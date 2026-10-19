@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
 from pathlib import Path
+
+from descape import game_dataset
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "object_catalog.json"
 _GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
@@ -64,7 +65,7 @@ RUN_ANGLE_STEP_DEG = 45
 QUARTER_TURN_STEPS = 2
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def groups() -> dict[tuple[str, str], tuple[int, ...]]:
     """(family, state) -> that group's four consts, in cycle order.
 
@@ -73,8 +74,8 @@ def groups() -> dict[tuple[str, str], tuple[int, ...]]:
     code's own third letter: A closed, B open, C the 1x1 corner, X the span
     corner.
     """
-    objects = json.loads(_CATALOG_PATH.read_text())["objects"]
-    graphics = json.loads(_GRAPHIC_MAP_PATH.read_text())["graphics"]
+    objects = json.loads(game_dataset.table_path(_CATALOG_PATH).read_text())["objects"]
+    graphics = json.loads(game_dataset.table_path(_GRAPHIC_MAP_PATH).read_text())["graphics"]
     slots: dict[tuple[str, str], dict[str, list[int]]] = {}
     for const, entry in objects.items():
         if entry.get("class") != _GATE_CLASS or const not in graphics:
@@ -91,7 +92,7 @@ def groups() -> dict[tuple[str, str], tuple[int, ...]]:
     }
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _siblings_by_const() -> dict[int, tuple[int, ...]]:
     return {const: consts for consts in groups().values() for const in consts}
 

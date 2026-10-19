@@ -6,15 +6,15 @@ is a Terrain-mode tool, not a Units-mode one, so MapView never calls
 on_unit_place for it.
 
 Stage 2 widened the tool from click_only to a drag stroke, so a click is now
-a one-tile stroke rather than an on_fill() dispatch. The placement assertions
-below are unchanged by that, which is the check that the widening left
-Stage 1's gesture alone: a lone node has no neighbours, so it takes the
-picker's own piece and frame rather than the connectivity table's.
+a one-tile stroke rather than an on_fill() dispatch. A lone node away from
+other cliffs still takes the picker's own piece and frame, centred on the
+clicked tile; one beside an existing cliff is shaped by that contact.
 
-The chain resolution itself (lattice stepping, dirset lookup, face
-inheritance) is tested headless in test_cliff_chain.py; what's here is the
-wiring -- one undo record per stroke, and no stray EditHistory terrain
-stroke opened alongside it.
+The chain resolution itself (cardinal steps, the facing the drag direction
+picks, the shape table lookup and the measured offsets) is tested headless
+in test_cliff_chain.py; what's here is the wiring: one undo record per
+stroke and its joins, the hover and drag previews, and no stray
+EditHistory terrain stroke opened alongside it.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ pytestmark = [
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
-# n_cliff_default_x1's own 01 piece: 3x3 span (A4's table), so span_anchor
-# lands its centre at tile + 1.5 on both axes -- an easy value to assert on.
+# n_cliff_default_x1's own 01 piece: 3x3 span (A4's table), centred on the
+# clicked tile, so its anchor is tile + 0.5 on both axes.
 _DEFAULT_CLIFF = 264
 GAIA_PLAYER_ID = 0
 
@@ -206,7 +206,10 @@ def test_a_drag_previews_the_run_release_places_and_release_clears_it():
         placed = window.scenario.unit_manager.units[GAIA_PLAYER_ID][-len(nodes):]
         assert [(u.unit_const, u.x, u.y) for u in placed] == [(n.unit_const, n.x, n.y) for n in nodes]
         last = window.status_log.toPlainText().splitlines()[-1]
-        assert last.startswith(f"Placed a run of {len(nodes)} cliffs, piece sizes chosen per junction"), last
+        assert last == (
+            f"Placed a run of {len(nodes)} cliffs from the picked family, shaped by the drag direction and their "
+            "neighbours"
+        ), last
     finally:
         _close(window)
 
@@ -391,6 +394,10 @@ def test_hover_beside_an_existing_cliff_is_what_the_click_places():
             cliff_catalog.piece_for_suffix(_DEFAULT_CLIFF, 2), 10.5, 11.5, 23.0,
         )
         assert (thin.rotation, thin.initial_animation_frame) == (22.0, 22)
+        assert _last_status(window) == (
+            "Placed a cliff from the picked family, shaped to join the cliff beside it, "
+            "1 existing cliff reshaped to join"
+        )
     finally:
         _close(window)
 
@@ -434,6 +441,24 @@ def test_the_ghost_returns_at_the_cursor_after_an_undo_without_a_mouse_move():
         assert (cap.rotation, [(u.x, u.y) for u in _gaia(window)[-2:]]) == (1.0, [(41.5, 44.5), (41.5, 47.5)])
         assert view._unit_ghost_item is None
         window.undo()
+        assert cap.rotation == 19.0
+        assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == [(40, 43, 45, 48)]
+        assert _highlight_box(view) == ((40, 43, 45, 48), 9)
+    finally:
+        _close(window)
+
+
+def test_the_ghost_returns_at_the_cursor_after_a_history_window_jump():
+    """TASK-358: the History window's jump moves the cursor without
+    _move_history(), so it refreshes the Cliff ghost itself."""
+    window = _shown_window()
+    try:
+        view = window.map_view
+        cap = _tall_run(window)
+        _hover_tile(window, 41, 41)
+        _mouse_drag(window, [(41, 41), (41, 44), (41, 46)])
+        assert view._unit_ghost_item is None
+        window._on_history_jump(window.edit_history.cursor - 1)
         assert cap.rotation == 19.0
         assert _mark_boxes(view._unit_ghost_item, view._tile_pixels) == [(40, 43, 45, 48)]
         assert _highlight_box(view) == ((40, 43, 45, 48), 9)
@@ -578,6 +603,31 @@ def test_the_hover_ghost_and_footprint_are_gone_on_leaving_the_view():
         _close(window)
 
 
+def test_a_stroke_closed_by_leaving_the_view_leaves_no_highlight_or_ghost():
+    """TASK-358: the stroke's close repaints the hover's highlight and ghost,
+    so leaveEvent clears them after closing it, not before."""
+    from PyQt5.QtCore import QEvent
+
+    window = _shown_window()
+    try:
+        view = window.map_view
+        _hover_tile(window, 30, 40)
+        before = _unit_count(window)
+        _mouse_press(window, (30, 40))
+        _mouse_move_held(window, (30, 46))
+        assert view._stroke_active
+
+        view.leaveEvent(QEvent(QEvent.Leave))
+
+        assert not view._stroke_active
+        assert _unit_count(window) > before
+        assert _highlight_box(view) is None
+        assert view._unit_ghost_item is None
+        assert view._cliff_footprint is None
+    finally:
+        _close(window)
+
+
 def _gaia(window):
     return window.scenario.unit_manager.units[GAIA_PLAYER_ID]
 
@@ -621,7 +671,7 @@ def test_a_drag_anchored_on_an_end_cap_extends_the_run_and_reshapes_the_cap_in_o
         assert (cap.rotation, cap.initial_animation_frame) == (1.0, 1)
         assert (cap.unit_const, cap.x, cap.y, cap.z, cap.reference_id) == placed_at
         assert _last_status(window) == (
-            "Placed a run of 2 cliffs, piece sizes chosen per junction from the picked family, "
+            "Placed a run of 2 cliffs from the picked family, shaped by the drag direction and their neighbours, "
             "1 existing cliff reshaped to join"
         )
 
@@ -651,7 +701,7 @@ def test_a_join_that_needs_a_different_size_piece_is_left_alone_and_counted():
         assert _unit_count(window) == before + 2
         assert (cap.rotation, cap.initial_animation_frame) == (19.0, 19)
         assert _last_status(window) == (
-            "Placed a run of 2 cliffs, piece sizes chosen per junction from the picked family, "
+            "Placed a run of 2 cliffs from the picked family, shaped by the drag direction and their neighbours, "
             "1 left as it was (a join there needs a different-size piece)"
         )
     finally:
@@ -680,6 +730,100 @@ def test_a_unit_change_between_press_and_release_drops_the_stroke():
         assert len(window.edit_history.records) == records
         assert _last_status(window) == "Cliff: the map's units changed during the drag, so nothing was placed"
         assert window._cliff_stroke is None
+    finally:
+        _close(window)
+
+
+def test_a_join_reshapes_a_player_owned_cap_and_undo_restores_it():
+    """TASK-358: the edit declares the cap owner's list as well as GAIA's, so
+    the undo record holds that cap's old frame."""
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        gaia_cap = _tall_run(window)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Give the cap to player 1", [GAIA_PLAYER_ID, 1]):
+            model.remove(gaia_cap)
+            model.add(1, _DEFAULT_CLIFF, 41.5, 41.5, rotation=19.0, initial_animation_frame=19)
+        cap = window.scenario.unit_manager.units[1][-1]
+        assert (cap.unit_const, cap.x, cap.y, cap.rotation) == (_DEFAULT_CLIFF, 41.5, 41.5, 19.0)
+        before = _unit_count(window)
+
+        _stroke(window, [(41, y) for y in range(41, 47)])
+
+        assert _unit_count(window) == before + 2
+        assert (cap.rotation, cap.initial_animation_frame) == (1.0, 1)
+        window.undo()
+        assert _unit_count(window) == before
+        assert (cap.rotation, cap.initial_animation_frame) == (19.0, 19)
+    finally:
+        _close(window)
+
+
+def _press_a_join_on_a_reopened_run(window, tmp_path):
+    """Saves the tall run and reopens it, so the press sees an unedited file
+    (unit_gen 0), then holds a drag that would extend it and reshape its cap."""
+    _select_piece(window, _DEFAULT_CLIFF)
+    window.cliff_action.setChecked(True)
+    _tall_run(window)
+    out = tmp_path / "run.aoe2scenario"
+    window.scenario.path = out
+    window._untitled = False
+    window.save()
+    window.load_scenario(out)
+    window.mode_combo.setCurrentText("Terrain")
+    _select_piece(window, _DEFAULT_CLIFF)
+    window.cliff_action.setChecked(True)
+    assert window.scenario.unit_gen == 0
+    window.on_edit_stroke_start()
+    for y in range(41, 47):
+        window.on_edit_stroke_tile(41, y, Qt.NoModifier)
+    assert len(window._cliff_stroke.nodes()) == 2 and len(window._cliff_stroke.rewrites()) == 1
+
+
+def test_a_document_swap_between_press_and_release_drops_the_stroke(tmp_path):
+    """TASK-358: unit_gen restarts at 0 per loaded file, so between two
+    unedited files only the scenario's identity tells the swap apart."""
+    window = _window()
+    try:
+        _press_a_join_on_a_reopened_run(window, tmp_path)
+        window.load_scenario(FIXTURE_PATH)
+        assert window.scenario.unit_gen == 0
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        window.on_edit_stroke_end()
+
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records
+        assert _last_status(window) == "Cliff: the map's units changed during the drag, so nothing was placed"
+    finally:
+        _close(window)
+
+
+def test_a_join_rewrite_that_raises_leaves_the_map_untouched(tmp_path, monkeypatch):
+    """TASK-358: the rewrites run before the adds, since an aborted unit edit
+    does not roll back: a raise there must not have placed any node yet."""
+    from descape.unit_model import UnitEditModel
+
+    window = _window()
+    try:
+        _press_a_join_on_a_reopened_run(window, tmp_path)
+        cap = _gaia(window)[-1]
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        def refuse(self, unit, frame):
+            raise ValueError("refused")
+
+        monkeypatch.setattr(UnitEditModel, "set_cliff_frame", refuse)
+        with pytest.raises(ValueError, match="refused"):
+            window.on_edit_stroke_end()
+
+        assert _unit_count(window) == before
+        assert (cap.rotation, cap.initial_animation_frame) == (19.0, 19)
+        assert len(window.edit_history.records) == records
     finally:
         _close(window)
 

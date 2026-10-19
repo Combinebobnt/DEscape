@@ -3802,6 +3802,43 @@ def test_a_paste_into_another_file_reports_and_undoes_in_one_step(new_maps_are_1
         window.close()
 
 
+def _variable_dialog_rows(panel) -> list[tuple[int, str]]:
+    """Open Variables… through its button, as a user does, and read its list."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel.variables_button.click()
+    QApplication.processEvents()
+    tree = panel._variables_dialog.tree
+    return [(int(tree.topLevelItem(i).text(0)), tree.topLevelItem(i).text(1)) for i in range(tree.topLevelItemCount())]
+
+
+def test_a_cross_document_pastes_variable_name_shows_in_the_variables_dialog_until_undone(new_maps_are_1_58) -> None:
+    """GH #3's manual step, in the dialog. Passes when: the new map's Variables…
+    list is empty before the paste; after pasting the fixture's triggers 2 and 3
+    it lists exactly (0, "fixture_var"); one undo empties the open dialog; and
+    reopening it through the button still lists nothing."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _ctrl_select(panel, 2, 3)
+        window.copy_triggers()
+        window.edit_history.mark_saved()
+        window.new_map()
+        window.mode_combo.setCurrentText("Triggers")
+        assert _variable_dialog_rows(panel) == [], "fixture assumption: the new map names no variable"
+
+        window.trigger_structural_edit("paste", [])
+        assert _variable_dialog_rows(panel) == [(0, "fixture_var")]
+
+        window.undo()
+        tree = panel._variables_dialog.tree
+        assert tree.topLevelItemCount() == 0, "the open dialog drops the name with the undo"
+        assert _variable_dialog_rows(panel) == []
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_paste_from_a_1_58_file_into_a_new_map_is_refused() -> None:
     """TASK-345: File > New Map is a 1.59 document, so triggers copied from the
     1.58 fixture are refused there. Paste stays enabled, says why, and
@@ -3916,6 +3953,125 @@ def test_select_all_in_triggers_mode_takes_every_visible_trigger() -> None:
         mm = window.scenario.map_manager
         assert window._region == (0, 0, mm.map_width, mm.map_height)
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _key(widget, key, modifiers) -> None:
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    QTest.keyClick(widget, key, modifiers)
+    QApplication.processEvents()
+
+
+def test_ctrl_a_and_ctrl_shift_a_keys_on_the_focused_trigger_tree() -> None:
+    """GH #3 by real key presses on the activated window, the tree focused.
+    Passes when: with section 2 collapsed, Ctrl+A selects [0, 1, 2, 3] (the
+    collapsed member 3 included); Ctrl+Shift+A clears it to []; and with
+    "variable" typed in the filter and the tree focused again, Ctrl+A selects
+    only the rows left visible, [2, 3]."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 2, "--- Second ---")  # sections: (before) 0, 1 | 2: 3
+        panel._item_for_index[2].setExpanded(False)
+        assert panel._item_for_index[3].parent() is panel._item_for_index[2], "fixture assumption"
+        panel.select_trigger(1)
+        _activate(window)
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert panel.tree.hasFocus()
+
+        _key(panel.tree, Qt.Key_A, Qt.ControlModifier)
+        assert panel.selected_trigger_indices() == [0, 1, 2, 3]
+        _key(panel.tree, Qt.Key_A, Qt.ControlModifier | Qt.ShiftModifier)
+        assert panel.selected_trigger_indices() == []
+
+        panel.filter_edit.setText("variable")
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert panel.tree.hasFocus()
+        assert sorted(i for i, row in panel._item_for_index.items() if not row.isHidden()) == [2, 3], "fixture assumption"
+        _key(panel.tree, Qt.Key_A, Qt.ControlModifier)
+        assert panel.selected_trigger_indices() == [2, 3]
+        # The reader skips hidden rows by itself; clearing the filter shows
+        # whether Select All left the hidden ones out of the selection too.
+        panel.filter_edit.clear()
+        QApplication.processEvents()
+        assert panel.selected_trigger_indices() == [2, 3], "Ctrl+A selected rows the filter hid"
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_trees_own_ctrl_a_takes_collapsed_members_once_select_all_is_rebound() -> None:
+    """With edit_select_all at its default, Ctrl+A on the focused tree is the
+    window's shortcut (measured: the tree never sees the key). Rebound away,
+    the key reaches the tree's own Select All. Passes when: Select All rebound
+    to Ctrl+Alt+F9, Ctrl+A on the focused tree with section 2 collapsed still
+    selects [0, 1, 2, 3], the collapsed member 3 included, not Qt's
+    expanded-rows-only set."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        taken = [aid for aid in window._keybind_actions if settings.get_keybind(aid) == "Ctrl+Alt+F9"]
+        assert not taken, f"Ctrl+Alt+F9 is not free: {taken}"
+        settings.set_keybind("edit_select_all", "Ctrl+Alt+F9")
+        window.apply_keybind("edit_select_all")
+        assert window.select_all_action.shortcut() == QKeySequence("Ctrl+Alt+F9")
+        _rename(panel, 2, "--- Second ---")  # sections: (before) 0, 1 | 2: 3
+        panel._item_for_index[2].setExpanded(False)
+        panel.select_trigger(1)
+        _activate(window)
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        assert panel.tree.hasFocus()
+
+        _key(panel.tree, Qt.Key_A, Qt.ControlModifier)
+        assert panel.selected_trigger_indices() == [0, 1, 2, 3]
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_ctrl_a_key_in_terrain_mode_selects_the_whole_map() -> None:
+    """GH #3's other half by a real key press. Passes when: back in Terrain
+    mode with the map view focused, Ctrl+A selects the whole map region and no
+    trigger selection changes; Ctrl+Shift+A clears the region."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(1)
+        window.mode_combo.setCurrentText("Terrain")
+        _activate(window)
+        window.map_view.setFocus()
+        QApplication.processEvents()
+        assert window.map_view.hasFocus()
+        assert window._region is None, "fixture assumption"
+
+        _key(window.map_view, Qt.Key_A, Qt.ControlModifier)
+        mm = window.scenario.map_manager
+        assert window._region == (0, 0, mm.map_width, mm.map_height)
+        assert panel.selected_trigger_indices() == [1]
+        _key(window.map_view, Qt.Key_A, Qt.ControlModifier | Qt.ShiftModifier)
+        assert window._region is None
+    finally:
+        _release_modifiers(window)
         window.edit_history.mark_saved()
         window.close()
 
@@ -5300,6 +5456,73 @@ def test_no_trigger_pane_button_clips_at_the_minimum_width() -> None:
         window.close()
 
 
+def _placeholder_ink_width(edit) -> int:
+    """Columns of the empty line edit's inside (its 3 px frame band skipped)
+    holding any pixel off its Base colour: the drawn placeholder's width."""
+    from PyQt5.QtGui import QColor, QPalette
+
+    assert edit.text() == "" and edit.placeholderText(), "fixture assumption: the placeholder is showing"
+    image = edit.grab().toImage()
+    base = edit.palette().color(QPalette.Base).rgb() & 0xFFFFFF
+    inked = [
+        x
+        for x in range(3, image.width() - 3)
+        if any(QColor(image.pixel(x, y)).rgb() & 0xFFFFFF != base for y in range(3, image.height() - 3))
+    ]
+    assert inked, "no placeholder ink drawn"
+    return inked[-1] - inked[0] + 1
+
+
+def test_the_filter_row_does_not_clip_at_the_minimum_width() -> None:
+    """TASK-068's filter row, the sibling of the tag row check above, at
+    MIN_USEFUL_WIDTH. Passes when: the row holds exactly filter_edit and
+    sort_combo, both visible; the sort combo gets its full size hint, so
+    neither mode's label is elided; the filter box gets at least its minimum
+    size hint; the two sit side by side inside the pane; and the empty box's
+    placeholder draws the same ink width at this width as at a 700 px pane,
+    so it is not elided."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_panel import TriggerPanel
+
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([TriggerPanel.MIN_USEFUL_WIDTH, total - TriggerPanel.MIN_USEFUL_WIDTH])
+        QApplication.processEvents()
+        assert panel.width() <= TriggerPanel.MIN_USEFUL_WIDTH + 10, "fixture assumption: the pane is at its minimum"
+        filter_row = panel.filter_edit.parentWidget().layout().itemAt(0).layout()
+        assert _row_widgets(filter_row) == [panel.filter_edit, panel.sort_combo]
+
+        combo = panel.sort_combo
+        assert combo.isVisible() and panel.filter_edit.isVisible()
+        assert combo.width() >= combo.sizeHint().width(), (
+            f"the sort combo gets {combo.width()} px of its {combo.sizeHint().width()} at {panel.width()} px"
+        )
+        edit = panel.filter_edit
+        assert edit.width() >= edit.minimumSizeHint().width(), (
+            f"the filter box gets {edit.width()} px of its {edit.minimumSizeHint().width()} minimum"
+        )
+        edit_right = edit.mapTo(panel, edit.rect().topRight()).x()
+        combo_left = combo.mapTo(panel, combo.rect().topLeft()).x()
+        assert edit_right < combo_left, "the filter box overlaps the sort combo"
+        assert combo_left + combo.width() <= panel.width(), "the sort combo runs past the pane"
+
+        # The placeholder, measured: its ink at this width against the same
+        # string drawn with room to spare. QLineEdit elides a placeholder that
+        # does not fit, which would draw narrower ink.
+        narrow = _placeholder_ink_width(edit)
+        window.content_splitter.setSizes([700, total - 700])
+        QApplication.processEvents()
+        assert edit.width() > 300, "fixture assumption: the wide pane widens the filter box"
+        wide = _placeholder_ink_width(edit)
+        assert narrow == wide, f"the placeholder draws {narrow} px of its {wide} at {TriggerPanel.MIN_USEFUL_WIDTH} px"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # -- TASK-285: the tree / detail split starts as equal halves --------------------
 
 
@@ -6310,6 +6533,116 @@ def test_gh137_slice0_c_a_right_click_on_the_entry_tree(_no_menu_exec, clicked: 
         window.close()
 
 
+def _context_menu(tree, item, shown: list):
+    """Deliver a mouse QContextMenuEvent to `item`'s row on the viewport, the
+    event a real right-click produces, and return the one QMenu it exec'd.
+    QTest's mouse presses never synthesize this event, so _right_click alone
+    leaves the customContextMenuRequested wiring unexercised."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtGui import QContextMenuEvent
+    from PyQt5.QtWidgets import QApplication
+
+    tree.scrollToItem(item)
+    QApplication.processEvents()
+    rect = tree.visualItemRect(item)
+    point = QPoint(rect.left() + 8, rect.center().y())
+    assert tree.viewport().rect().contains(point), (rect, tree.viewport().rect())
+    shown.clear()
+    event = QContextMenuEvent(QContextMenuEvent.Mouse, point, tree.viewport().mapToGlobal(point))
+    QApplication.sendEvent(tree.viewport(), event)
+    QApplication.processEvents()
+    assert len(shown) == 1, f"the right-click opened {len(shown)} menus"
+    return shown[0]
+
+
+def test_gh137_a_right_click_on_the_trigger_tree_opens_its_menu_and_pastes_below_that_row(_no_menu_exec) -> None:
+    """The trigger tree's customContextMenuRequested wiring. Passes when: a
+    context-menu event on row 0 exec's one menu starting Cut, Copy, Paste; its
+    Copy takes trigger 0; and with trigger 3 current, Paste from the menu a
+    right-click on row 1 opened lands the copy (index 4) below row 1, display
+    order [0, 1, 4, 2, 3], selected."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        menu = _context_menu(panel.tree, panel._item_for_index[0], _no_menu_exec)
+        assert _texts(menu)[:3] == ["Cut", "Copy", "Paste"]
+        _action(menu, "Copy").trigger()
+        assert [t.name for t in window._trigger_clipboard.triggers] == ["Fixture: setup"]
+
+        panel.select_trigger(3)
+        menu = _context_menu(panel.tree, panel._item_for_index[1], _no_menu_exec)
+        assert _texts(menu)[:3] == ["Cut", "Copy", "Paste"]
+        _action(menu, "Paste").trigger()
+        assert _order(window) == [0, 1, 4, 2, 3]
+        assert panel.selected_trigger_indices() == [4]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_menu_cut_and_paste_of_an_activated_trigger_relinks_and_says_so(_no_menu_exec) -> None:
+    """Cut and Paste of trigger 0, which trigger 2 ("Fixture: references")
+    activates, both through right-click menus rather than
+    window.cut_triggers()/paste_triggers(). Passes when: the Cut reports the
+    one inbound link that will reconnect and leaves that link (now on index 1)
+    at -1; the Paste from row 2's menu appends the trigger as "Fixture: setup"
+    (no "(copy)"), re-points the link to its new index 3, and reports
+    "reconnected 1 trigger link into them", in one undo record."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(panel._manager().triggers[2])] == [0, 1], (
+            "fixture assumption: trigger 2 activates trigger 0"
+        )
+        panel.select_trigger(0)
+        _action(_context_menu(panel.tree, panel._item_for_index[0], _no_menu_exec), "Cut").trigger()
+        assert "1 trigger link into the cut triggers will reconnect on Paste." in _status(window)
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(panel._manager().triggers[1])] == [-1, 0]
+
+        panel.select_trigger(2)
+        records = _record_count(window)
+        window.status_log.clear()
+        _action(_context_menu(panel.tree, panel._item_for_index[2], _no_menu_exec), "Paste").trigger()
+        manager = panel._manager()
+        assert [t.name for t in manager.triggers][-1] == "Fixture: setup", "no (copy) suffix"
+        assert [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[1])] == [3, 0]
+        assert "Pasted 1 trigger: reconnected 1 trigger link into them." in _status(window)
+        assert _record_count(window) == records + 1, "the relink rides in the paste's record"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh137_a_right_click_on_the_entry_tree_opens_its_menu_and_pastes_below_that_row(_no_menu_exec) -> None:
+    """The entry tree's customContextMenuRequested wiring. Passes when: a
+    context-menu event on trigger 3's effect 1 exec's one menu starting Cut,
+    Copy, Paste; its Copy takes effects 1 and 2; and on trigger 2, Paste from
+    the menu a right-click on effect 0 opened lands them below it, effect
+    types [8, 19, 11, 9], as one "Paste 2 effects" record."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(3)
+        _select_entries(panel, ("effect", 1), ("effect", 2))
+        menu = _context_menu(panel.entry_tree, panel._entry_item_for("effect", 1), _no_menu_exec)
+        assert _texts(menu)[:3] == ["Cut", "Copy", "Paste"]
+        _action(menu, "Copy").trigger()
+        assert window._entry_clipboard.label == "2 effects"
+
+        panel.select_trigger(2)
+        records = _record_count(window)
+        menu = _context_menu(panel.entry_tree, panel._entry_item_for("effect", 0), _no_menu_exec)
+        assert _texts(menu)[:3] == ["Cut", "Copy", "Paste"]
+        _action(menu, "Paste").trigger()
+        assert _types_of(window, 2) == [8, 19, 11, 9]
+        assert _record_count(window) == records + 1
+        assert window.edit_history.records[-1].label == "Paste 2 effects"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 _EDITABLE_WIDGETS = ["line edit", "text box", "spin box", "editable combo"]
 
 
@@ -6590,29 +6923,40 @@ def test_gh137_cut_undo_then_paste_leaves_the_restored_link_alone() -> None:
         window.close()
 
 
-_CLEARED_SINCE_COPY = "cleared 1 trigger link (target changed or removed since the copy)"
+_CLEARED_SINCE_COPY = "cleared 1 trigger link (target removed since the copy)"
+_LINK_TARGET_CASES = ["untouched", "edited and undone", "deleted"]
 
 
-@pytest.mark.parametrize("edited", [False, True], ids=["untouched target", "target edited and undone"])
-def test_gh137_a_same_document_trigger_paste_says_it_cleared_a_link(edited: bool) -> None:
-    """Trap 5: an undo swaps in a deep copy of the target, so the copied
-    block's link no longer resolves and lands on -1. That must not be silent."""
+def _change_link_target(window, panel, case: str) -> None:
+    """Act on trigger 0, the copied block's link target, between copy and paste."""
+    if case == "edited and undone":
+        _rename(panel, 0, "Fixture: renamed")
+        window.undo()
+    elif case == "deleted":
+        window.trigger_structural_edit("delete", [0])
+
+
+@pytest.mark.parametrize("case", _LINK_TARGET_CASES, ids=[f"target {case}" for case in _LINK_TARGET_CASES])
+def test_gh137_a_same_document_trigger_paste_says_it_cleared_a_link(case: str) -> None:
+    """A link resolves by identity, so only a deleted target lands on -1, and
+    that must not be silent. Since TASK-003.06 identity survives an undo (the
+    restore writes content back into the same object), so a target edited and
+    then undone still resolves."""
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         panel.select_trigger(2)
         window.copy_triggers()
-        if edited:
-            _rename(panel, 0, "Fixture: renamed")
-            window.undo()
+        _change_link_target(window, panel, case)
         window.status_log.clear()
         window.paste_triggers()
         manager = panel._manager()
-        assert manager.triggers[4].name == "Fixture: references (copy)"
-        refs = [ce.trigger_id for ce in trigger_clipboard_refs(manager.triggers[4])]
-        assert refs == ([-1, 1] if edited else [0, 1])
+        pasted = [t for t in manager.triggers if t.name == "Fixture: references (copy)"]
+        assert len(pasted) == 1
+        refs = [ce.trigger_id for ce in trigger_clipboard_refs(pasted[0])]
+        assert refs == ([-1, 0] if case == "deleted" else [0, 1])
         status = _status(window)
-        if edited:
+        if case == "deleted":
             assert f"Pasted 1 trigger: {_CLEARED_SINCE_COPY}." in status, status
         else:
             assert "cleared" not in status, status
@@ -6621,24 +6965,24 @@ def test_gh137_a_same_document_trigger_paste_says_it_cleared_a_link(edited: bool
         window.close()
 
 
-@pytest.mark.parametrize("edited", [False, True], ids=["untouched target", "target edited and undone"])
-def test_gh137_a_same_document_entry_paste_says_it_cleared_a_link(edited: bool) -> None:
+@pytest.mark.parametrize("case", _LINK_TARGET_CASES, ids=[f"target {case}" for case in _LINK_TARGET_CASES])
+def test_gh137_a_same_document_entry_paste_says_it_cleared_a_link(case: str) -> None:
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         panel.select_trigger(2)
         _select_entries(panel, ("effect", 0))
         window.copy_entries_to_clipboard()
-        if edited:
-            _rename(panel, 0, "Fixture: renamed")
-            window.undo()
-        panel.select_trigger(3)
+        _change_link_target(window, panel, case)
+        last = len(panel._manager().triggers) - 1
+        panel.select_trigger(last)
         window.status_log.clear()
         window.paste_entries()
-        pasted = panel._manager().triggers[3].effects[-1]
-        assert pasted.trigger_id == (-1 if edited else 0)
+        assert panel._manager().triggers[last].name == "Fixture: variable"
+        pasted = panel._manager().triggers[last].effects[-1]
+        assert pasted.trigger_id == (-1 if case == "deleted" else 0)
         status = _status(window)
-        if edited:
+        if case == "deleted":
             assert f"Pasted 1 effect: {_CLEARED_SINCE_COPY}." in status, status
         else:
             assert "cleared" not in status, status
@@ -7271,6 +7615,58 @@ def test_typing_in_the_message_updates_the_preview_but_writes_nothing() -> None:
         assert not window.edit_history.is_dirty
         assert _record_count(window) == 0
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_real_keystrokes_in_the_message_follow_in_the_preview_and_commit_once_on_focus_out() -> None:
+    """GH #140's manual step by real key presses on the activated window.
+    Passes when: after each of two typed characters the preview's text already
+    ends with them; until the box loses focus nothing is recorded and the entry
+    still holds the fixture's message; a real focus move to the filter box then
+    records exactly one undo step and writes the typed message; and focusing
+    and leaving the box again unchanged records nothing more."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _instruction_window()
+    try:
+        panel = window.trigger_panel
+        preview = _preview(panel)
+        entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
+        box = _row_widget(panel, "message")
+        _activate(window)
+        box.setFocus()
+        QApplication.processEvents()
+        assert box.hasFocus()
+        _key(box, Qt.Key_End, Qt.ControlModifier)
+
+        QTest.keyClicks(box, "X")
+        QApplication.processEvents()
+        assert "Fixture scenario loaded.X" in preview.text_label.text()
+        QTest.keyClicks(box, "Y")
+        QApplication.processEvents()
+        assert "Fixture scenario loaded.XY" in preview.text_label.text()
+        assert box.toPlainText() == "Fixture scenario loaded.XY"
+        assert _record_count(window) == 0, "a keystroke recorded an undo step"
+        assert entry.message == "Fixture scenario loaded."
+        assert not window.edit_history.is_dirty
+
+        panel.filter_edit.setFocus()
+        QApplication.processEvents()
+        assert not box.hasFocus()
+        assert _record_count(window) == 1, "the focus-out commits exactly one step"
+        assert panel._manager().triggers[_SETUP_TRIGGER].effects[0].message == "Fixture scenario loaded.XY"
+
+        box = _row_widget(panel, "message")
+        box.setFocus()
+        QApplication.processEvents()
+        panel.filter_edit.setFocus()
+        QApplication.processEvents()
+        assert _record_count(window) == 1, "an unchanged focus-out recorded again"
+    finally:
+        _release_modifiers(window)
         window.edit_history.mark_saved()
         window.close()
 
@@ -8060,10 +8456,19 @@ _REFERENCED_UNIT_KEY = (1, 502)
 
 
 def _brush_hex(item, col: int) -> str | None:
+    """The row's brush, read back as the default setting hex it is the legible
+    shade of (TASK-424), else as drawn. test_trigger_status_contrast.py measures the shade."""
     from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPalette
+
+    from descape.viewer_dialogs import legible_status_color
 
     brush = item.data(col, Qt.ForegroundRole)
-    return None if brush is None else brush.color().name()
+    if brush is None:
+        return None
+    base = item.treeWidget().palette().color(QPalette.Active, QPalette.Base).name()
+    shades = {legible_status_color(hex_str, base): hex_str for hex_str in (_OK_HEX, _PROBLEM_HEX)}
+    return shades.get(brush.color().name(), brush.color().name())
 
 
 def _icon_image(item, col: int):
@@ -8737,7 +9142,7 @@ def test_gh213_browsing_a_non_identity_file_changes_nothing_and_an_edit_keeps_it
 
         window.undo()
         for kind, order in ENTRY_ORDERS.items():
-            assert _entry_rows(panel, kind) == order, "an undo swaps in a deepcopy, which must keep the order"
+            assert _entry_rows(panel, kind) == order, "an undo deep-copies the state back into the trigger, which must keep the order"
         undone = tmp_path / "undone.aoe2scenario"
         write_scenario(window.scenario, undone, triggers=window.trigger_edits)
         assert undone.read_bytes() == base.read_bytes()

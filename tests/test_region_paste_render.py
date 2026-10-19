@@ -190,13 +190,14 @@ def _spy_in_place(window, monkeypatch) -> list[bool]:
 
 
 def _block_window(block: str, monkeypatch):
-    """_seeded_window() for one of BLOCKS, with `over_cap` pinning both unit
+    """_seeded_window() for one of BLOCKS, with `over_cap` pinning the three unit
     splice caps under the block's unit count and `no_elevation` leaving the
     Elevation category unchecked."""
     window = _seeded_window(MARK_CONST, block=block)
     if block == "over_cap":
         monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 1)
         monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 1)
+        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 1)
     if block == "no_elevation":
         window.paste_elevation_check.setChecked(False)
     return window

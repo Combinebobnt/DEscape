@@ -68,6 +68,8 @@ import argparse
 import json
 from pathlib import Path
 
+import _game_root
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -82,11 +84,12 @@ def main() -> None:
         default=Path(__file__).resolve().parent.parent / "descape",
         help="Where to write unit_stats.json (default: descape/)",
     )
+    _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
 
     from genieutils.datfile import DatFile
 
-    dat_path = args.aoe2de_root / "resources/_common/dat/empires2_x2_p1.dat"
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 

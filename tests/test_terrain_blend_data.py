@@ -188,9 +188,14 @@ def test_real_bleeding_edge_residue_is_the_assets_not_the_gathers():
 
 @pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
 def test_real_masks_give_every_bleeding_edge_wholly_to_the_neighbour(tile_px):
+    """The interior kept raw starts past the deeper of the edge fade and TASK-284's edge conform."""
     _require_install()
     gather = asset_source.blendomatic_square_gather(tile_px)
-    n = max(1, round(tile_px * terrain_blend.EDGE_FADE_DEPTH))
+    n = max(
+        1,
+        round(tile_px * terrain_blend.EDGE_FADE_DEPTH),
+        min(tile_px - 1, round(tile_px * terrain_blend.EDGE_CONFORM_DEPTH)),
+    )
     for tile in (*range(16), *range(20, 31)):
         edges = terrain_blend._BLEED_EDGES[tile]
         mask = asset_source.get_blend_mask(1, tile, tile_px)
@@ -201,6 +206,31 @@ def test_real_masks_give_every_bleeding_edge_wholly_to_the_neighbour(tile_px):
                 assert not edge.any(), (tile, bit)
         inner = slice(n, tile_px - n)
         assert np.array_equal(mask[inner, inner], raw[inner, inner]), tile
+
+
+_EDGE_LINES = {3: np.s_[-1, :], 1: np.s_[:, -1], 5: np.s_[:, 0], 7: np.s_[0, :]}
+
+
+@pytest.mark.parametrize("mode", (1, 2))
+def test_real_masks_edges_are_their_vertex_profiles(mode):
+    """TASK-284: get_blend_mask() conforms every real tile's non-bleeding edges, so two same-terrain
+    tiles blended by different tiles meet on the same profile. Raw, tile 0's SW edge runs
+    [128, 60, 3] and tile 12's [0, 48, 120]; tile 20's NW keeps 116 mid-edge where 24's has 36."""
+    _require_install()
+    tile_px = 64
+    raw_off = 0
+    for tile in range(31):
+        mask = asset_source.get_blend_mask(mode, tile, tile_px)
+        edges = terrain_blend._BLEED_EDGES.get(tile, 0)
+        for bit, line in _EDGE_LINES.items():
+            if edges >> bit & 1:
+                assert not mask[line].any(), (mode, tile, bit)
+                continue
+            profile = terrain_blend.edge_profile(tile, bit, tile_px)
+            assert np.array_equal(mask[line], profile), (mode, tile, bit)
+            raw = asset_source.get_blendomatic()[mode, tile][asset_source.blendomatic_square_gather(tile_px)]
+            raw_off = max(raw_off, int(np.abs(raw[line].astype(int) - profile).max()))
+    assert raw_off > 32, "the raw edges already match their profiles, so this pins nothing"
 
 
 def test_all_real_layer_masks_load_at_texture_size():

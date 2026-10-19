@@ -585,3 +585,176 @@ def test_move_mode_shows_the_full_count_line() -> None:
         assert dialog.count_label.text() == "2 selected units, 12 eligible tiles in a 4x3 region (12 tiles)"
     finally:
         dialog.deleteLater()
+
+
+# -- GH #196: the area around the selected units -------------------------------
+
+
+def test_units_region_is_the_union_of_the_footprints() -> None:
+    fish = fakes.SyntheticUnit(x=1.5, y=2.5, unit_const=_FISH)
+    house = fakes.SyntheticUnit(x=6.0, y=6.0, unit_const=_HOUSE)
+    house_tiles = _footprint(6.0, 6.0, _HOUSE)
+    assert len(house_tiles) > 1, "the house must span more than its own tile"
+    region = scatter_dialog.units_region([fish, house], 20, 20)
+    union = {(1, 2)} | house_tiles
+    xs, ys = {x for x, _ in union}, {y for _, y in union}
+    assert region == (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+    stray = fakes.SyntheticUnit(x=-3.0, y=40.0, unit_const=_FISH)
+    assert scatter_dialog.units_region([fish, house, stray], 20, 20) == region
+    assert scatter_dialog.units_region([stray], 20, 20) is None
+    assert scatter_dialog.units_region([], 20, 20) is None
+
+
+def test_grown_region_widens_every_side_and_region_tiles_clamps_it() -> None:
+    assert scatter_dialog.grown_region((4, 5, 7, 9), 3) == (1, 2, 10, 12)
+    assert scatter_dialog.grown_region((4, 5, 7, 9), 0) == (4, 5, 7, 9)
+    assert set(scatter_dialog.region_tiles(scatter_dialog.grown_region((1, 1, 2, 2), 4), 6, 6)) == _blob(0, 0, 6, 6)
+
+
+def _units_dialog(scenario, selected, region=None, unit_const=_FISH, last=None):
+    conftest.ensure_qapp()
+    return scatter_dialog.ScatterDialog(scenario, region, unit_const, 0, last=last, selected_units=selected)
+
+
+_PAIR = (
+    fakes.SyntheticUnit(x=4.5, y=4.5, unit_const=_FISH, reference_id=1),
+    fakes.SyntheticUnit(x=6.5, y=5.5, unit_const=_FISH, reference_id=2),
+)
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_with_no_region_the_area_is_the_selected_units_box_and_the_mode_is_move() -> None:
+    units = [[] for _ in range(9)]
+    units[1] = list(_PAIR)
+    dialog = _units_dialog(_scenario(units=units), list(_PAIR))
+    try:
+        assert dialog.units_radio.isChecked() and dialog.units_radio.isEnabled()
+        assert dialog.units_radio.text() == "Around the selected units (3x2)"
+        assert not dialog.region_radio.isEnabled()
+        assert "Select tool in Terrain mode" in dialog.region_radio.toolTip()
+        assert dialog.move_radio.isChecked()
+        dialog.grow_spin.setValue(0)
+        # Avoid is on, and the movers' own tiles are free to them.
+        assert dialog.avoid_check.isChecked()
+        assert set(dialog.eligible()) == _blob(4, 4, 7, 6)
+        assert set(dialog.params().tiles) == _blob(4, 4, 7, 6)
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_grow_starts_at_two_widens_the_box_clamps_at_the_edge_and_follows_the_label() -> None:
+    corner = [fakes.SyntheticUnit(x=0.5, y=1.5, unit_const=_FISH, reference_id=1)]
+    dialog = _units_dialog(_scenario(width=10, height=10), corner)
+    try:
+        assert dialog.grow_spin.value() == scatter_dialog.DEFAULT_GROW == 2
+        assert dialog.grow_spin.isEnabled()
+        assert set(dialog.eligible()) == _blob(0, 0, 3, 4)  # clamped at x=0 and y=0
+        assert "eligible tiles in a 3x4 region (12 tiles)" in dialog.count_label.text()
+        dialog.grow_spin.setValue(4)
+        assert set(dialog.eligible()) == _blob(0, 0, 5, 6)
+        assert "eligible tiles in a 5x6 region (30 tiles)" in dialog.count_label.text()
+        dialog.grow_spin.setValue(0)
+        assert set(dialog.eligible()) == {(0, 1)}
+        assert "in a 1x1 region (1 tiles)" in dialog.count_label.text()
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_a_region_wins_over_the_selection_until_the_units_area_is_picked() -> None:
+    picked = [fakes.SyntheticUnit(x=15.5, y=15.5, unit_const=_FISH, reference_id=5)]
+    units = [[] for _ in range(9)]
+    units[1] = list(picked)
+    dialog = _units_dialog(_scenario(units=units), picked, region=(0, 0, 4, 4))
+    try:
+        assert dialog.region_radio.isChecked()
+        assert dialog.region_radio.text() == "Selected region (4x4)"
+        assert dialog.place_radio.isChecked()  # today's rule: Place unless sticky Move
+        assert not dialog.grow_spin.isEnabled()
+        assert set(dialog.eligible()) == _blob(0, 0, 4, 4)
+        dialog.units_radio.setChecked(True)
+        assert dialog.grow_spin.isEnabled()
+        assert set(dialog.eligible()) == _blob(13, 13, 18, 18) - {(15, 15)}  # Avoid, Place mode
+        dialog.region_radio.setChecked(True)
+        assert not dialog.grow_spin.isEnabled()
+        assert set(dialog.eligible()) == _blob(0, 0, 4, 4)
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+@pytest.mark.parametrize("selected", [[], [fakes.SyntheticUnit(x=-2.0, y=3.5, unit_const=_FISH)]])
+def test_with_neither_area_both_radios_are_disabled_and_ok_is_greyed(selected) -> None:
+    dialog = _units_dialog(_scenario(), selected)
+    try:
+        assert not dialog.region_radio.isEnabled() and not dialog.units_radio.isEnabled()
+        assert not dialog.region_radio.isChecked() and not dialog.units_radio.isChecked()
+        assert dialog.units_radio.toolTip() == "Select units in Units mode first"
+        assert dialog.eligible() == []
+        assert not _ok_enabled(dialog)
+        assert dialog.count_label.text().startswith("No area")
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_terrain_default_follows_the_area_but_not_a_picked_terrain() -> None:
+    picked = [fakes.SyntheticUnit(x=12.5, y=12.5, unit_const=_FISH, reference_id=5)]
+    scenario = _scenario(dirt=_blob(10, 10, 16, 16))
+    dialog = _units_dialog(scenario, picked, region=(0, 0, 4, 4))
+    try:
+        assert dialog.terrain_combo.currentData() == _GRASS
+        dialog.units_radio.setChecked(True)
+        assert dialog.terrain_combo.currentData() == _DIRT
+        dialog.region_radio.setChecked(True)
+        assert dialog.terrain_combo.currentData() == _GRASS
+        dialog.terrain_radio.setChecked(True)
+        dialog.units_radio.setChecked(True)
+        assert dialog.terrain_combo.currentData() == _GRASS  # the Terrain filter is live, so it stays
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_grow_is_sticky_and_the_area_choice_is_not() -> None:
+    picked = [fakes.SyntheticUnit(x=12.5, y=12.5, unit_const=_FISH, reference_id=5)]
+    first = _units_dialog(_scenario(), picked, region=(0, 0, 4, 4))
+    try:
+        first.units_radio.setChecked(True)
+        first.grow_spin.setValue(5)
+        state = first.state()
+    finally:
+        first.deleteLater()
+    assert state["grow"] == 5
+    second = _units_dialog(_scenario(), picked, region=(0, 0, 4, 4), last=state)
+    try:
+        assert second.region_radio.isChecked()
+        assert second.grow_spin.value() == 5
+        assert not second.grow_spin.isEnabled()
+    finally:
+        second.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_move_radio_is_disabled_with_an_object_chosen_and_nothing_selected() -> None:
+    dialog = _units_dialog(_scenario(), [], region=(0, 0, 4, 4))
+    try:
+        assert not dialog.move_radio.isEnabled()
+        assert dialog.move_radio.toolTip().startswith("Select units in Units mode first.")
+        assert dialog.place_radio.isChecked()
+    finally:
+        dialog.deleteLater()
+    picked = [fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=_FISH, reference_id=5)]
+    dialog = _units_dialog(_scenario(), picked, region=(0, 0, 4, 4))
+    try:
+        assert dialog.move_radio.isEnabled()
+    finally:
+        dialog.deleteLater()

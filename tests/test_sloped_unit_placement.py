@@ -71,13 +71,13 @@ def _diamond_pixel_nearest(tile_px: int, fx: float, fy: float) -> int:
     return int(np.argmin((pfx - fx) ** 2 + (pfy - fy) ** 2))
 
 
-LEVELS = [0, -1, -2]
+LEVELS = [1, 0, -1, -2]
 
 
 def _render_at(scn, mip: int):
     """(img, elevations, corner_rise, proj) at cache level `mip`: the full
     render at 0, else SlopedChunkCache's stitched level with its own
-    corner_rise and proj (TASK-031.60's coarser ladder)."""
+    corner_rise and proj (TASK-031.60's coarser ladder, TASK-146's finer level)."""
     if mip == 0:
         return render.render_terrain_sloped_with_proj(scn)
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
@@ -158,7 +158,8 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy,
     where it can be made correctly -- against an ID plane that reproduces
     the depth walk -- in tests/test_off_grid_placement.py.
     """
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H) >> -mip
+    base = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = base << mip if mip >= 0 else base >> -mip
     ux, uy = 9, 8
 
     i = _diamond_pixel_nearest(tile_px, want_fx, want_fy)

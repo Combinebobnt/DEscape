@@ -13,23 +13,22 @@ form walls use. So writes are always a plain literal integer.
 Walls, cliffs and gates are excluded BY CONST SET, not by `unit.class_`: the
 game re-derives their stored index from neighbours (and a gate's orientation
 lives in its const). Class 27 is 36 consts of which only 9 are walls
-(counting Aqueduct, 231, since GH #110), so a class exclusion would also drop
-Mole (2421).
+(counting Aqueduct, 231, since GH #110; 8 in Return of Rome), so a class
+exclusion would also drop Mole (2421).
 """
 
 from __future__ import annotations
 
 import json
 import random
-from functools import lru_cache
 from pathlib import Path
 
-from descape import gate_orientation, unit_rotation, unit_sprites
+from descape import game_dataset, gate_orientation, unit_rotation, unit_sprites
 
 _GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def excluded_consts() -> frozenset[int]:
     """Walls, cliffs and every gate: variant-indexed, but not the user's to cycle.
 
@@ -37,13 +36,13 @@ def excluded_consts() -> frozenset[int]:
     JSON tables, the same reason unit_sprites.wall_connector_consts() is one.
     """
     gates = frozenset(const for group in gate_orientation.groups().values() for const in group)
-    return unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS | gates
+    return unit_sprites.rotation_variant_const_set() | unit_sprites.cliff_const_set() | gates
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _variant_counts() -> dict[int, int]:
     """unit_const -> the committed `variant_count` (.sld frames // frame_count)."""
-    data = json.loads(_GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(_GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(const): int(entry["variant_count"]) for const, entry in data.items() if "variant_count" in entry}
 
 

@@ -309,20 +309,43 @@ def test_nothing_is_queued_with_sprites_off(mixed_scenario) -> None:
     assert not _warm(flat, [1]).is_active
 
 
-def test_sloped_warms_a_coarser_level_the_visible_one_left_unbuilt(sprite_install, mixed_scenario) -> None:
-    """Sloped's ladder is Stepped's coarser levels (TASK-031.60), so a
-    non-visible level has a warm job until it is built, and a warm installs
-    it. Built from a headroom-0 Stepped proj, which must construct too: the
-    ladder derives its corner headroom from proj rather than assuming one step."""
+def _sloped_cache(scn, headroom: bool = True):
     from descape import iso_geometry
     from descape.render_cache import SlopedChunkCache
 
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
-    elevations, proj = render.elevations_and_proj(mixed_scenario)
-    assert proj.corner_headroom_px == 0
-    corner_rise = iso_geometry.corner_rise_px(elevations, proj)
-    cache = SlopedChunkCache(mixed_scenario, elevations, corner_rise, proj, tile_px, sprites=True)
-    assert cache.mip_levels() == [m for m in _iso_cache(mixed_scenario).mip_levels() if m <= 0]
+    if headroom:
+        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    else:
+        elevations, proj = render.elevations_and_proj(scn)
+        corner_rise = iso_geometry.corner_rise_px(elevations, proj)
+    return SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
+
+
+def test_a_warm_installs_a_sloped_finer_level(sprite_install, mixed_scenario) -> None:
+    """test_a_warm_installs_a_stepped_level's Sloped twin: level 1 is on
+    Sloped's ladder since TASK-146, recomputes its own corner_rise, and a warm
+    installs it."""
+    cache = _sloped_cache(mixed_scenario)
+    assert cache._levels[1].gen != cache._source_gen, "level 1 was already built -- vacuous"
+
+    _warm(cache, [1]).run_to_completion()
+
+    lvl = cache._levels[1]
+    assert lvl.gen == cache._source_gen and cache.level_warm_job(1) is None
+    assert lvl.sprites is not None and lvl.sprites.by_anchor, "installed an empty layer -- vacuous"
+    assert lvl.building_bboxes is not None
+    assert lvl.heights is lvl.corner_rise is not cache.corner_rise
+
+
+def test_sloped_warms_a_level_the_visible_one_left_unbuilt(sprite_install, mixed_scenario) -> None:
+    """Sloped's ladder is Stepped's (TASK-031.60 coarser, TASK-146 finer), so
+    a non-visible level has a warm job until it is built, and a warm installs
+    it. Built from a headroom-0 Stepped proj, which must construct too: the
+    ladder derives its corner headroom from proj rather than assuming one step."""
+    cache = _sloped_cache(mixed_scenario, headroom=False)
+    assert cache.proj.corner_headroom_px == 0
+    assert cache.mip_levels() == _iso_cache(mixed_scenario).mip_levels()
     assert -1 in cache.mip_levels()
     assert cache.level_warm_job(0) is not None
     cache.render_rect(0, 0, 64, 64, mip=0)
@@ -1161,10 +1184,12 @@ def _stale_residents(cache, visible: int) -> set[int]:
 
 
 @pytest.mark.gui
-def test_a_viewport_mip_change_re_anchors_the_level_warm(monkeypatch) -> None:
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_viewport_mip_change_re_anchors_the_level_warm(monkeypatch, style) -> None:
     """Zooming used to leave the warm set on the fit level's neighbours. A
     viewport fire at a new mip re-arms it on that mip's neighbours (plus any
-    stale residents); a fire at the same mip does not."""
+    stale residents); a fire at the same mip does not. Sloped's level 0 has a
+    finer neighbour too since TASK-146."""
     from descape import settings
 
     import conftest
@@ -1172,7 +1197,10 @@ def test_a_viewport_mip_change_re_anchors_the_level_warm(monkeypatch) -> None:
     monkeypatch.setattr(settings, "_preload_zoom_levels", True)
     window = conftest.stepped_window(UNITS_FIXTURE)
     try:
+        if style == "Sloped":
+            window.terrain_style_combo.setCurrentText("Sloped")
         cache = window._cache
+        assert cache.style == style.lower()
         assert {-2, -1, 0, 1} <= set(cache.mip_levels()), "ladder too short -- vacuous"
         fake = _fake_viewport_mip(window, monkeypatch)
         starts = _spy_level_warm_starts(window, monkeypatch)

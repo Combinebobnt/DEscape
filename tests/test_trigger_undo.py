@@ -427,15 +427,12 @@ def test_a_later_edit_does_not_mutate_an_earlier_record() -> None:
 def test_restore_hands_out_a_copy_not_the_records_own_object() -> None:
     """Trap 5, asserted as the invariant rather than through a consequence.
 
-    Deliberately white-box, because no route through today's API reaches the
-    corruption it prevents: the object would have to be handed to the live
-    list, mutated in place, and then replayed -- but any edit made after an
-    undo truncates the very record that held it, and the id-remap class
-    self-heals because ref_ids/trigger_ids are stored as values and rewritten
-    on every restore. Verified by mutation: removing the copy breaks no
-    behavioural test in this file. The copy stays because it stops being
-    defensive the moment an in-place variable rename or a "jump to history
-    entry N" replay arrives, both of which are already anticipated.
+    Deliberately white-box. This once claimed no route through the API reached
+    the corruption, which was wrong: TASK-003.06 is one, through an older
+    record's *reference* slot rather than its `states` slot (see
+    test_undo_past_a_later_edit_to_another_trigger_restores_its_content). The
+    restore now writes the state into the live object in place, so the live
+    trigger is still never the record's own `states` object.
     """
     loaded, model, history = _open()
     model.begin_trigger_edit([0])
@@ -452,6 +449,80 @@ def test_restore_hands_out_a_copy_not_the_records_own_object() -> None:
         "in-place edit would rewrite the record's idea of the past"
     )
     assert live.name == snapshot_object.name
+
+
+def _rename(model, history, index: int, name: str) -> None:
+    model.begin_trigger_edit([index])
+    model.manager().triggers[index].name = name
+    model.commit_trigger_edit("Set trigger name", history)
+
+
+def _saved_names(loaded, model, out: Path) -> list[str]:
+    write_scenario(loaded, out, triggers=model)
+    return [trigger.name for trigger in parse_triggers(load_map_and_units(out)).triggers]
+
+
+def test_undo_past_a_later_edit_to_another_trigger_restores_its_content(tmp_path: Path) -> None:
+    """TASK-003.06. Undoing the rename of trigger 1 used to swap in a fresh
+    copy, so the real object, still named "B1", dropped out of the live list
+    while the two older records' reference slots still named it. Undoing past
+    them put "B1" back on screen with its original blob, so Save wrote the
+    original name instead."""
+    loaded, model, history = _open()
+    original = _fresh_graph_state()[1]
+    terrain = loaded.map_manager.terrain
+
+    _rename(model, history, 0, "A0")
+    _rename(model, history, 2, "A2")
+    _rename(model, history, 1, "B1")
+    history.undo(terrain, model)
+    history.undo(terrain, model)
+
+    expected = ["A0", *original[1:]]
+    names = [trigger.name for trigger in model.manager().triggers]
+    assert names == expected
+    assert model.dirty_indices() == [0]
+    assert _saved_names(loaded, model, tmp_path / "undone.aoe2scenario") == names
+
+    history.redo(terrain, model)
+    history.redo(terrain, model)
+    names = [trigger.name for trigger in model.manager().triggers]
+    assert names == ["A0", "B1", "A2", *original[3:]]
+    assert _saved_names(loaded, model, tmp_path / "redone.aoe2scenario") == names
+
+
+def test_restore_keeps_trigger_identity() -> None:
+    """The invariant TASK-003.06's fix rests on: a snapshot's reference slots
+    stay valid only while every slot keeps its object across undo and redo,
+    touched (1) and untouched alike."""
+    loaded, model, history = _open()
+    before = list(model.manager().triggers)
+    terrain = loaded.map_manager.terrain
+
+    _rename(model, history, 1, "Renamed")
+    history.undo(terrain, model)
+    after_undo = list(model.manager().triggers)
+    history.redo(terrain, model)
+    after_redo = list(model.manager().triggers)
+
+    for label, live in (("undo", after_undo), ("redo", after_redo)):
+        assert len(live) == len(before), label
+        for index, (old, new) in enumerate(zip(before, live, strict=True)):
+            assert new is old, f"slot {index} changed identity after {label}"
+    assert model.manager().triggers[1].name == "Renamed"
+
+
+def test_restored_trigger_new_effect_binds_to_the_live_trigger() -> None:
+    """White-box, like the Trap 5 test above. Writing the state in place must
+    rebuild new_effect/new_condition around the live trigger, not leave them
+    pointing at a throwaway copy where an added effect would be lost."""
+    loaded, model, history = _open()
+    _rename(model, history, 0, "Renamed")
+    history.undo(loaded.map_manager.terrain, model)
+
+    live = model.manager().triggers[0]
+    assert live.new_effect._trigger_ref is live
+    assert live.new_condition._trigger_ref is live
 
 
 # -- 5. the begin/commit pair itself -----------------------------------------

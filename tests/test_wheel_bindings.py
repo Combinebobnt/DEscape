@@ -6,12 +6,21 @@ behaviour; this file is about the binding layer itself. Events go straight to
 view.wheelEvent(), as there, and for the same reason: a run of them has to
 stay one gesture. Alt + wheel arrives transposed on X11 and Windows (Qt 5
 delivers it as a sideways delta), so the Alt slot runs with both shapes.
+
+That leaves the step from QApplication to wheelEvent() untested, so one
+test sends single notches through QApplication.sendEvent() on the viewport
+instead (_send_wheel, GH #245). A single notch has no gesture to keep.
+
+The paste-turn tests (GH #245) reuse tests/test_region_rotate.py's blank
+template, block and paste.
 """
 
 from __future__ import annotations
 
 import pytest
-from test_wheel_zoom import _facing, _gesture, _place_window, _scale
+from test_region_rotate import _add, _close, _live, _paste, _setup, _tiles, _units
+from test_region_select import _select_window
+from test_wheel_zoom import _PLACE_CONST, _facing, _gesture, _place_window, _scale
 from test_zoom_status import _window
 
 import conftest
@@ -58,6 +67,28 @@ def _wheel_xy(view, delta: tuple[int, int], modifiers=None):
         False,
     )
     view.wheelEvent(event)
+    return event
+
+
+def _send_wheel(view, delta: tuple[int, int], modifiers=None):
+    """_wheel_xy() through QApplication.sendEvent() on the viewport: Qt's own
+    delivery path down to wheelEvent(), all but the platform plugin."""
+    from PyQt5.QtCore import QPoint, QPointF, Qt
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    center = QPointF(view.viewport().rect().center())
+    event = QWheelEvent(
+        center,
+        QPointF(view.viewport().mapToGlobal(center.toPoint())),
+        QPoint(0, 0),
+        QPoint(*delta),
+        Qt.NoButton,
+        Qt.NoModifier if modifiers is None else modifiers,
+        Qt.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(view.viewport(), event)
     return event
 
 
@@ -511,4 +542,314 @@ def test_a_binding_saved_before_the_window_is_built_is_live_on_the_first_event()
         assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
         assert window.brush_size_spin.value() == size + 1
     finally:
+        conftest.close_window(window)
+
+
+# --- real delivery (GH #245) --------------------------------------------------------
+
+
+@pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
+@pytest.mark.parametrize("tool", ["draw", "select"])
+@pytest.mark.parametrize("action", ["pan_vertical", "brush_size"])
+def test_a_wheel_event_sent_through_the_application_runs_its_binding(slot, modifier, delta, tool, action) -> None:
+    """Brush size has no brush to step in Select, so it zooms there."""
+    from descape.map_view import MapView
+
+    window = _terrain_window(tool)
+    try:
+        view = window.map_view
+        _room_to_pan(view)
+        _bind(window, **{slot: action})
+        has_brush = window.brush_size_spin.isEnabled()
+        assert has_brush == (tool == "draw")
+        size, scale, (h, v) = window.brush_size_spin.value(), _scale(view), _scrolls(view)
+        event = _send_wheel(view, delta, _mods(modifier))
+        if action == "pan_vertical":
+            assert _scrolls(view) == (h, v - MapView.WHEEL_PAN_NOTCH_PX)
+            assert (_scale(view), window.brush_size_spin.value()) == (scale, size)
+            assert event.isAccepted()
+        elif has_brush:
+            assert window.brush_size_spin.value() == size + 1
+            assert _scale(view) == scale
+            assert event.isAccepted()
+        else:
+            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+            assert window.brush_size_spin.value() == size
+    finally:
+        conftest.close_window(window)
+
+
+# --- the rotate binding turns a just-pasted region (GH #245) --------------------------
+
+
+def _paste_window(tool: str = "select"):
+    """_select_window() with test_region_rotate's block copied and pasted, then `tool` active."""
+    window = _select_window()
+    _setup(window)
+    _paste(window)
+    if tool != "select":
+        getattr(window, f"{tool}_action").setChecked(True)
+        assert window._current_tool == tool
+    assert window._paste_armed() and window._region_turn_target()
+    return window
+
+
+def _turn(window) -> str:
+    return window._paste_move.element
+
+
+def test_one_wheel_notch_turns_the_pasted_region_as_the_rotate_key_does() -> None:
+    from descape import region_transform
+
+    window = _paste_window()
+    try:
+        view = window.map_view
+        _bind(window, plain="rotate")
+        depth = len(window.edit_history.records)
+        scale, gesture = _scale(view), _gesture(view)
+        event = _wheel_xy(view, (0, 120))
+        assert event.isAccepted()
+        assert _turn(window) == region_transform.ROTATE_CW, "scroll up turns the ghost's way round"
+        assert len(window.edit_history.records) == depth, "a turn is folded into the paste's own record"
+        assert _scale(view) == scale and _gesture(view) == gesture, "a turn must not zoom or spend the budget"
+        assert window._region == (41, 39, 44, 44)
+        wheeled = (_tiles(window), _units(window), window._region)
+    finally:
+        _close(window)
+
+    window = _paste_window()
+    try:
+        window.on_region_transform(region_transform.ROTATE_CW)
+        assert (_tiles(window), _units(window), window._region) == wheeled
+    finally:
+        _close(window)
+
+
+def test_wheel_up_then_down_gives_back_the_plain_paste_and_one_undo_clears_it() -> None:
+    window = _select_window()
+    try:
+        _setup(window)
+        before = (_tiles(window), _units(window))
+        depth = len(window.edit_history.records)
+        _paste(window)
+        plain = (_tiles(window), _units(window))
+        _bind(window, plain="rotate")
+        _wheel_xy(window.map_view, (0, 120))
+        assert (_tiles(window), _units(window)) != plain
+        _wheel_xy(window.map_view, (0, -120))
+        assert _turn(window) == "id"
+        assert (_tiles(window), _units(window)) == plain
+        assert len(window.edit_history.records) == depth + 1
+        window.undo()
+        assert (_tiles(window), _units(window)) == before
+    finally:
+        _close(window)
+
+
+def test_the_wheel_turn_goes_through_on_region_transform_once_per_notch(monkeypatch) -> None:
+    """The hard rule: the wheel writes nothing itself; the Rotate keys' path does."""
+    from descape import region_transform
+
+    window = _paste_window()
+    try:
+        calls: list[str] = []
+        monkeypatch.setattr(window, "on_region_transform", calls.append)
+        _bind(window, plain="rotate")
+        _wheel_xy(window.map_view, (0, 240))
+        _wheel_xy(window.map_view, (0, -120))
+        assert calls == [region_transform.ROTATE_CW] * 2 + [region_transform.ROTATE_CCW]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("busy", ["_stroke_in_progress", "region_drag_live"])
+def test_rotate_mid_stroke_or_mid_drag_zooms_and_leaves_the_paste(monkeypatch, busy) -> None:
+    """on_region_transform() refuses then, so the wheel must fall back to zoom, not silently do nothing."""
+    window = _paste_window()
+    try:
+        target = window if busy == "_stroke_in_progress" else window.map_view
+        monkeypatch.setattr(target, busy, lambda: True)
+        _bind(window, plain="rotate")
+        tiles, scale = _tiles(window), _scale(window.map_view)
+        _wheel_xy(window.map_view, (0, 120))
+        assert _turn(window) == "id" and _tiles(window) == tiles
+        assert _scale(window.map_view) != scale
+    finally:
+        _close(window)
+
+
+def test_tool_in_draw_with_a_paste_armed_steps_the_brush_and_leaves_the_paste() -> None:
+    window = _paste_window("draw")
+    try:
+        _bind(window, plain="tool")
+        tiles, size = _tiles(window), window.brush_size_spin.value()
+        _wheel_xy(window.map_view, (0, 120))
+        assert window.brush_size_spin.value() == size + 1
+        assert _turn(window) == "id" and _tiles(window) == tiles
+    finally:
+        _close(window)
+
+
+def test_tool_in_select_with_a_paste_armed_turns_it() -> None:
+    from descape import region_transform
+
+    window = _paste_window()
+    try:
+        assert not window.brush_size_spin.isEnabled()
+        _bind(window, plain="tool")
+        size, scale = window.brush_size_spin.value(), _scale(window.map_view)
+        _wheel_xy(window.map_view, (0, 120))
+        assert _turn(window) == region_transform.ROTATE_CW
+        assert window.brush_size_spin.value() == size and _scale(window.map_view) == scale
+    finally:
+        _close(window)
+
+
+def test_rotate_in_draw_with_a_paste_armed_turns_it_and_leaves_the_brush() -> None:
+    """The documented disagreement: under Rotate preview the paste wins over the brush."""
+    from descape import region_transform
+
+    window = _paste_window("draw")
+    try:
+        _bind(window, plain="rotate")
+        size = window.brush_size_spin.value()
+        _wheel_xy(window.map_view, (0, 120))
+        assert _turn(window) == region_transform.ROTATE_CW
+        assert window.brush_size_spin.value() == size
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("tool", ["draw", "select"])
+def test_brush_size_with_a_paste_armed_never_turns_it(tool) -> None:
+    window = _paste_window(tool)
+    try:
+        view = window.map_view
+        _bind(window, plain="brush_size")
+        tiles, size, scale = _tiles(window), window.brush_size_spin.value(), _scale(view)
+        _wheel_xy(view, (0, 120))
+        assert _turn(window) == "id" and _tiles(window) == tiles
+        if tool == "draw":
+            assert window.brush_size_spin.value() == size + 1 and _scale(view) == scale
+        else:
+            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+    finally:
+        _close(window)
+
+
+def test_two_half_notches_make_one_paste_turn_and_a_reversal_drops_the_stale_half() -> None:
+    from descape import region_transform
+
+    window = _paste_window()
+    try:
+        _bind(window, plain="rotate")
+        view = window.map_view
+        _wheel_xy(view, (0, 60))
+        assert _turn(window) == "id"
+        _wheel_xy(view, (0, 60))
+        assert _turn(window) == region_transform.ROTATE_CW
+        _wheel_xy(view, (0, 60))
+        _wheel_xy(view, (0, -120))
+        assert _turn(window) == "id", "+60 then -120 is one turn back"
+        _wheel_xy(view, (0, -60))
+        assert _turn(window) == "id", "the reversal banked the stale half notch"
+    finally:
+        _close(window)
+
+
+def test_a_tool_switch_drops_a_leftover_paste_half_notch() -> None:
+    from descape import region_transform
+
+    window = _paste_window()
+    try:
+        _bind(window, plain="rotate")
+        view = window.map_view
+        _wheel_xy(view, (0, 60))
+        window._on_tool_selected("pan")  # _select_window() left the Pan action checked
+        assert window._current_tool == "pan" and window._region_turn_target()
+        _wheel_xy(view, (0, 60))
+        assert _turn(window) == "id", "the first half notch must not have survived"
+        _wheel_xy(view, (0, 60))
+        assert _turn(window) == region_transform.ROTATE_CW
+    finally:
+        _close(window)
+
+
+def test_rotate_with_a_units_selection_and_a_paste_armed_zooms_and_edits_no_unit() -> None:
+    """_region_turn_target()'s refusal: a Units-mode selection keeps Rotate for itself."""
+    window = _select_window()
+    try:
+        (loner,) = _add(window, [(1, 4, 80.5, 80.5, 0.0, None)])  # an archer, ANGLE
+        _setup(window)
+        _paste(window)
+        window.mode_combo.setCurrentText("Units")
+        window._selection = [(1, loner.reference_id)]
+        window._refresh_selection_view()
+        assert window._paste_armed() and not window._region_turn_target()
+        _bind(window, plain="rotate", ctrl="tool")
+        view = window.map_view
+        everything = _units(window, 0, 0, 120, 120)
+        tiles, scale = _tiles(window), _scale(view)
+        _wheel_xy(view, (0, 120))
+        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        _wheel_xy(view, (0, 120), _mods("ControlModifier"))
+        assert _scale(view) == pytest.approx(scale * 1.25**2, rel=1e-9)
+        assert _turn(window) == "id" and _tiles(window) == tiles
+        assert _units(window, 0, 0, 120, 120) == everything
+        assert [float(u.rotation) for u in _live(window, 4) if (u.x, u.y) == (80.5, 80.5)] == [0.0]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", ["tool", "rotate"])
+def test_place_units_ghost_wins_over_an_armed_paste(action) -> None:
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    window = _select_window()
+    try:
+        _setup(window)
+        _paste(window)
+        tiles = _tiles(window)
+        window.mode_combo.setCurrentText("Units")
+        window.units_panel._set_pending_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        view = window.map_view
+        center = QPointF(view.viewport().rect().center())
+        view.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, center, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        assert view._unit_ghost_item is not None and window._paste_armed()
+        _bind(window, plain=action)
+        _wheel_xy(view, (0, 120))
+        assert _facing(window) == 1
+        assert _turn(window) == "id" and _tiles(window) == tiles
+    finally:
+        _close(window)
+
+
+# --- where each action applies (GH #245) ----------------------------------------------
+
+
+def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape import settings
+
+    assert set(settings.WHEEL_ACTION_HINTS) == set(settings.WHEEL_ACTIONS)
+    for action in ("tool", "brush_size", "rotate"):
+        assert settings.WHEEL_ACTION_HINTS[action].endswith("Zooms anywhere else."), action
+    assert "Brush size box" in settings.WHEEL_ACTION_HINTS["brush_size"]
+    for action in ("tool", "rotate"):
+        hint = settings.WHEEL_ACTION_HINTS[action]
+        assert "Place Unit's preview" in hint and "just-pasted region" in hint, action
+    dialog, window = conftest.dialog_and_window()
+    try:
+        for slot, combo in dialog._wheel_combos.items():
+            for i in range(combo.count()):
+                tip = combo.itemData(i, Qt.ToolTipRole)
+                assert tip, f"{slot}: {combo.itemText(i)!r} has no tooltip"
+                assert tip == settings.WHEEL_ACTION_HINTS[combo.itemData(i)]
+        assert dialog._wheel_note.text().endswith("Brush size and Rotate preview zoom in a tool they don't apply to.")
+    finally:
+        dialog.close()
         conftest.close_window(window)

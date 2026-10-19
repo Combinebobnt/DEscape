@@ -13,6 +13,7 @@ Scope is app chrome only. The map view's tool overlay colours
 
 from __future__ import annotations
 
+import functools
 import re
 
 # (role_id, user-facing label, QPalette.ColorRole attribute name).
@@ -308,6 +309,7 @@ def contrast_ratio(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
+@functools.lru_cache(maxsize=1024)  # trigger_panel shades every status row (TASK-424)
 def legible(color: str, background: str, minimum: float) -> str:
     """`color` unchanged when it reaches `minimum` contrast on `background`.
     Otherwise the first 5% blend toward black or white (whichever contrasts

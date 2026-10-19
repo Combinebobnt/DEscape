@@ -163,10 +163,22 @@ def test_stitched_chunks_match_the_full_render_with_the_grid_on(style, spec) -> 
 
 @pytest.mark.parametrize("spec", [GRID, THICK_GRID])
 def test_sloped_equals_stepped_on_a_flat_map_with_the_grid_on(spec) -> None:
+    """The full renders, then every level of the two caches (one ladder since
+    TASK-146, GH #131), cropped to their common dims: Sloped's canvas is
+    tighter with sprites off."""
     scn = _scenario()
     stepped = _full("stepped", scn, spec)
     sloped = _full("sloped", scn, spec)
     assert np.array_equal(stepped, sloped)
+
+    iso, slo = _iso_cache(scn), _sloped_cache(scn)
+    iso.set_grid(spec)
+    slo.set_grid(spec)
+    assert slo.mip_levels() == iso.mip_levels() and max(iso.mip_levels()) > 0, (slo.mip_levels(), iso.mip_levels())
+    for mip in iso.mip_levels():
+        a, b = _whole(iso, mip), _whole(slo, mip)
+        h, w = min(a.shape[0], b.shape[0]), min(a.shape[1], b.shape[1])
+        assert np.array_equal(a[:h, :w], b[:h, :w]), f"level {mip}"
 
 
 # --- where the pixels land ------------------------------------------------------------
@@ -289,11 +301,11 @@ def test_set_grid_evicts_and_an_equal_spec_is_a_no_op() -> None:
     assert len(cache._cache) == cached
 
 
-@pytest.mark.parametrize("builder", [_iso_cache, _flat_cache])
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
 def test_the_grid_reaches_every_mip_level(builder) -> None:
     cache = builder(_scenario(_bumpy))
     levels = cache.mip_levels()
-    assert len(levels) > 1
+    assert len(levels) > 1 and max(levels) > 0, levels
     before = {mip: _whole(cache, mip).copy() for mip in levels}
     cache.set_grid(GRID)
     for mip in levels:

@@ -57,6 +57,7 @@ MEMOIZED_GLOBALS = (
     "_window_size",
     "_split_sizes",
     "_units_catalog_mode",
+    "_game_data",
     "_log_height",
     "_recent_files",
     "_keybinds",

@@ -866,6 +866,10 @@ def test_type_replace_enable_disable_and_delete_are_one_step_each() -> None:
 
 
 def test_an_object_replace_following_a_paired_effect_is_one_composite_step() -> None:
+    """Passes when the confirm offers the paired and filter-only checkboxes
+    with their exact labels (counts, and the filter-only summary) and
+    defaults (paired ticked, filter-only not), and the answered replace is one
+    composite unit + trigger step that undoes and redoes."""
     from descape.edit_history import CompositeDiffRecord
 
     window, boxes = _trigger_window()
@@ -879,6 +883,10 @@ def test_an_object_replace_following_a_paired_effect_is_one_composite_step() -> 
         tab.replace_button.click()
         _title, _text, choices, actions = boxes.confirmed[-1]
         assert [c[0] for c in choices] == ["paired", "filter_only"]
+        assert [(c[1], c[2]) for c in choices] == [
+            ("Retarget 1 paired trigger effects", True),
+            ("Also retarget 1 type-filter-only effects (Create Object: 1 effect name Archer)", False),
+        ]
         assert {a[0] for a in actions} == {"Show skipped", "Show others"}
         assert window.edit_history.cursor == 1
         record = window.edit_history.records[-1]
@@ -1290,3 +1298,77 @@ def test_delete_after_a_partial_bulk_tick_deletes_only_the_ticked_rows() -> None
         assert placed == _ALL_REFS - {_REF_ARCHER_P1, _REF_ARCHER_P2}
     finally:
         _close(window)
+
+
+def _value_cell_pixels(text: str, spans):
+    """(cell, font): the trigger tab's Value cell for `text` and `spans`,
+    painted by its own _SpanDelegate in a shown tree, as an (h, w, 3) array,
+    and the tree's font it was drawn in."""
+    from PyQt5.QtGui import QImage
+    from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+
+    from descape import find_dialog as fd
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    conftest.ensure_qapp()
+    tree = QTreeWidget()
+    try:
+        tree.setColumnCount(len(fd.TRIGGER_COLUMNS))
+        tree.setItemDelegateForColumn(fd._TCOL_VALUE, fd._SpanDelegate(tree))
+        tree.resize(1400, 160)
+        for column in range(fd._TCOL_VALUE):
+            tree.setColumnWidth(column, 40)
+        tree.setColumnWidth(fd._TCOL_VALUE, 500)
+        item = QTreeWidgetItem(tree)
+        item.setText(fd._TCOL_VALUE, text)
+        item.setData(fd._TCOL_VALUE, fd._SPANS_ROLE, list(spans))
+        tree.show()
+        _settle()
+        rect = tree.visualRect(tree.indexFromItem(item, fd._TCOL_VALUE))
+        assert rect.width() == 500
+        shot = tree.viewport().grab().toImage().convertToFormat(QImage.Format_RGB888)
+        pixels = qimage_rgb888_to_array(shot)
+        return pixels[rect.top() : rect.bottom() + 1, rect.left() : rect.right() + 1].astype(int), tree.font()
+    finally:
+        tree.close()
+        tree.deleteLater()
+
+
+def _ink_columns(cell) -> set[int]:
+    """Columns holding text ink: a pixel well below the background's own brightness."""
+    background = cell[1, -1].sum()
+    return {int(x) for x in np.nonzero((cell.sum(axis=2) < background - 150).any(axis=0))[0]}
+
+
+@pytest.mark.font_sensitive
+def test_the_value_highlight_covers_the_matched_glyphs() -> None:
+    """GH #144 (C): the _HIGHLIGHT fill lands on the drawn match, not beside it.
+
+    Passes when, in a Value cell reading "Send the Needle" with the span over
+    "Needle" (the match last, so its ink is what the full text adds to the
+    prefix's), the columns the fill changes on the cell's second row (the
+    fill starts one pixel down) are one run whose ends sit within 1 px of the
+    match's ink box widened by its end glyphs' own side bearings ("N"'s left,
+    "e"'s right). The fill is advance-based, so the bearings are the measured
+    gap between it and the ink; they grow with the DPI (2.7 px for "N" at
+    168), which a bare 1 px ink-box tolerance would misread as misalignment.
+    A zero-width span renders the same path with no fill, the unfilled
+    baseline."""
+    from PyQt5.QtGui import QFontMetricsF
+
+    text = "Send the Needle"
+    start, end = text.index("Needle"), len(text)
+    filled, font = _value_cell_pixels(text, [(start, end)])
+    bare, _font = _value_cell_pixels(text, [(start, start)])
+    prefix, _font = _value_cell_pixels(text[:start], [(start, start)])
+    metrics = QFontMetricsF(font)
+
+    fill_columns = np.nonzero((filled[1] != bare[1]).any(axis=1))[0]
+    assert fill_columns.size, "no highlight fill on the cell's second row"
+    assert fill_columns[-1] - fill_columns[0] + 1 == fill_columns.size, "the fill is one run"
+    match_ink = sorted(_ink_columns(bare) - _ink_columns(prefix))
+    assert match_ink, "no ink for the match"
+    want_first = match_ink[0] - metrics.leftBearing("N")
+    want_last = match_ink[-1] + metrics.rightBearing("e")
+    assert abs(fill_columns[0] - want_first) <= 1, (int(fill_columns[0]), want_first)
+    assert abs(fill_columns[-1] - want_last) <= 1, (int(fill_columns[-1]), want_last)

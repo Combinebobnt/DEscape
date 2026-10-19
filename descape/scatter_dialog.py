@@ -1,7 +1,11 @@
-"""Edit > Scatter Units in Region…: which tiles of the committed Select
-region are eligible, and the dialog that turns them into arguments for
-scatter.scatter_units(), or for scatter.scatter_existing_units() when it is
-set to move the Units-mode selection instead (GH #105).
+"""Edit > Scatter Units in Region…: which tiles of the area are eligible, and
+the dialog that turns them into arguments for scatter.scatter_units(), or for
+scatter.scatter_existing_units() when it is set to move the Units-mode
+selection instead (GH #105).
+
+The area is the committed Select region or, with none (or by choice), the
+selected units' bounding box grown by the dialog's "Grow by" tiles (GH #196).
+A region wins when both exist.
 
 Eligibility lives here, not in scatter.py, which takes an explicit tile set
 and never builds one (its own module docstring). The dialog's live "N
@@ -44,6 +48,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import batch_api, object_catalog, player_labels, scatter
+from descape.render import unit_tile_bounds
 from descape.terrain_palette import name_for_terrain_id, terrain_ids
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.viewer_common import _add_player_item
@@ -59,6 +64,13 @@ MAX_SEED = 2**31 - 1
 # Density is a percentage in the UI. 1% of a single eligible tile still
 # rounds up to one unit, so the Ok-implies-at-least-one rule holds.
 MIN_DENSITY_PERCENT = 1
+# Above 0, so one selected 1x1 unit has somewhere to go; 0 shuffles in place.
+DEFAULT_GROW = 2
+MAX_GROW = 64
+
+_REGION_DISABLED_TIP = "Drag an area with the Select tool in Terrain mode, or use Edit > Select All"
+_UNITS_DISABLED_TIP = "Select units in Units mode first"
+_MOVE_DISABLED_TIP = "Select units in Units mode first. The selection is dropped when you leave Units mode."
 
 _PLACE_NOTE = (
     "Every unit is placed with rotation 0 and animation frame 0: for many "
@@ -81,6 +93,27 @@ def region_tiles(region: tuple[int, int, int, int], width: int, height: int) -> 
     x0, x1 = max(0, min(tx0, tx1)), min(width, max(tx0, tx1))
     y0, y1 = max(0, min(ty0, ty1)), min(height, max(ty0, ty1))
     return [(x, y) for y in range(y0, y1) for x in range(x0, x1)]
+
+
+def units_region(units, width: int, height: int) -> tuple[int, int, int, int] | None:
+    """The union of the units' footprints as a half-open Select region
+    (tx0, ty0, tx1, ty1). Off-map units are skipped; none left gives None."""
+    bounds = [b for b in (unit_tile_bounds(unit, width, height) for unit in units) if b is not None]
+    if not bounds:
+        return None
+    return (min(b[0] for b in bounds), min(b[2] for b in bounds), max(b[1] for b in bounds), max(b[3] for b in bounds))
+
+
+def grown_region(region: tuple[int, int, int, int], grow: int) -> tuple[int, int, int, int]:
+    """`grow` tiles wider on every side; region_tiles() clamps it to the map."""
+    tx0, ty0, tx1, ty1 = region
+    return (min(tx0, tx1) - grow, min(ty0, ty1) - grow, max(tx0, tx1) + grow, max(ty0, ty1) + grow)
+
+
+def _region_size(region, width: int, height: int) -> tuple[int, int, int]:
+    """(columns, rows, tiles) of the region's on-map part."""
+    span = region_tiles(region, width, height)
+    return len({x for x, _ in span}), len({y for _, y in span}), len(span)
 
 
 def eligible_tiles(
@@ -139,12 +172,14 @@ class ScatterParams:
 
 
 class ScatterDialog(QDialog):
-    """Modal setup for one scatter into an already-committed region.
+    """Modal setup for one scatter into the committed region or around the
+    selected units (GH #196).
 
     It never touches the map. `params()` reads the live widget state, so a
-    test can drive the widgets and call it directly. `unit_const` may be
-    None (nothing picked in the Units panel), which leaves only the move
-    mode; `selected_units` are the units that mode would move. A random pick
+    test can drive the widgets and call it directly. `region` may be None,
+    which leaves the selection's bounding box as the only area. `unit_const`
+    may be None (nothing picked in the Units panel), which leaves only the
+    move mode; `selected_units` are the units that mode would move. A random pick
     (GH #164) also passes its name as `object_label` and its consts as
     `unit_consts`, which params() hands on.
     """
@@ -171,6 +206,8 @@ class ScatterDialog(QDialog):
         self._unit_const = unit_const
         self._unit_consts = None if unit_consts is None else tuple(unit_consts)
         self._selected = list(selected_units)
+        mm = scenario.map_manager
+        self._units_region = units_region(self._selected, mm.map_width, mm.map_height)
         # Computed once per mode, the first time Avoid is on, then kept for
         # this dialog's lifetime: occupied_tiles() walks all nine player lists.
         self._occupied: set[tuple[int, int]] | None = None
@@ -181,6 +218,8 @@ class ScatterDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_mode_group())
+        # Before the restrict group: its terrain default reads _area().
+        layout.addWidget(self._build_area_group())
         if unit_const is None:
             object_text = "Object: none chosen in the Units panel"
         elif object_label:
@@ -230,10 +269,61 @@ class ScatterDialog(QDialog):
         if self._unit_const is None:
             self.place_radio.setEnabled(False)
             self.place_radio.setToolTip("Choose an object in the Units panel to place new units")
-        self.move_radio.setToolTip("Moves the units selected in Units mode to random tiles in the region")
+        # Disabled up front rather than refusing after Ok.
+        move_ok = bool(self._selected) or self._unit_const is None
+        self.move_radio.setEnabled(move_ok)
+        self.move_radio.setToolTip(
+            "Moves the units selected in Units mode to random tiles in the area" if move_ok else _MOVE_DISABLED_TIP
+        )
         box.addWidget(self.place_radio)
         box.addWidget(self.move_radio)
         self.move_radio.toggled.connect(self._on_mode_changed)
+        return group
+
+    def _build_area_group(self) -> QGroupBox:
+        group = QGroupBox("Area")
+        box = QVBoxLayout(group)
+        mm = self._scenario.map_manager
+        width, height = mm.map_width, mm.map_height
+        if self._region is None:
+            self.region_radio = QRadioButton("Selected region")
+            self.region_radio.setEnabled(False)
+            self.region_radio.setToolTip(_REGION_DISABLED_TIP)
+        else:
+            cols, rows, _ = _region_size(self._region, width, height)
+            self.region_radio = QRadioButton(f"Selected region ({cols}x{rows})")
+            self.region_radio.setToolTip("Scatter across the region drawn with the Select tool")
+        if self._units_region is None:
+            self.units_radio = QRadioButton("Around the selected units")
+            self.units_radio.setEnabled(False)
+            self.units_radio.setToolTip(_UNITS_DISABLED_TIP)
+        else:
+            cols, rows, _ = _region_size(self._units_region, width, height)
+            self.units_radio = QRadioButton(f"Around the selected units ({cols}x{rows})")
+            self.units_radio.setToolTip("Scatter across the selected units' bounding box, grown by the tiles below")
+        # Not sticky: a freshly drawn region must win.
+        if self._region is not None:
+            self.region_radio.setChecked(True)
+        elif self._units_region is not None:
+            self.units_radio.setChecked(True)
+        box.addWidget(self.region_radio)
+        box.addWidget(self.units_radio)
+
+        self.grow_spin = QSpinBox()
+        self.grow_spin.setRange(0, MAX_GROW)
+        self.grow_spin.setValue(DEFAULT_GROW)
+        self.grow_spin.setSuffix(" tiles")
+        self.grow_spin.setToolTip("Widens the selected units' bounding box on every side")
+        self.grow_label = QLabel("Grow by:")
+        grow_row = QHBoxLayout()
+        grow_row.addWidget(self.grow_label)
+        grow_row.addWidget(self.grow_spin, stretch=1)
+        box.addLayout(grow_row)
+        self._settle_grow_enabled()
+
+        # Connected last, so nothing fires before the restrict group exists.
+        self.units_radio.toggled.connect(self._on_area_changed)
+        self.grow_spin.valueChanged.connect(self._on_area_changed)
         return group
 
     def _build_restrict_group(self) -> QGroupBox:
@@ -262,10 +352,13 @@ class ScatterDialog(QDialog):
         return group
 
     def _select_default_terrain(self) -> None:
-        """Defaults to whichever terrain the region holds most of. A raw id
+        """Defaults to whichever terrain the area holds most of. A raw id
         no terrain_palette.terrain_ids() member covers leaves the combo on its
         first entry."""
-        counts = region_terrain_counts(self._scenario, self._region)
+        area = self._area()
+        if area is None:
+            return
+        counts = region_terrain_counts(self._scenario, area)
         if not counts:
             return
         index = self.terrain_combo.findData(counts.most_common(1)[0][0])
@@ -355,6 +448,26 @@ class ScatterDialog(QDialog):
     def move_mode(self) -> bool:
         return self.move_radio.isChecked()
 
+    def _area(self) -> tuple[int, int, int, int] | None:
+        """The active area: the region, or the selection's box grown; None with neither."""
+        if self.region_radio.isChecked():
+            return self._region
+        if self.units_radio.isChecked():
+            return grown_region(self._units_region, self.grow_spin.value())
+        return None
+
+    def _settle_grow_enabled(self) -> None:
+        on_units = self.units_radio.isChecked()
+        self.grow_spin.setEnabled(on_units)
+        self.grow_label.setEnabled(on_units)
+
+    def _on_area_changed(self) -> None:
+        self._settle_grow_enabled()
+        # A terrain the user picked stays picked; otherwise follow the new area.
+        if not self.terrain_radio.isChecked():
+            self._select_default_terrain()
+        self._refresh_eligible()
+
     def _on_mode_changed(self) -> None:
         move = self.move_mode()
         # Move mode keeps each unit's own const, owner and count.
@@ -383,17 +496,21 @@ class ScatterDialog(QDialog):
         self.seed_spin.setValue(random.randint(0, MAX_SEED))
 
     def _refresh_eligible(self) -> None:
-        tiles = eligible_tiles(self._scenario, self._region, self.restrict_mode(), self.terrain_combo.currentData())
+        area = self._area()
+        if area is None:
+            self._eligible = []
+            self.count_label.setText("No area: select a region or units first")
+            self.buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+            return
+        tiles = eligible_tiles(self._scenario, area, self.restrict_mode(), self.terrain_combo.currentData())
         if self.avoid_check.isChecked():
             tiles = [t for t in tiles if t not in self._occupied_for_mode()]
         elif self.move_mode():
             tiles = [t for t in tiles if t not in self._other_buildings()]
         self._eligible = tiles
         mm = self._scenario.map_manager
-        span = region_tiles(self._region, mm.map_width, mm.map_height)
-        cols = len({x for x, _ in span})
-        rows = len({y for _, y in span})
-        text = f"{len(tiles)} eligible tiles in a {cols}x{rows} region ({len(span)} tiles)"
+        cols, rows, total = _region_size(area, mm.map_width, mm.map_height)
+        text = f"{len(tiles)} eligible tiles in a {cols}x{rows} region ({total} tiles)"
         if self.move_mode():
             moving = len(self._selected)
             text = f"{moving} selected units, {text}"
@@ -469,9 +586,12 @@ class ScatterDialog(QDialog):
             "jitter": self.jitter_spin.value(),
             "min_spacing": self.spacing_spin.value(),
             "avoid": self.avoid_check.isChecked(),
+            "grow": self.grow_spin.value(),
         }
 
     def _restore(self, last: dict) -> None:
+        # The area choice is not restored (a freshly drawn region must win), but Grow is.
+        self.grow_spin.setValue(last.get("grow", DEFAULT_GROW))
         restrict = last.get("restrict", RESTRICT_ANY)
         self.water_radio.setChecked(restrict == RESTRICT_WATER)
         self.terrain_radio.setChecked(restrict == RESTRICT_TERRAIN)
@@ -490,13 +610,19 @@ class ScatterDialog(QDialog):
         self.jitter_spin.setValue(last.get("jitter", 0.0))
         self.spacing_spin.setValue(last.get("min_spacing", 0))
         self.avoid_check.setChecked(bool(last.get("avoid", True)))
-        # A sticky Move with nothing selected would only refuse, so it falls
-        # back to Place unless there is no object to place either.
-        move = self._unit_const is None or (bool(last.get("move_selected", False)) and bool(self._selected))
+        # Sticky Move needs a selection, else Place unless there is no object;
+        # with no region the area came from the selection, so it opens on Move.
+        selected = bool(self._selected)
+        move = (
+            self._unit_const is None
+            or (selected and self._region is None)
+            or (bool(last.get("move_selected", False)) and selected)
+        )
         self.move_radio.setChecked(move)
         self.place_radio.setChecked(not move)
         # The toggled signals above only fire on a real change, so the
         # enabled states are settled explicitly here.
+        self._on_area_changed()
         self._on_mode_changed()
         self._on_restrict_changed()
         self._on_amount_changed()

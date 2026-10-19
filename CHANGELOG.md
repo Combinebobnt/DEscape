@@ -22,6 +22,73 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [Unreleased]
+
+### Added
+
+- **Return of Rome scenarios** (GH #67): a Return of Rome file opens with
+  Return of Rome's own units, names, art, portraits, civs, ages and terrain,
+  and edits and saves with its own walls, cliffs and rules. Settings >
+  Advanced > *Game data* can show a file in the other game's data instead
+  (Auto, the default, follows the file); a file shown that way is read-only.
+  (contributed by @teslatankx, #242, #248)
+- **The mouse wheel turns a just-pasted region** when bound to Rotate preview
+  (or Brush size or rotate preview where no brush applies), and each wheel
+  choice's tooltip in Settings > Keybinds says where it applies (GH #245).
+
+### Changed
+
+- **Settings has a Mods tab** holding the profile folder and the Mod art
+  list (GH #244).
+- **Faster large stroke ends and undos with Trees on** in Stepped and
+  Sloped views: a batch of over 1000 trees updates the visible zoom level in
+  place instead of rebuilding it.
+- **Faster redraws when zoomed in**: between detail levels the map draws
+  about a third faster, with identical pixels.
+- **Faster zoom, pan into new map and large-undo repaints** on multi-core
+  machines: the parts of the map a repaint is missing now draw on worker
+  threads, with identical pixels. Perf Trace reports a pooled chunk as
+  `prepare` and the wait for its batch as `join`, instead of `composite`.
+- **Faster large undos and big stroke ends** in Stepped and Sloped views on
+  multi-core machines: a large patch of the map redraws on worker threads,
+  with identical pixels.
+- **Edit > Scatter Units in Region… works from a Units-mode selection**
+  (GH #196): with no Select region, the area is the selected units'
+  bounding box plus a *Grow by* margin (default 2 tiles), and the greyed
+  item's tooltip says how to get an area.
+
+### Fixed
+
+- **Walls and gates lie along the square grid in top-down Flat** (Isometric
+  View off, GH #151): a wall run along x draws horizontal, along y
+  vertical, and a gate along its own footprint, instead of keeping their
+  isometric angle.
+- **Map Options no longer crashes on scenarios saved at version 1.49**
+  (GH #240): the Secondary game mode row is hidden on those files, and the
+  other Map Options and Players rows can be edited there. (contributed by
+  @teslatankx, #249)
+- **Seagulls draw** as their animated effect, like the Butterflies.
+  (contributed by @teslatankx, #242)
+- **Trigger undo no longer loses an edit on Save**: undoing past an edit to
+  one trigger no longer brings back another trigger's later edit. Copied
+  triggers also keep their links to a trigger whose edit was undone since
+  the copy; only a deleted target clears a link.
+- **Trigger status text is readable on the Wood and Light themes**: the green
+  and red row text is shaded to stay legible, also after a theme change.
+- **Terrain blending has no square steps in coastlines and water inlets**:
+  two neighbouring cells of the same ground, blended against the same
+  neighbour, now meet smoothly along their shared edge.
+- **Cliff tool**: Short Marble runs drawn east or south stay straight,
+  Marble and Short Marble runs drawn north start on a thin piece instead of
+  the picked one, and closing a drag by leaving the map or jumping in the
+  History window no longer leaves a stale highlight or ghost.
+- **Create Decision's two option texts are text fields**: typing in them no
+  longer makes Save fail.
+- **The grid is as strong in Sloped as in Stepped when zoomed in** (GH
+  #131): past 100% Sloped now draws the map at full detail instead of
+  enlarging its 100% image, so with Follow Terrain Elevation on the grid no
+  longer looks darker there.
+
 ## [0.10] - 2026-10-18
 
 ### Added

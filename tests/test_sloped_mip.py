@@ -1,6 +1,7 @@
-"""Sloped's coarser mip ladder (TASK-031.60): SlopedChunkCache enumerates
-Stepped's mip_projections_for() set filtered to k <= 0, with each level's
-corner_rise and headroom recomputed at its own proj.
+"""Sloped's mip ladder: SlopedChunkCache enumerates Stepped's
+mip_projections_for() set unfiltered (the coarser levels since TASK-031.60,
+the finer ones since TASK-146), with each level's corner_rise and headroom
+recomputed at its own proj.
 
 Every pixel oracle compares a level's stitched chunks against an independent
 render: a full render_terrain_sloped_with_proj() with tile_pixels_for_map()
@@ -9,14 +10,18 @@ cannot reach the cache (tests/test_mip_geometry.py's non-tautology rule).
 The fixture is a low-amplitude bumpy field painted as a BLACK / DESERT_SAND
 checkerboard, the demanding case for Sloped seams and tile ownership.
 
-The edit oracles (patch vs fresh, the deferred flush) compare a coarser level
-against a fresh cache's same level after each step, pixels and unit layers,
-with the whole level rendered right before each checked edit so no evicted
-chunk can redraw fresh and hide a stale one; a control that breaks only step
-k must fail naming step k.
+The edit oracles (patch vs fresh, the deferred flush) compare a level other
+than 0 against a fresh cache's same level after each step, pixels and unit
+layers, with the whole level rendered right before each checked edit so no
+evicted chunk can redraw fresh and hide a stale one; a control that breaks
+only step k must fail naming step k. A +1 level is 4x the level-0 canvas the
+LRU is sized to, so every +1 edit oracle runs on the 20x20 FIELD sites, never
+the 120x120 template, with max_bytes raised.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -35,7 +40,7 @@ from descape import iso_geometry, render, render_cache, settings
 from descape.elevation_tools import set_tiles_elevation
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
-from testkit.fakes import FakeScenario, SyntheticTile
+from testkit.fakes import FakeMapManager, FakeScenario, SyntheticTile
 
 from test_unit_sprites import CONST
 
@@ -96,7 +101,7 @@ def _assert_same(got: np.ndarray, want: np.ndarray, what: str) -> None:
 def test_each_level_matches_a_full_render_at_its_own_tile_px(sprite_install, sprites) -> None:  # noqa: F811
     scn = _scenario()
     cache = _cache(scn, sprites=sprites)
-    assert cache.mip_levels() == [-2, -1, 0]
+    assert cache.mip_levels() == [-2, -1, 0, 1]
     stitched = {mip: _whole(cache, mip) for mip in cache.mip_levels()}
     for mip, got in stitched.items():
         lvl = cache._levels[mip]
@@ -143,12 +148,12 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
         assert np.array_equal(rise, real(cache.elevations, lvl.proj, rule=rule)), f"level {mip}"
         assert cache._level_extra_top(lvl) == render._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
     assert cache._level_corner_rise(cache._levels[0]) is cache.corner_rise
-    assert sorted(calls) == [16, 32], "level 0 shares self.corner_rise; each coarser level computes its own"
+    assert sorted(calls) == [16, 32, 128], "level 0 shares self.corner_rise; every other level computes its own"
     assert cache._levels[-1].headroom > 0, "a flat field has headroom 0 at every level -- vacuous"
 
     for mip in cache.mip_levels():
         cache._level_corner_rise(cache._levels[mip])
-    assert len(calls) == 2, "re-derived without level 0's corner_rise changing"
+    assert len(calls) == 3, "re-derived without level 0's corner_rise changing"
 
     cache.elevations[3, 3] += 1
     cache.patch((0, 0, *cache.canvas_dims(0)), elevation_changed={(3, 3)})
@@ -173,33 +178,43 @@ def test_every_level_canvas_is_an_exact_mip_of_level_0(sprites) -> None:
         assert w * t0 == ref_w * t and h * t0 == ref_h * t, f"level {mip}: {(w, h)} vs {(ref_w, ref_h)}"
 
 
-def test_a_sprite_toggle_while_level_minus_2_is_shown_paints_its_grown_canvas(sprite_install) -> None:  # noqa: F811
+@pytest.mark.parametrize("mip", [-2, 1])
+def test_a_sprite_toggle_while_another_level_is_shown_paints_its_grown_canvas(sprite_install, mip) -> None:  # noqa: F811
     """Sprites on grows the canvas (Stepped's skirt-padded height). The toggle
     rebuilds the resident level eagerly, leaves level 0 unbuilt, and the grown
-    strip at -2 must be painted, not left black."""
+    strip at `mip` must be painted, not left black."""
     scn = _scenario()
     cache = _cache(scn, sprites=False)
-    small = cache.canvas_dims(-2)
-    _whole(cache, -2)
+    small = cache.canvas_dims(mip)
+    _whole(cache, mip)
     cache.set_sprites_enabled(True)
-    assert cache.canvas_dims(-2)[1] > small[1]
-    assert cache._levels[-2].gen == cache._source_gen, "the resident level was not warmed under the cursor"
+    assert cache.canvas_dims(mip)[1] > small[1]
+    assert cache._levels[mip].gen == cache._source_gen, "the resident level was not warmed under the cursor"
     assert cache._levels[0].gen != cache._source_gen, "level 0 was built though nothing showed it"
-    _assert_same(_whole(cache, -2), _whole(_cache(scn, sprites=True), -2), "after the toggle")
+    _assert_same(_whole(cache, mip), _whole(_cache(scn, sprites=True), mip), "after the toggle")
 
 
 # --- 7. small tile_px: the ladder per pct, and the column-run clamp ---------
 
 
-@pytest.mark.parametrize("pct", [25, 50, 100, 200])
-def test_the_ladder_is_steppeds_coarser_levels_at_every_pct(monkeypatch, pct) -> None:
+def _flat_scenario(size: int) -> FakeScenario:
+    tiles = [SyntheticTile(x=x, y=y, elevation=0, terrain_id=DESERT_SAND) for y in range(size) for x in range(size)]
+    return FakeScenario(size, size, tiles, [[] for _ in range(9)])
+
+
+@pytest.mark.parametrize("size, pct", [(MAP_W, 25), (MAP_W, 50), (MAP_W, 100), (MAP_W, 200), (252, 100)])
+def test_the_ladder_is_steppeds_at_every_pct(monkeypatch, size, pct) -> None:
+    """Plain equality with Stepped's ladder (TASK-146). A 252-wide map has a
+    32 px base, so it gets two finer levels, +1 and +2."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
-    scn = _scenario(units=False)
+    scn = _scenario(units=False) if size == MAP_W else _flat_scenario(size)
     elevations, proj = render.elevations_and_proj(scn)
     stepped = IsoChunkCache(scn, elevations, proj, proj.tile_px).mip_levels()
     cache = _cache(scn)
-    assert cache.mip_levels() == [mip for mip in stepped if mip <= 0]
-    assert len(cache.mip_levels()) > 1, f"pct {pct}: no coarser level -- vacuous"
+    assert cache.mip_levels() == stepped
+    assert min(stepped) < 0 < max(stepped), f"pct {pct}: no coarser or no finer level -- vacuous"
+    if size != MAP_W:
+        assert proj.tile_px == 32 and {1, 2} <= set(stepped), (proj.tile_px, stepped)
 
 
 def _footprint(tx: int, ty: int, proj, corner_rise) -> tuple[int, int, int, int]:
@@ -210,16 +225,27 @@ def _footprint(tx: int, ty: int, proj, corner_rise) -> tuple[int, int, int, int]
     return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
 
 
+def _inside(inner, outer) -> bool:
+    return inner[0] >= outer[0] and inner[1] >= outer[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
 @pytest.mark.parametrize("pct", [25, 50, 100, 200])
-def test_a_coarser_tile_never_paints_outside_its_scaled_reference_footprint(monkeypatch, pct) -> None:
-    """_sloped_column_runs' max(_, 1) clamp lengthens a run at small tile_px;
-    a level-L tile must still sit inside its level-0 footprint converted by
-    _bbox_to_level(), the conversion every patch bbox takes. At pct 200 the
-    clamp must actually fire somewhere, or that case proves nothing."""
+def test_a_coarser_tile_never_paints_outside_its_finer_twins_scaled_footprint(monkeypatch, pct) -> None:
+    """_sloped_column_runs' max(_, 1) clamp lengthens a run at small tile_px.
+    Of a tile's footprints at level 0 and level L, the coarser must sit inside
+    the finer converted to its pixels: by _bbox_to_level() for L < 0 (the
+    conversion every patch bbox takes), by _level_bbox_to_reference() for
+    L > 0 (the one a level extent takes back to scene space). A finer tile
+    paints up to half a reference pixel past its scaled level-0 footprint, so
+    at L > 0 it must also sit inside its converted diamond box
+    (tile_screen_bounds_over over its 3x3 heights), which a patch bbox is
+    built from. At pct 200 the clamp must actually fire somewhere, or that
+    case proves nothing."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
     scn = _scenario(units=False, elevation_of=lambda x, y: min(2, (x // 2 + y // 3) % 3))
     cache = _cache(scn)
     ref = cache._levels[0]
+    assert max(cache.mip_levels()) > 0, "no finer level -- vacuous"
     clamped = 0
     for mip in cache.mip_levels():
         lvl = cache._levels[mip]
@@ -227,10 +253,16 @@ def test_a_coarser_tile_never_paints_outside_its_scaled_reference_footprint(monk
         for ty in range(MAP_H):
             for tx in range(MAP_W):
                 got = _footprint(tx, ty, lvl.proj, rise)
-                bound = cache._bbox_to_level(mip, _footprint(tx, ty, ref.proj, cache.corner_rise))
-                assert (
-                    got[0] >= bound[0] and got[1] >= bound[1] and got[2] <= bound[2] and got[3] <= bound[3]
-                ), f"pct {pct} level {mip} tile {(tx, ty)}: {got} outside {bound}"
+                ref_fp = _footprint(tx, ty, ref.proj, cache.corner_rise)
+                if mip <= 0:
+                    inner, outer = got, cache._bbox_to_level(mip, ref_fp)
+                else:
+                    inner, outer = ref_fp, cache._level_bbox_to_reference(mip, got)
+                    near = cache.elevations[max(0, ty - 1) : ty + 2, max(0, tx - 1) : tx + 2]
+                    box = iso_geometry.tile_screen_bounds_over(tx, ty, int(near.min()), int(near.max()), ref.proj)
+                    box = cache._bbox_to_level(mip, tuple(int(v) for v in box))
+                    assert _inside(got, box), f"pct {pct} level {mip} tile {(tx, ty)}: {got} outside its box {box}"
+                assert _inside(inner, outer), f"pct {pct} level {mip} tile {(tx, ty)}: {inner} outside {outer}"
                 corners = (rise[ty, tx], rise[ty, tx + 1], rise[ty + 1, tx], rise[ty + 1, tx + 1])
                 raw_len = iso_geometry._sloped_column_runs(lvl.tile_px, *map(int, corners))[3]
                 clamped += int((raw_len[raw_len != 0] < 1).any())
@@ -250,15 +282,16 @@ def test_a_gen_bump_rebuilds_each_resident_level_once_and_never_an_unshown_one(s
     real = cache._commit_level
     monkeypatch.setattr(cache, "_commit_level", lambda mip, *a: (builds.append(mip), real(mip, *a))[1])
 
-    _whole(cache, -2)
-    _whole(cache, -1)
-    assert sorted(builds) == [-2, -1]
+    shown = (-2, -1, 1)
+    for mip in shown:
+        _whole(cache, mip)
+    assert sorted(builds) == list(shown)
     builds.clear()
     cache.invalidate_units()
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
-    _whole(cache, -2)
-    _whole(cache, -1)
-    assert sorted(builds) == [-2, -1], "each resident level rebuilds exactly once after one gen bump"
+    for mip in shown:
+        _whole(cache, mip)
+    assert sorted(builds) == list(shown), "each resident level rebuilds exactly once after one gen bump"
 
     builds.clear()
     assert cache.corner_rise is not None and cache.proj is cache._levels[0].proj
@@ -271,7 +304,8 @@ def test_a_gen_bump_rebuilds_each_resident_level_once_and_never_an_unshown_one(s
 # --- 9. pick at level 0 while only -2 is resident ---------------------------
 
 
-def test_pick_resolves_from_level_0_while_only_level_minus_2_was_composited() -> None:
+@pytest.mark.parametrize("mip", [-2, 1])
+def test_pick_resolves_from_level_0_while_only_another_level_was_composited(mip) -> None:
     """Pick planes stay level 0 (scene space) whatever level is on screen.
     Compared plane by plane, every pixel, against an independent rasterization
     from iso_geometry alone (test_sloped_pick's oracle)."""
@@ -279,7 +313,7 @@ def test_pick_resolves_from_level_0_while_only_level_minus_2_was_composited() ->
 
     scn = _scenario(units=False)
     cache = _cache(scn, chunk_px=256)
-    _whole(cache, -2)
+    _whole(cache, mip)
     oracle, _counts = _pick_oracle(scn, cache.corner_rise, cache.proj, cache.tile_px)
     w, h = cache.canvas_dims(0)
     for cy in range(-(-h // cache.chunk_px)):
@@ -291,35 +325,93 @@ def test_pick_resolves_from_level_0_while_only_level_minus_2_was_composited() ->
     for tx, ty in [(0, 0), (7, 11), (MAP_W - 1, MAP_H - 1)]:
         ys, xs = np.nonzero(oracle == ty * MAP_W + tx)
         assert cache.pick_tile(int(xs[len(xs) // 2]), int(ys[len(ys) // 2])) == (tx, ty)
-    assert {key[0] for key in cache._cache} == {-2}, "a level-0 chunk was composited"
+    assert {key[0] for key in cache._cache} == {mip}, "a level-0 chunk was composited"
     assert cache._levels[0].gen == -1
 
 
-# --- 4. patch vs fresh at the coarser levels ---------------------------------
-
-UNIT_TILE = (40, 40)
-QUIET_TILE = (20, 20)  # no unit in reach: its raise moves only the headroom
+# --- 4. patch vs fresh at every level other than 0 ---------------------------
 
 
-def _edit_scenario():
-    """The blank template, flat (so the first raise moves the headroom from 0),
-    with test_elevation_unit_splice's three-mill chain, one far mill and one
-    sprite unit."""
-    scn = load_map_and_units(str(BLANK_TEMPLATE_PATH))
+@dataclass(frozen=True)
+class _Sites:
+    """Where the edit oracles edit: the sprite unit's tile, a tile no unit
+    reaches (its raise moves only the headroom), mill A of the three-mill
+    chain (B and C follow at x + 1 and x + 2; A's own tile is the one raised),
+    the far mill, the unit added later, and a bump far from all of them."""
+
+    unit: tuple[int, int]
+    quiet: tuple[int, int]
+    chain: tuple[float, float]
+    far: tuple[float, float]
+    added: tuple[float, float]
+    bump: tuple[int, int]
+
+    @property
+    def mill(self) -> tuple[int, int]:
+        return int(self.chain[0]), int(self.chain[1])
+
+
+TEMPLATE = _Sites(unit=(40, 40), quiet=(20, 20), chain=(60.0, 60.0), far=(30.0, 30.0), added=(45.5, 44.5), bump=(110, 110))
+# The same layout on _scenario()'s 20x20 field, where a whole +1 level is 2560 px wide, not 15360.
+FIELD = _Sites(unit=(8, 8), quiet=(16, 4), chain=(14.0, 15.0), far=(4.0, 16.0), added=(12.5, 11.5), bump=(1, 18))
+
+
+class _FieldTile(SyntheticTile):
+    @property
+    def xy(self) -> tuple[int, int]:
+        return self.x, self.y
+
+
+class _FieldMapManager(FakeMapManager):
+    """FakeMapManager plus the members set_tiles_elevation() reads (with _FieldTile's xy)."""
+
+    @property
+    def map_size(self) -> int:
+        return self.map_width
+
+    def get_tile_safe(self, x: int, y: int):
+        return self._by_xy.get((x, y))
+
+
+def _base(sites: _Sites, flat: bool = True):
+    """At elevation 5 (flat, so the first raise moves the headroom from 0;
+    else with sites.bump one higher): the blank template, or a 20x20
+    DESERT_SAND field for FIELD."""
+    if sites is TEMPLATE:
+        scn = load_map_and_units(str(BLANK_TEMPLATE_PATH))
+    else:
+        tiles = [_FieldTile(x=x, y=y, elevation=5, terrain_id=DESERT_SAND) for y in range(MAP_H) for x in range(MAP_W)]
+        scn = FakeScenario(MAP_W, MAP_H, tiles, [[] for _ in range(9)])
+        scn.map_manager = _FieldMapManager(MAP_W, MAP_H, tiles)
+        scn.unit_gen = 0
     for tile in scn.map_manager.terrain:
         tile.elevation = 5
-    for player, x in ((5, 60.0), (3, 61.0), (1, 62.0)):
-        _place(scn, player, MILL_CONST, x, 60.0)
-    _place(scn, 3, MILL_CONST, 30.0, 30.0)
-    _place(scn, 1, CONST, UNIT_TILE[0] + 0.5, UNIT_TILE[1] + 0.5)
+    if not flat:
+        scn.map_manager.get_tile(*sites.bump).elevation = 6
     return scn
 
 
-def _draw(cache, scn) -> None:
+def _mill_chain(scn, sites: _Sites) -> None:
+    """test_elevation_unit_splice's chain: mills A-B-C overlapping in a row (owners 5, 3, 1), plus one far away."""
+    cx, cy = sites.chain
+    for player, dx in ((5, 0), (3, 1), (1, 2)):
+        _place(scn, player, MILL_CONST, cx + dx, cy)
+    _place(scn, 3, MILL_CONST, *sites.far)
+
+
+def _edit_scenario(sites: _Sites = TEMPLATE):
+    """Flat at 5, with the three-mill chain, one far mill and one sprite unit."""
+    scn = _base(sites)
+    _mill_chain(scn, sites)
+    _place(scn, 1, CONST, sites.unit[0] + 0.5, sites.unit[1] + 0.5)
+    return scn
+
+
+def _draw(cache, scn, sites: _Sites = TEMPLATE) -> None:
     mm = scn.map_manager
     # A run through the unit's tile and out past its sprite on both sides: the
     # sprite's opaque square hides the ground under it (GH #107), four tiles each way.
-    tiles = [(UNIT_TILE[0] + dx, UNIT_TILE[1]) for dx in range(-6, 7)]
+    tiles = [(sites.unit[0] + dx, sites.unit[1]) for dx in range(-6, 7)]
     dirty = [i for i, t in enumerate(mm.terrain) if (t.x, t.y) in tiles]
     for i in dirty:
         mm.terrain[i].terrain_id = BLACK
@@ -346,20 +438,20 @@ def _unit_edit(cache, splice) -> None:
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
 
 
-def _over_cap(cache, scn) -> None:
+def _over_cap(cache, scn, sites: _Sites) -> None:
     with pytest.MonkeyPatch.context() as m:
         m.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
         gen = cache._source_gen
-        _elevate(cache, scn, [(60, 60)])
+        _elevate(cache, scn, [sites.mill])
     assert cache._source_gen > gen, "the mill chain spliced under a cap of 2 -- vacuous"
 
 
-def _steps(scn):
+def _steps(scn, sites: _Sites):
     """(name, action, splices) in order; splices says whether the step reaches _splice_level()."""
     added = {}
 
     def add(cache):
-        unit = _place(scn, 2, CONST, 45.5, 44.5)
+        unit = _place(scn, 2, CONST, *sites.added)
         added["unit"] = unit
         _unit_edit(cache, _add_splice(scn, 2, unit))
 
@@ -372,14 +464,14 @@ def _steps(scn):
         assert cache._target_headroom == want_steps * cache.proj.elev_step, "the headroom did not move -- vacuous"
 
     return [
-        ("draw", lambda cache: _draw(cache, scn), False),
-        ("headroom_up", lambda cache: headroom(cache, 1, [QUIET_TILE], 1), True),
-        ("elev_splice", lambda cache: _elevate(cache, scn, [UNIT_TILE]), True),
-        ("over_cap", lambda cache: _over_cap(cache, scn), False),
+        ("draw", lambda cache: _draw(cache, scn, sites), False),
+        ("headroom_up", lambda cache: headroom(cache, 1, [sites.quiet], 1), True),
+        ("elev_splice", lambda cache: _elevate(cache, scn, [sites.unit]), True),
+        ("over_cap", lambda cache: _over_cap(cache, scn, sites), False),
         ("unit_add", add, True),
         ("unit_remove", remove, True),
         # Flat again, so the headroom falls back to 0 while the unit and the mills re-anchor.
-        ("headroom_down", lambda cache: headroom(cache, -1, [QUIET_TILE, UNIT_TILE, (60, 60)], 0), True),
+        ("headroom_down", lambda cache: headroom(cache, -1, [sites.quiet, sites.unit, sites.mill], 0), True),
     ]
 
 
@@ -393,7 +485,7 @@ def _level_differs(cache, scn, mip: int) -> str | None:
     return None
 
 
-def _run_steps(scn, levels, broken=None) -> list[str]:
+def _run_steps(scn, levels, broken=None, sites: _Sites = TEMPLATE) -> list[str]:
     """Applies _steps() with every level in `levels` rendered whole before each
     step, and returns '<step> @<mip>: <what>' for each level that then differs
     from a fresh cache. broken=(step, mip) skips that level's splice (or, for a
@@ -415,7 +507,7 @@ def _run_steps(scn, levels, broken=None) -> list[str]:
 
     cache._splice_level, cache.patch = splice, patch
     failures = []
-    for name, action, splices in _steps(scn):
+    for name, action, splices in _steps(scn, sites):
         for mip in levels:
             _whole(cache, mip)
         resident = len(cache._cache)
@@ -427,12 +519,16 @@ def _run_steps(scn, levels, broken=None) -> list[str]:
     return failures
 
 
-@pytest.mark.parametrize("levels", [(-1,), (-2,), (0, -1, -2)], ids=["-1", "-2", "all"])
-def test_every_edit_kind_patched_at_a_coarser_level_matches_a_fresh_cache(shared_art_install, levels) -> None:  # noqa: F811
-    assert _run_steps(_edit_scenario(), levels) == []
+EDIT_CASES = [(TEMPLATE, (-1,)), (TEMPLATE, (-2,)), (FIELD, (1,)), (FIELD, (-2, -1, 0, 1))]
+STEP_NAMES = ["draw", "headroom_up", "elev_splice", "over_cap", "unit_add", "unit_remove", "headroom_down"]
 
 
-@pytest.mark.parametrize("step", ["draw", "headroom_up", "elev_splice", "over_cap", "unit_add", "unit_remove", "headroom_down"])
+@pytest.mark.parametrize("sites, levels", EDIT_CASES, ids=["-1", "-2", "+1", "all"])
+def test_every_edit_kind_patched_at_another_level_matches_a_fresh_cache(shared_art_install, sites, levels) -> None:  # noqa: F811
+    assert _run_steps(_edit_scenario(sites), levels, sites=sites) == []
+
+
+@pytest.mark.parametrize("step", STEP_NAMES)
 def test_the_edit_oracle_names_the_one_step_broken_at_level_minus_2(shared_art_install, step) -> None:  # noqa: F811
     """Control for the test above: only step `step` is broken, at -2 alone
     while -1 is resident too. The first difference must be that step at -2,
@@ -442,21 +538,31 @@ def test_the_edit_oracle_names_the_one_step_broken_at_level_minus_2(shared_art_i
     assert not any(f.startswith(f"{step} @-1:") for f in failures), failures
 
 
-def test_a_headroom_change_names_each_spliced_level_on_the_op_line(shared_art_install, traced) -> None:  # noqa: F811
+@pytest.mark.parametrize("step", STEP_NAMES)
+def test_the_edit_oracle_names_the_one_step_broken_at_level_plus_1(shared_art_install, step) -> None:  # noqa: F811
+    """The same control at +1 on FIELD, with level 0 resident too: the first
+    difference must be that step at +1, and 0 must stay clean on it."""
+    failures = _run_steps(_edit_scenario(FIELD), (0, 1), broken=(step, 1), sites=FIELD)
+    assert failures and failures[0].startswith(f"{step} @1:"), failures
+    assert not any(f.startswith(f"{step} @0:") for f in failures), failures
+
+
+@pytest.mark.parametrize("sites, levels", [(TEMPLATE, (-1, -2)), (FIELD, (1, -1))], ids=["coarser", "finer"])
+def test_a_headroom_change_names_each_spliced_level_on_the_op_line(shared_art_install, traced, sites, levels) -> None:  # noqa: F811
     """Each current level checks its own headroom, so each one that moves
     says so with its own mip and its own pixel values."""
     from descape import debug_log, perf_trace
 
-    scn = _edit_scenario()
+    scn = _edit_scenario(sites)
     cache = _cache(scn, sprites=True)
-    for mip in (-1, -2):
+    for mip in levels:
         _whole(cache, mip)
     with perf_trace.op("Set elevation"):
-        _elevate(cache, scn, [QUIET_TILE])
+        _elevate(cache, scn, [sites.quiet])
     perf_trace.flush_idle()
 
     line = next(line for line in debug_log.get_log_text().splitlines() if "perf op set-elevation" in line)
-    for mip in (-1, -2):
+    for mip in levels:
         assert f"elev_headroom=0->{cache._levels[mip].proj.elev_step}@{mip}" in line, line
     assert "@0" not in line, "level 0 was never built, so it has no headroom to check"
 
@@ -464,17 +570,41 @@ def test_a_headroom_change_names_each_spliced_level_on_the_op_line(shared_art_in
 # --- 5. a level outside rebuild_levels defers, then flushes when shown -------
 
 
+def _deferred(case: str, monkeypatch, sites: _Sites):
+    """test_elevation_unit_splice's _deferred_cases() on `sites`: (scenario, raise steps)."""
+    if sites is TEMPLATE:
+        return _deferred_cases(case, monkeypatch)
+    if case == "headroom_empty":
+        scn = _base(sites)
+        _place(scn, 1, MILL_CONST, *sites.chain)
+        return scn, [[sites.quiet]]
+    scn = _base(sites, flat=False)
+    _mill_chain(scn, sites)
+    if case == "two_splices":
+        _place(scn, 1, CONST, sites.unit[0] + 0.5, sites.unit[1] + 0.5)
+        return scn, [[sites.mill], [sites.unit]]
+    assert case == "between_caps"
+    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 3)
+    return scn, [[sites.mill]]
+
+
+@pytest.mark.parametrize("sites, shown, deferred", [(TEMPLATE, -2, -1), (FIELD, -1, 1)], ids=["coarser", "finer"])
 @pytest.mark.parametrize("case", ["two_splices", "headroom_empty", "between_caps"])
-def test_a_level_left_out_of_rebuild_levels_flushes_to_a_fresh_cache_when_shown(case, shared_art_install, monkeypatch) -> None:  # noqa: F811
-    """Patched with rebuild_levels=(-2,) while -1 is resident too: -2 splices
-    in the patch, -1 stays current with the tiles pending and flushes once
-    when it is next composited. Both then equal a fresh cache. The cases are
-    test_elevation_unit_splice's deferred-flush ones: two splices into one
-    union, a headroom move with no unit in reach, and a union over Stepped's
-    cap but within Sloped's."""
-    scn, steps = _deferred_cases(case, monkeypatch)
+def test_a_level_left_out_of_rebuild_levels_flushes_to_a_fresh_cache_when_shown(
+    case, sites, shown, deferred, shared_art_install, monkeypatch  # noqa: F811
+) -> None:
+    """Patched with rebuild_levels=(shown,) while `deferred` is resident too:
+    `shown` splices in the patch, `deferred` stays current with the tiles
+    pending and flushes once when it is next composited. Both then equal a
+    fresh cache. The cases are test_elevation_unit_splice's deferred-flush
+    ones: two splices into one union, a headroom move with no unit in reach,
+    and a union over Stepped's cap but within Sloped's. `finer` defers +1, on
+    FIELD."""
+    scn, steps = _deferred(case, monkeypatch, sites)
     cache = _cache(scn, sprites=True)
-    for mip in (-1, -2):
+    cache.max_bytes *= 8  # both levels stay resident: an eviction would hide a stale chunk
+    for mip in (deferred, shown):
         _whole(cache, mip)
     flushes: list[int] = []
     real_flush = cache._flush_pending
@@ -482,16 +612,17 @@ def test_a_level_left_out_of_rebuild_levels_flushes_to_a_fresh_cache_when_shown(
 
     for tiles in steps:
         bbox, changed = _sloped_bbox(cache, scn, _raise_edit(scn, tiles))
-        cache.patch(bbox, elevation_changed=changed, rebuild_levels=(-2,))
-        assert cache._levels[-1].gen == cache._source_gen and cache._levels[-1].pending_elev, "-1 did not defer"
-        assert not cache._levels[-2].pending_elev, "the shown level deferred its own splice"
+        cache.patch(bbox, elevation_changed=changed, rebuild_levels=(shown,))
+        lvl = cache._levels[deferred]
+        assert lvl.gen == cache._source_gen and lvl.pending_elev, f"{deferred} did not defer"
+        assert not cache._levels[shown].pending_elev, "the shown level deferred its own splice"
     assert not flushes
-    assert _level_differs(cache, scn, -2) is None
-    assert flushes == [], "showing -2 flushed another level"
+    assert _level_differs(cache, scn, shown) is None
+    assert flushes == [], f"showing {shown} flushed another level"
 
-    assert _level_differs(cache, scn, -1) is None
-    assert flushes == [-1]
-    assert cache._levels[-1].gen == cache._source_gen, "the flush went wholesale"
+    assert _level_differs(cache, scn, deferred) is None
+    assert flushes == [deferred]
+    assert cache._levels[deferred].gen == cache._source_gen, "the flush went wholesale"
     assert cache._levels[0].gen == -1, "level 0 was built though nothing showed it"
 
 
@@ -522,22 +653,26 @@ def test_an_empty_splice_patch_never_recomputes_a_deferred_levels_rise(shared_ar
     assert calls == [cache._levels[-1].tile_px]
 
 
-def test_a_wholesale_refresh_re_derives_every_level(shared_art_install) -> None:  # noqa: F811
+@pytest.mark.parametrize(
+    "sites, levels, span", [(TEMPLATE, (-1, -2), range(35, 66)), (FIELD, (1, -1), range(3, 18))], ids=["coarser", "finer"]
+)
+def test_a_wholesale_refresh_re_derives_every_level(shared_art_install, sites, levels, span) -> None:  # noqa: F811
     """refresh_wholesale() (TASK-031.61's in-place full re-render) rebinds
     level 0's corner_rise, so every level re-derives its own and rebuilds on
     its next composite; both shown levels then equal a fresh cache."""
-    scn = _edit_scenario()
+    scn = _edit_scenario(sites)
     cache = _cache(scn, sprites=True)
-    for mip in (-1, -2):
+    cache.max_bytes *= 8  # both levels stay resident: an eviction would hide a stale chunk
+    for mip in levels:
         _whole(cache, mip)
     mm = scn.map_manager
-    tiles = [(x, y) for x in range(35, 66) for y in range(35, 66) if (x + y) % 3 == 0]
+    tiles = [(x, y) for x in span for y in span if (x + y) % 3 == 0]
     set_tiles_elevation(mm, [(x, y, 6) for x, y in tiles])
     dirty = [i for i, t in enumerate(mm.terrain) if (t.x, t.y) in set(tiles)]
-    old = {mip: cache._level_corner_rise(cache._levels[mip]) for mip in (-1, -2)}
+    old = {mip: cache._level_corner_rise(cache._levels[mip]) for mip in levels}
 
     assert cache.refresh_wholesale(dirty) is True
-    for mip in (-1, -2):
+    for mip in levels:
         assert cache._level_corner_rise(cache._levels[mip]) is not old[mip]
         assert _level_differs(cache, scn, mip) is None, f"level {mip}"
     assert cache._levels[0].gen == -1

@@ -178,15 +178,24 @@ def _check_panning_proportional(path: Path) -> tuple[bool, str]:
 
         requested = set()
         original_get_chunk = cache.get_chunk
+        original_install = cache.install_chunk
 
         def spy_get_chunk(mip, cx, cy):
             requested.add((mip, cx, cy))
             return original_get_chunk(mip, cx, cy)
 
+        # A pooled paint's misses (TASK-031.64) land through install_chunk(), never get_chunk().
+        def spy_install(job, painted):
+            landed = original_install(job, painted)
+            if landed:
+                requested.add(job.key)
+            return landed
+
         # Installed only now, for the same reason _check_exposed_rect_
         # smaller's paint spy is: the fit-to-view paint stepped_window()
         # already settled would otherwise count as pan traffic.
         cache.get_chunk = spy_get_chunk
+        cache.install_chunk = spy_install
         _zoom_and_pan(window.map_view)
 
         if not requested:

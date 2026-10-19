@@ -15,8 +15,8 @@ tests/test_content_roots.py scans this module's source for write calls.
 Profile location, in priority order (the same shape as
 asset_source.get_install_path()):
   1. the AOE2DE_PROFILE_PATH environment variable
-  2. an "aoe2de_profile" key in config.yaml (Settings > General's profile
-     folder row writes it, through asset_source.save_profile_path_to_config())
+  2. an "aoe2de_profile" key in config.yaml (the profile folder row in
+     Settings > Mods writes it, through asset_source.save_profile_path_to_config())
   3. Windows: %USERPROFILE%/Games/Age of Empires 2 DE
   4. elsewhere: derived from the install path, via its nearest `steamapps`
      ancestor and the Proton prefix of app 813780. Never guesses ~/.steam,

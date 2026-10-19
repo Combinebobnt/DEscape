@@ -497,9 +497,9 @@ def test_leaving_the_viewport_with_no_button_held_cancels() -> None:
     """leaveEvent gets a bare QEvent with no button state, so the guard asks
     QApplication.mouseButtons(). Under a synthesized press nothing is
     physically held, which is exactly the focus-lost case the cancel exists
-    for. The other half -- a real held button keeping the drag alive while
-    the cursor runs past the viewport edge -- is not synthesizable here and
-    is in the in-app list instead."""
+    for. The other half, a held button keeping the drag alive while the
+    cursor runs past the viewport edge, is
+    test_wall_run_viewer.test_a_leave_mid_drag_with_the_button_held_keeps_the_run."""
     from PyQt5.QtCore import QEvent
 
     window = _shape_window("draw_line")

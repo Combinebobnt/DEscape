@@ -40,12 +40,23 @@ def test_ground_texture_pack_check_passes() -> None:
 @pytest.mark.corpus
 def test_sloped_mip_pack_check_passes() -> None:
     """Needs examples/ and the real install: real maps, textures and sprites
-    stitched from SlopedChunkCache's coarser levels."""
+    stitched from SlopedChunkCache's coarser levels (sloped_fine has its finer one)."""
     gen = conftest.load_verify_module("gen_review_pack")
     reason = gen._sloped_prerequisites()
     if reason:
         pytest.skip(reason)
     gen.check("sloped_mip")
+
+
+@pytest.mark.corpus
+def test_sloped_fine_pack_check_passes() -> None:
+    """Needs examples/ and the real install: the same maps stitched at level +1
+    beside level 0 (TASK-146)."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._sloped_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("sloped_fine")
 
 
 @pytest.mark.corpus

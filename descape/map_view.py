@@ -847,8 +847,9 @@ class MapView(QGraphicsView):
         self._map_height: int | None = None
         # Memoizes the last highlight built, so mouseMoveEvent's per-pixel
         # calls into _update_highlight() don't rebuild an up-to-81-tile
-        # QPainterPath every time the mouse moves within the same tile.
-        self._highlight_key: tuple[int, int, int, str, int] | None = None
+        # QPainterPath every time the mouse moves within the same tile. The
+        # Cliff tool keys its footprint instead: ("cliff", tiles).
+        self._highlight_key: tuple[int, int, int, str, int] | tuple[str, tuple[tuple[int, int], ...]] | None = None
         self._map_rect: QRectF | None = None
         # Set by set_source() just before it calls set_isometric(), consumed
         # (and cleared) by set_isometric() itself -- see set_source()'s
@@ -957,6 +958,10 @@ class MapView(QGraphicsView):
         self._wheel_brush_query: Callable[[], bool] = lambda: False
         self._on_wheel_brush_step: Callable[[int], None] = lambda steps: None
         self._brush_wheel_accum = 0
+        # GH #245: the paste-turn hooks from set_wheel_paste_hooks(), with their own sub-notch delta.
+        self._wheel_paste_query: Callable[[], bool] = lambda: False
+        self._on_wheel_paste_turn: Callable[[int], None] = lambda direction: None
+        self._paste_wheel_accum = 0
         self.set_wheel_bindings(settings.get_wheel_bindings())
         self.setMouseTracking(True)
 
@@ -1184,6 +1189,12 @@ class MapView(QGraphicsView):
         self._wheel_brush_query = query
         self._on_wheel_brush_step = step
 
+    def set_wheel_paste_hooks(self, query: Callable[[], bool], turn: Callable[[int], None]) -> None:
+        """GH #245: `query()` says whether a just-pasted region would turn, and
+        `turn(direction)` turns it a quarter turn, +1 per wheel-up notch."""
+        self._wheel_paste_query = query
+        self._on_wheel_paste_turn = turn
+
     def set_brush(self, size: int, shape: str, thickness: int = brush.BRUSH_THICKNESS_MIN) -> None:
         """Updates the brush the hover-preview highlight (and, via
         ViewerWindow reading these same values back at stroke time, the
@@ -1340,6 +1351,7 @@ class MapView(QGraphicsView):
             return
         self._mode = mode
         self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the mode being left
+        self._paste_wheel_accum = 0
         self._eyedrop_cycle = None
         # Same reasoning as the tool switch: a pending measurement has no owner
         # in the next mode. Pinned rulers stay.
@@ -2387,6 +2399,7 @@ class MapView(QGraphicsView):
         # drops it.
         self._cancel_shape()
         self._brush_wheel_accum = 0  # a half-stepped brush notch belongs to the tool being left
+        self._paste_wheel_accum = 0
         self._cancel_area_drag()
         self._sync_pulse_timer()
         # Routed through _apply_drag_mode() rather than set here directly, so
@@ -3260,6 +3273,10 @@ class MapView(QGraphicsView):
         shape_held = self._shape_anchor is not None and QApplication.mouseButtons() != Qt.NoButton
         if self._shape_anchor is not None and not shape_held:
             self._cancel_shape()
+        # A drag that leaves without a release (focus lost mid-drag) must not leave a half-open stroke.
+        # Closed before the clears below: a Cliff stroke's close repaints the highlight and hover ghost.
+        if self._stroke_active:
+            self._end_stroke()
         if not shape_held:
             self._clear_highlight()
         self._clear_pan_highlight()
@@ -3271,13 +3288,6 @@ class MapView(QGraphicsView):
             self._clear_tile_pick_preview()
         if self._area_drag is None:
             self._set_area_hover(None)
-        # Defensive: a drag that exits the widget bounds without a release
-        # (Qt usually still routes the eventual release back here via its
-        # implicit mouse grab during a press-drag, but this covers the case
-        # where it doesn't -- e.g. focus lost mid-drag) must not leave a
-        # half-open stroke with no matching commit.
-        if self._stroke_active:
-            self._end_stroke()
         # Defensive, same reasoning as the stroke close above: a marquee
         # drag that exits the widget without a release must not leave a
         # dangling rectangle on screen with no pending selection to resolve
@@ -5711,6 +5721,15 @@ class MapView(QGraphicsView):
         if notches:
             self._on_wheel_brush_step(notches)
 
+    def _paste_wheel_turn(self, delta: int) -> None:
+        """The wheel's rotate binding over a just-pasted region (GH #245): one
+        quarter turn per whole notch, scroll up the ghost's way round."""
+        notches, self._paste_wheel_accum = self._wheel_notches(self._paste_wheel_accum, delta)
+        for _ in range(abs(notches)):
+            if not self._wheel_paste_query():
+                break  # the last turn lapsed the paste, so the next one would only log a refusal
+            self._on_wheel_paste_turn(1 if notches > 0 else -1)
+
     def _wheel_pan(self, action: str, delta: int) -> None:
         """The wheel's pan bindings: WHEEL_PAN_NOTCH_PX per notch, scroll up
         moving the view up (pan_vertical) or left (pan_horizontal)."""
@@ -5733,14 +5752,21 @@ class MapView(QGraphicsView):
 
     def _wheel_action(self, modifiers) -> str:
         """The settings.WHEEL_ACTIONS id a wheel event runs, with "tool"
-        resolved. The slot is the exact modifier set, so any other combination
-        zooms, and a tool action with nothing to act on zooms too: rotate
-        needs Place Unit's ghost showing, brush_size a tool with a brush."""
+        resolved, or the internal "paste_turn". The slot is the exact modifier
+        set, so any other combination zooms, and a tool action with nothing to
+        act on zooms too: rotate needs Place Unit's ghost showing or a
+        just-pasted region (GH #245), brush_size a tool with a brush. Under
+        "tool" the brush wins over the paste, so a resize right after a paste
+        still resizes."""
         action = self._wheel_bindings.get(int(modifiers) & self._WHEEL_MODIFIER_MASK, "zoom")
         if action in ("tool", "rotate") and self._tool == "place_unit" and self._place_ghost_query():
             return "rotate"
+        if action == "rotate" and self._wheel_paste_query():
+            return "paste_turn"
         if action in ("tool", "brush_size") and self._wheel_brush_query():
             return "brush_size"
+        if action == "tool" and self._wheel_paste_query():
+            return "paste_turn"
         if action in ("tool", "rotate", "brush_size"):
             return "zoom"
         return action
@@ -5777,6 +5803,8 @@ class MapView(QGraphicsView):
         if action != "zoom":
             if action == "rotate":
                 self._place_wheel_rotate(delta)
+            elif action == "paste_turn":
+                self._paste_wheel_turn(delta)
             elif action == "brush_size":
                 self._brush_wheel_step(delta)
             elif action in ("pan_vertical", "pan_horizontal"):

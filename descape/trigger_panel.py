@@ -7,8 +7,8 @@ import contextlib
 import dataclasses
 from typing import ClassVar
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QPointF, QSize, Qt, QTimer
-from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, QSize, Qt, QTimer
+from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -83,6 +83,7 @@ from descape.viewer_common import (
     _make_spinbox,
     _relabel_player_rows,
 )
+from descape.viewer_dialogs import legible_status_color
 
 # trigger_fields._ENUM_TYPES' key for players.PlayerId; PlayerColorId is a colour, not a player.
 PLAYER_ID_PRESENTATION = "PlayerId"
@@ -589,6 +590,7 @@ class TriggerPanel(QWidget):
         self.status_style = StatusStyle
         self._status_style = StatusStyle()
         self._status_icons: dict[Status, QIcon] = {}
+        self._status_restyle_pending = False
         # Per populate: trigger index -> its statuses, and the triggers whose entries hold placed-unit ids.
         self._status: dict[int, trigger_status.TriggerStatuses] = {}
         self._unit_ref_triggers: set[int] = set()
@@ -2242,15 +2244,20 @@ class TriggerPanel(QWidget):
         row, a tooltip listing the reasons. UNCHECKED and NONE stay unstyled,
         and so does an OK row with color_ok_rows off, in every marker mode.
         A row already showing `status` is skipped (see _batched_trigger_restyle()
-        for the cost); `force` is for a style change, which every row follows."""
+        for the cost); `force` is for a style or theme change, which every row
+        follows. The brush is the colour shaded to the floor on its tree's Base."""
         if not force and item.data(col, self._STATUS_ROLE) == status:
             return
         item.setData(col, self._STATUS_ROLE, status)
         style = self._status_style
         kind = status.status if status is not None else Status.NONE
         marked = kind is Status.PROBLEM or (kind is Status.OK and style.color_ok_rows)
-        colour = style.problem if kind is Status.PROBLEM else style.ok
-        item.setData(col, Qt.ForegroundRole, QBrush(QColor(colour)) if marked and style.colours else None)
+        brush = None
+        if marked and style.colours:
+            # A trigger row is styled before it is added to self.tree.
+            base = (item.treeWidget() or self.tree).palette().color(QPalette.Active, QPalette.Base).name()
+            brush = QBrush(QColor(legible_status_color(style.problem if kind is Status.PROBLEM else style.ok, base)))
+        item.setData(col, Qt.ForegroundRole, brush)
         icon = self._status_icons.get(kind) if marked and style.icons else None
         item.setIcon(col, icon if icon is not None else QIcon())
         item.setToolTip(col, status_tooltip(status) if kind is Status.PROBLEM else "")
@@ -2300,6 +2307,18 @@ class TriggerPanel(QWidget):
                 self._apply_status(item, item.data(0, self._STATUS_ROLE), 0, force=True)
         # An icon widens the Item column, which is sized once per populate.
         self._fit_entry_columns()
+
+    def changeEvent(self, event) -> None:
+        # A theme change moves the trees' Base, so the row brushes are re-shaded. Deferred and
+        # coalesced like ViewerWindow's icon re-ink: apply_theme() sends several.
+        if event.type() == QEvent.PaletteChange and not self._status_restyle_pending:
+            self._status_restyle_pending = True
+            QTimer.singleShot(0, self._restyle_for_palette)
+        super().changeEvent(event)
+
+    def _restyle_for_palette(self) -> None:
+        self._status_restyle_pending = False
+        self.apply_status_style()
 
     def status_of(self, trigger_index: int) -> trigger_status.TriggerStatuses | None:
         """The cached statuses of one trigger, for tests and tools."""

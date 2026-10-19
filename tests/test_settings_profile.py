@@ -1,5 +1,5 @@
-"""Settings > General's AoE2:DE profile folder row and its scanned-folders list
-(GH #126 follow-up). conftest's _isolated_settings redirects config.yaml and
+"""The AoE2:DE profile folder row and its scanned-folders list in Settings > Mods
+(GH #126 follow-up; their own tab since GH #244). conftest's _isolated_settings redirects config.yaml and
 drops AOE2DE_PROFILE_PATH; each test builds a fake profile under tmp_path."""
 
 from __future__ import annotations
@@ -57,6 +57,16 @@ def _list_texts(dialog) -> list[str]:
     return [view.item(i).text() for i in range(view.count())]
 
 
+def _select_tab(dialog, title: str):
+    """Select the Settings tab titled `title`; returns its page (the scroll area for a scrolled tab)."""
+    from PyQt5.QtWidgets import QTabWidget
+
+    tabs = dialog.findChild(QTabWidget)
+    index = next(i for i in range(tabs.count()) if tabs.tabText(i) == title)
+    tabs.setCurrentIndex(index)
+    return tabs.widget(index)
+
+
 @pytest.fixture
 def opened(monkeypatch):
     """(dialog, window, rescans), with invalidate_ai_choices() counted."""
@@ -74,7 +84,7 @@ def test_with_nothing_configured_the_row_says_so(opened) -> None:
     assert dialog.profile_path_edit.isEnabled()
     assert not dialog.profile_auto_button.isEnabled()
     assert "No profile folder found" in dialog.profile_status_label.text()
-    assert _list_texts(dialog) == ["Nothing yet: set the install path above."]
+    assert _list_texts(dialog) == ["Nothing yet: set the install path on the General tab."]
     assert not dialog.profile_skipped_label.isVisibleTo(dialog)
 
 
@@ -100,6 +110,58 @@ def test_load_writes_the_key_lists_the_folders_and_rescans(opened, tmp_path) -> 
     assert dialog.profile_skipped_label.text() == "1 mod disabled in the game's mod list is skipped."
     assert not dialog.profile_skipped_label.isHidden()
     assert f"Profile folder set to {profile}" in window.status_log.toPlainText()
+
+
+def _pump() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    for _ in range(4):
+        QApplication.processEvents()
+
+
+def _shown_width(dialog) -> int:
+    dialog.show()
+    _pump()
+    return dialog.width()
+
+
+def test_two_disabled_mods_read_plural_and_leave_the_dialog_width_alone(tmp_path) -> None:
+    """GH #126: the footnote's plural branch, and its width.
+
+    Passes when a profile with two disabled mods on disk reads "2 mods
+    disabled ... are skipped." under the scanned list, and the shown dialog
+    with that section populated (list, footnote) is no wider than a shown
+    dialog with nothing loaded. The width half is a guard: the tabs' minimum
+    (793 px at the pinned test font) already exceeds the 520 px default and
+    the one-line footnote alike."""
+    profile = _profile_tree(tmp_path)
+    mods = profile / "7656" / "mods"
+    (mods / "subscribed" / "56_Second Off AI" / "resources" / "_common").mkdir(parents=True)
+    status = json.loads((mods / "mod-status.json").read_text())
+    status["Mods"].append({"Enabled": False, "Path": "subscribed//56_Second Off AI"})
+    (mods / "mod-status.json").write_text(json.dumps(status))
+
+    empty_dialog, empty_window = conftest.dialog_and_window()
+    try:
+        _select_tab(empty_dialog, "Mods")
+        empty_width = _shown_width(empty_dialog)
+        assert not empty_dialog.profile_skipped_label.isVisibleTo(empty_dialog)
+    finally:
+        empty_dialog.close()
+        conftest.close_window(empty_window)
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        dialog.profile_path_edit.setText(str(profile))
+        dialog.load_profile_path()
+        assert dialog.profile_skipped_label.text() == "2 mods disabled in the game's mod list are skipped."
+        assert not dialog.profile_skipped_label.isHidden()
+        _select_tab(dialog, "Mods")
+        assert _shown_width(dialog) <= empty_width
+        assert dialog.profile_skipped_label.isVisibleTo(dialog)
+    finally:
+        dialog.close()
+        conftest.close_window(window)
 
 
 @pytest.mark.parametrize("kind", ["no-numeric-folder", "not-a-folder", "empty"])
@@ -209,21 +271,41 @@ def test_an_install_load_refreshes_the_auto_detected_profile(tmp_path, monkeypat
         asset_source.clear_install_caches()
 
 
-def test_the_scrolled_general_tab_still_paints_the_tab_page(opened) -> None:
+def test_the_mods_tab_holds_the_profile_and_mod_art_sections(opened) -> None:
+    """GH #244: the profile folder section and the Mod art list sit on their own Mods
+    tab, right after General; zoom mode and the install path stay on General."""
+    from PyQt5.QtWidgets import QTabWidget
+
+    dialog, _window, _rescans = opened
+    tabs = dialog.findChild(QTabWidget)
+    assert [tabs.tabText(i) for i in range(tabs.count())] == [
+        "General", "Mods", "Appearance", "Saving", "Keybinds", "Advanced",
+    ]
+    general, mods = _select_tab(dialog, "General"), _select_tab(dialog, "Mods")
+    for widget in (dialog.profile_path_edit, dialog.profile_roots_list, dialog.mod_art_list):
+        assert mods.isAncestorOf(widget) and not general.isAncestorOf(widget)
+    for widget in (dialog.install_path_edit, dialog.zoom_cursor_radio):
+        assert general.isAncestorOf(widget) and not mods.isAncestorOf(widget)
+
+
+@pytest.mark.parametrize(("title", "label"), [
+    ("General", "install_status_label"), ("Mods", "profile_status_label"),
+])
+def test_a_scrolled_tab_still_paints_the_tab_page(opened, title: str, label: str) -> None:
     """Its status labels are shaded for the tab page (status_color(on_tab_page=True));
     a plain scroll area would paint the window colour under them instead."""
     from PyQt5.QtCore import QPoint
-    from PyQt5.QtWidgets import QApplication, QTabWidget
+    from PyQt5.QtWidgets import QApplication
 
     from descape.viewer_dialogs import painted_tab_page
 
     dialog, _window, _rescans = opened
-    dialog.findChild(QTabWidget).setCurrentIndex(0)
+    _select_tab(dialog, title)
     dialog.show()
     for _ in range(4):
         QApplication.processEvents()
     image = dialog.grab().toImage()
-    page = dialog.profile_status_label.parentWidget()
+    page = getattr(dialog, label).parentWidget()
     corner = page.mapTo(dialog, QPoint(2, 2))
     assert image.pixelColor(corner).name() == painted_tab_page(QApplication.palette())
 
@@ -253,7 +335,7 @@ def test_a_theme_change_restyles_the_profile_status_line() -> None:
 
 def test_long_paths_scroll_inside_the_list_not_the_dialog(opened, tmp_path) -> None:
     """The list keeps a capped height and a long path never widens the dialog."""
-    from PyQt5.QtWidgets import QApplication, QTabWidget
+    from PyQt5.QtWidgets import QApplication
 
     dialog, _window, _rescans = opened
     width_before = dialog.minimumSizeHint().width()
@@ -261,8 +343,7 @@ def test_long_paths_scroll_inside_the_list_not_the_dialog(opened, tmp_path) -> N
     profile = _profile_tree(deep)
     dialog.profile_path_edit.setText(str(profile))
     dialog.load_profile_path()
-    tabs = dialog.findChild(QTabWidget)
-    tabs.setCurrentIndex(0)
+    _select_tab(dialog, "Mods")
     dialog.show()
     for _ in range(4):
         QApplication.processEvents()

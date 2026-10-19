@@ -74,9 +74,15 @@ against a full grid and pack build. --undo-plain times the undo alone, for an
 A/B against another checkout with --root.
 
 --fit drags the per-brush strokes at fit zoom (the zoom a load opens at)
-instead of the 1:1 pin, on rows clipped to the map diamond. --trees leaves
-Trees on (Eye candy keeps its default, off) instead of forcing both off.
---window WxH sizes the main window (default 1600x1000).
+instead of the 1:1 pin, on rows clipped to the map diamond. --scale F drags
+them at zoom F instead (QTransform.fromScale, centred like 1:1), e.g. 1.25
+or 2.0 to measure a finer mip level. --level N sets Set elevation's target
+level first (default: the spin box's own). --trees leaves Trees on (Eye
+candy keeps its default, off) instead of forcing both off. --window WxH
+sizes the main window (default 1600x1000). Per-brush mode prints the debug
+log up to the first drag (the load, the first paint and the paint at the
+bench zoom, with its level build) under `--- settle log`, and each drag's
+summary line carries the process's ru_maxrss so far.
 
 --flow gh180 is GH #180's tester flow, Trees on: load --scenario straight
 into --style (the style is set before the load, as when a file is opened
@@ -85,13 +91,15 @@ while Sloped is showing), keep the fit the load opened at, settle, a
 wait for the repaint, Ctrl+Z, a Set elevation drag of --flow-elev-rows rows
 two levels off the map's most common one, Ctrl+Z. It prints the whole debug
 log (every perf line) and one `gh180 gates:` summary line: G1 Draw ms/step,
-G2 release handler plus the next paint, the post-stroke composite and mip,
+G2 release handler plus the next paint, the post-stroke composite (a pooled
+repaint's prepare + join, TASK-031.64) and mip,
 G3 Set elevation ms/step, G4 each undo plus its next paint (with the side
 of STEPPED_FULL_RERENDER_THRESHOLD it took: patch, refresh, or rerender on
 a build before the in-place refresh or when the cache refused it), G5 the load's first-paint
 total, G6 the slowest single step. On old-allies-final-v2 the default
 --flow-draw-rows remove over UNIT_SPLICE_MAX_UNITS trees (the tester's
-wholesale stroke end) and undo below the 20k-tile re-render threshold, and
+over-cap stroke end, which now takes the visible-only splice,
+`splice_visible`, up to VISIBLE_SPLICE_MAX_UNITS) and undo below the 20k-tile re-render threshold, and
 the default --flow-elev-rows undo above it with margin (slow, coalesced Set
 elevation steps cut row corners and write fewer tiles), so one run covers
 both sides.
@@ -359,7 +367,7 @@ def _drag(
         f"  units converted {converted}, placed {placed}",
         (
             f"  wall {t1 - t0:.2f}s, steps {len(record)}, paints {len(paint_times)}, "
-            f"steps per paint mean {mean:.2f} max {max(per_paint, default=0)}"
+            f"steps per paint mean {mean:.2f} max {max(per_paint, default=0)}, ru_maxrss {_maxrss_mb():.0f}MB"
         ),
         f"  cursor-tile gap hist {_hist(cursor_gaps)} (skipped >1: {sum(g > 1 for g in cursor_gaps)})",
         f"  delivered-tile continuity hist {_hist(continuity)} (holes: {sum(c > 1 for c in continuity)})",
@@ -368,10 +376,16 @@ def _drag(
     ]
 
 
+def _maxrss_mb() -> float:
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KiB on Linux
+
+
 def _run(args) -> list[str]:
     from PyQt5.QtGui import QTransform
 
-    from descape import composite_backend, perf_trace, settings, viewer_canvas
+    from descape import composite_backend, debug_log, perf_trace, settings, viewer_canvas
     from testkit import qt_window
 
     # Trees/eye candy/ticks off unless --trees: they are not what the default run measures.
@@ -408,6 +422,8 @@ def _run(args) -> list[str]:
             raise SystemExit(f"--convert-to {args.convert_to}: no such owner in the Units panel")
         if args.tool == "cliff":
             _select_cliff_piece(window, args.cliff_piece)
+        if args.level is not None:
+            window.elevation_level_spin.setValue(args.level)
         window.paint_trees_check.setChecked(args.trees)
         window.paint_eye_candy_check.setChecked(False)
         window.move(0, 0)
@@ -418,9 +434,11 @@ def _run(args) -> list[str]:
         if args.fit:
             _fit(view)
         else:
-            view.setTransform(QTransform())  # 1:1, mip 0
+            scale = args.scale or 1.0
+            view.setTransform(QTransform.fromScale(scale, scale))  # 1:1 is mip 0
             view.centerOn(view.sceneRect().center())
         _pump(args.settle)
+        settle_log = debug_log.get_log_text().strip()
         fit_rows = _diamond_rows(view, window.scenario.map_manager, 4) if args.fit else None
 
         # MapView captured the bound callback at construction, so wrap its copy.
@@ -437,8 +455,11 @@ def _run(args) -> list[str]:
         output.append(composite_backend.describe())
         output.append(
             f"preload zoom levels {'off' if args.no_preload else 'on'}, sprites {window._sprites_enabled},"
-            f" trees {window.paint_trees_check.isChecked()}, visible mip {_visible_mip(view)}"
+            f" trees {window.paint_trees_check.isChecked()}, visible mip {_visible_mip(view)},"
+            f" ru_maxrss after settle {_maxrss_mb():.0f}MB"
         )
+        output.append("--- settle log")
+        output.append("  " + settle_log.replace("\n", "\n  "))
         row = 0
         for brush_size in args.brush:
             window.brush_size_spin.setValue(brush_size)
@@ -717,9 +738,15 @@ def gh180_gates(sections: dict[str, list[str]], stalls: dict[str, tuple[float, f
     handler, paint, total = stalls["draw"]
     parts.append(f"G2_release={handler:.0f} G2_next_paint={paint:.0f} G2_total={total:.0f}")
     after = draw[next((i for i, ln in enumerate(draw) if "perf drag paint-terrain:" in ln), len(draw)) + 1:]
-    comp = next((re.search(r"composite ([\d.]+) x(\d+)", ln) for ln in after if re.search(r"composite [\d.]+ x\d", ln)), None)
-    if comp:
-        parts.append(f"post_stroke_composite={float(comp.group(1)):.0f}x{comp.group(2)}")
+    # A pooled repaint (TASK-031.64) reports prepare/join instead of composite: ms summed, x counts
+    # prepare+composite calls, not chunks (a declined chunk counts twice); don't compare x base to change.
+    chunk_phase = re.compile(r"\b(composite|prepare|join) ([\d.]+) x(\d+)")
+    repaint = next((ln for ln in after if chunk_phase.search(ln)), None)
+    if repaint:
+        phases = {name: (float(ms), int(calls)) for name, ms, calls in chunk_phase.findall(repaint)}
+        ms = sum(ms for ms, _calls in phases.values())
+        chunks = sum(calls for name, (_ms, calls) in phases.items() if name != "join")
+        parts.append(f"post_stroke_composite={ms:.0f}x{chunks}")
     elev = section("elev")
     head3 = _drag_header(elev, "set-elevation")
     if head3:
@@ -1332,7 +1359,10 @@ def main() -> None:
     parser.add_argument("--no-preload", action="store_true", help="turn off neighbouring zoom-level preload")
     parser.add_argument("--profile-patch", action="store_true", help="one line per cache patch() (see above)")
     parser.add_argument("--root", type=Path, help="DEscape checkout to import descape and testkit from")
-    parser.add_argument("--fit", action="store_true", help="per-brush drags at fit zoom, not 1:1 (see above)")
+    zoom = parser.add_mutually_exclusive_group()
+    zoom.add_argument("--fit", action="store_true", help="per-brush drags at fit zoom, not 1:1 (see above)")
+    zoom.add_argument("--scale", type=float, help="per-brush drags at this zoom, not 1:1 (see above)")
+    parser.add_argument("--level", type=int, help="Set elevation's target level (default: the spin box's)")
     parser.add_argument("--trees", action="store_true", help="leave Trees on (Eye candy stays off)")
     parser.add_argument("--window", type=_size, default=(1600, 1000), help="main window size WxH (default 1600x1000)")
     parser.add_argument("--flow", choices=["gh180"], help="a scripted tester flow (see above)")

@@ -145,8 +145,7 @@ class CatalogBrowserView(QWidget):
         super().__init__(parent)
         self._loader = loader if loader is not None else catalog_thumbs.ThumbLoader(self)
         self._loader.ready.connect(self._on_thumb_ready)
-        self._entries = tuple(object_catalog.objects()) + tuple(place_random.catalog_entries())
-        self._by_id = {entry.id: entry for entry in self._entries}
+        self._entries, self._by_id = self._load_entries()
         self._items: dict[int, QListWidgetItem] = {}
         self._category = CATEGORIES[0][0]
         self._mode = settings.get_units_catalog_mode()
@@ -258,6 +257,19 @@ class CatalogBrowserView(QWidget):
     def mode(self) -> str:
         """The mode shown: the chosen one, or "names" while no install can supply thumbnails."""
         return self._mode if self._has_install() else "names"
+
+    @staticmethod
+    def _load_entries() -> tuple[tuple, dict]:
+        """The active game dataset's objects, plus GH #164's random rows (in Return
+        of Rome too: its 83 and 293 are the same male and female villagers, GH #67)."""
+        entries = tuple(object_catalog.objects()) + tuple(place_random.catalog_entries())
+        return entries, {entry.id: entry for entry in entries}
+
+    def reload_entries(self) -> None:
+        """After a game dataset switch: rows rebuilt from the new dataset's catalog."""
+        self._entries, self._by_id = self._load_entries()
+        self.class_combo.setProperty("category", None)
+        self._populate()
 
     def refresh_thumbnails(self) -> None:
         """After an install change: icon modes on or off, icons cleared, the viewport re-requested."""

@@ -18,7 +18,7 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # Path to your AoE2:DE profile folder, the one holding numeric per-account
 # folders with resources/ and mods/ inside. Only read, never written, and
 # optional: without it only the install's own content is offered. Also
-# settable from Settings > General's profile folder row, or via the
+# settable from the profile folder row in Settings > Mods, or via the
 # AOE2DE_PROFILE_PATH env var (checked first, overrides both). Default:
 # detected, as %USERPROFILE%\Games\Age of Empires 2 DE on Windows, or on
 # Linux as the Proton prefix beside aoe2de_install's Steam library
@@ -115,7 +115,7 @@ view_layers:
   translucent_walls: false
   mod_art: true
 
-# Mods whose art View > Layers > Mod Art skips, Settings > General > Mod art,
+# Mods whose art View > Layers > Mod Art skips, Settings > Mods > Mod art,
 # as the game's mods/mod-status.json Path strings. A listed mod that is no
 # longer installed stays listed, so it stays off if resubscribed.
 # Default: [] (every enabled mod's art draws). The value below is only an example.
@@ -147,6 +147,12 @@ stack_badge_position: bottom_right
 # beside its filter box: list or grid. Anything else falls back to the
 # default on read. Default: list.
 terrain_picker_mode: list
+
+# Which game's data draws every opened scenario, Settings > Advanced (GH #67):
+# auto or aoe2 or ror. auto follows the file's own header; aoe2 or ror shows every
+# file in that game's data, read-only when it is the other game's file.
+# Anything else falls back to the default on read. Default: auto.
+game_data: auto
 
 # The terrain grid's swatch size in px, Settings > Appearance: 32, 48, 64.
 # Anything else falls back to the default on read. Default: 48.

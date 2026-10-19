@@ -74,6 +74,50 @@ def test_only_the_list_field_is_list_presented() -> None:
     assert vocabulary.condition_presentation["unit_object"] == "Unit"
 
 
+# TASK-084's nine: selected_object_ids defaults to None, not [], on these in v1.59.
+_NONE_DEFAULTED_UNIT_LISTS = frozenset(
+    {
+        "task_object",
+        "change_object_caption",
+        "disable_unit_attackable",
+        "enable_unit_attackable",
+        "research_local_technology",
+        "modify_object_attribute",
+        "modify_object_attribute_by_variable",
+        "change_object_visibility",
+        "build_object",
+    }
+)
+
+
+def test_every_unit_list_field_keeps_the_list_editors_spec_whatever_its_default() -> None:
+    """TASK-088 step 7 (TASK-084), Qt-free: the FieldSpec facts the panel routes a Unit[]
+    field by. Pass conditions, over every effect of every shipped vocabulary: each field
+    presented "Unit[]" is selected_object_ids, and its spec keeps presentation "Unit[]" and is
+    editable (not the read-only UNSUPPORTED fallback), whether its default is a list or None;
+    the None-defaulted effects are exactly the nine in v1.59 and a subset of them in every
+    other version. The panel's widget choice itself is pinned by
+    test_trigger_unit_picker_viewer.py's sweep through _build_widget()."""
+    none_defaulted = {}
+    for version in _every_shipped_version():
+        vocabulary = library_compat.load_vocabulary(version)
+        names = set()
+        for definition in vocabulary.effects.values():
+            for spec in trigger_fields.field_specs(definition, vocabulary.effect_presentation, "effect_type"):
+                if vocabulary.effect_presentation.get(spec.name) != unit_references.LIST_PRESENTATION:
+                    continue
+                where = (version, definition.name)
+                assert spec.name == "selected_object_ids", where
+                assert spec.presentation == unit_references.LIST_PRESENTATION, where
+                assert not spec.read_only and spec.kind != trigger_fields.UNSUPPORTED, where
+                if definition.default_attributes.get(spec.name) is None:
+                    names.add(definition.name)
+        none_defaulted[version] = names
+    assert none_defaulted["1.59"] == _NONE_DEFAULTED_UNIT_LISTS
+    for version, names in none_defaulted.items():
+        assert names <= _NONE_DEFAULTED_UNIT_LISTS, version
+
+
 def test_a_missing_definition_has_no_reference_fields() -> None:
     assert unit_references.unit_reference_fields(None, {"unit_object": "Unit"}) == ()
 

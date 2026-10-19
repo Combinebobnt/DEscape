@@ -1320,6 +1320,41 @@ def test_the_drag_preview_outlines_a_host_only_when_the_drop_would_garrison() ->
         _close(window)
 
 
+def test_the_drag_preview_host_outline_uses_the_configured_hover_colour() -> None:
+    """TASK-130 1: the outline is the hover pen (default white), not a fixed cyan.
+
+    Passes when the drop-target outline drawn over an accepting host has the
+    configured `unit_hover` colour, which by default is #ffffff, and after
+    the setting changes to #00ffff and the overlay colours re-apply, the
+    same preview draws in the new colour."""
+    from PyQt5.QtGui import QColor
+
+    from descape import settings
+
+    window = _window()
+    try:
+        tower = _place_tower(window)
+        key = (2, _REF_ARCHER_P2)
+        window._selection = [key]
+        window._refresh_selection_view()
+        over_tower = _pos_for_tile(window, int(tower.x), int(tower.y))
+        mv = window.map_view
+
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert mv._unit_hover_key == (1, tower.reference_id)
+        assert settings.get_overlay_color("unit_hover") == "#ffffff"
+        assert mv._unit_hover_item.pen().color() == QColor(settings.get_overlay_color("unit_hover"))
+
+        window.on_unit_drag_preview(key, over_tower, Qt.ShiftModifier)
+        assert mv._unit_hover_item is None
+        settings.set_overlay_color("unit_hover", "#00ffff")
+        mv.apply_overlay_colors()
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert mv._unit_hover_item.pen().color() == QColor("#00ffff")
+    finally:
+        _close(window)
+
+
 def test_an_off_map_group_drag_outlines_the_edge_host_its_clamped_release_garrisons_into() -> None:
     """A group release clamps to the map rect, so the preview must test the clamped point too."""
     window = _window()
@@ -1543,6 +1578,69 @@ def test_copy_then_paste_into_a_second_host_keeps_each_occupants_owner() -> None
 
         window.undo()
         assert not any(u.garrisoned_in_id == other.reference_id for us in window.scenario.unit_manager.units for u in us)
+    finally:
+        _close(window)
+
+
+_V159_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "v159_units_triggers.aoe2scenario"
+
+
+def test_copy_then_paste_into_a_second_host_keeps_each_occupants_own_fields() -> None:
+    """TASK-130 3, on the 1.59 fixture so the capture flag is a real field.
+
+    Passes when two occupants of one tower that differ from each other and
+    from add()'s defaults in rotation, status, caption (id and text) and
+    capture flag are copied through the panel's Copy and pasted into a
+    second tower through its Paste, and each pasted copy carries its own
+    source's const, owner, rotation, status, caption and capture flag."""
+    from descape.unit_model import capture_flag_of
+
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    window = ViewerWindow()
+    window.load_scenario(_V159_FIXTURE)
+    try:
+        assert window.scenario is not None and window.scenario.scenario_version == "1.59"
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        _show_garrisoned(window)
+        window.mode_combo.setCurrentText("Units")
+        model = window._ensure_unit_edits()
+        tile = _empty_tile(window)
+        with window._unit_edit(model, "Place towers", [1, 2]):
+            tower = model.add(1, 79, tile[0] + 0.5, tile[1] + 0.5)
+            other = model.add(2, 79, tile[0] + 3.5, tile[1] + 0.5)
+            inside = [
+                model.add(1, 4, tower.x, tower.y, rotation=1.25, status=4, garrisoned_in_id=tower.reference_id,
+                          caption_string_id=7, caption_string="First", capture_flag=1),
+                model.add(2, 83, tower.x, tower.y, rotation=2.5, status=3, garrisoned_in_id=tower.reference_id,
+                          caption_string_id=9, caption_string="Second", capture_flag=3),
+            ]
+        window._rebuild_unit_index()
+
+        def fields(player, unit):
+            return (player, unit.unit_const, unit.rotation, unit.status,
+                    unit.caption_string_id, unit.caption_string, capture_flag_of(unit))
+
+        source = sorted(fields(p, u) for p, u in zip((1, 2), inside, strict=True))
+        assert len({row[2:] for row in source}) == 2
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {u.reference_id for u in inside})
+        panel = window.units_panel
+        panel.garrison_copy_button.click()
+        window._selection = [(2, other.reference_id)]
+        window._refresh_selection_view()
+        panel.garrison_paste_button.click()
+
+        pasted = sorted(
+            fields(p, u)
+            for p, units in enumerate(window.scenario.unit_manager.units)
+            for u in units
+            if u.garrisoned_in_id == other.reference_id
+        )
+        assert pasted == source
     finally:
         _close(window)
 
@@ -4621,15 +4719,26 @@ def _gaia_fish(window) -> list:
     return [u for u in window.scenario.unit_manager.units[0] if u.unit_const == _FISH_CONST]
 
 
-def test_the_scatter_action_is_gated_on_the_region_alone(monkeypatch) -> None:
+def test_the_scatter_action_is_gated_on_a_region_or_a_units_selection(monkeypatch) -> None:
+    """GH #196: a Units-mode selection is an area too; the tooltip says how to get one."""
+    from descape import viewer as viewer_mod
+
     window = _window()
     try:
-        assert window._region is None
+        assert window._region is None and window._selection == []
         assert not window.scatter_action.isEnabled()
+        assert window.scatter_action.toolTip() == viewer_mod._SCATTER_NO_AREA_TIP
+        _select_keys(window, [(2, 300)])
+        assert window.scatter_action.isEnabled()
+        assert window.scatter_action.toolTip() == viewer_mod._SCATTER_TIP
+        window.mode_combo.setCurrentText("Terrain")  # drops the selection
+        assert not window.scatter_action.isEnabled()
+        assert window.scatter_action.toolTip() == viewer_mod._SCATTER_NO_AREA_TIP
         window.on_region_selected(_POND)
-        assert window.scatter_action.isEnabled()  # Units mode
-        window.mode_combo.setCurrentText("Terrain")
-        assert window.scatter_action.isEnabled()  # and Terrain mode
+        assert window.scatter_action.isEnabled()  # Terrain mode
+        window.mode_combo.setCurrentText("Units")
+        assert window.scatter_action.isEnabled()  # and Units mode
+        assert window.scatter_action.toolTip() == viewer_mod._SCATTER_TIP
         window.deselect()
         assert not window.scatter_action.isEnabled()
     finally:
@@ -4638,12 +4747,14 @@ def test_the_scatter_action_is_gated_on_the_region_alone(monkeypatch) -> None:
 
 def test_the_scatter_action_is_disabled_with_no_map() -> None:
     conftest.ensure_qapp()
+    from descape import viewer as viewer_mod
     from descape.viewer import ViewerWindow
 
     window = ViewerWindow()
     try:
         assert window.scenario is None
         assert not window.scatter_action.isEnabled()
+        assert window.scatter_action.toolTip() == viewer_mod._SCATTER_TIP
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -4831,6 +4942,60 @@ def test_scatter_pixels_appear_and_one_undo_restores_them(monkeypatch) -> None:
         _close(window)
 
 
+def _press_on_map(window, key) -> None:
+    """A real Ctrl+<key> on the map of the activated, shown window, so the Edit menu keybind fires."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    window.map_view.setFocus()
+    QApplication.processEvents()
+    assert window.isActiveWindow() and QApplication.focusWidget() is window.map_view
+    QTest.keyClick(window.map_view, key, Qt.ControlModifier)
+    QTest.keyRelease(window.map_view, Qt.Key_Control)
+    QApplication.processEvents()
+
+
+def test_a_real_ctrl_z_takes_a_scatter_back_and_ctrl_y_puts_it_back(monkeypatch) -> None:
+    """TASK-106: the keybinds, not window.undo()/redo().
+
+    Passes when, on a shown window, a scatter adds 40 GAIA units and changes
+    the chunk under the region; a real Ctrl+Z on the map then leaves exactly
+    the pre-scatter unit list and repaints that chunk to its pre-scatter
+    pixels; and a real Ctrl+Y brings back the same 40 units at the same
+    coordinates and the scattered pixels."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        window.show()
+        QApplication.processEvents()
+        _arm_scatter(window, monkeypatch, lambda dialog: dialog.count_spin.setValue(40))
+        cx, cy = _chunk_for_tile(window, 65, 65)
+        gaia = window.scenario.unit_manager.units[0]
+        before_units = [(u.reference_id, u.x, u.y) for u in gaia]
+        before = window._cache.get_chunk(0, cx, cy).copy()
+
+        window.scatter_units_in_region()
+        scattered_units = [(u.reference_id, u.x, u.y) for u in window.scenario.unit_manager.units[0]]
+        assert len(scattered_units) == len(before_units) + 40
+        scattered = window._cache.get_chunk(0, cx, cy).copy()
+        assert not np.array_equal(before, scattered)
+
+        _press_on_map(window, Qt.Key_Z)
+        assert [(u.reference_id, u.x, u.y) for u in window.scenario.unit_manager.units[0]] == before_units
+        assert np.array_equal(window._cache.get_chunk(0, cx, cy), before)
+
+        _press_on_map(window, Qt.Key_Y)
+        assert [(u.reference_id, u.x, u.y) for u in window.scenario.unit_manager.units[0]] == scattered_units
+        assert np.array_equal(window._cache.get_chunk(0, cx, cy), scattered)
+    finally:
+        _close(window)
+
+
 def test_scattering_a_gaia_only_object_for_a_player_places_it_for_gaia(monkeypatch) -> None:
     """TASK-288: Scatter of a Forage Bush with Player 1 picked lands on GAIA."""
     window = _window()
@@ -4995,15 +5160,134 @@ def test_scatter_move_outside_units_mode_refuses(monkeypatch) -> None:
         _close(window)
 
 
-def test_scatter_with_no_region_says_so(monkeypatch) -> None:
+def test_scatter_with_no_region_and_nothing_selected_names_both_routes(monkeypatch) -> None:
+    from PyQt5.QtWidgets import QDialog
+
+    from descape import viewer as viewer_mod
+
     window = _window()
     try:
-        _arm_move(window, monkeypatch, _SCATTER_KEYS)
+        _arm_move(window, monkeypatch, [])
         window.on_region_selected(None)
+        opened = []
+
+        def record_exec(dialog):
+            opened.append(dialog)
+            return QDialog.Rejected
+
+        monkeypatch.setattr(viewer_mod.ScatterDialog, "exec_", record_exec)
         before = _all_fields(window)
         window.scatter_units_in_region()
-        assert "Scatter: select a region first" in window.status_log.toPlainText()
+        assert opened == []
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status.startswith("Scatter: no area yet.")
+        assert "Select in Terrain mode" in status and "select units in Units mode" in status
         assert _all_fields(window) == before
+    finally:
+        _close(window)
+
+
+# --- GH #196: no region, so the area is the selected units' box -------------
+
+# A 2x2 house (with its garrison) and two player-2 units: box (10, 10, 22, 21).
+_BOX_KEYS = [(1, 200), (2, 300), (2, 301)]
+
+
+def _arm_units_area(window, monkeypatch, keys, configure) -> None:
+    """Fish as GAIA, no region, `keys` selected, and the dialog auto-answered."""
+    from PyQt5.QtWidgets import QDialog
+
+    from descape import viewer as viewer_mod
+
+    window.units_panel.select_object(_FISH_CONST)
+    window.units_panel.select_owner(0)
+    window.on_region_selected(None)
+    _select_keys(window, keys)
+
+    def fake_exec(dialog):
+        configure(dialog)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(viewer_mod.ScatterDialog, "exec_", fake_exec)
+
+
+def _keys_box(window, keys):
+    from descape.scatter_dialog import units_region
+
+    return units_region([_unit_by_ref(window, *k) for k in keys], 120, 120)
+
+
+def _grow_move(grow: int, seed: int = 20261019, seen=None):
+    def configure(dialog) -> None:
+        if seen is not None:
+            seen.append((dialog.units_radio.isChecked(), dialog.move_radio.isChecked(), dialog.region_radio.isEnabled()))
+        dialog.grow_spin.setValue(grow)
+        dialog.seed_spin.setValue(seed)
+
+    return configure
+
+
+@pytest.mark.parametrize("grow", [0, 3])
+def test_scatter_with_no_region_moves_the_selection_inside_its_grown_box(monkeypatch, grow) -> None:
+    from descape.scatter_dialog import grown_region
+
+    window = _window()
+    try:
+        seen = []
+        _arm_units_area(window, monkeypatch, _BOX_KEYS, _grow_move(grow, seen=seen))
+        box = grown_region(_keys_box(window, _BOX_KEYS), grow)
+        assert _keys_box(window, _BOX_KEYS) == (10, 10, 22, 21)
+        before = _all_fields(window)
+        records = len(window.edit_history.records)
+
+        window.scatter_units_in_region()
+
+        assert seen == [(True, True, False)], "units area, Move, no region to pick"
+        after = _all_fields(window)
+        assert len(window.edit_history.records) == records + 1
+        assert "Scattered 3 selected units" in window.status_log.toPlainText()
+        moved = set(_BOX_KEYS) | {(1, 203)}  # the house's garrison rides along
+        for key in before:
+            same = {f: v for f, v in before[key].items() if not (key in moved and f in ("x", "y"))}
+            assert {f: after[key][f] for f in same} == same, key
+        for key in _BOX_KEYS:
+            assert _in_region(_unit_by_ref(window, *key), box), key
+        assert after != before
+        layout = after
+
+        window.undo()
+        assert _all_fields(window) == before
+        _select_keys(window, _BOX_KEYS)
+        window.scatter_units_in_region()
+        assert _all_fields(window) == layout, "the same seed gives the same layout"
+    finally:
+        _close(window)
+
+
+def test_scatter_with_no_region_places_new_units_around_the_selection(monkeypatch) -> None:
+    from descape import scatter
+    from descape.scatter_dialog import DEFAULT_GROW, grown_region
+
+    def place_10(dialog) -> None:
+        dialog.place_radio.setChecked(True)
+        dialog.count_spin.setValue(10)
+        dialog.seed_spin.setValue(20261019)
+
+    window = _window()
+    try:
+        _arm_units_area(window, monkeypatch, _BOX_KEYS, place_10)
+        box = grown_region(_keys_box(window, _BOX_KEYS), DEFAULT_GROW)
+        occupied = scatter.occupied_tiles(window.scenario)
+        before = len(_gaia_fish(window))
+
+        window.scatter_units_in_region()
+
+        fish = _gaia_fish(window)[before:]
+        assert len(fish) == 10
+        for unit in fish:
+            assert _in_region(unit, box)
+            assert (int(unit.x), int(unit.y)) not in occupied
+        assert "Scattered 10 x" in window.status_log.toPlainText()
     finally:
         _close(window)
 

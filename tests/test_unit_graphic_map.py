@@ -715,22 +715,24 @@ def test_ship_pieces_are_the_hull_then_every_sail_in_dat_order(graphics):
             assert sail["dx"] == 0 and sail["dy"] < 0, (unit_const, sail)
 
 
-# GH #20: unit_const -> (graphic_id, particle effect stem), read off the real
-# .dat 2026-10-12. Their standing graphic has file_name "None".
+# GH #20: unit_const -> (graphic_id, particle effect stem, the effect's Scale), read
+# off the real .dat 2026-10-12 (Seagulls 2026-10-17, GH #67). Their standing graphic
+# has file_name "None".
 PARTICLE_ENTRIES = {
-    1608: (12300, "butterflies_1_low"),
-    1609: (12301, "butterflies_2_low"),
-    1610: (12302, "butterflies_3_low"),
+    303: (4411, "dock_seagulls", 0.525),
+    1608: (12300, "butterflies_1_low", 0.5),
+    1609: (12301, "butterflies_2_low", 0.5),
+    1610: (12302, "butterflies_3_low", 0.5),
 }
 
 
-def test_only_the_butterflies_are_particle_entries(graphics):
-    found = {int(k): (e["graphic_id"], e["file_name"]) for k, e in graphics.items() if e.get("particle")}
+def test_only_the_butterflies_and_seagulls_are_particle_entries(graphics):
+    found = {int(k): (e["graphic_id"], e["file_name"], e["art_scale"]) for k, e in graphics.items() if e.get("particle")}
     assert found == PARTICLE_ENTRIES
-    for unit_const in PARTICLE_ENTRIES:
+    for unit_const, (_graphic_id, _stem, scale) in PARTICLE_ENTRIES.items():
         entry = graphics[str(unit_const)]
         assert entry == {
             "graphic_id": entry["graphic_id"], "file_name": entry["file_name"],
             "angle_count": 1, "mirroring_mode": 0, "frame_count": 1,
-            "particle": True, "art_scale": 0.5,
+            "particle": True, "art_scale": scale,
         }, unit_const

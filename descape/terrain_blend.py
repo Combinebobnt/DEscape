@@ -23,7 +23,9 @@ reading corner-only tiles (16-19) would out-cover single-edge ones and tile
 
 Accepted approximations: blendomatic shapes, not DE's terrain/blends atlases,
 with each bleeding edge faded to 0 own weight as DE's atlases are
-(fade_bleeding_edges()); a neighbour bleeds its base texture only; the layer blend divides by 256,
+(fade_bleeding_edges()) and every other edge conformed to a shared vertex-ramp profile, so two
+same-terrain tiles agree along their shared edge (conform_edges()); a neighbour bleeds its base
+texture only; the layer blend divides by 256,
 not the shader's 255, so a full mask lands up to 1 step short of the layer;
 the layer mask is the LAYER
 terrain's overlay_mask with LAYER_MASK_FALLBACK for an empty name (both
@@ -40,7 +42,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from descape import asset_source
+from descape import asset_source, game_dataset
 
 BLEND_MAP_PATH = Path(__file__).resolve().parent / "terrain_blend_map.json"
 
@@ -98,6 +100,39 @@ _EDGE_SIDE = {3: (0, True), 1: (1, True), 5: (1, False), 7: (0, False)}
 # Depth of the edge fade, as a fraction of the tile: two raster rows of the 49-row diamond either side.
 EDGE_FADE_DEPTH = 4 / 49
 
+
+def _edge_ends(edge_bit: int) -> int:
+    """The corner bits at the two ends of an edge: edge b runs from corner b - 1 to corner b + 1."""
+    return 1 << ((edge_bit - 1) % 8) | 1 << ((edge_bit + 1) % 8)
+
+
+def _touched(tile: int) -> int:
+    edges = _BLEED_EDGES.get(tile, 0)
+    out = 0
+    for bit in range(1, 8, 2):
+        if edges >> bit & 1:
+            out |= _edge_ends(bit)
+    for bit, corner in _CORNER_TILE.items():
+        if corner == tile:
+            out |= 1 << bit
+    return out
+
+
+# Blendomatic tile -> the square vertices it bleeds toward, as corner bits (0 N, 2 E, 4 S, 6 W).
+_TOUCHED_VERTICES = {tile: _touched(tile) for tile in (*_BLEED_EDGES, *_CORNER_TILE.values())}
+# Corner bit -> (on the last row, on the last column) of the square: N top right, E bottom right, ...
+_VERTEX_SIDE = {0: (False, True), 2: (True, True), 4: (True, False), 6: (False, False)}
+# r(t)'s ramp length, as a fraction of the edge: a non-bleeding edge's own weight rises from 0 at a
+# touched vertex to 128 this far from it. At most 1, so an untouched vertex is always 128.
+# Measured at 64 px on Dos Pilas and ElCid: every L in {1, 0.7, 0.5} takes the same-terrain mask
+# step from max 45.0 summed RGB to 0.0; 0.7 and 0.5 lift mid-edge to 128 and draw own-ground notches
+# along cell edges, 1 draws none.
+EDGE_RAMP_LENGTH = 1.0
+# Depth over which conform_edges() blends each edge's correction into the mask, as a fraction of the tile.
+# 8/49 and 12/49 render alike and leave identical edges; 8/49 adds less non-monotonicity inward of
+# the edges (352686 vs 376830 summed over every mode 1-2 tile, 312624 unconformed).
+EDGE_CONFORM_DEPTH = 8 / 49
+
 # Bounded by bytes, not entries: a 128 px block is 48 KB, an 8 px one 192 B.
 BLOCK_CACHE_BYTES = 32 * 1024 * 1024
 
@@ -109,13 +144,24 @@ class BlendEntry(NamedTuple):
 
 
 def _load_table() -> dict[int, BlendEntry]:
-    data = json.loads(BLEND_MAP_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BLEND_MAP_PATH).read_text())
     return {
         int(tid): BlendEntry(e["priority"], e["blend_type"], e["overlay_mask"]) for tid, e in data["terrains"].items()
     }
 
 
 BLEND_TABLE: dict[int, BlendEntry] = _load_table()
+
+
+@game_dataset.on_switch
+def _reload_table() -> None:
+    """Refills BLEND_TABLE in place for the active dataset (GH #67), and drops
+    _luts()' copy, which keys on the table's identity and so misses a refill."""
+    global _lut_for
+    BLEND_TABLE.clear()
+    BLEND_TABLE.update(_load_table())
+    with _lut_lock:
+        _lut_for = None
 
 
 def tile_indices(bits: int, x: int, y: int) -> tuple[int, ...]:
@@ -155,6 +201,62 @@ def fade_bleeding_edges(alpha: np.ndarray, tile_index: int) -> np.ndarray:
             ramp = np.minimum(depth[::-1] if far else depth, n)
             weight = np.minimum(weight, ramp[:, None] if axis == 0 else ramp[None, :])
     return ((alpha.astype(np.int32) * weight + n // 2) // n).astype(np.uint8)
+
+
+def _ramp(tile_px: int) -> np.ndarray:
+    """r at each texel of an edge, counted from a touched vertex: round(128 * min(1, t / L)),
+    t = i / (tile_px - 1), so the vertex texel is 0 and the far one 128 at every size."""
+    t = np.arange(tile_px) / max(1, tile_px - 1)
+    return np.floor(128 * np.minimum(1.0, t / EDGE_RAMP_LENGTH) + 0.5).astype(np.int64)
+
+
+def edge_profile(tile_index: int, edge_bit: int, tile_px: int) -> np.ndarray:
+    """The own weight conform_edges() puts on one non-bleeding edge line, from its low row or
+    column end: 128 times r / 128 for each touched end, so it depends on the two vertices only."""
+    touched = _TOUCHED_VERTICES.get(tile_index, 0)
+    axis = _EDGE_SIDE[edge_bit][0]
+    ramp = _ramp(tile_px)
+    out = np.full(tile_px, 128, dtype=np.int64)
+    for bit in (b for b in _VERTEX_SIDE if _edge_ends(edge_bit) >> b & 1 and touched >> b & 1):
+        # The end at the line's high index is the vertex on the last column (row line) or row (column line).
+        high = _VERTEX_SIDE[bit][1 - axis]
+        out = (out * (ramp[::-1] if high else ramp) + 64) // 128
+    return out
+
+
+def conform_edges(alpha: np.ndarray, tile_index: int) -> np.ndarray:
+    """A square own-weight mask with each non-bleeding edge line set to edge_profile(), blended in
+    over EDGE_CONFORM_DEPTH of the tile by a Coons-style Boolean sum of the four edge corrections,
+    so the interior past that depth keeps the blendomatic shape. Bleeding edges are
+    fade_bleeding_edges()' and get no correction. Two same-terrain tiles blended by different
+    blendomatic tiles then agree along their shared edge (TASK-284). Integer math, clamped 0..128."""
+    tile_px = alpha.shape[0]
+    bleeds = _BLEED_EDGES.get(tile_index, 0)
+    a = alpha.astype(np.int64)
+    lines = {3: np.s_[-1, :], 1: np.s_[:, -1], 5: np.s_[:, 0], 7: np.s_[0, :]}
+    deltas = {
+        bit: np.zeros(tile_px, dtype=np.int64) if bleeds >> bit & 1 else edge_profile(tile_index, bit, tile_px) - a[line]
+        for bit, line in lines.items()
+    }
+    if not any(d.any() for d in deltas.values()):
+        return alpha
+    n = min(tile_px - 1, max(1, round(tile_px * EDGE_CONFORM_DEPTH)))
+    depth = np.arange(tile_px)
+    near = {bit: np.maximum(0, n - (depth[::-1] if far else depth)) for bit, (_axis, far) in _EDGE_SIDE.items()}
+    num = np.zeros((tile_px, tile_px), dtype=np.int64)
+    for bit, (axis, _far) in _EDGE_SIDE.items():
+        num += n * (near[bit][:, None] * deltas[bit][None, :] if axis == 0 else near[bit][None, :] * deltas[bit][:, None])
+    touched = _TOUCHED_VERTICES.get(tile_index, 0)
+    for vertex, (row_far, col_far) in _VERTEX_SIDE.items():
+        ends = [b for b in lines if _edge_ends(b) >> vertex & 1]
+        if any(bleeds >> b & 1 for b in ends):
+            continue  # a faded edge holds the vertex at 0, which is already its profile value
+        row_bit = next(b for b in ends if _EDGE_SIDE[b][0] == 0)
+        col_bit = next(b for b in ends if _EDGE_SIDE[b][0] == 1)
+        corner = (0 if touched >> vertex & 1 else 128) - a[-1 if row_far else 0, -1 if col_far else 0]
+        num -= near[row_bit][:, None] * near[col_bit][None, :] * corner
+    out = a + (num + n * n // 2) // (n * n)
+    return np.clip(out, 0, 128).astype(np.uint8)
 
 
 _lut_lock = threading.Lock()
@@ -365,18 +467,19 @@ def _crop(arr: np.ndarray, ox: int, oy: int, tile_px: int) -> np.ndarray:
 
 def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
     own_tid, layer_tid, entries = key
-    base = asset_source.get_terrain_texture_array(own_tid)
+    size = asset_source.terrain_texture_size(tile_px)
+    base = asset_source.terrain_texture_at(own_tid, size)
     if base is None:
         return None
     out = _crop(base, ox, oy, tile_px).astype(np.uint32)
     if layer_tid >= 0:
-        layer = asset_source.get_terrain_texture_array(layer_tid)
-        mask = asset_source.get_terrain_mask_array(layer_mask_name(layer_tid))
+        layer = asset_source.terrain_texture_at(layer_tid, size)
+        mask = asset_source.terrain_mask_at(layer_mask_name(layer_tid), size)
         if layer is not None and mask is not None:
             m = _crop(mask, ox, oy, tile_px).astype(np.uint32)[:, :, None]
             out = (out * (256 - m) + _crop(layer, ox, oy, tile_px) * m + 128) >> 8
     for n_tid, mode, tile in entries:
-        neighbour = asset_source.get_terrain_texture_array(n_tid)
+        neighbour = asset_source.terrain_texture_at(n_tid, size)
         alpha = asset_source.get_blend_mask(mode, tile, tile_px)
         if neighbour is None or alpha is None:
             continue

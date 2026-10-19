@@ -349,7 +349,11 @@ def test_civilization_choices_exclude_gaia() -> None:
 
 
 def test_the_player_type_row_offers_either_and_computer_and_undoes() -> None:
-    """GH #126: the in-game Player Type, first in AI, above the read-only AI type."""
+    """GH #126: the in-game Player Type, first in AI, above the read-only AI type.
+
+    Passes when the `human` row is the AI group's first, its form label reads
+    "Player type" (and `player_type`'s reads "AI type"), it offers Either and
+    Computer, and an edit dirties the document and undoes cleanly."""
     from PyQt5.QtWidgets import QComboBox
 
     window = _players_window()
@@ -360,6 +364,9 @@ def test_the_player_type_row_offers_either_and_computer_and_undoes() -> None:
         assert ai_rows[:2] == ["human", "player_type"]
         widget = panel.widget_for("human")
         assert isinstance(widget, QComboBox) and widget.isEnabled()
+        form = widget.parentWidget().layout()
+        assert form.labelForField(widget).text() == "Player type"
+        assert form.labelForField(panel.widget_for("player_type")).text() == "AI type"
         assert [(widget.itemData(i), widget.itemText(i)) for i in range(widget.count())] == [
             (1, "Either"), (0, "Computer"),
         ]

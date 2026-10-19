@@ -372,9 +372,9 @@ def test_sloped_every_tile_px(
 
 @pytest.mark.parametrize(("sprites", "grid", "textures"), [(True, True, True), (False, False, False)], ids=["all-on", "flat"])
 def test_sloped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_textures, sprites, grid, textures):  # noqa: F811
-    """One Sloped cache's own ladder, coarse levels included (TASK-031.60).
+    """One Sloped cache's own ladder, coarse levels included (TASK-031.60) and +1 (TASK-146).
     Pass conditions:
-    - the ladder reaches mips -1 and -2
+    - the ladder reaches mips -1, -2 and +1
     - at every mip, each rect composites equal on both backends and not all-black"""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
@@ -385,7 +385,7 @@ def test_sloped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_te
     )
     if grid:
         cache.set_grid(grid_bake(True, 60, 2))
-    assert {-1, -2} <= set(cache.mip_levels()), cache.mip_levels()
+    assert {-1, -2, FINE} <= set(cache.mip_levels()), cache.mip_levels()
     for mip in cache.mip_levels():
         lvl_proj = cache._level(mip).proj
         anchors = _anchor_origins(lvl_proj, elevations, [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y), *_corner_tiles(mm)])
@@ -529,14 +529,48 @@ def _patch_tiles(cache, style: str, scenario, tiles, sprites: bool) -> None:
     cache.patch(bbox, elevation_changed=changed)
 
 
+FINE = 1  # the template's finer level (128 px), on both styles' ladder since TASK-146
+# The tiles the edit checks below paint, raise or move a unit to or from, so a +1 rect over them sees each edit.
+FINE_TILES = (
+    (EDIT_X - 1, EDIT_Y - 1), (EDIT_X + 1, EDIT_Y + 1), (EDIT_X - 3, EDIT_Y + 2), (EDIT_X - 2, EDIT_Y - 4),
+    (EDIT_X - 8, EDIT_Y + 5), (EDIT_X - 7, EDIT_Y + 4), (EDIT_X - 13, EDIT_Y + 7),
+    (FARM_X - 1, FARM_Y), (FARM_X + 1, FARM_Y + 1), (FARM_X + 4, FARM_Y - 4),
+)
+
+
+def _fine_rect(cache) -> tuple[int, int, int, int]:
+    """The +1 rect the edit checks compare: FINE_TILES' swept level-0 bounds,
+    converted to +1. A whole +1 level of the 120x120 template is 118M px."""
+    assert FINE in cache.mip_levels(), cache.mip_levels()
+    boxes = np.array([iso_geometry.tile_screen_bounds_swept(x, y, cache.proj) for x, y in FINE_TILES])
+    lo, hi = boxes.min(axis=0), boxes.max(axis=0)
+    x0, y0, x1, y1 = cache._bbox_to_level(FINE, (int(lo[0]), int(lo[1]), int(hi[2]), int(hi[3])))
+    w, h = cache.canvas_dims(FINE)
+    return max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+
+
+def _compare_rect(cache, mip: int) -> tuple[int, int, int, int]:
+    """The whole canvas at mip <= 0, the _fine_rect() at FINE."""
+    return _fine_rect(cache) if mip == FINE else (0, 0, *cache.canvas_dims(mip))
+
+
+def _warm_levels(cache) -> None:
+    """Every level _assert_matches_fresh() compares, resident: a chunk evicted
+    and recomposited fresh would hide a stale one."""
+    cache.max_bytes *= 8
+    for m in (0, -1, FINE):
+        cache.render_rect(*_compare_rect(cache, m), mip=m)
+
+
 def _assert_matches_fresh(cache, style: str, scenario, sprites: bool, what: str) -> None:
-    mips = [m for m in cache.mip_levels() if m in (0, -1)]
+    mips = [m for m in cache.mip_levels() if m in (0, -1, FINE)]
+    assert FINE in mips, mips
     with composite_backend.use_backend("numpy"):
         fresh = _edit_cache(style, scenario, sprites)
-        want = {m: fresh.render_rect(0, 0, *fresh.canvas_dims(m), mip=m) for m in mips}
+        want = {m: fresh.render_rect(*_compare_rect(cache, m), mip=m) for m in mips}
     with composite_backend.use_backend("native"):
         for m in mips:
-            got = cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+            got = cache.render_rect(*_compare_rect(cache, m), mip=m)
             if not np.array_equal(got, want[m]):
                 ys, xs = np.nonzero(np.any(got != want[m], axis=-1))
                 pytest.fail(f"{style} mip {m} after {what}: {ys.size} px differ, first at (y={ys[0]}, x={xs[0]})")
@@ -560,7 +594,7 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     (same object), so the splice-tile path is what these compare.
     Then a single Delete of the moved mark and an Elevate under the sprite unit:
     - the delete goes through the splice path (can_splice)
-    - after each, the whole canvas at mips 0 and -1 equals a fresh numpy render
+    - after each, the whole canvas at mips 0 and -1, and the _fine_rect() at +1, equal a fresh numpy render
     - after each, the unit pack is the same object (refreshed, not rebuilt)"""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
@@ -569,8 +603,7 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     assert mark.unit_const == PLAIN_UNIT_CONST and farm.unit_const == FAKE_FARM_CONST
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites)
-        for m in (0, -1) if style == "stepped" else (0,):
-            cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+        _warm_levels(cache)
     assert _pack_of(cache, style) is not None
     refreshed = []
 
@@ -639,19 +672,19 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     elevate(EDIT_X, EDIT_Y, "an elevation edit under the sprite unit after a delete")
 
 
-TOGGLE_MIPS = (0, -1)
+TOGGLE_MIPS = (0, -1, FINE)
 
 
 def _canvas_vs_fresh(cache, style: str, scenario, what: str) -> dict[int, np.ndarray]:
-    """Fails unless the live cache's whole canvas at TOGGLE_MIPS, composited
-    natively, equals a fresh numpy cache built in its sprite, layer and grid
-    state. Returns the fresh canvases."""
+    """Fails unless the live cache's canvas at TOGGLE_MIPS (_compare_rect(): +1
+    over its _fine_rect()), composited natively, equals a fresh numpy cache
+    built in its sprite, layer and grid state. Returns the fresh canvases."""
     with composite_backend.use_backend("numpy"):
         fresh = _edit_cache(style, scenario, cache.sprites_enabled, cache.layers, cache.grid)
-        want = {m: fresh.render_rect(0, 0, *fresh.canvas_dims(m), mip=m) for m in TOGGLE_MIPS}
+        want = {m: fresh.render_rect(*_compare_rect(cache, m), mip=m) for m in TOGGLE_MIPS}
     with composite_backend.use_backend("native"):
         for m in TOGGLE_MIPS:
-            got = cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+            got = cache.render_rect(*_compare_rect(cache, m), mip=m)
             if not np.array_equal(got, want[m]):
                 ys, xs = np.nonzero(np.any(got != want[m], axis=-1))
                 pytest.fail(f"{style} mip {m} after {what}: {ys.size} px differ, first at (y={ys[0]}, x={xs[0]})")
@@ -660,15 +693,17 @@ def _canvas_vs_fresh(cache, style: str, scenario, what: str) -> dict[int, np.nda
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_live_toggles_match_a_fresh_render(native_kernel, sprite_install, fake_farm, synthetic_textures, style):  # noqa: F811
-    """View toggles on one live native cache, warm at mips 0 and -1, applied
-    through the cache methods the viewer calls (set_sprites_enabled, set_layers,
-    and set_grid with MapView.grid_spec()'s off value). Pass conditions:
-    - the ladder holds mips 0 and -1, and the farm starts draped
-    - before any toggle and after each, both mips' whole canvas equals a fresh numpy cache in that state
+    """View toggles on one live native cache, warm at mips 0, -1 and +1 (its
+    _fine_rect()), applied through the cache methods the viewer calls
+    (set_sprites_enabled, set_layers, and set_grid with MapView.grid_spec()'s
+    off value). Pass conditions:
+    - the ladder holds TOGGLE_MIPS, and the farm starts draped
+    - before any toggle and after each, each mip's compared canvas equals a fresh numpy cache in that state
     - each toggle changed some compared canvas (not vacuous)"""
     scenario = _sloped_scenario()
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites=True)
+        cache.max_bytes *= 8  # every compared level stays resident
     assert set(TOGGLE_MIPS) <= set(cache.mip_levels()) and cache.farms_draped()
     prev = _canvas_vs_fresh(cache, style, scenario, "the initial warm")
     toggles = (
@@ -734,8 +769,9 @@ def _chunk_of_tile(cache, x: int, y: int) -> tuple[int, int, int]:
 def test_worker_threads_warm_every_chunk_byte_identical(
     native_kernel, sprite_install, fake_farm, synthetic_textures, style,  # noqa: F811
 ):
-    """A whole grid warmed through MarginWarmer on the real pool equals a
-    synchronous get_chunk(), chunk for chunk, and the pooled path was taken."""
+    """A whole grid (+1: its _fine_rect()'s chunks) warmed through
+    MarginWarmer on the real pool equals a synchronous get_chunk(), chunk for
+    chunk, and the pooled path was taken."""
     import time
 
     from PyQt5.QtWidgets import QApplication
@@ -759,10 +795,12 @@ def test_worker_threads_warm_every_chunk_byte_identical(
             return landed
 
         warm.install_chunk = install
-        for mip in [m for m in warm.mip_levels() if m in (0, -1)]:
+        warm.max_bytes *= 8
+        for mip in [m for m in warm.mip_levels() if m in (0, -1, FINE)]:
             warm._level(mip)
-            gw, gh = warm.canvas_dims(mip)
-            keys = [(mip, cx, cy) for cy in range(-(-gh // warm.chunk_px)) for cx in range(-(-gw // warm.chunk_px))]
+            # The whole grid, except +1's _fine_rect() chunks: a whole +1 template level is 118M px.
+            cx0, cy0, cx1, cy1 = warm.chunk_index_range(mip, *_compare_rect(warm, mip))
+            keys = [(mip, cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)]
             warmer = margin_warm.MarginWarmer()
             warmer.start(warm, mip, [key[1:] for key in keys])
             deadline = time.monotonic() + 60
@@ -882,7 +920,8 @@ def test_a_job_keeps_its_unit_pack_alive_after_the_cache_drops_it(native_kernel,
 
 
 def _warm_mips(style: str, cache) -> list[int]:
-    return [m for m in cache.mip_levels() if m in (0, -1, -2)] if style == "stepped" else [0]
+    """Stepped's coarser levels and, on both styles, +1 (TASK-146)."""
+    return [m for m in cache.mip_levels() if m in ((0, -1, -2, FINE) if style == "stepped" else (0, FINE))]
 
 
 def _drain_pack_warm(cache, mip: int) -> None:
@@ -896,9 +935,9 @@ def _drain_pack_warm(cache, mip: int) -> None:
 def test_a_pack_warm_composites_byte_identical(
     native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, style,  # noqa: F811
 ):
-    """A completed pack warm, then the whole canvas natively, equals a fresh
-    numpy render and a lazy native one, using the pack the warm derived into.
-    Small slices so slice boundaries land mid-map."""
+    """A completed pack warm, then the whole canvas (+1: its _fine_rect())
+    natively, equals a fresh numpy render and a lazy native one, using the
+    pack the warm derived into. Small slices so slice boundaries land mid-map."""
     from descape import render_cache
 
     monkeypatch.setattr(render_cache, "PACK_WARM_TILES", 3)
@@ -912,12 +951,13 @@ def test_a_pack_warm_composites_byte_identical(
             _drain_pack_warm(cache, m)
             pack = cache._unit_pack_of(m, create=False)
             assert pack is not None and pack.ready[pack.has].all(), f"mip {m}: tiles left pending"
-            got = cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+            rect = _compare_rect(cache, m)
+            got = cache.render_rect(*rect, mip=m)
             assert cache._unit_pack_of(m, create=False) is pack, f"mip {m}: the composite rebuilt the warmed pack"
-            want_lazy = lazy.render_rect(0, 0, *lazy.canvas_dims(m), mip=m)
+            want_lazy = lazy.render_rect(*rect, mip=m)
             with composite_backend.use_backend("numpy"):
                 fresh = _edit_cache(style, scenario, sprites=True)
-                want = fresh.render_rect(0, 0, *fresh.canvas_dims(m), mip=m)
+                want = fresh.render_rect(*rect, mip=m)
             assert np.array_equal(want_lazy, want), f"control: lazy native differs from numpy at mip {m}"
             if not np.array_equal(got, want):
                 ys, xs = np.nonzero(np.any(got != want, axis=-1))
@@ -937,10 +977,11 @@ def test_a_pack_warm_then_splices_matches_a_fresh_render(
     assert mark.unit_const == PLAIN_UNIT_CONST
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites=True)
-        for m in (0, -1) if style == "stepped" else (0,):
+        cache.max_bytes *= 8  # every compared level stays resident
+        for m in (0, -1, FINE) if style == "stepped" else (0, FINE):
             cache._level(m)
             _drain_pack_warm(cache, m)
-            cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+            cache.render_rect(*_compare_rect(cache, m), mip=m)
         pack = _pack_of(cache, style)
 
         tile = mm.terrain[int(mark.y) * mm.map_width + int(mark.x)]

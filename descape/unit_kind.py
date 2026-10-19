@@ -19,11 +19,12 @@ test tier covers it, and unit_filter.py stays a leaf module (view_layers.py:6-8
 records why that matters).
 
 Deliberately NOT importing unit_sprites, which pulls numpy, asset_source and
-sld_decoder and would take unit_filter.py off the leaf list. The 9-wall
-frozenset it already holds as _ROTATION_VARIANT_CONSTS is re-derived here
+sld_decoder and would take unit_filter.py off the leaf list. The wall
+frozenset it already holds as _ROTATION_VARIANT_CONSTS (9 walls; 8 in Return
+of Rome, `_ROR_ROTATION_VARIANT_CONSTS`) is re-derived here
 rather than copied; tests/test_unit_kind.py pins the two against each other.
 
-## wall_consts(): 105 consts, 9 walls plus 96 gates
+## wall_consts(): 105 consts in AoE2, 9 walls plus 96 gates
 
 Raw `class == 27` is the wrong basis, and AGENTS.md says so ("excluded by
 const set, never by `unit.class_`"). Class 27 holds 39 consts and 30 of them
@@ -203,6 +204,14 @@ Gunpowder Keg 2607 (GH #208), which the official editor drops when it is set
 to a player (the PR #223 contributor's in-game check). The corpus agrees: all
 20 keg placements, in 2 of the 21 files, are GAIA (measured 2026-10-15).
 
+Under Return of Rome (GH #67) the rule is the RoR editor's: everything its
+lists show only with GAIA selected. Measured 2026-10-17 from the in-game lists
+for a player against GAIA's: the Units tab drops non-hero classes 9, 10, 11
+and 65 (prey, predators, birds, foxes) and Discovery 16, and the Other tab
+keeps only _ROR_PLAYER_OTHERS. The 8 RoR sample files agree: none of their
+432 class 9/10/11 placements is player-owned, and of the Other tab only
+Granary 1089 is. Heroes stay player-ownable (Ornlu the Wolf is class 10).
+
 ## Two documented non-changes
 
 - render.wall_variant_rotation_overrides is built over ALL units ignoring the
@@ -217,10 +226,9 @@ to a player (the PR #223 contributor's in-game check). The corpus agrees: all
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
 
-from descape import gate_orientation
+from descape import game_dataset, gate_orientation
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "object_catalog.json"
@@ -247,28 +255,41 @@ _RESOURCE_CLASSES = frozenset({5, 7, 8, 31, 32, 33, 40, 41, 48, 63})
 _GAIA_ONLY_CLASSES = _RESOURCE_CLASSES - {40, 41}
 # Gunpowder Keg: the official editor drops it when a player owns it (GH #208).
 _GAIA_ONLY_EXTRA_CONSTS = frozenset({2607})
+# GH #67, Return of Rome: non-hero Units classes its editor lists for GAIA only, and the
+# extra Units ids it treats the same way (Discovery) or not (Moveable Map Revealer A, Furious the Monkey Boy).
+_ROR_GAIA_ONLY_CLASSES = frozenset({9, 10, 11, 65})
+_ROR_GAIA_ONLY_EXTRA_CONSTS = frozenset({16})
+_ROR_PLAYER_UNIT_EXCEPTIONS = frozenset({0, 860})
+# Its Other tab for a player, the only Others a player may own: flags, flares, Granary,
+# map revealers, Paper Lantern, rubble, Smoke, targets, torches and Invisible Spawner A-J.
+_ROR_PLAYER_OTHERS = frozenset({
+    274, 304, 499, 600, 601, 837, 851, 863, 864, 865, 1089, 1285, 1308, 1376, 1497, 1498,
+    1564, 1565, 1689, 1774, 1775, 1785, 1986, 2576,
+    2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648,
+})
+_EYE_CANDY_TYPES = frozenset({10, 20, 30})
 # unit_filter.GAIA_PLAYER_ID, repeated so this module stays a leaf (test pins the two).
 _GAIA_PLAYER_ID = 0
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _objects() -> dict[int, dict]:
     """unit_const -> its committed catalog entry, keyed by int."""
-    data = json.loads(_CATALOG_PATH.read_text())["objects"]
+    data = json.loads(game_dataset.table_path(_CATALOG_PATH).read_text())["objects"]
     return {int(const): entry for const, entry in data.items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _angle_counts() -> dict[int, int]:
     """unit_const -> its standing graphic's angle_count. Same table
     unit_sprites.graphic_map() reads, loaded independently to keep this module
     free of that one's install-dependent imports (unit_rotation.py:78 reads it
     the same way, for the same reason)."""
-    data = json.loads(_GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(_GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(const): int(entry["angle_count"]) for const, entry in data.items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def wall_consts() -> frozenset[int]:
     """Every const Show Walls hides: real walls plus all four orientations of
     every gate. See the module docstring for why class 27 alone is not it."""
@@ -282,7 +303,7 @@ def wall_consts() -> frozenset[int]:
     return frozenset(walls | gates)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def invisible_consts() -> frozenset[int]:
     """Every const Show Invisible Objects hides: the .dat gives it no standing
     graphic. See the module docstring for why that and not "no map entry"."""
@@ -301,7 +322,7 @@ def invisible_category(unit_const: int) -> str | None:
     return _INVISIBLE_CATEGORY_BY_CLASS.get(_objects()[unit_const].get("class"), "other")
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def building_consts() -> frozenset[int]:
     """Every const Show Buildings hides: BUILDING_TILE_SPANS minus walls and
     gates, mobile siege and the leftover gate class. See the module docstring."""
@@ -316,7 +337,7 @@ def building_consts() -> frozenset[int]:
     )
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def eye_candy_consts() -> frozenset[int]:
     """Every const Show Eye Candy hides: the .dat's own EyeCandy type, minus
     the trees show_trees owns, the resources the user is looking for, the
@@ -333,7 +354,7 @@ def eye_candy_consts() -> frozenset[int]:
     )
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def obstacle_consts() -> frozenset[int]:
     """Every const Show Obstacles hides: eye candy whose .dat obstruction_type
     is non-zero (rocks, ruins, statues, mountains). See the module docstring."""
@@ -341,7 +362,7 @@ def obstacle_consts() -> frozenset[int]:
     return frozenset(const for const in eye_candy_consts() if objects[const].get("obstruction", 0) != 0)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def passable_eye_candy_consts() -> frozenset[int]:
     """Every const Show Eye Candy hides: eye candy units can walk through."""
     return eye_candy_consts() - obstacle_consts()
@@ -352,7 +373,7 @@ _CREATABLE_TYPE = 70
 _RELIC_CLASS = 42
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def mobile_unit_consts() -> frozenset[int]:
     """The Eraser's Units target (GH #184): creatable consts plus mobile siege,
     minus invisible objects, trees, resources (salvage and resource piles are
@@ -368,13 +389,35 @@ def mobile_unit_consts() -> frozenset[int]:
     )
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def gaia_only_consts() -> frozenset[int]:
     """Every const a new placement gives to GAIA (TASK-288): the resource
     classes minus the hidden piles, plus trees and _GAIA_ONLY_EXTRA_CONSTS.
     See the module docstring."""
     resources = {const for const, entry in _objects().items() if entry.get("class") in _GAIA_ONLY_CLASSES}
+    if game_dataset.is_ror():
+        return frozenset(resources | TREE_UNIT_IDS | _ror_gaia_only())
     return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_EXTRA_CONSTS)
+
+
+def _ror_gaia_only() -> set[int]:
+    """The unhidden RoR objects its editor lists only for GAIA, by its measured
+    rule, which also covers the hidden ones that are the same object as in
+    AoE2 (same code and class), since the catalog offers those (GH #67: a
+    relic or a wild animal stays GAIA's). See the module docstring."""
+    aoe2 = json.loads(game_dataset.table_path(_CATALOG_PATH, game_dataset.AOE2).read_text())["objects"]
+    found = set(_ROR_GAIA_ONLY_EXTRA_CONSTS)
+    for const, entry in _objects().items():
+        old = aoe2.get(str(const))
+        shared = old is not None and (old.get("code"), old.get("class")) == (entry.get("code"), entry.get("class"))
+        if (entry.get("hidden") and not shared) or const in _ROR_PLAYER_UNIT_EXCEPTIONS:
+            continue
+        if entry.get("type") in _EYE_CANDY_TYPES or entry.get("class") == _RELIC_CLASS:
+            if const not in _ROR_PLAYER_OTHERS:
+                found.add(const)
+        elif entry.get("class") in _ROR_GAIA_ONLY_CLASSES and not entry.get("hero_mode", 0) & 1:
+            found.add(const)
+    return found
 
 
 def placement_owner(unit_const: int, owner: int) -> int:
@@ -383,7 +426,7 @@ def placement_owner(unit_const: int, owner: int) -> int:
     return _GAIA_PLAYER_ID if unit_const in gaia_only_consts() else owner
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def cliff_consts() -> frozenset[int]:
     """Every class-34 cliff const. Equal to unit_sprites.cliff_consts(), derived
     here from the catalog so this module stays free of that one's imports."""

@@ -567,8 +567,8 @@ def test_small_trees_applies_at_every_mip_level_not_just_the_resident_one(fake_t
     """The factor multiplies into sprite_scale(half_w), so it has to follow
     the mip ladder rather than being applied once at level 0.
 
-    Stepped and Sloped, whose ladder is Stepped's coarser levels
-    (TASK-031.60); Flat does not reach this layer at all."""
+    Stepped and Sloped, whose ladder is Stepped's (TASK-031.60's coarser
+    levels, TASK-146's finer ones); Flat does not reach this layer at all."""
     cache = build(_scenario(with_trees=True), sprites=True)
     levels = sorted(cache._mip_tile_px)
     assert len(levels) > 1, f"enumerated only {levels} -- test would be vacuous"
@@ -816,6 +816,8 @@ def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
     assert availability(spec, style="flat", sprites_enabled=False, has_map=True) == (True, spec.tooltip)
     enabled, tip = availability(spec, style="stepped", sprites_enabled=True, has_map=True, has_mod_art=False)
     assert not enabled and tip.startswith("No enabled mod ships art")
+    # GH #244: both point at the tab that holds the profile folder and the Mod art list.
+    assert "Settings > Mods" in tip and "Settings > Mods lists the mods" in spec.tooltip
     assert availability(spec, style="stepped", sprites_enabled=True, has_map=False, has_mod_art=False)[1] == (
         "Open a map first"
     )

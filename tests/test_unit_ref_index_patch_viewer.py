@@ -297,3 +297,135 @@ def test_a_moved_reference_label_follows_a_patched_nudge() -> None:
         assert text == unit_references.describe(unit_references.build_reference_index(window.scenario), _REF_ARCHER_P1)
     finally:
         _close(window)
+
+
+# -- the owed in-app passes, offscreen (TASK-088) ------------------------------------
+
+
+def _held_task_object_window(gen):
+    """The trigger fixture in Flat, its Task Object effect selected in Triggers, then Units."""
+    window = conftest.shown_window(1100, 760)
+    window.load_scenario(Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario")
+    assert window.scenario is not None
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    window.mode_combo.setCurrentText("Triggers")
+    window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+    window.trigger_panel.select_entry("effect", gen.TASK_OBJECT_EFFECT)
+    window.mode_combo.setCurrentText("Units")
+    assert window._trigger_overlay_ref is not None
+    return window
+
+
+def _selected_rings(window, gen):
+    """The Task Object's selected-objects outlines, as the overlay's inclusive tile rects."""
+    view = window.map_view
+    return [
+        s.coords
+        for s in view._trigger_shapes
+        if s.shape == "unit" and s.fields[0] == "selected_object_ids" and s.entry_ref == ("effect", gen.TASK_OBJECT_EFFECT)
+    ]
+
+
+def _units_strong_bounds(view):
+    (item,) = [i for i in view.trigger_overlay_items() if i.data(0) == "units_strong"]
+    return item.path().boundingRect()
+
+
+def _units_strong_path(view):
+    (item,) = [i for i in view.trigger_overlay_items() if i.data(0) == "units_strong"]
+    return item.path()
+
+
+def _selected_objects_label(window) -> str:
+    """The text of the panel's own QLabel under the Task Object's selected objects field."""
+    from test_trigger_unit_picker_viewer import _row, _texts
+
+    (text,) = _texts(_row(window.trigger_panel, "selected_object_ids"))
+    return text
+
+
+def test_a_move_drag_of_a_referenced_unit_moves_its_outline_and_label_and_undo_brings_both_back() -> None:
+    """TASK-088 step 10, the drag half. Pass conditions, the Task Object (archers A and B) held
+    from Triggers, then Units with the Move tool: a real press-move-release dragging archer A
+    from tile (50, 55) to (54, 55) moves it there, the overlay's ring for it is then exactly
+    tile (54, 55), and the panel's selected-objects label line for archer A ends
+    "[P1, X54, Y55]"; one Undo puts the unit, the ring and the label back on (50, 55)."""
+    from PyQt5.QtCore import QEvent, QPointF, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    gen = conftest.load_verify_module("gen_trigger_fixture")
+    window = _held_task_object_window(gen)
+    try:
+        view = window.map_view
+        window.move_action.trigger()
+        assert window._current_tool == "move"
+        start, end = (50, 55), (54, 55)
+        assert tuple(int(c) for c in gen.ARCHER_A_POS) == start
+        ring_before = _selected_rings(window, gen)
+        assert (*start, *start) in ring_before
+        bounds_before = _units_strong_bounds(view)
+        label_before = _selected_objects_label(window)
+        assert "[P1, X50, Y55]" in label_before.splitlines()[0]
+        tp = view._tile_pixels
+
+        def viewport(tile):
+            return QPointF(view.mapFromScene(QPointF((tile[0] + 0.5) * tp, (tile[1] + 0.5) * tp)))
+
+        view.centerOn(QPointF(52 * tp, 55.5 * tp))
+        QApplication.processEvents()
+        press, release = viewport(start), viewport(end)
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, release, Qt.NoButton, Qt.LeftButton))
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, release, Qt.LeftButton, Qt.NoButton))
+        unit = next(u for u in window.scenario.unit_manager.units[1] if u.reference_id == gen.REF_ARCHER_A)
+        assert (int(unit.x), int(unit.y)) == end, "the drag did not move archer A"
+        rings = _selected_rings(window, gen)
+        assert (*end, *end) in rings and (*start, *start) not in rings
+        assert _units_strong_bounds(view) != bounds_before, "the drawn outline did not move"
+        assert _selected_objects_label(window).splitlines()[0].endswith("[P1, X54, Y55]")
+
+        window.undo()
+        assert (int(unit.x), int(unit.y)) == start
+        assert _selected_rings(window, gen) == ring_before
+        assert _units_strong_bounds(view) == bounds_before
+        assert _selected_objects_label(window) == label_before
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_panel_label_follows_a_patched_arrow_key_nudge() -> None:
+    """TASK-088 steps 10 (arrow keys) and 12, functional only. Pass conditions, the Task
+    Object held from Triggers, archer A selected in Units and the reference index built: a
+    Shift+Right key press on the map view nudges archer A one tile east, the held index is
+    patched in place (the same object, no rebuild), and the panel's own selected-objects
+    QLabel line for archer A then ends "[P1, X51, Y55]" (it read "X50" before), and the drawn
+    outline moves with it (archer A's ring leaves (50,55) for (51,55), the units_strong bounds
+    change); Undo puts the line, the ring and the bounds back."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    gen = conftest.load_verify_module("gen_trigger_fixture")
+    window = _held_task_object_window(gen)
+    try:
+        view = window.map_view
+        _select(window, gen.REF_ARCHER_A)
+        primed = _prime(window)
+        before = _selected_objects_label(window)
+        ring_before = _selected_rings(window, gen)
+        path_before = _units_strong_path(view)
+        assert before.splitlines()[0].endswith("[P1, X50, Y55]")
+        assert (50, 55, 50, 55) in ring_before
+        view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.ShiftModifier))
+        assert window._unit_ref_index is primed, "the nudge rebuilt the index instead of patching it"
+        assert _selected_objects_label(window).splitlines()[0].endswith("[P1, X51, Y55]")
+        rings = _selected_rings(window, gen)
+        assert (51, 55, 51, 55) in rings and (50, 55, 50, 55) not in rings
+        # A one-tile nudge stays inside the rings' union bounds, so compare the drawn path itself.
+        assert _units_strong_path(view) != path_before, "the drawn outline did not follow the nudge"
+        window.undo()
+        assert _selected_objects_label(window) == before
+        assert _selected_rings(window, gen) == ring_before
+        assert _units_strong_path(view) == path_before
+    finally:
+        conftest.close_window(window)

@@ -413,7 +413,12 @@ def build_document(files: list[ScannedFile], min_n: int = 30, min_suffix_n: int 
     offsets, offsets_by_span, offset_stats = build_offsets(files)
     shapes = build_shapes(files, min_suffix_n)
     return {
-        "_comment": "Cliff neighbour-direction-set -> (suffix, rotation candidates) -- see tools/gen_cliff_connectivity.py",
+        "_comment": (
+            "Cliff placements measured from real scenarios. The Cliff tool reads `shapes` (typed cardinal arms "
+            "-> piece suffix and frames) and `offsets`/`offsets_by_span` (where a neighbour's footprint sits); "
+            "`entries` is the older per-dirset majority table, kept as a measurement. "
+            "See tools/gen_cliff_connectivity.py."
+        ),
         "metadata": metadata,
         "entries": entries,
         "projection_metadata": offset_stats,

@@ -302,8 +302,11 @@ def test_the_flat_offset_never_reaches_the_variant_path(unit_const):
     """A real wall const and a real cliff const. By construction, not by luck:
     a variant index is a SHAPE, not a facing, so no camera zero point applies
     to it, and threading the offset as a parameter is what keeps that true.
-    Pre-rotating `rotation` at icon_for()'s door instead would land a mutated
-    value in variant_index(), which AGENTS.md's hard rules forbid.
+    Pre-rotating `rotation` at icon_for()'s door by an ANGLE would land a
+    mutated value in variant_index(), which AGENTS.md's hard rules forbid.
+    flat_art()'s wall turn at that door (GH #151) is not that: it reads the
+    stored value once, unmodified, through variant_index() and hands down a
+    literal shape index, pinned by the flat_art tests below.
 
     A third, deliberately absurd offset of exactly one stored step is probed
     alongside the two real ones, and that is what keeps this non-vacuous:
@@ -328,6 +331,106 @@ def test_the_flat_offset_never_reaches_the_variant_path(unit_const):
                 f"const {unit_const} rotation {rotation}: offset {offset} moved the "
                 f"variant frame from {iso} to {got}"
             )
+
+
+# --- Flat's wall and gate turn (GH #151) -------------------------------
+
+
+# One run direction per 45 degrees of world angle, as integer tile steps:
+# +x, +x+y, +y and -x+y (the same axis as +x-y).
+_RUN_DIRS = tuple(
+    (round(math.cos(math.radians(i * 45))), round(math.sin(math.radians(i * 45)))) for i in range(4)
+)
+
+
+def _flat_screen_axis(d: tuple[int, int]) -> float:
+    """A tile step's direction on Flat's top-down grid (+x right, +y down), mod 180."""
+    return math.degrees(math.atan2(d[1], d[0])) % 180.0
+
+
+def _iso_screen_axis(d: tuple[int, int]) -> float:
+    """A tile step's iso screen direction from iso_geometry's own projection,
+    with y doubled to undo the 2:1 squash, mod 180."""
+    from descape import iso_geometry
+
+    proj = iso_geometry.canvas_size_and_origin(8, 8, 64, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION)
+    x0, y0 = iso_geometry.tile_screen_origin(0, 0, 0, proj)
+    x1, y1 = iso_geometry.tile_screen_origin(d[0], d[1], 0, proj)
+    assert proj.half_w == 2 * proj.half_h, "the squash this undoes is not 2:1"
+    return math.degrees(math.atan2(2 * (y1 - y0), x1 - x0)) % 180.0
+
+
+def _run_shape(d: tuple[int, int]) -> int:
+    """The stored shape of a wall whose two neighbours lie along `d`."""
+    mask = unit_sprites.neighbour_mask(0, 0, {d, (-d[0], -d[1])}, diagonals=True)
+    return unit_sprites.wall_variant_from_neighbours8(mask)
+
+
+def test_the_flat_run_turn_is_the_two_zero_points_difference():
+    delta = (unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG - unit_sprites.ANGLE_ZERO_OFFSET_DEG) % 360
+    assert delta == unit_sprites.FLAT_RUN_STEPS * 45
+
+
+def test_flat_draws_each_wall_run_with_the_frame_whose_iso_art_points_its_flat_way():
+    """From first principles, not from the table: the frame Flat draws for a
+    run along `d` is the iso art of some other run d', and d''s iso screen
+    direction must be `d`'s own direction on the flat grid."""
+    shape_dir = {_run_shape(d): d for d in _RUN_DIRS}
+    assert sorted(shape_dir) == [0, 1, 3, 4], shape_dir
+    for d in _RUN_DIRS:
+        drawn = unit_sprites.flat_wall_shape(_run_shape(d))
+        assert _iso_screen_axis(shape_dir[drawn]) == pytest.approx(_flat_screen_axis(d)), (
+            f"a run along {d} draws shape {drawn}, whose iso art runs along {shape_dir[drawn]}"
+        )
+    assert unit_sprites.flat_wall_shape(2) == 2, "the tower has no direction to turn"
+
+
+def test_flat_draws_each_gate_with_the_sibling_whose_iso_art_points_its_flat_way():
+    """The same check over gate_orientation's cycle, whose step i runs along
+    i * RUN_ANGLE_STEP_DEG in the world."""
+    from descape import gate_orientation
+
+    step = gate_orientation.RUN_ANGLE_STEP_DEG
+    assert step == 45
+    groups = gate_orientation.groups()
+    assert len(groups) == 24
+    for consts in groups.values():
+        for i, const in enumerate(consts):
+            turned, _rotation = unit_sprites.flat_art(const, 0.0)
+            j = consts.index(turned)
+            assert _iso_screen_axis(_RUN_DIRS[j]) == pytest.approx(_flat_screen_axis(_RUN_DIRS[i])), (
+                f"gate {const} (step {i}) draws sibling {turned} (step {j})"
+            )
+
+
+# Archer (ANGLE), a cliff, an oak tree and a GAIA doodad (barrels).
+@pytest.mark.parametrize("unit_const", [4, 264, 349, 1330])
+def test_flat_art_leaves_every_non_wall_non_gate_untouched(unit_const):
+    rotation = 37.0
+    got_const, got_rotation = unit_sprites.flat_art(unit_const, rotation)
+    assert got_const == unit_const
+    assert got_rotation is rotation, "the stored rotation must come back as the same object"
+
+
+def test_flat_art_turns_every_wall_through_its_stored_shape():
+    walls = unit_sprites.wall_family_consts()
+    assert len(walls) == 9, walls
+    radians = [k * 2 * math.pi / 5 for k in range(5)]
+    for const in walls:
+        for rotation in (0.0, 1.0, 2.0, 3.0, 4.0, *radians, 5.969026, 7.0):
+            want = float(unit_sprites.flat_wall_shape(unit_sprites.variant_index(rotation, 5)))
+            assert unit_sprites.flat_art(const, rotation) == (const, want), (const, rotation)
+
+
+def test_flat_art_turns_every_gate_to_its_next_sibling():
+    from descape import gate_orientation
+
+    gates = [c for consts in gate_orientation.groups().values() for c in consts]
+    assert len(gates) == 96
+    for const in gates:
+        for rotation in (0.0, 7.0):
+            got = unit_sprites.flat_art(const, rotation)
+            assert got == (gate_orientation.cycle_const(const, 1), rotation), const
 
 
 # --- variant resolution: walls, whose frames are shapes not facings ----

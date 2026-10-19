@@ -151,7 +151,7 @@ def test_a_sloped_map_has_no_tile_seam(coord_texture, unshaded) -> None:
     _elevations, corner_rise, _proj = render.sloped_elevations_and_proj(scn)
     assert len(np.unique(corner_rise)) > 2, "fixture no longer slopes"
     cache = _sloped_cache(scn)
-    assert len(cache.mip_levels()) > 1, "no coarser level to check (TASK-031.60's ladder) -- vacuous"
+    assert len(cache.mip_levels()) > 1, "no other level to check (Stepped's ladder, TASK-031.60 and TASK-146) -- vacuous"
     for mip in cache.mip_levels():
         tile_px = cache.mip_tile_px(mip)
         img = _level_canvas(cache, mip)

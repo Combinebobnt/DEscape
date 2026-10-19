@@ -88,6 +88,7 @@ from descape.player_fields import (
     defined_player_count,
     pov_bounds,
     specs_for_player,
+    starting_age_choices,
 )
 from descape.scenario_io import LoadedScenario
 from descape.viewer_common import (
@@ -711,11 +712,12 @@ class PlayersPanel(QWidget):
         if spec.kind == COMBO:
             widget = QComboBox()
             _fit_combo_width(widget)
-            choices = (
-                civilization_choices(self._loaded)
-                if spec.field_id in _DYNAMIC_CHOICE_FIELDS
-                else spec.choices
-            )
+            if spec.field_id in _DYNAMIC_CHOICE_FIELDS:
+                choices = civilization_choices(self._loaded)
+            elif spec.field_id == "starting_age":
+                choices = starting_age_choices()
+            else:
+                choices = spec.choices
             for choice, choice_label in choices:
                 widget.addItem(choice_label, choice)
             if widget.findData(value) < 0:

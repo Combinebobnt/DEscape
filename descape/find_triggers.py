@@ -39,9 +39,6 @@ TEXT_SCOPES = ("names", "descriptions", "messages", "identifiers", "xs")
 DEFAULT_SCOPES = frozenset({"names", "descriptions", "messages"})
 TYPE_PRESENTATIONS = frozenset({"UnitInfo", "BuildingInfo"})
 
-# str32 in the structure, but field_specs() classifies them INT (presentation
-# "", default None), so a STR-only scan misses them.
-EXTRA_TEXT_FIELDS = frozenset({("create_decision", "message_option1"), ("create_decision", "message_option2")})
 # STR fields that hold a name, not prose. Same (entry name, attribute) shape as
 # trigger_fields.PROSE_FIELDS; `sound_name` is an identifier on every entry.
 IDENTIFIER_FIELDS = frozenset(
@@ -130,8 +127,6 @@ def _vocabulary(loaded):
 def text_scope(entry_name: str, spec: trigger_fields.FieldSpec) -> tuple[str, str] | None:
     """(scope, mode) for a text field of a condition/effect, or None if it is not text."""
     pair = (entry_name, spec.name)
-    if pair in EXTRA_TEXT_FIELDS:
-        return "messages", MODE_LINE
     if spec.kind != trigger_fields.STR:
         return None
     if spec.multiline == trigger_fields.XS:

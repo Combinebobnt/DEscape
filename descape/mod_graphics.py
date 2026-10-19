@@ -3,8 +3,8 @@ cosmetic mods override the install's: per file stem, the highest-priority
 active mod that ships one, else the install (None here).
 
 Qt-free module state, read by unit_sprites (sprites), asset_source (terrain
-textures) and the viewer (the View > Layers "Mod Art" row, Settings > General's
-opt-out list, the status line):
+textures) and the viewer (the View > Layers "Mod Art" row, the opt-out list in
+Settings > Mods, the status line):
 
 - **Off by module default.** The viewer turns it on from the persisted layer,
   so tests and tools/ never pick up the developer's mods by accident.

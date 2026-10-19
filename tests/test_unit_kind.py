@@ -304,6 +304,7 @@ def test_the_module_stays_a_stdlib_only_leaf() -> None:
     assert not {m for m in imported if m.startswith("descape.")} - {
         "descape.terrain_palette",
         "descape.gate_orientation",
+        "descape.game_dataset",  # GH #67: a stdlib leaf too; it reaches asset_source only lazily
     }
 
 

@@ -13,7 +13,10 @@ the reach fallback and the non-visible reach eviction are correct by
 construction too.
 
 Stepped runs at mip 0 and mip -1, so the level-to-reference conversion runs;
-Sloped at mip 0, -1 and -2, its coarser ladder (TASK-031.60).
+Sloped at mip 0, -1 and -2 (its coarser ladder, TASK-031.60) and +1 (TASK-146).
+A +1 case renders and checks only the rect over its edits (_show_level()'s
+focus), with the LRU raised so all of it stays resident: a whole +1 level of
+the template is 4x the budget.
 """
 
 from __future__ import annotations
@@ -49,7 +52,12 @@ TOWER_PIECE = 9001
 
 STROKE_TILES = [(20 + i, 30) for i in range(8)]
 SHIFTED_TILES = [(24 + i, 30) for i in range(8)]
-STYLE_MIPS = [("Stepped", 0), ("Stepped", -1), ("Sloped", 0), ("Sloped", -1), ("Sloped", -2)]
+STYLE_MIPS = [("Stepped", 0), ("Stepped", -1), ("Sloped", 0), ("Sloped", -1), ("Sloped", -2), ("Sloped", 1)]
+# Tile boxes (x0, y0, x1, y1) a +1 case renders and checks instead of the whole level, which is
+# 118M px on the template, 4x the LRU (TASK-146). _show_level() takes one; MAIN is the default.
+FOCUS_MAIN = (49, 49, 67, 62)  # every unit placed, moved or recoloured on rows 50 to 61
+FOCUS_DRAW = (19, 29, 32, 31)  # STROKE_TILES and SHIFTED_TILES
+FOCUS_DOCK = (36, 35, 44, 44)  # the dock's move onto the cone at (40, 40)
 
 
 @pytest.fixture
@@ -125,17 +133,42 @@ def _window(style: str, slope: bool = False):
     return window
 
 
-def _show_level(window, monkeypatch, mip: int) -> None:
-    """Pins the level the viewer treats as on screen, with the whole level in view."""
+def _focus_rect(cache, mip: int, tiles) -> tuple[int, int, int, int]:
+    """Level `mip`'s rect over the tile box `tiles`: its corners' swept bounds
+    at level 0, padded by the sprite reach, converted and clamped."""
+    from descape import iso_geometry
+
+    x0, y0, x1, y1 = tiles
+    corners = ((x0, y0), (x1, y0), (x0, y1), (x1, y1))
+    boxes = np.array([iso_geometry.tile_screen_bounds_swept(x, y, cache.proj) for x, y in corners])
+    left, up, right, down = render._sprite_reach_px(cache.proj)
+    ref = (int(boxes[:, 0].min()) - left, int(boxes[:, 1].min()) - up, int(boxes[:, 2].max()) + right, int(boxes[:, 3].max()) + down)
+    lx0, ly0, lx1, ly1 = cache._bbox_to_level(mip, ref)
+    w, h = cache.canvas_dims(mip)
+    return max(0, lx0), max(0, ly0), min(w, lx1), min(h, ly1)
+
+
+def _level_rect(window, mip: int) -> tuple[int, int, int, int]:
+    """The whole level, or at +1 the rect over _show_level()'s focus tiles."""
+    if mip > 0:
+        return _focus_rect(window._cache, mip, window._test_focus)
+    return (0, 0, *window._cache.canvas_dims(mip))
+
+
+def _show_level(window, monkeypatch, mip: int, focus=FOCUS_MAIN) -> None:
+    """Pins the level the viewer treats as on screen, with the whole level in
+    view; at +1 only the `focus` tiles' rect, every chunk of it kept resident."""
     cache = window._cache
-    _cx0, _cy0, cx1, cy1 = cache.chunk_index_range(mip, 0, 0, *cache.canvas_dims(mip))
-    monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (mip, 0, 0, cx1, cy1))
+    window._test_focus = focus
+    if mip > 0:
+        cache.max_bytes *= 8
+    cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, *_level_rect(window, mip))
+    monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (mip, cx0, cy0, cx1, cy1))
 
 
 def _level(window, mip: int) -> np.ndarray:
-    """The level as the cache serves it; every chunk is resident afterwards."""
-    w, h = window._cache.canvas_dims(mip)
-    return window._cache.render_rect(0, 0, w, h, mip=mip).copy()
+    """The level (+1: its focus rect) as the cache serves it; every chunk is resident afterwards."""
+    return window._cache.render_rect(*_level_rect(window, mip), mip=mip).copy()
 
 
 def _fresh(window, mip: int, rect=None) -> np.ndarray:
@@ -158,7 +191,7 @@ def _fresh(window, mip: int, rect=None) -> np.ndarray:
 
 def _check(window, mip: int, what: str) -> np.ndarray:
     now = _level(window, mip)
-    fresh = _fresh(window, mip)
+    fresh = _fresh(window, mip, _level_rect(window, mip))
     if not np.array_equal(now, fresh):
         ys, xs = np.nonzero((now != fresh).any(axis=2))
         pytest.fail(f"{what}: {len(xs)} stale px at level {mip}, in x {xs.min()}..{xs.max()}, y {ys.min()}..{ys.max()}")
@@ -167,6 +200,46 @@ def _check(window, mip: int, what: str) -> np.ndarray:
 
 def _contains(outer, inner) -> bool:
     return outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3]
+
+
+def _covers(outer, inner) -> bool:
+    """_contains() for extents, where None paints nothing."""
+    return inner is None or (outer is not None and _contains(outer, inner))
+
+
+def _shares_a_tile(cache, changed: list[UnitSplice]) -> bool:
+    """Whether a unit outside `changed` stands on one of its new footprint tiles."""
+    ours = {id(s.unit) for s in changed}
+    return any(id(u) not in ours for s in changed for t in s.new_tiles for u, _c in cache.units_by_tile.get(t, ()))
+
+
+@pytest.fixture(autouse=True)
+def layer_extents(monkeypatch) -> list:
+    """TASK-031.61 c2x S3's oracle on every extent case here: an answer
+    sprite_extent_after() read from a current layer contains the per-unit
+    resolve, and equals it where no other unit shares a new tile. Returns
+    each (mip, units resolved while answering) it checked."""
+    checked = []
+    resolves = [0]
+    real, real_resolve = render_cache._ChunkCacheBase.sprite_extent_after, render._resolve_unit_sprite
+
+    def resolve(*args, **kwargs):
+        resolves[0] += 1
+        return real_resolve(*args, **kwargs)
+
+    def after(self, changed, mip):
+        resolves[0] = 0
+        box = real(self, changed, mip)
+        if box is not REACH_FALLBACK and self._layer_current(mip):
+            checked.append((mip, resolves[0]))
+            resolved = self._resolved_extent(changed, mip)
+            assert _covers(box, resolved), f"layer {box} misses the resolved {resolved}"
+            assert _shares_a_tile(self, changed) or box == resolved, f"layer {box} != resolved {resolved}"
+        return box
+
+    monkeypatch.setattr(render, "_resolve_unit_sprite", resolve)
+    monkeypatch.setattr(render_cache._ChunkCacheBase, "sprite_extent_after", after)
+    return checked
 
 
 class _Spy:
@@ -344,8 +417,10 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
     patched by per-chunk rects."""
     _ratio(monkeypatch, repaint)
     real_cap = render_cache._COMPONENT_SPLICE_MAX_UNITS
+    real_visible = render_cache.VISIBLE_SPLICE_MAX_UNITS
     if a_path == "wholesale":
         monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
     window = _window(style)
     try:
         _add(window, 1, VILLAGER, STROKE_TILES[3][0] + 0.5, STROKE_TILES[3][1] + 0.5)
@@ -353,7 +428,7 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
         window._on_tool_selected("draw")
         window.paint_trees_check.setChecked(True)
         window.paint_eye_candy_check.setChecked(False)
-        _show_level(window, monkeypatch, mip)
+        _show_level(window, monkeypatch, mip, FOCUS_DRAW)
         spy = _Spy(window, monkeypatch)
         repainted = spy.assert_rects if repaint == "rects" else spy.assert_tight
         spliced = []
@@ -370,6 +445,7 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
         after_a = _check(window, mip, "stroke A")
         # Back to the real cap, so stroke B and the undo/redo run as they would.
         monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", real_cap)
+        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", real_visible)
         spy.reset()
         _draw(window, FOREST_PALM, SHIFTED_TILES)
         repainted(mip)
@@ -438,7 +514,7 @@ def test_moving_a_mark_only_building_across_an_elevation_step(style, mip, art, m
         ) is None
         tiles = render.unit_occupied_tiles(dock, 120, 120)
         assert len({int(window._cache.elevations[y, x]) for x, y in tiles}) > 1, "the footprint is flat"
-        _show_level(window, monkeypatch, mip)
+        _show_level(window, monkeypatch, mip, FOCUS_DOCK)
         spy = _Spy(window, monkeypatch)
         _level(window, mip)
         _set_x(window, dock, 41.5)
@@ -780,6 +856,7 @@ def test_a_wholesale_wall_move_rebuilds_no_off_screen_level(art, monkeypatch) ->
     and evicts itself from -2 and -1, which stay stale for LevelWarmer instead
     of rebuilding inside the handler. A forced read then matches a fresh cache."""
     monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
     mips = (-2, -1, 0)
     window = _window("Stepped")
     try:
@@ -910,6 +987,70 @@ def test_sprite_extents_fall_back_for_a_wall_or_a_level_with_nothing_resident(ar
     assert cache.sprite_extent_before(tree_splice, 0) is None
 
 
+def _moved_tree(mip: int):
+    """_bare_cache() with one oak, level `mip` and level 0 rendered whole,
+    then the oak moved three tiles east: (cache, its splice)."""
+    tree = _Unit(30.5, 30.5, TREE_OAK)
+    cache = _bare_cache(tree)
+    for level in {mip, 0}:
+        cache.render_rect(0, 0, *cache.canvas_dims(level), mip=level)
+    tree.x = 33.5
+    return cache, [UnitSplice(0, 0, tree, (30, 30), (33, 30), ((30, 30),), ((33, 30),))]
+
+
+@pytest.mark.parametrize("mip", [0, -1])
+def test_a_spliced_level_answers_the_after_extent_from_its_layer(mip, art, layer_extents) -> None:
+    cache, changed = _moved_tree(mip)
+    cache.invalidate_units(changed)
+    assert cache.sprite_extent_after(changed, mip) is not None
+    assert layer_extents == [(mip, 0)], "the after extent resolved the unit instead of reading the layer"
+
+
+def test_a_stale_level_still_resolves_the_after_extent(art, layer_extents) -> None:
+    cache, changed = _moved_tree(0)
+    cache.invalidate_units()  # wholesale: every level stale
+    assert cache._levels[0].gen != cache._source_gen
+    assert cache.sprite_extent_after(changed, 0) == cache._resolved_extent(changed, 0) is not None
+    assert layer_extents == []
+
+
+def test_a_pending_level_still_takes_the_reach_fallback(art, layer_extents) -> None:
+    """Level 0 defers an Elevate under the oak (only -1 splices it), so its
+    layer is behind when the oak then moves."""
+    from descape.elevation_tools import set_tiles_elevation
+
+    tree = _Unit(30.5, 30.5, TREE_OAK)
+    cache = _bare_cache(tree)
+    for level in (0, -1):
+        cache.render_rect(0, 0, *cache.canvas_dims(level), mip=level)
+    scenario = cache.scenario
+    mm = scenario.map_manager
+    set_tiles_elevation(mm, [(30, 30, mm.get_tile(30, 30).elevation + 1)])
+    elevation_changed: set = set()
+    bbox = render.dirty_screen_bbox_iso(
+        scenario, [30 * mm.map_width + 30], cache.elevations, cache.proj, with_units=True, with_sprites=True,
+        elevation_changed=elevation_changed,
+    )
+    cache.patch(bbox, elevation_changed=elevation_changed, rebuild_levels=(-1,))
+    assert cache._levels[0].pending_elev, "level 0 did not defer the raise"
+    tree.x = 33.5
+    changed = [UnitSplice(0, 0, tree, (30, 30), (33, 30), ((30, 30),), ((33, 30),))]
+    cache.invalidate_units(changed)
+    assert cache.sprite_extent_after(changed, 0) is REACH_FALLBACK
+    assert layer_extents == []
+
+
+def test_the_layer_extent_oracle_fails_on_a_layer_read_before_its_splice(art) -> None:
+    """Control: the moved oak read from level 0's layer before the edit
+    reached it (sprite_extent_after() forced onto the layer of a stale level)
+    misses the resolved extent, and the autouse oracle says so."""
+    cache, changed = _moved_tree(0)
+    cache.invalidate_units()
+    cache._layer_current = lambda mip: True
+    with pytest.raises(AssertionError, match="misses the resolved"):
+        cache.sprite_extent_after(changed, 0)
+
+
 def test_flat_has_no_unit_edit_sprite_extent() -> None:
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     mm = scenario.map_manager
@@ -948,6 +1089,7 @@ def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art
     level without the oak before the unit step reads it, and the oak stays
     in its resident chunk."""
     monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
+    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)  # the stale level comes from the gen bump
     _ratio(monkeypatch, "evict")
     window = _window("Stepped")
     try:
@@ -996,6 +1138,7 @@ def _stale_erase_window(style: str, monkeypatch, overlay: bool, extra_level: int
     stale and the patch ratio in force. extra_level is rendered whole before
     the drag, so it is resident and goes stale too."""
     monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
+    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
     _ratio(monkeypatch, "evict")
     window = _window(style)
     try:

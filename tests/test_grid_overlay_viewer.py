@@ -635,3 +635,72 @@ def test_flat_ignores_the_follow_toggle_and_always_bakes() -> None:
         assert not view._grid_item.isVisible()
     finally:
         conftest.close_window(window)
+
+
+# --- GH #131: both elevation views bake the same grid ink at every zoom ------------
+
+
+def _luminance(img: np.ndarray) -> np.ndarray:
+    a = img.astype(np.float64)
+    return 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+
+
+def _grab(view) -> np.ndarray:
+    from PyQt5.QtGui import QImage
+    from PyQt5.QtWidgets import QApplication
+
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    QApplication.processEvents()
+    return qimage_rgb888_to_array(view.viewport().grab().toImage().convertToFormat(QImage.Format_RGB888))
+
+
+def _baked_ink(window, scale: float) -> tuple[float, int]:
+    """(ink, shown level) at `scale`, centred on the map: the luminance the
+    baked grid takes off a grid-off grab, summed over the viewport."""
+    from PyQt5.QtGui import QTransform
+
+    view = window.map_view
+    view.setTransform(QTransform.fromScale(scale, scale))
+    mm = window.scenario.map_manager
+    view.centerOn(view._tile_polygon(mm.map_width // 2, mm.map_height // 2).boundingRect().center())
+    window.grid_action.setChecked(False)
+    off = _grab(view)
+    window.grid_action.setChecked(True)
+    on = _grab(view)
+    assert view.grid_bake_live()
+    return float(np.clip(_luminance(off) - _luminance(on), 0, None).sum()), view.viewport_chunk_target()[0]
+
+
+@pytest.mark.parametrize("scale", [0.5, 1.0, 1.25, 2.0])
+def test_both_elevation_views_bake_the_same_grid_ink_at_every_zoom(scale: float) -> None:
+    """GH #131: with Follow Terrain Elevation on, a flat map's baked grid ink
+    in Sloped is within 1% of Stepped's, and both show the same level. Baked
+    ink scales with the shown level's residual magnification, so this holds
+    only while the two styles share one mip ladder (TASK-146); with Sloped's
+    old coarser-only ladder it fails at 1.25 and 2.0."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        for tile in window.scenario.map_manager.terrain:
+            tile.elevation = 0
+        window.grid_follow_action.setChecked(True)
+        ink = {}
+        for style in ("Stepped", "Sloped"):
+            # Through Flat, since a same-style set is a no-op; then re-render the mutated tiles.
+            window.terrain_style_combo.setCurrentText("Flat")
+            QApplication.processEvents()
+            window.terrain_style_combo.setCurrentText(style)
+            window.refresh_map()
+            QApplication.processEvents()
+            assert window._cache.style == style.lower()
+            ink[style] = _baked_ink(window, scale)
+        (stepped, stepped_mip), (sloped, sloped_mip) = ink["Stepped"], ink["Sloped"]
+        assert stepped > 0, "the grid took no ink -- vacuous"
+        assert abs(sloped / stepped - 1) <= 0.01, (
+            f"scale {scale}: Sloped ink {sloped:.0f} at level {sloped_mip}, Stepped {stepped:.0f} at level {stepped_mip}"
+        )
+        assert sloped_mip == stepped_mip
+    finally:
+        conftest.close_window(window)

@@ -226,8 +226,9 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 
 Settings > Keybinds rebinds every shortcut and sets what the mouse wheel does
 over the map, alone or with Ctrl, Shift or Alt held (zoom, brush size, turning
-Place Unit's preview, panning, or nothing; by default it zooms, and Ctrl +
-wheel steps the brush size or turns the preview).
+Place Unit's preview or a just-pasted region, panning, or nothing; by default
+it zooms, and Ctrl + wheel steps the brush size or turns the preview). Each
+choice's tooltip says where it applies; elsewhere the wheel zooms.
 
 Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
 given file, a one-time `.orig` snapshot beside it, so the write path always
@@ -332,16 +333,22 @@ many GAIA objects; pass `rotation_choices=` with values you've confirmed if you
 need variety.
 
 The same thing from the GUI is **Edit > Scatter Units in Region…**: pick an
-object (and an owner) in the Units panel, outline an area with the Select tool
-in Terrain mode, then open the dialog from any mode. It filters the outlined
-region to eligible tiles (any tile, water only, or one terrain type),
-optionally skips tiles already under a unit, and places a count or a density of
-randomized copies as one undo step. The live "N eligible tiles" line is exactly
-what will be placed. Resources, trees and the Gunpowder Keg always go to GAIA, whatever the owner.
+object (and an owner) in the Units panel, then give it an area: outline one
+with the Select tool in Terrain mode (the dialog then opens from any mode), or
+select units in Units mode. With no outlined region the area is the selected
+units' bounding box, widened on every side by the dialog's **Grow by** tiles (2
+by default); with both, the dialog starts on the region and its **Area** row
+switches to the units. It filters the area to eligible tiles (any tile, water
+only, or one terrain type), optionally skips tiles already under a unit, and
+places a count or a density of randomized copies as one undo step. The live "N
+eligible tiles" line is exactly what will be placed. Resources, trees and the
+Gunpowder Keg always go to GAIA, whatever the owner. With no area at all the
+menu item is greyed, and its tooltip says how to get one.
 
 Its other mode, **Move the selected units**, takes the units selected in Units
-mode instead and moves each one to a random eligible tile of the region, one
-per tile while there is room, as one undo step. Only `x`/`y` change; rotation
+mode instead and moves each one to a random eligible tile of the area, one
+per tile while there is room, as one undo step. It is the default when the area
+came from the selection. Only `x`/`y` change; rotation
 and every other field are kept, buildings snap to whole tiles with their own
 footprint (one that cannot fit stays put), and a garrison moves with its host.
 The same seed and selection give the same result. From a script, it is
@@ -425,7 +432,7 @@ content is offered. It is usually found on its own: on Windows at
 `%USERPROFILE%\Games\Age of Empires 2 DE`, and on Linux in the Proton prefix
 beside the install's Steam library
 (`steamapps/compatdata/813780/pfx/drive_c/users/steamuser/Games/Age of Empires 2 DE`).
-To point DEscape elsewhere, use **Settings > General**'s profile folder row
+To point DEscape elsewhere, use the profile folder row in **Settings > Mods**
 (Browse…, then Load; Use auto-detect goes back to finding it on its own),
 set `aoe2de_profile` in `config.yaml`, or set the `AOE2DE_PROFILE_PATH`
 environment variable (checked first, and it overrides the Settings row). The
@@ -436,8 +443,8 @@ folders: the install's AIs, plus any in your profile and enabled mods.
 Cosmetic mods draw too: the art your enabled mods ship (trees, buildings,
 units, walls, terrain textures, `.sld` or `.smx`) replaces the game's own on
 the map, in the game's mod order, the top mod winning where two ship the
-same file. **View > Layers > Mod Art** turns it off, and Settings > General's
-Mod art list leaves single mods out. Mods are read once per launch; after
+same file. **View > Layers > Mod Art** turns it off, and the Mod art list in
+Settings > Mods leaves single mods out. Mods are read once per launch; after
 enabling one in the game, restart DEscape or reload the profile folder.
 
 Typical Steam install locations, if you need a starting point for Browse…:

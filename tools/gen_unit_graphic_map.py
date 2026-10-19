@@ -265,8 +265,8 @@ sail belongs to one angle only". There is no offset dedupe, unlike gates:
 five of the Galleon's sails share (0, -25). Only the Gaia table is emitted
 for ships, so a civ with its own sail set (most of them) draws these.
 
-**Particle effects (GH #20).** Butterflies 1608-1610 (`_PARTICLE_CONSTS`, an
-allowlist) have a standing graphic with file_name "None" and a
+**Particle effects (GH #20).** Butterflies 1608-1610 and Seagulls 303 (GH #67)
+(`_PARTICLE_CONSTS`, an allowlist) have a standing graphic with file_name "None" and a
 particle_effect_name: the art is `resources/_common/particles/<name>.json`,
 which names a TexturePacker atlas (`AtlasFile`), a frame run
 (`ImageFirst`/`ImageCount`) and a `Scale`. Their entry carries the effect
@@ -275,7 +275,7 @@ angle_count and frame_count 1: a scenario editor draws the loop's first
 frame. The generator fails unless the effect has an AtlasFile and no
 `ImageAngles` (per-angle frame runs, which the waterfalls use and
 descape.particle_art does not read). Every other particle-only const (FLAME,
-SMOKE, the seagulls, the waterfalls) is still skipped.
+SMOKE, the waterfalls) is still skipped.
 
 Normally run through tools/regen_game_data.py, which also restamps
 tools/game_data_stamp.json.
@@ -287,6 +287,8 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+
+import _game_root
 
 # Every .sld begins with this, and the u16 at offset 10 is a layout-variant tag
 # taking exactly two values across the install, both readable: 16, and the 14
@@ -949,6 +951,10 @@ _ANNEX_TREE_SCOPE: frozenset[int] = frozenset({1893, 1897})
 # The hut (1890's own graphic) supplies the entry's top-level fields.
 _ANNEX_TREE_PARENT_UNIT = 1890
 
+# The fence shell, a legacy graphic in AoE2; Return of Rome gives it the farm
+# sprite b_all_farm_x1 (2026-10-17), which is not a pasture piece. Never emitted.
+_ANNEX_TREE_SHELL_UNIT = 2078
+
 # Pieces an in-scope root must yield: hut + 4 posts + 4 edges x 5 fences.
 _ANNEX_TREE_PIECE_COUNT = 25
 
@@ -959,8 +965,8 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
 
     A DFS over building.annexes, summing misplacement down the tree: every
     node whose OWN standing_graphic resolves modern emits a piece at the summed
-    misplacement; a legacy node (the root, 2078) emits nothing but its annexes
-    still walk. Unlike a town centre, the parent is an annex's art (1890's
+    misplacement; the fence shell 2078 (_ANNEX_TREE_SHELL_UNIT) emits nothing
+    but its annexes still walk. Unlike a town centre, the parent is an annex's art (1890's
     hut), not the const's own. Every piece but the hut is `seeded`: its
     variant is picked per placed unit, not by the root's rotation."""
     found: list[tuple[int, float, float, object]] = []
@@ -969,7 +975,7 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
         unit = units[uid]
         if unit is None:
             return
-        if uid != unit_const:
+        if uid not in (unit_const, _ANNEX_TREE_SHELL_UNIT):
             standing = unit.standing_graphic
             graphic = _resolve_modern_graphic(graphics, standing[0] if standing else -1)
             if graphic is not None:
@@ -1217,8 +1223,8 @@ def _resolve_shell_delta_pieces(
 
 
 # Consts whose standing graphic is a particle effect and gets an entry: the
-# butterflies. An allowlist; see the module docstring's "Particle effects".
-_PARTICLE_CONSTS: frozenset[int] = frozenset({1608, 1609, 1610})
+# butterflies and the seagulls. An allowlist; see the module docstring's "Particle effects".
+_PARTICLE_CONSTS: frozenset[int] = frozenset({303, 1608, 1609, 1610})
 
 
 def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, object]:
@@ -1632,6 +1638,43 @@ def _building_art(
     }
 
 
+# GH #67: each list above is hand-measured on the AoE2 .dat, so a RoR run
+# starts with none of them and they are measured on the RoR .dat in their turn.
+# Each hand-measured list's RoR value, measured on the RoR .dat and 8 RoR samples (2026-10-17).
+_ROR_VALUES: dict[str, object] = {
+    # The same four trebuchet objects (TREBU/PTREB, angle_count 32), hidden in RoR's editor.
+    "_EXTRA_ANGLE_CONSTS": _EXTRA_ANGLE_CONSTS,
+    # RoR town centres have only the empty annex 890; the pastures keep AoE2's slots (same pieces).
+    "_COMPOSITE_SCOPE": frozenset(),
+    "_PIECE_SLOTS": {const: _PIECE_SLOTS[const] for const in _ANNEX_TREE_SCOPE},
+    "_TOWN_CENTRE_SCOPE": frozenset(),
+    "_PIECE_SLOTS_BY_ART": {},
+    # Its pastures carry AoE2's annex tree (hut 1890, 2078, posts 1888); the hut shows in game.
+    "_ANNEX_TREE_SCOPE": _ANNEX_TREE_SCOPE,
+    # 72 is a plain wall there; 119 and 788 still draw the palisade flag shell.
+    "_BODY_GRAPHIC_OVERRIDES": {119: 605, 788: 6595},
+    # Same _underwater deltas, except Whale 2625, whose delta is empty there.
+    "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
+    "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
+}
+# Measured on the RoR .dat (2026-10-16): _AGE_TECHS' 101/102/103 are its Tool,
+# Bronze and Iron Ages, so they stay; the holdout is the same hidden PORT as AoE2's.
+# _PARTICLE_CONSTS stays too (2026-10-17): 303 and 1608-1610 have the same graphics and effects.
+_ROR_ART_INVARIANT_HOLDOUTS: dict[int, str] = {
+    446: "PORT, hidden in the editor: a projectile graphic, angle_count 32 vs 1 (civs 2, 5, 7)",
+}
+
+
+def _select_dataset(dataset: str) -> None:
+    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES)
+    and the RoR holdouts in, for a RoR run."""
+    global _ART_INVARIANT_HOLDOUTS
+    if dataset == _game_root.ROR:
+        assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
+        globals().update(_ROR_VALUES)
+        _ART_INVARIANT_HOLDOUTS = _ROR_ART_INVARIANT_HOLDOUTS
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1650,16 +1693,18 @@ def main() -> None:
         default=Path(__file__).resolve().parent.parent / "descape",
         help="Where to write both JSON tables (default: descape/)",
     )
+    _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _select_dataset(args.dataset)
 
     from genieutils.datfile import DatFile
 
-    dat_path = args.aoe2de_root / "resources/_common/dat/empires2_x2_p1.dat"
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    graphics_dir = args.aoe2de_root / "resources/_common/drs/graphics"
-    particles_dir = args.aoe2de_root / "resources/_common/particles"
+    graphics_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/drs/graphics")
+    particles_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/particles")
     data = DatFile.parse(str(dat_path))
     graphics = data.graphics
     units = data.civs[0].units

@@ -33,6 +33,12 @@ in-flight jobs without waiting for them. Everything else (numpy, Flat, a
 chunk the kernel can't take, no QApplication, run_to_completion) still runs
 get_chunk() synchronously, exactly as before.
 
+**The same pool composites visible chunks (TASK-031.64).** chunk_pool() hands
+it to the viewer's cache (set_chunk_executor()), whose render_rect() submits
+a paint's missing chunks to it and joins before returning, running unstarted
+jobs on the GUI thread too. One pool, so a paint and a margin warm never
+oversubscribe the cores; WORKERS sizes both.
+
 render_cache._ChunkCacheBase.is_level_resident()/has_chunk() are this
 module's other half of the correctness argument -- see MarginWarmer.start()
 and ring_chunks() below for how each is used."""
@@ -68,6 +74,14 @@ def _pool():
     if _executor is None:
         _executor = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="margin-warm")
     return _executor
+
+
+def chunk_pool():
+    """(executor, workers) for render_cache's set_chunk_executor(): the shared
+    pool, or (None, 0) when WORKERS keeps everything on the GUI thread."""
+    if WORKERS <= 0:
+        return None, 0
+    return _pool(), WORKERS
 
 
 def _result_bridge():

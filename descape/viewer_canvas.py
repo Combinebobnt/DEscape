@@ -144,6 +144,30 @@ def _max_axis_scale(transform) -> float:
     return math.sqrt(half_sum_sq + disc)
 
 
+# Smallest residual (device pixels per level pixel, per axis) the RGB32 blit is used at.
+RGB32_BLIT_MIN_RESIDUAL = 0.5
+
+
+def _rgb32_blit_ok(device: QTransform, scale: float) -> bool:
+    """Whether a smooth scaled drawImage() of an RGB888 block at `scale` scene
+    units per level pixel, under the painter device transform `device`, may
+    take an RGB32 copy of the block instead: 3x faster in Qt's raster engine
+    and, measured on Qt 5.15.14, byte-identical exactly when this holds.
+
+    Two conditions. The transform must be axis-aligned (no rotation, shear or
+    projection; Flat's isometric view fails this and differs by up to 14),
+    and the residual must be at least 0.5 on both axes, in DEVICE pixels, so
+    the device pixel ratio is part of it. Below 0.5 on x the two sources
+    differ by up to 14 (consistent with Qt's 32-bit bilinear fetch taking a
+    separate downscale branch there); above 1 (magnification) they match.
+    Mirroring is allowed: measured identical, and the abs() covers it. y is
+    held to the same bound too, though a y-only minification measured
+    identical."""
+    if device.type() > QTransform.TxScale:
+        return False
+    return min(abs(device.m11()), abs(device.m22())) * scale >= RGB32_BLIT_MIN_RESIDUAL
+
+
 def level_rect_for(cache, mip: int, scene_rect: QRectF) -> tuple[int, int, int, int] | None:
     """The LEVEL-`mip`-pixel chunk-cache rect a scene-space rect covers --
     MapCanvasItem.paint()'s own arithmetic (floor the low edge, ceil the
@@ -263,6 +287,8 @@ class MapCanvasItem(QGraphicsItem):
         # do, via a single scene.render() -- worth keeping in mind before
         # reusing it after a repaint that Qt may have split).
         self._last_mip = 0
+        # Write-only like _last_mip: the QImage format of the last block drawn.
+        self._last_blit_format: QImage.Format | None = None
         # Cleared once, on this item's first paint only -- one new
         # MapCanvasItem is built per MapView.set_source(), so this is
         # exactly "first paint of the current canvas item" with no
@@ -336,6 +362,8 @@ class MapCanvasItem(QGraphicsItem):
                     return
                 x0, y0, x1, y1 = level_rect
                 canvas_w, canvas_h = self._cache.canvas_dims(mip)
+                # The scale-1.0 point overload below never converts, whatever the gate says.
+                to_rgb32 = scale != 1.0 and _rgb32_blit_ok(painter.deviceTransform(), scale)
 
                 # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
                 # anchored at the canvas origin, not at x0/y0, so repeated partial
@@ -374,11 +402,14 @@ class MapCanvasItem(QGraphicsItem):
                                 # bar, rather than merely empirically not doing so.
                                 painter.drawImage(px0, py0, qimg)
                             else:
+                                if to_rgb32:
+                                    qimg = qimg.convertToFormat(QImage.Format_RGB32)
                                 painter.drawImage(
                                     QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
                                     qimg,
                                     QRectF(0, 0, w, h),
                                 )
+                            self._last_blit_format = qimg.format()
         finally:
             # Every paint, not just the first, and including the two early
             # returns above: whoever installed the callback is summing them.

@@ -6,6 +6,28 @@
   },
   "genieutils": "0.1.2",
   "refreshed": "2026-10-13",
+  "ror": {
+    "dat": {
+      "sha256": "fe4d566b98b0e40b05af749fc61c48b3317194d5cefd2ed5d40b80cefbd4b00d",
+      "size": 2573146
+    },
+    "genieutils": "0.1.2",
+    "refreshed": "2026-10-17",
+    "steam_buildid": "25464371",
+    "tables": {
+      "building_art_map.json": "9cf358519fe8706cabdccfd22a8f839f4ccee720152285603cdc7939ca84d054",
+      "garrison_table.json": "0704f43f9e76392631ab5807428356b03a3f3ecc70d5f9a9f130444b74bdf9be",
+      "object_catalog.json": "ec85f56481d8e594bd41f8cbe8c89589069b0fa60006620844b7988b20e5e441",
+      "terrain_blend_map.json": "8cd898fc51d0a9b88a776ae2fd75b23c0b8e8b85323651c010966bd4eeb9c066",
+      "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
+      "terrain_texture_map.json": "18f9706e224f9da6b06a48ca38958685ec9a26ff3da69fd589c54fde0fe30f95",
+      "terrain_unit_map.json": "b4e843565d308efd6b42d10bebe0cc6ba32d10887e7fe9a860ea10edd7ad1e1f",
+      "tree_unit_ids.json": "a23d5953c37e5cd7cff81fc759adfbe21a6282a2dce7cd56e3cdec82156f73d8",
+      "unit_graphic_map.json": "c296d4ae20ae342734756b788c9c4f804e7af65bacaed923eca01b9ff84de6ac",
+      "unit_render_data.json": "2b26bfc94a07d0e33254a1915090ec6c94ee208b9b39d12da53a6a239ab35d3c",
+      "unit_stats.json": "e4c739e4b22208d894f42d545b94f4c446cbf000fa31f413467dc3f02e454a32"
+    }
+  },
   "steam_buildid": "25464371",
   "tables": {
     "building_art_map.json": "37e084e80fb34730ee7b19e5e28589f4e4d03477a9b742ac62500661cb8eb210",
@@ -16,7 +38,7 @@
     "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",
     "terrain_unit_map.json": "cfd8f0e22539f96f543dd754f76a27710d3f48c392fc2492d9079eeed584d9fb",
     "tree_unit_ids.json": "7f67ea779b0e96b886b161c0165f3db079ea13be10ac9347851fc195eae34bfa",
-    "unit_graphic_map.json": "7b23f60c8a17be1a359cd58bb52a52d9a46779cc982157c721b7f41aa21cc990",
+    "unit_graphic_map.json": "9befefbe6d040f16305df6f31a5a13c4f3290eef84607ade0b07c8d5c5f003d0",
     "unit_render_data.json": "74369d9a623ff7bb4471bb98d2c99f452abc08f9dbd294ea4b649d212f6c217a",
     "unit_stats.json": "259e13a418ef438016a18d39838c657538733688a72bb8da6017852e371e5cf6"
   }

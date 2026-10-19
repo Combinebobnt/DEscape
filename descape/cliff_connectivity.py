@@ -187,8 +187,14 @@ class ShapeTables:
     def _frames(self, frames: tuple[int, ...], arm_count: int, frame_limit: int) -> tuple[int, ...]:
         """The row's commonest frame plus its twin if it has one, less any the
         family lacks. A cap frame topping a row of two or more arms is two
-        runs abutting, not a shape: nothing."""
+        runs abutting, not a shape: nothing. Where the family lacks the
+        commonest frame (Marble's 23 frames have no thin north cap 23), the
+        row's next frame it has stands alone (user decision, 2026-10-19)."""
         limit = min(frame_limit, _FRAME_COUNT)
+        # Only a real frame this family lacks: a row topped by the stored 24 still gives nothing.
+        if limit <= frames[0] < _FRAME_COUNT and not (arm_count >= 2 and frames[0] >= _FIRST_CAP_FRAME):
+            usable = [f for f in frames[1:] if f < limit and not (arm_count >= 2 and f >= _FIRST_CAP_FRAME)]
+            return tuple(usable[:1])
         pair = (frames[0], self.twins.get(frames[0]))
         return tuple(
             sorted(f for f in pair if f is not None and f < limit and not (arm_count >= 2 and f >= _FIRST_CAP_FRAME))
@@ -231,7 +237,9 @@ def resolve_shape(
     `frames` is the row's commonest frame, plus its art twin on a straight
     (1/2, 4/5, 7/8, 10/11; the caller alternates them by position), in
     ascending order. A frame at or past `frame_limit` (Marble has 23) or the
-    stored 24 is left out, as is an end cap frame on two or more arms."""
+    stored 24 is left out, as is an end cap frame on two or more arms. Where
+    that drops the commonest frame, the row's next usable frame is taken
+    alone: Marble's thin north cap is 7, a thin straight."""
     return (tables or shape_tables()).resolve(arms, allowed_suffixes=allowed_suffixes, frame_limit=frame_limit)
 
 
