@@ -56,9 +56,6 @@ def test_every_menu_command_is_rebindable_or_explicitly_exempt() -> None:
     window = ViewerWindow()
     try:
         bound = {id(action) for action in window._keybind_actions.values()}
-        # Each exemption is a deliberate "not a command" call: preset sizes
-        # beside file_new/file_new_default.
-        exempt = {id(a) for a in window.new_size_actions if a is not window.new_action}
 
         missing: list[str] = []
 
@@ -75,7 +72,7 @@ def test_every_menu_command_is_rebindable_or_explicitly_exempt() -> None:
                 group = action.actionGroup()
                 if group is not None and group.isExclusive():
                     continue  # a radio choice inside a submenu, not a command
-                if id(action) not in bound and id(action) not in exempt:
+                if id(action) not in bound:
                     missing.append(action.text())
 
         walk(window.menuBar().actions())

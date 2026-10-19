@@ -15,7 +15,16 @@ from pathlib import Path
 
 import yaml
 
-from descape import asset_source, edge_ticks, grid_overlay, iso_geometry, terrain_style, themes, view_layers
+from descape import (
+    asset_source,
+    edge_ticks,
+    game_dataset,
+    grid_overlay,
+    iso_geometry,
+    terrain_style,
+    themes,
+    view_layers,
+)
 from descape.asset_source import CONFIG_PATH
 from descape.themes import normalize_hex as _normalize_hex
 
@@ -1675,6 +1684,66 @@ def clear_recent_files() -> None:
     _save_config(config)
 
 
+# File > New Map…'s last choices (GH #243), written by its dialog on OK, not
+# by Settings. Game data is a game_dataset id (GH #67).
+NEW_MAP_GAME_DATA = game_dataset.DATASETS
+NEW_MAP_DEFAULT_TERRAIN_ID = 0
+NEW_MAP_DEFAULT_ELEVATION = 0
+
+_new_map: dict | None = None
+
+
+def _int_or_none(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _clean_new_map(raw) -> dict:
+    # Imported here: scenario_new loads the scenario parser, which settings otherwise never needs.
+    from descape.scenario_io import BLANK_TEMPLATE_TILES
+    from descape.scenario_new import MAX_MAP_TILES, MIN_MAP_TILES
+
+    raw = raw if isinstance(raw, dict) else {}
+    tiles = _int_or_none(raw.get("tiles"))
+    terrain_id = _int_or_none(raw.get("terrain_id"))
+    elevation = _int_or_none(raw.get("elevation"))
+    game_data = raw.get("game_data")
+    return {
+        "tiles": BLANK_TEMPLATE_TILES if tiles is None else max(MIN_MAP_TILES, min(MAX_MAP_TILES, tiles)),
+        "game_data": game_data if game_data in NEW_MAP_GAME_DATA else NEW_MAP_GAME_DATA[0],
+        "terrain_id": terrain_id if terrain_id is not None and 0 <= terrain_id <= 255 else NEW_MAP_DEFAULT_TERRAIN_ID,
+        "elevation": (
+            NEW_MAP_DEFAULT_ELEVATION
+            if elevation is None
+            else max(iso_geometry.MIN_ELEVATION, min(iso_geometry.MAX_ELEVATION, elevation))
+        ),
+    }
+
+
+def get_new_map_choice() -> dict:
+    """File > New Map…'s last choices as {tiles, game_data, terrain_id,
+    elevation}. Each field falls back on its own: tiles and elevation are
+    clamped into range, an unknown game_data or a terrain id outside 0..255
+    takes the default. Whether the terrain id is in the catalog is the
+    dialog's check, not this one."""
+    global _new_map
+    if _new_map is None:
+        _new_map = _clean_new_map(_load_config().get("new_map"))
+    return dict(_new_map)
+
+
+def set_new_map_choice(choice: dict) -> None:
+    global _new_map
+    _new_map = _clean_new_map(choice)
+    config = _load_config()
+    config["new_map"] = dict(_new_map)
+    _save_config(config)
+
+
 @dataclass(frozen=True)
 class ToolDef:
     """One entry per toolbar Tool (Pan, Draw, Elevate, Set Elevation, and
@@ -1893,11 +1962,11 @@ TOOLS: list[ToolDef] = [
 # strings are plain text (e.g. "Ctrl+P"), no need to import Qt just to store
 # them.
 REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
-    ("file_new", "New Map", "Ctrl+N"),
-    # The quick "default size" New action (File > New Map > <blank size>),
-    # distinct from file_new above which is Custom size's Ctrl+N. Ships
-    # unbound like view_distance_ticks below -- no default suggested by the
-    # feature request that added this entry, just making it user-bindable.
+    ("file_new", "New Map…", "Ctrl+N"),
+    # The quick "default size" New action: a 120x120 Grass 1 map at elevation
+    # 0 with no dialog, distinct from file_new above which opens File > New
+    # Map…'s dialog. In no menu since GH #243, so only this keybind reaches
+    # it. Ships unbound like view_distance_ticks below.
     ("file_new_default", "New Map (Default Size)", ""),
     ("file_open", "Open Map", "Ctrl+O"),
     ("file_close", "Close Map", "Ctrl+W"),

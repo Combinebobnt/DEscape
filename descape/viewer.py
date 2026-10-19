@@ -64,7 +64,6 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
@@ -193,6 +192,7 @@ from descape.mirror_tools import (
     plan_mirror_units,
     walls_are_radian,
 )
+from descape.new_map_dialog import NewMapChoice, NewMapDialog
 from descape.options_model import (
     OptionEditsUnavailableError,
     OptionsEditModel,
@@ -251,10 +251,8 @@ from descape.scenario_io import (
 )
 from descape.scenario_new import (
     LARGE_MAP_CONFIRM_TILES,
-    MAX_MAP_TILES,
-    MIN_MAP_TILES,
-    STANDARD_MAP_SIZE_NAMES,
     STANDARD_MAP_SIZES,
+    BlankFillError,
     BlankGenerationError,
     MapSizeError,
     blank_scenario_bytes,
@@ -335,10 +333,6 @@ def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
     """GH #221: the local .aoe2scenario files among dropped URLs, in drop order."""
     paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
     return [path for path in paths if path.suffix.lower() == ".aoe2scenario"]
-
-
-def _new_map_tip(tiles: int) -> str:
-    return f"Start a blank {tiles}x{tiles} scenario, the game's {STANDARD_MAP_SIZE_NAMES[tiles]} map size"
 
 
 def _shape_shore(tiles) -> list[tuple[int, int]]:
@@ -3056,6 +3050,8 @@ class ViewerWindow(QMainWindow):
         # not a real file), so Save As must default to UNTITLED_NAME instead.
         # Cleared by a successful Save As, by File > Open, and by Close.
         self._untitled = False
+        # File > New Map…'s panel, built on first open and reused (GH #243).
+        self._new_map_panel: NewMapDialog | None = None
         # Holds whichever style's chunk cache is current -- an IsoChunkCache
         # (Stepped), a FlatChunkCache (Flat, since Phase B-E; previously a
         # separate self._img numpy array, retired in that phase), or a
@@ -3636,49 +3632,20 @@ class ViewerWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
-        # One action per real AoE2:DE map size (descape.scenario_new.STANDARD_MAP_SIZES
-        # -- confirmed empirically against every real scenario in examples/, see that
-        # module's docstring), each generated on demand from the shipped 120x120 donor
-        # rather than loaded from its own file. new_action stays the 120x120 entry, but
-        # Ctrl+N lives on new_custom_action below instead -- picking a size is more
-        # useful as the keyboard-driven default than always defaulting to Tiny.
-        new_menu = file_menu.addMenu("&New Map")
-        new_menu.menuAction().setToolTip("Start a blank scenario at one of the game's map sizes")
-        self.new_action = QAction(
-            f"{BLANK_TEMPLATE_TILES}×{BLANK_TEMPLATE_TILES} ({STANDARD_MAP_SIZE_NAMES[BLANK_TEMPLATE_TILES]})",
-            self,
-        )
-        self.new_action.triggered.connect(lambda: self.new_map(BLANK_TEMPLATE_TILES))
-        self.new_action.setToolTip(_new_map_tip(BLANK_TEMPLATE_TILES))
-        new_menu.addAction(self.new_action)
-        self.new_size_actions = [self.new_action]
-        for tiles in STANDARD_MAP_SIZES:
-            if tiles == BLANK_TEMPLATE_TILES:
-                continue
-            action = QAction(f"{tiles}×{tiles} ({STANDARD_MAP_SIZE_NAMES[tiles]})", self)
-            action.setToolTip(_new_map_tip(tiles))
-            # checked=False must come first: QAction.triggered passes a
-            # checked: bool positional arg, and PyQt5 binds it into whichever
-            # parameter is first available -- a lambda with only `tiles=tiles`
-            # gets `checked` bound into `tiles` instead of the captured
-            # default, silently passing tiles=0/False (confirmed: hangs the
-            # test suite on a QMessageBox.critical() for the resulting
-            # nonexistent blank_0x0.aoe2scenario, with nothing able to click
-            # "OK" in an offscreen run).
-            action.triggered.connect(lambda checked=False, tiles=tiles: self.new_map(tiles))
-            new_menu.addAction(action)
-            self.new_size_actions.append(action)
-        new_menu.addSeparator()
-        # Deliberately NOT appended to new_size_actions -- that list means "one
-        # action per preset size", and new_map_custom() is the only path that can
-        # ever pop the >LARGE_MAP_CONFIRM_TILES confirmation dialog (see its own
-        # docstring for why the presets, including 480, never confirm).
-        self.new_custom_action = QAction("&Custom size…", self)
-        # Same checked=False trap as above -- applies even with no captured value,
-        # since QAction.triggered still passes a positional bool.
-        self.new_custom_action.triggered.connect(lambda checked=False: self.new_map_custom())
-        self.new_custom_action.setToolTip("Start a blank square scenario of any size you type")
-        new_menu.addAction(self.new_custom_action)
+        # GH #243: one dialog for size, game data, terrain and elevation, in place
+        # of the old one-action-per-size submenu.
+        self.new_map_action = QAction("&New Map…", self)
+        # checked=False must come first: QAction.triggered passes a positional
+        # checked bool, which PyQt5 would otherwise bind into the lambda's first
+        # parameter.
+        self.new_map_action.triggered.connect(lambda checked=False: self.new_map_dialog())
+        self.new_map_action.setToolTip("Start a blank scenario: pick its size, game data, terrain and elevation")
+        file_menu.addAction(self.new_map_action)
+        # file_new_default's action: a 120x120 Grass 1 map with no dialog. In no
+        # menu, so it is added to the window for its keybind to fire.
+        self.new_action = QAction("New Map (Default Size)", self)
+        self.new_action.triggered.connect(lambda checked=False: self.new_map(BLANK_TEMPLATE_TILES))
+        self.addAction(self.new_action)
         self.open_action = QAction("&Open .aoe2scenario…", self)
         self.open_action.setToolTip("Open a scenario file from disk")
         self.open_action.triggered.connect(self.open_file)
@@ -8917,7 +8884,7 @@ class ViewerWindow(QMainWindow):
         # -- getattr with no default raises immediately, which is the point
         # (see settings.ToolDef's own docstring).
         self._keybind_actions = {
-            "file_new": self.new_custom_action,
+            "file_new": self.new_map_action,
             "file_new_default": self.new_action,
             "file_open": self.open_action,
             "file_close": self.close_action,
@@ -18055,9 +18022,9 @@ class ViewerWindow(QMainWindow):
     def new_map(self, tiles: int = BLANK_TEMPLATE_TILES) -> None:
         """Starts a blank `tiles`x`tiles` map by generating it in memory from
         the shipped 120x120 donor template (descape.scenario_new.
-        blank_scenario_bytes -- one of STANDARD_MAP_SIZES via File > New Map's
-        size submenu, or any size in [MIN_MAP_TILES, MAX_MAP_TILES] via
-        new_map_custom()) and loading the result through the normal load path,
+        blank_scenario_bytes -- the file_new_default keybind's 120x120, or
+        any size in [MIN_MAP_TILES, MAX_MAP_TILES] via new_map_dialog(),
+        which calls _create_new_map() itself) and loading the result through the normal load path,
         then marking the document untitled -- see load_scenario()'s `untitled`
         handling. Not built from AoE2ScenarioParser's own from_default():
         that would need a second write path through the library's own
@@ -18075,37 +18042,39 @@ class ViewerWindow(QMainWindow):
             return
         self._create_new_map(tiles)
 
-    def new_map_custom(self) -> None:
-        """File > New Map > Custom size…. Split out from new_map() so the
-        size policy (scenario_new.validate_tiles) is testable with no dialog
-        at all. Confirms first for anything larger than
-        LARGE_MAP_CONFIRM_TILES -- deliberately only on this path, never for
-        the labelled preset entries (including 480): a preset is a deliberate
-        choice on a size already in-game proven, so a confirm there would
-        just be a nag, while a typed-in custom size has no such history.
+    def new_map_dialog(self) -> None:
+        """File > New Map… (Ctrl+N, GH #243). Confirms discard once, opens
+        NewMapDialog at the last choices (saved again on OK), then asks first
+        for a size above LARGE_MAP_CONFIRM_TILES that is not one of
+        STANDARD_MAP_SIZES -- never for a preset size, including 480, even
+        typed into Custom: a preset is a size already proven in-game, so a
+        confirm there would just be a nag, while any other size has no such
+        history.
 
-        Checks _confirm_discard_changes() up front, before either dialog, and
-        calls _create_new_map() directly rather than new_map() -- new_map()
-        would check discard again, which would mean answering it twice (once
-        here, once more inside new_map()) whenever the document is dirty."""
+        Calls _create_new_map() directly rather than new_map(), which would
+        ask the discard question a second time."""
+        if self._new_map_panel is not None and self._new_map_panel.isVisible():
+            return  # already open
         if not self._confirm_discard_changes():
             return
-        tiles, ok = QInputDialog.getInt(
-            self,
-            "Custom map size",
-            f"Map size (tiles, square, {MIN_MAP_TILES}-{MAX_MAP_TILES}):",
-            BLANK_TEMPLATE_TILES,
-            MIN_MAP_TILES,
-            MAX_MAP_TILES,
-            1,
-        )
-        if not ok:
+        initial = NewMapChoice.from_dict(settings.get_new_map_choice())
+        dialog = self._new_map_panel
+        if dialog is None or dialog.built_for != NewMapDialog.build_key():
+            if dialog is not None:
+                dialog.deleteLater()
+            dialog = self._new_map_panel = NewMapDialog(self, initial)
+        else:
+            dialog.set_initial(initial)
+        accepted = dialog.exec_in(self) == QDialog.Accepted
+        choice = dialog.choice
+        if not accepted or choice is None:
             return
-        if tiles > LARGE_MAP_CONFIRM_TILES:
+        settings.set_new_map_choice(choice.as_dict())
+        if choice.tiles > LARGE_MAP_CONFIRM_TILES and choice.tiles not in STANDARD_MAP_SIZES:
             reply = QMessageBox.question(
                 self,
                 "Large map",
-                f"{tiles}×{tiles} is larger than the {LARGE_MAP_CONFIRM_TILES}×"
+                f"{choice.tiles}×{choice.tiles} is larger than the {LARGE_MAP_CONFIRM_TILES}×"
                 f"{LARGE_MAP_CONFIRM_TILES} standard size. Large maps take "
                 "longer to create and render, and use significantly more "
                 "memory. Create it anyway?",
@@ -18114,18 +18083,23 @@ class ViewerWindow(QMainWindow):
             )
             if reply != QMessageBox.Yes:
                 return
-        self._create_new_map(tiles)
+        self._create_new_map(
+            choice.tiles, terrain_id=choice.terrain_id, elevation=choice.elevation, game_data=choice.game_data
+        )
 
-    def _create_new_map(self, tiles: int) -> None:
-        """The generate-and-load half of File > New Map, shared by new_map()
-        and new_map_custom() -- both of which have already run
+    def _create_new_map(
+        self, tiles: int, *, terrain_id: int = 0, elevation: int = 0, game_data: str = game_dataset.AOE2
+    ) -> None:
+        """The generate-and-load half of File > New Map…, shared by new_map()
+        and new_map_dialog() -- both of which have already run
         _confirm_discard_changes() themselves before calling this, so it
-        does no confirming of its own."""
+        does no confirming of its own. game_data picks the donor, and the
+        load sets the active dataset from the result's own header."""
         try:
             t_generate0 = time.perf_counter()
-            data = blank_scenario_bytes(tiles)
+            data = blank_scenario_bytes(tiles, terrain_id=terrain_id, elevation=elevation, game_data=game_data)
             generate_elapsed = time.perf_counter() - t_generate0
-        except (MapSizeError, BlankGenerationError) as e:
+        except (MapSizeError, BlankFillError, BlankGenerationError) as e:
             self._log_status(f"New Map failed: {type(e).__name__}: {e}")
             QMessageBox.critical(self, "New Map failed", str(e))
             return

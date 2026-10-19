@@ -1,6 +1,6 @@
 """Verifies descape/scenario_new.py: the byte-splice that generates a blank
-N x N .aoe2scenario map from the shipped 120x120 donor, for File > New Map's
-size submenu and Custom size... dialog.
+N x N .aoe2scenario map from the shipped 120x120 donor, for File > New Map…'s
+dialog and the file_new_default keybind.
 
 The centerpiece is test_generated_matches_real_game_export: a 120->120
 self-test is identity by construction (splicing the donor's own size back in
@@ -34,7 +34,9 @@ from pathlib import Path
 
 import pytest
 
+from descape import game_dataset, player_fields
 from descape.scenario_io import (
+    BLANK_ROR_TEMPLATE_PATH,
     BLANK_TEMPLATE_PATH,
     TERRAIN_STRUCT_SIZE,
     load_map_and_units,
@@ -44,10 +46,13 @@ from descape.scenario_new import (
     MAX_MAP_TILES,
     MIN_MAP_TILES,
     STANDARD_MAP_SIZES,
+    BlankFillError,
     BlankGenerationError,
     MapSizeError,
     blank_body,
     blank_scenario_bytes,
+    blank_template_path_for,
+    blank_terrain_struct,
     load_blank_scenario,
     validate_map_size,
     validate_tiles,
@@ -217,6 +222,103 @@ def test_min_map_tiles_loads_blank_and_square(donor) -> None:
     assert scenario.map_is_square
     assert scenario.terrain_write_supported
     assert all(t.terrain_id == 0 and t.elevation == 0 and t.layer == -1 for t in mm.terrain)
+
+
+def test_blank_terrain_struct_replaces_only_terrain_and_elevation() -> None:
+    assert blank_terrain_struct() == BLANK_TERRAIN_STRUCT
+    assert blank_terrain_struct(2, 3) == bytes((2, 3)) + BLANK_TERRAIN_STRUCT[2:]
+    assert blank_terrain_struct(255, 15) == bytes((255, 15)) + BLANK_TERRAIN_STRUCT[2:]
+
+
+@pytest.mark.parametrize(
+    ("terrain_id", "elevation"), ((0, -1), (0, 16), (256, 0), (-1, 0), (True, 0), (0, 1.0))
+)
+def test_blank_fill_out_of_range_raises(donor, terrain_id, elevation) -> None:
+    with pytest.raises(BlankFillError):
+        blank_terrain_struct(terrain_id, elevation)
+    with pytest.raises(BlankFillError):
+        blank_body(donor, 144, terrain_id=terrain_id, elevation=elevation)
+
+
+def test_terrain_and_elevation_fill_changes_only_the_terrain_block(donor) -> None:
+    off = donor.terrain_block_offset
+    end = off + TERRAIN_STRUCT_SIZE * 144 * 144
+    default = blank_body(donor, 144)
+    filled = blank_body(donor, 144, terrain_id=2, elevation=3)
+    assert len(filled) == len(default)
+    assert filled[off:end] == (bytes((2, 3)) + BLANK_TERRAIN_STRUCT[2:]) * (144 * 144)
+    assert filled[:off] == default[:off]
+    assert filled[end:] == default[end:]
+
+
+def test_default_fill_is_byte_identical_to_explicit_zero(donor) -> None:
+    assert blank_body(donor, 168) == blank_body(donor, 168, terrain_id=0, elevation=0)
+    assert blank_scenario_bytes(168, donor) == blank_scenario_bytes(168, donor, terrain_id=0, elevation=0)
+
+
+def test_filled_map_reloads_with_every_tile_set(donor) -> None:
+    scenario = load_blank_scenario(144, donor, terrain_id=2, elevation=3)
+    mm = scenario.map_manager
+    assert mm.map_width == mm.map_height == 144
+    assert scenario.terrain_write_supported
+    assert all(t.terrain_id == 2 and t.elevation == 3 and t.layer == -1 for t in mm.terrain)
+
+
+@pytest.fixture(scope="module")
+def ror_donor():
+    return load_map_and_units(BLANK_ROR_TEMPLATE_PATH)
+
+
+def _camera_values(scenario) -> list[float]:
+    return [float(field.value) for field in player_fields.camera_fields(scenario)]
+
+
+def test_ror_donor_is_a_blank_unit_free_ror_map(ror_donor) -> None:
+    """The preconditions blank_body() and File > New Map… rely on, for the
+    Return of Rome donor saved by the 1.59 RoR editor (GH #243)."""
+    mm = ror_donor.map_manager
+    assert game_dataset.from_variant(ror_donor.game_variant) == game_dataset.ROR
+    assert ror_donor.scenario_version == "1.59"
+    assert mm.map_width == mm.map_height == 120
+    assert ror_donor.map_is_square
+    assert ror_donor.terrain_write_supported
+    assert all(t.terrain_id == 0 and t.elevation == 0 and t.layer == -1 for t in mm.terrain)
+    assert sum(len(units) for units in ror_donor.unit_manager.units) == 0
+    assert player_fields.camera_fields(ror_donor) is not None
+    # The creator name every generated RoR map inherits: DEscape, not the saving player's.
+    assert b"\x08\x00\x00\x00DEscape\x00" in ror_donor.header_bytes
+    assert b"TeslaTank" not in BLANK_ROR_TEMPLATE_PATH.read_bytes()
+
+
+def test_blank_template_path_for_picks_the_game_donor() -> None:
+    assert blank_template_path_for(game_dataset.ROR) == BLANK_ROR_TEMPLATE_PATH
+    assert blank_template_path_for(game_dataset.AOE2) == BLANK_TEMPLATE_PATH
+
+
+def test_ror_fill_reloads_as_ror_with_every_tile_set() -> None:
+    scenario = load_blank_scenario(144, terrain_id=2, elevation=3, game_data=game_dataset.ROR)
+    mm = scenario.map_manager
+    assert game_dataset.from_variant(scenario.game_variant) == game_dataset.ROR
+    assert mm.map_width == mm.map_height == 144
+    assert all(t.terrain_id == 2 and t.elevation == 3 and t.layer == -1 for t in mm.terrain)
+
+
+def test_ror_donor_camera_past_a_small_map_is_clamped_onto_it(ror_donor) -> None:
+    """The RoR donor has a camera at y 90.2, clamped on any map of 91 tiles or fewer; at
+    MIN_MAP_TILES every camera ends inside the map, and the unset -1s stay."""
+    assert max(_camera_values(ror_donor)) > MIN_MAP_TILES - 1
+    small = load_blank_scenario(MIN_MAP_TILES, ror_donor)
+    values = _camera_values(small)
+    assert max(values) <= MIN_MAP_TILES - 1
+    assert values.count(-1.0) == _camera_values(ror_donor).count(-1.0)
+    assert _camera_values(load_blank_scenario(144, ror_donor)) == _camera_values(ror_donor)
+
+
+def test_aoe2_donor_cameras_never_need_a_clamp(donor) -> None:
+    assert max(_camera_values(donor)) <= MIN_MAP_TILES - 1
+    assert blank_body(donor, MIN_MAP_TILES)[: donor.terrain_block_offset - 8] == (
+        donor.decompressed_body[: donor.terrain_block_offset - 8]
+    )
 
 
 def test_refuses_unverified_donor(donor) -> None:

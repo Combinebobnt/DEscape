@@ -169,6 +169,10 @@ def is_in_game_profile(path: Path | str) -> bool:
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 BLANK_TEMPLATE_TILES = 120
 BLANK_TEMPLATE_PATH = TEMPLATE_DIR / f"blank_{BLANK_TEMPLATE_TILES}x{BLANK_TEMPLATE_TILES}.aoe2scenario"
+# The Return of Rome donor (GH #243): a blank 120x120 map saved by the 1.59 RoR
+# editor (header variant 2), with its Grass Green scatter removed by
+# tools/strip_units.py. Not generated: re-save it in game to refresh it.
+BLANK_ROR_TEMPLATE_PATH = TEMPLATE_DIR / f"blank_ror_{BLANK_TEMPLATE_TILES}x{BLANK_TEMPLATE_TILES}.aoe2scenario"
 
 # Sizes with a shipped template on disk in TEMPLATE_DIR -- just the one donor now.
 # The 240x240 and 480x480 exports that used to live here moved to

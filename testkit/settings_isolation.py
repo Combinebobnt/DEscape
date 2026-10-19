@@ -60,6 +60,7 @@ MEMOIZED_GLOBALS = (
     "_game_data",
     "_log_height",
     "_recent_files",
+    "_new_map",
     "_keybinds",
     "_wheel_bindings",
     "_autosave_enabled",

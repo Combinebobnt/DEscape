@@ -85,8 +85,8 @@ def _add(dialog, name: str) -> None:
 
 
 def _rename(dialog, monkeypatch, name: str) -> None:
-    """Drive the Rename button through its QInputDialog, the same way
-    test_new_map.py fakes QInputDialog.getInt for the new-map-size prompt."""
+    """Drive the Rename button through its QInputDialog, faked with
+    getText returning (name, True)."""
     import descape.trigger_panel as trigger_panel_module
 
     monkeypatch.setattr(
