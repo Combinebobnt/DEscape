@@ -89,6 +89,7 @@ def test_can_hold_separates_a_real_host_from_a_capacity_only_row() -> None:
     assert not garrison.can_hold(70)
 
 
+# Stays corpus: a census of game-authored garrisons; the test map's come from its generator.
 @pytest.mark.corpus
 def test_every_corpus_occupant_is_accepted_by_its_host(scenario_path) -> None:
     """The measurement the class-to-bit mapping was derived from (2026-09-21:

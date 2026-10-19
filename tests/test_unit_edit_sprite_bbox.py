@@ -104,18 +104,24 @@ def art(tmp_path, monkeypatch):
 # --- helpers ---------------------------------------------------------------
 
 
+_STYLE_CACHES = {"Stepped": IsoChunkCache, "Sloped": SlopedChunkCache, "Flat": FlatChunkCache}
+
+
 def _window(style: str, slope: bool = False):
-    """The blank template in `style`, Units mode, sprites on. slope raises a
-    cone at (40, 40) so a footprint there spans several elevations."""
+    """The blank template in `style` (Flat: top-down, Isometric View off),
+    Units mode, sprites on. slope raises a cone at (40, 40) so a footprint
+    there spans several elevations."""
     window = conftest.blank_window()
     if slope:
         set_tile_elevation(window.scenario.map_manager, 40, 40, 3)
+    if style == "Flat":
+        window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText(style)
     if slope:
         window._render_current()
     window.mode_combo.setCurrentText("Units")
     assert window._cache.sprites_enabled
-    assert isinstance(window._cache, IsoChunkCache if style == "Stepped" else SlopedChunkCache)
+    assert isinstance(window._cache, _STYLE_CACHES[style])
     return window
 
 
@@ -137,7 +143,9 @@ def _fresh(window, mip: int, rect=None) -> np.ndarray:
     from the window's current scenario, filter, layers and grid."""
     cache = window._cache
     common = {"unit_filter": cache.unit_filter, "sprites": True, "layers": cache.layers}
-    if isinstance(cache, SlopedChunkCache):
+    if isinstance(cache, FlatChunkCache):
+        fresh = FlatChunkCache(window.scenario, cache.tile_px, **common)
+    elif isinstance(cache, SlopedChunkCache):
         fresh = SlopedChunkCache(
             window.scenario, cache.elevations.copy(), cache.corner_rise.copy(), cache.proj, cache.tile_px, **common
         )
@@ -615,6 +623,74 @@ def test_a_convert_of_a_reshaped_wall_and_a_gate_is_sized_tight(style, mip, art,
         assert seen and all(o.get(key) == now[key] for o in seen), "the post extent resolved without the real overrides"
         spy.assert_tight(mip)
         assert not np.array_equal(_check(window, mip, "wall and gate convert"), before)
+    finally:
+        conftest.close_window(window)
+
+
+def _owners_in_index(window, units) -> list[int]:
+    """Each unit's owner as the pick index reports it."""
+    index = window.map_view._unit_index
+    return [next((e.player_id for e in index.entries if e.unit is unit), None) for unit in units]
+
+
+def _check_numpy(window, step: str) -> np.ndarray:
+    """Level 0 as the cache serves it, equal to a fresh numpy cache's."""
+    import os
+
+    from descape import composite_backend
+
+    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
+    now = _level(window, 0)
+    with composite_backend.use_backend("numpy"):
+        fresh = _fresh(window, 0)
+    if not np.array_equal(now, fresh):
+        ys, xs = np.nonzero((now != fresh).any(axis=2))
+        pytest.fail(f"{step}: {len(xs)} px differ from a fresh numpy render, x {xs.min()}..{xs.max()}, y {ys.min()}..{ys.max()}")
+    return now
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+def test_a_convert_stroke_its_undo_and_redo_match_a_fresh_numpy_render(style, art, monkeypatch) -> None:
+    """TASK-052: a Convert drag across three team-coloured heroes and the
+    tiles between them, through the real stroke handlers, at mip 0 in view.
+    - before release, after the first hero and the throttled refresh (the timer's handler), the level changed
+      and equals a fresh numpy render
+    - the stroke records one undo step
+    - after the stroke, its undo and its redo, every hero's owner in the scenario and in the pick index is
+      2, 1 and 2, and the level equals a fresh numpy render
+    - the stroke and the redo change the level from its pre-stroke pixels, and the undo restores them"""
+    window = _window(style)
+    try:
+        heroes = [_add(window, 1, HERO, 60.5 + 3 * i, 60.5) for i in range(3)]
+        window.units_panel.select_owner(2)
+        window.brush_size_spin.setValue(1)
+        _show_level(window, monkeypatch, 0)
+        records = len(window.edit_history.records)
+        start = _level(window, 0)
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(60, 60)
+        assert heroes[0] in window.scenario.unit_manager.units[2]
+        window._flush_convert_refresh()
+        mid = _check_numpy(window, "mid-stroke")
+        assert not np.array_equal(mid, start), "the first hero's recolour was not on screen before release"
+        for x in range(61, 67):
+            window._convert_stroke_tile(x, 60)
+        window._end_convert_stroke()
+        assert len(window.edit_history.records) == records + 1
+
+        stroked = None
+        for step, act, owner in (("stroke", None, 2), ("undo", window.undo, 1), ("redo", window.redo, 2)):
+            if act is not None:
+                act()
+            assert all(u in window.scenario.unit_manager.units[owner] for u in heroes), f"{step}: scenario owners"
+            assert _owners_in_index(window, heroes) == [owner] * 3, f"{step}: pick index owners"
+            now = _check_numpy(window, step)
+            assert np.array_equal(now, start) is (owner == 1), f"{step}: pixels vs the pre-stroke level"
+            if stroked is None:
+                stroked = now
+            assert owner == 1 or np.array_equal(now, stroked), f"{step}: differs from the stroke's pixels"
     finally:
         conftest.close_window(window)
 

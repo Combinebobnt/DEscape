@@ -480,7 +480,6 @@ def test_one_begin_commit_pair_is_one_undo_step() -> None:
 # -- corpus -------------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_scatter_round_trips_on_a_real_scenario(scenario_path: Path, tmp_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:

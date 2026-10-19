@@ -63,6 +63,7 @@ from descape.scenario_io import (
     parse_triggers,
 )
 from descape.scenario_write import WriteBlockedError
+from testkit.zlib_runtime import warn_if_not_stock
 
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "v159_units_triggers.aoe2scenario"
 
@@ -219,6 +220,7 @@ def main() -> None:
     data = build_fixture_bytes()
     args.out.write_bytes(data)
     verify_fixture(args.out)
+    warn_if_not_stock(str(args.out))
     print(f"{args.out}: {len(data)} bytes, verified {len(UNITS)} units and {TRIGGER_COUNT} triggers")
 
 

@@ -150,12 +150,10 @@ def test_trigger_counts_are_none_not_zero_when_the_parse_failed() -> None:
     assert player_stats.triggers_without_player(loaded) is None
 
 
-@pytest.mark.corpus
 def test_counts_partition_every_player_of_every_corpus_file(scenario_path) -> None:
     _assert_partition(load_map_and_units(scenario_path), scenario_path.name)
 
 
-@pytest.mark.corpus
 def test_trigger_counts_follow_the_parse_outcome(scenario_path) -> None:
     """None exactly when the Triggers section doesn't parse (the 1.54/3.9
     set), never zeros; otherwise every trigger is counted somewhere."""

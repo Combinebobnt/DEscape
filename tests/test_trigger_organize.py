@@ -466,7 +466,6 @@ def test_section_header_of_names_the_containing_section():
     assert section_header_of(names, [0, 1, 2], 2) == 1
 
 
-@pytest.mark.corpus
 def test_split_divider_agrees_with_is_divider_across_the_corpus(scenario_path) -> None:
     from descape.scenario_io import load_map_and_units, parse_triggers
 
@@ -484,7 +483,6 @@ def test_split_divider_agrees_with_is_divider_across_the_corpus(scenario_path) -
         assert is_divider(retitle_divider(name, "Renamed")), name
 
 
-@pytest.mark.corpus
 def test_split_tag_agrees_with_parse_tag_across_the_corpus(scenario_path) -> None:
     from descape.scenario_io import load_map_and_units, parse_triggers
 

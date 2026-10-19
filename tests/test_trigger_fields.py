@@ -143,9 +143,9 @@ def test_list_ness_is_per_type_not_per_field_name() -> None:
 
 
 def test_a_list_field_keeps_its_kind_over_its_presentation() -> None:
-    """armour_attack_class presents as DamageClass but defaults to [] on the
-    types that use it as a list. The list shape wins; a combo box cannot hold
-    two values."""
+    """armour_attack_class presents as DamageClass; on an entry that defaults
+    it to [] (the library's 77/78 did before TASK-395's fix) the list shape
+    wins, since a combo box cannot hold two values."""
     entry = _entry(["armour_attack_class"], {"armour_attack_class": []})
     spec = trigger_fields.field_specs(entry, {"armour_attack_class": "DamageClass"}, "effect_type")[0]
     assert spec.kind == trigger_fields.INT_LIST

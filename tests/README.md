@@ -12,13 +12,14 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 run_all_tests.bat                                   # same, for Windows
 ./run_all_tests.sh -n 0                             # same tier, serially -- ~29 min
 .venv/bin/python3 -m pytest                         # same tier, invoked directly: serial, see below
-bash tools/ci_parity.sh [tag]                       # same tier as CI sees it (corpus, install, examples/ hidden); run before every tag
+bash tools/ci_parity.sh [tag]                       # same tier plus the test map items, as CI sees them (corpus, install, examples/ hidden); run before every tag
 
-./run_corpus_quick.sh                                # corpus/gui tier, QUICK_CORPUS_NAMES only -- ~11 min, the default
-.venv/bin/python3 -m pytest -m "corpus or slow"      # same thing, invoked directly (no flag needed)
+./run_corpus_quick.sh                                # default tier plus the test map and slow items, in parallel; no examples/ needed
+.venv/bin/python3 -m pytest -m "not corpus"          # same thing, invoked directly: serial
+.venv/bin/python3 -m pytest -m test_map              # the test map items alone
 
-./run_corpus_stress.sh                               # corpus/gui tier, the FULL corpus -- ~27 min
-.venv/bin/python3 -m pytest -m "corpus or slow" --corpus-full
+./run_corpus_stress.sh                               # corpus/gui tier, the FULL corpus, plus the test map items -- ~27 min
+.venv/bin/python3 -m pytest -m "corpus or slow or test_map" --corpus-full
 
 .venv/bin/python3 -m pytest --scenario-dir=/path/to/other/examples -m "corpus or slow" [--corpus-full]
 ```
@@ -100,13 +101,14 @@ problem. `conftest.py`'s `QUICK_CORPUS_NAMES` (`2_Joan_coop_1`,
 `C2_ElCid_coop_1`, `F7_2_Dos Pilas` -- a small cross-section of real
 map-size bands, including the 480x480 outlier that dominates full-corpus
 runtime the most -- plus the 200x200 scenario-1.37 `0_June_Event_Scenario`,
-the only file the Number of Players gate refuses) is what `-m "corpus or slow"` runs **by default now**,
-with no flag needed. `F7_3_York` (220x220) was dropped from this set
+the only file the Number of Players gate refuses) is what `-m "corpus or slow"` runs
+when invoked directly with no flag. `F7_3_York` (220x220) was dropped from this set
 2026-08-13; runtime dropped to about 11 minutes (measured: 11m02s), down
 from the old ~15 min (13m40s) figure. Pass `--corpus-full` for the
 complete corpus before a release or after touching rendering/write-path
 internals specifically -- routine feature work only needs the quick
-default. When iterating on a change that only touches one or two scripts,
+default. `run_corpus_quick` runs no corpus file at all: the `examples/` maps
+run only in `run_corpus_stress`. When iterating on a change that only touches one or two scripts,
 `-k` narrows further on top of either scope -- e.g. `-m "corpus or slow"
 -k "viewer_pick or copy_paste"` re-verifies just the gui-tier tests against
 the quick set in under a minute. Check which modules a change can possibly
@@ -119,7 +121,8 @@ assuming the full corpus needs re-running.
 |---|---|---|
 | _(none)_ | synthetic + fixture-based tests | runs |
 | `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~11 min) unless `--corpus-full` (~27 min) is also passed |
-| `slow` | full-render comparisons, O(pixels) sweeps | deselected (unused so far -- no Phase 1 entry needed it) |
+| `slow` | full-render comparisons, O(pixels) sweeps | deselected |
+| `test_map` | runs on the generated test map or its game resave (see below) | deselected; `run_corpus_quick` and `run_corpus_stress` add it, `-m test_map` runs it alone with no `examples/` |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
 | `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms, and the Units, Players, Diplomacy and View info-page minimum-width checks | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
 
@@ -146,12 +149,29 @@ A `pytest_terminal_summary` hook in `conftest.py` prints how much of the
 run was deselected/skipped, so an empty `examples/` or a default `-m` run
 doesn't silently read as full coverage.
 
-`tests/test_scenario_new.py`'s one `corpus`-marked test
-(`test_map_size_precedes_terrain_block_in_every_corpus_file`) is a cheap
-per-file byte-offset assertion, not a render -- unlike most of this suite's
-`corpus` tier, it doesn't meaningfully add to the ~27-minute runtime.
+A per-file test (one that takes `scenario_path`) without a `corpus` mark
+runs first on the generated test map and its game resave, as `[map240]`
+and `[test_map_game_resave]` items marked `test_map`, then on each corpus
+file as a `corpus`-marked item. So the default tier runs exactly what it
+ran before the map existed, and `run_corpus_quick` and `run_corpus_stress`
+add the map items. A named-file test's map sibling (see Fixtures), and every test in
+`test_test_map_fixture.py` and `test_test_map_game_resave.py`, carries
+`test_map` itself; `test_test_map_collection.py` fails on a test that reads
+`conftest.TEST_MAP_PATH` or `TEST_MAP_RESAVE_PATH` without it. A test that keeps
+`corpus` (a census of real files, a real-file baseline, an install-only
+check, or one that would only skip on the map) gets the corpus files alone,
+with a one-line comment saying why.
 
 ## Fixtures
+
+Each generated file below is pinned twice against its generator, as is the
+New Map splice against the real 240/480 exports: header plus decompressed
+body, which holds on any zlib, and a `..._byte_identical`
+sibling on the compressed bytes, which skips (`testkit/zlib_runtime.py`)
+when the interpreter's zlib is zlib-ng, since its deflate output differs
+from stock zlib's while inflating to the same body. A sibling failing on CI
+while its partner passes means the file was regenerated off stock zlib:
+regenerate it on stock zlib.
 
 - `descape/templates/blank_120x120.aoe2scenario`
   (`descape/scenario_io.BLANK_TEMPLATE_SIZES`) -- tracked in git so the
@@ -173,23 +193,12 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   golden_blank_120x120.aoe2scenario` is the older, already-unit-free 120x120
   export that predates that discovery; kept as the strip tool's own no-op
   self-test golden reference (`tests/test_strip_units.py`).
-  On the 120x120 donor specifically, every batch_api.py building-dependent
-  check (6 of them:
-  `check_raise_elevation_under_buildings`, `check_raise_elevation_clamp`,
-  `check_raise_elevation_off_map`, `check_raise_elevation_under_many`,
-  `check_raw_unit_mutation_does_not_persist`,
-  `check_unit_edit_persists_through_the_model`) returns `None` ("no player
-  has any on-map building") on this file, which the adapter maps to
-  `pytest.skip`, not a pass. Those 6 show up as SKIPPED in the corpus-tier
-  run against the real `examples/` corpus too, on this same file -- not a
-  regression, a known gap. `tests/fixtures/units_120x120.aoe2scenario`
-  below has a real building, but it does **not** close this gap:
-  `tools/verify_batch_api.py`'s checks are `tier=("corpus",)` and
-  parametrized only over `examples/*.aoe2scenario`
-  (`tests/conftest.py`'s `pytest_generate_tests`), which never globs
-  `tests/fixtures/`. A fixture *inside* `examples/` with real buildings/
-  units/water/elevation variation would close it; see the plan's "Larger
-  fixtures" section for the exact ask (not yet requested).
+  The six building-dependent `verify_batch_api` checks would return `None`
+  ("no player has any on-map building") on this unit-free template, which
+  the adapter maps to `pytest.skip`, so it is not their input. The generated test map
+  (`tests/fixtures/test_map_240x240.aoe2scenario`) has buildings, water
+  beside dirt and elevation, so all nine `verify_batch_api` path checks now
+  run on it in the quick and stress tiers (`map240`).
 - `tests/fixtures/blank_120x120_v158.aoe2scenario`: the 1.58 donor, and the
   shipped template's own bytes until 1.59. A real in-game "Blank" map export,
   unit-stripped via `tools/strip_units.py`, since that map style actually
@@ -213,7 +222,8 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   donor above), moved from `descape/templates/` once `descape/scenario_new.py`
   could reproduce them from the 120x120 donor. **Byte oracles, not
   regenerable assets** -- `tests/test_scenario_new.py`'s central test
-  reproduces them from the 1.58 donor and compares byte-for-byte; regenerating
+  reproduces them from the 1.58 donor and compares byte-for-byte (header and
+  decompressed body everywhere, compressed bytes on stock zlib); regenerating
   these files *from* the donor would make that comparison a tautology and
   silently stop testing anything. If they're ever replaced, it must be with
   a fresh real game export, never a generator run.
@@ -280,6 +290,41 @@ per-file byte-offset assertion, not a render -- unlike most of this suite's
   `reference_id`s have a deliberate gap, and `next_unit_id_to_place` sits
   above every assigned id, mirroring every real corpus file (a naive
   `len(units)`-based add path fails on either).
+- `tests/fixtures/test_map_240x240.aoe2scenario`: a 240x240 v1.59 map of
+  every catalog object, terrain, trigger condition and effect plus bug-bait
+  regions (map edges and corners, stacks, cliffs, walls, gates, garrisons,
+  odd values), built through the app's own edit models and tools from the
+  shipped template by `tools/gen_test_map.py`; regenerate with
+  `.venv/bin/python3 tools/gen_test_map.py` and commit the result. **A test
+  input, not a byte oracle**: every serialization change regenerates it.
+  64,437 bytes. `tests/test_test_map_fixture.py` pins it against a fresh
+  build (about 2.6 s), checks it holds every catalog and vocabulary entry,
+  and holds each of the generator's `REGIONS` and `SECTIONS` to its one-line
+  "why". Those checks are `test_map`, so the default tier does not notice a
+  stale map (CI and `tools/ci_parity.sh` run them as a second step): after
+  a serialization or `tools/gen_test_map.py` change, run
+  `./run_corpus_quick.sh` (or `-m test_map` alone). The run also writes
+  `build/test_map_bisect/` (each risky region or section alone, for an
+  in-game check); `--no-bisect` skips that.
+  **`REGIONS` is the contract for finding a feature**: a test that needs
+  one (the walls, a gate, the elevation staircase) reads its rectangle from
+  `conftest.load_verify_module("gen_test_map").REGIONS` rather than
+  hard-coding tiles, and the inventory test keeps each region holding what
+  its "why" says. Besides the `[map240]` items of per-file tests, a corpus
+  test that names a real file or takes `corpus_files` may have a separate
+  `test_map` sibling on the map next to it; the corpus original stays
+  alongside it.
+- `tests/fixtures/test_map_game_resave.aoe2scenario`: the test map opened
+  and saved once in the AoE2:DE 1.59 editor. Never regenerated. Every
+  per-file test that runs on the map also runs on it (param id
+  `test_map_game_resave`), and `tests/test_test_map_game_resave.py`
+  compares the two, listing each change the game makes on save. When a
+  generator change moves one of those, update the expected drift there or
+  refresh the resave with a new in-game save.
+- `tests/fixtures/test_map_script.xs`: an empty-`main()` stub for the
+  `script_name` the map names. DEscape never embeds script content, so to
+  open the map in AoE2:DE without an "XS: Error 0354: failed to open file"
+  dialog, copy it into the game profile's `resources/_common/xs/` first.
 - `examples/` -- untracked, gitignored, opt-in. The real 18-file corpus
   (a mix of scenario versions, sizes up to 480x480). Absent on a fresh
   clone or worktree; the corpus tier reports why it skipped rather than
@@ -346,7 +391,9 @@ to `tmp_path` before anything writes to it), in the default tier. Mark a test `g
 that needs a live `ViewerWindow`, and `corpus` only when it needs the real
 scenario corpus. Rule of thumb: a check
 belongs in the default tier unless it needs the real corpus or takes more
-than a second. New `tools/verify_*.py` scripts are not the convention
+than a second. A test that reads the test map is marked `test_map` whatever
+its runtime, so it runs in the quick and stress tiers, never the default (see Tiers).
+New `tools/verify_*.py` scripts are not the convention
 going forward.
 
 ## Migration status

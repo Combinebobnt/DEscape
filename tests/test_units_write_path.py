@@ -107,7 +107,6 @@ def test_the_zero_unit_template_is_unaffected(tmp_path: Path) -> None:
     assert out.read_bytes() == BLANK_TEMPLATE_PATH.read_bytes()
 
 
-@pytest.mark.corpus
 def test_zero_edit_save_is_byte_identical_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:
@@ -199,7 +198,6 @@ def test_every_mapped_option_offset_sits_before_units_block_offset() -> None:
         )
 
 
-@pytest.mark.corpus
 def test_every_mapped_option_offset_sits_before_units_block_offset_across_the_corpus(
     scenario_path: Path,
 ) -> None:
@@ -237,6 +235,7 @@ def test_a_patch_landing_inside_the_units_region_is_refused_not_dropped(tmp_path
         has_player_count_edit = False
         has_disables_edits = False
         has_personality_edits = False
+        has_script_name_edit = False
         specs = model.specs
 
         def serialize_patches(self):

@@ -87,6 +87,7 @@ MEMOIZED_GLOBALS = (
     "_trigger_status_colors",
     "_trigger_status_marker",
     "_trigger_status_color_ok_rows",
+    "_toolbar_style",
     "_terrain_style",
     "_view_layers",
     "_mod_art_excluded",

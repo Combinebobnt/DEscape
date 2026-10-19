@@ -702,3 +702,255 @@ def test_the_unit_outline_paints_on_the_house_footprint_in_every_style(tmp_path,
             assert abs(got - want) < 0.5, (style, ring, footprint)
     finally:
         conftest.close_window(window)
+
+
+# -- the owed in-app passes, offscreen (TASK-087) ------------------------------------
+
+
+def _area_tiles(area):
+    x1, y1, x2, y2 = area
+    return [(tx, ty) for tx in range(x1, x2 + 1) for ty in range(y1, y2 + 1)]
+
+
+def _tiles_bounds(view, tiles):
+    bounds = None
+    for tile in tiles:
+        rect = view._tile_polygon(*tile).boundingRect()
+        bounds = rect if bounds is None else bounds.united(rect)
+    return bounds
+
+
+def _ring_around(view, role: str, area):
+    """The one subpath of `role`'s ring whose bounds match `area`'s tiles, or None."""
+    from PyQt5.QtGui import QPolygonF
+
+    want = _tiles_bounds(view, _area_tiles(area))
+    for polygon in _items_by_role(view)[role].path().toSubpathPolygons():
+        got = QPolygonF(polygon).boundingRect()
+        if all(abs(g - w) < 0.5 for g, w in zip(got.getCoords(), want.getCoords(), strict=True)):
+            return QPolygonF(polygon)
+    return None
+
+
+def _tile_centre(view, tile):
+    return view._tile_polygon(*tile).boundingRect().center()
+
+
+_STYLE_CASES = [("Flat", False), ("Flat", True), ("Stepped", False), ("Sloped", False)]
+
+
+@pytest.mark.parametrize(("style", "iso"), _STYLE_CASES)
+def test_the_patrol_is_drawn_over_exactly_its_tiles_with_its_mark_run_and_label_in_every_style(style: str, iso: bool) -> None:
+    """GH #41 steps 2 and 5: the Patrol (area 30-34 x 40-46, location 60,50) selected in
+    Triggers, then View mode and the style (Flat, Flat + Isometric View, Stepped, Sloped).
+
+    Pass conditions, in that style's own tile geometry:
+    - the strong outline has a ring whose bounds are exactly the area's 35 tiles' (both corner
+      tiles included), and the strong fill is the same path;
+    - every area tile's centre is inside that ring and every tile bordering the area is not;
+    - the location's mark is drawn inside the location tile (its centre is the tile's centre);
+    - the run is one segment from the area centre tile's anchor to the location's anchor;
+    - the one label reads the run's distance and is pinned at the location's anchor.
+    """
+    from PyQt5.QtCore import QPointF, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import ruler
+
+    gen = _gen()
+    area, location = gen.GEOMETRY_PATROL_AREA, gen.GEOMETRY_PATROL_LOCATION
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*PATROL)
+        window.mode_combo.setCurrentText("View")
+        window.iso_action.setChecked(iso)
+        window.terrain_style_combo.setCurrentText(style)
+        QApplication.processEvents()
+        assert view._terrain_style == ("stepped" if iso else style.lower())
+        assert view._trigger_emphasis == frozenset({PATROL})
+
+        ring = _ring_around(view, "outline_strong", area)
+        assert ring is not None, f"no strong ring over the patrol's tiles in {style} iso={iso}"
+        roles = _items_by_role(view)
+        assert roles["fill_strong"].path() == roles["outline_strong"].path()
+        x1, y1, x2, y2 = area
+        for tile in _area_tiles(area):
+            assert ring.containsPoint(_tile_centre(view, tile), Qt.OddEvenFill), tile
+        border = [(x, y) for x in range(x1 - 1, x2 + 2) for y in (y1 - 1, y2 + 1)]
+        border += [(x, y) for x in (x1 - 1, x2 + 1) for y in range(y1, y2 + 1)]
+        for tile in border:
+            assert not ring.containsPoint(_tile_centre(view, tile), Qt.OddEvenFill), tile
+
+        mark_centre = _mark_centre(view, location)
+        assert view._tile_polygon(*location).containsPoint(mark_centre, Qt.OddEvenFill)
+        assert roles["marks_strong"].path().contains(mark_centre)
+        middle = ruler.measure((32, 43), location)
+        a, b = view._ruler_anchor((32, 43)), view._ruler_anchor(location)
+        segments = [p for p in roles["marks_strong"].path().toSubpathPolygons() if p.count() == 2]
+        assert any(
+            (QPointF(p[0]) - a).manhattanLength() < 0.01 and (QPointF(p[1]) - b).manhattanLength() < 0.01 for p in segments
+        ), "no run segment from the area centre to the location"
+        (label,) = [i for i in view.trigger_overlay_items() if i.data(0) == "label"]
+        assert label.text() == ruler.format_measurement(middle)
+        assert (label.pos() - b).manhattanLength() < 0.01
+    finally:
+        conftest.close_window(window)
+
+
+def test_another_entry_draws_strongest_the_patrol_fades_but_stays_and_the_trigger_row_draws_all_strong() -> None:
+    """GH #41 step 4. Pass conditions:
+    - with the condition area selected, its ring is strong and the Patrol's ring is in the dim
+      outline, not the strong one;
+    - with the trigger row clicked, it is the only selected row, no dim area roles are drawn
+      and both rings are strong.
+    """
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+        panel = window.trigger_panel
+        panel.select_entry(*PATROL)
+        panel.select_entry(*CONDITION_AREA)
+        assert view._trigger_emphasis == frozenset({CONDITION_AREA})
+        roles = _items_by_role(view)
+        strong, dim = _ring_polygons(roles["outline_strong"].path()), _ring_polygons(roles["outline_dim"].path())
+        assert _area_ring(view, gen.GEOMETRY_CONDITION_AREA) in strong
+        assert _area_ring(view, gen.GEOMETRY_PATROL_AREA) in dim
+        assert _area_ring(view, gen.GEOMETRY_PATROL_AREA) not in strong
+
+        # A plain click on the entry list's own "Trigger" row. Not setCurrentItem(): under
+        # ExtendedSelection that reads QApplication.keyboardModifiers(), which an earlier
+        # QTest Ctrl+key click in the same process can leave latched, turning it into a Ctrl-click.
+        tree = panel.entry_tree
+        root = tree.topLevelItem(0)
+        assert root.data(0, Qt.UserRole) == ("trigger", -1)
+        # The short entry list has scrolled the root out of view, as a user would scroll it back.
+        tree.scrollToItem(root)
+        rect = tree.visualItemRect(root)
+        point = QPoint(rect.left() + 5, rect.center().y())
+        assert tree.itemAt(point) is root, (rect, tree.viewport().size())
+        QTest.mouseClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        assert tree.currentItem() is root
+        assert tree.selectedItems() == [root]
+        assert panel.current_entry_ref() is None
+        assert view._trigger_emphasis is None
+        roles = _items_by_role(view)
+        assert not {"outline_dim", "fill_dim"} & set(roles)
+        strong = _ring_polygons(roles["outline_strong"].path())
+        assert {_area_ring(view, gen.GEOMETRY_CONDITION_AREA), _area_ring(view, gen.GEOMETRY_PATROL_AREA)} <= strong
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_outline_climbs_a_raised_corner_tile(style: str) -> None:
+    """GH #41 step 6. Pass conditions, the condition area's topmost on-screen tile raised with
+    the Elevation tool: before and after, the strong ring's bounds are exactly the area tiles'
+    own current polygons, and its top edge rose with the raised tile's top.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    gen = _gen()
+    area = gen.GEOMETRY_CONDITION_AREA
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*CONDITION_AREA)
+        before = _ring_around(view, "outline_strong", area)
+        assert before is not None
+        top_tile = min(_area_tiles(area), key=lambda t: view._tile_polygon(*t).boundingRect().top())
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*top_tile, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        assert window.scenario.map_manager.get_tile(*top_tile).elevation > 0
+        after = _ring_around(view, "outline_strong", area)
+        assert after is not None, "the ring no longer matches the area tiles' raised polygons"
+        raised_top = view._tile_polygon(*top_tile).boundingRect().top()
+        assert after.boundingRect().top() < before.boundingRect().top()
+        assert abs(after.boundingRect().top() - raised_top) < 0.5
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_four_trigger_overlay_swatches_recolour_the_drawing_at_once(monkeypatch) -> None:
+    """GH #41 step 11, through Settings > Appearance's own swatches (colour dialog answered).
+
+    Pass conditions, the Task Object effect selected (an area-free run to a referenced house,
+    plus the patrol area dimmed): after each swatch, the items that colour inks carry it at
+    once: the area outline pen, the area fill's RGB (its alpha kept), the marks/run pen and the
+    run label, and the referenced-unit outline pen.
+    """
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog
+
+    from descape.viewer import SettingsDialog
+
+    gen = _gen()
+    window = _window()
+    dialog = SettingsDialog(window)
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entries([PATROL, ("effect", gen.TASK_OBJECT_EFFECT)])
+        picks = {
+            "trigger_area_outline": "#ff00ff",
+            "trigger_area_fill": "#00ffff",
+            "trigger_run": "#ffff00",
+            "trigger_unit_ref": "#0000ff",
+        }
+        for color_id, hex_str in picks.items():
+            monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, h=hex_str, **k: QColor(h)))
+            dialog._overlay_swatches[color_id].click()
+            assert _settings_color(color_id) == hex_str
+        roles = _items_by_role(view)
+        assert roles["outline_strong"].pen().color().name() == "#ff00ff"
+        fill = roles["fill_strong"].brush().color()
+        assert fill.name() == "#00ffff" and fill.alpha() == view.TRIGGER_FILL_ALPHA
+        assert roles["marks_strong"].pen().color().name() == "#ffff00"
+        labels = [i for i in view.trigger_overlay_items() if i.data(0) == "label"]
+        assert labels and all(i.brush().color().name() == "#ffff00" for i in labels)
+        assert roles["units_strong"].pen().color().name() == "#0000ff"
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def _settings_color(color_id: str) -> str:
+    from descape import settings
+
+    return settings.get_overlay_color(color_id)
+
+
+def test_opening_another_scenario_then_closing_leaves_nothing_of_the_drawing() -> None:
+    """GH #41 step 12. Pass conditions: with the Patrol drawn, opening the blank template
+    drops every overlay item and shape, and leaves no trigger-overlay item in the scene; File >
+    Close afterwards leaves none either.
+    """
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*PATROL)
+        assert view.trigger_overlay_items()
+        roles = {"label", *(f"{k}_{s}" for k in ("fill", "outline", "marks", "units") for s in ("strong", "dim"))}
+
+        def leftovers() -> list:
+            return [i for i in view.scene().items() if i.data(0) in roles] if view.scene() is not None else []
+
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        assert window.scenario is not None and window.scenario.path == BLANK_TEMPLATE_PATH
+        assert view._trigger_shapes == [] and view.trigger_overlay_items() == []
+        assert leftovers() == []
+        window.close_scenario()
+        assert view._trigger_shapes == [] and view.trigger_overlay_items() == []
+        assert leftovers() == []
+    finally:
+        conftest.close_window(window)

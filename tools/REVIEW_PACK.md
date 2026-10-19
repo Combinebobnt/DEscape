@@ -71,12 +71,17 @@ not vacuous.
 - **Anything whose oracle is AoE2:DE itself** - ramp geometry, team-colour
   multiply against the running game, anything calibrated against real captures.
   Rendering an app's own output only ever proves the app agrees with itself.
-- **Anything gated on an in-app acceptance pass**, or on the user's own taste.
+- **An in-app acceptance pass, on the review alone.** Such a check, render look
+  included, closes only on an offscreen test plus a capture of the running
+  app. Any look verdict on that capture runs as a review pack under this
+  protocol. The AoE2:DE cases above, perf feel and the user's own taste stay
+  with the user.
 - **Anything countable.** Extent, pixel equality, component counts and bbox
   coverage belong in an assertion, where they cannot drift.
 
-A review can *disambiguate a symptom* so a fix can be designed. That is its
-whole remit.
+A review can *disambiguate a symptom* so a fix can be designed, and it can
+give the look verdict on a capture that closes an in-app check beside an
+offscreen test. On its own it closes nothing.
 
 ## Framing rules, enforced by `--check`
 

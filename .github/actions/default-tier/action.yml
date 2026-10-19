@@ -1,6 +1,7 @@
 name: Default test tier (Linux)
 description: >
-  Runs the default pytest tier under xvfb with the native kernel required.
+  Runs the default pytest tier, then the test map items, under xvfb with the
+  native kernel required.
   Assumes the qt-linux-libs and install-and-build actions already ran.
 runs:
   using: composite
@@ -10,3 +11,10 @@ runs:
       env:
         DESCAPE_REQUIRE_NATIVE: '1'
       run: xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup
+
+    # pytest.ini leaves test_map out of the default tier; it needs no examples/.
+    - name: Run the test map items
+      shell: bash
+      env:
+        DESCAPE_REQUIRE_NATIVE: '1'
+      run: xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup -m "test_map and not corpus"

@@ -1,7 +1,8 @@
 @echo off
-REM Runs the corpus/gui pytest tier against the default QUICK_CORPUS_NAMES
-REM subset (~15 min) -- see tests/README.md and tests/conftest.py. For the
-REM complete corpus (~27 min), use run_corpus_stress.bat instead.
+REM Runs the default tier plus the generated test map's test_map items and
+REM the slow checks, in parallel like run_all_tests.bat. No examples/ map runs
+REM here: the real corpus is run_corpus_stress.bat's (~27 min). See
+REM tests/README.md and tests/conftest.py.
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
@@ -9,4 +10,4 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-.venv\Scripts\python.exe -m pytest -m "corpus or slow" %*
+.venv\Scripts\python.exe -m pytest -n auto --maxprocesses 8 --dist loadgroup -m "not corpus" %*

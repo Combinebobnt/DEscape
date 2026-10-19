@@ -415,6 +415,51 @@ def test_browse_persists_the_folder_and_the_next_tick_writes_there(tmp_path, mon
         conftest.close_window(window)
 
 
+def test_after_use_default_the_next_tick_writes_to_the_config_folder_and_recover_lists_both_folders(
+    tmp_path, monkeypatch
+) -> None:
+    """GH #127, after Browse then Use Default.
+
+    Pass conditions:
+    - a tick with the custom folder set writes one slot there and none in the config folder;
+    - after Use Default, the next tick (after a fresh edit) writes one slot in the config
+      folder (autosave.autosave_dir()) and leaves the custom folder at one;
+    - File > Recover from Autosave lists exactly those two slots, one from each folder.
+    """
+    from PyQt5.QtCore import Qt
+
+    from descape.viewer import SettingsDialog
+
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    window, _target = _window_on(tmp_path)
+    dialog = SettingsDialog(window)
+    try:
+        _pick_folder(monkeypatch, custom)
+        dialog.autosave_dir_browse_button.click()
+        _dirty(window)
+        window._autosave_tick()
+        assert len(_custom_slots(custom)) == 1
+        assert _slots() == []
+
+        dialog.autosave_dir_default_button.click()
+        assert settings.get_autosave_dir() == ""
+        _dirty(window)
+        window._autosave_tick()
+        assert len(_slots()) == 1
+        assert _slots()[0].parent == autosave.autosave_dir() == tmp_path / autosave.AUTOSAVE_DIRNAME
+        assert len(_custom_slots(custom)) == 1
+
+        window.show_recover_autosave()
+        tree = window._recover_dialog.tree
+        listed = {tree.topLevelItem(i).data(0, Qt.UserRole).path for i in range(tree.topLevelItemCount())}
+        assert tree.topLevelItemCount() == 2
+        assert listed == {*_custom_slots(custom), *_slots()}
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_a_subscribed_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
     from descape.viewer import SettingsDialog, status_color
 

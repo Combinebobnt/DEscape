@@ -509,3 +509,177 @@ def test_export_into_mods_subscribed_is_blocked_and_reported(tmp_path, monkeypat
     qt_dialog.theme_export_button.click()
     assert len(reported) == 1 and reported[0][1] == "Export blocked"
     assert list(subscribed.iterdir()) == []
+
+
+# --- the owed in-app passes, offscreen (TASK-100) ----------------------------
+
+
+@pytest.mark.gui
+def test_an_export_then_import_through_the_buttons_restores_theme_overlay_colour_and_grid_thickness(
+    tmp_path, monkeypatch, qt_dialog
+) -> None:
+    """Pass conditions:
+    - Export theme... writes the current look to the picked path;
+    - after the theme, the ruler_line overlay colour and Grid thickness change through their
+      widgets, Import theme... of that file shows a summary with the overlay-colour
+      "Overlay colour Line and endpoints: <new> -> <old>" line, plus theme and thickness lines;
+    - Apply restores all three in settings and in the theme combo, the overlay swatch and the
+      thickness slider.
+    """
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog, QFileDialog
+
+    from descape import grid_overlay
+
+    before = (settings.get_theme(), settings.get_overlay_color("ruler_line"), settings.get_grid_thickness())
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(tmp_path / "mine"), "")))
+    qt_dialog.theme_export_button.click()
+    out = tmp_path / f"mine{theme_file.FILE_SUFFIX}"
+    assert out.is_file()
+
+    qt_dialog.theme_combo.setCurrentIndex(qt_dialog.theme_combo.findData("solarized_light"))
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor("#00ff00")))
+    qt_dialog._overlay_swatches["ruler_line"].click()
+    qt_dialog.grid_thickness_slider.setValue(grid_overlay.thickness_index(4))
+    changed = (settings.get_theme(), settings.get_overlay_color("ruler_line"), settings.get_grid_thickness())
+    assert changed == ("solarized_light", "#00ff00", 4)
+    assert all(a != b for a, b in zip(before, changed, strict=True))
+
+    shown = _answer_import(monkeypatch, out, apply=True)
+    qt_dialog.theme_import_button.click()
+    assert len(shown) == 1
+    lines = shown[0].splitlines()
+    assert f"  Overlay colour Line and endpoints: #00ff00 -> {before[1]}" in lines
+    assert f"  Theme: Solarized light -> {themes.preset_label(before[0])}" in lines
+    assert f"  Grid thickness: 4 px -> {before[2]} px" in lines
+
+    assert (settings.get_theme(), settings.get_overlay_color("ruler_line"), settings.get_grid_thickness()) == before
+    assert qt_dialog.theme_combo.currentData() == before[0]
+    assert qt_dialog._overlay_swatches["ruler_line"].toolTip() == before[1]
+    assert qt_dialog.grid_thickness_slider.value() == grid_overlay.thickness_index(before[2])
+
+
+# The listed contents of the W11 hand-made broken theme, rebuilt here so no test reads build/.
+_BROKEN_THEME = """\
+format: descape-theme
+version: 1
+theme: {preset: solarized_dark, colors: {highlight: '#336699', text: nope}}
+overlay_colors: {ruler_line: '#00ff00', no_such_overlay: '#000000'}
+ruler_label_font_px: 99
+grid_thickness: 3
+ui_font: {family: Nowhere Sans}
+bogus_key: 1
+"""
+
+
+@pytest.mark.gui
+def test_importing_the_broken_theme_through_the_dialog_reports_each_part_and_applies_only_the_good_ones(
+    tmp_path, monkeypatch, qt_dialog
+) -> None:
+    """Pass conditions, the summary the Import button shows:
+    - Will change: Theme -> Solarized dark, the Selection #336699 chrome override, the
+      ruler_line overlay colour -> #00ff00, Grid thickness -> 3 px (and the kept UI font);
+    - Skipped: theme.colors.text 'nope', no_such_overlay, ruler_label_font_px 99, bogus_key;
+    - Notes: the 'Nowhere Sans' not-installed note;
+    and after Apply: those four took effect, the ruler label spin box and its setting are
+    unchanged, and no 'text' role override was stored.
+    """
+    path = tmp_path / f"broken{theme_file.FILE_SUFFIX}"
+    path.write_text(_BROKEN_THEME)
+    ruler_px_before = settings.get_ruler_label_font_px()
+    assert qt_dialog.ruler_label_font_spin.value() == ruler_px_before
+    overlay_before = settings.get_overlay_color("ruler_line")
+    thickness_before = settings.get_grid_thickness()
+    theme_before = settings.get_theme()
+
+    shown = _answer_import(monkeypatch, path, apply=True)
+    qt_dialog.theme_import_button.click()
+    assert len(shown) == 1
+    will, skipped, notes = shown[0].split("\n\n")
+    assert will.splitlines() == [
+        "Will change:",
+        f"  Theme: {themes.preset_label(theme_before)} -> Solarized dark",
+        "  Chrome colour overrides: Selection #336699",
+        "  UI font: Nowhere Sans",
+        f"  Overlay colour Line and endpoints: {overlay_before} -> #00ff00",
+        f"  Grid thickness: {thickness_before} px -> 3 px",
+    ]
+    skipped_lines = skipped.splitlines()
+    assert skipped_lines[0] == "Skipped (not applied):"
+    assert len(skipped_lines) == 5
+    for fragment in ("theme.colors.text: 'nope'", "unknown id 'no_such_overlay'", "ruler_label_font_px: 99", "'bogus_key'"):
+        assert sum(fragment in line for line in skipped_lines) == 1, fragment
+    assert notes.startswith("Notes:\n") and "'Nowhere Sans' is not installed" in notes
+
+    assert settings.get_theme() == "solarized_dark"
+    assert settings.get_theme_colors() == {"highlight": "#336699"}
+    assert settings.get_overlay_color("ruler_line") == "#00ff00"
+    assert settings.get_grid_thickness() == 3
+    assert settings.get_ruler_label_font_px() == ruler_px_before
+    assert qt_dialog.ruler_label_font_spin.value() == ruler_px_before
+
+
+_STARTUP_PROBE = """
+import sys
+from pathlib import Path
+config = Path(sys.argv[1])
+import descape.asset_source as asset_source
+import descape.settings as settings
+asset_source.CONFIG_PATH = config
+settings.CONFIG_PATH = config
+asset_source.LEGACY_CONFIG_PATH = config.parent / "no-legacy-config.yaml"
+from PyQt5.QtGui import QPalette
+from PyQt5.QtWidgets import QApplication
+import descape.viewer as viewer
+
+def _probe_exec(app):
+    palette = app.palette()
+    print("HIGHLIGHT", palette.color(QPalette.Active, QPalette.Highlight).name())
+    print("WINDOW", palette.color(QPalette.Active, QPalette.Window).name())
+    for widget in app.topLevelWidgets():
+        if isinstance(widget, viewer.ViewerWindow):
+            widget.edit_history.mark_saved()
+            widget.close()
+    return 0
+
+QApplication.exec_ = _probe_exec
+sys.argv = ["descape"]
+try:
+    viewer.main()
+except SystemExit as e:
+    print("EXIT", e.code)
+"""
+
+
+@pytest.mark.gui
+def test_main_applies_a_persisted_imported_theme_at_startup(tmp_path) -> None:
+    """A theme imported through apply_appearance_values() (the Import button's persist step)
+    and then a fresh `viewer.main()` in its own process (one QApplication per process).
+
+    Pass conditions: before its event loop starts, main()'s QApplication palette has the
+    imported preset's Window colour and the imported Highlight override, and main() exits 0.
+    """
+    import os
+    import subprocess
+    import sys
+
+    doc = _doc(theme={"preset": "high_contrast_light", "colors": {"highlight": "#123456"}})
+    plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", doc))
+    settings.apply_appearance_values(plan.values)
+    config = tmp_path / "config.yaml"
+    assert yaml.safe_load(config.read_text())["theme"] == "high_contrast_light"
+
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QPA_PLATFORMTHEME="", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    proc = subprocess.run(
+        [sys.executable, "-c", _STARTUP_PROBE, str(config)],
+        cwd=Path(__file__).resolve().parent.parent,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    out = dict(line.split(" ", 1) for line in proc.stdout.splitlines() if line.startswith(("HIGHLIGHT ", "WINDOW ", "EXIT ")))
+    assert out.get("EXIT") == "0", proc.stderr[-2000:]
+    assert out["HIGHLIGHT"] == "#123456"
+    assert out["WINDOW"] == themes.PRESETS["high_contrast_light"][1]["window"]

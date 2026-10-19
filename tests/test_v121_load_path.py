@@ -61,7 +61,6 @@ def test_de_fixture_reads_a_seven_byte_stride_with_layer(fixture: str) -> None:
     assert loaded.terrain_write_supported
 
 
-@pytest.mark.corpus
 def test_de_corpus_reads_a_seven_byte_stride_with_layer(scenario_path) -> None:
     """Old (constant 7) equals new (read off the parse) on every examples/ file."""
     loaded = load_map_and_units(scenario_path)
@@ -169,7 +168,6 @@ def test_forward_units_walk_equals_the_old_backward_derivation(fixture: str) -> 
     assert loaded.players_units_end == loaded.units_section_end
 
 
-@pytest.mark.corpus
 def test_forward_units_walk_equals_the_old_backward_derivation_corpus(scenario_path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:
@@ -302,7 +300,6 @@ def test_de_fixture_has_trigger_counters(fixture: str) -> None:
     assert load_map_and_units(fixture).has_trigger_counters is True
 
 
-@pytest.mark.corpus
 def test_de_corpus_has_trigger_counters(scenario_path) -> None:
     assert load_map_and_units(scenario_path).has_trigger_counters is True
 

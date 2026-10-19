@@ -561,7 +561,6 @@ def test_a_patch_overlapping_the_trigger_counter_is_refused(tmp_path: Path) -> N
 # -- 8. corpus ---------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_every_writable_option_repacks_its_stored_bytes_across_the_corpus(
     scenario_path,
 ) -> None:
@@ -582,7 +581,6 @@ def test_every_writable_option_repacks_its_stored_bytes_across_the_corpus(
         ), f"{scenario_path.name}: {spec.field_id}"
 
 
-@pytest.mark.corpus
 def test_a_browsed_options_model_saves_byte_identically_across_the_corpus(
     scenario_path, tmp_path: Path
 ) -> None:
@@ -601,7 +599,6 @@ def test_a_browsed_options_model_saves_byte_identically_across_the_corpus(
     assert with_model.read_bytes() == without.read_bytes()
 
 
-@pytest.mark.corpus
 def test_exec_order_survives_an_unrelated_trigger_edit_across_the_corpus(
     scenario_path, tmp_path: Path
 ) -> None:

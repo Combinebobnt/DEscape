@@ -1260,3 +1260,50 @@ def test_the_first_finished_ruler_logs_the_remove_hint_once() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_the_remove_hint_sits_right_after_clear_rulers_in_the_tool_options_row() -> None:
+    """Pass conditions: in the Tool Options toolbar's own action order, the
+    hint's action comes immediately after Clear rulers', and with the Ruler
+    active both are shown."""
+    from PyQt5.QtWidgets import QToolBar
+
+    window = _ruler_window()
+    try:
+        (toolbar,) = [tb for tb in window.findChildren(QToolBar) if tb.windowTitle() == "Tool Options"]
+        actions = toolbar.actions()
+        clear_at = actions.index(window.clear_rulers_param_action)
+        assert actions.index(window.ruler_hint_param_action) == clear_at + 1
+        assert window.clear_rulers_param_action.isVisible()
+        assert window.ruler_hint_param_action.isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_edit_undo_and_redo_fire_after_a_ruler_only_push_and_step_the_ruler() -> None:
+    """GH #108 through the Edit menu's own actions, not window.undo(). Pass conditions:
+    - before any ruler, Undo and Redo are disabled;
+    - after one ruler (a ruler-only push), Undo (Ctrl+Z) is enabled, Redo is not;
+    - triggering Undo removes the ruler and enables Redo (Ctrl+Y);
+    - triggering Redo puts it back; the title never shows the file modified."""
+    from PyQt5.QtGui import QKeySequence
+
+    window = _ruler_window()
+    try:
+        map_view = window.map_view
+        undo, redo = window.undo_action, window.redo_action
+        assert undo.shortcut() == QKeySequence("Ctrl+Z") and redo.shortcut() == QKeySequence("Ctrl+Y")
+        assert not undo.isEnabled() and not redo.isEnabled()
+        _drag(map_view, (10, 10), (30, 24))
+        assert undo.isEnabled() and not redo.isEnabled()
+        undo.trigger()
+        assert _pinned_ends(map_view) == []
+        assert redo.isEnabled() and not undo.isEnabled()
+        redo.trigger()
+        assert _pinned_ends(map_view) == [((10, 10), (30, 24))]
+        assert undo.isEnabled() and not redo.isEnabled()
+        assert not _modified(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

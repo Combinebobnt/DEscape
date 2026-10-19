@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from descape.brush import BRUSH_SHAPE_SQUARE, line_tiles
+from descape.brush import BRUSH_SHAPE_SQUARE, brush_tiles, line_tiles
 
 import conftest
 
@@ -106,6 +106,50 @@ def test_a_far_jump_paints_every_tile_on_the_line_with_one_apply() -> None:
             del window._apply_dirty
 
         assert _painted(window) == {start, *line_tiles(*start, *end)}
+        assert len(window.edit_history.records) == 1
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize(("start", "end"), [((10, 10), (17, 13)), ((10, 20), (17, 20))], ids=["diagonal", "horizontal"])
+@pytest.mark.parametrize("size", [3, 5])
+def test_a_far_jump_at_a_wide_brush_paints_the_whole_swept_band(size: int, start, end) -> None:
+    """TASK-031.04 step 2, through MapView's mouse path.
+    - The jump's one mouse event runs _apply_dirty exactly once.
+    - Painted tiles == the union of brush_tiles over the start tile and every line_tiles tile.
+    - That band is wider than the bare line, so the brush size really applied.
+    - The stroke is one undo record."""
+    window = _edit_window("draw")
+    try:
+        window.brush_size_spin.setValue(size)
+        window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_SQUARE))
+        _shown_flat(window)
+        map_view = window.map_view
+        mm = window.scenario.map_manager
+        calls = []
+        original = window._apply_dirty
+
+        def counting(dirty_indices) -> None:
+            calls.append(set(dirty_indices))
+            original(dirty_indices)
+
+        window._apply_dirty = counting
+        try:
+            _press(map_view, start)
+            calls.clear()
+            _move(map_view, end)
+            assert len(calls) == 1, f"one mouse event ran _apply_dirty {len(calls)} times"
+            _release(map_view, end)
+        finally:
+            del window._apply_dirty
+
+        band = {
+            tile
+            for x, y in [start, *line_tiles(*start, *end)]
+            for tile in brush_tiles(x, y, size, BRUSH_SHAPE_SQUARE, mm.map_width, mm.map_height)
+        }
+        assert len(band) > len(line_tiles(*start, *end)) + 1
+        assert _painted(window) == band
         assert len(window.edit_history.records) == 1
     finally:
         _close(window)
@@ -257,6 +301,38 @@ def test_a_compressed_convert_drag_converts_what_a_tile_by_tile_drag_does() -> N
 
     player_1, tile_by_tile = run([start, *line_tiles(*start, *end)])
     assert len(player_1) == 3
+    assert tile_by_tile == player_1, "the slow drag missed a unit, so the comparison is vacuous"
+    assert run([start, end])[1] == tile_by_tile
+
+
+@pytest.mark.parametrize("offset", [1, 2])
+def test_a_compressed_brush_5_convert_drag_converts_the_whole_swept_band(offset: int) -> None:
+    """TASK-031.05 step 3: brush 5 along y = 10 + offset, so player 1's units on (10..12, 10) are off the line.
+    - No player-1 unit tile is on the drag's line, and none is in either endpoint's footprint.
+    - The tile-by-tile drag converts all three player-1 units (non-trivial set).
+    - A two-event drag converts exactly the same set."""
+    start, end = (5, 10 + offset), (17, 10 + offset)
+    line = {start, *line_tiles(*start, *end)}
+    ends = {*brush_tiles(*start, 5, BRUSH_SHAPE_SQUARE, 120, 120), *brush_tiles(*end, 5, BRUSH_SHAPE_SQUARE, 120, 120)}
+
+    def run(tiles) -> tuple[set, set]:
+        window = _units_window("Units", "convert")
+        try:
+            window.units_panel.select_owner(2)
+            window.brush_size_spin.setValue(5)
+            window.brush_shape_combo.setCurrentIndex(window.brush_shape_combo.findData(BRUSH_SHAPE_SQUARE))
+            units = window.scenario.unit_manager.units
+            player_1 = {(u.unit_const, u.x, u.y) for u in units[1]}
+            _drag(window.map_view, tiles)
+            return player_1, player_1 & {(u.unit_const, u.x, u.y) for u in units[2]}
+        finally:
+            _close(window)
+
+    player_1, tile_by_tile = run([start, *line_tiles(*start, *end)])
+    unit_tiles = {(int(x), int(y)) for _, x, y in player_1}
+    assert len(player_1) == 3
+    assert not unit_tiles & line, "a unit sits on the line, so the band is not exercised"
+    assert not unit_tiles & ends, "an endpoint footprint reaches a unit, so the fast drag proves nothing"
     assert tile_by_tile == player_1, "the slow drag missed a unit, so the comparison is vacuous"
     assert run([start, end])[1] == tile_by_tile
 

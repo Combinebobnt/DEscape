@@ -211,7 +211,6 @@ def test_a_link_an_earlier_load_left_disabled_gets_none_like_the_library(monkeyp
     assert all("caption_string_id" not in unit for units in results[1][0] for unit in units)
 
 
-@pytest.mark.corpus
 def test_fast_units_match_the_library_walk_corpus(scenario_path, fast_spy) -> None:
     _assert_units_agree(*_load_both(fast_spy, load_map_and_units, scenario_path))
 
@@ -502,7 +501,6 @@ def test_encoder_serializer_and_spans_agree(path: Path) -> None:
     _encoder_serializer_and_spans_agree(path)
 
 
-@pytest.mark.corpus
 def test_encoder_serializer_and_spans_agree_corpus(scenario_path) -> None:
     _encoder_serializer_and_spans_agree(scenario_path)
 
@@ -514,7 +512,6 @@ def test_encoder_serializer_and_spans_agree_v121(path: Path) -> None:
     _encoder_serializer_and_spans_agree(path)
 
 
-@pytest.mark.corpus
 def test_an_edited_fast_save_equals_the_same_edit_on_a_library_load_corpus(scenario_path, tmp_path: Path) -> None:
     loaded = load_map_and_units(scenario_path, fast_units=False)
     if not loaded.units_write_supported or sum(len(u) for u in loaded.unit_manager.units) < 3:
@@ -522,7 +519,6 @@ def test_an_edited_fast_save_equals_the_same_edit_on_a_library_load_corpus(scena
     _edited_saves_agree(scenario_path, tmp_path)
 
 
-@pytest.mark.corpus
 def test_a_fast_load_dirty_save_of_every_unit_is_byte_identical_corpus(scenario_path, tmp_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:
@@ -530,7 +526,6 @@ def test_a_fast_load_dirty_save_of_every_unit_is_byte_identical_corpus(scenario_
     _dirty_save_reproduces(scenario_path, tmp_path)
 
 
-@pytest.mark.corpus
 def test_a_fast_load_dirty_save_of_every_unit_through_the_commit_is_byte_identical_corpus(scenario_path, tmp_path: Path) -> None:
     """The fallback writer keeps the full-corpus coverage the encoder took over."""
     loaded = load_map_and_units(scenario_path)
@@ -609,7 +604,6 @@ def test_the_encoder_and_the_commit_write_the_same_edits(path: Path, commits: _C
     _encoder_equals_commit(path, commits)
 
 
-@pytest.mark.corpus
 def test_the_encoder_and_the_commit_write_the_same_edits_corpus(scenario_path, commits: _Commits) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported or sum(len(u) for u in loaded.unit_manager.units) < 3:

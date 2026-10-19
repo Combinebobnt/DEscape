@@ -78,7 +78,6 @@ def test_tail_completeness() -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_tail_completeness_corpus(scenario_path) -> None:
     ok, detail = _check_tail_completeness(scenario_path)
     assert ok, detail
@@ -93,7 +92,6 @@ def test_scenario_loads_without_raising() -> None:
     load_map_and_units(FIXTURE_PATH)
 
 
-@pytest.mark.corpus
 def test_scenario_loads_without_raising_corpus(scenario_path) -> None:
     load_map_and_units(scenario_path)
 
@@ -180,7 +178,6 @@ def test_fast_terrain_matches_the_library_walk_on_varied_tiles(tmp_path: Path) -
     _assert_paths_agree(library, load_map_and_units(out))
 
 
-@pytest.mark.corpus
 def test_fast_terrain_matches_the_library_walk_corpus(scenario_path) -> None:
     _assert_paths_agree(load_map_and_units(scenario_path, fast_terrain=False), load_map_and_units(scenario_path))
 

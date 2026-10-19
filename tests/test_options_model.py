@@ -35,7 +35,8 @@ def test_every_mapped_field_verifies_on_the_blank_template() -> None:
     offsets, all_available = field_offsets(loaded, specs)
 
     assert all_available
-    assert len(offsets) == len(specs)
+    # A TEXT spec (script_name) is not byte-patched, so the walk skips it.
+    assert len(offsets) == sum(1 for s in specs if s.kind != option_fields.TEXT)
     assert verify_options_block(loaded, specs)
 
 
@@ -205,14 +206,12 @@ def test_ai_map_type_is_genuinely_absent_on_a_1_41_file_not_mis_lengthed() -> No
 # -- corpus: every file maps and verifies, or is honestly explained -----------
 
 
-@pytest.mark.corpus
 def test_field_offsets_verify_across_the_corpus(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     specs = option_fields.specs_for(loaded)
     assert verify_options_block(loaded, specs), scenario_path.name
 
 
-@pytest.mark.corpus
 def test_options_section_length_is_self_consistent_across_the_corpus(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     assert _options_section_length_matches(loaded), scenario_path.name

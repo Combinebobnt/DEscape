@@ -359,7 +359,6 @@ def test_a_diplomacy_only_failure_does_not_block_an_unrelated_scalar_save(
 # -- 7. corpus ----------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_a_browsed_diplomacy_model_saves_byte_identically_across_the_corpus(
     scenario_path, tmp_path: Path
 ) -> None:

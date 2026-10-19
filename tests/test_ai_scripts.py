@@ -198,7 +198,6 @@ def _library_entries(loaded) -> list[tuple[bytes, bytes]] | None:
     return entries
 
 
-@pytest.mark.corpus
 def test_library_is_the_load_closure_of_every_custom_row(scenario_path) -> None:
     """Every P1..P8 ai_type-0 row counts, active or not (R4_LeLoi_4's inactive
     P7 keeps its closure), and each main script equals the embedded text,

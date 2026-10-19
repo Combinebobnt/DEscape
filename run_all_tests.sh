@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Runs the default (fast, no-corpus) pytest tier -- see tests/README.md for
-# what that covers. For the corpus/gui tier, see run_corpus_quick.sh
-# (~15 min, the default scope) and run_corpus_stress.sh (~27 min, the
-# complete corpus).
+# what that covers. run_corpus_quick.sh adds the test map; for the
+# examples/ corpus, see run_corpus_stress.sh (~27 min).
 #
 # Parallel via pytest-xdist: one worker per CPU, capped at 8 so the machine
 # stays usable. Arguments come last, so `-n 0` runs serially and

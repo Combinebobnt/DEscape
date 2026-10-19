@@ -258,19 +258,16 @@ def test_scene_render_matches_full_render() -> None:
 
 
 @pytest.mark.gui
-@pytest.mark.corpus
 def test_exposed_rect_smaller_than_bounding_corpus(scenario_path) -> None:
     conftest.run_check(_check_exposed_rect_smaller, scenario_path)
 
 
 @pytest.mark.gui
-@pytest.mark.corpus
 def test_panning_proportional_to_viewport_corpus(scenario_path) -> None:
     conftest.run_check(_check_panning_proportional, scenario_path)
 
 
 @pytest.mark.gui
-@pytest.mark.corpus
 def test_scene_render_matches_full_render_corpus(scenario_path) -> None:
     conftest.run_check(_check_matches_full_render, scenario_path)
 

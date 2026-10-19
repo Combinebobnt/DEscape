@@ -860,7 +860,6 @@ def test_max_number_of_teams_past_int32_is_shown_as_stored() -> None:
 # --- corpus tier -----------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_diplomacy_panel_populates_every_corpus_file(scenario_path) -> None:
     from descape.diplomacy_fields import (
         allied_victory_cell_id,
@@ -896,7 +895,6 @@ def test_diplomacy_panel_populates_every_corpus_file(scenario_path) -> None:
         _close(window)
 
 
-@pytest.mark.corpus
 def test_the_teams_group_populates_every_corpus_file(scenario_path) -> None:
     """The corpus coverage test_map_options_panel_populates_every_corpus_file
     used to give these four fields before step 5 moved them here -- the
@@ -927,7 +925,6 @@ def test_the_teams_group_populates_every_corpus_file(scenario_path) -> None:
         _close(window)
 
 
-@pytest.mark.corpus
 def test_browsing_diplomacy_leaves_the_document_clean(scenario_path) -> None:
     from PyQt5.QtWidgets import QApplication, QRadioButton
 

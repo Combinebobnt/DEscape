@@ -576,6 +576,22 @@ def _beach_shape_window(tool: str, ticked: bool):
     return window
 
 
+def _press_ctrl_z(window) -> None:
+    """A real Ctrl+Z on the map of the activated window, so the Edit > Undo keybind fires."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    window.map_view.setFocus()
+    QApplication.processEvents()
+    assert window.isActiveWindow() and QApplication.focusWidget() is window.map_view
+    QTest.keyClick(window.map_view, Qt.Key_Z, Qt.ControlModifier)
+    QTest.keyRelease(window.map_view, Qt.Key_Control)
+    QApplication.processEvents()
+
+
 @pytest.mark.parametrize("tool,width", [("draw_line", 1), ("draw_rect", 1), ("draw_rect", 3)])
 def test_auto_beach_rings_a_water_shape_in_one_undo_step(tool: str, width: int) -> None:
     """Width 3 on a filled rectangle checks that ringing only the shape's edge
@@ -597,7 +613,7 @@ def test_auto_beach_rings_a_water_shape_in_one_undo_step(tool: str, width: int) 
         assert water
         assert _terrain_tiles(window, _BEACH) == set(ring_tiles(water, width, mm.map_width, mm.map_height))
         assert len(window.edit_history.records) == before + 1
-        window.undo()
+        _press_ctrl_z(window)
         assert _terrain_tiles(window, _WATER_DEEP) == set()
         assert _terrain_tiles(window, _BEACH) == set()
     finally:
@@ -610,6 +626,36 @@ def test_an_unticked_box_lays_no_beach_on_a_shape(tool: str) -> None:
     try:
         _drag(window.map_view, (4, 10), (20, 14))
         assert _terrain_tiles(window, _WATER_DEEP)
+        assert _terrain_tiles(window, _BEACH) == set()
+    finally:
+        _close(window)
+
+
+def test_auto_beach_rings_an_outlined_water_rectangle_inside_and_out_and_ctrl_z_takes_both() -> None:
+    """GH #88, Draw Rectangle in Outline mode. Pass conditions:
+    - the water is exactly the rectangle's border, the land inside untouched;
+    - the beach is the width-1 ring of that border: outside it and along the
+      land inside it, which a ring of the filled rectangle would leave out;
+    - the drag is one undo record, and one real Ctrl+Z takes water and beach
+      off together."""
+    from descape.beach_edges import ring_tiles
+
+    window = _beach_shape_window("draw_rect", ticked=True)
+    try:
+        window.rect_fill_combo.setCurrentText("Outline")
+        window.beach_width_spin.setValue(1)
+        mm = window.scenario.map_manager
+        before = len(window.edit_history.records)
+        _drag(window.map_view, (4, 10), (20, 18))
+        border = {(x, y) for y in range(10, 19) for x in range(4, 21) if x in (4, 20) or y in (10, 18)}
+        assert _terrain_tiles(window, _WATER_DEEP) == border
+        beach = _terrain_tiles(window, _BEACH)
+        assert beach == set(ring_tiles(border, 1, mm.map_width, mm.map_height))
+        assert (10, 14) not in beach and (5, 11) in beach and (3, 9) in beach
+        assert len(window.edit_history.records) == before + 1
+        assert window.undo_action.isEnabled()
+        _press_ctrl_z(window)
+        assert _terrain_tiles(window, _WATER_DEEP) == set()
         assert _terrain_tiles(window, _BEACH) == set()
     finally:
         _close(window)

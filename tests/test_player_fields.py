@@ -342,7 +342,6 @@ def test_gaia_has_no_pop_limit_row_before_1_44() -> None:
     assert gaia_ids <= player_fields.GAIA_FIELDS
 
 
-@pytest.mark.corpus
 def test_gaia_rows_resolve_on_the_corpus(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     gaia_specs = player_fields.specs_for_player(loaded, 0)
@@ -390,7 +389,6 @@ def test_never_reads_number_of_players_or_a_swap_players_field() -> None:
 # -- corpus: the layout mapping and the version-gated fallback ---------------
 
 
-@pytest.mark.corpus
 def test_p1_to_p8_then_gaia_specs_put_gaia_where_gaia_player_index_says(scenario_path) -> None:
     """DataHeader.gaia_player_index (only present at 1.53+) is independent,
     library-confirmed ground truth for where GAIA sits in the arrays this
@@ -403,7 +401,6 @@ def test_p1_to_p8_then_gaia_specs_put_gaia_where_gaia_player_index_says(scenario
     assert PlayerArrayLayout.P1_TO_P8_THEN_GAIA.index_for(0) == gpi.data
 
 
-@pytest.mark.corpus
 def test_every_spec_element_count_matches_its_retriever_length(scenario_path) -> None:
     """Would catch a future base_priority-shaped surprise: an array whose
     real length disagrees with the 16-vs-8 assumption baked into its
@@ -423,7 +420,6 @@ def test_every_spec_element_count_matches_its_retriever_length(scenario_path) ->
             assert n >= 9, (scenario_path.name, spec.field_id, n)
 
 
-@pytest.mark.corpus
 def test_every_spec_resolves_on_the_corpus_for_every_p1_to_p8_player(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     for spec in specs_for(loaded):
@@ -432,6 +428,7 @@ def test_every_spec_resolves_on_the_corpus_for_every_p1_to_p8_player(scenario_pa
             assert isinstance(value, (int, str)), (scenario_path.name, spec.field_id, player_id)
 
 
+# Stays corpus: the test map's two copies are equal (the write path mirrors them), so it can't tell them apart.
 @pytest.mark.corpus
 def test_pop_limit_reads_the_map_array_when_present(scenario_path) -> None:
     """8 of 20 corpus files disagree between the two stored copies (a flat
@@ -455,7 +452,6 @@ def test_pop_limit_reads_the_map_array_when_present(scenario_path) -> None:
         )
 
 
-@pytest.mark.corpus
 def test_civilization_is_int_below_1_56_and_str_from_1_56(scenario_path) -> None:
     loaded = scenario_io.load_map_and_units(scenario_path)
     specs = {s.field_id: s for s in specs_for(loaded)}
@@ -511,7 +507,6 @@ def test_civilization_choices_is_civilization_str_from_1_56() -> None:
     assert list(labels) == sorted(labels), "choices must be sorted by label"
 
 
-@pytest.mark.corpus
 def test_civilization_choices_value_type_matches_the_corpus_codec(scenario_path) -> None:
     """The type-level twin of test_civilization_is_int_below_1_56_and_str_from_1_56,
     plus the GAIA carve-out: every real corpus file's civilization combo

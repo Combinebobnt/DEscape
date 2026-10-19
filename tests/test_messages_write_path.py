@@ -57,7 +57,6 @@ def test_zero_edit_save_with_a_clean_model_is_unchanged(tmp_path: Path) -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_zero_edit_save_with_a_clean_model_is_unchanged_corpus(scenario_path, tmp_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.messages_write_supported:

@@ -30,6 +30,7 @@ from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_new import load_blank_scenario
 from descape.scenario_write import write_scenario
 from descape.unit_model import UnitEditModel
+from testkit.zlib_runtime import BYTES_DIFFER, NOT_STOCK_REASON, STOCK_ZLIB, scenario_parts
 
 import conftest
 
@@ -109,9 +110,14 @@ def _assert_matches_the_oracle(path: Path) -> None:
 def test_the_template_matches_its_generator() -> None:
     gen = _gen()
     built = gen.build_template_bytes()
-    assert built == BLANK_TEMPLATE_PATH.read_bytes()
+    assert scenario_parts(built) == scenario_parts(BLANK_TEMPLATE_PATH.read_bytes())
     assert gen.build_template_bytes() == built, "two builds differ"
     gen.verify_template(built)
+
+
+@pytest.mark.skipif(not STOCK_ZLIB, reason=NOT_STOCK_REASON)
+def test_the_template_matches_its_generator_byte_identical() -> None:
+    assert _gen().build_template_bytes() == BLANK_TEMPLATE_PATH.read_bytes(), BYTES_DIFFER
 
 
 def test_the_generator_refuses_a_source_that_is_not_the_1_58_donor() -> None:
@@ -127,13 +133,22 @@ def test_the_generators_verify_refuses_a_file_at_another_version() -> None:
         gen.verify_template(V158_DONOR_PATH.read_bytes())
 
 
-def test_the_generator_writes_the_template_and_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None:
-    gen = _gen()
+def _run_the_generator(tmp_path: Path, monkeypatch) -> Path:
     out = tmp_path / "templates" / "blank.aoe2scenario"
     monkeypatch.setattr(sys, "argv", ["gen_blank_template", "--out", str(out)])
-    gen.main()
-    assert out.read_bytes() == BLANK_TEMPLATE_PATH.read_bytes()
+    _gen().main()
+    return out
+
+
+def test_the_generator_writes_the_template_and_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None:
+    out = _run_the_generator(tmp_path, monkeypatch)
+    assert scenario_parts(out.read_bytes()) == scenario_parts(BLANK_TEMPLATE_PATH.read_bytes())
     assert [p.name for p in out.parent.iterdir()] == [out.name]
+
+
+@pytest.mark.skipif(not STOCK_ZLIB, reason=NOT_STOCK_REASON)
+def test_the_generator_writes_the_template_and_leaves_no_temp_file_byte_identical(tmp_path: Path, monkeypatch) -> None:
+    assert _run_the_generator(tmp_path, monkeypatch).read_bytes() == BLANK_TEMPLATE_PATH.read_bytes(), BYTES_DIFFER
 
 
 # -- against a game-saved 1.59 blank -------------------------------------------

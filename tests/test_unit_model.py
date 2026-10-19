@@ -1303,7 +1303,6 @@ def test_undo_and_redo_restore_the_live_garrison_link() -> None:
 # -- corpus ---------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_construction_gate_passes_across_the_corpus(scenario_path: Path) -> None:
     """units_write_supported=True files should all pass the per-file gate --
     this is what actually re-derives finding 3 on real data, per load."""
@@ -1313,7 +1312,6 @@ def test_construction_gate_passes_across_the_corpus(scenario_path: Path) -> None
     UnitEditModel(loaded)  # must not raise
 
 
-@pytest.mark.corpus
 def test_clean_serialize_is_verbatim_across_the_corpus(scenario_path: Path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:

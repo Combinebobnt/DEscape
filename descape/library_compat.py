@@ -35,7 +35,9 @@ Two library behaviours make a shim necessary.
    means the UI can populate a condition/effect picker before any file is open.
 
 It also corrects a structure.json that frames a field at the wrong offset
-without changing its section's length: fix_structure(), per load.
+without changing its section's length: fix_structure(), per load. And the
+effects.json defaults that write an unparseable Triggers section:
+fix_effect_defaults(), per load, plus vocabulary_json().
 
 **Import ordering is load-bearing.** PRISTINE_CLASS_STATE snapshots every
 POISONED_CLASSES class at import time, and that snapshot is only clean if nothing has loaded a
@@ -429,6 +431,48 @@ def repo_only_attributes(scenario_version: str) -> dict[str, frozenset[str]]:
     }
 
 
+# Effect defaults the library's effects.json gets wrong, by effect name, then
+# field: (shipped value, corrected value). create_object_attack/_armor (77/78)
+# ship the armour/attack pair as [] on every version that has them, where
+# change_object_attack/_armor (28/31) ship 1 and 0. Both pairs pack into
+# `quantity` as one scalar each, so a fresh 77/78 wrote [] there and the
+# Triggers section no longer parsed (TASK-395); field_specs() also read the
+# pair as INT_LIST off that default. A field already holding anything but the
+# shipped value is left alone, so an upstream fix makes this a no-op.
+_EFFECT_DEFAULT_FIXES: Mapping[str, Mapping[str, tuple[Any, Any]]] = {
+    name: {"armour_attack_quantity": ([], 1), "armour_attack_class": ([], 0)}
+    for name in ("create_object_attack", "create_object_armor")
+}
+
+
+def fixed_effect_defaults(name: str, defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of one effect type's default_attributes with
+    _EFFECT_DEFAULT_FIXES applied. Never mutates `defaults`."""
+    fixed = dict(defaults)
+    for field, (shipped, corrected) in _EFFECT_DEFAULT_FIXES.get(name, {}).items():
+        if field in fixed and fixed[field] == shipped:
+            fixed[field] = corrected
+    return fixed
+
+
+def fix_effect_defaults(names: Mapping[int, str], defaults: dict[int, Any]) -> None:
+    """Apply fixed_effect_defaults() to the library's module-level
+    effects.default_attributes, keyed like effects.effect_names. Call after
+    every _initialise_version_dependencies(): it rewrites that dict per load."""
+    for type_id, name in names.items():
+        if type_id in defaults:
+            defaults[type_id] = fixed_effect_defaults(name, defaults[type_id])
+
+
+def _with_fixed_effect_defaults(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: {**value, "default_attributes": fixed_effect_defaults(value["name"], value["default_attributes"])}
+        if key != "-1" and "default_attributes" in value
+        else value
+        for key, value in raw.items()
+    }
+
+
 def _without_attributes(raw: dict[str, Any], dropped: frozenset[str]) -> dict[str, Any]:
     """A conditions.json/effects.json dict with every `dropped` name removed
     from its attribute lists, defaults and presentation maps."""
@@ -448,9 +492,10 @@ def _without_attributes(raw: dict[str, Any], dropped: frozenset[str]) -> dict[st
 
 def vocabulary_json(scenario_version: str) -> dict[str, dict[str, Any]]:
     """{"conditions": ..., "effects": ...}: `scenario_version`'s raw vocabulary
-    JSON, with repo_only_attributes() removed. What load_vocabulary() parses,
-    and what scenario_io feeds the library's module dicts for a repo version.
-    Raises FileNotFoundError if neither side ships one."""
+    JSON, with repo_only_attributes() removed and _EFFECT_DEFAULT_FIXES
+    applied. What load_vocabulary() parses, and what scenario_io feeds the
+    library's module dicts for a repo version. Raises FileNotFoundError if
+    neither side ships one."""
     found = _vocabulary_dir(scenario_version)
     if found is None:
         raise FileNotFoundError(
@@ -458,10 +503,12 @@ def vocabulary_json(scenario_version: str) -> dict[str, dict[str, Any]]:
             f"for scenario version {scenario_version} (looked in {VERSIONS_DIR} and {REPO_VERSIONS_DIR})"
         )
     dropped = repo_only_attributes(scenario_version)
-    return {
+    raw = {
         kind: _without_attributes(json.loads((found[0] / f"{kind}.json").read_text(encoding="utf-8")), dropped[kind])
         for kind in _VOCABULARY_KINDS
     }
+    raw["effects"] = _with_fixed_effect_defaults(raw["effects"])
+    return raw
 
 
 def vocabulary_versions() -> list[str]:

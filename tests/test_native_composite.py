@@ -14,6 +14,7 @@ flat-colour branch would run, and a solid colour can't expose a wrong uv crop.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 
@@ -24,11 +25,11 @@ from test_farm_terrain import FAKE_FARM_CONST, fake_farm  # noqa: F401 -- fake_f
 from test_sprite_chunks import CHUNK, MAP_H, MAP_W
 from test_sprite_edit_bbox import CONST, EDIT_X, EDIT_Y, Unit, _fixture_scenario, sprite_install  # noqa: F401
 
-from descape import asset_source, composite_backend, iso_geometry, native_composite, render, settings
+from descape import asset_source, composite_backend, grid_overlay, iso_geometry, native_composite, render, settings
 from descape.grid_overlay import grid_bake
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
 from descape.scenario_io import load_map_and_units
-from descape.view_layers import LayerState
+from descape.view_layers import DEFAULT_LAYERS, LayerState
 
 TEXTURE_SIZE = 512
 # A spread of real ids, so the textures-off branch gets distinct flat colours too.
@@ -132,18 +133,26 @@ def _anchor_origins(proj, elevations, tiles):
 
 
 @pytest.mark.parametrize(
-    ("sprites", "grid", "textures"),
-    [(True, False, True), (False, True, True), (True, True, False), (False, False, False)],
-    ids=["sprites", "grid", "sprites-grid-flat", "flat"],
+    ("sprites", "grid", "textures", "farms"),
+    [
+        (True, False, True, True), (False, True, True, True), (True, True, False, True), (False, False, False, True),
+        (True, True, True, False), (True, False, False, False),
+    ],
+    ids=["sprites", "grid", "sprites-grid-flat", "flat", "sprites-grid-nofarms", "sprites-flat-nofarms"],
 )
-def test_stepped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_textures, sprites, grid, textures):  # noqa: F811
+def test_stepped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_textures, sprites, grid, textures, farms):  # noqa: F811
+    """Pass conditions:
+    - the ladder holds every tile_px on TILE_PX_LADDER
+    - at every mip, each rect composites equal on both backends and not all-black
+    - a nofarms row composites with the farm undraped (Farm Overlay off, sprites on)"""
     scenario = _cliff_scenario()
     mm = scenario.map_manager
     elevations, proj = render.elevations_and_proj(scenario)
     cache = IsoChunkCache(
         scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height),
-        sprites=sprites, layers=LayerState(terrain_textures=textures),
+        sprites=sprites, layers=LayerState(terrain_textures=textures, farm_overlay=farms),
     )
+    assert cache.farms_draped() == (sprites and farms)
     if grid:
         cache.set_grid(grid_bake(True, 60, 2))
     assert {cache.mip_tile_px(m) for m in cache.mip_levels()} == set(TILE_PX_LADDER)
@@ -268,6 +277,22 @@ def test_native_path_is_actually_taken(native_kernel, sprite_install, fake_farm,
     assert {"lerp", "blit_rgba"} <= calls.keys(), calls
 
 
+@pytest.mark.parametrize("mip", [-1, -2])
+def test_native_path_is_actually_taken_at_coarse_mips(native_kernel, sprite_install, fake_farm, synthetic_textures, mip):  # noqa: F811
+    """test_native_path_is_actually_taken's whole-rect half at a coarse level,
+    where zoomed-out panning composites. Pass conditions, Stepped and Sloped:
+    - the level is on the cache's ladder
+    - each of _count_native_calls()' three composites at that level is exactly one whole-rect kernel
+      call, never the per-tile fallback: three calls of that one entry point, nothing else"""
+    mm = _cliff_scenario().map_manager
+    _scenario, stepped, sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    for cache, entry in ((stepped, "composite_iso"), (sloped, "composite_sloped")):
+        assert mip in cache.mip_levels(), (cache.style, cache.mip_levels())
+        cache._level(mip)
+        calls = _count_native_calls(lambda *r, c=cache: c._composite_rect(mip, *r), cache.canvas_dims(mip))
+        assert calls == {entry: 3}, (cache.style, calls)
+
+
 def test_per_tile_path_backends_agree(native_kernel, sprite_install, fake_farm, synthetic_textures):  # noqa: F811
     """N1's per-tile kernel stays covered: it is every pack-less caller's path
     and the whole-rect path's fallback."""
@@ -318,20 +343,53 @@ def _sloped_scenario():
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
-@pytest.mark.parametrize(("sprites", "grid", "textures"), [(True, True, True), (False, False, False)], ids=["all-on", "flat"])
-def test_sloped_every_tile_px(native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, tile_px, sprites, grid, textures):  # noqa: F811
+@pytest.mark.parametrize(
+    ("sprites", "grid", "textures", "farms"),
+    [(True, True, True, True), (False, False, False, True), (True, True, True, False)],
+    ids=["all-on", "flat", "nofarms"],
+)
+def test_sloped_every_tile_px(
+    native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, tile_px, sprites, grid, textures, farms,  # noqa: F811
+):
     """Each tile_px on the Stepped ladder gets its own cache, checked at its
-    level 0, so every tile_px is covered whatever a cache's own ladder holds."""
+    level 0, so every tile_px is covered whatever a cache's own ladder holds.
+    Pass conditions:
+    - each rect composites equal on both backends and not all-black
+    - the nofarms row composites with the farm undraped (Farm Overlay off, sprites on)"""
     monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: tile_px)
     scenario = _sloped_scenario()
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
     cache = SlopedChunkCache(
-        scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, layers=LayerState(terrain_textures=textures),
+        scenario, elevations, corner_rise, proj, tile_px, sprites=sprites,
+        layers=LayerState(terrain_textures=textures, farm_overlay=farms),
     )
+    assert cache.farms_draped() == (sprites and farms)
     if grid:
         cache.set_grid(grid_bake(True, 60, 2))
     anchors = _anchor_origins(proj, elevations, [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y), *_corner_tiles(scenario.map_manager)])
     _assert_backends_agree(lambda *r: cache._composite_rect(0, *r), _rects(cache, 0, anchors))
+
+
+@pytest.mark.parametrize(("sprites", "grid", "textures"), [(True, True, True), (False, False, False)], ids=["all-on", "flat"])
+def test_sloped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_textures, sprites, grid, textures):  # noqa: F811
+    """One Sloped cache's own ladder, coarse levels included (TASK-031.60).
+    Pass conditions:
+    - the ladder reaches mips -1 and -2
+    - at every mip, each rect composites equal on both backends and not all-black"""
+    scenario = _sloped_scenario()
+    mm = scenario.map_manager
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    cache = SlopedChunkCache(
+        scenario, elevations, corner_rise, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height),
+        sprites=sprites, layers=LayerState(terrain_textures=textures),
+    )
+    if grid:
+        cache.set_grid(grid_bake(True, 60, 2))
+    assert {-1, -2} <= set(cache.mip_levels()), cache.mip_levels()
+    for mip in cache.mip_levels():
+        lvl_proj = cache._level(mip).proj
+        anchors = _anchor_origins(lvl_proj, elevations, [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y), *_corner_tiles(mm)])
+        _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), _rects(cache, mip, anchors))
 
 
 # --- two-pass compositing, sprites on (GH #107) ------------------------------
@@ -443,16 +501,16 @@ def test_unit_pack_rows_carry_each_units_base_rise(ink_sprite, style):  # noqa: 
 NEW_TERRAIN_ID = 17  # not in TERRAIN_IDS, so a paint adds a texture the map never had
 
 
-def _edit_cache(style: str, scenario, sprites: bool):
+def _edit_cache(style: str, scenario, sprites: bool, layers: LayerState = DEFAULT_LAYERS, grid=None):
     mm = scenario.map_manager
     tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
         elevations, proj = render.elevations_and_proj(scenario)
-        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, layers=layers)
     else:
         elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
-        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites)
-    cache.set_grid(grid_bake(True, 60, 2))
+        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, layers=layers)
+    cache.set_grid(grid_bake(True, 60, 2) if grid is None else grid)
     return cache
 
 
@@ -499,7 +557,11 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     edge and under a mark, a sprite and a farm, and unit moves. After each,
     the whole canvas must equal a fresh numpy render of the edited scenario.
     The unit pack must survive the elevation and move edits as a refresh
-    (same object), so the splice-tile path is what these compare."""
+    (same object), so the splice-tile path is what these compare.
+    Then a single Delete of the moved mark and an Elevate under the sprite unit:
+    - the delete goes through the splice path (can_splice)
+    - after each, the whole canvas at mips 0 and -1 equals a fresh numpy render
+    - after each, the unit pack is the same object (refreshed, not rebuilt)"""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
     mark = scenario.unit_manager.units[1][-1]
@@ -561,6 +623,68 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
             cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
         _assert_matches_fresh(cache, style, scenario, sprites, what)
     assert _pack_of(cache, style) is pack, "a unit splice rebuilt the unit pack instead of refreshing it"
+
+    # The viewer's single Delete: a removal splice, new tiles empty.
+    index = scenario.unit_manager.units[1].index(mark)
+    old_tiles = tuple(render.unit_occupied_tiles(mark, mm.map_width, mm.map_height))
+    scenario.unit_manager.units[1].remove(mark)
+    scenario.unit_gen += 1
+    splice = UnitSplice(1, index, mark, (int(mark.x), int(mark.y)), None, old_tiles, ())
+    with composite_backend.use_backend("native"):
+        assert cache.can_splice([splice])
+        cache.invalidate_units([splice])
+        cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+    _assert_matches_fresh(cache, style, scenario, sprites, "a mark delete")
+    assert _pack_of(cache, style) is pack, "a delete splice rebuilt the unit pack instead of refreshing it"
+    elevate(EDIT_X, EDIT_Y, "an elevation edit under the sprite unit after a delete")
+
+
+TOGGLE_MIPS = (0, -1)
+
+
+def _canvas_vs_fresh(cache, style: str, scenario, what: str) -> dict[int, np.ndarray]:
+    """Fails unless the live cache's whole canvas at TOGGLE_MIPS, composited
+    natively, equals a fresh numpy cache built in its sprite, layer and grid
+    state. Returns the fresh canvases."""
+    with composite_backend.use_backend("numpy"):
+        fresh = _edit_cache(style, scenario, cache.sprites_enabled, cache.layers, cache.grid)
+        want = {m: fresh.render_rect(0, 0, *fresh.canvas_dims(m), mip=m) for m in TOGGLE_MIPS}
+    with composite_backend.use_backend("native"):
+        for m in TOGGLE_MIPS:
+            got = cache.render_rect(0, 0, *cache.canvas_dims(m), mip=m)
+            if not np.array_equal(got, want[m]):
+                ys, xs = np.nonzero(np.any(got != want[m], axis=-1))
+                pytest.fail(f"{style} mip {m} after {what}: {ys.size} px differ, first at (y={ys[0]}, x={xs[0]})")
+    return want
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_live_toggles_match_a_fresh_render(native_kernel, sprite_install, fake_farm, synthetic_textures, style):  # noqa: F811
+    """View toggles on one live native cache, warm at mips 0 and -1, applied
+    through the cache methods the viewer calls (set_sprites_enabled, set_layers,
+    and set_grid with MapView.grid_spec()'s off value). Pass conditions:
+    - the ladder holds mips 0 and -1, and the farm starts draped
+    - before any toggle and after each, both mips' whole canvas equals a fresh numpy cache in that state
+    - each toggle changed some compared canvas (not vacuous)"""
+    scenario = _sloped_scenario()
+    with composite_backend.use_backend("native"):
+        cache = _edit_cache(style, scenario, sprites=True)
+    assert set(TOGGLE_MIPS) <= set(cache.mip_levels()) and cache.farms_draped()
+    prev = _canvas_vs_fresh(cache, style, scenario, "the initial warm")
+    toggles = (
+        ("sprites off", lambda: cache.set_sprites_enabled(False)),
+        ("sprites on", lambda: cache.set_sprites_enabled(True)),
+        ("farms off", lambda: cache.set_layers(dataclasses.replace(cache.layers, farm_overlay=False))),
+        ("grid off", lambda: cache.set_grid(grid_overlay.DEFAULT_GRID)),
+        ("textures off", lambda: cache.set_layers(dataclasses.replace(cache.layers, terrain_textures=False))),
+        ("textures on", lambda: cache.set_layers(dataclasses.replace(cache.layers, terrain_textures=True))),
+    )
+    for what, toggle in toggles:
+        with composite_backend.use_backend("native"):
+            toggle()
+        now = _canvas_vs_fresh(cache, style, scenario, what)
+        assert any(not np.array_equal(now[m], prev[m]) for m in TOGGLE_MIPS), f"{what} changed nothing -- vacuous"
+        prev = now
 
 
 def _pack_rows(pack) -> dict[int, list[tuple]]:
@@ -1179,7 +1303,6 @@ def test_sloped_index_producers_never_repeat_a_destination(tile_px):
 # --- corpus -----------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_corpus_scenario_backends_agree(native_kernel, scenario_path):
     """Real maps, real textures when an install is configured. Stepped at every
     mip plus Sloped, sprites on, a handful of rects each."""

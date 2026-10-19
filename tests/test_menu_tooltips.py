@@ -23,17 +23,6 @@ def _qt_default_tip(text: str) -> str:
     return text.replace("...", "").replace("&", "").strip()
 
 
-def _menu_items(menu, path: str):
-    """(path, action) for every non-separator action under `menu`, submenus included."""
-    for action in menu.actions():
-        if action.isSeparator():
-            continue
-        where = f"{path} > {action.text()}"
-        yield where, action
-        if action.menu() is not None:
-            yield from _menu_items(action.menu(), where)
-
-
 def _missing_tooltips(window) -> list[str]:
     missing = []
     for top in window.menuBar().actions():
@@ -42,7 +31,7 @@ def _missing_tooltips(window) -> list[str]:
             continue
         if not menu.toolTipsVisible():
             missing.append(f"{top.text()}: setToolTipsVisible(True) missing")
-        for where, action in _menu_items(menu, top.text()):
+        for where, action in conftest.menu_items(menu, top.text()):
             tip = action.toolTip().strip()
             if not tip or tip == _qt_default_tip(action.text()):
                 missing.append(f"{where}: no tooltip")

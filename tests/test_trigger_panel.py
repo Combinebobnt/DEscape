@@ -1926,7 +1926,6 @@ def test_a_grouped_move_keeps_a_pending_exec_order_flip() -> None:
         window.close()
 
 
-@pytest.mark.corpus
 def test_the_position_column_matches_display_order_on_real_files(scenario_path) -> None:
     """Every row's position cell is its index in trigger_display_order, the
     header matches resolve_exec_mode(), and a grouped tree's synthetic header
@@ -2300,7 +2299,6 @@ def test_no_field_demands_more_width_than_the_pane_can_give() -> None:
         window.close()
 
 
-@pytest.mark.corpus
 def test_panel_populates_and_filters_a_real_scenario(scenario_path) -> None:
     window = _window()
     try:
@@ -2347,6 +2345,7 @@ def test_panel_populates_and_filters_a_real_scenario(scenario_path) -> None:
         window.close()
 
 
+# Stays corpus: the test map stores the exec-order byte, so it would only skip there.
 @pytest.mark.corpus
 def test_execution_order_readout_covers_the_no_stored_byte_case(scenario_path) -> None:
     """The third readout state -- "not stored" -- needs a real file to reach:
@@ -2401,7 +2400,6 @@ def _panel_sections(panel) -> list:
     return result
 
 
-@pytest.mark.corpus
 def test_grouped_tree_matches_trigger_organize_sections_on_a_real_scenario(scenario_path) -> None:
     """Cross-checks the panel's own grouped-tree construction against an
     independent call to trigger_organize.sections() on the same manager data
@@ -2439,7 +2437,6 @@ def test_grouped_tree_matches_trigger_organize_sections_on_a_real_scenario(scena
         window.close()
 
 
-@pytest.mark.corpus
 def test_file_order_is_always_flat_on_a_real_scenario(scenario_path) -> None:
     """4c's grouping exists only under Display order -- switching to File
     order must flatten the tree even on a file whose names are full of
@@ -2463,7 +2460,6 @@ def test_file_order_is_always_flat_on_a_real_scenario(scenario_path) -> None:
         window.close()
 
 
-@pytest.mark.corpus
 def test_tag_facet_hides_non_matching_rows_on_a_real_scenario(scenario_path) -> None:
     """The tag combo matches the stashed _TAG_ROLE, never the rendered label
     -- see that constant's docstring for why inheriting the label-matching
@@ -2503,7 +2499,6 @@ def test_tag_facet_hides_non_matching_rows_on_a_real_scenario(scenario_path) -> 
         window.close()
 
 
-@pytest.mark.corpus
 def test_renaming_across_the_divider_predicate_regroups_a_real_scenario(scenario_path) -> None:
     """4c's silent-staleness case 1: a rename that flips is_divider() must
     trigger a full repopulate, promoting the renamed trigger to its own
@@ -2542,7 +2537,6 @@ def test_renaming_across_the_divider_predicate_regroups_a_real_scenario(scenario
         window.close()
 
 
-@pytest.mark.corpus
 def test_opening_a_grouped_real_scenario_selects_a_trigger_not_the_synthetic_header(scenario_path) -> None:
     """4c's silent-staleness case 2: opening a file with a before-first run of
     triggers must land on the first real trigger, not the synthetic
@@ -2572,7 +2566,6 @@ def test_opening_a_grouped_real_scenario_selects_a_trigger_not_the_synthetic_hea
         window.close()
 
 
-@pytest.mark.corpus
 def test_browsing_a_grouped_real_scenario_saves_byte_identically(scenario_path, tmp_path) -> None:
     """Extends test_browsing_every_row_saves_byte_identically's guarantee to
     grouped browsing: expanding/collapsing every section and switching the
@@ -5504,7 +5497,6 @@ def test_a_saved_retitle_leaves_every_other_trigger_blob_alone(tmp_path: Path) -
     assert before[2] != after[2]
 
 
-@pytest.mark.corpus
 def test_a_new_section_on_a_real_scenario_matches_its_format_and_survives_save(
     scenario_path, tmp_path
 ) -> None:
@@ -9787,15 +9779,25 @@ def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -
     """Measured 2026-10-07: 2.3 s for a live marker change and 453 ms for a
     Triggers-mode unit edit on old-allies-final-v2 when every setData re-sized
     the content-sized columns; 3 ms and 8 ms batched. 250 ms is far from both."""
+    path = Path(__file__).resolve().parent.parent / "examples" / "old-allies-final-v2.aoe2scenario"
+    if not path.is_file():
+        pytest.skip(f"missing corpus file: {path}")
+    _assert_status_restyle_is_batched(path)
+
+
+@pytest.mark.test_map
+def test_trigger_status_restyles_the_600_trigger_test_map_without_a_resize_per_row() -> None:
+    """The same 250 ms gate on the generated test map, in the quick tier."""
+    _assert_status_restyle_is_batched(conftest.TEST_MAP_PATH)
+
+
+def _assert_status_restyle_is_batched(path: Path) -> None:
     import time
 
     from PyQt5.QtWidgets import QApplication
 
     from descape import settings
 
-    path = Path(__file__).resolve().parent.parent / "examples" / "old-allies-final-v2.aoe2scenario"
-    if not path.is_file():
-        pytest.skip(f"missing corpus file: {path}")
     window = _window()
     try:
         window.load_scenario(path)
@@ -9815,6 +9817,395 @@ def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -
         unit_ms = (time.perf_counter() - start) * 1e3
         assert restyle_ms < 250, f"apply_status_style took {restyle_ms:.0f} ms"
         assert unit_ms < 250, f"refresh_unit_reference_labels took {unit_ms:.0f} ms"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- tag verbs under a real Ctrl+Z, and the tag chain on a real file -----------
+
+
+def _press_ctrl_z(window) -> None:
+    """A real Ctrl+Z on the focused trigger tree of the activated window, so
+    the Edit > Undo keybind fires, not a direct window.undo()."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    # tests/test_text_box_undo_menu.py's activation recipe: shortcuts only reach an active window.
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    tree = window.trigger_panel.tree
+    tree.setFocus()
+    QApplication.processEvents()
+    assert window.isActiveWindow() and QApplication.focusWidget() is tree
+    QTest.keyClick(tree, Qt.Key_Z, Qt.ControlModifier)
+    QTest.keyRelease(tree, Qt.Key_Control)
+    QApplication.processEvents()
+
+
+def test_the_tags_menu_verbs_each_take_back_with_one_ctrl_z(tmp_path: Path, monkeypatch) -> None:
+    """TASK-003.04 (GH #101), through the Tags menu's own actions and a real
+    Ctrl+Z key press. Pass conditions:
+    - Add Tag to Selection… on three selected triggers, typing a new tag: all
+      three gain it, in front of the tag each already carries, as one record;
+    - one Ctrl+Z press restores all three names;
+    - the same verb with a tag picked from the offered list (the document's
+      own tags): each of the three gains it, and one Ctrl+Z restores them;
+    - Remove Tag Everywhere on the picked facet tag opens no dialog, strips
+      every carrier, and one Ctrl+Z restores them."""
+    window = _tagged_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        menu = {a.text(): a for a in panel.tags_menu.actions() if not a.isSeparator()}
+
+        _ctrl_select(panel, 1, 2, 3)
+        asked = _answer_item(monkeypatch, text="New")
+        menu["Add Tag to Selection…"].trigger()
+        assert asked[0][1] == "Add a tag to 3 selected triggers:"
+        assert _names(window) == [
+            "[D1] setup", "[New] [d1]armour split", "[New] [P1][D1] references", "[New] [D1]: variable",
+        ]
+        assert len(window.edit_history.records) == 1
+        _press_ctrl_z(window)
+        assert _names(window) == _TAGGED_NAMES, "one Ctrl+Z takes back all three"
+        assert window.edit_history.cursor == 0
+
+        _ctrl_select(panel, 0, 1, 3)
+        asked = _answer_item(monkeypatch, text="P1")
+        menu["Add Tag to Selection…"].trigger()
+        assert "P1" in asked[0][2], "the document's own tags are offered to pick"
+        assert _names(window) == [
+            "[P1] [D1] setup", "[P1] [d1]armour split", "[P1][D1] references", "[P1] [D1]: variable",
+        ]
+        _press_ctrl_z(window)
+        assert _names(window) == _TAGGED_NAMES
+
+        panel.set_tag_filter("D1")
+        dialogs = _answer_dialogs(monkeypatch)
+        menu["Remove Tag Everywhere"].trigger()
+        assert dialogs == {"getText": [], "question": []}, "no question asked"
+        assert _names(window) == ["setup", "[d1]armour split", "[P1] references", ": variable"]
+        _press_ctrl_z(window)
+        assert _names(window) == _TAGGED_NAMES
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+_EL_CID_4 = Path(__file__).resolve().parent.parent / "examples" / "C2_ElCid_coop_4_v0_13.aoe2scenario"
+
+
+@pytest.mark.corpus
+def test_the_tags_menu_reads_the_whole_tag_chain_on_el_cid_4(monkeypatch) -> None:
+    """TASK-003.14 on the real file, in the body's order. Pass conditions:
+    1. the tag dropdown lists both Obj and D1; picking D1 shows exactly the D1
+       carriers, the 8 "[Obj] [D1] ..." rows among them;
+    2. with D1 picked, Tags > Rename Tag… to X: those 8 read "[Obj] [X] ...",
+       the leading-D1 rows read "[X] ...", nothing else changes, and one
+       Ctrl+Z restores every name;
+    3. D1 picked again, Tags > Remove Tag Everywhere asks nothing: the 8 read
+       "[Obj] ...", no trigger carries D1, and one Ctrl+Z restores every name;
+    4. one "[Obj] [D1] ..." trigger selected, Tags > Remove Tag from
+       Selection… offers D1 and Obj, with Obj pre-selected."""
+    from descape import trigger_organize
+
+    if not _EL_CID_4.is_file():
+        pytest.skip(f"{_EL_CID_4.name} is not in examples/")
+    window = _window()
+    try:
+        window.load_scenario(_EL_CID_4)
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        original = _names(window)
+        chained = [i for i, n in enumerate(original) if n.startswith("[Obj] [D1] ")]
+        carriers = [i for i, n in enumerate(original) if "D1" in trigger_organize.tag_chain(n)]
+        assert len(chained) == 8, "corpus assumption: the body's 8 [Obj] [D1] rows"
+        assert set(chained) < set(carriers)
+
+        # 1.
+        assert {"Obj", "D1"} <= set(_combo_tags(panel))
+        panel.set_tag_filter("D1")
+        assert panel.current_tag() == "D1"
+        assert _visible_ids(panel) == carriers
+
+        # 2.
+        _answer_dialogs(monkeypatch, text="X")
+        panel.tag_rename_action.trigger()
+        renamed = _names(window)
+        assert [renamed[i] for i in chained] == ["[Obj] [X] " + original[i][len("[Obj] [D1] "):] for i in chained]
+        for i, name in enumerate(original):
+            if i in carriers and i not in chained:
+                assert renamed[i] == "[X]" + name[len("[D1]"):], (i, name, renamed[i])
+            elif i not in carriers:
+                assert renamed[i] == name, (i, name, renamed[i])
+        assert len(window.edit_history.records) == 1
+        _press_ctrl_z(window)
+        assert _names(window) == original
+
+        # 3.
+        panel.set_tag_filter("D1")
+        dialogs = _answer_dialogs(monkeypatch)
+        panel.tag_remove_action.trigger()
+        assert dialogs == {"getText": [], "question": []}, "no question asked"
+        stripped = _names(window)
+        assert [stripped[i] for i in chained] == ["[Obj] " + original[i][len("[Obj] [D1] "):] for i in chained]
+        assert not any("D1" in trigger_organize.tag_chain(n) for n in stripped)
+        assert window.edit_history.cursor == 1, "one record (the undone rename's redo was dropped)"
+        _press_ctrl_z(window)
+        assert _names(window) == original
+
+        # 4.
+        _ctrl_select(panel, chained[0])
+        asked = _answer_item(monkeypatch)  # cancelled: only the offer is under test
+        panel.tag_remove_selected_action.trigger()
+        assert asked == [("Remove tag", "Remove a tag from 1 selected trigger:", ["D1", "Obj"], False)]
+        assert asked.defaults == ["Obj"]
+        assert _names(window) == original
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #139 on the trigger form: the grip both ways, reset, a restart ----------
+
+
+def _form_top(panel, widget) -> int:
+    from PyQt5.QtCore import QPoint
+
+    return widget.mapTo(panel.property_host, QPoint(0, 0)).y()
+
+
+def _settle() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    # Box, form and host each re-lay out in a later pass.
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def test_a_description_drag_moves_the_rows_below_both_ways_and_a_double_click_resets() -> None:
+    """TASK-165 steps 1-2 on the trigger form, Description's grip. Pass conditions:
+    - the grip carries the vertical-resize cursor;
+    - dragged 4 lines down it steps 7, 8, 9, 10 (one step per whole line) and
+      the box grows by exactly 4 line heights;
+    - the next form row moves down by the box's growth, and no row overlaps another;
+    - dragged 6 lines back up it steps 9 down to 4, the next row follows it up
+      by the same amount, and still no row overlaps another;
+    - a double-click on the grip puts the box back to 6 lines at its starting
+      height, with the next row back where it started."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from test_text_edits import _drag
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        _settle()
+        names = [spec.name for spec, *_ in panel._rows]
+        box = _row_widget(panel, "description")
+        below = panel._rows[names.index("description") + 1][3]
+        assert box.grip().cursor().shape() == Qt.SizeVerCursor
+        steps: list[int] = []
+        box.linesChanged.connect(steps.append)
+        line = box.fontMetrics().lineSpacing()
+        start_height, start_below = box.height(), _form_top(panel, below)
+        assert box.visible_lines() == 6
+
+        _drag(box.grip(), 4)
+        _settle()
+        assert steps == [7, 8, 9, 10]
+        assert box.height() - start_height == 4 * line
+        assert _form_top(panel, below) - start_below == 4 * line, "the row below moves down with the box"
+        _assert_form_rows_do_not_overlap(panel.property_form)
+
+        del steps[:]
+        _drag(box.grip(), -6)
+        _settle()
+        assert steps == [9, 8, 7, 6, 5, 4]
+        assert box.height() - start_height == -2 * line
+        assert _form_top(panel, below) - start_below == -2 * line, "the row below moves up with the box"
+        _assert_form_rows_do_not_overlap(panel.property_form)
+
+        QTest.mouseDClick(box.grip(), Qt.LeftButton, Qt.NoModifier, QPoint(5, 2))
+        # A real double click ends with a release; QTest's leaves the button held process-wide.
+        QTest.mouseRelease(box.grip(), Qt.LeftButton, Qt.NoModifier, QPoint(5, 2))
+        _settle()
+        assert box.visible_lines() == 6
+        assert box.height() == start_height
+        assert _form_top(panel, below) == start_below
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_dragged_description_height_survives_a_restart_on_every_trigger(monkeypatch) -> None:
+    """TASK-165 step 3. Pass conditions:
+    - dragging Description from 6 to 12 lines writes 12 under
+      trigger.description in config.yaml;
+    - after that window closes and settings' memoised values are dropped (a
+      restart's cold read of config.yaml), a new window on the file shows
+      Description at 12 lines;
+    - another trigger's Description is 12 lines too."""
+    import yaml
+    from test_text_edits import _drag
+
+    from descape import settings
+    from testkit import settings_isolation
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        _settle()
+        box = _row_widget(panel, "description")
+        assert box.visible_lines() == 6
+        _drag(box.grip(), 6)
+        assert box.visible_lines() == 12
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    assert yaml.safe_load(settings.CONFIG_PATH.read_text())["text_box_lines"] == {"trigger.description": 12}
+
+    for name in settings_isolation.MEMOIZED_GLOBALS:
+        monkeypatch.setattr(settings, name, None)
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        _settle()
+        assert _row_widget(panel, "description").visible_lines() == 12
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(1))
+        _settle()
+        assert panel.current_trigger_index() == 1
+        assert _row_widget(panel, "description").visible_lines() == 12, "another trigger's Description"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #2: a pending exec-order flip across every repopulate ------------------
+
+
+def _flip_exec_order(window) -> tuple[str, str]:
+    """Flip Execution order in Map Options, then come back to Triggers. Returns
+    the flipped mode's position header and its status readout."""
+    window.mode_combo.setCurrentText("Map Options")
+    # Map Options' value, not exec_order_value(): Triggers may not have parsed its section yet.
+    before = window.map_options_panel.current_values()["legacy_exec_order"]
+    widget = window.map_options_panel.widget_for("legacy_exec_order")
+    assert widget.isEnabled(), widget.toolTip()
+    widget.setCurrentIndex(widget.findData(1 - before))
+    assert widget.currentData() == 1 - before
+    window.mode_combo.setCurrentText("Triggers")
+    header = "Exec #" if before else "Display #"
+    readout = (
+        "Executes in trigger-ID order (legacy) - unsaved change."
+        if 1 - before
+        else "Executes in display order - unsaved change."
+    )
+    return header, readout
+
+
+def _saved_sectioned_file(tmp_path: Path) -> Path:
+    """_sectioned_window()'s eight triggers in four sections, saved and closed,
+    so a window opening it is grouped from the start."""
+    from descape.scenario_write import write_scenario
+
+    window = _sectioned_window()
+    try:
+        path = tmp_path / "sectioned.aoe2scenario"
+        write_scenario(window.scenario, path, **window._edit_model_kwargs())
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return path
+
+
+def test_a_pending_exec_order_flip_survives_each_grouped_repopulate(tmp_path: Path) -> None:
+    """TASK-053.01 (GH #2) on _sectioned_window()'s layout, saved and reopened,
+    because a flip made after its New trigger edits is refused (see the xfail
+    below). Pass conditions: with Execution order flipped in Map Options
+    before Triggers is ever entered, the position header reads the flipped
+    mode and the status line carries "- unsaved change." after each of
+    - opening Triggers on the file, grouped from the start;
+    - Move Down of a trigger (grouped, move_row() repopulates);
+    - renaming a "--RISK!!!--" divider to a plain name;
+    - renaming a plain trigger to a "--- divider ---";
+    - switching the sort to File order (header too);
+    - switching back to Display order."""
+    path = _saved_sectioned_file(tmp_path)
+    window = _window()
+    try:
+        window.load_scenario(path)
+        assert window.mode_combo.currentText() != "Triggers"
+        header, readout = _flip_exec_order(window)
+        panel = window.trigger_panel
+        assert [s.header_index for s in panel._sections] == [None, 2, 4, 6], "fixture assumption"
+
+        def still_flipped(step: str) -> None:
+            assert _header(panel) == header, f"{step}: header {_header(panel)!r}"
+            assert readout in panel.status.text(), f"{step}: {panel.status.text()!r}"
+
+        still_flipped("opening Triggers on a file grouped from the start")
+        window.trigger_structural_edit("move_down", [0])
+        assert panel._display_position[0] == 1, "the move itself landed"
+        still_flipped("Move Down")
+
+        _rename(panel, 4, "plain four")
+        assert [s.header_index for s in panel._sections] == [None, 2, 6], "the rename repartitioned"
+        still_flipped("rename from a divider")
+
+        _rename(panel, 5, "--- New ---")
+        assert [s.header_index for s in panel._sections] == [None, 2, 5, 6], "the rename repartitioned"
+        still_flipped("rename to a divider")
+
+        panel.sort_combo.setCurrentIndex(1)  # File order
+        still_flipped("File order")
+        panel.sort_combo.setCurrentIndex(0)  # Display order
+        assert panel._grouped
+        still_flipped("back to Display order")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "none",
+        "rename",
+        pytest.param(
+            "new trigger",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="DEFECT (sweep TASK-403 W1): exec_order_write_supported() walks the live, edited "
+                "Triggers section against the file's original bytes, so after New trigger the "
+                "Execution order row greys out with the 'failed the alignment gate' reason",
+            ),
+        ),
+    ],
+)
+def test_the_execution_order_row_stays_editable_after_a_trigger_edit(edit: str) -> None:
+    """Found by TASK-053.01's sweep test. Pass conditions, on the trigger fixture
+    in Triggers mode, after `edit`, then Map Options:
+    - the Execution order row is enabled;
+    - its tooltip is not the alignment-gate read-only reason.
+    "none" and "rename" are the in-test controls: the same assertions pass
+    there, so the "new trigger" failure is the edit, not the probe."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        if edit == "rename":
+            _rename(panel, 0, "a much longer name than the fixture's own")
+        elif edit == "new trigger":
+            window.trigger_structural_edit("new", [])
+        window.mode_combo.setCurrentText("Map Options")
+        widget = window.map_options_panel.widget_for("legacy_exec_order")
+        assert widget.isEnabled(), widget.toolTip()
+        assert widget.toolTip() != window._EXEC_ORDER_READ_ONLY
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -847,6 +847,56 @@ def test_a_gapped_run_agrees_with_the_render_sides_derivation():
         _close(window)
 
 
+def test_the_skip_occupied_checkbox_shows_under_no_tool_but_place_unit_and_wall_rectangle():
+    """GH #124 step 1, every tool in every mode it runs in. Pass conditions:
+    - with a wall picked, the box starts unticked;
+    - Place Unit and Wall Rectangle show it and enable it;
+    - every other tool, Pan and the Ruler included, hides and disables it;
+    - the walk really reached every registered tool (no vacuous pass)."""
+    window = _window()
+    try:
+        assert not window.skip_occupied_check.isChecked()
+        shown = set()
+        reached = set()
+        for mode in ("View", "Terrain", "Units", "Triggers"):
+            window.mode_combo.setCurrentText(mode)
+            for tool in settings.TOOLS:
+                if tool.modes and mode.lower() not in tool.modes:
+                    continue
+                window._on_tool_selected(tool.tool_id)
+                if window._current_tool != tool.tool_id:
+                    continue
+                reached.add(tool.tool_id)
+                visible = window.skip_occupied_param_action.isVisible()
+                assert visible == window.skip_occupied_check.isEnabled(), (mode, tool.tool_id)
+                if visible:
+                    shown.add(tool.tool_id)
+        assert reached == {tool.tool_id for tool in settings.TOOLS}
+        assert shown == {"place_unit", "wall_rect"}
+        assert not window.skip_occupied_check.isChecked()
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("const", [334, 859, 1366], ids=["flowers-1", "flower-bed", "plant-flowers"])
+def test_toggle_on_flowers_do_not_block(const):
+    """GH #124 step 4's flowers. Pass condition: with the box ticked, a run
+    dragged across a flower places a wall on its tile like any other."""
+    from descape import unit_kind
+
+    window = _window()
+    try:
+        assert const in unit_kind.passable_eye_candy_consts()
+        _plant(window, (25, 40), const=const)
+        window.skip_occupied_check.setChecked(True)
+        before = _unit_count(window)
+        _drag(window.map_view, (20, 40), (31, 40))
+        assert (25, 40) in _walls_by_tile(window)
+        assert _unit_count(window) == before + 12
+    finally:
+        _close(window)
+
+
 # --- The wall button (GH #125 Part A) ------------------------------------
 
 

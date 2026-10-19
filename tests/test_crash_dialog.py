@@ -1,7 +1,7 @@
 """CrashReportDialog, plus the two sites in descape/viewer.py that create
 it: the in-app crash-time path (main()'s installed sys.excepthook) and the
 next-launch sweep. @pytest.mark.gui but still default-tier -- pytest.ini's
-addopts only deselects "corpus"/"slow", not "gui".
+addopts only deselects "corpus"/"slow"/"test_map", not "gui".
 
 Never calls CrashReportDialog.exec_() for real: tests/conftest.py records
 that a modal dialog blocks forever offscreen, which is exactly the trap a

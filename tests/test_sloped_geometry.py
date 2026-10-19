@@ -724,6 +724,22 @@ def test_sloped_output_stays_on_canvas_on_real_maps(corpus_files, pct):
     likely to be where a sizing error shows up -- and pct=200 is where the
     negative control failed first.
     """
+    checked = _sloped_output_on_canvas_count(corpus_files, pct)
+    assert checked > 0, "no corpus tiles checked -- fixture resolved to nothing"
+
+
+@pytest.mark.test_map
+@pytest.mark.parametrize("pct", [25, 50, 100, 200])
+def test_sloped_output_stays_on_canvas_on_test_map(pct):
+    """The corpus test above on conftest.TEST_MAP_PATH (elevations 0..7). It pins canvas sizing
+    and contiguity only: dropping `base_y -= d_min` stays on canvas unless no tile is at elevation 0."""
+    import conftest
+
+    assert _sloped_output_on_canvas_count([conftest.TEST_MAP_PATH], pct) == 240 * 240
+
+
+def _sloped_output_on_canvas_count(files, pct) -> int:
+    """Asserts test_sloped_output_stays_on_canvas_on_real_maps' three properties on every tile; returns the tile count."""
     from descape.render import SLOPE_CORNER_RULE, tile_pixels_for_map
     from descape.scenario_io import load_map_and_units
 
@@ -749,7 +765,7 @@ def test_sloped_output_stays_on_canvas_on_real_maps(corpus_files, pct):
         return hit
 
     checked = 0
-    for path in corpus_files:
+    for path in files:
         scenario = load_map_and_units(str(path))
         mm = scenario.map_manager
         w, h = mm.map_width, mm.map_height
@@ -784,4 +800,4 @@ def test_sloped_output_stays_on_canvas_on_real_maps(corpus_files, pct):
                     f"{base_x + dx0}..{base_x + dx1} escape canvas_w={proj.canvas_w}"
                 )
                 checked += 1
-    assert checked > 0, "no corpus tiles checked -- fixture resolved to nothing"
+    return checked

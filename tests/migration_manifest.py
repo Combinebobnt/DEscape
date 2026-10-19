@@ -119,35 +119,35 @@ MANIFEST: list[ManifestEntry] = [
         "with the same invariants against a real, loaded scenario's real TerrainTiles.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_raise_elevation_under_buildings", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_raise_elevation_under_buildings", "path_tmp", (), "",
         "Raise the tile under a real building by 1, save, reload, confirm the reloaded "
         "elevation is the pre-edit value + 1 (clamped). Skips (returns None) if the map isn't "
         "square or no player has an on-map building.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_raise_elevation_clamp", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_raise_elevation_clamp", "path_tmp", (), "",
         "Same as check_raise_elevation_under_buildings but starting the tile at MAX_ELEVATION -- "
         "must stay clamped, not go out of range. Skips under the same conditions.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_raise_elevation_off_map", "path", ("corpus",), "",
+        "verify_batch_api", "check_raise_elevation_off_map", "path", (), "",
         "A unit moved off-map must make raise_elevation_under return False, not raise. Skips "
         "if no player has an on-map building to move off-map.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_neighbors", "path", ("corpus",), "",
+        "verify_batch_api", "check_neighbors", "path", (), "",
         "neighbors() edge/corner behavior: interior tile has 4 (8 diagonal) neighbors; every "
         "corner -- not just (0,0), the opposite corner rules out an xy_to_i wraparound bug too "
         "-- has 2 (3 diagonal); a non-corner edge tile has 3.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_recolor_dirt_near_water", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_recolor_dirt_near_water", "path_tmp", (), "",
         "Recolor every DIRT_2 tile bordering water to BEACH, save, reload: every recolored tile "
         "really did border water and is now BEACH with layer reset, and re-running detection "
         "against the reloaded file finds nothing left to recolor.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_set_layer_persists", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_set_layer_persists", "path_tmp", (), "",
         "set_layer on a real file: a layered terrain set on three unlayered tiles, one "
         "existing layer removed, one layer equal to its tile's own base (reads back as none); "
         "save, reload, every tile's layer and terrain_id is exactly as expected. Skips on a "
@@ -160,20 +160,20 @@ MANIFEST: list[ManifestEntry] = [
         "deliberately excluded.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_raise_elevation_under_many", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_raise_elevation_under_many", "path_tmp", (), "",
         "Apply raise_elevation_under_many across every on-map building of whichever player has "
         "the most; every affected tile lands at exactly its pre-edit elevation + amount "
         "(clamped), once per unique tile -- the guarantee a naive per-unit loop lacks.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_raw_unit_mutation_does_not_persist", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_raw_unit_mutation_does_not_persist", "path_tmp", (), "",
         "Renamed from check_unit_edit_not_persisted (phase 3.5a, stage 5.1): mutate a real "
         "unit's player directly (the banned `unit.player =` setter, not a UnitEditModel), save "
         "with no model, reload: the reloaded unit's player is unchanged -- the containment "
         "guarantee phase 3.5a's write path depends on.",
     ),
     ManifestEntry(
-        "verify_batch_api", "check_unit_edit_persists_through_the_model", "path_tmp", ("corpus",), "",
+        "verify_batch_api", "check_unit_edit_persists_through_the_model", "path_tmp", (), "",
         "New in phase 3.5a (stage 5.1), the other half of the pair above: the same kind of edit "
         "(a player reassignment), made through a UnitEditModel and passed to save(units=...), "
         "does persist -- proving persistence is opt-in per edit, not a per-script flag.",
@@ -279,12 +279,12 @@ MANIFEST: list[ManifestEntry] = [
         "Incremental vs. full render match for a building's FOOTPRINT CORNER tile.",
     ),
     ManifestEntry(
-        "verify_iso_incremental", "check_incremental_and_undo_redo", "path", ("corpus",), "",
+        "verify_iso_incremental", "check_incremental_and_undo_redo", "path", (), "",
         "A scripted sequence of edit ops applied incrementally matches a full re-render at "
         "every step, and undo/redo stay consistent with it.",
     ),
     ManifestEntry(
-        "verify_iso_incremental", "check_out_of_range_fallback", "path", ("corpus",), "",
+        "verify_iso_incremental", "check_out_of_range_fallback", "path", (), "",
         "An out-of-range incremental edit falls back correctly instead of producing a wrong or "
         "crashing partial redraw.",
     ),
@@ -330,14 +330,14 @@ MANIFEST: list[ManifestEntry] = [
         "after. Single-file (files[0]) despite the list[Path] signature.",
     ),
     ManifestEntry(
-        "verify_iso_viewer_pick", "check_file", "path", ("corpus", "gui"), "",
+        "verify_iso_viewer_pick", "check_file", "path", ("gui",), "",
         "Drives a real ViewerWindow headlessly (QT_QPA_PLATFORM=offscreen): elevation-snapshot "
         "freshness after a live Flat-mode edit, pick round-trip on edited tiles, edit tools "
         "enabled in both Terrain Styles, and a live edit made while already in Stepped mode "
         "(pixels change, snapshot stays fresh, undo restores exactly).",
     ),
     ManifestEntry(
-        "verify_copy_paste", "check_file", "path", ("corpus", "gui"), "",
+        "verify_copy_paste", "check_file", "path", ("gui",), "",
         "Rewritten for phase 2.8's region Select/Copy/Paste. Drives a real ViewerWindow "
         "headlessly: Copy/Paste disabled with no region/clipboard regardless of the active tool; "
         "terrain region round trip carrying one layered source tile; elevation region round trip with FORCED "

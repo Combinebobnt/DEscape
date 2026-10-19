@@ -232,7 +232,6 @@ def test_zero_edit_identity(tmp_path: Path) -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_zero_edit_identity_corpus(scenario_path, tmp_path: Path) -> None:
     ok, detail = _check_zero_edit_identity(scenario_path, tmp_path)
     assert ok, detail
@@ -243,7 +242,6 @@ def test_edit_reload(tmp_path: Path) -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_edit_reload_corpus(scenario_path, tmp_path: Path) -> None:
     ok, detail = _check_edit_reload(scenario_path, tmp_path)
     assert ok, detail
@@ -254,7 +252,6 @@ def test_history_invariants() -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_history_invariants_corpus(scenario_path) -> None:
     ok, detail = _check_history_invariants(scenario_path)
     assert ok, detail

@@ -424,7 +424,6 @@ def test_batch_api_resize_map_carries_pending_option_and_message_edits(tmp_path)
 # -- corpus --------------------------------------------------------------------
 
 
-@pytest.mark.corpus
 @pytest.mark.gui
 def test_verify_resize_corpus(scenario_path) -> None:
     """tools/verify_resize.py's check_file(): the same resize driven through
@@ -438,7 +437,6 @@ def test_verify_resize_corpus(scenario_path) -> None:
     assert ok, detail
 
 
-@pytest.mark.corpus
 def test_resize_corpus_round_trip(scenario_path, tmp_path) -> None:
     """A real file shrunk from BOTTOM_RIGHT by 24 tiles, through the real
     write path and back: dimensions, the deleted count, every surviving
@@ -490,7 +488,6 @@ def _max_step(loaded) -> int:
     return int(max(steps))
 
 
-@pytest.mark.corpus
 def test_resize_corpus_grow_adds_no_steeper_step(scenario_path) -> None:
     """Edge extension can only repeat an existing neighbour pair, so a grown
     map's steepest 8-neighbour elevation step is never steeper than the

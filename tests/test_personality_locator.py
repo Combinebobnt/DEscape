@@ -162,13 +162,11 @@ def test_encode_str32_is_verbatim_bytes() -> None:
 # -- corpus ------------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_personality_gate_across_the_corpus(scenario_path) -> None:
     loaded = load_map_and_units(scenario_path)
     assert pf.verify_personality_block(loaded), scenario_path.name
 
 
-@pytest.mark.corpus
 def test_ai_library_layout_across_the_corpus(scenario_path) -> None:
     """Every file whose trigger parse succeeds and that has a Files section
     gets a library layout whose entries tile the ai_files span exactly and

@@ -58,6 +58,8 @@ from descape.render_cache import FlatChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 
+import conftest
+
 RNG_SEED = 20260810
 
 
@@ -444,4 +446,34 @@ def test_flat_chunks_corpus(check_fn, corpus_files) -> None:
 @pytest.mark.corpus
 def test_flat_chunks_stitched_matches_full_corpus(corpus_files) -> None:
     ok, detail = _check_stitched_matches_full(corpus_files, require_overlap_evidence=True)
+    assert ok, detail
+
+
+@pytest.mark.test_map
+@pytest.mark.parametrize(
+    "check_fn",
+    [
+        pytest.param(fn, id=fn.__name__.removeprefix("_check_"))
+        for fn in (
+            _check_order_independence,
+            _check_patch_after_scripted_ops,
+            _check_eviction_round_trips,
+            _check_arbitrary_rects_match_full,
+            _check_invalidate_region_round_trips,
+            _check_composite_rect_flat_mutates_nothing,
+            _check_unit_overlap_tiling_matches_single_call,
+        )
+    ],
+)
+def test_flat_chunks_on_test_map(check_fn) -> None:
+    # The map has units and overlaps, so a None (nothing to check) fails here instead of skipping.
+    ok, detail = check_fn([conftest.TEST_MAP_PATH])
+    assert ok, detail
+    if check_fn is _check_patch_after_scripted_ops:
+        assert "(1 editable files" in detail, f"test map assumption: terrain writable ({detail})"
+
+
+@pytest.mark.test_map
+def test_flat_chunks_stitched_matches_full_on_test_map() -> None:
+    ok, detail = _check_stitched_matches_full([conftest.TEST_MAP_PATH], require_overlap_evidence=True)
     assert ok, detail

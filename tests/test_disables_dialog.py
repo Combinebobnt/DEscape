@@ -119,6 +119,49 @@ def test_the_menu_action_is_in_the_map_menu_and_the_keybinds_tab_lists_it_under_
         _close(window)
 
 
+def test_a_legacy_edit_disables_binding_reaches_the_map_action_its_key_and_the_keybinds_row(tmp_path, monkeypatch) -> None:
+    """A config.yaml from before the Map-menu move holds `keybinds: {edit_disables: F7}`.
+
+    Pass conditions:
+    - a window built from that config has disables_action.shortcut() == F7;
+    - pressing F7 on the shown, active window opens the dialog (exec_ stubbed) exactly once;
+    - Settings > Keybinds shows F7 in the map_disables key edit, whose section header is Map.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication, QLabel
+
+    from descape import viewer as viewer_module
+    from descape.viewer import SettingsDialog
+
+    (tmp_path / "config.yaml").write_text("keybinds:\n  edit_disables: F7\n")
+    opened = []
+    monkeypatch.setattr(viewer_module.DisablesDialog, "exec_", lambda self: opened.append(self) or 0)
+    window = _window()
+    try:
+        assert window.disables_action.shortcut() == QKeySequence("F7")
+        assert window.disables_action.isEnabled()
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        QTest.keyClick(window, Qt.Key_F7)
+        QApplication.processEvents()
+        assert len(opened) == 1
+        assert isinstance(opened[0], viewer_module.DisablesDialog)
+
+        dialog = SettingsDialog(window)
+        try:
+            assert dialog._keybind_edits["map_disables"].keySequence() == QKeySequence("F7")
+            [(_divider, header, _rows)] = [s for s in dialog._keybind_sections if "map_disables" in dict(s[2])]
+            assert isinstance(header, QLabel) and header.text() == "<b>Map</b>"
+        finally:
+            dialog.close()
+    finally:
+        _close(window)
+
+
 # -- the dialog itself -------------------------------------------------------
 
 

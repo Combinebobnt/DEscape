@@ -39,6 +39,21 @@ def test_a_fixture_generator_refuses_a_linked_subscribed_folder(tmp_path, monkey
     assert list(real.iterdir()) == []  # neither the file nor its parent's mkdir
 
 
+def test_gen_test_map_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
+    """--no-bisect: without it main() also writes the bisect set into build/, whatever --out says."""
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("gen_test_map")
+    out = link / "sub" / "f.aoe2scenario"
+    monkeypatch.setattr(sys, "argv", ["gen_test_map", "--no-bisect", "--out", str(out)])
+
+    with pytest.raises(WriteBlockedError):
+        module.main()
+    assert list(real.iterdir()) == []
+    with pytest.raises(WriteBlockedError):
+        module._write(out, b"x")  # the per-file guard behind main()'s early refusal
+    assert list(real.iterdir()) == []
+
+
 def test_gen_blank_maps_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module("gen_blank_maps")

@@ -1,6 +1,6 @@
-"""Covers scenario_io.xs_attachment() and the info panel's two read-only XS
-lines (phase 5, P5-b). The file-level XS surface is read-only by design: see
-the accessor's own docstring for why no write path may touch script_name."""
+"""Covers scenario_io.xs_attachment() and the info panel's two XS lines
+(phase 5, P5-b). The accessor reads the file as parsed; editing the script
+name (GH #216) is covered by tests/test_script_name_write_path.py."""
 
 from __future__ import annotations
 
@@ -62,11 +62,13 @@ def test_entering_triggers_mode_refreshes_the_info_panel() -> None:
         window.close()
 
 
+# Stays corpus: a census of real files; the test map names a script on purpose.
 @pytest.mark.corpus
 def test_no_corpus_file_uses_the_file_level_xs_surface(scenario_path) -> None:
     """Pins the census finding that 0 real files attach or embed a script.
-    A new corpus file that does should fail loudly, since the read-only
-    display and the no-write-path decision both rest on it."""
+    A new corpus file that does should fail loudly: the script name write
+    path (GH #216) was only measured against an editor save that embeds
+    nothing, and script_file_content has no write path."""
     loaded = load_map_and_units(scenario_path)
     parse_triggers(loaded)
     script_name, embedded = xs_attachment(loaded)

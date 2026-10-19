@@ -31,11 +31,17 @@ from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_filter import UnitFilter
 from descape.unit_model import UnitEditModel
 
+import conftest
+
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 CORPUS_FILES = (
     "old-allies-final-v2.aoe2scenario",
     "0_June_Event_Scenario.aoe2scenario",
     "F7_2_Dos Pilas (648).aoe2scenario",
+)
+TEST_MAP_REGIONS = (
+    "elevation", "stacks", "objects_buildings", "players",
+    "corner_nw", "corner_ne", "corner_sw", "corner_se", "edge_n", "edge_s", "edge_w", "edge_e",
 )
 BIG_CONST = 182
 assert BUILDING_TILE_SPANS[BIG_CONST] == (5, 5)
@@ -115,14 +121,15 @@ def _raise_around(mm, cx, cy, brush, step, propagate=True) -> list[int]:
     return [i for i, t in enumerate(mm.terrain) if t.elevation != before[i]]
 
 
-def _drive(scenario, rng, rounds, tag, propagate=True):
-    """Random brush edits centred on units, each checked against the walk on
-    every shape and on both the loop and the array path."""
+def _drive(scenario, rng, rounds, tag, propagate=True, regions=()):
+    """Random brush edits centred on units (only those inside `regions`, when
+    given), each checked against the walk on every shape and on both the loop and the array path."""
     mm = scenario.map_manager
     pre, proj = elevations_and_proj(scenario)
     on_map = [
         u for units in scenario.unit_manager.units for u in units
         if 0 <= int(u.x) < mm.map_width and 0 <= int(u.y) < mm.map_height
+        and (not regions or any(region.holds_tile(int(u.x), int(u.y)) for region in regions))
     ]
     for r in range(rounds):
         seed = rng.choice(on_map)
@@ -176,15 +183,27 @@ def test_synthetic_edits_match_the_walk(checked, seed):
     assert checked["calls"] and checked["units"], f"vacuous: {checked}"
 
 
+def _drive_file(checked, path: Path, tag: str, rounds: int = 12, regions=()) -> None:
+    _drive(load_map_and_units(path), random.Random(tag), rounds, tag, regions=regions)
+    assert checked["calls"] and checked["units"], f"vacuous: {checked}"
+
+
 @pytest.mark.corpus
 @pytest.mark.parametrize("name", CORPUS_FILES)
 def test_corpus_edits_match_the_walk(checked, name):
     path = EXAMPLES / name
     if not path.exists():
         pytest.skip(f"{name} is not in examples/")
-    scenario = load_map_and_units(path)
-    _drive(scenario, random.Random(name), 12, name)
-    assert checked["calls"] and checked["units"], f"vacuous: {checked}"
+    _drive_file(checked, path, name)
+
+
+@pytest.mark.test_map
+def test_test_map_edits_match_the_walk(checked):
+    """The corpus case on the generated map, its brushes centred on units on
+    slopes, stacks, buildings and the map's edges and corners."""
+    regions = conftest.load_verify_module("gen_test_map").REGIONS
+    picked = [regions[name] for name in TEST_MAP_REGIONS]
+    _drive_file(checked, conftest.TEST_MAP_PATH, conftest.TEST_MAP_PATH.name, rounds=24, regions=picked)
 
 
 def _blank_with(player: int, **add_kw):

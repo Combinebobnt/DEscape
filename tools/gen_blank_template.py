@@ -69,6 +69,7 @@ from descape.scenario_io import (
     parse_triggers,
 )
 from descape.scenario_write import WriteBlockedError, _compress_bytes
+from testkit.zlib_runtime import warn_if_not_stock
 
 SOURCE_VERSION = "1.58"
 SOURCE_TRIGGER_VERSION = 4.9
@@ -157,6 +158,7 @@ def main() -> None:
     tmp = args.out.parent.parent / f"{args.out.name}.tmp"
     tmp.write_bytes(data)
     os.replace(tmp, args.out)
+    warn_if_not_stock(str(args.out))
     print(f"{args.out}: {len(data)} bytes, scenario version {SCENARIO_VERSION}, trigger version {TRIGGER_VERSION}")
 
 

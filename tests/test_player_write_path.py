@@ -375,7 +375,6 @@ def test_human_is_a_u32_target_below_1_56() -> None:
 # -- 4. corpus ----------------------------------------------------------------
 
 
-@pytest.mark.corpus
 def test_verify_player_block_across_the_corpus(scenario_path) -> None:
     loaded = load_map_and_units(scenario_path)
     if not loaded.units_write_supported:
@@ -383,7 +382,6 @@ def test_verify_player_block_across_the_corpus(scenario_path) -> None:
     assert pf.verify_player_block(loaded), scenario_path.name
 
 
-@pytest.mark.corpus
 def test_write_targets_field_count_matches_specs_for_across_the_corpus(scenario_path) -> None:
     """Every Tier-1 spec this file's version actually stores gets a target
     for every player 1..8, and nothing else -- pins the version-gated field
@@ -405,7 +403,6 @@ def test_write_targets_field_count_matches_specs_for_across_the_corpus(scenario_
         assert players == expected, (scenario_path.name, field_id)
 
 
-@pytest.mark.corpus
 def test_reencoding_the_stored_civ_value_is_byte_identical_across_the_corpus(scenario_path) -> None:
     """The maintainer plan's own "cheap correctness guard, worth a test on
     its own": re-encode()ing every 1.56+ entry's *existing* civilization/

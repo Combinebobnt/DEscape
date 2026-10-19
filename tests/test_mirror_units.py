@@ -14,6 +14,7 @@ refusal sweeps (axis straddle, garrisoned destination unit) fire.
 from __future__ import annotations
 
 import math
+import struct
 
 import pytest
 from test_wall_connectivity import WALL_CONST, real_gate_wall_install  # noqa: F401 (a pytest fixture, imported for its name)
@@ -40,6 +41,8 @@ from descape.mirror_tools import (
     walls_are_radian,
 )
 from descape.terrain_palette import tile_span
+
+import conftest
 
 N = 64
 _RADIAN_3 = 3 * 2 * math.pi / 5  # a radian-encoded wall index, so the file reads as radian
@@ -547,6 +550,27 @@ class _History:
         self.record = record
 
 
+def _assert_integer_encoded_walls(loaded) -> None:
+    """The file holds walls and stores their shapes as literal indices, so the mirror permutes them."""
+    from descape import unit_sprites
+
+    units = [u for units in loaded.unit_manager.units for u in units]
+    walls = [u for u in units if unit_sprites.rotation_variant_eligible(u.unit_const)]
+    assert walls, "no wall in the file, so its encoding proves nothing"
+    assert not walls_are_radian(units), "the file's walls read as radian-encoded"
+
+
+def _assert_permuted_walls(plan, region) -> None:
+    """Some wall image of a source in `region` carries an index other than its source's: the remap ran."""
+    from descape import unit_sprites
+
+    walls = [
+        image for image in plan.images
+        if unit_sprites.rotation_variant_eligible(image.unit_const) and region.holds_tile(int(image.source.x), int(image.source.y))
+    ]
+    assert any(image.rotation != float(image.source.rotation) for image in walls), f"no wall index permuted among {len(walls)}"
+
+
 @pytest.mark.corpus
 def test_a_mirror_survives_write_and_reload(tmp_path):
     """Plan -> apply through UnitEditModel -> write_scenario -> reload, on a
@@ -555,21 +579,40 @@ def test_a_mirror_survives_write_and_reload(tmp_path):
     from pathlib import Path
 
     from descape.scenario_io import load_map_and_units
-    from descape.scenario_write import write_scenario
-    from descape.unit_model import UnitEditModel
 
     # Mode 3 on this file is the one real-corpus combination with no
     # axis-straddling building, i.e. the case a user could actually apply.
     source = Path(__file__).resolve().parent.parent / "examples" / "2_Joan_coop_4_v0_13.aoe2scenario"
-    loaded = load_map_and_units(source)
+    _mirror_round_trip(load_map_and_units(source), tmp_path)
+
+
+@pytest.mark.test_map
+def test_a_mirror_survives_write_and_reload_on_the_test_map(tmp_path):
+    """The corpus round trip on the generated map, whose walls are integer-encoded.
+    Mode 3 slice 1 holds the walls region, so `mx` exchanges its diagonal runs (3, 4)."""
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(conftest.TEST_MAP_PATH)
+    _assert_integer_encoded_walls(loaded)
+    walls = conftest.load_verify_module("gen_test_map").REGIONS["walls"]
+    plan = _mirror_round_trip(loaded, tmp_path, slice_index=1)
+    _assert_permuted_walls(plan, walls)
+
+
+def _mirror_round_trip(loaded, tmp_path, slice_index: int = 0):
+    """Mode 3 applied, written and reloaded; every image must read back. Returns the plan."""
+    from descape.scenario_io import load_map_and_units
+    from descape.scenario_write import write_scenario
+    from descape.unit_model import UnitEditModel
+
     mm = loaded.map_manager
     model = UnitEditModel(loaded)
-    tiles = plan_mirror(mm, 3, 0, False, False)
+    tiles = plan_mirror(mm, 3, slice_index, False, False)
     plan = plan_mirror_units(
-        mm, 3, 0, loaded.unit_manager.units, tiles.source_indices, referencing=model.referencing
+        mm, 3, slice_index, loaded.unit_manager.units, tiles.source_indices, referencing=model.referencing
     )
     assert plan.images, "nothing to mirror, so this proves nothing"
-    assert not plan.blocked, "this file no longer mirrors cleanly under mode 3"
+    assert not plan.blocked, f"this file no longer mirrors cleanly under mode 3 slice {slice_index}"
 
     model.begin_unit_edit(range(9))
     model.remove_many(plan.removals)
@@ -608,6 +651,7 @@ def test_a_mirror_survives_write_and_reload(tmp_path):
         f"{len(missing)} image(s) did not survive the round trip: "
         f"{[(m.unit_const, m.x, m.y) for m in missing[:5]]}"
     )
+    return plan
 
 
 @pytest.mark.corpus
@@ -879,13 +923,44 @@ def test_a_six_way_mirror_survives_write_and_reload(tmp_path):
     image survives."""
     from pathlib import Path
 
+    from descape.scenario_io import load_map_and_units
+
+    source = Path(__file__).resolve().parent.parent / "examples" / "atilla_1_scn_resaved.aoe2scenario"
+    _six_way_round_trip(load_map_and_units(source), tmp_path)
+
+
+@pytest.mark.test_map
+def test_a_six_way_mirror_survives_write_and_reload_on_the_test_map(tmp_path):
+    """The corpus round trip on the generated map: wedge 0 holds the walls
+    region, whose integer-encoded axis runs (0, 1) swap under 60 and 120 degrees."""
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(conftest.TEST_MAP_PATH)
+    _assert_integer_encoded_walls(loaded)
+    from descape import unit_sprites
+
+    walls = conftest.load_verify_module("gen_test_map").REGIONS["walls"]
+    plan, reloaded = _six_way_round_trip(loaded, tmp_path)
+    _assert_permuted_walls(plan, walls)
+    # The shared position check ignores rotation, so the permuted wall indexes are read back here.
+    stored = {
+        (int(u.player), u.unit_const, round(float(u.x), 3), round(float(u.y), 3), round(float(u.rotation), 4))
+        for u in reloaded.unit_manager.get_all_units() if unit_sprites.rotation_variant_eligible(u.unit_const)
+    }
+    for image in plan.images:
+        if unit_sprites.rotation_variant_eligible(image.unit_const):
+            key = (int(image.player), image.unit_const, round(_f32(image.x), 3), round(_f32(image.y), 3),
+                   round(_f32(image.rotation), 4))
+            assert key in stored, key
+
+
+def _six_way_round_trip(loaded, tmp_path):
+    """Mode 11 wedge 0, terrain and units, applied, written and reloaded. Returns the unit plan and the reload."""
     from descape.edit_history import tile_state
     from descape.scenario_io import load_map_and_units
     from descape.scenario_write import write_scenario
     from descape.unit_model import UnitEditModel
 
-    source = Path(__file__).resolve().parent.parent / "examples" / "atilla_1_scn_resaved.aoe2scenario"
-    loaded = load_map_and_units(source)
     mm = loaded.map_manager
     before = [tile_state(tile) for tile in mm.terrain]
     model = UnitEditModel(loaded)
@@ -924,5 +999,11 @@ def test_a_six_way_mirror_survives_write_and_reload(tmp_path):
         for u in reloaded.unit_manager.get_all_units()
     )
     for image in plan.images:
-        key = (int(image.player), image.unit_const, round(image.x, 3), round(image.y, 3))
+        # Rounded from float32, as the file stores it: 221.55350 rounds to .554 in float64 but .553 stored.
+        key = (int(image.player), image.unit_const, round(_f32(image.x), 3), round(_f32(image.y), 3))
         assert key in written, key
+    return plan, reloaded
+
+
+def _f32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", value))[0]

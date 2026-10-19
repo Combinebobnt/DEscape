@@ -128,6 +128,7 @@ from descape import (
     player_fields,
     player_labels,
     player_stats,
+    qt_messages,
     qt_platform,
     region_clipboard,
     region_transform,
@@ -145,6 +146,7 @@ from descape import (
     trigger_geometry,
     trigger_organize,
     trigger_status,
+    ui_icons,
     unit_fields,
     unit_kind,
     unit_pick,
@@ -203,6 +205,7 @@ from descape.options_model import (
     personality_write_supported,
     player_count_write_supported,
     players_write_supported,
+    script_name_write_supported,
 )
 from descape.players_panel import STORED_PERSONALITY, PersonalityOptions, PlayersPanel, personality_choice_label
 from descape.render import (
@@ -483,6 +486,7 @@ _MODE_ID_FOR_LABEL = {"Map Options": "map_options"}
 # fails silently in the direction of dropping the edit.
 _EXEC_ORDER_FIELD = "legacy_exec_order"
 _EXEC_ORDER_SECTION = "Triggers"
+_SCRIPT_NAME_FIELD = "script_name"
 
 # GH #168: the most shapes a several-trigger overlay draws. Every unit edit re-derives
 # the union, and 300 is what fits a 25 ms refresh on the corpus file with the most shapes.
@@ -493,10 +497,13 @@ def _mode_id(mode_text: str) -> str:
     return _MODE_ID_FOR_LABEL.get(mode_text, mode_text.lower())
 
 
-def _xs_info_lines(loaded) -> list[str]:
-    """The info panel's two read-only XS attachment lines. Honest about what is
-    not known yet, like the trigger-tail line above them."""
+def _xs_info_lines(loaded, pending_name: str | None = None) -> list[str]:
+    """The info panel's two XS attachment lines. Honest about what is not
+    known yet, like the trigger-tail line above them. `pending_name` is an
+    unsaved Script filename edit, shown in place of the file's."""
     script_name, embedded = xs_attachment(loaded)
+    if pending_name is not None:
+        script_name = pending_name
     if script_name is None:
         name_text = "(not stored before scenario 1.40)"
     else:
@@ -970,7 +977,8 @@ class SettingsDialog(QDialog):
         file_tooltip = (
             "A theme file carries this tab's look settings: theme and chrome colours, UI font, "
             "tool overlay colours, ruler and distance-tick label sizes, badge position, grid "
-            "blend and thickness. Not graphics quality, preloading, elevation height or pan speed."
+            "blend and thickness. Not graphics quality, preloading, elevation height, pan speed, "
+            "toolbar buttons or trigger status."
         )
         self.theme_export_button = QPushButton("Export theme…")
         self.theme_export_button.setToolTip(file_tooltip)
@@ -1017,6 +1025,20 @@ class SettingsDialog(QDialog):
         ui_font_row.addWidget(self.ui_font_size_spin, stretch=0)
         ui_font_row.addWidget(ui_font_reset, stretch=0)
         layout.addLayout(ui_font_row)
+
+        toolbar_style_row = QHBoxLayout()
+        toolbar_style_row.addWidget(QLabel("Toolbar buttons:"))
+        self.toolbar_style_combo = QComboBox()
+        for style_id, style_label in settings.TOOLBAR_STYLES:
+            self.toolbar_style_combo.addItem(style_label, style_id)
+        self.toolbar_style_combo.setCurrentIndex(self.toolbar_style_combo.findData(settings.get_toolbar_style()))
+        self.toolbar_style_combo.setToolTip(
+            "How the main toolbar's tool buttons show. Each tool's tooltip names it and its key either way"
+        )
+        self.toolbar_style_combo.currentIndexChanged.connect(self._on_toolbar_style_changed)
+        toolbar_style_row.addWidget(self.toolbar_style_combo)
+        toolbar_style_row.addStretch(1)
+        layout.addLayout(toolbar_style_row)
 
         preload_checkbox = QCheckBox("Preload neighbouring zoom levels")
         preload_checkbox.setChecked(settings.get_preload_zoom_levels())
@@ -1779,6 +1801,11 @@ class SettingsDialog(QDialog):
                 column=column,
             )
         return container
+
+    def _on_toolbar_style_changed(self, index: int) -> None:
+        settings.set_toolbar_style(self.toolbar_style_combo.itemData(index))
+        self._window._apply_toolbar_style()
+        self._window._log_status(f"Toolbar buttons: {self.toolbar_style_combo.itemText(index)}")
 
     def _on_trigger_status_marker_changed(self, index: int) -> None:
         settings.set_trigger_status_marker(self.trigger_status_marker_combo.itemData(index))
@@ -3011,10 +3038,21 @@ class MirrorDialog(QDialog):
         self._window.map_view.clear_mirror_overlay()
 
 
+# settings.TOOLBAR_STYLES id -> the Qt style it applies.
+_TOOLBAR_BUTTON_STYLES = {
+    "icons": Qt.ToolButtonIconOnly,
+    "icons_text": Qt.ToolButtonTextBesideIcon,
+    "text": Qt.ToolButtonTextOnly,
+}
+
+
 class ViewerWindow(QMainWindow):
     # GH #142: the View info page's minimumSizeHint width at the baseline font (the stats table).
     # A class attribute: FontScaledWidth only resolves on attribute access through a class.
     INFO_PAGE_MIN_USEFUL_WIDTH = FontScaledWidth(210)
+    # File > Open Recent's Clear entry, None while the list is empty.
+    clear_recent_action: QAction | None = None
+    _icon_reink_pending = False
 
     def __init__(self):
         super().__init__()
@@ -3595,8 +3633,12 @@ class ViewerWindow(QMainWindow):
         self.map_view.on_area_edit = self._on_area_edited
         self.map_view.on_tile_picker_cancel = self.disarm_unit_picker
         self.map_view.on_unit_eyedrop = self.pick_unit_value
+        self._tool_base_tips: dict[str, str] = {}
         self._build_keybind_actions()
         self._update_tool_enabled()
+        # After _build_keybind_actions(), which fills the table apply_icons() reads.
+        ui_icons.apply_icons(self)
+        self._apply_toolbar_style()
         # Once per launch: this is what bounds the untitled autosave keys
         # doc_key() deliberately leaves unbounded by count. Never fatal --
         # a failure here must not stop the window from opening.
@@ -7992,17 +8034,61 @@ class ViewerWindow(QMainWindow):
                 self.more_tools_menu.addAction(getattr(self, f"{tool_id}_action"))
 
             self.more_tools_action.setVisible(bool(overflow_ids))
-            if self._current_tool in overflow_set:
-                label = _TOOL_LABELS.get(self._current_tool, self._current_tool)
-                self.more_tools_button.setText(f"{label} ▾")
-            else:
-                self.more_tools_button.setText("More Tools ▾")
+            self._update_more_tools_button(overflow_set)
         finally:
             self._toolbar_overflow_updating = False
+
+    def _update_more_tools_button(self, overflow_ids: set[str] | None = None) -> None:
+        """The button wears the active tool's label and icon while that tool sits in its menu."""
+        if overflow_ids is None:
+            in_menu = self.more_tools_menu.actions()
+            overflow_ids = {t.tool_id for t in settings.TOOLS if getattr(self, f"{t.tool_id}_action") in in_menu}
+        if self._current_tool in overflow_ids:
+            label = _TOOL_LABELS.get(self._current_tool, self._current_tool)
+            self.more_tools_button.setText(f"{label} ▾")
+            new_icon = ui_icons.tool_icon(self._current_tool)
+        else:
+            self.more_tools_button.setText("More Tools ▾")
+            new_icon = ui_icons.icon(ui_icons.WINDOW_ICONS["more_tools_button"])
+        # setIcon() always relayouts the toolbar, and this runs on every resize.
+        if new_icon.cacheKey() != self.more_tools_button.icon().cacheKey():
+            self.more_tools_button.setIcon(new_icon)
+
+    def _apply_toolbar_style(self) -> None:
+        """Settings > Appearance's Toolbar buttons, then a fresh overflow pass on the new widths."""
+        style = _TOOLBAR_BUTTON_STYLES[settings.get_toolbar_style()]
+        self.main_toolbar.setToolButtonStyle(style)
+        # Widgets added with addWidget() don't follow the toolbar's style.
+        self.filters_button.setToolButtonStyle(style)
+        self.more_tools_button.setToolButtonStyle(style)
+        if not self._tool_overflow_measured:
+            return
+        # The width cache needs every tool on the bar (widgetForAction() is None in the menu).
+        self._toolbar_overflow_updating = True
+        try:
+            for tool in settings.TOOLS:
+                action = getattr(self, f"{tool.tool_id}_action")
+                if action not in self.main_toolbar.actions():
+                    self.main_toolbar.insertAction(self.more_tools_action, action)
+            self.more_tools_menu.clear()
+            self.more_tools_action.setVisible(False)
+            # Hidden as at the first measure (before any map), so the pinned width doesn't depend on the mode.
+            rotate_shown = [a.isVisible() for a in self._rotate_toolbar_actions]
+            for action in self._rotate_toolbar_actions:
+                action.setVisible(False)
+            self.main_toolbar.layout().invalidate()
+            self._cache_tool_button_widths()
+            for action, shown in zip(self._rotate_toolbar_actions, rotate_shown, strict=True):
+                action.setVisible(shown)
+        finally:
+            self._toolbar_overflow_updating = False
+        self._apply_toolbar_overflow()
 
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("Main")
         toolbar.setMovable(False)
+        # Fixed, not the style's metric, so the bar height and the overflow widths match on every platform.
+        toolbar.setIconSize(QSize(24, 24))
         # Kept for the Stage 3 overflow logic (_apply_toolbar_overflow),
         # which needs to add/remove tool actions on this specific toolbar.
         self.main_toolbar = toolbar
@@ -8991,6 +9077,13 @@ class ViewerWindow(QMainWindow):
             return
         key_text = settings.get_keybind(action_id)
         action.setShortcut(QKeySequence(key_text) if key_text else QKeySequence())
+        tool_id = action_id.removeprefix("tool_")
+        if action_id.startswith("tool_") and tool_id in _TOOL_LABELS:
+            # An icon-only button shows no name, so the tooltip leads with it and the key.
+            base = self._tool_base_tips.setdefault(tool_id, action.toolTip())
+            key = QKeySequence(key_text).toString(QKeySequence.NativeText) if key_text else ""
+            label = _TOOL_LABELS[tool_id]
+            action.setToolTip(f"{label} ({key}): {base}" if key else f"{label}: {base}")
 
     def _select_player(self, player_id: int) -> None:
         """Backs the player_select_0..8 shortcuts. There is no global
@@ -9708,8 +9801,15 @@ class ViewerWindow(QMainWindow):
         editable = set()
         if options_write_supported(self.scenario, specs):
             editable.update(
-                spec.field_id for spec in specs if spec.field_id != _EXEC_ORDER_FIELD
+                spec.field_id
+                for spec in specs
+                if spec.field_id not in (_EXEC_ORDER_FIELD, _SCRIPT_NAME_FIELD)
             )
+            # Its own gate (the Files walk); listed only on a 1.40+ file.
+            if any(spec.field_id == _SCRIPT_NAME_FIELD for spec in specs) and script_name_write_supported(
+                self.scenario
+            ):
+                editable.add(_SCRIPT_NAME_FIELD)
         if exec_order_write_supported(self.scenario):
             editable.add(_EXEC_ORDER_FIELD)
         return frozenset(editable)
@@ -9721,6 +9821,16 @@ class ViewerWindow(QMainWindow):
     _SCALARS_READ_ONLY = (
         "Read-only for this file: its map-option block failed verification, so "
         "patching this setting would land at an offset that cannot be trusted."
+    )
+
+    _SCRIPT_NAME_READ_ONLY = (
+        "Read-only for this file: its script filename or Files section failed "
+        "verification, so this setting cannot be written back."
+    )
+
+    _SCRIPT_NAME_EMBEDDED_READ_ONLY = (
+        "Read-only for this file: it embeds its XS script's text, and a new "
+        "name would leave that text under it."
     )
 
     def _map_options_read_only_reasons(self) -> dict[str, str]:
@@ -9742,11 +9852,19 @@ class ViewerWindow(QMainWindow):
         for spec in option_fields.specs_for(self.scenario):
             if spec.field_id in editable:
                 continue
-            reasons[spec.field_id] = (
-                self._EXEC_ORDER_READ_ONLY
-                if spec.section == _EXEC_ORDER_SECTION
-                else self._SCALARS_READ_ONLY
-            )
+            if spec.section == _EXEC_ORDER_SECTION:
+                reasons[spec.field_id] = self._EXEC_ORDER_READ_ONLY
+            elif spec.field_id == _SCRIPT_NAME_FIELD and options_write_supported(
+                self.scenario, option_fields.specs_for(self.scenario)
+            ):
+                # The gate above already forced the Files parse, so the embedded length is known.
+                reasons[spec.field_id] = (
+                    self._SCRIPT_NAME_EMBEDDED_READ_ONLY
+                    if xs_attachment(self.scenario)[1]
+                    else self._SCRIPT_NAME_READ_ONLY
+                )
+            else:
+                reasons[spec.field_id] = self._SCALARS_READ_ONLY
         return reasons
 
     def _map_options_notes(self) -> list[str]:
@@ -9835,6 +9953,9 @@ class ViewerWindow(QMainWindow):
         except (KeyError, ValueError) as e:
             self._log_status(f"Map option {spec.field_id} not set: {e}")
             self._repopulate_map_options()
+            return
+        if spec.field_id == _SCRIPT_NAME_FIELD:
+            self._update_technical_info()
 
     def _ensure_option_edits(self) -> OptionsEditModel | None:
         """The document's OptionsEditModel, built on first use.
@@ -16496,6 +16617,7 @@ class ViewerWindow(QMainWindow):
             self._after_player_color_change()
             # An undone Number of Players edit changes the stats combo's list.
             self._repopulate_stats_players()
+            self._update_technical_info()
         elif "trigger" in kinds:
             self._update_player_stats()
         if "messages" in kinds:
@@ -16895,6 +17017,17 @@ class ViewerWindow(QMainWindow):
             self._cache_tool_button_widths()
             self._tool_overflow_measured = True
         self._apply_toolbar_overflow()
+
+    def changeEvent(self, event) -> None:
+        # Deferred and coalesced: apply_theme() sends several, and painting mid apply_theme() can segfault offscreen.
+        if event.type() == QEvent.PaletteChange and not self._icon_reink_pending:
+            self._icon_reink_pending = True
+            QTimer.singleShot(0, self._reink_icons)
+        super().changeEvent(event)
+
+    def _reink_icons(self) -> None:
+        self._icon_reink_pending = False
+        ui_icons.apply_icons(self)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -17946,6 +18079,7 @@ class ViewerWindow(QMainWindow):
         the persisted list, so a file on a removable drive reappears once
         it's back."""
         self.recent_menu.clear()
+        self.clear_recent_action = None
         paths = [p for p in settings.get_recent_files() if Path(p).is_file()]
         if not paths:
             empty_action = QAction("(No recent files)", self)
@@ -17967,8 +18101,10 @@ class ViewerWindow(QMainWindow):
         self.recent_menu.addSeparator()
         clear_action = QAction("&Clear Recent Files", self)
         clear_action.setToolTip("Empty this list. The files themselves are not touched")
+        clear_action.setIcon(ui_icons.icon(ui_icons.CLEAR_RECENT_ICON))
         clear_action.triggered.connect(self._clear_recent_files)
         self.recent_menu.addAction(clear_action)
+        self.clear_recent_action = clear_action
 
     def _open_recent(self, path_str: str) -> None:
         if not self._confirm_discard_changes():
@@ -18519,13 +18655,24 @@ class ViewerWindow(QMainWindow):
             (name_for_terrain_id(tid), f"{100 * count / total_tiles:.1f}%", "")
             for tid, count in terrain_hist.most_common(8)
         ], numeric=True)
+        self._update_technical_info()
+        # The trigger-tail/XS rows above and the Player section's trigger row flip together.
+        self._repopulate_stats_players()
+
+    def _update_technical_info(self) -> None:
+        """The info page's Technical rows alone, also refreshed after a Script
+        filename edit or its undo, so the XS line shows the pending name."""
+        s = self.scenario
+        if s is None:
+            return
         technical = [("Trigger tail", f"{len(s.trigger_tail):,}", "bytes (not parsed)")]
-        for line in _xs_info_lines(s):
+        pending_name = None
+        if self.option_edits is not None:
+            pending_name = self.option_edits.pending_values().get(_SCRIPT_NAME_FIELD)
+        for line in _xs_info_lines(s, pending_name):
             label, _, value = line.partition(": ")
             technical.append((label, "", value))
         self._set_info_children("Technical", technical)
-        # The trigger-tail/XS rows above and the Player section's trigger row flip together.
-        self._repopulate_stats_players()
 
     def _set_info_children(self, title: str, rows: list[tuple[str, str, str]], numeric: bool = False) -> None:
         """Replaces one static section's rows. numeric right-aligns the Value column."""
@@ -18838,6 +18985,7 @@ def main() -> None:
     theme_line = qt_platform.apply_default_theme()
     if theme_line is not None:
         debug_log.log(theme_line)
+    qt_messages.install()
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
     # Wayland's app_id, matching packaging/DEscape.desktop (StartupWMClass is X11-only).

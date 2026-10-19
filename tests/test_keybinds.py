@@ -542,6 +542,8 @@ def test_tool_shortcut_fires_while_overflowed_into_more_tools() -> None:
 
     import conftest
 
+    # Text buttons: icon-only ones are narrow enough that Cliff stays on the bar.
+    settings.set_toolbar_style("text")
     window = conftest.shown_terrain_window(width=settings.MIN_WINDOW_WIDTH)
     try:
         assert window.cliff_action in window.more_tools_menu.actions(), (
@@ -1097,3 +1099,139 @@ def test_the_pan_ids_reach_map_view_rather_than_a_qaction_shortcut() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- File > Recover from Autosave… (rebindable since c376a8e) ----------------
+
+
+def _file_section_ids(dialog) -> list[str]:
+    [rows] = [rows for _divider, header, rows in dialog._keybind_sections if header.text() == "<b>File</b>"]
+    return [action_id for action_id, _widgets in rows]
+
+
+def _row_widgets(dialog, action_id: str) -> list:
+    return next(w for _d, _h, rows in dialog._keybind_sections for aid, w in rows if aid == action_id)
+
+
+def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bound_key_opens_the_dialog() -> None:
+    """Pass conditions:
+    - the File section lists file_save_as, file_recover_autosave, file_exit consecutively;
+    - its key edit starts empty;
+    - typing Ctrl+F10 into that edit binds the action, and pressing Ctrl+F10 on the shown,
+      active window opens a visible RecoverAutosaveDialog.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+    from descape.autosave_dialog import RecoverAutosaveDialog
+    from descape.viewer import SettingsDialog
+
+    window = conftest.shown_window(1200, 800)
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            ids = _file_section_ids(dialog)
+            at = ids.index("file_recover_autosave")
+            assert ids[at - 1 : at + 2] == ["file_save_as", "file_recover_autosave", "file_exit"]
+            edit = dialog._keybind_edits["file_recover_autosave"]
+            assert edit.keySequence().isEmpty()
+            assert settings.keybind_holder("Ctrl+F10") is None
+            edit.setKeySequence(QKeySequence("Ctrl+F10"))
+        finally:
+            dialog.close()
+        assert window.recover_autosave_action.shortcut() == QKeySequence("Ctrl+F10")
+        assert window.findChild(RecoverAutosaveDialog) is None
+
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        QTest.keyClick(window, Qt.Key_F10, Qt.ControlModifier)
+        QApplication.processEvents()
+        recover = window.findChild(RecoverAutosaveDialog)
+        assert recover is not None and recover.isVisible()
+        recover.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_reassigning_the_recover_autosave_key_clears_its_row_with_a_warning_and_default_blanks_it() -> None:
+    """Pass conditions:
+    - with Recover bound to Ctrl+F10, typing Ctrl+F10 into mode_view's edit clears Recover's
+      edit, its stored binding and its QAction shortcut, and the warning names Recover;
+    - bound again to Ctrl+F10, its Default button blanks the edit, the stored binding and
+      the shortcut.
+    """
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog
+
+    window = conftest.shown_window(1200, 800)
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            recover_edit = dialog._keybind_edits["file_recover_autosave"]
+            recover_edit.setKeySequence(QKeySequence("Ctrl+F10"))
+            assert settings.get_keybind("file_recover_autosave") == "Ctrl+F10"
+
+            dialog._keybind_edits["mode_view"].setKeySequence(QKeySequence("Ctrl+F10"))
+            assert recover_edit.keySequence().isEmpty()
+            assert settings.get_keybind("file_recover_autosave") == ""
+            assert window.recover_autosave_action.shortcut().isEmpty()
+            assert dialog._keybind_warning_label.text() == (
+                "'Ctrl+F10' was already assigned to Recover from Autosave… -- that binding has been cleared."
+            )
+
+            recover_edit.setKeySequence(QKeySequence("Ctrl+Alt+F10"))
+            assert window.recover_autosave_action.shortcut() == QKeySequence("Ctrl+Alt+F10")
+            _label, _edit, default_btn, _clear_btn = _row_widgets(dialog, "file_recover_autosave")
+            assert default_btn.text() == "Default"
+            default_btn.click()
+            assert recover_edit.keySequence().isEmpty()
+            assert settings.get_keybind("file_recover_autosave") == ""
+            assert window.recover_autosave_action.shortcut().isEmpty()
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_recover_autosave_binding_survives_a_config_reload_and_a_window_rebuild(tmp_path, monkeypatch) -> None:
+    """Pass conditions:
+    - binding Recover to Ctrl+F10 through the Keybinds row writes it to config.yaml;
+    - after the window closes and settings' memoized keybinds are dropped (a restart), a new
+      window's recover_autosave_action has Ctrl+F10 and its Keybinds row shows Ctrl+F10.
+    """
+    import yaml
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog
+
+    window = conftest.shown_window(1200, 800)
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            dialog._keybind_edits["file_recover_autosave"].setKeySequence(QKeySequence("Ctrl+F10"))
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
+    assert saved["file_recover_autosave"] == "Ctrl+F10"
+
+    monkeypatch.setattr(settings, "_keybinds", None)
+    window = conftest.shown_window(1200, 800)
+    try:
+        assert window.recover_autosave_action.shortcut() == QKeySequence("Ctrl+F10")
+        dialog = SettingsDialog(window)
+        try:
+            assert dialog._keybind_edits["file_recover_autosave"].keySequence() == QKeySequence("Ctrl+F10")
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)

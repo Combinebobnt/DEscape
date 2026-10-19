@@ -1256,6 +1256,35 @@ def set_trigger_status_marker(marker: str) -> None:
     _save_config(config)
 
 
+TOOLBAR_STYLES: list[tuple[str, str]] = [
+    ("icons", "Icons only"),
+    ("icons_text", "Icons and text"),
+    ("text", "Text only"),
+]
+TOOLBAR_STYLE_DEFAULT = "icons_text"
+_TOOLBAR_STYLE_IDS = tuple(sid for sid, _label in TOOLBAR_STYLES)
+_toolbar_style: str | None = None
+
+
+def get_toolbar_style() -> str:
+    """One of TOOLBAR_STYLES' ids; anything else reads as the default."""
+    global _toolbar_style
+    if _toolbar_style is None:
+        raw = _load_config().get("toolbar_style")
+        _toolbar_style = raw if raw in _TOOLBAR_STYLE_IDS else TOOLBAR_STYLE_DEFAULT
+    return _toolbar_style
+
+
+def set_toolbar_style(style: str) -> None:
+    if style not in _TOOLBAR_STYLE_IDS:
+        raise ValueError(f"toolbar_style must be one of {list(_TOOLBAR_STYLE_IDS)}, got {style!r}")
+    global _toolbar_style
+    _toolbar_style = style
+    config = _load_config()
+    config["toolbar_style"] = style
+    _save_config(config)
+
+
 def get_trigger_status_color_ok_rows() -> bool:
     """Whether rows that pass are marked too (colour and tick); off leaves only problems marked."""
     global _trigger_status_color_ok_rows
