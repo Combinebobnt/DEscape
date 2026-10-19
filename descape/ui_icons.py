@@ -72,8 +72,6 @@ WINDOW_ICONS: dict[str, str] = {
 }
 # Open Recent's Clear entry is rebuilt with the menu, so it reads this name itself.
 CLEAR_RECENT_ICON = "file-clear-recent"
-# Every preset size under File > New Map shares the New icon.
-NEW_SIZE_ICON = "file-new"
 
 _cache: dict[str, QIcon] = {}
 _cache_colours: tuple[int, ...] = ()
@@ -120,8 +118,6 @@ def apply_icons(window) -> None:
         action.setIcon(icon(name))
     for attr, name in WINDOW_ICONS.items():
         getattr(window, attr).setIcon(icon(name))
-    for action in window.new_size_actions:
-        action.setIcon(icon(NEW_SIZE_ICON))
     if window.clear_recent_action is not None:
         window.clear_recent_action.setIcon(icon(CLEAR_RECENT_ICON))
     # The More Tools button wears the active tool's icon while that tool is in its menu.

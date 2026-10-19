@@ -172,7 +172,6 @@ def test_every_table_name_has_artwork():
         *ui_icons.ACTION_ICONS.values(),
         *ui_icons.WINDOW_ICONS.values(),
         ui_icons.CLEAR_RECENT_ICON,
-        ui_icons.NEW_SIZE_ICON,
     }
     assert named - set(icon_art.ICON_SHAPES) == set()
     # And the reverse: artwork nothing asks for is a drawing no one sees.
