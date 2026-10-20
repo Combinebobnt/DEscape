@@ -1,5 +1,5 @@
 """Frames of a particle effect, for the units whose standing graphic is one
-(GH #20: Butterflies 1608-1610, which have no .sld at all).
+(GH #20: Butterflies 1608-1610; GH #67: Seagulls 303). None of them has an .sld at all.
 
 Leaf module like unit_sprites: numpy, Pillow and stdlib, no Qt. Pixels come
 from the user's own install at runtime and nothing is shipped.

@@ -56,7 +56,12 @@ install's blendomatic and fails without it).
 
 --force-wholesale sends _after_unit_mutation's `changed` to None, i.e. the
 pre-splice path, for a same-build comparison row. --cap overrides
-render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover.
+render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover;
+with sprites on, a row past it takes the visible-only splice unless
+--visible-cap 0 is also passed.
+--visible-cap overrides render_cache.VISIBLE_SPLICE_MAX_UNITS, the bound on the
+visible-only splice of a batch past both 1000 caps (0: never, today's stale
+level; inf: always). A row that took it logs `splice_visible <splices>`.
 --area-ratio overrides viewer._TIGHT_PATCH_AREA_RATIO and, on an older build
 that still has it, the retired _SCOPED_PATCH_AREA_RATIO, for every style (inf:
 always patch the bbox eagerly, 0: always evict it), for finding the crossover.
@@ -104,7 +109,9 @@ Columns:
              `rect_area` the same for the per-chunk rects it priced (`rects` of them),
              whether it then patched them (path rects) or evicted; rect_bbox the
              sizing of the block rects behind them, rect_patch the
-             patch_composite_rects() time, also inside unit_patch
+             patch_composite_rects() time, also inside unit_patch;
+             splice_visible the splices invalidate_units() put into the visible
+             level alone (a batch past both 1000 caps)
   bbox line  (Stepped/Sloped unit edits) tight / reach: dims, patch_area()
              over every resident level and resident chunks per level
              (mip:count) each would touch; sub: whether tight lies inside
@@ -237,6 +244,8 @@ class _Timers:
         self._pricing_rects = False
         self._level_depth = 0
         self.rebuild_in_paint = 0.0
+        # Splices in each visible-only splice (cache._splice_visible() answering True).
+        self.splice_visible: list[int] = []
         # (owner, attr, the instance attribute it replaced or _MISSING), in install order.
         self._installed: list[tuple[object, str, object]] = []
 
@@ -402,6 +411,20 @@ class _Timers:
 
         self._replace(cache, "_refresh_source_caches", spy)
         self._replace(cache, "invalidate_units", invalidate)
+        inner_visible = getattr(cache, "_splice_visible", None)
+        if inner_visible is not None:
+            from descape import perf_trace
+
+            def splice_visible(*args, **kwargs):
+                spliced = inner_visible(*args, **kwargs)
+                if self.armed and spliced and perf_trace.is_enabled():
+                    # Its last act is the zero-length `splice_visible=<splices>` phase.
+                    name = perf_trace._recent[-1][3] if perf_trace._recent else ""
+                    if name.startswith("splice_visible="):
+                        self.splice_visible.append(int(name.partition("=")[2]))
+                return spliced
+
+            self._replace(cache, "_splice_visible", splice_visible)
         inner_evict = cache.invalidate_region
 
         def evict(bbox, *args, **kwargs):
@@ -484,6 +507,7 @@ class _Timers:
         self.bbox_lines = []
         self.probe_ms = 0.0
         self.rebuild_in_paint = 0.0
+        self.splice_visible = []
 
     def bbox_kind(self, cache) -> str:
         """The path column's suffix: T when the tight split ran, else R-<why>."""
@@ -571,6 +595,8 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
     )
     path += timers.bbox_kind(window._cache)
     ms = dict(timers.ms)
+    if timers.splice_visible:
+        ms["splice_visible"] = sum(timers.splice_visible)
     if timers.rebuild_in_paint:
         ms["rebuild_in_paint"] = timers.rebuild_in_paint
     if timers.evict_others:
@@ -588,7 +614,7 @@ def _timed(window, timers: _Timers, paints: list, action) -> tuple[float, float,
 def _row(label: str, result, before: int, after: int) -> str:
     handler_ms, paint_ms, n_paints, ms, path, bbox_lines = result
     subs = " ".join(
-        f"{k} {v:.2f}" if k in ("area", "rect_area") else f"{k} {v}" if k in ("evict_others", "rects")
+        f"{k} {v:.2f}" if k in ("area", "rect_area") else f"{k} {v}" if k in ("evict_others", "rects", "splice_visible")
         else f"{k} {v:.1f}"
         for k, v in ms.items()
     )
@@ -862,6 +888,9 @@ def main() -> None:
     parser.add_argument("--tool", choices=("draw", "fill"), default="draw")
     parser.add_argument("--force-wholesale", action="store_true")
     parser.add_argument("--cap", type=int, help="Override render_cache.UNIT_SPLICE_MAX_UNITS")
+    parser.add_argument(
+        "--visible-cap", help="Override render_cache.VISIBLE_SPLICE_MAX_UNITS (0: never, inf: always)",
+    )
     parser.add_argument("--area-ratio", type=float, help="Override viewer._TIGHT_PATCH_AREA_RATIO")
     parser.add_argument(
         "--rect-ratio", type=float,
@@ -915,6 +944,13 @@ def main() -> None:
         from descape import render_cache
 
         render_cache.UNIT_SPLICE_MAX_UNITS = args.cap
+    if args.visible_cap is not None:
+        from descape import render_cache
+
+        # Absent on a build without the visible-only splice.
+        if not hasattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS"):
+            raise SystemExit("--visible-cap: this build has no VISIBLE_SPLICE_MAX_UNITS.")
+        render_cache.VISIBLE_SPLICE_MAX_UNITS = 10**9 if args.visible_cap == "inf" else int(args.visible_cap)
 
     from descape import composite_backend, render, settings
 

@@ -43,8 +43,9 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
+
+from descape import game_dataset
 
 _TABLE_JSON_PATH = Path(__file__).resolve().parent / "garrison_table.json"
 
@@ -96,9 +97,9 @@ _CLASS_BIT = {
 }
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _table() -> tuple[dict[int, dict[str, int]], dict[int, int]]:
-    data = json.loads(_TABLE_JSON_PATH.read_text())
+    data = json.loads(game_dataset.table_path(_TABLE_JSON_PATH).read_text())
     hosts = {int(const): entry for const, entry in data["hosts"].items()}
     classes = {int(const): value for const, value in data["classes"].items()}
     return hosts, classes
@@ -149,7 +150,7 @@ def accepts(host_const: int, occupant_const: int) -> bool:
     return bool(garrison_mask(host_const) & unit_bit(occupant_const))
 
 
-@lru_cache(maxsize=32)
+@game_dataset.cache(maxsize=32)
 def eligible_consts(host_const: int) -> frozenset[int]:
     """Every const `host_const` admits. Cached per host: the Add… picker
     rebuilds its item list every time it opens, and this is a walk of all

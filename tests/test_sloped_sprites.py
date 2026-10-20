@@ -154,6 +154,18 @@ def _ramped_scenario_with_unit(ux: float, uy: float, unit_const: int = CONST):
     return scenario
 
 
+def _ramped_field_with_unit(ux: float, uy: float, unit_const: int, size: int = 40):
+    """_ramped_scenario_with_unit() on a size x size field, for a +1 patch
+    oracle: a whole +1 level of the 120x120 template is 118M px (TASK-146)."""
+    from test_sloped_mip import _FieldMapManager, _FieldTile  # here, since test_sloped_mip imports this module
+
+    tiles = [_FieldTile(x=x, y=y, elevation=1 if x >= size // 2 else 0) for y in range(size) for x in range(size)]
+    scenario = FakeScenario(size, size, tiles, [[] for _ in range(9)])
+    scenario.map_manager = _FieldMapManager(size, size, tiles)
+    scenario.unit_manager.units[1].append(Unit(ux, uy, unit_const))
+    return scenario
+
+
 def _make_cache(scenario, **kwargs) -> SlopedChunkCache:
     mm = scenario.map_manager
     tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
@@ -161,8 +173,8 @@ def _make_cache(scenario, **kwargs) -> SlopedChunkCache:
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, **kwargs)
 
 
-# The cache levels the farm-drape checks run at (TASK-031.60's coarser ladder).
-LEVELS = [0, -1, -2]
+# The cache levels the farm-drape checks run at (TASK-031.60's coarser ladder, TASK-146's finer level).
+LEVELS = [1, 0, -1, -2]
 
 
 def _whole_level(cache, mip: int) -> np.ndarray:
@@ -400,10 +412,14 @@ def test_patch_after_a_distant_edit_still_drapes_the_farm(sprite_install, mip):
     elevation_changed on the ALREADY-correct patch branch. Pins the two
     branches agreeing: an edit far from the farm's own tiles (so its
     corner_rise is untouched) must not change how the farm looks, before or
-    after. Level `mip` is the one shown and patched."""
-    scenario = _ramped_scenario_with_unit(ux=5.5, uy=5.5, unit_const=FARM_CONST)
+    after. Level `mip` is the one shown and patched; +1 runs on a 40x40
+    field with every chunk kept resident, so no evicted chunk redraws fresh
+    and hides a stale one."""
+    build = _ramped_field_with_unit if mip > 0 else _ramped_scenario_with_unit
+    scenario = build(ux=5.5, uy=5.5, unit_const=FARM_CONST)
     mm = scenario.map_manager
     cache = _make_cache(scenario, sprites=True)
+    cache.max_bytes *= 8
     tile_px = cache.mip_tile_px(mip)
     before = _whole_level(cache, mip)
     canvas_h, canvas_w = before.shape[:2]

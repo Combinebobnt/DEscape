@@ -37,7 +37,8 @@ Two library behaviours make a shim necessary.
 It also corrects a structure.json that frames a field at the wrong offset
 without changing its section's length: fix_structure(), per load. And the
 effects.json defaults that write an unparseable Triggers section:
-fix_effect_defaults(), per load, plus vocabulary_json().
+fix_effect_defaults(), per load, plus vocabulary_json(), which also corrects
+the shipped presentation of two str32 fields.
 
 **Import ordering is load-bearing.** PRISTINE_CLASS_STATE snapshots every
 POISONED_CLASSES class at import time, and that snapshot is only clean if nothing has loaded a
@@ -473,6 +474,27 @@ def _with_fixed_effect_defaults(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Effect presentations the library's effects.json gets wrong, by field:
+# (shipped, corrected). create_decision's message_option1/2 are str32 in
+# structure.json but ship as "" (a number), so field_specs() made them INT and
+# an int there failed the save (TASK-396). Only the shipped value is replaced.
+_EFFECT_PRESENTATION_FIXES: Mapping[str, tuple[str, str]] = {
+    "message_option1": ("", "str"),
+    "message_option2": ("", "str"),
+}
+
+
+def _with_fixed_effect_presentation(raw: dict[str, Any]) -> dict[str, Any]:
+    shared = raw.get("-1")
+    if shared is None or "attribute_presentation" not in shared:
+        return raw
+    presentation = dict(shared["attribute_presentation"])
+    for field, (shipped, corrected) in _EFFECT_PRESENTATION_FIXES.items():
+        if presentation.get(field) == shipped:
+            presentation[field] = corrected
+    return {**raw, "-1": {**shared, "attribute_presentation": presentation}}
+
+
 def _without_attributes(raw: dict[str, Any], dropped: frozenset[str]) -> dict[str, Any]:
     """A conditions.json/effects.json dict with every `dropped` name removed
     from its attribute lists, defaults and presentation maps."""
@@ -492,8 +514,8 @@ def _without_attributes(raw: dict[str, Any], dropped: frozenset[str]) -> dict[st
 
 def vocabulary_json(scenario_version: str) -> dict[str, dict[str, Any]]:
     """{"conditions": ..., "effects": ...}: `scenario_version`'s raw vocabulary
-    JSON, with repo_only_attributes() removed and _EFFECT_DEFAULT_FIXES
-    applied. What load_vocabulary() parses, and what scenario_io feeds the
+    JSON, with repo_only_attributes() removed and _EFFECT_DEFAULT_FIXES and
+    _EFFECT_PRESENTATION_FIXES applied. What load_vocabulary() parses, and what scenario_io feeds the
     library's module dicts for a repo version. Raises FileNotFoundError if
     neither side ships one."""
     found = _vocabulary_dir(scenario_version)
@@ -507,7 +529,7 @@ def vocabulary_json(scenario_version: str) -> dict[str, dict[str, Any]]:
         kind: _without_attributes(json.loads((found[0] / f"{kind}.json").read_text(encoding="utf-8")), dropped[kind])
         for kind in _VOCABULARY_KINDS
     }
-    raw["effects"] = _with_fixed_effect_defaults(raw["effects"])
+    raw["effects"] = _with_fixed_effect_presentation(_with_fixed_effect_defaults(raw["effects"]))
     return raw
 
 

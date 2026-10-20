@@ -9,8 +9,9 @@ too-short bbox top leaves a stale strip above the apex.
 Dropping shadow_reach_px alone stays green (the 1-tile dilation ring covers
 the wedge). Dropping it and a tile height more turns the raises red at
 Stepped pct 25/50 and Sloped pct 25; the lowers and Stepped pct 200 stay green.
-The level sibling repeats it at mips -1 and -2 and the finer +1 (Stepped only),
-the visible level patched in place, and the same break turns the same cases red there.
+The level sibling repeats it at mips -1 and -2 and the finer +1 (both styles
+since TASK-146), the visible level patched in place, and the same break turns
+the same cases red there.
 
 Every ViewerWindow here closes through conftest.close_window().
 """
@@ -134,8 +135,8 @@ def test_viewer_one_level_edit_patches_to_a_fresh_render(monkeypatch, style, pct
     assert not stale.size, f"stale rows {stale.min() + wy0}..{stale.max() + wy0} after the viewer's patch"
 
 
-# Sloped's ladder is coarse-only (k <= 0, TASK-031.60), so it has no +1.
-LEVEL_CASES = [(s, p, mip) for s, p in CASES for mip in (-1, -2, 1) if not (s == "sloped" and mip > 0)]
+# Sloped has Stepped's ladder, +1 included, since TASK-146.
+LEVEL_CASES = [(s, p, mip) for s, p in CASES for mip in (-1, -2, 1)]
 
 
 @pytest.mark.parametrize("delta", DELTAS, ids=["raise_1", "lower_1"])

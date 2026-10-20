@@ -954,3 +954,135 @@ def test_opening_another_scenario_then_closing_leaves_nothing_of_the_drawing() -
         assert leftovers() == []
     finally:
         conftest.close_window(window)
+
+
+# -- the owed in-app passes, offscreen (TASK-088) ------------------------------------
+
+HOUSE_FOOTPRINT = (40, 62, 41, 63)
+
+
+def test_the_referenced_unit_ring_has_no_fill() -> None:
+    """TASK-088 step 8, "no fill". Pass conditions: with the reference trigger selected, and
+    again with only its Destroy Object condition selected (the house strong, the Task Object's
+    units dimmed), every units_* item's brush style is Qt.NoBrush."""
+    from PyQt5.QtCore import Qt
+
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+        for step in ("trigger", "entry"):
+            if step == "entry":
+                window.trigger_panel.select_entry("condition", gen.DESTROY_CONDITION)
+            units = {role: item for role, item in _items_by_role(view).items() if role.startswith("units_")}
+            assert "units_strong" in units, step
+            assert step == "trigger" or "units_dim" in units
+            for role, item in units.items():
+                assert item.brush().style() == Qt.NoBrush, (step, role)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_unit_ring_follows_a_building_across_a_raised_edge(style: str) -> None:
+    """TASK-088 step 8, raised ground. Pass conditions, the Destroy Object condition selected
+    (the house, four tiles): one footprint tile raised with a one-tile Elevation brush, so the
+    house straddles a raised edge; before and after, the strong unit ring's bounds are exactly
+    the four footprint tiles' own current polygons, and its top edge rose to the raised tile's top."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    gen = _gen()
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+        window.trigger_panel.select_entry("condition", gen.DESTROY_CONDITION)
+        before = _ring_around(view, "units_strong", HOUSE_FOOTPRINT)
+        assert before is not None
+        footprint = _area_tiles(HOUSE_FOOTPRINT)
+        top_tile = min(footprint, key=lambda t: view._tile_polygon(*t).boundingRect().top())
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.brush_size_spin.setValue(1)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*top_tile, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        heights = {t: window.scenario.map_manager.get_tile(*t).elevation for t in footprint}
+        assert heights[top_tile] > 0 and 0 in heights.values(), f"the house does not straddle a raised edge: {heights}"
+        after = _ring_around(view, "units_strong", HOUSE_FOOTPRINT)
+        assert after is not None, "the ring no longer matches the footprint tiles' raised polygons"
+        raised_top = view._tile_polygon(*top_tile).boundingRect().top()
+        assert after.boundingRect().top() < before.boundingRect().top()
+        assert abs(after.boundingRect().top() - raised_top) < 0.5
+    finally:
+        conftest.close_window(window)
+
+
+def _run_segments(view, role: str = "marks_strong") -> list:
+    from PyQt5.QtGui import QPolygonF
+
+    item = _items_by_role(view).get(role)
+    if item is None:
+        return []
+    return [QPolygonF(p) for p in item.path().toSubpathPolygons() if p.count() == 2]
+
+
+def _near(a, b) -> bool:
+    from PyQt5.QtCore import QPointF
+
+    return (QPointF(a) - QPointF(b)).manhattanLength() < 0.01
+
+
+def test_a_task_object_rings_each_selected_unit_and_runs_from_their_centroid_to_its_location_object() -> None:
+    """TASK-088 step 9, Task Object. Pass conditions, only the Task Object effect selected
+    (archers A and B selected, the house its location object): the strong unit outline is
+    exactly three rings, one over each archer's tile and one over the house's four tiles; the
+    strong marks carry exactly one run segment, from the anchor of the archers' integer
+    centroid tile (51, 56) to the anchor of the house's own tile; the one label reads that
+    run's ruler measurement and is pinned at the house's anchor."""
+    from descape import ruler
+
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+        window.trigger_panel.select_entry("effect", gen.TASK_OBJECT_EFFECT)
+        archers = [tuple(int(c) for c in pos) for pos in (gen.ARCHER_A_POS, gen.ARCHER_B_POS)]
+        rings = _items_by_role(view)["units_strong"].path().toSubpathPolygons()
+        assert len(rings) == 3, len(rings)
+        for tile in archers:
+            assert _ring_around(view, "units_strong", (*tile, *tile)) is not None, tile
+        assert _ring_around(view, "units_strong", HOUSE_FOOTPRINT) is not None
+        centroid = (sum(x for x, _ in archers) // 2, sum(y for _, y in archers) // 2)
+        assert centroid == (51, 56)
+        a, b = view._ruler_anchor(centroid), view._ruler_anchor(gen.HOUSE_TILE)
+        (segment,) = _run_segments(view)
+        assert _near(segment[0], a) and _near(segment[1], b), (segment[0], segment[1], a, b)
+        (label,) = [i for i in view.trigger_overlay_items() if i.data(0) == "label"]
+        assert label.text() == ruler.format_measurement(ruler.measure(centroid, gen.HOUSE_TILE))
+        assert _near(label.pos(), b)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_patrol_with_selected_units_and_no_location_rings_them_with_no_run() -> None:
+    """TASK-088 step 9, Patrol. Pass conditions, only the Patrol effect with a selection and no
+    location selected (archer B): the strong unit outline is exactly one ring, over archer B's
+    tile; no strong run segment is drawn and no label at all."""
+    gen = _gen()
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+        window.trigger_panel.select_entry("effect", gen.PATROL_IDS_EFFECT)
+        tile = tuple(int(c) for c in gen.ARCHER_B_POS)
+        assert len(_items_by_role(view)["units_strong"].path().toSubpathPolygons()) == 1
+        assert _ring_around(view, "units_strong", (*tile, *tile)) is not None
+        assert _run_segments(view) == []
+        assert _labels(view) == []
+    finally:
+        conftest.close_window(window)

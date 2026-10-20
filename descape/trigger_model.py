@@ -244,6 +244,15 @@ class TriggerSnapshot:
     is the *only* thing they write to a pre-existing trigger -- so the whole
     id-remap class restores from these two small lists with no deepcopy at all.
 
+    A reference slot is only valid while that object's identity is stable
+    across restore: it is trusted to still hold the content it had when this
+    snapshot was taken. That is why restore() writes a touched slot's content
+    back into the same object instead of swapping in a copy, which left an
+    older record pointing at an object that dropped out of the live list still
+    carrying a later edit (TASK-003.06). It also relies on restores stepping
+    one record at a time, which EditHistory.jump_to() does by looping
+    record.undo/record.redo over the span.
+
     `variables_dirty` is not optional bookkeeping: without it, undoing a
     variable add leaves the model's flag True, so the next save re-serializes a
     variable block the document no longer edits and reintroduces NUL-trail
@@ -286,6 +295,21 @@ def _reference_signature(trigger) -> tuple[int, ...]:
     without having to reimplement the library's remap rules.
     """
     return tuple(ce.trigger_id for ce in get_trigger_referencing_ce(trigger))
+
+
+def _restore_state_into(target, state) -> None:
+    """Make `target` a fresh deep copy of `state` without changing its identity.
+
+    This is `AoE2Object.__deepcopy__` with `result = target`. Clearing first
+    leaves `target` as empty as `cls.__new__` would. `Trigger._deepcopy_entry`
+    rebuilds `new_effect`/`new_condition` around `target`, and the seeded memo
+    maps any other back-reference to the trigger onto `target` too, which a
+    `__dict__.update()` from a throwaway deepcopy would not.
+    """
+    memo = {id(state): target}
+    target.__dict__.clear()
+    for key, value in state.__dict__.items():
+        setattr(target, key, state._deepcopy_entry(target, key, value, memo))
 
 
 def display_order_with_copy_inserted(
@@ -972,14 +996,18 @@ class TriggerEditModel:
                 f"blobs -- refusing to restore a record that cannot align"
             )
 
-        # Trap 5: never hand the record's own object to the live list, or the
-        # next in-place edit mutates the snapshot and undoing twice replays
-        # already-edited state. Replace the entry outright rather than copying
-        # fields across, which would walk into the Effect.quantity bit-split.
-        restored = [
-            copy.deepcopy(state) if state is not None else trigger
-            for trigger, state in zip(snapshot.triggers, snapshot.states, strict=True)
-        ]
+        # Trap 5: never hand the record's own `states` object to the live list,
+        # or the next in-place edit mutates the snapshot and undoing twice
+        # replays already-edited state. Nor swap in a new object: an older
+        # record's reference slot still names the old one, which keeps the
+        # content it had when it left the list (TASK-003.06). So a touched slot
+        # gets a fresh deep copy written into the record's own reference, via
+        # the library's deepcopy entries rather than public setters, which
+        # would walk into the Effect.quantity bit-split.
+        for trigger, state in zip(snapshot.triggers, snapshot.states, strict=True):
+            if state is not None:
+                _restore_state_into(trigger, state)
+        restored = list(snapshot.triggers)
 
         # Trap 1: `manager.triggers = [...]` resets trigger_display_order to
         # identity unconditionally in its setter. Slice-assign preserves the
@@ -1020,9 +1048,9 @@ class TriggerEditModel:
 
         # Trap 4: _tracked and _blobs must be restored in the same step, or the
         # next serialize() trips _check_alignment(). Trap 7 again: _tracked
-        # comes from the *live* list, not the record -- its content-touched
-        # entries were just replaced by fresh deepcopies, so setting it from
-        # the record makes _check_alignment raise on the next save.
+        # comes from the *live* list, not the record's list object. Its
+        # identities now match the record's, but the record's list must never
+        # be shared with the model (Trap 6).
         self._blobs = list(snapshot.blobs)
         self._tracked = list(manager.triggers)
         self._variables_dirty = snapshot.variables_dirty

@@ -61,6 +61,7 @@ from descape import (
     asset_source,
     debug_log,
     editor_markers,
+    game_dataset,
     gate_orientation,
     mod_graphics,
     particle_art,
@@ -182,6 +183,43 @@ ANGLE_DIRECTION = 1
 # the diagonals (measured 28.01 against 45 at rotation pi/4).
 # tools/verify_flat_facing.py re-measures all of the above against an install.
 FLAT_ANGLE_ZERO_OFFSET_DEG = 0.0
+
+# Walls and gates (GH #151), which the offset above never reaches: a wall's
+# `rotation` is a shape index and a gate's orientation is its const. Top-down
+# Flat is the iso view turned 45 degrees (the two offsets' difference), and a
+# run direction has four values 45 degrees apart, so the turn is exactly one
+# step along +x, +x+y, +y, +x-y. That order is gate_orientation's A, C, B, D
+# cycle and, as wall_variant_from_neighbours8()'s shapes, (0, 3, 1, 4); the
+# tower (2) has no direction. Flat therefore draws stored shape 0 (a run along
+# +x) with frame 3, 1 with 4, 3 with 1 and 4 with 0, and a gate with its next
+# orientation sibling's art. Measured on the real install: Fence 1062's frame
+# axes read 146.09 / 34.83 / 1.12 / 89.12 degrees for frames 0 / 1 / 3 / 4
+# (iso +x is 153.43, +y 26.57), and every gate group's turned art reads within
+# 1.5 degrees of 0 and 90 for its A and B states. The residual is the iso camera's
+# 2:1 squash: a diagonal run's foot line sits near 27 degrees, not 45, the same
+# residual the facing offset accepts. Draw-only: no write path may use it.
+FLAT_RUN_STEPS = 1
+_WALL_RUN_SHAPES = (0, 3, 1, 4)  # +x, +x+y, +y, +x-y: gate_orientation's A, C, B, D
+
+
+def flat_wall_shape(shape: int) -> int:
+    """The wall frame top-down Flat draws for stored shape index `shape`."""
+    if shape not in _WALL_RUN_SHAPES:
+        return shape  # 2, the tower
+    return _WALL_RUN_SHAPES[(_WALL_RUN_SHAPES.index(shape) + FLAT_RUN_STEPS) % 4]
+
+
+def flat_art(unit_const: int, rotation: float) -> tuple[int, float]:
+    """Which (const, rotation) the iso art pipeline is handed to draw what
+    top-down Flat wants for a placed unit. A wall (rotation_variant_eligible())
+    gets flat_wall_shape() of its stored index as a literal index; a gate its
+    next orientation sibling with `rotation` unchanged. Every other const,
+    cliffs, trees and doodads included, returns its inputs untouched."""
+    if rotation_variant_eligible(unit_const):
+        return unit_const, float(flat_wall_shape(variant_index(rotation, 5)))
+    if gate_orientation.is_gate(unit_const):
+        return gate_orientation.cycle_const(unit_const, FLAT_RUN_STEPS), rotation
+    return unit_const, rotation
 
 # resources/_common/palettes/spritecolors.json's TeamColors block, as RGB.
 # Index is the scenario's own player id: 0 is GAIA, 1..8 the real players.
@@ -487,20 +525,28 @@ def hi_res() -> bool:
     return _hi_res
 
 
-# The male villager: every install draws it, so its x2 file stands for the whole x2 set.
-X2_PROBE_CONST = 83
+# The AoE2 male villager's x2 file, which stands for the whole x2 set.
+X2_PROBE_FILE = "u_vil_male_villager_idleA_x2.sld"
 
 
 @lru_cache(maxsize=1)
 def x2_art_installed() -> bool:
-    """Whether the install ships the game's _x2 art (AoE2's free Enhanced
-    Graphics DLC), probed by one file: Step 0 found x2 for every referenced
-    stem with the DLC and for none without it. The viewer turns set_hi_res()
-    on only when this holds, so Enhanced without the DLC draws as before."""
+    """Whether the install ships AoE2's _x2 art (the free Enhanced Graphics
+    DLC), probed by one file: Step 0 found x2 for every referenced stem with
+    the DLC and for none without it. For the viewer's message only: drawing
+    falls back to x1 file by file, and Return of Rome ships its own x2."""
     directory = _graphics_dir()
-    entry = graphic_map().get(X2_PROBE_CONST)
-    stem = None if directory is None or entry is None else _x2_stem(entry["file_name"])
-    return stem is not None and (directory / f"{stem}.sld").is_file()
+    return directory is not None and (directory / X2_PROBE_FILE).is_file()
+
+
+@lru_cache(maxsize=1)
+def ror_x2_art_installed() -> bool:
+    """Whether the Return of Rome folder ships its own _x2 art, which it does
+    without the Enhanced Graphics DLC (1041 files, 2026-10-20). Any one file
+    counts. For the viewer's message only, like x2_art_installed()."""
+    root = game_dataset.ror_root(asset_source.get_install_path())
+    directory = None if root is None else root / GRAPHICS_SUBPATH
+    return directory is not None and directory.is_dir() and next(directory.glob("*_x2.sld"), None) is not None
 
 
 def hi_res_generation() -> int:
@@ -528,6 +574,7 @@ def clear_caches() -> None:
     _x2_bytes_cache.clear()
     _x2_mismatch_logged.clear()
     x2_art_installed.cache_clear()
+    ror_x2_art_installed.cache_clear()
     sld_frame_count.cache_clear()
     wall_connector_consts.cache_clear()
     building_art.cache_clear()
@@ -539,15 +586,15 @@ def clear_caches() -> None:
     editor_markers.clear_caches()
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def graphic_map() -> dict[int, dict]:
     """unit_const -> {graphic_id, file_name, angle_count, mirroring_mode,
     frame_count}, from the committed table."""
-    data = json.loads(GRAPHIC_MAP_PATH.read_text())["graphics"]
+    data = json.loads(game_dataset.table_path(GRAPHIC_MAP_PATH).read_text())["graphics"]
     return {int(k): v for k, v in data.items()}
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _particle_stems() -> frozenset[str]:
     """The file_names that are particle effects, not .sld stems (GH #20):
     _native_frame() reads those through particle_art. Cleared by
@@ -563,10 +610,10 @@ class BuildingArt(NamedTuple):
     civ_names: dict[int, str]
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def building_art() -> BuildingArt:
     """The committed per-civ and per-age building art table."""
-    data = json.loads(BUILDING_ART_PATH.read_text())
+    data = json.loads(game_dataset.table_path(BUILDING_ART_PATH).read_text())
     entries = data["entries"]
     return BuildingArt(
         age_upgrades={
@@ -743,6 +790,11 @@ def angle_index(
 _ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
     72, 117, 119, 155, 231, 370, 788, 1062, 2678,
 })
+# Return of Rome (GH #67, 2026-10-17): its .dat's class-27 angle_count-5 consts are the
+# AoE2 nine minus WALL5 2678 (an empty slot there); 1,548 RoR placements, 96.9% agreement.
+_ROR_ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({
+    72, 117, 119, 155, 231, 370, 788, 1062,
+})
 
 
 # Cliffs (2026-09-05 cliffs plan, Track A2). Every `class_ == 34` const in the
@@ -780,6 +832,30 @@ _CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
         *range(2651, 2660),
     ]
 )
+# Return of Rome (GH #67, 2026-10-17): its 60 class-34 consts, the AoE2 set without the
+# Short Marble family 2190-2225 (empty slots there); 2,110 RoR placements, rotation == frame.
+_ROR_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
+    [
+        *range(264, 273),
+        1339, 1340, 1341, 1342, 1344, 1346,
+        *range(1849, 1867),
+        *range(2069, 2078),
+        *range(2178, 2187),
+        *range(2651, 2660),
+    ]
+)
+
+
+def rotation_variant_const_set() -> frozenset[int]:
+    """The active game dataset's wall family (GH #67). Reads the module
+    attribute at call time, so a test's monkeypatch of either set holds."""
+    return _ROR_ROTATION_VARIANT_CONSTS if game_dataset.is_ror() else _ROTATION_VARIANT_CONSTS
+
+
+def cliff_const_set() -> frozenset[int]:
+    """The active game dataset's cliff consts (GH #67), read at call time
+    like rotation_variant_const_set()."""
+    return _ROR_CLIFF_VARIANT_CONSTS if game_dataset.is_ror() else _CLIFF_VARIANT_CONSTS
 
 
 def rotation_is_variant(unit_const: int) -> bool:
@@ -817,10 +893,11 @@ def rotation_facing_viewer(unit_const: int) -> float | None:
 
 
 def cliff_consts() -> frozenset[int]:
-    """The public read of `_CLIFF_VARIANT_CONSTS`, for cliff_catalog.py's
-    family/piece grouping -- kept a function, not a re-exported name, so
-    every caller goes through one place if Tier B ever replaces the set."""
-    return _CLIFF_VARIANT_CONSTS
+    """The public read of the active dataset's cliff set (cliff_const_set()),
+    for cliff_catalog.py's family/piece grouping -- kept a function, not a
+    re-exported name, so every caller goes through one place if Tier B ever
+    replaces the set."""
+    return cliff_const_set()
 
 
 # Generated, not hand-kept (2026-09-12 plan): the gate half is every const in
@@ -846,14 +923,14 @@ def cliff_consts() -> frozenset[int]:
 # live editing (e.g. cycling a palisade gate's orientation no longer reshapes
 # its neighbouring walls, where cycling a stone gate already didn't), not
 # anything visible in the corpus.
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def wall_connector_consts() -> frozenset[int]:
     """The set of consts whose tiles count as a "wall neighbour" for
     render.wall_variant_rotation_overrides(). A function, not a module
     constant, because the gate half reads two JSON tables via
     gate_orientation.groups(), and an import-time read is a cost this module
     does not otherwise pay."""
-    return _ROTATION_VARIANT_CONSTS | frozenset(
+    return rotation_variant_const_set() | frozenset(
         const for group in gate_orientation.groups().values() for const in group
     )
 
@@ -965,7 +1042,8 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     plan): the const is a variant-index graphic, and its angle_count is 5 --
     the 3-case mask table above does not transfer to another frame count.
 
-    Gates on `_ROTATION_VARIANT_CONSTS` rather than `rotation_is_variant()`
+    Gates on `rotation_variant_const_set()` (`_ROTATION_VARIANT_CONSTS` in
+    AoE2, its Return of Rome sibling under RoR) rather than `rotation_is_variant()`
     (2026-09-06 Tier B plan): that predicate widened from 8 consts to every
     unit.type != 70 graphic, which would also make Aqueduct, Granary, a water
     lily and a dozen other non-wall consts eligible for the wall-connectivity
@@ -997,7 +1075,7 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     Deliberately looks angle_count up via graphic_map() itself rather than
     taking it as a parameter, so render.py never has to reach into this
     module's data table directly."""
-    if unit_const not in _ROTATION_VARIANT_CONSTS:
+    if unit_const not in rotation_variant_const_set():
         return False
     entry = graphic_map().get(unit_const)
     return entry is not None and int(entry["angle_count"]) == 5
@@ -1010,7 +1088,7 @@ def wall_family_consts() -> tuple[int, ...]:
     UnitEditModel.set_wall_variant()'s own scope -- so a wall run can never
     place something the model would refuse. Gates are not here: their
     orientation lives in the const, not in `rotation`."""
-    return tuple(sorted(c for c in _ROTATION_VARIANT_CONSTS if rotation_variant_eligible(c)))
+    return tuple(sorted(c for c in rotation_variant_const_set() if rotation_variant_eligible(c)))
 
 
 def is_literal_variant_index(rotation: float, angle_count: int) -> bool:
@@ -1117,6 +1195,16 @@ def _graphics_dir() -> Path | None:
     return None if root is None else root / GRAPHICS_SUBPATH
 
 
+def _sld_path(directory: Path, file_name: str) -> Path:
+    """The .sld for a stem: under Return of Rome the RoR root's copy when it
+    has one, else the install's in `directory` (GH #67)."""
+    if game_dataset.is_ror():
+        found = game_dataset.resource_path(f"{GRAPHICS_SUBPATH}/{file_name}.sld")
+        if found is not None:
+            return found
+    return directory / f"{file_name}.sld"
+
+
 @lru_cache(maxsize=512)
 def sld_frame_count(file_name: str) -> int | None:
     """How many frames the .sld file actually holds, or None when it can't be
@@ -1147,7 +1235,7 @@ def _sld_index(file_name: str):
     hit = _sld_index_cache.get_or_none(file_name)
     if hit is not None:
         return None if hit is _MISS else hit
-    sld = load_sld(directory / f"{file_name}.sld")
+    sld = load_sld(_sld_path(directory, file_name))
     if sld is not None:
         _sld_bytes_cache.put(file_name, sld.release_data())
     _sld_index_cache.put(file_name, _MISS if sld is None else sld)
@@ -1224,7 +1312,7 @@ def _sld_bytes(directory: Path, file_name: str) -> bytes:
     its walk is refused by decode_frame()'s length check."""
     data = _sld_bytes_cache.get_or_none(file_name)
     if data is None:
-        data = (directory / f"{file_name}.sld").read_bytes()
+        data = _sld_path(directory, file_name).read_bytes()
         _sld_bytes_cache.put(file_name, data)
     return data
 
@@ -1302,14 +1390,21 @@ def _x2_stem(file_name: str) -> str | None:
     return file_name[:-3] + "_x2" if file_name.endswith("_x1") else None
 
 
-def _x2_index(x2_name: str):
+def _x2_path(file_name: str, x2_name: str) -> Path | None:
+    """The x2 file beside the x1 file the install draws: under Return of Rome
+    the RoR root's when x1 comes from there (_sld_path()), so x2 never mixes
+    the two games' art."""
+    directory = _graphics_dir()
+    return None if directory is None else _sld_path(directory, file_name).parent / f"{x2_name}.sld"
+
+
+def _x2_index(file_name: str, x2_name: str):
     """The install's walked x2 file holding no bytes, or None. _sld_index()'s
     shape over x2's own caches."""
     hit = _x2_index_cache.get_or_none(x2_name)
     if hit is not None:
         return None if hit is _MISS else hit
-    directory = _graphics_dir()
-    path = None if directory is None else directory / f"{x2_name}.sld"
+    path = _x2_path(file_name, x2_name)
     sld = None if path is None or not path.is_file() else load_sld(path)
     if sld is not None:
         _x2_bytes_cache.put(x2_name, sld.release_data())
@@ -1317,10 +1412,10 @@ def _x2_index(x2_name: str):
     return sld
 
 
-def _x2_bytes(directory: Path, x2_name: str) -> bytes:
+def _x2_bytes(file_name: str, x2_name: str) -> bytes:
     data = _x2_bytes_cache.get_or_none(x2_name)
     if data is None:
-        data = (directory / f"{x2_name}.sld").read_bytes()
+        data = _x2_path(file_name, x2_name).read_bytes()
         _x2_bytes_cache.put(x2_name, data)
     return data
 
@@ -1345,7 +1440,7 @@ def _decode_x2_frame(file_name: str, x2_name: str, frame_index: int, install_cou
         return _decode_mod_frame(x2_name, frame_index, install_count)
     if mod_graphics.resolve_sprite(x2_name) is not None:
         return None
-    sld = _x2_index(x2_name)
+    sld = _x2_index(file_name, x2_name)
     if sld is None:
         return None
     if sld.frame_count != install_count:
@@ -1355,7 +1450,7 @@ def _decode_x2_frame(file_name: str, x2_name: str, frame_index: int, install_cou
         return None
     return sld.decode_frame(
         frame_index,
-        _x2_bytes(_graphics_dir(), x2_name),
+        _x2_bytes(file_name, x2_name),
         kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
         window_to_main=True,
     )
@@ -1602,7 +1697,9 @@ def _frame_for(
     a variant index is a shape, not a facing, so there is no camera angle to
     correct and `rotation` reaches variant_index() unmodified whatever the
     caller passes. That is why the offset is a parameter here rather than a
-    pre-rotation applied at icon_for()'s door.
+    pre-rotation applied at icon_for()'s door. (flat_art()'s wall turn at that
+    door is a different thing: a literal shape index chosen from the stored
+    one, never an angular offset; see icon_for().)
 
     `unit_const` is the piece's OWN resolving unit_id, not necessarily the
     unit standing on the map -- see _draw_for_entry()'s own note on that.
@@ -2202,6 +2299,15 @@ def icon_for(
     An invisible const (GH #53 Part B) returns its editor-only marker instead,
     never None, so Flat's row lockstep with _flat_unit_draws() holds.
 
+    **Walls and gates are turned at this door, by flat_art()** (GH #151): a
+    wall draws the frame whose art runs the Flat way, a gate its next
+    orientation sibling's art, inside the placed const's own footprint. This
+    is not the angular pre-rotation _frame_for()'s docstring rules out: the
+    stored value is read once, unmodified, by variant_index(), only for the
+    rotation_variant_eligible() consts, and what goes down is a literal index
+    0..4. Cliffs, trees and doodads pass through verbatim, and the cache key
+    needs no change since it already holds the resolved art and frames.
+
     `art` as sprite_for()'s. The cache is keyed on the resolved art
     (_art_key()), not the const, so one owner's art is never served to
     another's (GH #48)."""
@@ -2211,14 +2317,15 @@ def icon_for(
     if category is not None:
         span = terrain_palette.tile_span(unit_const, (1, 1))
         return _marker_icon(category, team_index, footprint_w, footprint_h, span)
-    entry = _entry_for_art(unit_const, art)
+    art_const, art_rotation = flat_art(unit_const, rotation)
+    entry = _entry_for_art(art_const, art)
     if entry is None:
         return None
 
     team_slot = team_index % len(TEAM_COLORS)
     key = (
         _art_key(entry),
-        _frame_key(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
+        _frame_key(art_const, entry, art_rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
         team_slot, footprint_w, footprint_h, _hi_res,
     )
     hit = _icon_cache.get_or_none(key)
@@ -2226,7 +2333,7 @@ def icon_for(
         return None if hit is _MISS else hit
 
     draw = _build_icon(
-        unit_const, entry, rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h,
+        art_const, entry, art_rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h,
         FLAT_ANGLE_ZERO_OFFSET_DEG, seed,
     )
     _icon_cache.put(key, _MISS if draw is None else draw)  # see _MISS

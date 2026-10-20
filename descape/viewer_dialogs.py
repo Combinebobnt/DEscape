@@ -193,14 +193,19 @@ def painted_tab_page(palette: QPalette) -> str:
     return QColor(image.pixel(12, 12)).name()
 
 
-def status_text_color(hex_str: str, *, on_tab_page: bool) -> str:
-    """`hex_str` shaded until it is readable under the live theme on what the
-    label sits on, a tab page or the window: 4.5:1, or 7:1 on a high-contrast
-    preset. Computed on demand, so call it again after a theme change."""
-    palette = QApplication.palette()
-    background = painted_tab_page(palette) if on_tab_page else palette.color(QPalette.Active, QPalette.Window).name()
+def legible_status_color(hex_str: str, background: str) -> str:
+    """`hex_str` shaded until it is readable on `background` under the live
+    theme: 4.5:1, or 7:1 on a high-contrast preset."""
     floor = 7.0 if settings.get_theme() in themes.HIGH_CONTRAST_PRESETS else 4.5
     return themes.legible(hex_str, background, floor)
+
+
+def status_text_color(hex_str: str, *, on_tab_page: bool) -> str:
+    """legible_status_color() on what the label sits on, a tab page or the
+    window. Computed on demand, so call it again after a theme change."""
+    palette = QApplication.palette()
+    background = painted_tab_page(palette) if on_tab_page else palette.color(QPalette.Active, QPalette.Window).name()
+    return legible_status_color(hex_str, background)
 
 
 def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:

@@ -96,6 +96,25 @@ def test_above_keeps_the_original_box_exactly() -> None:
     assert box.bottom() == pytest.approx(100 - item.GAP_PX)
 
 
+@pytest.mark.parametrize(
+    "half_h",
+    [
+        100.0,
+        pytest.param(20.0, marks=pytest.mark.xfail(strict=True, reason="tucked box outgrows the tile (TASK-422)")),
+    ],
+)
+def test_a_bottom_position_never_draws_above_its_top_position(half_h: float) -> None:
+    """Bottom-right and top-right on one tile: the anchors are the right edges' midpoints."""
+    from PyQt5.QtCore import QPointF
+
+    centre = QPointF(100, 100)
+    item = _item(QPointF(140, 100 + half_h / 2), centre)
+    item.set_badges([(QPointF(140, 100 + half_h / 2), centre, 3), (QPointF(140, 100 - half_h / 2), centre, 3)])
+    _paint(item)
+    bottom, top = item.drawn_boxes
+    assert bottom.center().y() > top.center().y()
+
+
 def test_the_background_keeps_its_alpha_after_a_colour_change() -> None:
     from PyQt5.QtCore import QPointF
     from PyQt5.QtGui import QColor

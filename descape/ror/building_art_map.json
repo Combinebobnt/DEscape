@@ -1,0 +1,8246 @@
+{
+ "_comment": "GH #48 per-civ and per-age building art -- see tools/gen_unit_graphic_map.py",
+ "civ_names": {
+  "0": "Gaia",
+  "1": "Egyptian",
+  "2": "Greek",
+  "3": "Babylonian",
+  "4": "Assyrian",
+  "5": "Minoan",
+  "6": "Hittite",
+  "7": "Phoenician",
+  "8": "Sumerian",
+  "9": "Persian",
+  "10": "Shang",
+  "11": "Yamato",
+  "12": "Choson",
+  "13": "Roman",
+  "14": "Carthage",
+  "15": "Palmyra",
+  "16": "Macedonian",
+  "17": "Lac Viet"
+ },
+ "age_upgrades": {
+  "12": {
+   "3": 498,
+   "4": 132,
+   "5": 20
+  },
+  "45": {
+   "3": 133,
+   "4": 47,
+   "5": 51
+  },
+  "49": {
+   "5": 150
+  },
+  "68": {
+   "3": 129,
+   "4": 130,
+   "5": 131
+  },
+  "70": {
+   "3": 463,
+   "4": 464,
+   "5": 465
+  },
+  "84": {
+   "4": 116,
+   "5": 137
+  },
+  "87": {
+   "4": 10,
+   "5": 14
+  },
+  "101": {
+   "4": 86,
+   "5": 153
+  },
+  "103": {
+   "3": 105,
+   "4": 18,
+   "5": 19
+  },
+  "104": {
+   "3": 30,
+   "4": 31,
+   "5": 32
+  },
+  "109": {
+   "3": 71,
+   "4": 141,
+   "5": 142
+  },
+  "209": {
+   "5": 210
+  },
+  "562": {
+   "3": 563,
+   "4": 564,
+   "5": 565
+  },
+  "584": {
+   "3": 585,
+   "4": 586,
+   "5": 587
+  },
+  "618": {
+   "3": 614,
+   "4": 481,
+   "5": 611
+  },
+  "619": {
+   "3": 615,
+   "4": 482,
+   "5": 612
+  },
+  "620": {
+   "3": 616,
+   "4": 483,
+   "5": 613
+  },
+  "621": {
+   "3": 617,
+   "4": 484,
+   "5": 597
+  }
+ },
+ "entries": [
+  {
+   "graphic_id": 6658,
+   "file_name": "b_egy_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6665,
+   "file_name": "b_egy_archery_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6673,
+   "file_name": "b_egy_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6706,
+   "file_name": "b_egy_barracks_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7061,
+   "file_name": "b_egy_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6734,
+   "file_name": "b_egy_temple_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6755,
+   "file_name": "b_egy_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7042,
+   "file_name": "b_egy_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6763,
+   "file_name": "b_egy_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6779,
+   "file_name": "b_egy_gate_fortified_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 63,
+     "file_name": "b_egy_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6775,
+   "file_name": "b_egy_gate_medium_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 64,
+     "file_name": "b_egy_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6787,
+   "file_name": "b_egy_gate_fortified_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 67,
+     "file_name": "b_egy_gate_fortified_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6923,
+   "file_name": "b_egy_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7139,
+   "file_name": "b_egy_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6783,
+   "file_name": "b_egy_gate_medium_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 78,
+     "file_name": "b_egy_gate_medium_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 80,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 81,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6747,
+   "file_name": "b_egy_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6811,
+   "file_name": "b_egy_gate_fortified_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 85,
+     "file_name": "b_egy_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 7068,
+   "file_name": "b_egy_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6807,
+   "file_name": "b_egy_gate_medium_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 88,
+     "file_name": "b_egy_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6819,
+   "file_name": "b_egy_gate_fortified_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 90,
+     "file_name": "b_egy_gate_fortified_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6815,
+   "file_name": "b_egy_gate_medium_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 91,
+     "file_name": "b_egy_gate_medium_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 92,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 95,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 7077,
+   "file_name": "b_egy_trade_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6958,
+   "file_name": "b_egy_market_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7096,
+   "file_name": "b_egy_wall_medium_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 6930,
+   "file_name": "b_egy_granary_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6698,
+   "file_name": "b_egy_barracks_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6964,
+   "file_name": "b_egy_market_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7002,
+   "file_name": "b_egy_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7018,
+   "file_name": "b_egy_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7100,
+   "file_name": "b_egy_wall_fortified_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 7084,
+   "file_name": "b_egy_government_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7090,
+   "file_name": "b_egy_government_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7131,
+   "file_name": "b_egy_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6909,
+   "file_name": "b_egy_house_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6916,
+   "file_name": "b_egy_house_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6951,
+   "file_name": "b_egy_house_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7006,
+   "file_name": "b_meso_town_center_age3_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7001,
+   "file_name": "b_meso_town_center_age3_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7000,
+   "file_name": "b_meso_town_center_age3_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 487,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_egy_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -141
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -69
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 488,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_egy_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 70,
+     "dy": -136
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -74,
+     "dy": -64
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 490,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_egy_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -141
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -69
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 491,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_egy_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -136
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -64
+    }
+   ]
+  },
+  {
+   "graphic_id": 7049,
+   "file_name": "b_egy_storage_pit_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6939,
+   "file_name": "b_egy_storage_pit_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7116,
+   "file_name": "b_meso_tower_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7022,
+   "file_name": "b_meso_town_center_age4_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7017,
+   "file_name": "b_meso_town_center_age4_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7016,
+   "file_name": "b_meso_town_center_age4_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6990,
+   "file_name": "b_meso_town_center_age2_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6985,
+   "file_name": "b_meso_town_center_age2_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6984,
+   "file_name": "b_meso_town_center_age2_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 6839,
+   "file_name": "b_egy_gate_medium_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 659,
+     "file_name": "b_egy_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6843,
+   "file_name": "b_egy_gate_fortified_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 660,
+     "file_name": "b_egy_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6847,
+   "file_name": "b_egy_gate_medium_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 661,
+     "file_name": "b_egy_gate_medium_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6851,
+   "file_name": "b_egy_gate_fortified_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 662,
+     "file_name": "b_egy_gate_fortified_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 663,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 664,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 665,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_egy_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -105
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -105
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 666,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_egy_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6871,
+   "file_name": "b_egy_gate_medium_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 667,
+     "file_name": "b_egy_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 6875,
+   "file_name": "b_egy_gate_fortified_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 668,
+     "file_name": "b_egy_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 6879,
+   "file_name": "b_egy_gate_medium_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 669,
+     "file_name": "b_egy_gate_medium_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 6883,
+   "file_name": "b_egy_gate_fortified_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 670,
+     "file_name": "b_egy_gate_fortified_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 671,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 672,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 6791,
+   "file_name": "b_egy_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 673,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_egy_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_egy_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -177
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -33
+    }
+   ]
+  },
+  {
+   "graphic_id": 6795,
+   "file_name": "b_egy_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 674,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_egy_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_egy_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 303,
+   "file_name": "b_meso_tower_scen_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 9,
+   "file_name": "b_gre_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 21,
+   "file_name": "b_gre_archery_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 50,
+   "file_name": "b_gre_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 102,
+   "file_name": "b_gre_barracks_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 510,
+   "file_name": "b_gre_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 147,
+   "file_name": "b_gre_temple_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 221,
+   "file_name": "b_gre_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 486,
+   "file_name": "b_gre_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 233,
+   "file_name": "b_gre_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2057,
+   "file_name": "b_gre_gate_fortified_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 63,
+     "file_name": "b_gre_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -54
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -126
+    }
+   ]
+  },
+  {
+   "graphic_id": 2045,
+   "file_name": "b_gre_gate_medium_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 64,
+     "file_name": "b_gre_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -39
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -111
+    }
+   ]
+  },
+  {
+   "graphic_id": 2081,
+   "file_name": "b_gre_gate_fortified_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 67,
+     "file_name": "b_gre_gate_fortified_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -54
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -126
+    }
+   ]
+  },
+  {
+   "graphic_id": 365,
+   "file_name": "b_gre_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2412,
+   "file_name": "b_gre_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2069,
+   "file_name": "b_gre_gate_medium_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 78,
+     "file_name": "b_gre_gate_medium_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -39
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -111
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 80,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 81,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 171,
+   "file_name": "b_gre_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2129,
+   "file_name": "b_gre_gate_fortified_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 85,
+     "file_name": "b_gre_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -54
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -126
+    }
+   ]
+  },
+  {
+   "graphic_id": 522,
+   "file_name": "b_gre_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2117,
+   "file_name": "b_gre_gate_medium_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 88,
+     "file_name": "b_gre_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -39
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -111
+    }
+   ]
+  },
+  {
+   "graphic_id": 2153,
+   "file_name": "b_gre_gate_fortified_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 90,
+     "file_name": "b_gre_gate_fortified_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -54
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -126
+    }
+   ]
+  },
+  {
+   "graphic_id": 2141,
+   "file_name": "b_gre_gate_medium_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 91,
+     "file_name": "b_gre_gate_medium_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -39
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -111
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 92,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 95,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 546,
+   "file_name": "b_gre_trade_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 408,
+   "file_name": "b_gre_market_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2021,
+   "file_name": "b_gre_wall_medium_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 377,
+   "file_name": "b_gre_granary_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 90,
+   "file_name": "b_gre_barracks_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3431,
+   "file_name": "b_gre_market_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3262,
+   "file_name": "b_gre_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3038,
+   "file_name": "b_gre_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2033,
+   "file_name": "b_gre_wall_fortified_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 566,
+   "file_name": "b_gre_government_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 578,
+   "file_name": "b_gre_government_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2404,
+   "file_name": "b_gre_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2206,
+   "file_name": "b_gre_house_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2220,
+   "file_name": "b_gre_house_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2265,
+   "file_name": "b_gre_house_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 456,
+   "file_name": "b_east_town_center_age3_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3258,
+   "file_name": "b_east_town_center_age3_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3254,
+   "file_name": "b_east_town_center_age3_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 487,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_gre_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -111
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -39
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 488,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_gre_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -126
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -54
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 490,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_gre_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -111
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -39
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 491,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_gre_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -126
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -54
+    }
+   ]
+  },
+  {
+   "graphic_id": 3115,
+   "file_name": "b_gre_storage_pit_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3130,
+   "file_name": "b_gre_storage_pit_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 4199,
+   "file_name": "b_east_tower_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 468,
+   "file_name": "b_east_town_center_age4_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3034,
+   "file_name": "b_east_town_center_age4_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3030,
+   "file_name": "b_east_town_center_age4_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 444,
+   "file_name": "b_east_town_center_age2_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3246,
+   "file_name": "b_east_town_center_age2_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3242,
+   "file_name": "b_east_town_center_age2_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3605,
+   "file_name": "b_gre_gate_medium_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 659,
+     "file_name": "b_gre_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -75
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 3617,
+   "file_name": "b_gre_gate_fortified_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 660,
+     "file_name": "b_gre_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -90
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 3629,
+   "file_name": "b_gre_gate_medium_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 661,
+     "file_name": "b_gre_gate_medium_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -75
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 3641,
+   "file_name": "b_gre_gate_fortified_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 662,
+     "file_name": "b_gre_gate_fortified_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -90
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 663,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 664,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 665,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_gre_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -75
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 666,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_gre_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -90
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 3701,
+   "file_name": "b_gre_gate_medium_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 667,
+     "file_name": "b_gre_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -147
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -3
+    }
+   ]
+  },
+  {
+   "graphic_id": 3713,
+   "file_name": "b_gre_gate_fortified_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 668,
+     "file_name": "b_gre_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -162
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -18
+    }
+   ]
+  },
+  {
+   "graphic_id": 3725,
+   "file_name": "b_gre_gate_medium_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 669,
+     "file_name": "b_gre_gate_medium_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -147
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -3
+    }
+   ]
+  },
+  {
+   "graphic_id": 3737,
+   "file_name": "b_gre_gate_fortified_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 670,
+     "file_name": "b_gre_gate_fortified_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -162
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -18
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 671,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -75
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 672,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 2093,
+   "file_name": "b_gre_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 673,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_gre_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_gre_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -147
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -3
+    }
+   ]
+  },
+  {
+   "graphic_id": 2105,
+   "file_name": "b_gre_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 674,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_gre_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_gre_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -162
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -18
+    }
+   ]
+  },
+  {
+   "graphic_id": 298,
+   "file_name": "b_east_tower_scen_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 11,
+   "file_name": "b_bab_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 23,
+   "file_name": "b_bab_archery_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 52,
+   "file_name": "b_bab_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 104,
+   "file_name": "b_bab_barracks_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 512,
+   "file_name": "b_bab_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 149,
+   "file_name": "b_bab_temple_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 223,
+   "file_name": "b_bab_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 488,
+   "file_name": "b_bab_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 235,
+   "file_name": "b_bab_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2059,
+   "file_name": "b_bab_gate_fortified_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 63,
+     "file_name": "b_bab_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -79
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2047,
+   "file_name": "b_bab_gate_medium_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 64,
+     "file_name": "b_bab_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 2083,
+   "file_name": "b_bab_gate_fortified_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 67,
+     "file_name": "b_bab_gate_fortified_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -79
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 367,
+   "file_name": "b_bab_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2414,
+   "file_name": "b_bab_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2071,
+   "file_name": "b_bab_gate_medium_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 78,
+     "file_name": "b_bab_gate_medium_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 80,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 81,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 173,
+   "file_name": "b_bab_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2131,
+   "file_name": "b_bab_gate_fortified_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 85,
+     "file_name": "b_bab_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -79
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 524,
+   "file_name": "b_bab_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2119,
+   "file_name": "b_bab_gate_medium_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 88,
+     "file_name": "b_bab_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 2155,
+   "file_name": "b_bab_gate_fortified_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 90,
+     "file_name": "b_bab_gate_fortified_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -79
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2143,
+   "file_name": "b_bab_gate_medium_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 91,
+     "file_name": "b_bab_gate_medium_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -64
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -136
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 92,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 95,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 548,
+   "file_name": "b_bab_trade_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 410,
+   "file_name": "b_bab_market_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2023,
+   "file_name": "b_bab_wall_medium_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 379,
+   "file_name": "b_bab_granary_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 92,
+   "file_name": "b_bab_barracks_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3433,
+   "file_name": "b_bab_market_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3264,
+   "file_name": "b_bab_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3040,
+   "file_name": "b_bab_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2035,
+   "file_name": "b_bab_wall_fortified_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 568,
+   "file_name": "b_bab_government_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 580,
+   "file_name": "b_bab_government_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2406,
+   "file_name": "b_bab_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3403,
+   "file_name": "p_arrow_fire_x1",
+   "angle_count": 32,
+   "mirroring_mode": 24,
+   "frame_count": 11,
+   "rotation_is_variant": true,
+   "variant_count": 32
+  },
+  {
+   "graphic_id": 2208,
+   "file_name": "b_bab_house_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2222,
+   "file_name": "b_bab_house_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2267,
+   "file_name": "b_bab_house_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 458,
+   "file_name": "b_orie_town_center_age3_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3260,
+   "file_name": "b_orie_town_center_age3_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3256,
+   "file_name": "b_orie_town_center_age3_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 487,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_bab_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -136
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -64
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 488,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_bab_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -153
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -81
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 490,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_bab_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -136
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -64
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 491,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_bab_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -153
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -81
+    }
+   ]
+  },
+  {
+   "graphic_id": 3117,
+   "file_name": "b_bab_storage_pit_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3132,
+   "file_name": "b_bab_storage_pit_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 4201,
+   "file_name": "b_orie_tower_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 470,
+   "file_name": "b_orie_town_center_age4_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3036,
+   "file_name": "b_orie_town_center_age4_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3032,
+   "file_name": "b_orie_town_center_age4_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 446,
+   "file_name": "b_orie_town_center_age2_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3248,
+   "file_name": "b_orie_town_center_age2_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3244,
+   "file_name": "b_orie_town_center_age2_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3607,
+   "file_name": "b_bab_gate_medium_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 659,
+     "file_name": "b_bab_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 3619,
+   "file_name": "b_bab_gate_fortified_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 660,
+     "file_name": "b_bab_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -115
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 3631,
+   "file_name": "b_bab_gate_medium_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 661,
+     "file_name": "b_bab_gate_medium_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 3643,
+   "file_name": "b_bab_gate_fortified_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 662,
+     "file_name": "b_bab_gate_fortified_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -115
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 663,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 664,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 665,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_bab_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -100
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 666,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_bab_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -117
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -117
+    }
+   ]
+  },
+  {
+   "graphic_id": 3703,
+   "file_name": "b_bab_gate_medium_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 667,
+     "file_name": "b_bab_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 3715,
+   "file_name": "b_bab_gate_fortified_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 668,
+     "file_name": "b_bab_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -187
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -43
+    }
+   ]
+  },
+  {
+   "graphic_id": 3727,
+   "file_name": "b_bab_gate_medium_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 669,
+     "file_name": "b_bab_gate_medium_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 3739,
+   "file_name": "b_bab_gate_fortified_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 670,
+     "file_name": "b_bab_gate_fortified_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -187
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -43
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 671,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -100
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 672,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2095,
+   "file_name": "b_bab_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 673,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_bab_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_bab_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -172
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -28
+    }
+   ]
+  },
+  {
+   "graphic_id": 2107,
+   "file_name": "b_bab_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 674,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_bab_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_bab_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -189
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -45
+    }
+   ]
+  },
+  {
+   "graphic_id": 300,
+   "file_name": "b_orie_tower_scen_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 10,
+   "file_name": "b_asi_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 22,
+   "file_name": "b_asi_archery_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 51,
+   "file_name": "b_asi_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 103,
+   "file_name": "b_asi_barracks_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 511,
+   "file_name": "b_asi_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 148,
+   "file_name": "b_asi_temple_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 222,
+   "file_name": "b_asi_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 487,
+   "file_name": "b_asi_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 234,
+   "file_name": "b_asi_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2058,
+   "file_name": "b_asi_gate_fortified_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 63,
+     "file_name": "b_asi_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -104
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -176
+    }
+   ]
+  },
+  {
+   "graphic_id": 2046,
+   "file_name": "b_asi_gate_medium_ne_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 64,
+     "file_name": "b_asi_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -79
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2082,
+   "file_name": "b_asi_gate_fortified_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 67,
+     "file_name": "b_asi_gate_fortified_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -104
+    },
+    {
+     "unit_id": 80,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -176
+    }
+   ]
+  },
+  {
+   "graphic_id": 366,
+   "file_name": "b_asi_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2413,
+   "file_name": "b_asi_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2070,
+   "file_name": "b_asi_gate_medium_ne_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 78,
+     "file_name": "b_asi_gate_medium_ne_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -79
+    },
+    {
+     "unit_id": 81,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 80,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 80,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 81,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 81,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 172,
+   "file_name": "b_asi_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2130,
+   "file_name": "b_asi_gate_fortified_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 85,
+     "file_name": "b_asi_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -104
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -176
+    }
+   ]
+  },
+  {
+   "graphic_id": 523,
+   "file_name": "b_asi_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2118,
+   "file_name": "b_asi_gate_medium_se_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 88,
+     "file_name": "b_asi_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -79
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2154,
+   "file_name": "b_asi_gate_fortified_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 90,
+     "file_name": "b_asi_gate_fortified_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -104
+    },
+    {
+     "unit_id": 92,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -176
+    }
+   ]
+  },
+  {
+   "graphic_id": 2142,
+   "file_name": "b_asi_gate_medium_se_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 91,
+     "file_name": "b_asi_gate_medium_se_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -79
+    },
+    {
+     "unit_id": 95,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -151
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 92,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 92,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 95,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 95,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 547,
+   "file_name": "b_asi_trade_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 409,
+   "file_name": "b_asi_market_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2022,
+   "file_name": "b_asi_wall_medium_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 378,
+   "file_name": "b_asi_granary_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 91,
+   "file_name": "b_asi_barracks_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3432,
+   "file_name": "b_asi_market_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3263,
+   "file_name": "b_asi_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3039,
+   "file_name": "b_asi_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2034,
+   "file_name": "b_asi_wall_fortified_x1",
+   "angle_count": 5,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 5
+  },
+  {
+   "graphic_id": 567,
+   "file_name": "b_asi_government_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 579,
+   "file_name": "b_asi_government_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2405,
+   "file_name": "b_asi_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3402,
+   "file_name": "p_arrow_x1",
+   "angle_count": 32,
+   "mirroring_mode": 24,
+   "frame_count": 11,
+   "rotation_is_variant": true,
+   "variant_count": 32
+  },
+  {
+   "graphic_id": 2207,
+   "file_name": "b_asi_house_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2221,
+   "file_name": "b_asi_house_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2266,
+   "file_name": "b_asi_house_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 457,
+   "file_name": "b_asia_town_center_age3_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3259,
+   "file_name": "b_asia_town_center_age3_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3255,
+   "file_name": "b_asia_town_center_age3_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 487,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_asi_gate_medium_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 487,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -151
+    },
+    {
+     "unit_id": 487,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -79
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 488,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_asi_gate_fortified_ne_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 488,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": 36
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 72,
+     "dy": -176
+    },
+    {
+     "unit_id": 488,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -72,
+     "dy": -104
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 490,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_asi_gate_medium_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 490,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -151
+    },
+    {
+     "unit_id": 490,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -79
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 491,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -36,
+     "parent": true
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_asi_gate_fortified_se_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 491,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": 36
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -72,
+     "dy": -176
+    },
+    {
+     "unit_id": 491,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 72,
+     "dy": -104
+    }
+   ]
+  },
+  {
+   "graphic_id": 3116,
+   "file_name": "b_asi_storage_pit_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3131,
+   "file_name": "b_asi_storage_pit_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 4200,
+   "file_name": "b_asia_tower_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 469,
+   "file_name": "b_asia_town_center_age4_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3035,
+   "file_name": "b_asia_town_center_age4_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3031,
+   "file_name": "b_asia_town_center_age4_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 445,
+   "file_name": "b_asia_town_center_age2_main_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3247,
+   "file_name": "b_asia_town_center_age2_center_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3243,
+   "file_name": "b_asia_town_center_age2_front_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 3606,
+   "file_name": "b_asi_gate_medium_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 659,
+     "file_name": "b_asi_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -115
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 3618,
+   "file_name": "b_asi_gate_fortified_e_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 660,
+     "file_name": "b_asi_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -140
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 3630,
+   "file_name": "b_asi_gate_medium_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 661,
+     "file_name": "b_asi_gate_medium_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -115
+    },
+    {
+     "unit_id": 663,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 3642,
+   "file_name": "b_asi_gate_fortified_e_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 662,
+     "file_name": "b_asi_gate_fortified_e_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -144,
+     "dy": -140
+    },
+    {
+     "unit_id": 664,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 144,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 663,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 663,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 664,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 664,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 665,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_asi_gate_medium_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -115
+    },
+    {
+     "unit_id": 665,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 666,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_asi_gate_fortified_e_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": 0
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": -144,
+     "dy": -140
+    },
+    {
+     "unit_id": 666,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 144,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 3702,
+   "file_name": "b_asi_gate_medium_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 667,
+     "file_name": "b_asi_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -187
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -43
+    }
+   ]
+  },
+  {
+   "graphic_id": 3714,
+   "file_name": "b_asi_gate_fortified_n_closed_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 668,
+     "file_name": "b_asi_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -212
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -68
+    }
+   ]
+  },
+  {
+   "graphic_id": 3726,
+   "file_name": "b_asi_gate_medium_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 669,
+     "file_name": "b_asi_gate_medium_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -187
+    },
+    {
+     "unit_id": 671,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -43
+    }
+   ]
+  },
+  {
+   "graphic_id": 3738,
+   "file_name": "b_asi_gate_fortified_n_open_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 670,
+     "file_name": "b_asi_gate_fortified_n_open_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -212
+    },
+    {
+     "unit_id": 672,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -68
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 671,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 671,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -115
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 672,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0,
+     "parent": true
+    },
+    {
+     "unit_id": 672,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -140
+    }
+   ]
+  },
+  {
+   "graphic_id": 2094,
+   "file_name": "b_asi_gate_medium_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 673,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_asi_gate_medium_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 673,
+     "file_name": "b_asi_gate_medium_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -187
+    },
+    {
+     "unit_id": 673,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -43
+    }
+   ]
+  },
+  {
+   "graphic_id": 2106,
+   "file_name": "b_asi_gate_fortified_corner_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "pieces": [
+    {
+     "unit_id": 674,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -72,
+     "parent": true
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_asi_gate_fortified_n_closed_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 674,
+     "file_name": "b_asi_gate_fortified_corner_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": 72
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -212
+    },
+    {
+     "unit_id": 674,
+     "file_name": "e_all_gate_flag_x1",
+     "angle_count": 1,
+     "frame_count": 1,
+     "dx": 0,
+     "dy": -68
+    }
+   ]
+  },
+  {
+   "graphic_id": 299,
+   "file_name": "b_asia_tower_scen_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  }
+ ],
+ "civ_art": {
+  "1": {
+   "10": 0,
+   "14": 1,
+   "18": 2,
+   "19": 2,
+   "20": 3,
+   "30": 4,
+   "31": 4,
+   "32": 5,
+   "47": 6,
+   "49": 7,
+   "51": 8,
+   "63": 9,
+   "64": 10,
+   "67": 11,
+   "68": 12,
+   "76": 13,
+   "78": 14,
+   "80": 15,
+   "81": 16,
+   "82": 17,
+   "85": 18,
+   "86": 19,
+   "87": 0,
+   "88": 20,
+   "90": 21,
+   "91": 22,
+   "92": 23,
+   "95": 24,
+   "103": 2,
+   "104": 4,
+   "105": 2,
+   "110": 25,
+   "116": 26,
+   "117": 27,
+   "129": 12,
+   "130": 12,
+   "131": 28,
+   "132": 29,
+   "137": 30,
+   "141": 31,
+   "142": 32,
+   "150": 7,
+   "153": 19,
+   "155": 33,
+   "158": 13,
+   "179": 25,
+   "209": 34,
+   "210": 35,
+   "235": 36,
+   "236": 13,
+   "276": 17,
+   "463": 37,
+   "464": 38,
+   "465": 39,
+   "481": 40,
+   "482": 41,
+   "483": 42,
+   "484": 31,
+   "487": 43,
+   "488": 44,
+   "490": 45,
+   "491": 46,
+   "564": 47,
+   "565": 48,
+   "566": 49,
+   "584": 48,
+   "585": 48,
+   "586": 48,
+   "587": 48,
+   "597": 32,
+   "611": 50,
+   "612": 51,
+   "613": 52,
+   "614": 53,
+   "615": 54,
+   "616": 55,
+   "659": 56,
+   "660": 57,
+   "661": 58,
+   "662": 59,
+   "663": 60,
+   "664": 61,
+   "665": 62,
+   "666": 63,
+   "667": 64,
+   "668": 65,
+   "669": 66,
+   "670": 67,
+   "671": 68,
+   "672": 69,
+   "673": 70,
+   "674": 71,
+   "806": 6,
+   "807": 8,
+   "808": 8,
+   "826": 17,
+   "1102": 72,
+   "1189": 8,
+   "1647": 25
+  },
+  "2": {
+   "10": 73,
+   "14": 74,
+   "18": 75,
+   "19": 75,
+   "20": 76,
+   "30": 77,
+   "31": 77,
+   "32": 78,
+   "47": 79,
+   "49": 80,
+   "51": 81,
+   "63": 82,
+   "64": 83,
+   "67": 84,
+   "68": 85,
+   "76": 86,
+   "78": 87,
+   "80": 88,
+   "81": 89,
+   "82": 90,
+   "85": 91,
+   "86": 92,
+   "87": 73,
+   "88": 93,
+   "90": 94,
+   "91": 95,
+   "92": 96,
+   "95": 97,
+   "103": 75,
+   "104": 77,
+   "105": 75,
+   "110": 98,
+   "116": 99,
+   "117": 100,
+   "129": 85,
+   "130": 85,
+   "131": 101,
+   "132": 102,
+   "137": 103,
+   "141": 104,
+   "142": 105,
+   "150": 80,
+   "153": 92,
+   "155": 106,
+   "158": 86,
+   "179": 98,
+   "209": 107,
+   "210": 108,
+   "235": 109,
+   "236": 86,
+   "276": 90,
+   "463": 110,
+   "464": 111,
+   "465": 112,
+   "481": 113,
+   "482": 114,
+   "483": 115,
+   "484": 104,
+   "487": 116,
+   "488": 117,
+   "490": 118,
+   "491": 119,
+   "564": 120,
+   "565": 121,
+   "566": 122,
+   "584": 121,
+   "585": 121,
+   "586": 121,
+   "587": 121,
+   "597": 105,
+   "611": 123,
+   "612": 124,
+   "613": 125,
+   "614": 126,
+   "615": 127,
+   "616": 128,
+   "659": 129,
+   "660": 130,
+   "661": 131,
+   "662": 132,
+   "663": 133,
+   "664": 134,
+   "665": 135,
+   "666": 136,
+   "667": 137,
+   "668": 138,
+   "669": 139,
+   "670": 140,
+   "671": 141,
+   "672": 142,
+   "673": 143,
+   "674": 144,
+   "806": 79,
+   "807": 81,
+   "808": 81,
+   "826": 90,
+   "1102": 145,
+   "1189": 81,
+   "1647": 98
+  },
+  "3": {
+   "10": 146,
+   "14": 147,
+   "18": 148,
+   "19": 148,
+   "20": 149,
+   "30": 150,
+   "31": 150,
+   "32": 151,
+   "47": 152,
+   "49": 153,
+   "51": 154,
+   "63": 155,
+   "64": 156,
+   "67": 157,
+   "68": 158,
+   "76": 159,
+   "78": 160,
+   "80": 161,
+   "81": 162,
+   "82": 163,
+   "85": 164,
+   "86": 165,
+   "87": 146,
+   "88": 166,
+   "90": 167,
+   "91": 168,
+   "92": 169,
+   "95": 170,
+   "103": 148,
+   "104": 150,
+   "105": 148,
+   "110": 171,
+   "116": 172,
+   "117": 173,
+   "129": 158,
+   "130": 158,
+   "131": 174,
+   "132": 175,
+   "137": 176,
+   "141": 177,
+   "142": 178,
+   "150": 153,
+   "153": 165,
+   "155": 179,
+   "158": 159,
+   "179": 171,
+   "209": 180,
+   "210": 181,
+   "235": 182,
+   "236": 159,
+   "276": 163,
+   "446": 183,
+   "463": 184,
+   "464": 185,
+   "465": 186,
+   "481": 187,
+   "482": 188,
+   "483": 189,
+   "484": 177,
+   "487": 190,
+   "488": 191,
+   "490": 192,
+   "491": 193,
+   "564": 194,
+   "565": 195,
+   "566": 196,
+   "584": 195,
+   "585": 195,
+   "586": 195,
+   "587": 195,
+   "597": 178,
+   "611": 197,
+   "612": 198,
+   "613": 199,
+   "614": 200,
+   "615": 201,
+   "616": 202,
+   "659": 203,
+   "660": 204,
+   "661": 205,
+   "662": 206,
+   "663": 207,
+   "664": 208,
+   "665": 209,
+   "666": 210,
+   "667": 211,
+   "668": 212,
+   "669": 213,
+   "670": 214,
+   "671": 215,
+   "672": 216,
+   "673": 217,
+   "674": 218,
+   "806": 152,
+   "807": 154,
+   "808": 154,
+   "826": 163,
+   "1102": 219,
+   "1189": 154,
+   "1647": 171
+  },
+  "4": {
+   "10": 0,
+   "14": 1,
+   "18": 2,
+   "19": 2,
+   "20": 3,
+   "30": 4,
+   "31": 4,
+   "32": 5,
+   "47": 6,
+   "49": 7,
+   "51": 8,
+   "63": 9,
+   "64": 10,
+   "67": 11,
+   "68": 12,
+   "76": 13,
+   "78": 14,
+   "80": 15,
+   "81": 16,
+   "82": 17,
+   "85": 18,
+   "86": 19,
+   "87": 0,
+   "88": 20,
+   "90": 21,
+   "91": 22,
+   "92": 23,
+   "95": 24,
+   "103": 2,
+   "104": 4,
+   "105": 2,
+   "110": 25,
+   "116": 26,
+   "117": 27,
+   "129": 12,
+   "130": 12,
+   "131": 28,
+   "132": 29,
+   "137": 30,
+   "141": 31,
+   "142": 32,
+   "150": 7,
+   "153": 19,
+   "155": 33,
+   "158": 13,
+   "179": 25,
+   "209": 34,
+   "210": 35,
+   "235": 36,
+   "236": 13,
+   "276": 17,
+   "463": 37,
+   "464": 38,
+   "465": 39,
+   "481": 40,
+   "482": 41,
+   "483": 42,
+   "484": 31,
+   "487": 43,
+   "488": 44,
+   "490": 45,
+   "491": 46,
+   "564": 47,
+   "565": 48,
+   "566": 49,
+   "584": 48,
+   "585": 48,
+   "586": 48,
+   "587": 48,
+   "597": 32,
+   "611": 50,
+   "612": 51,
+   "613": 52,
+   "614": 53,
+   "615": 54,
+   "616": 55,
+   "659": 56,
+   "660": 57,
+   "661": 58,
+   "662": 59,
+   "663": 60,
+   "664": 61,
+   "665": 62,
+   "666": 63,
+   "667": 64,
+   "668": 65,
+   "669": 66,
+   "670": 67,
+   "671": 68,
+   "672": 69,
+   "673": 70,
+   "674": 71,
+   "806": 6,
+   "807": 8,
+   "808": 8,
+   "826": 17,
+   "1102": 72,
+   "1189": 8,
+   "1647": 25
+  },
+  "5": {
+   "10": 73,
+   "14": 74,
+   "18": 75,
+   "19": 75,
+   "20": 76,
+   "30": 77,
+   "31": 77,
+   "32": 78,
+   "47": 79,
+   "49": 80,
+   "51": 81,
+   "63": 82,
+   "64": 83,
+   "67": 84,
+   "68": 85,
+   "76": 86,
+   "78": 87,
+   "80": 88,
+   "81": 89,
+   "82": 90,
+   "85": 91,
+   "86": 92,
+   "87": 73,
+   "88": 93,
+   "90": 94,
+   "91": 95,
+   "92": 96,
+   "95": 97,
+   "103": 75,
+   "104": 77,
+   "105": 75,
+   "110": 98,
+   "116": 99,
+   "117": 100,
+   "129": 85,
+   "130": 85,
+   "131": 101,
+   "132": 102,
+   "137": 103,
+   "141": 104,
+   "142": 105,
+   "150": 80,
+   "153": 92,
+   "155": 106,
+   "158": 86,
+   "179": 98,
+   "209": 107,
+   "210": 108,
+   "235": 109,
+   "236": 86,
+   "276": 90,
+   "463": 110,
+   "464": 111,
+   "465": 112,
+   "481": 113,
+   "482": 114,
+   "483": 115,
+   "484": 104,
+   "487": 116,
+   "488": 117,
+   "490": 118,
+   "491": 119,
+   "564": 120,
+   "565": 121,
+   "566": 122,
+   "584": 121,
+   "585": 121,
+   "586": 121,
+   "587": 121,
+   "597": 105,
+   "611": 123,
+   "612": 124,
+   "613": 125,
+   "614": 126,
+   "615": 127,
+   "616": 128,
+   "659": 129,
+   "660": 130,
+   "661": 131,
+   "662": 132,
+   "663": 133,
+   "664": 134,
+   "665": 135,
+   "666": 136,
+   "667": 137,
+   "668": 138,
+   "669": 139,
+   "670": 140,
+   "671": 141,
+   "672": 142,
+   "673": 143,
+   "674": 144,
+   "806": 79,
+   "807": 81,
+   "808": 81,
+   "826": 90,
+   "1102": 145,
+   "1189": 81,
+   "1647": 98
+  },
+  "6": {
+   "10": 0,
+   "14": 1,
+   "18": 2,
+   "19": 2,
+   "20": 3,
+   "30": 4,
+   "31": 4,
+   "32": 5,
+   "47": 6,
+   "49": 7,
+   "51": 8,
+   "63": 9,
+   "64": 10,
+   "67": 11,
+   "68": 12,
+   "76": 13,
+   "78": 14,
+   "80": 15,
+   "81": 16,
+   "82": 17,
+   "85": 18,
+   "86": 19,
+   "87": 0,
+   "88": 20,
+   "90": 21,
+   "91": 22,
+   "92": 23,
+   "95": 24,
+   "103": 2,
+   "104": 4,
+   "105": 2,
+   "110": 25,
+   "116": 26,
+   "117": 27,
+   "129": 12,
+   "130": 12,
+   "131": 28,
+   "132": 29,
+   "137": 30,
+   "141": 31,
+   "142": 32,
+   "150": 7,
+   "153": 19,
+   "155": 33,
+   "158": 13,
+   "179": 25,
+   "209": 34,
+   "210": 35,
+   "235": 36,
+   "236": 13,
+   "276": 17,
+   "463": 37,
+   "464": 38,
+   "465": 39,
+   "481": 40,
+   "482": 41,
+   "483": 42,
+   "484": 31,
+   "487": 43,
+   "488": 44,
+   "490": 45,
+   "491": 46,
+   "564": 47,
+   "565": 48,
+   "566": 49,
+   "584": 48,
+   "585": 48,
+   "586": 48,
+   "587": 48,
+   "597": 32,
+   "611": 50,
+   "612": 51,
+   "613": 52,
+   "614": 53,
+   "615": 54,
+   "616": 55,
+   "659": 56,
+   "660": 57,
+   "661": 58,
+   "662": 59,
+   "663": 60,
+   "664": 61,
+   "665": 62,
+   "666": 63,
+   "667": 64,
+   "668": 65,
+   "669": 66,
+   "670": 67,
+   "671": 68,
+   "672": 69,
+   "673": 70,
+   "674": 71,
+   "806": 6,
+   "807": 8,
+   "808": 8,
+   "826": 17,
+   "1102": 72,
+   "1189": 8,
+   "1647": 25
+  },
+  "7": {
+   "10": 73,
+   "14": 74,
+   "18": 75,
+   "19": 75,
+   "20": 76,
+   "30": 77,
+   "31": 77,
+   "32": 78,
+   "47": 79,
+   "49": 80,
+   "51": 81,
+   "63": 82,
+   "64": 83,
+   "67": 84,
+   "68": 85,
+   "76": 86,
+   "78": 87,
+   "80": 88,
+   "81": 89,
+   "82": 90,
+   "85": 91,
+   "86": 92,
+   "87": 73,
+   "88": 93,
+   "90": 94,
+   "91": 95,
+   "92": 96,
+   "95": 97,
+   "103": 75,
+   "104": 77,
+   "105": 75,
+   "110": 98,
+   "116": 99,
+   "117": 100,
+   "129": 85,
+   "130": 85,
+   "131": 101,
+   "132": 102,
+   "137": 103,
+   "141": 104,
+   "142": 105,
+   "150": 80,
+   "153": 92,
+   "155": 106,
+   "158": 86,
+   "179": 98,
+   "209": 107,
+   "210": 108,
+   "235": 109,
+   "236": 86,
+   "276": 90,
+   "463": 110,
+   "464": 111,
+   "465": 112,
+   "481": 113,
+   "482": 114,
+   "483": 115,
+   "484": 104,
+   "487": 116,
+   "488": 117,
+   "490": 118,
+   "491": 119,
+   "564": 120,
+   "565": 121,
+   "566": 122,
+   "584": 121,
+   "585": 121,
+   "586": 121,
+   "587": 121,
+   "597": 105,
+   "611": 123,
+   "612": 124,
+   "613": 125,
+   "614": 126,
+   "615": 127,
+   "616": 128,
+   "659": 129,
+   "660": 130,
+   "661": 131,
+   "662": 132,
+   "663": 133,
+   "664": 134,
+   "665": 135,
+   "666": 136,
+   "667": 137,
+   "668": 138,
+   "669": 139,
+   "670": 140,
+   "671": 141,
+   "672": 142,
+   "673": 143,
+   "674": 144,
+   "806": 79,
+   "807": 81,
+   "808": 81,
+   "826": 90,
+   "1102": 145,
+   "1189": 81,
+   "1647": 98
+  },
+  "8": {
+   "10": 146,
+   "14": 147,
+   "18": 148,
+   "19": 148,
+   "20": 149,
+   "30": 150,
+   "31": 150,
+   "32": 151,
+   "47": 152,
+   "49": 153,
+   "51": 154,
+   "63": 155,
+   "64": 156,
+   "67": 157,
+   "68": 158,
+   "76": 159,
+   "78": 160,
+   "80": 161,
+   "81": 162,
+   "82": 163,
+   "85": 164,
+   "86": 165,
+   "87": 146,
+   "88": 166,
+   "90": 167,
+   "91": 168,
+   "92": 169,
+   "95": 170,
+   "103": 148,
+   "104": 150,
+   "105": 148,
+   "110": 171,
+   "116": 172,
+   "117": 173,
+   "129": 158,
+   "130": 158,
+   "131": 174,
+   "132": 175,
+   "137": 176,
+   "141": 177,
+   "142": 178,
+   "150": 153,
+   "153": 165,
+   "155": 179,
+   "158": 159,
+   "179": 171,
+   "209": 180,
+   "210": 181,
+   "235": 182,
+   "236": 159,
+   "276": 163,
+   "446": 183,
+   "463": 184,
+   "464": 185,
+   "465": 186,
+   "481": 187,
+   "482": 188,
+   "483": 189,
+   "484": 177,
+   "487": 190,
+   "488": 191,
+   "490": 192,
+   "491": 193,
+   "564": 194,
+   "565": 195,
+   "566": 196,
+   "584": 195,
+   "585": 195,
+   "586": 195,
+   "587": 195,
+   "597": 178,
+   "611": 197,
+   "612": 198,
+   "613": 199,
+   "614": 200,
+   "615": 201,
+   "616": 202,
+   "659": 203,
+   "660": 204,
+   "661": 205,
+   "662": 206,
+   "663": 207,
+   "664": 208,
+   "665": 209,
+   "666": 210,
+   "667": 211,
+   "668": 212,
+   "669": 213,
+   "670": 214,
+   "671": 215,
+   "672": 216,
+   "673": 217,
+   "674": 218,
+   "806": 152,
+   "807": 154,
+   "808": 154,
+   "826": 163,
+   "1102": 219,
+   "1189": 154,
+   "1647": 171
+  },
+  "9": {
+   "10": 146,
+   "14": 147,
+   "18": 148,
+   "19": 148,
+   "20": 149,
+   "30": 150,
+   "31": 150,
+   "32": 151,
+   "47": 152,
+   "49": 153,
+   "51": 154,
+   "63": 155,
+   "64": 156,
+   "67": 157,
+   "68": 158,
+   "76": 159,
+   "78": 160,
+   "80": 161,
+   "81": 162,
+   "82": 163,
+   "85": 164,
+   "86": 165,
+   "87": 146,
+   "88": 166,
+   "90": 167,
+   "91": 168,
+   "92": 169,
+   "95": 170,
+   "103": 148,
+   "104": 150,
+   "105": 148,
+   "110": 171,
+   "116": 172,
+   "117": 173,
+   "129": 158,
+   "130": 158,
+   "131": 174,
+   "132": 175,
+   "137": 176,
+   "141": 177,
+   "142": 178,
+   "150": 153,
+   "153": 165,
+   "155": 179,
+   "158": 159,
+   "179": 171,
+   "209": 180,
+   "210": 181,
+   "235": 182,
+   "236": 159,
+   "276": 163,
+   "446": 183,
+   "463": 184,
+   "464": 185,
+   "465": 186,
+   "481": 187,
+   "482": 188,
+   "483": 189,
+   "484": 177,
+   "487": 190,
+   "488": 191,
+   "490": 192,
+   "491": 193,
+   "564": 194,
+   "565": 195,
+   "566": 196,
+   "584": 195,
+   "585": 195,
+   "586": 195,
+   "587": 195,
+   "597": 178,
+   "611": 197,
+   "612": 198,
+   "613": 199,
+   "614": 200,
+   "615": 201,
+   "616": 202,
+   "659": 203,
+   "660": 204,
+   "661": 205,
+   "662": 206,
+   "663": 207,
+   "664": 208,
+   "665": 209,
+   "666": 210,
+   "667": 211,
+   "668": 212,
+   "669": 213,
+   "670": 214,
+   "671": 215,
+   "672": 216,
+   "673": 217,
+   "674": 218,
+   "806": 152,
+   "807": 154,
+   "808": 154,
+   "826": 163,
+   "1102": 219,
+   "1189": 154,
+   "1647": 171
+  },
+  "10": {
+   "10": 220,
+   "14": 221,
+   "18": 222,
+   "19": 222,
+   "20": 223,
+   "30": 224,
+   "31": 224,
+   "32": 225,
+   "47": 226,
+   "49": 227,
+   "51": 228,
+   "63": 229,
+   "64": 230,
+   "67": 231,
+   "68": 232,
+   "76": 233,
+   "78": 234,
+   "80": 235,
+   "81": 236,
+   "82": 237,
+   "85": 238,
+   "86": 239,
+   "87": 220,
+   "88": 240,
+   "90": 241,
+   "91": 242,
+   "92": 243,
+   "95": 244,
+   "103": 222,
+   "104": 224,
+   "105": 222,
+   "110": 245,
+   "116": 246,
+   "117": 247,
+   "129": 232,
+   "130": 232,
+   "131": 248,
+   "132": 249,
+   "137": 250,
+   "141": 251,
+   "142": 252,
+   "150": 227,
+   "153": 239,
+   "155": 253,
+   "158": 233,
+   "179": 245,
+   "209": 254,
+   "210": 255,
+   "235": 256,
+   "236": 233,
+   "276": 237,
+   "446": 257,
+   "463": 258,
+   "464": 259,
+   "465": 260,
+   "481": 261,
+   "482": 262,
+   "483": 263,
+   "484": 251,
+   "487": 264,
+   "488": 265,
+   "490": 266,
+   "491": 267,
+   "564": 268,
+   "565": 269,
+   "566": 270,
+   "584": 269,
+   "585": 269,
+   "586": 269,
+   "587": 269,
+   "597": 252,
+   "611": 271,
+   "612": 272,
+   "613": 273,
+   "614": 274,
+   "615": 275,
+   "616": 276,
+   "659": 277,
+   "660": 278,
+   "661": 279,
+   "662": 280,
+   "663": 281,
+   "664": 282,
+   "665": 283,
+   "666": 284,
+   "667": 285,
+   "668": 286,
+   "669": 287,
+   "670": 288,
+   "671": 289,
+   "672": 290,
+   "673": 291,
+   "674": 292,
+   "806": 226,
+   "807": 228,
+   "808": 228,
+   "826": 237,
+   "1102": 293,
+   "1189": 228,
+   "1647": 245
+  },
+  "11": {
+   "10": 220,
+   "14": 221,
+   "18": 222,
+   "19": 222,
+   "20": 223,
+   "30": 224,
+   "31": 224,
+   "32": 225,
+   "47": 226,
+   "49": 227,
+   "51": 228,
+   "63": 229,
+   "64": 230,
+   "67": 231,
+   "68": 232,
+   "76": 233,
+   "78": 234,
+   "80": 235,
+   "81": 236,
+   "82": 237,
+   "85": 238,
+   "86": 239,
+   "87": 220,
+   "88": 240,
+   "90": 241,
+   "91": 242,
+   "92": 243,
+   "95": 244,
+   "103": 222,
+   "104": 224,
+   "105": 222,
+   "110": 245,
+   "116": 246,
+   "117": 247,
+   "129": 232,
+   "130": 232,
+   "131": 248,
+   "132": 249,
+   "137": 250,
+   "141": 251,
+   "142": 252,
+   "150": 227,
+   "153": 239,
+   "155": 253,
+   "158": 233,
+   "179": 245,
+   "209": 254,
+   "210": 255,
+   "235": 256,
+   "236": 233,
+   "276": 237,
+   "446": 257,
+   "463": 258,
+   "464": 259,
+   "465": 260,
+   "481": 261,
+   "482": 262,
+   "483": 263,
+   "484": 251,
+   "487": 264,
+   "488": 265,
+   "490": 266,
+   "491": 267,
+   "564": 268,
+   "565": 269,
+   "566": 270,
+   "584": 269,
+   "585": 269,
+   "586": 269,
+   "587": 269,
+   "597": 252,
+   "611": 271,
+   "612": 272,
+   "613": 273,
+   "614": 274,
+   "615": 275,
+   "616": 276,
+   "659": 277,
+   "660": 278,
+   "661": 279,
+   "662": 280,
+   "663": 281,
+   "664": 282,
+   "665": 283,
+   "666": 284,
+   "667": 285,
+   "668": 286,
+   "669": 287,
+   "670": 288,
+   "671": 289,
+   "672": 290,
+   "673": 291,
+   "674": 292,
+   "806": 226,
+   "807": 228,
+   "808": 228,
+   "826": 237,
+   "1102": 293,
+   "1189": 228,
+   "1647": 245
+  },
+  "12": {
+   "10": 220,
+   "14": 221,
+   "18": 222,
+   "19": 222,
+   "20": 223,
+   "30": 224,
+   "31": 224,
+   "32": 225,
+   "47": 226,
+   "49": 227,
+   "51": 228,
+   "63": 229,
+   "64": 230,
+   "67": 231,
+   "68": 232,
+   "76": 233,
+   "78": 234,
+   "80": 235,
+   "81": 236,
+   "82": 237,
+   "85": 238,
+   "86": 239,
+   "87": 220,
+   "88": 240,
+   "90": 241,
+   "91": 242,
+   "92": 243,
+   "95": 244,
+   "103": 222,
+   "104": 224,
+   "105": 222,
+   "110": 245,
+   "116": 246,
+   "117": 247,
+   "129": 232,
+   "130": 232,
+   "131": 248,
+   "132": 249,
+   "137": 250,
+   "141": 251,
+   "142": 252,
+   "150": 227,
+   "153": 239,
+   "155": 253,
+   "158": 233,
+   "179": 245,
+   "209": 254,
+   "210": 255,
+   "235": 256,
+   "236": 233,
+   "276": 237,
+   "446": 257,
+   "463": 258,
+   "464": 259,
+   "465": 260,
+   "481": 261,
+   "482": 262,
+   "483": 263,
+   "484": 251,
+   "487": 264,
+   "488": 265,
+   "490": 266,
+   "491": 267,
+   "564": 268,
+   "565": 269,
+   "566": 270,
+   "584": 269,
+   "585": 269,
+   "586": 269,
+   "587": 269,
+   "597": 252,
+   "611": 271,
+   "612": 272,
+   "613": 273,
+   "614": 274,
+   "615": 275,
+   "616": 276,
+   "659": 277,
+   "660": 278,
+   "661": 279,
+   "662": 280,
+   "663": 281,
+   "664": 282,
+   "665": 283,
+   "666": 284,
+   "667": 285,
+   "668": 286,
+   "669": 287,
+   "670": 288,
+   "671": 289,
+   "672": 290,
+   "673": 291,
+   "674": 292,
+   "806": 226,
+   "807": 228,
+   "808": 228,
+   "826": 237,
+   "1102": 293,
+   "1189": 228,
+   "1647": 245
+  },
+  "17": {
+   "10": 220,
+   "14": 221,
+   "18": 222,
+   "19": 222,
+   "20": 223,
+   "30": 224,
+   "31": 224,
+   "32": 225,
+   "47": 226,
+   "49": 227,
+   "51": 228,
+   "63": 229,
+   "64": 230,
+   "67": 231,
+   "68": 232,
+   "76": 233,
+   "78": 234,
+   "80": 235,
+   "81": 236,
+   "82": 237,
+   "85": 238,
+   "86": 239,
+   "87": 220,
+   "88": 240,
+   "90": 241,
+   "91": 242,
+   "92": 243,
+   "95": 244,
+   "103": 222,
+   "104": 224,
+   "105": 222,
+   "110": 245,
+   "116": 246,
+   "117": 247,
+   "129": 232,
+   "130": 232,
+   "131": 248,
+   "132": 249,
+   "137": 250,
+   "141": 251,
+   "142": 252,
+   "150": 227,
+   "153": 239,
+   "155": 253,
+   "158": 233,
+   "179": 245,
+   "209": 254,
+   "210": 255,
+   "235": 256,
+   "236": 233,
+   "276": 237,
+   "446": 257,
+   "463": 258,
+   "464": 259,
+   "465": 260,
+   "481": 261,
+   "482": 262,
+   "483": 263,
+   "484": 251,
+   "487": 264,
+   "488": 265,
+   "490": 266,
+   "491": 267,
+   "564": 268,
+   "565": 269,
+   "566": 270,
+   "584": 269,
+   "585": 269,
+   "586": 269,
+   "587": 269,
+   "597": 252,
+   "611": 271,
+   "612": 272,
+   "613": 273,
+   "614": 274,
+   "615": 275,
+   "616": 276,
+   "659": 277,
+   "660": 278,
+   "661": 279,
+   "662": 280,
+   "663": 281,
+   "664": 282,
+   "665": 283,
+   "666": 284,
+   "667": 285,
+   "668": 286,
+   "669": 287,
+   "670": 288,
+   "671": 289,
+   "672": 290,
+   "673": 291,
+   "674": 292,
+   "806": 226,
+   "807": 228,
+   "808": 228,
+   "826": 237,
+   "1102": 293,
+   "1189": 228,
+   "1647": 245
+  }
+ }
+}

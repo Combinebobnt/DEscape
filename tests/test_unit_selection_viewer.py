@@ -773,6 +773,130 @@ def test_the_marquee_keeps_the_configured_colour() -> None:
         _close(window)
 
 
+@pytest.mark.parametrize("style", ["Flat", "Sloped"])
+def test_the_dark_under_stroke_follows_every_owner_group_in_flat_and_sloped(style: str) -> None:
+    """TASK-115 1, the Sloped half beside its Flat control.
+
+    Passes when, in `style`, a GAIA + P1 selection makes two groups, each
+    with a dark under-stroke at the shared width and RGBA, tracing exactly
+    the outline's own non-empty path."""
+    window = _owner_window()
+    try:
+        # Unchecked first, or Flat renders through the Flat+Isometric path.
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText(style)
+        mv = window.map_view
+        assert window._render_style == mv._terrain_style == style.lower()
+        mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
+        assert set(mv._unit_select_groups) == {None, tuple(window.scenario.player_colors[1])}
+        for _fill, under, outline in mv._unit_select_groups.values():
+            assert under is not None, f"no dark under-stroke in {style}"
+            assert under.scene() is mv.scene()
+            assert under.pen().widthF() == mv.UNIT_SELECT_UNDERSTROKE_WIDTH
+            assert under.pen().color().getRgb() == mv.UNIT_SELECT_UNDERSTROKE_RGBA
+            assert not outline.path().isEmpty()
+            assert under.path() == outline.path()
+    finally:
+        _close(window)
+
+
+def test_a_players_panel_recolour_shows_on_the_next_units_selection() -> None:
+    """TASK-115 3, the reachable version: leaving Units mode clears the
+    selection, so the recolour happens with none live.
+
+    Passes when P1's colour is changed through the Players panel's own colour
+    combo, and back in Units mode a P1 selection is one group keyed, outlined
+    and filled in the new colour, not the old one; and after an undo in
+    Players mode, the next Units-mode P1 selection is back in the old colour.
+
+    The mode-entry re-push alone is not what this pins: the edit-time push in
+    _apply_player_color_change() covers the same path, so it fails only with
+    both removed."""
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    window = _owner_window()
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 1)])
+        old = tuple(window.scenario.player_colors[1])
+        assert list(mv._unit_select_groups) == [old]
+
+        window.mode_combo.setCurrentText("Players")
+        assert mv._unit_select_groups == {}
+        panel = window.players_panel
+        assert panel.select_player(1)
+        widget = panel.widget_for("color")
+        target = next(
+            i for i in range(widget.count())
+            if widget.itemData(i) is not None and tuple(PLAYER_COLOR_BY_ID[widget.itemData(i)]) != old
+        )
+        new = tuple(PLAYER_COLOR_BY_ID[widget.itemData(target)])
+        widget.setCurrentIndex(target)
+        assert window.edit_history.is_dirty
+
+        window.mode_combo.setCurrentText("Units")
+        mv.set_unit_selection([_entry_for(window, 1)])
+        assert list(mv._unit_select_groups) == [new]
+        fill, _under, outline = mv._unit_select_groups[new]
+        assert _rgb(outline.pen().color()) == new
+        assert _rgb(fill.brush().color()) == new
+
+        window.mode_combo.setCurrentText("Players")
+        window.undo()
+        assert not window.edit_history.is_dirty
+        window.mode_combo.setCurrentText("Units")
+        mv.set_unit_selection([_entry_for(window, 1)])
+        assert list(mv._unit_select_groups) == [old]
+    finally:
+        _close(window)
+
+
+def test_a_settings_swatch_click_reinks_gaia_the_fill_and_the_marquee(monkeypatch) -> None:
+    """TASK-115 4: the Settings > Appearance rows, not settings + apply_overlay_colors().
+
+    Passes when, with a GAIA + P1 selection and a live marquee, clicking the
+    Selection outline swatch (colour dialog stubbed to #ff00ff) re-inks
+    GAIA's group outline and the marquee's pen, and clicking the Selection
+    fill swatch (stubbed to #00ff80) re-inks GAIA's fill and the marquee's
+    brush at the fixed fill alpha, while P1's owner group keeps P1's colour."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog
+
+    from descape import settings
+    from descape.viewer import SettingsDialog
+
+    window = _owner_window()
+    dialog = SettingsDialog(window)
+    try:
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
+        mv._update_marquee(QPoint(0, 0), QPoint(40, 40))
+        p1 = tuple(window.scenario.player_colors[1])
+        picks = iter([QColor("#ff00ff"), QColor("#00ff80")])
+        monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: next(picks)))
+
+        dialog._overlay_swatches["unit_select"].click()
+        assert settings.get_overlay_color("unit_select") == "#ff00ff"
+        assert _rgb(mv._unit_select_groups[None][2].pen().color()) == (255, 0, 255)
+        assert _rgb(mv._marquee_item.pen().color()) == (255, 0, 255)
+
+        dialog._overlay_swatches["unit_select_fill"].click()
+        assert settings.get_overlay_color("unit_select_fill") == "#00ff80"
+        gaia_fill = mv._unit_select_groups[None][0].brush().color()
+        assert (_rgb(gaia_fill), gaia_fill.alpha()) == ((0, 255, 128), mv.UNIT_SELECT_FILL_ALPHA)
+        marquee_fill = mv._marquee_item.brush().color()
+        assert (_rgb(marquee_fill), marquee_fill.alpha()) == ((0, 255, 128), mv.UNIT_SELECT_FILL_ALPHA)
+        assert _rgb(mv._marquee_item.pen().color()) == (255, 0, 255)
+
+        p1_fill, _under, p1_outline = mv._unit_select_groups[p1]
+        assert _rgb(p1_outline.pen().color()) == p1
+        assert _rgb(p1_fill.brush().color()) == p1
+    finally:
+        dialog.close()
+        _close(window)
+
+
 def test_an_appearance_change_reinks_only_the_configured_group() -> None:
     from descape import settings
 

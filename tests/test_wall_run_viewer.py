@@ -38,6 +38,23 @@ VILLAGER = 83
 GAIA_PLAYER_ID = 0
 PLAYER = 1
 
+# MapView.leaveEvent reads QApplication.mouseButtons() and a synthetic press never sets it (TASK-406).
+_HELD = {"value": False}
+
+
+@pytest.fixture(autouse=True)
+def _hold_the_synthetic_button(monkeypatch):
+    if conftest.PYQT5_AVAILABLE:
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtWidgets import QApplication
+
+        monkeypatch.setattr(
+            QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if _HELD["value"] else Qt.NoButton)
+        )
+    _HELD["value"] = False
+    yield
+    _HELD["value"] = False
+
 
 def _window(const: int = WALL):
     """A shown window, Units mode, Place Unit armed with `const` picked.
@@ -86,6 +103,7 @@ def _mouse_event(kind, pos, button, buttons, modifiers=None):
 def _press(map_view, tile, modifiers=None) -> None:
     from PyQt5.QtCore import QEvent, Qt
 
+    _HELD["value"] = True
     map_view.mousePressEvent(
         _mouse_event(
             QEvent.MouseButtonPress, conftest.polygon_viewport_pos(map_view, *tile),
@@ -114,6 +132,7 @@ def _release(map_view, tile) -> None:
             Qt.LeftButton, Qt.NoButton,
         )
     )
+    _HELD["value"] = False
 
 
 def _drag(map_view, a, b, modifiers=None) -> None:
@@ -257,6 +276,72 @@ def test_a_single_click_aqueduct_joins_its_neighbour():
         _close(window)
 
 
+def _l_of_two_drags(const: int) -> dict[tuple[int, int], tuple[int, float]]:
+    """An L laid by two Place Unit drags, (20, 40)-(25, 40) then (25, 40)-(25, 45):
+    one drag cannot turn a right angle, since wall_path_tiles bends at 45
+    degrees. The second starts on the first's end tile, which it skips."""
+    window = _window(const)
+    try:
+        before = _unit_count(window)
+        _drag(window.map_view, (20, 40), (25, 40))
+        _drag(window.map_view, (25, 40), (25, 45))
+        assert _unit_count(window) == before + 11
+        assert len(window.edit_history.records) == 2
+        return {
+            (int(u.x), int(u.y)): (u.unit_const, u.rotation)
+            for u in window.scenario.unit_manager.units[PLAYER]
+            if 40 <= u.y < 46 and 20 <= u.x < 26
+        }
+    finally:
+        _close(window)
+
+
+def test_an_aqueduct_l_of_two_drags_turns_its_corner_like_a_stone_wall():
+    """GH #110, the corner. Pass conditions:
+    - the Aqueduct L is all Aqueduct, 11 pieces, one undo record per drag;
+    - the corner (25, 40) reads 2, the x leg 0, the y leg 1, the two ends 2;
+      the second drag's first piece (25, 41) is 1, so it joined the corner
+      rather than standing as an end of its own;
+    - the same two drags with Stone Wall store the same index on every tile."""
+    aqueduct = _l_of_two_drags(AQUEDUCT)
+    assert {const for const, _r in aqueduct.values()} == {AQUEDUCT}
+    rotations = {tile: r for tile, (_c, r) in aqueduct.items()}
+    expected = {(20, 40): 2.0, (25, 40): 2.0, (25, 45): 2.0}
+    expected |= {(x, 40): 0.0 for x in range(21, 25)}
+    expected |= {(25, y): 1.0 for y in range(41, 45)}
+    assert rotations == expected
+    stone = _l_of_two_drags(WALL)
+    assert {tile: r for tile, (_c, r) in stone.items()} == rotations
+
+
+def test_a_stone_wall_drag_ending_against_an_aqueduct_run_joins_it():
+    """GH #110, wall against Aqueduct. An Aqueduct run (20..25, 40) stored as
+    a run stores it; a Stone Wall drag from (30, 40) back to (26, 40) ends
+    against its east end. Pass conditions:
+    - the Aqueduct end piece (25, 40) is rewritten 2 -> 0 (now a mid-run);
+    - the wall's own end at (26, 40) joins (0), its free end (30, 40) is 2;
+    - the rewrite rides in the drag's one record, and undo puts the 2 back."""
+    window = _window(WALL)
+    try:
+        model = window._ensure_unit_edits()
+        assert model is not None
+        with window._unit_edit(model, "Place aqueducts", [PLAYER]):
+            run = [
+                model.add(PLAYER, AQUEDUCT, x + 0.5, 40.5, rotation=r)
+                for x, r in zip(range(20, 26), [2.0, 0.0, 0.0, 0.0, 0.0, 2.0], strict=True)
+            ]
+        records = len(window.edit_history.records)
+        _drag(window.map_view, (30, 40), (26, 40))
+        assert len(window.edit_history.records) == records + 1
+        assert run[-1].rotation == 0.0
+        assert [u.rotation for u in run[:-1]] == [2.0, 0.0, 0.0, 0.0, 0.0]
+        assert _walls_by_tile(window) == {(26, 40): 0.0, (27, 40): 0.0, (28, 40): 0.0, (29, 40): 0.0, (30, 40): 2.0}
+        window.undo()
+        assert run[-1].rotation == 2.0
+    finally:
+        _close(window)
+
+
 def test_a_gaia_run_places_with_derived_indices():
     """Replaces the old GAIA refusal, whose premise was stale:
     render.stored_rotation() keeps a GAIA wall's variant index."""
@@ -301,8 +386,12 @@ def _click_point(window, x: float, y: float) -> None:
     view = window.map_view
     tp = view._tile_pixels
     pos = QPointF(view.mapFromScene(QPointF(x * tp, y * tp)))
-    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
-    view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+    _HELD["value"] = True
+    try:
+        view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _HELD["value"] = False
 
 
 def _walls_on(window, tiles) -> list:
@@ -474,6 +563,28 @@ def test_a_mid_drag_switch_to_another_wall_places_that_wall():
         _close(window)
 
 
+def test_a_leave_mid_drag_with_the_button_held_keeps_the_run():
+    """The held-button half of test_shape_tools_viewer's no-button Leave
+    cancel: the cursor running past the viewport edge mid-drag keeps the run."""
+    from PyQt5.QtCore import QEvent
+
+    window = _window()
+    try:
+        map_view = window.map_view
+        before = _unit_count(window)
+        before_records = len(window.edit_history.records)
+        _press(map_view, (20, 40))
+        map_view.leaveEvent(QEvent(QEvent.Leave))
+        _move(map_view, (24, 40))
+        _release(map_view, (24, 40))
+        assert _unit_count(window) == before + 5
+        assert len(window.edit_history.records) == before_records + 1
+        placed = window.scenario.unit_manager.units[PLAYER][-5:]
+        assert [u.unit_const for u in placed] == [WALL] * 5
+    finally:
+        _close(window)
+
+
 def test_no_terrain_stroke_opens_alongside_the_unit_record():
     """The wall tile set never reaches EditHistory's terrain path -- the
     check that the Units-mode shape commit didn't inherit the terrain branch
@@ -591,6 +702,50 @@ def test_a_ring_drag_is_one_undo_record_even_with_draw_rectangle_filled():
         assert by_tile[(20, 42)] == 1.0
         window.undo()
         assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def _band_polygons(map_view) -> list[tuple]:
+    """The rubber band's drawn subpaths, each as its point tuple, sorted."""
+    path = map_view._highlight_outline_item.path()
+    return sorted(tuple((round(p.x(), 6), round(p.y(), 6)) for p in poly) for poly in path.toSubpathPolygons())
+
+
+def _tile_polygons(map_view, tiles) -> list[tuple]:
+    out = []
+    for tx, ty in tiles:
+        polygon = map_view._tile_polygon(tx, ty, coarse=True)
+        polygon.append(polygon[0])  # closeSubpath() repeats the first point
+        out.append(tuple((round(p.x(), 6), round(p.y(), 6)) for p in polygon))
+    return sorted(out)
+
+
+def test_the_ring_preview_band_is_built_mid_drag_before_release():
+    """TASK-074: the band the user sees while dragging, not just the tile
+    list behind it. Pass conditions:
+    - the press builds the band at once, on the anchor tile alone;
+    - a move to (28, 44) rebuilds it, still before any release: the outline
+      and fill items are in the scene, share one path, and that path is
+      exactly the 24 ring tiles' polygons, one closed subpath per tile;
+    - nothing is placed until the release."""
+    window = _rect_window()
+    try:
+        map_view = window.map_view
+        before = _unit_count(window)
+        _press(map_view, (20, 40))
+        assert map_view._highlight_outline_item is not None
+        assert _band_polygons(map_view) == _tile_polygons(map_view, [(20, 40)])
+        _move(map_view, (28, 44))
+        outline, fill = map_view._highlight_outline_item, map_view._highlight_fill_item
+        assert outline.scene() is map_view.scene() and fill.scene() is map_view.scene()
+        assert fill.path() == outline.path()
+        ring = _ring(20, 40, 28, 44)
+        assert len(ring) == 24
+        assert _band_polygons(map_view) == _tile_polygons(map_view, ring)
+        assert _unit_count(window) == before
+        _release(map_view, (28, 44))
+        assert _unit_count(window) == before + 24
     finally:
         _close(window)
 
@@ -1117,9 +1272,13 @@ def _drag_point(window, a, b) -> None:
 
     view = window.map_view
     start, end = _point_pos(window, *a), _point_pos(window, *b)
-    view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
-    view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
-    view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+    _HELD["value"] = True
+    try:
+        view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+        view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _HELD["value"] = False
 
 
 def _drag_gate(window, dx: float, dy: float) -> None:

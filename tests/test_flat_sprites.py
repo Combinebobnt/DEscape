@@ -45,6 +45,14 @@ what each check actually covers is recorded rather than hoped for:
   tests/test_unit_sprites.py stays green under it, because they exercise
   `angle_index`/`_frame_for` directly and never ask whether anything calls them
   with the flat value.
+- Drop the `flat_art()` call in `icon_for()` (GH #151, hand `unit_const` and
+  `rotation` straight down): RED, 5 of 6, via the wall and gate checks at the
+  bottom of this file. Shape 2, the tower, stays green by design. Recorded
+  2026-10-19; every flat_art test in tests/test_unit_sprites.py stays green
+  under it, for the same reason as the arm above.
+- Turn the wrong way (`FLAT_RUN_STEPS = 3`): RED via the gate check here and
+  the first-principles turn checks in tests/test_unit_sprites.py; the wall
+  check here stays green, since it derives its frame from flat_wall_shape().
 """
 
 from __future__ import annotations
@@ -81,6 +89,13 @@ BIG_SPAN = (3, 3)
 ANGLE_CONST = CONST + 2
 ANGLE_FILE = "t_facing_x1"
 ANGLE_COUNT = 16
+
+# GH #151's wiring checks need REAL consts, since flat_art() keys on the wall
+# set and gate_orientation's committed tables: Stone Wall, and the stone gate
+# 64 (4x1) with 659, its next orientation sibling. Each gets its own file.
+WALL_CONST, WALL_FILE = 117, "t_wall_x1"
+GATE_CONST, GATE_FILE = 64, "t_gate_a_x1"
+GATE_TURNED, GATE_TURNED_FILE = 659, "t_gate_b_x1"
 
 
 @dataclass
@@ -149,6 +164,9 @@ def sprite_install(tmp_path, monkeypatch):
     (graphics / f"{ANGLE_FILE}.sld").write_bytes(
         build_sld(ANGLE_COUNT, canvas=unit_sprites.NATIVE_TILE_W)
     )
+    (graphics / f"{WALL_FILE}.sld").write_bytes(build_sld(5, canvas=unit_sprites.NATIVE_TILE_W))
+    (graphics / f"{GATE_FILE}.sld").write_bytes(build_sld(1, colour_base=10))
+    (graphics / f"{GATE_TURNED_FILE}.sld").write_bytes(build_sld(1, colour_base=20))
 
     def entry(const):
         piece = {"unit_id": const, "file_name": FILE_NAME, "angle_count": 4,
@@ -160,10 +178,18 @@ def sprite_install(tmp_path, monkeypatch):
 
     facing = {"graphic_id": 2, "file_name": ANGLE_FILE, "angle_count": ANGLE_COUNT,
               "mirroring_mode": 6, "frame_count": 1}
-    monkeypatch.setattr(
-        unit_sprites, "graphic_map",
-        lambda: {CONST: entry(CONST), BIG_CONST: entry(BIG_CONST), ANGLE_CONST: facing},
-    )
+
+    def single(file_name, angle_count, **extra):
+        return {"graphic_id": 3, "file_name": file_name, "angle_count": angle_count,
+                "mirroring_mode": 0, "frame_count": 1, **extra}
+
+    table = {
+        CONST: entry(CONST), BIG_CONST: entry(BIG_CONST), ANGLE_CONST: facing,
+        WALL_CONST: single(WALL_FILE, 5, rotation_is_variant=True),
+        GATE_CONST: single(GATE_FILE, 1, rotation_is_variant=True),
+        GATE_TURNED: single(GATE_TURNED_FILE, 1, rotation_is_variant=True),
+    }
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
     monkeypatch.setitem(render.BUILDING_TILE_SPANS, BIG_CONST, BIG_SPAN)
     asset_source.set_install_path_override(tmp_path)
     unit_sprites.clear_caches()
@@ -453,3 +479,52 @@ def test_a_flat_icon_draws_the_frame_the_flat_zero_point_selects(sprite_install,
         f"{flat_frame} ({_frame_colour(flat_frame)}) and the isometric one frame "
         f"{iso_frame} ({_frame_colour(iso_frame)})"
     )
+
+
+# --- walls and gates turned onto the square grid (GH #151) -------------
+
+
+def _file_colour(file_name: str, frame_index: int) -> tuple[int, int, int]:
+    main = unit_sprites._native_frame(file_name, frame_index)[0]
+    return tuple(int(v) for v in main[0, 0, :3])
+
+
+def _centre_colour(draw: unit_sprites.SpriteDraw) -> tuple[int, int, int]:
+    h, w = draw.rgba.shape[:2]
+    return tuple(int(v) for v in draw.rgba[h // 2, w // 2, :3])
+
+
+@pytest.mark.parametrize("shape", range(5))
+def test_a_flat_wall_icon_draws_the_turned_shape_and_iso_keeps_the_stored_one(sprite_install, shape):
+    """**The wiring check for flat_art()'s wall half.** The frame colours say
+    which shape was drawn, so this goes red if icon_for() stops calling it,
+    while sprite_for() is the iso control that must not move."""
+    turned = unit_sprites.flat_wall_shape(shape)
+    colours = {_file_colour(WALL_FILE, k) for k in range(5)}
+    assert len(colours) == 5, "the wall's five frames are not distinct colours"
+
+    icon = unit_sprites.icon_for(WALL_CONST, float(shape), 0, 32, 32)
+    assert icon is not None, "the icon resolved to nothing, so this proves nothing"
+    assert _centre_colour(icon) == _file_colour(WALL_FILE, turned), (
+        f"stored shape {shape}: Flat should draw frame {turned}"
+    )
+    sprite = unit_sprites.sprite_for(WALL_CONST, float(shape), 0, 32)
+    assert sprite is not None
+    assert _centre_colour(sprite) == _file_colour(WALL_FILE, shape), "the iso view must keep frame k"
+
+
+def test_a_flat_gate_icon_draws_its_turned_sibling_in_its_own_footprint(sprite_install):
+    """**The wiring check for flat_art()'s gate half**: 64's 4x1 footprint
+    holds 659's art in Flat, while iso still draws 64's own."""
+    from descape import gate_orientation
+
+    assert gate_orientation.cycle_const(GATE_CONST, 1) == GATE_TURNED
+    assert _file_colour(GATE_FILE, 0) != _file_colour(GATE_TURNED_FILE, 0)
+
+    icon = unit_sprites.icon_for(GATE_CONST, 0.0, 0, 4 * 32, 32)
+    assert icon is not None, "the icon resolved to nothing, so this proves nothing"
+    assert icon.rgba.shape[1] <= 4 * 32 and icon.rgba.shape[0] <= 32, "the icon left the placed footprint"
+    assert _centre_colour(icon) == _file_colour(GATE_TURNED_FILE, 0)
+    sprite = unit_sprites.sprite_for(GATE_CONST, 0.0, 0, 32)
+    assert sprite is not None
+    assert _centre_colour(sprite) == _file_colour(GATE_FILE, 0)

@@ -151,6 +151,195 @@ def test_edge_combinations_follow_openage():
     assert tile_indices(ne | se | sw | nw, 0, 0) == (30,)
 
 
+# --- conform_edges (TASK-284), synthetic masks ---
+
+# Hand-typed oracle: the square vertices each blendomatic tile bleeds toward, and where they sit.
+_TOUCHED = {
+    **dict.fromkeys(range(4), "ES"),
+    **dict.fromkeys(range(4, 8), "NE"),
+    **dict.fromkeys(range(8, 12), "SW"),
+    **dict.fromkeys(range(12, 16), "WN"),
+    16: "E",
+    17: "S",
+    18: "N",
+    19: "W",
+    20: "NESW",
+    21: "NESW",
+    22: "SWN",
+    23: "WNE",
+    24: "ESW",
+    25: "NES",
+    **dict.fromkeys(range(26, 31), "NESW"),
+}
+_BLEEDS = {
+    **dict.fromkeys(range(4), ("SE",)),
+    **dict.fromkeys(range(4, 8), ("NE",)),
+    **dict.fromkeys(range(8, 12), ("SW",)),
+    **dict.fromkeys(range(12, 16), ("NW",)),
+    **dict.fromkeys(range(16, 20), ()),
+    20: ("NE", "SW"),
+    21: ("SE", "NW"),
+    22: ("SW", "NW"),
+    23: ("NW", "NE"),
+    24: ("SE", "SW"),
+    25: ("NE", "SE"),
+    26: ("NE", "SE", "SW"),
+    27: ("SE", "SW", "NW"),
+    28: ("NE", "SW", "NW"),
+    29: ("NE", "SE", "NW"),
+    30: ("NE", "SE", "SW", "NW"),
+}
+# Edge -> (its texel line, the vertex at the line's index 0, the vertex at its last index).
+_EDGES = {
+    "NW": (np.s_[0, :], "W", "N"),
+    "NE": (np.s_[:, -1], "N", "E"),
+    "SE": (np.s_[-1, :], "S", "E"),
+    "SW": (np.s_[:, 0], "W", "S"),
+}
+
+
+def _oracle_profile(tile: int, edge: str, tile_px: int) -> np.ndarray:
+    """The plan's canonical profile: 128 times r(distance from v) / 128 per touched end v."""
+    _line, lo, hi = _EDGES[edge]
+    i = np.arange(tile_px)
+    out = np.full(tile_px, 128, dtype=np.int64)
+    for vertex, dist in ((lo, i), (hi, tile_px - 1 - i)):
+        if vertex in _TOUCHED[tile]:
+            r = np.floor(128 * np.minimum(1.0, dist / (tile_px - 1) / terrain_blend.EDGE_RAMP_LENGTH) + 0.5)
+            out = (out * r.astype(np.int64) + 64) // 128
+    return out
+
+
+def _conformed(mask: np.ndarray, tile: int) -> np.ndarray:
+    return terrain_blend.conform_edges(terrain_blend.fade_bleeding_edges(mask, tile), tile)
+
+
+@pytest.mark.parametrize("tile_px", (8, 16, 64, 128))
+def test_conformed_edges_follow_the_vertex_profile_and_spare_the_interior(tile_px):
+    """Every tile 0-30, on random masks: each non-bleeding edge line is exactly the canonical
+    profile, each bleeding one is 0, everything past EDGE_CONFORM_DEPTH is untouched, 0..128."""
+    rng = np.random.default_rng(tile_px)
+    n = min(tile_px - 1, max(1, round(tile_px * terrain_blend.EDGE_CONFORM_DEPTH)))
+    for tile in range(31):
+        mask = rng.integers(0, 129, (tile_px, tile_px)).astype(np.uint8)
+        faded = terrain_blend.fade_bleeding_edges(mask, tile)
+        out = terrain_blend.conform_edges(faded, tile)
+        assert out.dtype == np.uint8 and int(out.max()) <= 128
+        for edge, (line, _lo, _hi) in _EDGES.items():
+            if edge in _BLEEDS[tile]:
+                assert not out[line].any(), (tile, edge)
+            else:
+                assert np.array_equal(out[line], _oracle_profile(tile, edge, tile_px)), (tile, edge, out[line])
+        assert np.array_equal(out[n:-n, n:-n], faded[n:-n, n:-n]), tile
+
+
+def test_the_touched_vertex_table_matches_the_hand_oracle():
+    name = {0: "N", 2: "E", 4: "S", 6: "W"}
+    for tile in range(31):
+        got = {name[b] for b in name if terrain_blend._TOUCHED_VERTICES[tile] >> b & 1}
+        assert got == set(_TOUCHED[tile]), tile
+
+
+_OWN, _ABOVE, _HIGHER, _BELOW = 1, 2, 3, 4
+_COLOURS = {_OWN: (200, 40, 90), _ABOVE: (10, 230, 120), _HIGHER: (90, 0, 255), _BELOW: (255, 255, 0)}
+
+
+@pytest.fixture
+def seam_masks(monkeypatch):
+    """Constant-colour textures and a random 0..128 mask per (mode, tile), served by
+    get_blend_mask as the loader does: faded, then conform_edges, looked up at call time."""
+    size = asset_source.LOADED_TEXTURE_SIZE
+    textures = {tid: np.broadcast_to(np.array(c, dtype=np.uint8), (size, size, 3)) for tid, c in _COLOURS.items()}
+    def texture(tid):
+        return textures.get(tid)
+
+    monkeypatch.setattr(asset_source, "get_terrain_texture_array", _fake(texture))
+    monkeypatch.setattr(
+        terrain_blend,
+        "BLEND_TABLE",
+        {
+            _BELOW: BlendEntry(5, 0, ""),
+            _OWN: BlendEntry(10, 0, ""),
+            _ABOVE: BlendEntry(20, 3, ""),
+            _HIGHER: BlendEntry(30, 5, ""),
+        },
+    )
+    rng = np.random.default_rng(20261011)
+    raw: dict = {}
+
+    def mask(mode, tile, tile_px):
+        if (mode, tile, tile_px) not in raw:
+            raw[mode, tile, tile_px] = rng.integers(0, 129, (tile_px, tile_px)).astype(np.uint8)
+        return _conformed(raw[mode, tile, tile_px], tile)
+
+    monkeypatch.setattr(asset_source, "get_blend_mask", _fake(mask))
+    asset_source.clear_install_caches()
+
+
+# Orientation -> (grid w, h, A, B, A's line on the shared edge, B's line on it).
+_SEAM_ORIENTATIONS = {
+    "SE/NW": (3, 4, (1, 1), (1, 2), np.s_[-1, :], np.s_[0, :]),
+    "NE/SW": (4, 3, (1, 1), (2, 1), np.s_[:, -1], np.s_[:, 0]),
+}
+
+
+def _seam_steps(orientation: str, fills, tile_px: int) -> list[tuple[int, int, tuple]]:
+    """Per fill of the 10 cells around A and B: (max channel step between A's and B's shared-edge
+    lines, the rounding allowance of 1 per influence entry on either side, the grid)."""
+    w, h, a, b, a_line, b_line = _SEAM_ORIENTATIONS[orientation]
+    others = [(x, y) for y in range(h) for x in range(w) if (x, y) not in (a, b)]
+    layers = np.full((h, w), -1, dtype=np.int64)
+    blocks: dict = {}
+
+    def block(key):
+        if key is None:
+            return np.broadcast_to(np.array(_COLOURS[_OWN], dtype=np.int64), (tile_px, tile_px, 3))
+        if key not in blocks:
+            blocks[key] = terrain_blend._compose(key, 0, 0, tile_px).astype(np.int64)
+        return blocks[key]
+
+    out = []
+    for fill in fills:
+        tids = np.full((h, w), _OWN, dtype=np.int64)
+        for (x, y), tid in zip(others, fill, strict=True):
+            tids[y, x] = tid
+        key_a, key_b = influences(tids, layers, [a[0], b[0]], [a[1], b[1]])
+        step = int(np.abs(block(key_a)[a_line] - block(key_b)[b_line]).max())
+        allowance = max(len(k[2]) if k else 0 for k in (key_a, key_b))
+        out.append((step, allowance, tuple(map(tuple, tids))))
+    return out
+
+
+def _all_fills(orientation: str, tile_px: int) -> list:
+    import itertools
+
+    exhaustive = _seam_steps(orientation, itertools.product((_OWN, _ABOVE), repeat=10), tile_px)
+    rng = np.random.default_rng(284)
+    mixed = rng.choice((_OWN, _ABOVE, _HIGHER, _BELOW), size=(600, 10))
+    return exhaustive + _seam_steps(orientation, mixed.tolist(), tile_px)
+
+
+@pytest.mark.parametrize("tile_px", (8, 32))
+@pytest.mark.parametrize("orientation", tuple(_SEAM_ORIENTATIONS))
+def test_same_terrain_neighbours_agree_along_their_shared_edge(seam_masks, orientation, tile_px):
+    """TASK-284's invariant. Two same-terrain cells A, B, their 10 surrounding cells drawn from
+    {own, T} exhaustively (1024), then a seeded sample with a terrain below A and two above it.
+    A's and B's lines on their shared edge agree within 1 per influence entry per channel."""
+    steps = _all_fills(orientation, tile_px)
+    keyed = [s for s in steps if s[1]]
+    assert len(keyed) > 1000, "too few keyed pairs to mean anything"
+    worst = max(steps, key=lambda s: s[0] - s[1])
+    assert worst[0] <= worst[1], worst
+
+
+def test_the_seam_agreement_catches_unconformed_masks(seam_masks, monkeypatch):
+    """Control: with conform_edges patched to identity (gen_review_pack's seam-conform-off
+    inject), the same pairs step by far more than their rounding allowance."""
+    monkeypatch.setattr(terrain_blend, "conform_edges", lambda alpha, _tile: alpha)
+    steps = _all_fills("SE/NW", 32)
+    assert max(s[0] - s[1] for s in steps) > 20
+
+
 # --- synthetic fixtures ---
 
 
@@ -259,6 +448,9 @@ def test_a_layer_gives_a_key_unless_it_is_the_tiles_own_terrain(synthetic):
 
 @pytest.mark.parametrize("tile_px", (8, 16, 32, 64, 128))
 def test_a_bleed_changes_only_the_lower_tiles_neighbour_side(synthetic, tile_px):
+    """Away from the two edges conform_edges() ramps (TASK-284: a lone NE bleed now runs the NW and
+    SE edge lines from 0 at its vertex to 128 at the far one), only the +x half changes; the change
+    as a whole leans +x; and wherever the served mask is 0 the block is the neighbour's own crop."""
     tids, layers = _grid()
     tids[:, 5:] = HIGH
     (key,) = influences(tids, layers, [4], [2])
@@ -266,11 +458,15 @@ def test_a_bleed_changes_only_the_lower_tiles_neighbour_side(synthetic, tile_px)
     block = terrain_blend.blended_block(key, ox, oy, tile_px)
     changed = np.any(block != _plain(LOW, 4, 2, tile_px), axis=-1)
     assert changed.any()
-    _rows, cols = np.nonzero(changed)
+    n = min(tile_px - 1, max(1, round(tile_px * terrain_blend.EDGE_CONFORM_DEPTH)))
+    _rows, cols = np.nonzero(changed[n:-n])
     assert ((cols + 0.5) / tile_px > 0.5).all(), "the bleed reached the side away from the +x neighbour"
+    _rows, cols = np.nonzero(changed)
+    assert ((cols + 0.5) / tile_px).mean() > 0.6
     # Cropped at THIS tile's offsets, so the bleed continues the neighbour's own tiles.
     expected = synthetic.textures[HIGH][oy : oy + tile_px, ox : ox + tile_px]
-    assert np.array_equal(block[changed], expected[changed]), "alpha 0 must give the neighbour's own crop"
+    zero = asset_source.get_blend_mask(*key[2][0][1:], tile_px) == 0
+    assert zero.any() and np.array_equal(block[zero], expected[zero]), "alpha 0 must give the neighbour's own crop"
 
 
 def test_a_constant_128_layer_mask_gives_the_exact_integer_midpoint(synthetic):

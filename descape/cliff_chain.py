@@ -253,6 +253,13 @@ class _Shape:
     ok: bool
 
 
+def _off_nominal(shape: _Shape) -> bool:
+    """A piece whose real span is not its suffix's nominal one: Short Marble
+    Cliff 01 (3x2 where every other family's 01 is 3x3)."""
+    nominal = cliff_connectivity.NOMINAL_SPAN.get(shape.suffix)
+    return nominal is not None and shape.span != nominal
+
+
 @dataclass
 class _Plan:
     """One resolve plus layout of a path. `bounds` covers every path node,
@@ -520,7 +527,12 @@ class ChainStroke:
         lows = [self._first_low(shapes[0].span)]
         for i, step in enumerate(self._steps):
             a, b = shapes[i], shapes[i + 1]
-            found = cliff_connectivity.offset(a.arms, a.span, step, b.arms, b.span)
+            if _off_nominal(a) or _off_nominal(b):
+                # The table keys offsets by real span, and Short Marble 01's 3x2 is
+                # the s6/s7 corners' there: none measured is its own, so abut flush.
+                found = _abut(step, a.span, b.span)
+            else:
+                found = cliff_connectivity.offset(a.arms, a.span, step, b.arms, b.span)
             if found is None:
                 found = _abut(step, a.span, b.span)
                 ok[i] = ok[i + 1] = False

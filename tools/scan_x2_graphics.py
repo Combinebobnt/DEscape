@@ -15,6 +15,10 @@ have no .sld and are skipped) it reports:
   unit_sprites.MAX_SPRITE_REACH_*;
 - total file bytes, x1 and x2.
 
+`--ror` scans Return of Rome's referenced art instead: each x1 file where
+unit_sprites finds it (the RoR root's copy, else the install's) and the x2
+copy beside it, the pair the viewer draws.
+
 Those are header reads only, as in scan_sprite_reach.py. A MAIN layer's
 stored box is not its ink (block padding, and decay animations whose boxes
 differ between the two files), so `--ink` adds the check that decides whether
@@ -35,7 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
-from descape import asset_source, unit_sprites
+from descape import asset_source, game_dataset, unit_sprites
 from descape.sld_decoder import LayerKind, SLDError, load_sld
 
 # How many rows of each worst-first list are printed.
@@ -165,8 +169,9 @@ def scan(graphics_dir: Path, check_ink: bool) -> dict:
         x2_name = x2_stem(name)
         if x2_name is None:
             continue
-        path1 = graphics_dir / f"{name}.sld"
-        path2 = graphics_dir / f"{x2_name}.sld"
+        # As unit_sprites draws them: x1 through _sld_path() (the RoR root's copy under --ror), x2 beside it.
+        path1 = unit_sprites._sld_path(graphics_dir, name)
+        path2 = path1.parent / f"{x2_name}.sld"
         x1 = load_sld(path1, keep_data=check_ink)
         if x1 is None:
             missing_x1.append(name)
@@ -238,6 +243,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--install", type=Path, help="AoE2:DE install root override")
     parser.add_argument("--ink", action="store_true", help="also decode standing frames and compare their ink (slow)")
+    parser.add_argument("--ror", action="store_true", help="scan Return of Rome's referenced art and its x2 copies")
     args = parser.parse_args()
 
     if args.install:
@@ -250,7 +256,9 @@ def main() -> None:
         )
         return
     graphics_dir = Path(install) / unit_sprites.GRAPHICS_SUBPATH
-    print(f"x2 sprite scan -- install {install}")
+    if args.ror:
+        game_dataset.set_active(game_dataset.ROR)
+    print(f"x2 sprite scan -- install {install}, {'Return of Rome' if args.ror else 'AoE2'} art")
     for label, directory in (("AoE2", graphics_dir), ("RoR", Path(install) / RETURN_OF_ROME_SUBPATH)):
         count = sum(1 for _ in directory.glob("*_x2.sld")) if directory.is_dir() else "no folder"
         print(f"{label} _x2.sld files in {directory}: {count}")

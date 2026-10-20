@@ -540,6 +540,54 @@ def test_mode_12_draws_three_mirror_axes_and_the_rotations_none() -> None:
         window.close()
 
 
+@pytest.mark.parametrize(
+    ("style", "iso", "render_style", "axes"),
+    [("Flat", True, "stepped", 0), ("Stepped", False, "stepped", 0), ("Flat", False, "flat", 3)],
+    ids=["flat_isometric", "stepped", "flat_square"],
+)
+def test_mode_12_in_the_scene_shades_its_slice_and_draws_axes_in_flat_square_only(style, iso, render_style, axes) -> None:
+    """TASK-046 step 7, in the scene the user sees rather than in
+    _axis_lines' return value. Pass conditions, with mode 12 picked:
+    - the view really renders in the style named (Flat + Isometric View
+      builds Stepped geometry, so MapView's own style is "stepped");
+    - the shaded slice is up: its outline and fill path items sit in the
+      scene at the overlay's z;
+    - Flat + Isometric View and Stepped add no line item at that z;
+    - Flat square adds exactly the three axis line items, the ones
+      _axis_lines gives for mode 12;
+    - closing the dialog takes every overlay item away again."""
+    from PyQt5.QtWidgets import QGraphicsLineItem, QGraphicsPathItem
+
+    from descape.mirror_tools import MODE_BY_ID
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        window.iso_action.setChecked(iso)
+        assert window._terrain_style == style.lower()
+        assert window.map_view._terrain_style == render_style
+        dialog = MirrorDialog(window)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(12))
+        assert dialog._current_mode() is MODE_BY_ID[12]
+        items = _mirror_overlay_items(window)
+        paths = [item for item in items if isinstance(item, QGraphicsPathItem)]
+        lines = [item for item in items if isinstance(item, QGraphicsLineItem)]
+        assert len(paths) == 2
+        assert not paths[0].path().isEmpty() and paths[0].path() == paths[1].path()
+        assert len(lines) == axes
+        assert len(items) == 2 + axes
+        expected = dialog._axis_lines(MODE_BY_ID[12], window.scenario.map_manager.map_width)
+        assert sorted((ln.line().x1(), ln.line().y1(), ln.line().x2(), ln.line().y2()) for ln in lines) == sorted(
+            (p.x(), p.y(), q.x(), q.y()) for p, q in expected
+        )
+        dialog.reject()
+        assert _mirror_overlay_items(window) == []
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_angular_modes_default_elevation_off_and_report_unreachable_corners() -> None:
     from descape.viewer import MirrorDialog
 

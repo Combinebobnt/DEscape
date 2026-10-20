@@ -12,7 +12,8 @@ number below understates the real cold cost.
 
 All three styles get the full level-build/chunk-grid breakdown below. Sloped
 has had Stepped's coarser levels since TASK-031.60 (before that it had only
-level 0 and a narrower row), so its ladder stops at mip 0.
+level 0 and a narrower row) and its finer ones since TASK-146, so its ladder
+is Stepped's.
 
 Three things measured per real corpus file, per style, per mip level:
 
@@ -259,7 +260,7 @@ def _bench_per_chunk(scenario, style: str, repeats: int, mip: int = 0) -> list[s
     work MarginWarmer.tick() packs into its budget. Mip 0 by default because it
     is the one level every style and map has; --mip takes the cache's own
     level index (negative is coarser) and a style without that level is
-    reported and skipped (Sloped has none above 0).
+    reported and skipped (Flat's ladder differs; Stepped and Sloped share one).
 
     Run 1 starts from cleared sprite caches (cold); later runs build a fresh
     chunk cache but keep the process-wide sprite caches (warm), which is the

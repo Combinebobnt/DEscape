@@ -54,13 +54,12 @@ Nothing here ever triggers a parse: an unattempted parse reads as None.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from functools import lru_cache
 
 from AoE2ScenarioParser.datasets.buildings import BuildingInfo
 from AoE2ScenarioParser.datasets.heroes import HeroInfo
 from AoE2ScenarioParser.datasets.units import UnitInfo
 
-from descape import library_compat, object_catalog, unit_kind
+from descape import game_dataset, library_compat, object_catalog, unit_kind
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 
@@ -190,20 +189,22 @@ def _classes(objects: dict[int, dict], classes: frozenset[int]) -> frozenset[int
     return frozenset(c for c, e in objects.items() if e.get("class") in classes)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _sets() -> _Sets:
     objects = object_catalog.dat_objects()
+    # Return of Rome (GH #67): the AoE2 enums and fixed consts name other units
+    # there, so the building families, unique units and trebuchets are left
+    # out (its buildings count under other_buildings) and heroes come from
+    # the RoR .dat's hero_mode, as object_catalog.derived_category() reads it.
+    ror = game_dataset.is_ror()
     birds = frozenset(
         c for c, e in objects.items() if e.get("class") == _BIRD_CLASS and e.get("type") == _CREATABLE_TYPE
     )
-    economy_buildings = (
-        _classes(objects, frozenset({_FARM_CLASS}))
-        | _EXTRA_ECONOMY_CONSTS
-        | frozenset().union(*(_family(objects, name) for name in _ECONOMY_FAMILIES))
-    )
-    military_buildings = _classes(objects, frozenset({_TOWER_CLASS})) | frozenset().union(
-        *(_family(objects, name) for name in _MILITARY_FAMILIES)
-    )
+    economy_buildings = _classes(objects, frozenset({_FARM_CLASS}))
+    military_buildings = _classes(objects, frozenset({_TOWER_CLASS}))
+    if not ror:
+        economy_buildings |= _EXTRA_ECONOMY_CONSTS | frozenset().union(*(_family(objects, name) for name in _ECONOMY_FAMILIES))
+        military_buildings |= frozenset().union(*(_family(objects, name) for name in _MILITARY_FAMILIES))
     return _Sets(
         gold_mines=_classes(objects, _GOLD_MINE_CLASSES),
         stone_mines=_classes(objects, _STONE_MINE_CLASSES),
@@ -214,10 +215,13 @@ def _sets() -> _Sets:
         cliffs=_classes(objects, _CLIFF_CLASSES),
         relics=_classes(objects, _RELIC_CLASSES),
         economy_units=_classes(objects, ECONOMY_UNIT_CLASSES),
-        military_units=_classes(objects, MILITARY_UNIT_CLASSES) | TREBUCHET_CONSTS,
+        military_units=_classes(objects, MILITARY_UNIT_CLASSES) | (frozenset() if ror else TREBUCHET_CONSTS),
         water_units=_classes(objects, WATER_UNIT_CLASSES),
-        unique_units=frozenset(m.ID for m in UnitInfo.unique_units(include_chronicles=True)),
-        hero_units=frozenset(m.ID for m in HeroInfo),
+        unique_units=frozenset() if ror else frozenset(m.ID for m in UnitInfo.unique_units(include_chronicles=True)),
+        hero_units=(
+            frozenset(c for c, e in objects.items() if object_catalog.derived_category(e) == "Heroes")
+            if ror else frozenset(m.ID for m in HeroInfo)
+        ),
         economy_buildings=economy_buildings,
         military_buildings=military_buildings,
     )
@@ -287,7 +291,7 @@ def counts_for(loaded: LoadedScenario, player_id: int) -> PlayerCounts:
     return PlayerCounts(**n)
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _resource_amounts() -> dict[int, tuple[int, int, int, int]]:
     return {
         const: tuple(entry["resources"].get(key, 0) for key in ("food", "wood", "gold", "stone"))

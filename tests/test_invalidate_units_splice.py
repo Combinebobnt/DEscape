@@ -24,6 +24,7 @@ from test_bystander_grid_patch import grid_state
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
 from descape import asset_source, debug_log, perf_trace, render, render_cache, unit_sprites
+from descape.elevation_tools import set_tiles_elevation
 from descape.render import (
     elevations_and_proj,
     render_terrain_iso_with_proj,
@@ -976,7 +977,7 @@ def test_a_group_wall_drag_reshapes_the_stationary_neighbour_like_a_fresh_render
 # --- Convert splices walls and gates (2026-09-27 plan, Step A) ---------------
 
 STYLES = ["stepped", "sloped"]
-STATE_MIPS = (0, 1)  # the Stepped levels each Convert test below keeps current
+STATE_MIPS = (0, 1)  # the levels each Convert test below keeps current, Stepped and Sloped alike (TASK-146)
 RUN_WALL_INTEGER = 2.0  # variant 2 as a literal index, so the file is integer-encoded
 GATE_CONST = 64  # an axis-aligned stone gate, span (4, 1)
 assert GATE_CONST in unit_sprites.wall_connector_consts()
@@ -984,11 +985,10 @@ assert render.tile_span(GATE_CONST, render.NON_BUILDING_SPAN) == (4, 1)
 
 
 def _warm_mips(cache) -> None:
-    """Builds every STATE_MIPS level past mip 0 (Stepped only); one small rect
-    is enough to make a level current."""
-    if isinstance(cache, IsoChunkCache):
-        for mip in STATE_MIPS[1:]:
-            cache.render_rect(0, 0, 256, 256, mip=mip)
+    """Builds every STATE_MIPS level past mip 0; one small rect is enough to
+    make a level current."""
+    for mip in STATE_MIPS[1:]:
+        cache.render_rect(0, 0, 256, 256, mip=mip)
 
 
 def _layer_state(sprites):
@@ -1000,17 +1000,24 @@ def _layer_state(sprites):
     return by_anchor, dict(sprites.bboxes), sprites.skip_ids, dict(sprites.farm_by_tile)
 
 
-def _unit_state(cache, spliced: bool):
-    """units_by_tile (bucket order kept) plus every level's building_bboxes and
-    sprite layer. A spliced cache's levels are read without _level(), which
-    would silently rebuild a stale one and hide a fallback."""
+def _state_mips(cache, levels=None) -> tuple[int, ...]:
+    if levels is not None:
+        return tuple(levels)
+    return STATE_MIPS
+
+
+def _unit_state(cache, spliced: bool, levels=None):
+    """units_by_tile (bucket order kept) plus each level's building_bboxes and
+    sprite layer (`levels`, default every level this file keeps current). A
+    spliced cache's levels are read without _level(), which would silently
+    rebuild a stale one and hide a fallback."""
     by_tile = {t: [(id(u), color) for u, color in bucket] for t, bucket in cache.units_by_tile.items()}
-    levels = {}
-    for mip in STATE_MIPS if isinstance(cache, IsoChunkCache) else (0,):
+    out = {}
+    for mip in _state_mips(cache, levels):
         lvl = cache._levels[mip] if spliced else cache._level(mip)
         assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale, so it was not spliced"
-        levels[mip] = (dict(lvl.building_bboxes), _layer_state(lvl.sprites))
-    return by_tile, levels
+        out[mip] = (dict(lvl.building_bboxes), _layer_state(lvl.sprites))
+    return by_tile, out
 
 
 def _make_convert_cache(style: str, scenario, sprites: bool, unit_filter: UnitFilter = UnitFilter()):
@@ -1019,16 +1026,18 @@ def _make_convert_cache(style: str, scenario, sprites: bool, unit_filter: UnitFi
     return cache
 
 
-def _assert_spliced_like_a_fresh_cache(style, cache, scenario, sprites, counts, unit_filter=UnitFilter()) -> None:
-    """Zero wholesale rebuilds, then every level's unit state and the mip-0
-    render equal a fresh cache's. counts is read before the fresh cache
-    exists, since building one calls the counted walks itself."""
+def _assert_spliced_like_a_fresh_cache(
+    style, cache, scenario, sprites, counts, unit_filter=UnitFilter(), levels=None
+) -> None:
+    """Zero wholesale rebuilds, then each level's unit state (`levels`, as
+    _unit_state()) and the mip-0 render equal a fresh cache's. counts is read
+    before the fresh cache exists, since building one calls the counted walks itself."""
     canvas_w, canvas_h = cache.canvas_dims(0)
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
-    state = _unit_state(cache, spliced=True)
+    state = _unit_state(cache, spliced=True, levels=levels)
     assert counts["building_bboxes"] == 0, "the Convert fell back to the wholesale rebuild"
     fresh = _make_convert_cache(style, scenario, sprites, unit_filter)
-    fresh_state = _unit_state(fresh, spliced=False)
+    fresh_state = _unit_state(fresh, spliced=False, levels=levels)
     assert state[0] == fresh_state[0], "units_by_tile differs from a fresh cache"
     for mip, got in state[1].items():
         assert got[0] == fresh_state[1][mip][0], f"mip {mip} building_bboxes differ from a fresh cache"
@@ -1661,8 +1670,9 @@ def _shapes(scenario, walls) -> list[int | None]:
     return out
 
 
-def _assert_packs_like_a_fresh_cache(style, cache, scenario, sprites, unit_filter) -> None:
-    """Every checked level's native unit pack against a fresh cache's (native backend only)."""
+def _assert_packs_like_a_fresh_cache(style, cache, scenario, sprites, unit_filter, levels=None) -> None:
+    """Each checked level's native unit pack (`levels`, as _unit_state())
+    against a fresh cache's (native backend only)."""
     from test_convert_splice_corpus import _pack_state
 
     from descape import composite_backend
@@ -1671,7 +1681,7 @@ def _assert_packs_like_a_fresh_cache(style, cache, scenario, sprites, unit_filte
         return
     fresh = _make_convert_cache(style, scenario, sprites, unit_filter)
     keys: dict = {}
-    for mip in STATE_MIPS if isinstance(cache, IsoChunkCache) else (0,):
+    for mip in _state_mips(cache, levels):
         pack = cache._unit_pack_of(mip, create=False)
         assert pack is not None, f"mip {mip} lost its unit pack instead of refreshing it"
         assert _pack_state(pack, keys) == _pack_state(fresh._unit_pack_of(mip, create=True), keys), f"mip {mip} pack"
@@ -2037,3 +2047,333 @@ def test_an_in_place_update_says_so_on_its_perf_line(style, traced):
     line = next(line for line in debug_log.get_log_text().splitlines() if "perf op paste-region" in line)
     assert "splice_refused=skipped" in line
     assert "units_in_place" in line
+
+
+# --- Past the splice caps, the visible level alone splices (TASK-031.61 c2x) --
+
+SECOND_LEVEL = {"stepped": 1, "sloped": -1}  # a second resident level, which goes stale
+SECOND_TILE = (80.5, 80.5)  # an empty tile two batch adds claim
+
+
+def _pin_caps_below(monkeypatch) -> None:
+    """Both all-levels caps at 0, so every batch is past them;
+    VISIBLE_SPLICE_MAX_UNITS keeps its default."""
+    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 0)
+    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+
+
+def _two_level_cache(style: str, scenario, unit_filter: UnitFilter = UnitFilter(), sprites: bool = True):
+    """Level 0 whole and a second level current."""
+    cache = _make_cache(style, scenario, sprites=sprites, unit_filter=unit_filter)
+    cache.render_rect(0, 0, 256, 256, mip=SECOND_LEVEL[style])
+    return cache
+
+
+def _walk_counts(monkeypatch) -> dict:
+    """_call_counts() plus the sliced sprite walk, which every level build runs with sprites on."""
+    counts = _call_counts(monkeypatch)
+    counts["sprite_walk"] = 0
+    real = render.sprite_draws_by_anchor_sliced
+
+    def counted(*args, **kwargs):
+        counts["sprite_walk"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render, "sprite_draws_by_anchor_sliced", counted)
+    return counts
+
+
+def _apply_visible(cache, batch: list[UnitSplice], cap_levels=(0,)) -> None:
+    """The viewer's over-cap shape: invalidate_units() naming the visible level, then the canvas evicted."""
+    cache.invalidate_units(batch, cap_levels=cap_levels)
+    cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+
+
+def _assert_visible_like_a_fresh_cache(
+    style, cache, scenario, counts, unit_filter: UnitFilter = UnitFilter(), walk_exempt: bool = False
+) -> None:
+    """Level 0 composites with no level build and equals a fresh cache in
+    units_by_tile, unit state, pack and pixels; the second level then equals
+    a fresh cache once read. walk_exempt: a target _splice_level() rebuilds
+    whole (a Sloped headroom change), so the bbox walk is expected there."""
+    second = SECOND_LEVEL[style]
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    assert counts["sprite_walk"] == 0, "the visible level was rebuilt"
+    if not walk_exempt:
+        assert counts["building_bboxes"] == 0, "the visible level was rebuilt"
+    _assert_packs_like_a_fresh_cache(style, cache, scenario, True, unit_filter, levels=(0,))
+    state = _unit_state(cache, spliced=True, levels=(0,))
+    fresh = _make_cache(style, scenario, sprites=True, unit_filter=unit_filter)
+    want = _unit_state(fresh, spliced=False, levels=(0, second))
+    assert state[0] == want[0], "units_by_tile differs from a fresh cache"
+    assert state[1][0] == want[1][0], "mip 0 unit state differs from a fresh cache"
+    assert _unit_state(cache, spliced=False, levels=(second,))[1][second] == want[1][second], (
+        f"mip {second} unit state differs from a fresh cache"
+    )
+    assert np.array_equal(stitched, fresh.render_rect(0, 0, canvas_w, canvas_h, mip=0)), "mip 0 pixels"
+
+
+def _visible_case(case: str, scenario) -> tuple[UnitFilter, object]:
+    """Places the units the cache is built over; returns the filter and a
+    callable that makes the edit and returns its batch."""
+    if case == "removals":
+        _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)  # the foreign co-occupant
+        tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+        _place(scenario, 3, MILL_CONST, 30.0, 30.0)
+
+        def batch():
+            gone = _remove_splice(scenario, 0, tree)
+            pair = [_place(scenario, 0, SPRITE_CONST, *SECOND_TILE) for _ in range(2)]
+            return [gone, *[_add_splice(scenario, 0, u) for u in pair]]
+
+        return UnitFilter(), batch
+    if case == "undo":
+        rock = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+        _place(scenario, 3, MILL_CONST, 30.0, 30.0)
+
+        def batch():
+            tree = Unit(*DECOR_TILE, SPRITE_CONST, player=0)
+            scenario.unit_manager.units[0].insert(0, tree)
+            scenario.unit_gen += 1
+            assert scenario.unit_manager.units[0][1] is rock
+            return [_add_splice(scenario, 0, tree)]
+
+        return UnitFilter(), batch
+    if case in ("players", "filter"):
+        _place(scenario, 1, MILL_CONST, *MILL_TILE)
+        _place(scenario, 0, SPRITE_CONST, *ELSEWHERE_TILE)
+
+        def batch():
+            adds = [_place(scenario, p, SPRITE_CONST, *DECOR_TILE) for p in (3, 0, 2)]
+            return [_add_splice(scenario, int(u.player), u) for u in adds]
+
+        return (UnitFilter(players=frozenset({0, 1, 3})) if case == "filter" else UnitFilter()), batch
+    assert case == "convert"
+    mill, _decor = _decorated_mill(scenario, 1, 3)
+    return UnitFilter(), lambda: [_reassign_splice(scenario, 1, 4, mill)]
+
+
+@pytest.mark.parametrize("case", ["removals", "undo", "players", "convert", "filter"])
+@pytest.mark.parametrize("style", STYLES)
+def test_past_the_caps_the_visible_level_splices_alone(style, case, shared_art_install, monkeypatch):
+    """Batches the old caps refuse and VISIBLE_SPLICE_MAX_UNITS takes: a
+    removal beside a foreign co-occupant with a claimed pair, a mid-list add
+    (an undo), adds from two players onto a foreign footprint, a Convert on a
+    shared tile, and a batch holding a filter-hidden unit. One gen bump,
+    level 0 restamped, the second level stale; both then equal a fresh cache."""
+    scenario = _scenario()
+    unit_filter, make_batch = _visible_case(case, scenario)
+    cache = _two_level_cache(style, scenario, unit_filter)
+    second = SECOND_LEVEL[style]
+    _pin_caps_below(monkeypatch)
+    gen = cache._source_gen
+    counts = _walk_counts(monkeypatch)
+    batch = make_batch()
+    assert render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, unit_filter, batch)[0] is None
+
+    _apply_visible(cache, batch)
+
+    assert cache._source_gen == gen + 1, "the visible splice must bump the gen once"
+    assert cache._levels[0].gen == cache._source_gen, "level 0 was not restamped"
+    assert cache._levels[second].gen != cache._source_gen, "the second level was not left stale"
+    _assert_visible_like_a_fresh_cache(style, cache, scenario, counts, unit_filter)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_past_the_caps_a_group_move_holding_a_wall_splices_the_visible_level(style, run_wall_install, monkeypatch):
+    """test_a_mixed_group_move_of_walls_a_gate_and_shared_tiles_splices' batch
+    (`const:move`, reshaped stationary walls) through the visible-only path."""
+    scenario = _scenario()
+    run = _walls(scenario, [(1, (x, 30)) for x in (30, 31, 32, 33, 34)], _variant(1))
+    gate = _place(scenario, 1, GATE_CONST, 37.0, 30.5)
+    under = _walls(scenario, [(1, (30, 31))], _variant(1))[0]
+    past = _walls(scenario, [(2, (40, 30))], _variant(1))[0]
+    lead = _place(scenario, 1, MILL_CONST, 60.0, 60.0)
+    trail = _place(scenario, 1, MILL_CONST, 62.0, 60.0)
+    _place(scenario, 3, MILL_CONST, 45.0, 45.0)
+    leaves = _place(scenario, 1, MILL_CONST, 45.0, 45.0)
+    cache = _two_level_cache(style, scenario)
+    _pin_caps_below(monkeypatch)
+    counts = _walk_counts(monkeypatch)
+
+    batch = _group_move(scenario, 1, [*run, gate, lead, trail, leaves], 1.0, 0.0)
+    _apply_visible(cache, batch)
+
+    assert _shapes(scenario, [under, past]) == [None, 2], "the stationary walls did not reshape"
+    assert cache._levels[0].gen == cache._source_gen
+    _assert_visible_like_a_fresh_cache(style, cache, scenario, counts)
+
+
+@pytest.mark.parametrize("case", ["const_add", "past_visible", "stale_target", "no_cap_levels", "sprites_off"])
+@pytest.mark.parametrize("style", STYLES)
+def test_past_the_caps_these_batches_keep_todays_fallback(style, case, shared_art_install, monkeypatch):
+    """An added wall (`const:add`, final), a batch past
+    VISIBLE_SPLICE_MAX_UNITS, a named level that is not current, no
+    cap_levels, and sprites off: level 0 is left stale as today, and equals a
+    fresh cache once composited."""
+    scenario = _scenario()
+    _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    cache = _two_level_cache(style, scenario, sprites=case != "sprites_off")
+    _pin_caps_below(monkeypatch)
+    if case == "past_visible":
+        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 1)
+    if case == "stale_target":
+        # A level built, then made stale by a unit it never saw, while level 0 is rebuilt current.
+        cache.render_rect(0, 0, 256, 256, mip=-2)
+        _place(scenario, 0, SPRITE_CONST, 40.5, 40.5)
+        cache.invalidate_units(None)
+        cache.render_rect(0, 0, 256, 256, mip=0)
+        assert cache._levels[-2].building_bboxes is not None
+        assert cache._levels[-2].gen != cache._source_gen
+        assert cache._levels[0].gen == cache._source_gen
+    adds = [_place(scenario, 0, SPRITE_CONST, *DECOR_TILE), _place(scenario, 3, SPRITE_CONST, *SECOND_TILE)]
+    if case == "const_add":
+        adds.append(_place(scenario, 3, WALL_CONST, 90.0, 90.0))
+    batch = [_add_splice(scenario, int(u.player), u) for u in adds]
+    cap_levels = {"stale_target": (-2,), "no_cap_levels": None}.get(case, (0,))
+
+    _apply_visible(cache, batch, cap_levels=cap_levels)
+
+    assert cache._levels[0].gen != cache._source_gen, "level 0 took the visible splice"
+    canvas_w, canvas_h = cache.canvas_dims(0)
+    fresh = _make_cache(style, scenario, sprites=case != "sprites_off")
+    assert _bucket_ids(cache.units_by_tile) == _bucket_ids(fresh.units_by_tile)
+    assert np.array_equal(
+        cache.render_rect(0, 0, canvas_w, canvas_h, mip=0), fresh.render_rect(0, 0, canvas_w, canvas_h, mip=0)
+    )
+    if case == "stale_target":
+        w2, h2 = cache.canvas_dims(-2)
+        assert np.array_equal(cache.render_rect(0, 0, w2, h2, mip=-2), fresh.render_rect(0, 0, w2, h2, mip=-2))
+
+
+def _deferred_raise(style: str, cache, scenario, tiles, rebuild_levels) -> None:
+    """One Elevate +1 over `tiles` through patch(), as the viewer does, with
+    only `rebuild_levels` splicing: every other current level defers."""
+    mm = scenario.map_manager
+    before = [t.elevation for t in mm.terrain]
+    set_tiles_elevation(mm, [(x, y, mm.get_tile(x, y).elevation + 1) for x, y in tiles])
+    dirty = [i for i, t in enumerate(mm.terrain) if t.elevation != before[i]]
+    changed: set = set()
+    bbox_of = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox = bbox_of(
+        scenario, dirty, cache.elevations, cache.proj, with_units=True, with_sprites=True, elevation_changed=changed
+    )
+    assert changed, "the raise changed no elevation"
+    cache.patch(bbox, elevation_changed=changed, rebuild_levels=rebuild_levels)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_pending_target_equals_a_fresh_cache_after_its_flush(style, shared_art_install, monkeypatch):
+    """Level 0 defers an Elevate under a unit the batch then shares a tile
+    with (pending_elev set), and the visible splice reaches it there. On
+    Sloped the raise is the flat field's first, so the headroom moves and
+    level 0 is current but not _level_synced(): _splice_level() rebuilds its
+    bboxes whole, which exempts it from the bbox walk count."""
+    scenario = _scenario()
+    _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    _place(scenario, 3, MILL_CONST, 30.0, 30.0)
+    cache = _two_level_cache(style, scenario)
+    second = SECOND_LEVEL[style]
+    _deferred_raise(style, cache, scenario, [(59, 60)], rebuild_levels=(second,))
+    target = cache._levels[0]
+    assert target.gen == cache._source_gen and target.pending_elev, "level 0 did not defer"
+    assert (style == "sloped") != cache._level_synced(target), "the Sloped case is not testing a headroom change"
+    _pin_caps_below(monkeypatch)
+    counts = _walk_counts(monkeypatch)
+
+    tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    _apply_visible(cache, [_add_splice(scenario, 0, tree)])
+
+    assert target.gen == cache._source_gen and target.pending_elev, "the splice dropped the pending set"
+    _assert_visible_like_a_fresh_cache(style, cache, scenario, counts, walk_exempt=style == "sloped")
+    assert not target.pending_elev, "the read did not flush level 0"
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_warm_started_before_the_visible_splice_does_not_install(style, shared_art_install, monkeypatch):
+    """The second level is stale and warming when the splice lands: its
+    install must refuse (the gen bump), and the level then builds fresh."""
+    scenario = _scenario()
+    _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    cache = _make_cache(style, scenario, sprites=True)
+    second = SECOND_LEVEL[style]
+    job = cache.level_warm_job(second)
+    assert job is not None, "the second level has nothing to warm -- vacuous"
+    next(job.gen)
+    _pin_caps_below(monkeypatch)
+
+    tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    _apply_visible(cache, [_add_splice(scenario, 0, tree)])
+    assert cache._levels[0].gen == cache._source_gen, "the splice did not take the visible path"
+    built = None
+    while built is None:
+        try:
+            next(job.gen)
+        except StopIteration as stop:
+            built = stop.value
+
+    assert job.install(built) is False, "a warm from before the splice installed"
+    assert cache._levels[second].gen != cache._source_gen
+    fresh = _make_cache(style, scenario, sprites=True)
+    assert _unit_state(cache, False, (second,)) == _unit_state(fresh, False, (second,))
+
+
+def _control_cache(style, scenario, monkeypatch):
+    _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+    _place(scenario, 3, MILL_CONST, 30.0, 30.0)
+    cache = _two_level_cache(style, scenario)
+    _pin_caps_below(monkeypatch)
+    return cache
+
+
+@pytest.mark.parametrize(
+    ("broken", "match"),
+    [
+        ("restamp", "the visible level was rebuilt"),
+        ("gen_bump", "mip (1|-1) unit state differs"),
+        ("current_check", "mip 0 (pack|unit state differs)"),
+    ],
+)
+@pytest.mark.parametrize("style", STYLES)
+def test_the_visible_splice_oracle_names_each_skipped_step(style, broken, match, shared_art_install, monkeypatch):
+    """Control (GOTCHAS: a step-k break fails naming step k). Each break is
+    reproduced exactly from outside: `restamp` puts level 0's gen back where
+    the skipped assignment would have left it; `gen_bump` undoes the bump on
+    the cache and level 0 together, so the second level reads as current;
+    `current_check` stamps a stale level 0 current before the call, as a
+    dropped check would treat it (it missed an earlier wholesale edit)."""
+    scenario = _scenario()
+    cache = _control_cache(style, scenario, monkeypatch)
+    if broken == "current_check":
+        moved = scenario.unit_manager.units[3][0]
+        moved.x += 5.0
+        scenario.unit_gen += 1
+        cache.invalidate_units(None)
+        assert cache._levels[0].gen != cache._source_gen
+        cache._levels[0].gen = cache._source_gen
+    counts = _walk_counts(monkeypatch)
+    tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+
+    _apply_visible(cache, [_add_splice(scenario, 0, tree)])
+    if broken == "restamp":
+        cache._levels[0].gen = cache._source_gen - 1
+    elif broken == "gen_bump":
+        cache._source_gen -= 1
+        cache._levels[0].gen = cache._source_gen
+
+    with pytest.raises(AssertionError, match=match):
+        _assert_visible_like_a_fresh_cache(style, cache, scenario, counts)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_visible_splice_says_so_on_its_perf_line(style, shared_art_install, traced, monkeypatch):
+    scenario = _scenario()
+    cache = _control_cache(style, scenario, monkeypatch)
+    with perf_trace.op("Draw"):
+        tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
+        cache.invalidate_units([_add_splice(scenario, 0, tree)], cap_levels=(0,))
+    perf_trace.flush_idle()
+    line = next(line for line in debug_log.get_log_text().splitlines() if "perf op draw" in line)
+    assert "splice_visible=2" in line, line
+    assert "splice_refused" not in line, line

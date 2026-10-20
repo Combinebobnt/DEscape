@@ -11,13 +11,10 @@ intervening delete or reorder. The panel's Duplicate button is the other verb:
 it makes independent duplicates whose references still point at the originals.
 
 Where identity does not survive, a reference lands on -1, the same outcome as
-pasting into another document. Two cases:
-
-- the target was deleted since the copy;
-- a *content* edit on the target was undone since the copy. That undo swaps in
-  a deepcopy of the trigger (trigger_model.py's restore(), Trap 5), so the
-  recorded object is gone. A structural undo/redo hands back the same objects
-  and is unaffected.
+pasting into another document. That happens only when the target was deleted
+since the copy: undo and redo keep every trigger's identity, content edits
+included, since trigger_model.py's restore() writes the state back into the
+same object (TASK-003.06).
 
 A copied block pastes with COPY_SUFFIX through trigger_organize.copied_name()
 (GH #134): inside a divider's title (`--- X ---` becomes `--- X (copy) ---`),
@@ -64,6 +61,7 @@ into A's sections or raise once A is gone.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -71,7 +69,7 @@ from typing import Any
 
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from . import library_compat, trigger_fields, trigger_organize
+from . import game_dataset, library_compat, trigger_fields, trigger_organize
 from .trigger_model import entry_display_order, entry_order_after_insert, set_entry_order
 
 COPY_SUFFIX = trigger_organize.COPY_SUFFIX
@@ -105,6 +103,8 @@ class TriggerBlock:
     # from outside the block into it, which remove_triggers() reset to -1.
     from_cut: bool = False
     inbound: tuple = ()
+    # GH #67: the game data active at copy time; a paste under the other game's is refused.
+    dataset: str = dataclasses.field(default_factory=game_dataset.active)
 
 
 @dataclass(frozen=True)
@@ -352,6 +352,7 @@ class EntryBlock:
     source_doc_id: str = ""
     scenario_version: str = ""
     variable_names: tuple = ()
+    dataset: str = dataclasses.field(default_factory=game_dataset.active)  # as TriggerBlock's
 
 
 @dataclass(frozen=True)
@@ -497,8 +498,8 @@ def paste_report(result: PasteResult) -> str:
 
 
 def _cleared_since_copy(n: int) -> list[str]:
-    # An undo swaps in a deep copy of the target (restore()'s Trap 5), which identity no longer finds.
-    return [f"cleared {_count(n, 'trigger link')} (target changed or removed since the copy)"] if n else []
+    # Identity survives undo/redo, so a same-document link clears only when its target was deleted.
+    return [f"cleared {_count(n, 'trigger link')} (target removed since the copy)"] if n else []
 
 
 def relink_report(result: PasteResult) -> str:

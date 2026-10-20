@@ -326,14 +326,25 @@ def test_the_stall_watchdog_follows_the_perf_trace_toggle(units_window, on):
     assert perf_trace._on_gc not in gc.callbacks
 
 
-def test_the_first_paint_after_a_load_splits_its_repaint_into_composite_and_blit():
+@pytest.mark.parametrize("workers", [None, 0], ids=["pooled", "serial"])
+def test_the_first_paint_after_a_load_splits_its_repaint_into_its_phases(monkeypatch, workers):
+    """Pooled (TASK-031.64, native backend): `prepare` and `join`; serial: `composite`."""
+    from descape import composite_backend, margin_warm
+
+    if workers is not None:
+        monkeypatch.setattr(margin_warm, "WORKERS", workers)
+    pooled = margin_warm.WORKERS > 0 and composite_backend.native is not None
     perf_trace.enable(True)
     perf_trace.reset()
     debug_log.clear()
     window = conftest.stepped_window(UNITS_FIXTURE, size=600)
     try:
         [line] = [line for line in debug_log.get_log_text().splitlines() if "perf load: repaint" in line]
-        assert " [composite " in line and "; blit " in line and "; other " in line, line
+        assert "; blit " in line and "; other " in line, line
+        if pooled:
+            assert " [prepare " in line and "; join " in line, line
+        else:
+            assert " [composite " in line and "prepare " not in line and "join " not in line, line
     finally:
         perf_trace.enable(False)
         perf_trace.reset()

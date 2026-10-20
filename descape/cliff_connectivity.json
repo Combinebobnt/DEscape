@@ -1,5 +1,5 @@
 {
-  "_comment": "Cliff neighbour-direction-set -> (suffix, rotation candidates) -- see tools/gen_cliff_connectivity.py",
+  "_comment": "Cliff placements measured from real scenarios. The Cliff tool reads `shapes` (typed cardinal arms -> piece suffix and frames) and `offsets`/`offsets_by_span` (where a neighbour's footprint sits); `entries` is the older per-dirset majority table, kept as a measurement. See tools/gen_cliff_connectivity.py.",
   "metadata": {
     "total_records": 23313,
     "min_n": 30,

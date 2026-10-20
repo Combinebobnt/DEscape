@@ -92,6 +92,7 @@ def transform_block(block: RegionBlock, element: str, file_radian: bool) -> Bloc
         elevations=elevations,
         layers=layers,
         units=tuple(units),
+        dataset=block.dataset,
     )
     return BlockTransform(result, kept)
 

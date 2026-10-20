@@ -159,6 +159,23 @@ def test_clear_caches_empties_every_x2_cache(install, monkeypatch):  # noqa: F81
 # --- same source as x1 -------------------------------------------------------
 
 
+def test_x2_comes_from_the_folder_x1_does(install, tmp_path, monkeypatch):  # noqa: F811
+    """Under Return of Rome, _sld_path() can resolve x1 to the RoR root (GH #67):
+    x2 is read beside it, never from the AoE2 folder."""
+    _pair(install)  # AoE2 folder: x1 and x2 at X1_BASE / X2_BASE
+    ror = tmp_path / "ror_graphics"
+    ror.mkdir()
+    (ror / f"{FILE_NAME}.sld").write_bytes(build_sld(4, colour_base=MOD_X1_BASE))
+    (ror / f"{X2_NAME}.sld").write_bytes(build_sld(4, canvas=16, colour_base=MOD_X2_BASE))
+    real = unit_sprites._sld_path
+    monkeypatch.setattr(
+        unit_sprites, "_sld_path", lambda directory, name: ror / f"{name}.sld" if name == FILE_NAME else real(directory, name)
+    )
+    unit_sprites.set_hi_res(True)
+    assert _draw(ENLARGED).rgba[0, 0, 0] == _red(MOD_X2_BASE)
+
+
+
 def _profile(tmp_path: Path, monkeypatch, mods: dict[str, dict[str, bytes]]) -> None:
     """A profile whose mods are listed in `mods` order, highest priority first."""
     profile = tmp_path / "profile"
@@ -355,7 +372,9 @@ def _dlc(monkeypatch, installed: bool) -> None:
 @_GUI[0]
 @_GUI[1]
 @pytest.mark.parametrize("dlc", [True, False], ids=["dlc", "no-dlc"])
-def test_the_quality_slider_sets_the_flag_only_with_the_dlc(qtbot, monkeypatch, dlc):
+def test_the_quality_slider_sets_the_flag_and_names_the_dlc(qtbot, monkeypatch, dlc):
+    """The flag follows Enhanced either way (each file falls back to x1);
+    the DLC probe only picks the status-log wording."""
     from descape import settings
 
     _dlc(monkeypatch, dlc)
@@ -364,7 +383,7 @@ def test_the_quality_slider_sets_the_flag_only_with_the_dlc(qtbot, monkeypatch, 
     monkeypatch.setattr(window, "_log_status", logged.append)
     try:
         assert not unit_sprites.hi_res()
-        for value, want in ((settings.GRAPHICS_QUALITY_MAX, dlc), (settings.GRAPHICS_QUALITY_DEFAULT, False)):
+        for value, want in ((settings.GRAPHICS_QUALITY_MAX, True), (settings.GRAPHICS_QUALITY_DEFAULT, False)):
             dialog.graphics_quality_slider.setValue(value)
             dialog._apply_graphics_quality()
             assert unit_sprites.hi_res() is want
@@ -378,7 +397,7 @@ def test_the_quality_slider_sets_the_flag_only_with_the_dlc(qtbot, monkeypatch, 
 @_GUI[0]
 @_GUI[1]
 @pytest.mark.parametrize("dlc", [True, False], ids=["dlc", "no-dlc"])
-def test_a_window_opened_at_enhanced_turns_the_flag_on_only_with_the_dlc(qtbot, monkeypatch, dlc):
+def test_a_window_opened_at_enhanced_turns_the_flag_on(qtbot, monkeypatch, dlc):
     from descape import settings
     from descape.viewer import ViewerWindow
 
@@ -386,21 +405,24 @@ def test_a_window_opened_at_enhanced_turns_the_flag_on_only_with_the_dlc(qtbot, 
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX)
     window = ViewerWindow()
     try:
-        assert unit_sprites.hi_res() is dlc
+        assert unit_sprites.hi_res()
     finally:
         conftest.close_window(window)
 
 
 @_GUI[0]
 @_GUI[1]
+@pytest.mark.parametrize("ror", [True, False], ids=["ror-x2", "no-ror-x2"])
 @pytest.mark.parametrize("dlc", [True, False], ids=["dlc", "no-dlc"])
-def test_the_settings_say_whether_the_dlc_was_detected(qtbot, monkeypatch, tmp_path, dlc):
+def test_the_settings_say_whether_the_dlc_was_detected(qtbot, monkeypatch, tmp_path, dlc, ror):
     _dlc(monkeypatch, dlc)
+    monkeypatch.setattr(unit_sprites, "ror_x2_art_installed", lru_cache(maxsize=1)(lambda: ror))
     monkeypatch.setattr(asset_source, "get_install_path", lambda: tmp_path)
     dialog, window = conftest.dialog_and_window()
     try:
         text = dialog.x2_art_label.text()
         assert ("DLC: detected" in text) is dlc and ("not detected" in text) is not dlc
+        assert ("Return of Rome's own high-resolution art" in text) is ror
         assert bool(dialog.x2_art_label.styleSheet()) is dlc  # green only when detected
     finally:
         dialog.close()
@@ -409,12 +431,43 @@ def test_the_settings_say_whether_the_dlc_was_detected(qtbot, monkeypatch, tmp_p
 
 def test_the_dlc_probe_is_the_villagers_x2_file(install, monkeypatch):  # noqa: F811
     _pair(install, x2=False)
-    monkeypatch.setattr(unit_sprites, "X2_PROBE_CONST", CONST)
+    monkeypatch.setattr(unit_sprites, "X2_PROBE_FILE", f"{X2_NAME}.sld")
     assert not unit_sprites.x2_art_installed()
     install.write(build_sld(4, canvas=16), X2_NAME)
     assert not unit_sprites.x2_art_installed(), "cached until the art caches clear"
     unit_sprites.clear_caches()
     assert unit_sprites.x2_art_installed()
+
+
+def test_the_ror_probe_is_any_x2_file_in_the_ror_folder(install):  # noqa: F811
+    from descape import game_dataset
+
+    ror_graphics = game_dataset.ror_root(asset_source.get_install_path()) / unit_sprites.GRAPHICS_SUBPATH
+    ror_graphics.mkdir(parents=True)
+    (ror_graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
+    assert not unit_sprites.ror_x2_art_installed()
+    (ror_graphics / f"{X2_NAME}.sld").write_bytes(build_sld(4, canvas=16))
+    unit_sprites.clear_caches()
+    assert unit_sprites.ror_x2_art_installed()
+    assert not unit_sprites.x2_art_installed(), "RoR's x2 is not the DLC"
+
+
+@_GUI[0]
+@_GUI[1]
+@pytest.mark.parametrize("ror", [True, False], ids=["ror", "aoe2"])
+def test_the_status_log_names_ror_art_under_ror(monkeypatch, ror):
+    """RoR ships its own x2 (GH #241 test issue, 2026-10-20): under RoR the
+    log says so rather than that the DLC is missing."""
+    from descape import game_dataset, settings, viewer
+
+    _dlc(monkeypatch, False)
+    monkeypatch.setattr(unit_sprites, "ror_x2_art_installed", lru_cache(maxsize=1)(lambda: True))
+    monkeypatch.setattr(game_dataset, "is_ror", lambda: ror)
+    settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX)
+    suffix = viewer._sync_hi_res()
+    assert unit_sprites.hi_res()
+    assert ("Return of Rome high-resolution unit art on" in suffix) is ror
+    assert ("DLC not installed" in suffix) is not ror
 
 
 # --- the real install --------------------------------------------------------

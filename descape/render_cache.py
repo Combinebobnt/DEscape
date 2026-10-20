@@ -25,6 +25,7 @@ import numpy as np
 
 from descape import (
     composite_backend,
+    debug_log,
     iso_geometry,
     native_composite,
     perf_trace,
@@ -247,7 +248,7 @@ def _const_refusal(changed: list[UnitSplice]) -> str | None:
     return "const:move" if moved else None
 
 
-def _batch_splice_refusal(units_by_tile: dict, changed: list[UnitSplice]) -> str | None:
+def _batch_splice_refusal(units_by_tile: dict, changed: list[UnitSplice], cap: int | None = None) -> str | None:
     """Which clause of _batch_splice_eligible() refuses `changed`, or None if
     none does: `cap`, then the const clause over the whole batch
     (_const_refusal()), then the first of `occupant:foreign` (a unit outside
@@ -256,8 +257,9 @@ def _batch_splice_refusal(units_by_tile: dict, changed: list[UnitSplice]) -> str
     units landing on one tile). So an occupant or claimed answer means the
     batch holds no wall/connector const but a reassigned one. `const:move`
     and those three go on to a component splice (_splice_plan_or_refusal());
-    `cap` and the other const answers are final."""
-    if len(changed) > UNIT_SPLICE_MAX_UNITS:
+    `cap` and the other const answers are final. `cap` None reads
+    UNIT_SPLICE_MAX_UNITS at call time."""
+    if len(changed) > (UNIT_SPLICE_MAX_UNITS if cap is None else cap):
         return "cap"
     const = _const_refusal(changed)
     if const is not None:
@@ -282,6 +284,10 @@ def _batch_splice_refusal(units_by_tile: dict, changed: list[UnitSplice]) -> str
 # brush-9 Draw rows: 335-345-unit components splice in 36-55 ms against 100-139 ms
 # wholesale. Matches _ELEV_SPLICE_MAX_UNITS' measured re-anchor cost (~13us/unit).
 _COMPONENT_SPLICE_MAX_UNITS = 1000
+
+# Past both caps above: invalidate_units()' visible-only splice (cap_levels), Stepped/Sloped, sprites
+# on. min(3000, half the batch where it stops winning), measured 2026-10-14 by bench_stroke_end --visible-cap.
+VISIBLE_SPLICE_MAX_UNITS = 3000
 
 
 def _locate(own_index: dict, unit) -> tuple[int, int] | None:
@@ -367,7 +373,8 @@ def _walk_component(
 
 
 def _reassign_component_splices(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice],
+    cap: int | None = None,
 ) -> tuple[list[UnitSplice] | None, str | None]:
     """A Convert batch that _batch_splice_eligible() refused for a shared tile,
     widened to its _shared_tile_component(), or None and why (`cap`, `none`)
@@ -378,11 +385,13 @@ def _reassign_component_splices(
     covered. Each unit is spliced at its CURRENT (player_id, i) as a
     re-anchor, batch units keeping old_player_id.
 
-    None unless every splice is a pure reassign, or past
-    _COMPONENT_SPLICE_MAX_UNITS component units."""
+    None unless every splice is a pure reassign, or past `cap` component
+    units (None: _COMPONENT_SPLICE_MAX_UNITS, read at call time)."""
+    if cap is None:
+        cap = _COMPONENT_SPLICE_MAX_UNITS
     if not all(s.is_reassign for s in changed):
         return None, "none"
-    if len(changed) > _COMPONENT_SPLICE_MAX_UNITS:
+    if len(changed) > cap:
         return None, "cap"
     own_index = render.unit_own_tile_index(scenario)
     batch = {id(s.unit): s for s in changed}
@@ -394,7 +403,7 @@ def _reassign_component_splices(
         seeds.append((*where, s.unit, s.new_own_tile, s.new_tiles))
     tiles = [t for seed in seeds for t in (*seed[4], seed[3]) if t is not None]
     found, why = _walk_component(
-        scenario, units_by_tile, unit_filter, own_index, tiles, set(batch), _COMPONENT_SPLICE_MAX_UNITS - len(seeds)
+        scenario, units_by_tile, unit_filter, own_index, tiles, set(batch), cap - len(seeds)
     )
     if found is None:
         return None, why
@@ -448,7 +457,8 @@ def _connector_neighbours(
 
 
 def _membership_component_splices(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice],
+    cap: int | None = None,
 ) -> tuple[list[UnitSplice] | None, str | None]:
     """A unit-edit batch that is not a pure Convert (Draw's stroke end, its
     undo/redo, a group Move) and that _batch_splice_eligible() refused for a
@@ -477,15 +487,18 @@ def _membership_component_splices(
     and their tiles seed the walk too, so their co-occupants join. Every
     rotation-variant unit in the plan then resolves with the real overrides
     (_splice_overrides()), memoized on the edit's own unit_gen bump. None
-    past _COMPONENT_SPLICE_MAX_UNITS units in total, neighbours included."""
+    past `cap` units in total, neighbours included (None:
+    _COMPONENT_SPLICE_MAX_UNITS, read at call time)."""
+    if cap is None:
+        cap = _COMPONENT_SPLICE_MAX_UNITS
     if any(not s.is_reassign and not s.is_move and not _const_splice_eligible(s.unit) for s in changed):
         return None, "const"
-    if len(changed) > _COMPONENT_SPLICE_MAX_UNITS:
+    if len(changed) > cap:
         return None, "cap"
     own_index = render.unit_own_tile_index(scenario)
     known = {id(s.unit) for s in changed}
     neighbours = _connector_neighbours(scenario, unit_filter, own_index, changed, known)
-    room = _COMPONENT_SPLICE_MAX_UNITS - len(changed) - len(neighbours)
+    room = cap - len(changed) - len(neighbours)
     if room < 0:
         return None, "cap"
     tiles: list[tuple[int, int]] = []
@@ -518,21 +531,24 @@ def _splice_plan(
 
 
 def _splice_plan_or_refusal(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice]
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, changed: list[UnitSplice],
+    cap: int | None = None, component_cap: int | None = None,
 ) -> tuple[list[UnitSplice] | None, str | None]:
     """_splice_plan()'s answer paired with why it is None: the refusing
     _batch_splice_refusal() clause, plus `/component:<why>` when the component
     fallback was tried and failed too. Perf Trace's `splice_refused=<reason>`
     token (_trace_splice_refusal()): `cap`, `const:add`, `const:remove`,
     `const:other`, or `<clause>/component:<why>` where the clause is
-    `const:move`, `occupant:*` or `claimed`."""
-    reason = _batch_splice_refusal(units_by_tile, changed)
+    `const:move`, `occupant:*` or `claimed`. `cap` and `component_cap` are
+    the two caps' overrides (None: the module constants), which only
+    invalidate_units()' visible-only splice passes."""
+    reason = _batch_splice_refusal(units_by_tile, changed, cap)
     if reason is None:
         return changed, None
     if reason == "cap" or (reason.startswith("const:") and reason != "const:move"):
         return None, reason
     component = _reassign_component_splices if all(s.is_reassign for s in changed) else _membership_component_splices
-    plan, why = component(scenario, units_by_tile, unit_filter, changed)
+    plan, why = component(scenario, units_by_tile, unit_filter, changed, component_cap)
     return plan, None if plan is not None else f"{reason}/component:{why}"
 
 
@@ -927,6 +943,49 @@ class ChunkJob:
         return self.kernel(self.scratch, *self.args) is not False
 
 
+@dataclass
+class RectJob(ChunkJob):
+    """A ChunkJob over a sub-rect of a CACHED chunk, for a pooled patch
+    (TASK-031.67). scratch is the slice's pixels; install_slice() writes them
+    into `chunk`, the array that was cached at prepare."""
+
+    chunk: np.ndarray | None = None
+    # The slice, LEVEL pixels (ix0, iy0, ix1, iy1).
+    slice: tuple[int, int, int, int] = (0, 0, 0, 0)
+
+
+def join_chunk_jobs(submitted: list) -> list[bool]:
+    """Waits for every (job, future) in `submitted`, in submit order, and
+    returns whether each painted (TASK-031.64). The calling thread is one
+    more consumer: it cancels the newest job still unstarted and runs it
+    inline, then looks again, so the workers drain from the head while it
+    takes from the tail. A pool is FIFO, so once a future will not cancel
+    every older one has started and the rest are waited on head to tail.
+    A raise, inline or on a worker, is logged and counts as declined; a None
+    future (the submit itself failed) is declined too."""
+    painted = [False] * len(submitted)
+    tail = len(submitted) - 1
+    while tail >= 0:
+        job, future = submitted[tail]
+        if future is not None and not future.cancel():
+            break
+        if future is not None:
+            try:
+                painted[tail] = job.run()
+            except Exception as exc:  # noqa: BLE001
+                debug_log.log(f"pooled paint: chunk {job.key} raised inline ({exc!r})")
+        tail -= 1
+    for i in range(tail + 1):
+        job, future = submitted[i]
+        if future is None:
+            continue
+        try:
+            painted[i] = future.result() is True
+        except Exception as exc:  # noqa: BLE001
+            debug_log.log(f"pooled paint: chunk {job.key} raised on a worker ({exc!r})")
+    return painted
+
+
 class _ChunkCacheBase:
     """Grid/LRU bookkeeping shared by IsoChunkCache (Stepped, Phase B-B) and
     FlatChunkCache (Flat, Phase B-E) -- extracted because get_chunk/
@@ -992,6 +1051,15 @@ class _ChunkCacheBase:
     _layer_ids: np.ndarray | None = None
     # The blend key of every tile, memoized from those two mirrors (_refresh_terrain_ids()).
     _blend_key_map: terrain_blend.KeyMap | None = None
+    # The pool render_rect() fans missing chunks out to (set_chunk_executor()); None runs serial.
+    _chunk_executor = None
+    # Unread today: kept for the plan's `workers >= 2` gate, which its 2-core bench did not need.
+    _chunk_workers: int = 0
+    # Fewest uncached chunks a render_rect() pools, or slices a patch pools; and keys per prepare/join/install batch.
+    POOL_MIN_MISSING = 2
+    POOL_BATCH = 64
+    # Fewest summed slice tiles (level px / tile_px**2) a patch pools; TASK-031.67 step 0's 280,000 px at tile_px 16.
+    POOL_MIN_PATCH_TILE_AREA = 1100
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -1173,27 +1241,48 @@ class _ChunkCacheBase:
         from the live scenario (TASK-318, viewer._erase_units())."""
         if self._extent_fallback(changed, mip):
             return REACH_FALLBACK
+        return self._layer_extent(changed, mip, after=False)
+
+    def _layer_extent(self, changed: list[UnitSplice], mip: int, after: bool):
+        """`changed`'s extent read from level `mip`'s installed layer: sprite
+        bboxes over each old (or, `after`, new) footprint tile plus the
+        building bbox at that own tile. A reference-canvas bbox or None."""
         _proj, sprites, building_bboxes, _rise, _top = self._unit_level_state(mip)
         box = None
         for s in changed:
+            tiles, own = (s.new_tiles, s.new_own_tile) if after else (s.old_tiles, s.old_own_tile)
             if sprites is not None:
-                for tile in s.old_tiles:
+                for tile in tiles:
                     box = _union_bbox(box, sprites.bboxes.get(tile))
-            if s.old_own_tile is not None:
-                box = _union_bbox(box, building_bboxes.get(s.old_own_tile))
+            if own is not None:
+                box = _union_bbox(box, building_bboxes.get(own))
         return None if box is None else self._level_bbox_to_reference(mip, box)
+
+    def _layer_current(self, mip: int) -> bool:
+        """Whether level `mip`'s installed layer matches the live units and
+        heights, so sprite_extent_after() may read it. Base: never."""
+        return False
 
     def sprite_extent_after(self, changed: list[UnitSplice], mip: int | None):
         """sprite_extent_before()'s counterpart after invalidate_units(changed):
-        what the edited units paint at level `mip` now. Resolved per unit
-        with _reanchor_units()' own arguments rather than read from the layer,
-        since a Stepped level the wholesale fallback left stale has no
+        what the edited units paint at level `mip` now. Read from the layer
+        as the old side is when the level is current (_layer_current(): a
+        splice kept or restamped it, TASK-031.61 c2x), which _reanchor_units()
+        already resolved; a tile shared with another unit over-covers, which
+        is safe. Otherwise resolved per unit with _reanchor_units()' own
+        arguments, since a level the wholesale fallback left stale has no
         post-edit layer until its next composite. overrides are
         _splice_overrides()': the real dict when a reassigned wall reads it,
         else {}. A moved one takes REACH_FALLBACK even though its sources now
         splice: its reshaped neighbours are not in `changed`."""
         if self._extent_fallback(changed, mip):
             return REACH_FALLBACK
+        if self._layer_current(mip):
+            return self._layer_extent(changed, mip, after=True)
+        return self._resolved_extent(changed, mip)
+
+    def _resolved_extent(self, changed: list[UnitSplice], mip: int):
+        """sprite_extent_after()'s per-unit resolve, for a level whose layer is behind."""
         proj, _sprites, _bb, corner_rise, extra_top = self._unit_level_state(mip)
         scenario = self.scenario
         mm = scenario.map_manager
@@ -1375,7 +1464,9 @@ class _ChunkCacheBase:
                     bucket.insert(pos, entry)
         return True
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
+    def invalidate_units(
+        self, changed: list[UnitSplice] | None = None, splice_levels: bool = True, cap_levels=None
+    ) -> None:
         """Forces this cache's unit-derived structures to rebuild on the next
         composite -- the explicit hook for a unit-editing mutation (place/
         move/delete/reassign), which changes unit.x/y/player without going
@@ -1401,6 +1492,8 @@ class _ChunkCacheBase:
 
         splice_levels (Stepped/Sloped only): False skips the level splice and
         tries the in-place units_by_tile update instead. Ignored here and on Flat.
+        cap_levels (Stepped/Sloped only): the levels a batch past the splice
+        caps may still splice. Ignored here and on Flat.
         """
         self._mutation_epoch += 1
         self._refresh_source_caches()
@@ -1562,21 +1655,25 @@ class _ChunkCacheBase:
         self._cache.move_to_end(key)
         self._evict()
 
-    def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
+    def _prepare_rect(
+        self, mip: int, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray | None = None
+    ) -> tuple | None:
         """render.prepare_rect_native() for this cache's sources, or None when
-        the rect has no worker-safe path. Base (Flat): none."""
+        the rect has no worker-safe path. Base (Flat): none. heights: a
+        _heights_snapshot() the job reads as is, None for its own copy."""
         return None
 
-    def prepare_chunk_job(self, mip: int, cx: int, cy: int) -> ChunkJob | None:
-        """get_chunk() split for margin_warm's worker threads: everything but
-        the kernel runs here, on the caller's (GUI) thread. None means call
-        get_chunk() instead: the chunk is cached, or has no worker-safe path
-        (numpy backend, Flat, a texture the kernel can't crop or a blend it
-        can't compose)."""
+    def prepare_chunk_job(self, mip: int, cx: int, cy: int, heights: np.ndarray | None = None) -> ChunkJob | None:
+        """get_chunk() split for margin_warm's worker threads and a pooled
+        render_rect(): everything but the kernel runs here, on the caller's
+        (GUI) thread. None means call get_chunk() instead: the chunk is
+        cached, or has no worker-safe path (numpy backend, Flat, a texture
+        the kernel can't crop or a blend it can't compose). heights: a pooled
+        batch's shared _heights_snapshot()."""
         key = (mip, cx, cy)
         if key in self._cache:
             return None
-        prepared = self._prepare_rect(mip, *self._chunk_rect(mip, cx, cy))
+        prepared = self._prepare_rect(mip, *self._chunk_rect(mip, cx, cy), heights=heights)
         if prepared is None:
             return None
         kernel, scratch, args, holds = prepared
@@ -1586,11 +1683,150 @@ class _ChunkCacheBase:
         """Caches a finished job's pixels as get_chunk() would have. Refused
         (False) if the kernel declined, if any mutation ran since the job was
         prepared (patch() only fixes chunks already cached, never one in
-        flight), or if a paint already built the chunk."""
+        flight), or if a paint already built the chunk. Only for an uncached
+        key: a pooled patch's slice of a cached chunk goes through
+        install_slice()."""
         if not painted or job.epoch != self._mutation_epoch or job.key in self._cache:
             return False
         self._insert(job.key, job.scratch)
         return True
+
+    def prepare_rect_job(
+        self, mip: int, cx: int, cy: int, ix0: int, iy0: int, ix1: int, iy1: int, heights: np.ndarray | None = None
+    ) -> RectJob | None:
+        """A pooled patch's job for slice [ix0, ix1) x [iy0, iy1) (LEVEL
+        pixels) of CACHED chunk (mip, cx, cy), everything but the kernel run
+        here. None means composite the slice synchronously: the chunk is not
+        cached, or the rect has no worker-safe path. heights as in
+        prepare_chunk_job()."""
+        key = (mip, cx, cy)
+        chunk = self._cache.get(key)
+        if chunk is None:
+            return None
+        prepared = self._prepare_rect(mip, ix0, iy0, ix1, iy1, heights=heights)
+        if prepared is None:
+            return None
+        kernel, scratch, args, holds = prepared
+        return RectJob(key, self._mutation_epoch, kernel, scratch, args, holds, chunk=chunk, slice=(ix0, iy0, ix1, iy1))
+
+    def install_slice(self, job: RectJob, painted: bool) -> bool:
+        """Writes a finished RectJob's pixels into its chunk's slice. Refused
+        (False) if the kernel declined, if any mutation ran since the prepare,
+        or if the key no longer holds the very array the job was prepared
+        against (evicted, or replaced by a fresh composite). Never inserts,
+        and never touches the LRU order: a patch is not a use."""
+        if not painted or job.epoch != self._mutation_epoch or self._cache.get(job.key) is not job.chunk:
+            return False
+        self._write_slice(job.chunk, job.key[1], job.key[2], *job.slice, job.scratch)
+        return True
+
+    def _write_slice(
+        self, chunk: np.ndarray, cx: int, cy: int, ix0: int, iy0: int, ix1: int, iy1: int, pixels: np.ndarray
+    ) -> None:
+        x0, y0 = cx * self.chunk_px, cy * self.chunk_px
+        chunk[iy0 - y0 : iy1 - y0, ix0 - x0 : ix1 - x0] = pixels
+
+    def set_chunk_executor(self, executor, workers: int) -> None:
+        """The pool render_rect() composites missing chunks on (TASK-031.64),
+        `workers` its thread count; None or 0 keeps every chunk on the calling
+        thread. executor.submit(fn) must return a concurrent.futures.Future.
+        The viewer shares margin_warm's pool (margin_warm.chunk_pool())."""
+        self._chunk_executor = executor if workers > 0 else None
+        self._chunk_workers = workers if executor is not None else 0
+
+    def _pools(self, keys: list[tuple[int, int, int]]) -> bool:
+        """Whether render_rect() takes _pooled_chunks() for `keys`: a pool is
+        set, the cache has a job path (Stepped and Sloped, native backend),
+        and at least POOL_MIN_MISSING of them are uncached."""
+        if self._chunk_executor is None or not self._has_unit_pack or composite_backend.native is None:
+            return False
+        missing = 0
+        for key in keys:
+            if key not in self._cache:
+                missing += 1
+                if missing >= self.POOL_MIN_MISSING:
+                    return True
+        return False
+
+    def _heights_snapshot(self, mip: int) -> np.ndarray | None:
+        """One copy of the heights the kernel reads that the GUI thread writes
+        in place, for every job of a pooled batch; None when there is none."""
+        return None
+
+    def _derive_pack_over(self, mip: int, rects: list[tuple[int, int, int, int]]) -> None:
+        """Derives the level's pending unit-pack tiles under `rects` before a
+        pooled batch's first prepare, so no later prepare writes the pack."""
+
+    def _derive_pack_for_slices(self, mip: int, rects: list[tuple[int, int, int, int]]) -> None:
+        """A pooled patch batch's _derive_pack_over(): `rects` (LEVEL pixels)
+        are scattered slices, whose bounding rect can span the map."""
+
+    def _pooled_chunks(self, mip: int, keys: list[tuple[int, int, int]]):
+        """Yields get_chunk(*key) for each of `keys` in order, the misses
+        composited on the chunk pool (TASK-031.64). Per POOL_BATCH keys:
+
+        1. Prepare each miss on this thread (prepare_chunk_job()) and submit
+           its kernel at once, so prepare overlaps the kernels. Nothing is
+           inserted.
+        2. Join (join_chunk_jobs()): this thread runs unstarted jobs too.
+        3. In key order, a painted job goes through install_chunk() and
+           yields its scratch; anything else yields get_chunk(), which is a
+           touch on a hit and a synchronous composite on a declined miss.
+
+        Why that is the serial loop's result, LRU included: nothing pumps the
+        event loop between the first prepare and the last install, so no
+        mutation interleaves (_mutation_epoch cannot move; install_chunk()
+        still checks). Workers run ChunkJob.run() alone, a nogil kernel over
+        arrays the job owns or shares copy-on-write, never the cache, Qt or
+        perf_trace. Pass 3 performs the serial loop's cache operations in its
+        order and passes 1-2 insert nothing, so evictions match; a chunk
+        evicted by a later install still paints from its scratch. The batch
+        shares one heights snapshot (_heights_snapshot()) and derives the
+        pack first (_derive_pack_over()): every chunk's candidates are a
+        subset of the batch rect's, so no prepare writes the pack while a job
+        may read it, and no _unshare() copy is stranded per job. The one
+        in-place pack write with no copy, UnitPack._slot() on addrs/dims,
+        stays safe because every slot is assigned before the first submit."""
+        executor = self._chunk_executor
+        for start in range(0, len(keys), self.POOL_BATCH):
+            batch = keys[start : start + self.POOL_BATCH]
+            missing = [i for i, key in enumerate(batch) if key not in self._cache]
+            jobs: list[ChunkJob | None] = [None] * len(batch)
+            painted: list[bool] = [False] * len(batch)
+            if missing:
+                self._derive_pack_over(mip, [self._chunk_rect(*batch[i]) for i in missing])
+                snapshot = self._heights_snapshot(mip)
+                submitted = []
+                try:
+                    for i in missing:
+                        job = self.prepare_chunk_job(*batch[i], heights=snapshot)
+                        if job is None:
+                            continue
+                        try:
+                            future = executor.submit(job.run)
+                        except Exception as exc:  # noqa: BLE001
+                            debug_log.log(f"pooled paint: submit failed for chunk {job.key} ({exc!r})")
+                            future = None
+                        jobs[i] = job
+                        submitted.append((i, job, future))
+                except BaseException:
+                    # A prepare raised: don't leave this batch's kernels queued ahead of the next paint.
+                    for _i, _job, future in submitted:
+                        if future is not None:
+                            future.cancel()
+                    raise
+                del snapshot
+                with perf_trace.repaint_phase("join"):
+                    outcomes = join_chunk_jobs([(job, future) for _i, job, future in submitted])
+                for (i, _job, _future), ok in zip(submitted, outcomes, strict=True):
+                    painted[i] = ok
+                del submitted
+            for i, key in enumerate(batch):
+                job, jobs[i] = jobs[i], None
+                if job is not None and self.install_chunk(job, painted[i]):
+                    yield job.scratch
+                else:
+                    yield self.get_chunk(*key)
 
     def render_rect(self, x0: int, y0: int, x1: int, y1: int, mip: int = 0) -> np.ndarray:
         """Assembles pixels for [x0, x1) x [y0, y1) -- LEVEL `mip` pixels,
@@ -1600,7 +1836,9 @@ class _ChunkCacheBase:
         full render at that level regardless of chunk request order or
         what was already cached -- see tools/verify_iso_chunks.py (Stepped)
         / tests/test_flat_chunks.py (Flat) at mip=0, tests/
-        test_mip_geometry.py (Phase B-D-b) at mip != 0."""
+        test_mip_geometry.py (Phase B-D-b) at mip != 0. With a chunk pool
+        set (set_chunk_executor()) the misses composite on it instead
+        (_pooled_chunks()), to the same pixels and cache state."""
         canvas_w, canvas_h = self.canvas_dims(mip)
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
@@ -1610,17 +1848,17 @@ class _ChunkCacheBase:
         out = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
         cx0, cy0 = x0 // self.chunk_px, y0 // self.chunk_px
         cx1, cy1 = (x1 - 1) // self.chunk_px, (y1 - 1) // self.chunk_px
-        for cy in range(cy0, cy1 + 1):
-            for cx in range(cx0, cx1 + 1):
-                chunk = self.get_chunk(mip, cx, cy)
-                chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
-                ox0, oy0 = max(x0, chunk_x0), max(y0, chunk_y0)
-                ox1, oy1 = min(x1, chunk_x0 + chunk.shape[1]), min(y1, chunk_y0 + chunk.shape[0])
-                if ox1 <= ox0 or oy1 <= oy0:
-                    continue
-                out[oy0 - y0 : oy1 - y0, ox0 - x0 : ox1 - x0] = chunk[
-                    oy0 - chunk_y0 : oy1 - chunk_y0, ox0 - chunk_x0 : ox1 - chunk_x0
-                ]
+        keys = [(mip, cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)]
+        chunks = self._pooled_chunks(mip, keys) if self._pools(keys) else (self.get_chunk(*key) for key in keys)
+        for (_mip, cx, cy), chunk in zip(keys, chunks, strict=True):
+            chunk_x0, chunk_y0 = cx * self.chunk_px, cy * self.chunk_px
+            ox0, oy0 = max(x0, chunk_x0), max(y0, chunk_y0)
+            ox1, oy1 = min(x1, chunk_x0 + chunk.shape[1]), min(y1, chunk_y0 + chunk.shape[0])
+            if ox1 <= ox0 or oy1 <= oy0:
+                continue
+            out[oy0 - y0 : oy1 - y0, ox0 - x0 : ox1 - x0] = chunk[
+                oy0 - chunk_y0 : oy1 - chunk_y0, ox0 - chunk_x0 : ox1 - chunk_x0
+            ]
         return out
 
     def patch(
@@ -1677,7 +1915,10 @@ class _ChunkCacheBase:
         (_LeveledChunkCache._splice_levels), and any level with deferred work
         (_defers_patch) evicts too, so no cached chunk shows an unflushed layer.
 
-        The two halves are patch_sources() and patch_composite()."""
+        The two halves are patch_sources() and patch_composite(). With a chunk
+        pool set (set_chunk_executor()), a large enough patch composites its
+        slices on it (TASK-031.67), to the same pixels, the same chunk
+        objects and the same LRU order."""
         if self.patch_sources(bbox, elevation_changed, rebuild_levels):
             self.patch_composite(bbox, levels, rebuild_levels)
 
@@ -1706,7 +1947,23 @@ class _ChunkCacheBase:
         """patch()'s composite half, after patch_sources(): recomposites bbox
         in every cached chunk of the resident levels (`levels` only, when
         given), or evicts it where a level outside rebuild_levels went stale
-        or has deferred work."""
+        or has deferred work. With a chunk pool set, enough slices composite
+        on it (_composite_patch_targets())."""
+        self._composite_patch_targets(list(self._patch_targets(bbox, levels, rebuild_levels)))
+
+    def _patch_targets(self, bbox: tuple[int, int, int, int], levels=None, rebuild_levels=None):
+        """patch_composite()'s walk, compositing nothing: evicts bbox's chunks
+        at a level that must evict, and yields (mip, cx, cy, chunk, ix0, iy0,
+        ix1, iy1) for each other cached chunk bbox reaches, the slice in LEVEL
+        pixels, in the serial loop's order.
+
+        A caller may collect every walk before compositing any slice (a
+        pooled patch must, to price the batch): a composite changes no level's
+        evict test. It can build or flush only the level it composites, and
+        that level evicts nothing either way: one inside rebuild_levels (or
+        with none given) never takes the stale branch, one outside it is
+        composited only while resident, so _level() does nothing there, and
+        one with deferred work evicts and is never composited, so never flushed."""
         px0, py0, px1, py1 = bbox
         if px1 <= px0 or py1 <= py0:
             return
@@ -1734,8 +1991,116 @@ class _ChunkCacheBase:
                     ix1, iy1 = min(lx1, chunk_x1), min(ly1, chunk_y1)
                     if ix1 <= ix0 or iy1 <= iy0:
                         continue
-                    patched = self._composite_rect(mip, ix0, iy0, ix1, iy1)
-                    chunk[iy0 - chunk_y0 : iy1 - chunk_y0, ix0 - chunk_x0 : ix1 - chunk_x0] = patched
+                    yield mip, cx, cy, chunk, ix0, iy0, ix1, iy1
+
+    def _composite_patch_targets(self, targets: list) -> None:
+        """Composites each _patch_targets() slice into its chunk: pooled when
+        _pools_patch() says so (a zero-length `patch_pool=<jobs>/<targets>`
+        Perf Trace phase marks it), else one _composite_rect() per slice in order."""
+        if self._pools_patch(targets):
+            jobs = self._pooled_patch(targets)
+            with perf_trace.phase(f"patch_pool={jobs}/{len(targets)}"):
+                pass
+            return
+        for mip, cx, cy, chunk, ix0, iy0, ix1, iy1 in targets:
+            self._write_slice(chunk, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
+
+    def _pools_patch(self, targets: list) -> bool:
+        """Whether a patch takes _pooled_patch(): render_rect()'s _pools()
+        conditions, at least POOL_MIN_MISSING slices, and at least
+        POOL_MIN_PATCH_TILE_AREA tiles summed over them. The area is in tiles
+        of each slice's own level, so the gate is the same at every zoom: a
+        typical brush-9 Draw step (about 344 tiles) stays serial, and the rare
+        larger step pools by area like any other patch. Pooled only beat
+        serial by 5% from about 1100 (TASK-031.67 step 0)."""
+        if self._chunk_executor is None or not self._has_unit_pack or composite_backend.native is None:
+            return False
+        if len(targets) < self.POOL_MIN_MISSING:
+            return False
+        tiles = 0.0
+        for mip, _cx, _cy, _chunk, ix0, iy0, ix1, iy1 in targets:
+            tiles += (ix1 - ix0) * (iy1 - iy0) / self.mip_tile_px(mip) ** 2
+        return tiles >= self.POOL_MIN_PATCH_TILE_AREA
+
+    def _pooled_patch(self, targets: list) -> int:
+        """Composites `targets` (_patch_targets() slices) on the chunk pool
+        (TASK-031.67) and returns how many jobs it submitted. Per POOL_BATCH
+        slices:
+
+        1. Derive each level's unit pack (_derive_pack_for_slices(), which
+           also builds or flushes the level as its first prepare would) and
+           take one heights snapshot.
+        2. Prepare each slice in walk order (prepare_rect_job()) and submit
+           its kernel at once.
+        3. Join (join_chunk_jobs()).
+        4. In walk order, a painted job goes through install_slice(); any
+           other slice (a declined prepare, a declined or raising kernel, a
+           refused install) composites synchronously into the walked chunk,
+           exactly as the serial loop does.
+
+        Why that is the serial loop's result: nothing pumps the event loop
+        between the first prepare and the last install, so no mutation
+        interleaves (install_slice() still checks the epoch and the chunk's
+        identity). Nothing is inserted, so _evict() never runs and every
+        target chunk outlives its job, the same array object and LRU order.
+        Slices of one chunk are disjoint unless the caller passed overlapping
+        rects; those paint the same pixels from the same sources, and the
+        installs run in walk order, so the last write is the serial one's. A
+        level built by a later prepare voids no earlier job: _commit_level()
+        rebinds that level's fields only and bumps no epoch, and each job
+        holds its own arrays (`holds`). Workers run RectJob.run() alone, as
+        in _pooled_chunks()."""
+        executor = self._chunk_executor
+        total = 0
+        for start in range(0, len(targets), self.POOL_BATCH):
+            batch = targets[start : start + self.POOL_BATCH]
+            by_level: dict[int, list] = {}
+            for mip, _cx, _cy, _chunk, ix0, iy0, ix1, iy1 in batch:
+                by_level.setdefault(mip, []).append((ix0, iy0, ix1, iy1))
+            for mip, rects in by_level.items():
+                self._derive_pack_for_slices(mip, rects)
+            # One per batch: elevations is not per level, and Sloped returns None.
+            snapshot = self._heights_snapshot(batch[0][0])
+            jobs: list[RectJob | None] = [None] * len(batch)
+            painted: list[bool] = [False] * len(batch)
+            submitted = []
+            try:
+                for i, (mip, cx, cy, _chunk, ix0, iy0, ix1, iy1) in enumerate(batch):
+                    job = self.prepare_rect_job(mip, cx, cy, ix0, iy0, ix1, iy1, heights=snapshot)
+                    if job is None:
+                        continue
+                    try:
+                        future = executor.submit(job.run)
+                    except Exception as exc:  # noqa: BLE001
+                        debug_log.log(f"pooled patch: submit failed for chunk {job.key} ({exc!r})")
+                        future = None
+                    jobs[i] = job
+                    submitted.append((i, job, future))
+            except BaseException:
+                # A prepare raised: don't leave this batch's kernels queued ahead of the next paint.
+                for _i, _job, future in submitted:
+                    if future is not None:
+                        future.cancel()
+                # Nothing from here on is patched, so evict it: the next paint composites it fresh.
+                for target in targets[start:]:
+                    key, chunk = target[:3], target[3]
+                    if self._cache.get(key) is chunk:
+                        del self._cache[key]
+                        self._cache_bytes -= chunk.nbytes
+                raise
+            del snapshot
+            with perf_trace.repaint_phase("join"):
+                outcomes = join_chunk_jobs([(job, future) for _i, job, future in submitted])
+            for (i, _job, _future), ok in zip(submitted, outcomes, strict=True):
+                painted[i] = ok
+            total += len(submitted)
+            del submitted
+            for i, (mip, cx, cy, chunk, ix0, iy0, ix1, iy1) in enumerate(batch):
+                job, jobs[i] = jobs[i], None
+                if job is not None and self.install_slice(job, painted[i]):
+                    continue
+                self._write_slice(chunk, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
+        return total
 
     def patch_area(self, bbox: tuple[int, int, int, int], levels=None) -> int:
         """Level pixels patch(bbox, levels=levels) would recomposite: bbox
@@ -1853,13 +2218,17 @@ class _ChunkCacheBase:
         chunks under each rect instead. A stale level inside rebuild_levels
         rebuilds here, in the first composite, not at the next paint. A chunk
         that is not cached is skipped, never composited: get_chunk() builds
-        it fresh."""
+        it fresh.
+
+        Every rect's slices are walked first and composited as one set, so a
+        chunk pool takes them in one fan-out (TASK-031.67: undo 1's rects are
+        one chunk each, so a fan-out per rect would never reach two jobs)."""
         live = [rect for rect in rects if rect[2] > rect[0] and rect[3] > rect[1]]
         if not terrain_current:
             for rect in live:
                 self._refresh_terrain_ids(rect)
-        for rect in live:
-            self.patch_composite(rect, levels, rebuild_levels)
+        targets = [target for rect in live for target in self._patch_targets(rect, levels, rebuild_levels)]
+        self._composite_patch_targets(targets)
 
     def invalidate_region(self, bbox: tuple[int, int, int, int], levels=None, terrain_changed: bool = True) -> None:
         """Evicts every cached chunk, at every RESIDENT mip level (only those
@@ -2297,6 +2666,10 @@ class _LeveledChunkCache(_ChunkCacheBase):
         lvl = self._levels[mip]
         return lvl.gen == self._source_gen and bool(lvl.pending_elev)
 
+    def _layer_current(self, mip: int) -> bool:
+        lvl = self._levels.get(mip)
+        return lvl is not None and lvl.gen == self._source_gen and not lvl.pending_elev and self._level_synced(lvl)
+
     def _flush_pending(self, mip: int) -> None:
         """Applies a current level's deferred elevation re-anchors: one
         _elevation_splices() over the union, then _splice_level(). A union
@@ -2465,7 +2838,9 @@ class _LeveledChunkCache(_ChunkCacheBase):
         """Whether invalidate_units(changed) would take its splice path."""
         return self._unit_splice_plan(changed) is not None
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
+    def invalidate_units(
+        self, changed: list[UnitSplice] | None = None, splice_levels: bool = True, cap_levels=None
+    ) -> None:
         """Batch D's D4 splice: `changed` (a list of UnitSplice, one per
         single-unit-tool-path edit) lets a Move/Nudge/Rotate/Set field/Place/
         single Delete update units_by_tile and every ALREADY-BUILT level's
@@ -2505,6 +2880,11 @@ class _LeveledChunkCache(_ChunkCacheBase):
         describing the pre-edit units. The caller (_after_unit_mutation, D5)
         still cancels warms first, which saves the wasted walk.
 
+        The one exception is a batch past the splice caps with `cap_levels`
+        given and sprites on (_splice_visible()): it bumps the gen once and
+        restamps only the cap_levels it spliced, since splicing every level
+        would cost more than rebuilding the ones off screen when reached.
+
         The whole batch goes through ONE _reanchor_units() call per level,
         so a Convert of N units copies each SpriteLayer dict once, not N
         times. overrides come from _splice_overrides() over the plan: a
@@ -2521,6 +2901,8 @@ class _LeveledChunkCache(_ChunkCacheBase):
         self._mutation_epoch += 1
         plan = self._unit_splice_plan(changed) if splice_levels else None
         if plan is None:
+            if splice_levels and cap_levels and self._splice_visible(changed, cap_levels):
+                return
             self._trace_splice_refusal(changed, skipped=not splice_levels)
             if changed is not None and self._update_units_by_tile_in_place(changed):
                 with perf_trace.phase("units_in_place"):
@@ -2535,6 +2917,48 @@ class _LeveledChunkCache(_ChunkCacheBase):
         for s in changed:
             _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
         self._splice_levels(changed, _splice_overrides(self.scenario, changed), old_version)
+
+    def _splice_visible(self, changed: list[UnitSplice] | None, cap_levels) -> bool:
+        """invalidate_units()' path for a batch past both splice caps (TASK-031.61
+        c2x): the same plan under VISIBLE_SPLICE_MAX_UNITS, spliced into
+        units_by_tile and into only the `cap_levels` levels that are current.
+        One _source_gen bump marks every other level stale, as the wholesale
+        path does, and also refuses an in-flight warm through its existing
+        predicate; each spliced level is then restamped current. A zero-length
+        `splice_visible=<splices>` phase marks it.
+
+        False, touching nothing, with sprites off (a level build is then ~4 ms,
+        under the plan's own cost), with no cap_level current, or when the plan
+        is refused or holds more than VISIBLE_SPLICE_MAX_UNITS splices. The
+        targets are read before anything moves. A target with pending_elev
+        keeps it: its later flush reads the consistent state this leaves."""
+        if changed is None or not (self.with_units and self.sprites_enabled):
+            return False
+        targets = [
+            self._levels[m] for m in cap_levels if m in self._levels and self._levels[m].gen == self._source_gen
+        ]
+        if not targets:
+            return False
+        cap = VISIBLE_SPLICE_MAX_UNITS
+        plan, _why = _splice_plan_or_refusal(
+            self.scenario, self.units_by_tile, self.unit_filter, changed, cap=cap, component_cap=cap
+        )
+        if plan is None or len(plan) > cap:
+            return False
+        plan = _removals_first(plan)
+        old_version = self._units_version
+        for s in plan:
+            _splice_units_by_tile(self.units_by_tile, self.scenario, self.unit_filter, s)
+        self._units_version += 1
+        self._source_gen += 1
+        overrides = _splice_overrides(self.scenario, plan)
+        for lvl in targets:
+            self._splice_level(lvl, plan, overrides, old_version)
+            lvl.gen = self._source_gen
+        self._splice_epoch += 1
+        with perf_trace.phase(f"splice_visible={len(plan)}"):
+            pass
+        return True
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
         """The resumable warm for one level -- see _ChunkCacheBase's own
@@ -2757,6 +3181,53 @@ class _LeveledChunkCache(_ChunkCacheBase):
                 )
         return pack
 
+    def _derive_pack_over(self, mip: int, rects: list[tuple[int, int, int, int]]) -> None:
+        # Resolves the level (a build or deferred flush) and pack the first prepare would.
+        lvl = self._level(mip)
+        pack = native_composite._units_of(self._native_units(lvl, mip))
+        if pack is None or not self.with_units or not rects or not pack.pending().size:
+            return
+        x0, y0 = min(r[0] for r in rects), min(r[1] for r in rects)
+        x1, y1 = max(r[2] for r in rects), max(r[3] for r in rects)
+        # A serial composite derives these inside `composite`; the level and pack resolve above stay outside.
+        with perf_trace.repaint_phase("prepare"):
+            # Each rect's candidates are a subset of the bounding rect's: pack_warm_job()'s ensure(), called earlier.
+            candidates = render._rect_candidates(
+                self.scenario, x0, y0, x1, y1, lvl.proj, self.with_units, lvl.building_bboxes, lvl.bystander_grid
+            )
+            if candidates.shape[0]:
+                pack.ensure(candidates[:, 1].astype(np.int64) * self.scenario.map_manager.map_width + candidates[:, 0])
+
+    def _derive_pack_for_slices(self, mip: int, rects: list[tuple[int, int, int, int]]) -> None:
+        """Derives every pending tile (pack_warm_job()'s own argument) when
+        there are no more of them than the slices' summed tile area, else each
+        slice's own candidates. Both derive at about 1 us per tile (TASK-031.67
+        step 0), and the first form skips re-deriving the candidates, which the
+        prepares do again; the second keeps a pack the level build just made
+        from paying a whole-map derive (20-170 ms on the corpus) for a few slices."""
+        lvl = self._level(mip)
+        pack = native_composite._units_of(self._native_units(lvl, mip))
+        if pack is None or not self.with_units or not rects:
+            return
+        pending = pack.pending()
+        if not pending.size:
+            return
+        tiles = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects) / lvl.tile_px**2
+        with perf_trace.repaint_phase("prepare"):
+            if pending.size <= tiles:
+                pack.ensure(pending)
+                return
+            w = self.scenario.map_manager.map_width
+            idx = []
+            for x0, y0, x1, y1 in rects:
+                candidates = render._rect_candidates(
+                    self.scenario, x0, y0, x1, y1, lvl.proj, self.with_units, lvl.building_bboxes, lvl.bystander_grid
+                )
+                if candidates.shape[0]:
+                    idx.append(candidates[:, 1].astype(np.int64) * w + candidates[:, 0])
+            if idx:
+                pack.ensure(np.concatenate(idx))
+
 
 class IsoChunkCache(_LeveledChunkCache):
     """Qt-free LRU cache of composited Stepped-mode canvas chunks, keyed by
@@ -2954,13 +3425,23 @@ class IsoChunkCache(_LeveledChunkCache):
                 key_map=self._blend_key_map,
             )
 
-    def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
+    def _prepare_rect(
+        self, mip: int, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray | None = None
+    ) -> tuple | None:
         lvl = self._level(mip)
-        return render.prepare_rect_native(
-            False, self.scenario, x0, y0, x1, y1, self.elevations, lvl.proj, lvl.tile_px, lvl.building_bboxes,
-            self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
-            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
-        )
+        # Resolved first so a pack build stays its own level event, outside the phase.
+        unit_pack = self._native_units(lvl, mip)
+        with perf_trace.repaint_phase("prepare"):
+            return render.prepare_rect_native(
+                False, self.scenario, x0, y0, x1, y1, self.elevations, lvl.proj, lvl.tile_px, lvl.building_bboxes,
+                self.with_units, lvl.bystander_grid, self.layers, self.grid, unit_pack,
+                terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
+                snapshot=heights,
+            )
+
+    def _heights_snapshot(self, mip: int) -> np.ndarray | None:
+        # The bbox functions write elevations in place, so the batch's jobs share one copy.
+        return self.elevations.copy()
 
 
 class FlatChunkCache(_ChunkCacheBase):
@@ -3102,7 +3583,9 @@ class FlatChunkCache(_ChunkCacheBase):
 
     sprite_extent_after = sprite_extent_before
 
-    def invalidate_units(self, changed: list[UnitSplice] | None = None, splice_levels: bool = True) -> None:
+    def invalidate_units(
+        self, changed: list[UnitSplice] | None = None, splice_levels: bool = True, cap_levels=None
+    ) -> None:
         """Brings unit_draws, every other level's draws and every icon layer
         up to date after a unit edit. Phase 3.5b's unit-editing UI calls this
         via ViewerWindow._after_unit_mutation(); it overrides the base class
@@ -3118,7 +3601,7 @@ class FlatChunkCache(_ChunkCacheBase):
         live scenario state in the same order. None, an empty list, or an
         ineligible batch takes the wholesale path below, which drops
         everything and rebuilds level 0's draws now and the rest lazily.
-        splice_levels is the Stepped/Sloped keyword, ignored here."""
+        splice_levels and cap_levels are Stepped/Sloped keywords, ignored here."""
         self._mutation_epoch += 1
         if self.can_splice(changed):
             self._splice_rows(changed)
@@ -3538,11 +4021,10 @@ class SlopedChunkCache(_LeveledChunkCache):
     level's corner_rise feeds its sprite walk, re-anchor, unit pack and
     compositor, and its headroom widens every building bbox at that level.
 
-    The mip ladder (TASK-031.60) is Stepped's mip_projections_for() set
-    filtered to the coarser levels (k <= 0), so zoomed in Sloped renders at
-    level 0 exactly as before. At Graphics Quality Enhanced (GH #241) it
-    keeps level 1 too: x1 art drawn there at 1.33x keeps every pixel the 64 px
-    level drops, and with the Enhanced Graphics DLC it draws the x2 art. Each level's corner_rise and headroom are
+    The mip ladder is Stepped's mip_projections_for() set, unfiltered: the
+    coarser levels since TASK-031.60, the finer ones since TASK-146 (GH #131:
+    baked grid ink scales with the shown level's residual magnification, so
+    the two elevation views agree only on one ladder). Each level's corner_rise and headroom are
     recomputed at its own proj (_level_rise()), never scaled from level 0, so
     a level depends on elevations and its own proj only, never on level 0's
     array, at the same cost as scaling. (At exact power-of-two levels a
@@ -3603,9 +4085,7 @@ class SlopedChunkCache(_LeveledChunkCache):
             corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
             max_tile_px=render.finest_tile_pixels(),
         )
-        # One finer level at Enhanced (GH #241): sprites keep their detail there, DLC or not.
-        finest = 1 if settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_MAX else 0
-        self._init_levels({level: p for level, p in projs.items() if level <= finest})
+        self._init_levels(projs)
         # Both canvas_dims() answers (sprites off and on) must scale exactly, as IsoChunkCache asserts.
         for lvl in self._levels.values():
             for dims in (lambda p: (p.canvas_w, p.canvas_h), render._canvas_pixel_dims):
@@ -3645,25 +4125,6 @@ class SlopedChunkCache(_LeveledChunkCache):
 
     def _level_extra_top(self, lvl: _IsoLevel) -> int:
         return self._level_rise(lvl).headroom
-
-    def _bbox_to_level(self, mip: int, bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-        """The base conversion, widened at a level finer than the reference
-        (GH #241's Enhanced level 1). A finer level rasterizes each sloped
-        edge per column of its own, so a tile reaches up to 1 px past its
-        scaled reference footprint across and, on a slope, about one column's
-        rise of the steepest edge possible (the whole elevation range over
-        half a tile) up and down. Padded by twice that, so a patch stays a
-        superset. Cache-side only: the Qt repaint rect stays the reference
-        bbox, which is safe because every Sloped dirty bbox already spans the
-        edited tiles' neighbours (test_sloped_mip's Enhanced edit oracle).
-        Measured over every 4-corner elevation combination: at most 1 px
-        across and 14 px up or down at pct 200, against a 31 px pad."""
-        lx0, ly0, lx1, ly1 = super()._bbox_to_level(mip, bbox)
-        proj = self._levels[mip].proj
-        if proj.tile_px <= self._mip_tile_px[0]:
-            return lx0, ly0, lx1, ly1
-        pad_y = 2 * math.ceil((proj.max_elev - proj.min_elev) * proj.elev_step / proj.half_w) + 1
-        return lx0 - 1, ly0 - pad_y, lx1 + 1, ly1 + pad_y
 
     def _refresh_corner_rise(self) -> None:
         """corner_rise rebuilt from self.elevations (a new array, never
@@ -3790,7 +4251,10 @@ class SlopedChunkCache(_LeveledChunkCache):
         corner_rise cannot drift apart; a level outside splice_levels defers
         them to its pending set instead. The seeds and the splice component
         are computed once, from level 0: tile space, and exact across levels
-        under `max` (a superset under `average`) (TASK-031.60). A component
+        under `max`, the live SLOPE_CORNER_RULE (TASK-031.60). Under `average`
+        they would be a superset only toward a coarser level: a finer level
+        resolves a corner move level 0's floor rounds away, so a seed could be
+        missed there (TASK-146; not live while the rule is `max`). A component
         past _SLOPED_ELEV_SPLICE_MAX_UNITS (elevation_splice_cap()) bumps the
         gen instead, with one elev_splice_refused token, and each level
         rebuilds once on its next composite (TASK-031.28: an elevation
@@ -3906,14 +4370,21 @@ class SlopedChunkCache(_LeveledChunkCache):
                 key_map=self._blend_key_map,
             )
 
-    def _prepare_rect(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple | None:
+    def _prepare_rect(
+        self, mip: int, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray | None = None
+    ) -> tuple | None:
+        # heights is always None here: corner_rise is replaced on refresh, never written in place.
         lvl = self._level(mip)
-        return render.prepare_rect_native(
-            True, self.scenario, x0, y0, x1, y1, self._level_corner_rise(lvl), lvl.proj, lvl.tile_px,
-            lvl.building_bboxes,
-            self.with_units, lvl.bystander_grid, self.layers, self.grid, self._native_units(lvl, mip),
-            terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
-        )
+        # Resolved first so a pack build stays its own level event, outside the phase.
+        unit_pack = self._native_units(lvl, mip)
+        corner_rise = self._level_corner_rise(lvl)
+        with perf_trace.repaint_phase("prepare"):
+            return render.prepare_rect_native(
+                True, self.scenario, x0, y0, x1, y1, corner_rise, lvl.proj, lvl.tile_px,
+                lvl.building_bboxes,
+                self.with_units, lvl.bystander_grid, self.layers, self.grid, unit_pack,
+                terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
+            )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:
         """Chunk (cx, cy)'s int32 tile-id plane, built on demand and
@@ -3961,9 +4432,11 @@ class SlopedChunkCache(_LeveledChunkCache):
         Reference-canvas pixels, which is also scene space: mip decision D2
         pins scene space to the reference level permanently, so viewer.py
         can pass a scene position through unconverted. The pick planes are
-        level 0's whatever level is on screen (TASK-031.60): at a coarser
-        level the visible pixels and the plane can disagree by about one
-        scene pixel at tile edges, as Stepped's analytic pick does.
+        level 0's whatever level is on screen (TASK-031.60, TASK-146): at a
+        coarser level the visible pixels and the plane can disagree by about
+        one scene pixel at tile edges, as Stepped's analytic pick does; at a
+        finer level by under one scene pixel, since the finer level resolves
+        detail level 0 rounds away.
 
         Worth stating because it is the opposite of what the missing-feature
         history suggests: this is STRICTLY BETTER than Stepped's

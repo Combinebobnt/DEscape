@@ -47,13 +47,15 @@ def _show_and_settle(window) -> None:
 def test_sloped_actually_composites_through_a_real_paint_cycle() -> None:
     """The gap the other tests here don't cover: none of them show the
     window, so none of them would catch SlopedChunkCache's mip ladder (the
-    coarser levels only, TASK-031.60; see that class's own docstring)
-    interacting badly with Track B-D-c/d's real LOD-selection paint() path
-    (aa885ee/5547904). Asserts the chunk cache actually gets populated (not
-    just constructed) by a real MapCanvasItem.paint() dispatch: at the
-    initial fit-to-view scale, at a coarser level, and at a zoomed-in scale
-    that forces _select_mip() to read the transform, at level 0, the finest
-    level Sloped has."""
+    coarser levels since TASK-031.60, the finer ones since TASK-146; see that
+    class's own docstring) interacting badly with Track B-D-c/d's real
+    LOD-selection paint() path (aa885ee/5547904). Asserts the chunk cache
+    actually gets populated (not just constructed) by a real
+    MapCanvasItem.paint() dispatch: at the initial fit-to-view scale, at a
+    coarser level, and at a zoomed-in scale that forces _select_mip() to read
+    the transform, at level 0. Level +1 through a real paint is
+    test_scene_space_reads_stay_at_level_0_while_another_level_is_shown's
+    `finer` case."""
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.terrain_edit_window()
@@ -409,19 +411,27 @@ def test_sloped_highlight_rebuild_builds_only_shapes_it_has_not_seen(monkeypatch
         window.close()
 
 
-def test_scene_space_reads_stay_at_level_0_while_a_coarser_level_is_shown(monkeypatch) -> None:
+@pytest.mark.parametrize("shown", ["coarser", "finer"])
+def test_scene_space_reads_stay_at_level_0_while_another_level_is_shown(monkeypatch, shown) -> None:
     """TASK-031.60: MapView's Sloped readers (tile outline, pick, continuous
     pick, a unit's rise and outline) take scene-space geometry from level 0
     while the view paints a coarser level, and none of them builds level 0.
     The oracle is the same reads with _sloped_cache() swapped for a fresh
-    cache; a stand-in carrying the shown level's corner_rise must disagree."""
+    cache; a stand-in carrying the shown level's corner_rise must disagree.
+    `finer` zooms to 150%, so level +1 is shown (TASK-146), with preload off:
+    its neighbour warm would build level 0 in idle ticks, which is allowed,
+    where a scene-space read building it is not."""
     from types import SimpleNamespace
 
     from PyQt5.QtCore import QPointF
+    from PyQt5.QtGui import QTransform
+    from PyQt5.QtWidgets import QApplication
 
-    from descape import render, unit_pick
+    from descape import render, settings, unit_pick
     from descape.render_cache import SlopedChunkCache
 
+    if shown == "finer":
+        monkeypatch.setattr(settings, "_preload_zoom_levels", False)
     window = conftest.terrain_edit_window()
     try:
         mm = window.scenario.map_manager
@@ -434,8 +444,17 @@ def test_scene_space_reads_stay_at_level_0_while_a_coarser_level_is_shown(monkey
         window._rebuild_unit_index()
         _show_and_settle(window)
         mv, cache = window.map_view, window._cache
+        if shown == "finer":
+            mv.setTransform(QTransform.fromScale(1.5, 1.5))
+            mv.centerOn(mv._tile_polygon(*unit_tile).boundingRect().center())
+            QApplication.processEvents()
+            QApplication.processEvents()
         visible = mv.viewport_chunk_target()[0]
-        assert visible < 0 and {key[0] for key in cache._cache} == {visible}, "the fit paint did not stay coarse"
+        if shown == "coarser":
+            assert visible < 0 and {key[0] for key in cache._cache} == {visible}, "the fit paint did not stay coarse"
+        else:
+            assert visible == 1 and 1 in {key[0] for key in cache._cache}, f"level {visible} shown, not +1 -- vacuous"
+            assert 0 not in {key[0] for key in cache._cache} and cache._levels[0].gen == -1, "the zoom built level 0"
         builds: list[int] = []
         real = cache._commit_level
         monkeypatch.setattr(cache, "_commit_level", lambda mip, *a: (builds.append(mip), real(mip, *a))[1])

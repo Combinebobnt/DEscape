@@ -49,12 +49,13 @@ disabled link, and reading it raises AttributeError instead.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.objects.managers.map_manager import MapManager
 from AoE2ScenarioParser.objects.managers.unit_manager import UnitManager
 
+from descape import game_dataset
 from descape.unit_model import capture_flag_of
 
 
@@ -93,6 +94,8 @@ class RegionBlock:
     # which paste_terrain() writes back verbatim beside terrain_ids.
     layers: tuple[int, ...]
     units: tuple[RegionUnit, ...]
+    # GH #67: the game data active at copy time; a paste under the other game's is refused.
+    dataset: str = field(default_factory=game_dataset.active)
 
     @property
     def has_tiles(self) -> bool:

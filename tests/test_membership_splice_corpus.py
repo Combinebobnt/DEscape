@@ -24,9 +24,17 @@ import random
 
 import numpy as np
 import pytest
-from test_convert_splice_corpus import EXAMPLES, _assert_matches_fresh, _footprint, _make_cache, _mips
+from test_convert_splice_corpus import (
+    EXAMPLES,
+    _assert_matches_fresh,
+    _footprint,
+    _level_state,
+    _make_cache,
+    _mips,
+    _pack_state,
+)
 
-from descape import asset_source, iso_geometry, render, render_cache, terrain_units, unit_sprites
+from descape import asset_source, composite_backend, iso_geometry, render, render_cache, terrain_units, unit_sprites
 from descape.edit_history import EditHistory
 from descape.render_cache import UnitSplice
 from descape.scenario_io import load_map_and_units
@@ -214,3 +222,104 @@ def test_random_draw_and_move_batches_splice_exactly_like_a_fresh_cache(name, st
     assert stats["wall"], f"no round spliced a moved wall: {stats}"
     if name.startswith("C2_ElCid"):
         assert stats["reshaped"], f"no wall round reshaped a stationary wall in the radian file: {stats}"
+
+
+# --- Past both caps, the visible level alone (TASK-031.61 c2x) ---------------
+
+C2X_FILE = "old-allies-final-v2.aoe2scenario"
+# A brush-9 strip of rows, a tree on every tile: 1,122 splices, a 1,266-unit plan.
+C2X_TILES = [(x, y) for x in range(10, 110) for y in range(110, 119)]
+C2X_SECOND = {"stepped": 1, "sloped": -1}
+
+
+def _c2x_draw(rng, scenario, model, history):
+    """_draw_round()'s shape over C2X_TILES. Returns (splices, record, removed, added)."""
+    window = set(C2X_TILES)
+    gaia = scenario.unit_manager.units[0]
+    removes = [u for u in gaia if u.unit_const in terrain_units.TREE_CONSTS and (int(u.x), int(u.y)) in window]
+    position = {id(u): i for i, u in enumerate(gaia)}
+    model.begin_unit_edit(list(range(len(scenario.unit_manager.units))))
+    splices = []
+    for unit in removes:
+        own, occ = _footprint(scenario, unit)
+        splices.append(UnitSplice(0, position[id(unit)], unit, own, None, occ or (), ()))
+    model.remove_many(removes)
+    added = model.add_many(0, [terrain_units.UnitAddSpec(x + 0.5, y + 0.5, rng.choice(TREES), 0.0, 0) for x, y in C2X_TILES])
+    base = len(gaia) - len(added)
+    for offset, unit in enumerate(added):
+        own, occ = _footprint(scenario, unit)
+        splices.append(UnitSplice(0, base + offset, unit, None, own, (), occ or ()))
+    record = model.commit_unit_edit("c2x draw", history)
+    return splices, record, removes, added
+
+
+def _c2x_undo(scenario, model, record, removed, added) -> list[UnitSplice]:
+    """The undo's batch: the added trees leave from the tail, the removed ones
+    come back at their old, mid-list indices."""
+    gaia = scenario.unit_manager.units[0]
+    position = {id(u): i for i, u in enumerate(gaia)}
+    splices = []
+    for unit in added:
+        own, occ = _footprint(scenario, unit)
+        splices.append(UnitSplice(0, position[id(unit)], unit, own, None, occ or (), ()))
+    model.restore(record.before)
+    position = {id(u): i for i, u in enumerate(gaia)}
+    for unit in removed:
+        own, occ = _footprint(scenario, unit)
+        splices.append(UnitSplice(0, position[id(unit)], unit, None, own, (), occ or ()))
+    return splices
+
+
+def _assert_visible_matches_fresh(cache, style: str, scenario, tag: str) -> None:
+    """Level 0 read as spliced (it must be current) and the second level read
+    through _level(), each against a fresh cache: _assert_matches_fresh()'s
+    state, plus level 0's pack."""
+    keys: dict = {}
+    second = C2X_SECOND[style]
+    got = _level_state(cache, 0, True, keys)
+    fresh = _make_cache(style, scenario, UnitFilter())
+    for tile, bucket in cache.units_by_tile.items():
+        want = [(id(u), c) for u, c in fresh.units_by_tile.get(tile, ())]
+        assert [(id(u), c) for u, c in bucket] == want, f"{tag}: units_by_tile[{tile}] order"
+    assert cache.units_by_tile.keys() == fresh.units_by_tile.keys(), f"{tag}: units_by_tile keys"
+    assert got == _level_state(fresh, 0, False, keys), f"{tag}: mip 0"
+    assert _level_state(cache, second, False, keys) == _level_state(fresh, second, False, keys), f"{tag}: mip {second}"
+    if composite_backend.native is not None:
+        pack = cache._unit_pack_of(0, create=False)
+        assert pack is not None, f"{tag}: mip 0 lost its unit pack instead of refreshing it"
+        assert _pack_state(pack, keys) == _pack_state(fresh._unit_pack_of(0, create=True), keys), f"{tag}: mip 0 pack"
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_draw_past_both_caps_and_its_undo_splice_the_visible_level_like_a_fresh_cache(style, monkeypatch):
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    path = EXAMPLES / C2X_FILE
+    if not path.exists():
+        pytest.skip(f"{C2X_FILE} is not in examples/")
+    scenario = load_map_and_units(path)
+    cache = _make_cache(style, scenario, UnitFilter())
+    second = C2X_SECOND[style]
+    cache.render_rect(0, 0, 1024, 1024, mip=second)
+    model = UnitEditModel(scenario)
+    wholesale = []
+    real_units_by_tile = render._units_by_tile
+    monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
+
+    splices, record, removed, added = _c2x_draw(random.Random(f"c2x-{style}"), scenario, model, EditHistory())
+    for tag in ("draw", "undo"):
+        batch = splices if tag == "draw" else _c2x_undo(scenario, model, record, removed, added)
+        assert len(batch) > render_cache.UNIT_SPLICE_MAX_UNITS, f"{tag}: {len(batch)} splices, inside the cap"
+        plan, why = render_cache._splice_plan_or_refusal(
+            scenario, cache.units_by_tile, cache.unit_filter, batch,
+            cap=render_cache.VISIBLE_SPLICE_MAX_UNITS, component_cap=render_cache.VISIBLE_SPLICE_MAX_UNITS,
+        )
+        assert plan is not None, f"{tag}: the wide plan refused it: {why}"
+        wholesale.clear()
+        cache.invalidate_units(batch, cap_levels=(0,))
+        cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
+        assert not wholesale, f"{tag}: rebuilt units_by_tile wholesale"
+        assert cache._levels[0].gen == cache._source_gen, f"{tag}: level 0 did not take the visible splice"
+        assert cache._levels[second].gen != cache._source_gen, f"{tag}: the second level was spliced too"
+        _assert_visible_matches_fresh(cache, style, scenario, f"{tag} ({len(plan)}-unit plan)")

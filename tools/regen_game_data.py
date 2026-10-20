@@ -18,6 +18,14 @@ state (a table that differs from the stamp); rerun the regeneration.
     python3 tools/regen_game_data.py --only gen_unit_stats.py
     python3 tools/regen_game_data.py --status     is a regeneration due?
     python3 tools/regen_game_data.py --check      does one reproduce the tables?
+    python3 tools/regen_game_data.py --dataset ror   only Return of Rome's tables
+
+Two datasets (GH #67), each with its own .dat, tables and stamp section:
+aoe2 (resources/_common/dat/, descape/, the stamp's top level) and ror, Return
+of Rome (modes/Pompeii/resources/_common/dat/, descape/ror/, the stamp's "ror"
+section). Each generator runs with --dataset ror for the second. --dataset
+picks aoe2, ror or all (the default); under all, an install without the RoR
+.dat looks at the AoE2 tables only, with a note.
 
 --only regenerates a subset and updates only those tables' stamp entries. It
 refuses when the install's .dat or build id is not the one the stamp records,
@@ -71,6 +79,9 @@ TOOLS_DIR = ROOT / "tools"
 TABLES_DIR = ROOT / "descape"
 STAMP_PATH = TOOLS_DIR / "game_data_stamp.json"
 DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
+ROR_DAT_SUBPATH = Path("modes") / "Pompeii" / DAT_SUBPATH
+ROR_STAMP_KEY = "ror"
+ROR_TABLES_SUBDIR = "ror"
 
 # The one registry: every tools/gen_*.py that parses the .dat, and the tables it writes.
 GENERATORS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -85,6 +96,8 @@ GENERATORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("gen_unit_render_data.py", ("unit_render_data.json",)),
     ("gen_unit_stats.py", ("unit_stats.json",)),
 )
+
+DATASET_LABELS = {"aoe2": "Age of Empires II", "ror": "Return of Rome"}
 
 EXIT_OK = 0
 EXIT_STALE = 1
@@ -108,8 +121,8 @@ def table_sha256(path: Path) -> str:
     return hashlib.sha256(normalise(path.read_bytes())).hexdigest()
 
 
-def dat_fingerprint(install: Path) -> dict[str, object] | None:
-    dat_path = install / DAT_SUBPATH
+def dat_fingerprint(install: Path, dat_subpath: Path = DAT_SUBPATH) -> dict[str, object] | None:
+    dat_path = install / dat_subpath
     if not dat_path.is_file():
         return None
     digest = hashlib.sha256()
@@ -157,6 +170,23 @@ class Context:
     genieutils_version: Callable[[], str | None] = genieutils_version
     today: Callable[[], str] = _today
     out: Callable[[str], None] = print
+    # Per dataset: dataset_context() replaces these for ror, and tables_dir with descape/ror/.
+    dat_subpath: Path = DAT_SUBPATH
+    generator_args: tuple[str, ...] = ()
+    stamp_key: str | None = None
+
+
+def dataset_context(ctx: Context, dataset: str) -> Context:
+    """ctx for one dataset: aoe2 as given, ror under tables_dir/ror with its own .dat and stamp section."""
+    if dataset == "aoe2":
+        return ctx
+    return replace(
+        ctx,
+        tables_dir=ctx.tables_dir / ROR_TABLES_SUBDIR,
+        dat_subpath=ROR_DAT_SUBPATH,
+        generator_args=("--dataset", "ror"),
+        stamp_key=ROR_STAMP_KEY,
+    )
 
 
 def outputs_of(generators: Sequence[tuple[str, tuple[str, ...]]]) -> tuple[str, ...]:
@@ -177,6 +207,25 @@ def load_stamp(path: Path) -> dict | None:
 
 def stamp_text(stamp: dict) -> str:
     return json.dumps(stamp, indent=2, sort_keys=True) + "\n"
+
+
+def load_section(ctx: Context) -> dict | None:
+    """ctx's dataset's part of the stamp: the top level without the ror section, or that section."""
+    stamp = load_stamp(ctx.stamp_path)
+    if stamp is None:
+        return None
+    if ctx.stamp_key is None:
+        return {key: value for key, value in stamp.items() if key != ROR_STAMP_KEY}
+    section = stamp.get(ctx.stamp_key)
+    return section if isinstance(section, dict) else None
+
+
+def merged_stamp(ctx: Context, section: dict) -> dict:
+    """The whole stamp with ctx's dataset's part replaced by `section`."""
+    stamp = load_stamp(ctx.stamp_path) or {}
+    if ctx.stamp_key is not None:
+        return {**stamp, ctx.stamp_key: section}
+    return {**section, **({ROR_STAMP_KEY: stamp[ROR_STAMP_KEY]} if ROR_STAMP_KEY in stamp else {})}
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -245,7 +294,7 @@ def run_generators(generators: Sequence[tuple[str, tuple[str, ...]]], install: P
     for script, names in generators:
         ctx.out(f"== {script}")
         run = subprocess.run(
-            [sys.executable, str(ctx.tools_dir / script), str(install), "--out-dir", str(scratch)],
+            [sys.executable, str(ctx.tools_dir / script), str(install), "--out-dir", str(scratch), *ctx.generator_args],
             capture_output=True, text=True, errors="replace", check=False,
         )
         for stream in (run.stdout, run.stderr):
@@ -278,13 +327,13 @@ def _read_install(install: Path | None, ctx: Context) -> tuple[dict[str, object]
     if install is None:
         ctx.out("no AoE2:DE install visible: pass --install or set AOE2DE_INSTALL_PATH")
         return None
-    fingerprint = dat_fingerprint(install)
+    fingerprint = dat_fingerprint(install, ctx.dat_subpath)
     if fingerprint is None:
-        ctx.out(f"not found: {install / DAT_SUBPATH}")
+        ctx.out(f"not found: {install / ctx.dat_subpath}")
         return None
     buildid = steam_buildid(install)
     ctx.out(f"install: {install}")
-    ctx.out(f"  {DAT_SUBPATH.name}: sha256 {fingerprint['sha256']}, {fingerprint['size']} bytes")
+    ctx.out(f"  {ctx.dat_subpath.as_posix()}: sha256 {fingerprint['sha256']}, {fingerprint['size']} bytes")
     ctx.out(f"  Steam buildid: {buildid if buildid is not None else 'none (no steamapps app manifest)'}")
     return fingerprint, buildid
 
@@ -320,7 +369,7 @@ def status(install: Path | None, ctx: Context) -> int:
     seen = _read_install(install, ctx)
     if seen is None:
         return EXIT_CANNOT
-    stamp = load_stamp(ctx.stamp_path)
+    stamp = load_section(ctx)
     _describe_stamp(stamp, ctx)
     return _verdict(_stale_and_said(stamp, seen, ctx), ctx)
 
@@ -329,7 +378,7 @@ def check(install: Path | None, ctx: Context, *, keep: bool = False) -> int:
     seen = _read_install(install, ctx)
     if seen is None:
         return EXIT_CANNOT
-    stamp = load_stamp(ctx.stamp_path)
+    stamp = load_section(ctx)
     _describe_stamp(stamp, ctx)
     version = ctx.genieutils_version()
     if version is None:
@@ -364,7 +413,7 @@ def regenerate(install: Path | None, ctx: Context, *, only: Sequence[str] = (), 
     if seen is None:
         return EXIT_CANNOT
     fingerprint, buildid = seen
-    stamp = load_stamp(ctx.stamp_path)
+    stamp = load_section(ctx)
     _describe_stamp(stamp, ctx)
     version = ctx.genieutils_version()
     if version is None:
@@ -404,18 +453,19 @@ def regenerate(install: Path | None, ctx: Context, *, only: Sequence[str] = (), 
     else:
         same_build = stamp is not None and stamp.get("dat") == fingerprint and stamp.get("steam_buildid") == buildid
         new_stamp = {
-            "_comment": STAMP_COMMENT,
             "dat": fingerprint,
             "steam_buildid": buildid,
             "genieutils": version,
             "refreshed": stamp["refreshed"] if same_build and stamp.get("refreshed") else ctx.today(),
             "tables": hashes,
         }
+        if ctx.stamp_key is None:
+            new_stamp["_comment"] = STAMP_COMMENT
     if new_stamp == stamp:
         ctx.out(f"  {_shown(ctx.stamp_path)}: unchanged")
     else:
         ctx.stamp_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(ctx.stamp_path, stamp_text(new_stamp).encode("utf-8"))
+        _write_atomic(ctx.stamp_path, stamp_text(merged_stamp(ctx, new_stamp)).encode("utf-8"))
         ctx.out(f"  {_shown(ctx.stamp_path)}: updated")
     ctx.out(f"regenerated {len(generated)} of {len(outputs_of(ctx.generators))} tables")
     return EXIT_OK
@@ -443,6 +493,10 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     mode.add_argument("--check", action="store_true", help="--status, plus a full regeneration compared with the tables")
     mode.add_argument("--only", nargs="+", metavar="SCRIPT", help="Regenerate only these generators' tables, e.g. gen_unit_stats.py")
     parser.add_argument("--keep", action="store_true", help="Leave the scratch directory of generated tables and print its path")
+    parser.add_argument(
+        "--dataset", choices=("aoe2", "ror", "all"), default="all",
+        help="Which game's tables: aoe2, ror (Return of Rome) or all (default)",
+    )
     args = parser.parse_args(argv)
 
     regenerating = not (args.status or args.check)
@@ -462,11 +516,26 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     if regenerating and ctx.stamp_path.resolve() == STAMP_PATH.resolve() and ctx.tables_dir.resolve() != TABLES_DIR.resolve():
         parser.error("regenerating into --tables-dir needs --stamp too, or the repo's own stamp would describe tables kept elsewhere")
     install = args.install if args.install is not None else asset_source.get_install_path()
-    if args.status:
-        return status(install, ctx)
-    if args.check:
-        return check(install, ctx, keep=args.keep)
-    return regenerate(install, ctx, only=only, keep=args.keep)
+    datasets = ["aoe2", "ror"] if args.dataset == "all" else [args.dataset]
+    if args.dataset == "all" and install is not None and not (install / ROR_DAT_SUBPATH).is_file():
+        if (install / DAT_SUBPATH).is_file():
+            ctx.out(f"note: no Return of Rome .dat at {install / ROR_DAT_SUBPATH}: looking at the AoE2 tables only")
+        datasets = ["aoe2"]
+    worst = EXIT_OK
+    for dataset in datasets:
+        if len(datasets) > 1:
+            ctx.out(f"=== {DATASET_LABELS[dataset]} ===")
+        dctx = dataset_context(ctx, dataset)
+        if args.status:
+            result = status(install, dctx)
+        elif args.check:
+            result = check(install, dctx, keep=args.keep)
+        else:
+            result = regenerate(install, dctx, only=only, keep=args.keep)
+        worst = max(worst, result)
+        if result == EXIT_CANNOT:
+            break
+    return worst
 
 
 if __name__ == "__main__":

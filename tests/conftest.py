@@ -536,6 +536,16 @@ def _no_perf_trace_hooks_left():
 
 
 @pytest.fixture(autouse=True)
+def _aoe2_dataset():
+    """GH #67: every test starts and ends with the AoE2 game data active."""
+    from descape import game_dataset
+
+    game_dataset.set_active(game_dataset.AOE2)
+    yield
+    game_dataset.set_active(game_dataset.AOE2)
+
+
+@pytest.fixture(autouse=True)
 def _no_gc_hold_left():
     """A warm started under the shared QApplication engages descape.gc_hold;
     its raised threshold2 would otherwise stop full collections for the rest
@@ -631,7 +641,7 @@ def _isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_module, "CONFIG_PATH", fake_config_path)
     for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
-    # Settings > General lists content_roots(), so a developer's AOE2DE_PROFILE_PATH must not reach it (GH #126).
+    # Settings > Mods lists content_roots(), so a developer's AOE2DE_PROFILE_PATH must not reach it (GH #126).
     # setenv first so teardown restores "unset" even after testkit.isolate_settings() sets it (TASK-378).
     monkeypatch.setenv("AOE2DE_PROFILE_PATH", "")
     monkeypatch.delenv("AOE2DE_PROFILE_PATH", raising=False)

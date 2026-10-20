@@ -112,6 +112,14 @@ def test_terrain_differs_only_by_the_editors_conversions() -> None:
     assert seen["conversion"] and seen["foundation"], seen
 
 
+_STALE_RESAVE = pytest.mark.xfail(
+    strict=True,
+    reason="STALE RESAVE: the generator moved after the 2026-10-17 in-game save (TASK-358 lays Short Marble "
+    "2190 runs flush, TASK-396 types create_decision's options as text). Refresh the resave in AoE2:DE.",
+)
+
+
+@_STALE_RESAVE
 def test_units_differ_only_by_the_measured_rewrites() -> None:
     generated, resaved = _units(MAP_PATH), _units(RESAVE_PATH)
     dropped: dict[int, set[int]] = {}
@@ -153,6 +161,7 @@ def test_each_recomputed_field_really_changes(field: str) -> None:
     assert any(getattr(generated[ref][1], field) != getattr(resaved[ref][1], field) for ref in generated.keys() & resaved.keys())
 
 
+@_STALE_RESAVE
 def test_triggers_and_variables_survive_unchanged() -> None:
     generated = parse_triggers(_loaded(MAP_PATH))
     resaved = parse_triggers(_loaded(RESAVE_PATH))

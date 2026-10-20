@@ -64,7 +64,7 @@ _ZOOMS = {"s": -2, "m": 0, "l": 1}
 # frame id -> (scene, style, mip, crop tiles)
 _FRAMES = {
     **{f"stepped_{z}": ("row", "stepped", mip, _ROW_TILES) for z, mip in _ZOOMS.items()},
-    # One Sloped frame, at level 0: Sloped has no finer level, and its coarser ones are not framed here.
+    # One Sloped frame, at level 0: its other levels (Stepped's ladder) are not framed here.
     "sloped_m": ("row", "sloped", 0, _ROW_TILES),
     **{f"flat_{z}": ("row", "flat", mip, _ROW_TILES) for z, mip in _ZOOMS.items()},
     "eye_a": ("revealer", "stepped", 1, _REVEALER_TILES),

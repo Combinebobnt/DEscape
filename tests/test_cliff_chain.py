@@ -106,13 +106,14 @@ def _typed_arms(steps, side=1):
     return out
 
 
-def _assert_on_the_table(nodes, steps, side=1):
+def _assert_on_the_table(nodes, steps, side=1, suffix_of=SUFFIX_OF):
     """Every node is the table's piece for its typed path arms, at the frame
-    its position gives, and resolved."""
+    its position gives, and resolved. `suffix_of` is the family's own
+    const -> suffix map, so a const from another family fails it."""
     assert [n.index for n in nodes] == list(range(len(steps) + 1))
     for node, arms in zip(nodes, _typed_arms(steps, side), strict=True):
         suffix, frames = _table_piece(arms)
-        assert (SUFFIX_OF[node.unit_const], node.rotation) == (suffix, _twin(frames, node.bounds)), (node, arms)
+        assert (suffix_of[node.unit_const], node.rotation) == (suffix, _twin(frames, node.bounds)), (node, arms)
         assert node.arms == frozenset(arms)
         assert node.resolved, node
     for (earlier, later), step in zip(pairwise(nodes), steps, strict=True):
@@ -298,6 +299,36 @@ def test_a_straight_east_run_row_by_row():
     ]
 
 
+def _first_pieces():
+    return {name: pieces[0].unit_const for name, pieces in sorted(cliff_catalog.families().items())}
+
+
+_STRAIGHT_DRAGS = {
+    "east": [(x, 40) for x in range(40, 61)],
+    "west": [(x, 40) for x in range(60, 39, -1)],
+    "south": [(40, y) for y in range(40, 61)],
+    "north": [(40, y) for y in range(60, 39, -1)],
+}
+
+
+@pytest.mark.parametrize("direction", sorted(_STRAIGHT_DRAGS))
+@pytest.mark.parametrize("family", sorted(_first_pieces()))
+def test_a_straight_drag_is_straight_in_every_family(family, direction):
+    """TASK-358: Short Marble 01 (2190) is 3x2, and the span-only offset for two
+    3x2 pieces is the s6/s7 corners' (3, -1): a run east climbed a tile a piece."""
+    pieces = {p.unit_const for p in cliff_catalog.families()[family]}
+    tiles = _STRAIGHT_DRAGS[direction]
+    nodes = _drag(_stroke(const=_first_pieces()[family]), tiles)
+    step = (tiles[1][0] - tiles[0][0], tiles[1][1] - tiles[0][1])
+    assert len(nodes) >= 5
+    assert [n.index for n in nodes] == list(range(len(nodes)))
+    assert all(n.unit_const in pieces and n.resolved for n in nodes), _rows(nodes)
+    for earlier, later in pairwise(nodes):
+        assert cliff_connectivity.adjacency_dir(earlier.bounds, later.bounds) == step
+    cross = {n.bounds[2:] if step[0] else n.bounds[:2] for n in nodes}
+    assert len(cross) == 1, _rows(nodes)
+
+
 # The eight directed L turns: the suffix of each of the five nodes (cap, leg,
 # corner, leg, cap), and the frames of the start cap, corner and end cap. Both
 # legs tall gives the all-3x3 corners (3 and 15); a mixed turn takes the 3x2
@@ -343,6 +374,31 @@ def test_a_zig_zag_alternates_front_and_back_legs():
     _assert_on_the_table(nodes, steps)
 
 
+# Manual step 4's zig-zag, four turns: the steps, then each leg's middle
+# node's suffix (1 the tall rock face, 2 the thin ridge) and each corner's
+# (suffix, frame), typed from the shape table. East-north alternates
+# front and back on every leg; the square wave runs front, front, back,
+# front, front and so meets both all-3x3 corners and both mixed ones.
+_ZIG_ZAGS = {
+    "east_north": ([E, E, N, N, E, E, N, N, E, E], [1, 2, 1, 2, 1], [(5, 6), (4, 12), (5, 6), (4, 12)]),
+    "square_wave": ([S, S, E, E, N, N, E, E, S, S], [1, 1, 2, 1, 1], [(1, 3), (5, 6), (4, 12), (1, 15)]),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ZIG_ZAGS))
+def test_a_four_turn_zig_zag_alternates_its_legs_and_joins_every_corner(name):
+    """Pass conditions: every node is the table's piece for its typed arms
+    at its position's frame and resolved, each node shares an edge with the
+    next along its step; the legs' sizes and the four corners' pieces are
+    the literals above; no node carries an arm beyond its two path arms."""
+    steps, legs, corners = _ZIG_ZAGS[name]
+    nodes = _path((40, 40), steps)
+    _assert_on_the_table(nodes, steps)
+    assert [SUFFIX_OF[nodes[i].unit_const] for i in (1, 3, 5, 7, 9)] == legs
+    assert [(SUFFIX_OF[nodes[i].unit_const], nodes[i].rotation) for i in (2, 4, 6, 8)] == corners
+    assert all(len(node.arms) == 2 for node in nodes[1:-1])
+
+
 def test_a_staircase_drag_lays_table_pieces_and_ends_at_the_cursor():
     """A fast diagonal drag from (10, 10) to (26, 26): cardinal steps, larger
     overshoot first, every node the table's piece for its typed arms."""
@@ -351,6 +407,21 @@ def test_a_staircase_drag_lays_table_pieces_and_ends_at_the_cursor():
     assert set(stroke.steps) == {E, S} and len(stroke.steps) >= 6
     _assert_on_the_table(nodes, stroke.steps)
     assert _distance((26, 26), nodes[-1].bounds) <= 2
+
+
+def test_a_staircase_drag_back_up_lays_thin_table_pieces_and_ends_at_the_cursor():
+    """The same diagonal drawn the other way, (26, 26) to (10, 10): the
+    screen-leftward drag in iso. Pass conditions: west and north steps only,
+    at least six; every node the table's piece for its typed arms (thin
+    legs, so 2x2 corners and the thin caps) at its position's frame and
+    resolved, each sharing an edge with the next; the last node within 2
+    tiles of the cursor."""
+    stroke = _stroke()
+    nodes = _drag(stroke, [(26, 26), (10, 10)])
+    assert set(stroke.steps) == {W, N} and len(stroke.steps) >= 6
+    _assert_on_the_table(nodes, stroke.steps)
+    assert {SUFFIX_OF[n.unit_const] for n in nodes[1:-1]} == {8, 9}
+    assert _distance((10, 10), nodes[-1].bounds) <= 2
 
 
 def test_the_run_is_not_each_shape_s_own_majority_piece():
@@ -528,16 +599,36 @@ def test_a_contact_the_table_has_no_piece_for_keeps_the_path_shape():
 
 
 def test_a_shape_with_no_piece_keeps_the_picked_piece_and_frame(monkeypatch):
-    """Marble has 23 frames, so the thin north cap (frame 23) does not exist
-    there: that node keeps the picker's piece and frame and is flagged."""
-    marble_01 = 2178
-    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
-    nodes = _path((40, 40), [N, N], const=marble_01, frame=5)
+    """A node whose typed arms the table has no piece for keeps the picker's
+    piece and frame and is flagged; the rest of the run is unaffected."""
+    real = cliff_connectivity.resolve_shape
+
+    def no_thin_north_cap(arms, **kwargs):
+        return None if arms == {N: t} else real(arms, **kwargs)
+
+    monkeypatch.setattr(cliff_connectivity, "resolve_shape", no_thin_north_cap)
+    nodes = _path((40, 40), [N, N], const=DEFAULT_01, frame=5)
     assert [(n.unit_const, n.rotation, n.resolved) for n in nodes] == [
-        (marble_01, 5, False),
-        (cliff_catalog.piece_for_suffix(marble_01, 2), _twin((7, 8), nodes[1].bounds), True),
-        (cliff_catalog.piece_for_suffix(marble_01, 2), 22, True),
+        (DEFAULT_01, 5, False),
+        (DEFAULT_02, _twin((7, 8), nodes[1].bounds), True),
+        (DEFAULT_02, 22, True),
     ]
+
+
+@pytest.mark.parametrize(("family_01", "family_02"), [(2178, 2179), (2190, 2191)], ids=["marble", "short marble"])
+def test_a_back_facing_run_drawn_north_in_marble_starts_on_the_thin_straight_7(family_01, family_02, monkeypatch):
+    """TASK-358, user decision 2026-10-19: Marble and Short Marble have 23
+    frames, so no thin north cap 23; node 0 takes that row's next frame, 7,
+    as a 1x3 centred on the press like every other family's cap."""
+    # Their real .sld count; with no install Marble falls back to the .dat's 25.
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    nodes = _path((40, 40), [N, N], const=family_01, frame=5)
+    assert [(n.unit_const, n.rotation, n.resolved) for n in nodes] == [
+        (family_02, 7, True),
+        (family_02, _twin((7, 8), nodes[1].bounds), True),
+        (family_02, 22, True),
+    ]
+    assert [n.bounds for n in nodes] == [(40, 41, 39, 42), (40, 41, 36, 39), (40, 41, 33, 36)]
 
 
 def test_a_node_overlapping_an_existing_cliff_is_skipped_but_the_run_continues():
@@ -942,7 +1033,8 @@ def test_random_drags_keep_every_layout_invariant():
             assert node.arms >= path[i]
             if node.resolved:
                 assert node.arms <= _realized(node, nodes, [])
-        for a, b in pairwise(sorted(n.index for n in nodes)):
+        # Nodes come in path order, each path index at most once.
+        for a, b in pairwise(n.index for n in nodes):
             assert a < b
         for i, a in enumerate(nodes):
             x0, x1, y0, y1 = a.bounds
@@ -1044,6 +1136,11 @@ _INK_RUNS = {
     "l_west_north": [W, W, N, N],
     "u_turn": [S, S, E, E, N, N],
     "zig_zag": [S, S, E, E, S, S],
+    "zig_zag_four_turns_east_north": _ZIG_ZAGS["east_north"][0],
+    "zig_zag_four_turns_square_wave": _ZIG_ZAGS["square_wave"][0],
+    # What a fast diagonal drag lays, pinned by the test after the next.
+    "staircase_east_south": [E, S] * 5,
+    "staircase_west_north": [W, N] * 5,
 }
 
 
@@ -1051,6 +1148,51 @@ _INK_RUNS = {
 def test_a_resolved_run_draws_one_connected_wall(name):
     _require_install()
     assert len(_walls(*_ink(_placed(_path((40, 40), _INK_RUNS[name]))))) == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "start", "end"),
+    [("staircase_east_south", (40, 40), (56, 56)), ("staircase_west_north", (56, 56), (40, 40))],
+)
+def test_the_staircase_ink_runs_are_what_a_diagonal_drag_lays(name, start, end):
+    """Ties the two literal staircases above to the drag: a fast 45-degree
+    drag either way steps one tile each axis in turn, x first."""
+    stroke = _stroke()
+    _drag(stroke, [start, end])
+    assert stroke.steps == _INK_RUNS[name]
+
+
+# A second full family end to end (TASK-113 manual step 10): Snow, nine
+# pieces 1858..1866 at 24 frames each. Marble and Short Marble are not used:
+# they have known gaps of their own (TASK-358).
+SNOW = {suffix: 1857 + suffix for suffix in range(1, 10)}
+SNOW_SUFFIX_OF = {const: suffix for suffix, const in SNOW.items()}
+
+
+@pytest.mark.parametrize("name", sorted(_L_TURNS))
+def test_each_directed_l_turn_in_the_snow_family_takes_the_table_s_corner_and_legs(name):
+    """Pass conditions: every node is a Snow const (no fall-through into
+    another family), the five suffixes and the cap, corner and cap frames
+    are the table's (the same literals as the default family's), and every
+    node is the table's piece at its position's frame, resolved, sharing an
+    edge with the next."""
+    (first, second), suffixes, (start, corner, end) = _L_TURNS[name]
+    steps = [first, first, second, second]
+    nodes = _path((40, 40), steps, const=SNOW[1])
+    assert {n.unit_const for n in nodes} <= set(SNOW.values())
+    assert [SNOW_SUFFIX_OF[n.unit_const] for n in nodes] == suffixes
+    assert [nodes[0].rotation, nodes[2].rotation, nodes[4].rotation] == [start, corner, end]
+    _assert_on_the_table(nodes, steps, suffix_of=SNOW_SUFFIX_OF)
+
+
+@pytest.mark.parametrize("name", sorted(_INK_RUNS))
+def test_a_resolved_snow_run_draws_one_connected_wall(name):
+    """The ink-connectivity check over the Snow family's own decoded art:
+    every run above, laid with Snow 01 picked, is one 4-connected wall."""
+    _require_install()
+    nodes = _path((40, 40), _INK_RUNS[name], const=SNOW[1])
+    assert {n.unit_const for n in nodes} <= set(SNOW.values())
+    assert len(_walls(*_ink(_placed(nodes)))) == 1
 
 
 def test_the_l_drag_draws_one_wall_where_the_one_suffix_resolver_drew_two():

@@ -110,6 +110,7 @@ from descape import (
     eraser,
     find_objects,
     find_triggers,
+    game_dataset,
     garrison,
     gate_orientation,
     gc_hold,
@@ -235,7 +236,7 @@ from descape.render_cache import (
     UnitSplice,
 )
 from descape.resize_dialog import ResizeDialog
-from descape.scatter_dialog import ScatterDialog
+from descape.scatter_dialog import ScatterDialog, units_region
 from descape.scenario_io import (
     BLANK_TEMPLATE_TILES,
     TEMPLATE_DIR,
@@ -587,20 +588,26 @@ def _garrison_referrers(model, unit) -> list:
     return model.referencing(unit)
 
 
-@functools.cache
+@game_dataset.cache(maxsize=1)
 def _wall_consts() -> frozenset[int]:
     """Place Unit's wall-run consts (GH #98). Lazy: the graphic map it
     reads is not needed to import this module."""
     return frozenset(unit_sprites.wall_family_consts())
 
 
-_DEFAULT_WALL_CONST = 117  # Stone Wall
+_DEFAULT_WALL_CONST = 117  # Stone Wall in AoE2, Medium Wall in Return of Rome
 # The Cliff hover keeps one ghost's parts per tile crossed; past this many it starts over.
 _CLIFF_HOVER_PARTS_MAX = 64
 # The tools the wall button keeps active when it re-picks the wall.
 _WALL_TOOLS = ("place_unit", "wall_rect")
 # TASK-288: Place Unit and Scatter coerced a GAIA-only object to GAIA.
 _GAIA_ONLY_PLACED_SUFFIX = " (GAIA-only, so placed for GAIA)"
+# GH #196: Edit > Scatter Units in Region's tooltip, and why it is greyed with a map open.
+_SCATTER_TIP = (
+    "Place random copies of the Units panel's object across the selected region or around the selected units, "
+    "or move the selected units there"
+)
+_SCATTER_NO_AREA_TIP = "Select an area first: drag one with Select in Terrain mode, or select units in Units mode"
 
 
 def _gaia_only_owner_note(units, new_player: int) -> str:
@@ -859,22 +866,27 @@ class _WholeLabelComboBox(NoWheelComboBox):
 
 
 def _sync_hi_res() -> str:
-    """unit_sprites.set_hi_res() from Graphics Quality and the install (GH
-    #241): x2 art only at Enhanced with the Enhanced Graphics DLC installed.
-    Returns a status-log suffix at Enhanced, else ""."""
+    """unit_sprites.set_hi_res() from Graphics Quality (GH #241): x2 art at
+    Enhanced, each file falling back to x1 where the install has no x2.
+    Returns a status-log suffix at Enhanced naming the Enhanced Graphics DLC,
+    or Return of Rome's own x2 art under Return of Rome, else ""."""
     enhanced = settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_MAX
-    installed = enhanced and unit_sprites.x2_art_installed()
-    unit_sprites.set_hi_res(installed)
+    unit_sprites.set_hi_res(enhanced)
     if not enhanced:
         return ""
-    return " (high-resolution unit art on)" if installed else " (Enhanced Graphics DLC not installed: regular unit art)"
+    if game_dataset.is_ror() and unit_sprites.ror_x2_art_installed():
+        return " (Return of Rome high-resolution unit art on)"
+    if unit_sprites.x2_art_installed():
+        return " (high-resolution unit art on)"
+    return " (Enhanced Graphics DLC not installed: regular unit art)"
 
 
 class SettingsDialog(QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
-    step, not a recurring one), Appearance (theme, render quality), and
-    Keybinds. Split into tabs so more settings in any category have an
+    step, not a recurring one), Mods (the profile folder and Mod art
+    list), Appearance (theme, render quality), Saving, Keybinds and
+    Advanced. Split into tabs so more settings in any category have an
     obvious place to land without reshaping this dialog."""
 
     def __init__(self, parent: ViewerWindow):
@@ -885,12 +897,15 @@ class SettingsDialog(QDialog):
         self._window = parent
 
         tabs = QTabWidget()
-        # Scrolls too since the profile folder rows and their scanned list landed (GH #126).
+        # Scrolls (GH #126); see-through for the install status label.
         tabs.addTab(self._scrolled_tab(self._build_general_tab(), see_through=True), "General")
+        # GH #244: the profile folder and Mod art list; see-through for their status label.
+        tabs.addTab(self._scrolled_tab(self._build_mods_tab(), see_through=True), "Mods")
         # TASK-210: Appearance alone outgrows a 768 px screen, so it scrolls.
         tabs.addTab(self._scrolled_tab(self._build_appearance_tab()), "Appearance")
         tabs.addTab(self._build_saving_tab(), "Saving")
         tabs.addTab(self._build_keybinds_tab(), "Keybinds")
+        tabs.addTab(self._build_advanced_tab(), "Advanced")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.close)
@@ -941,8 +956,6 @@ class SettingsDialog(QDialog):
         layout.addWidget(divider)
 
         self._add_install_section(layout)
-        self._add_profile_section(layout)
-        self._add_mod_art_section(layout)
 
         if sys.platform.startswith("linux"):
             self.xwayland_checkbox = QCheckBox("X11 compatibility on Wayland (takes effect next launch)")
@@ -957,6 +970,15 @@ class SettingsDialog(QDialog):
             self.xwayland_checkbox.toggled.connect(self._on_xwayland_toggled)
             layout.addWidget(self.xwayland_checkbox)
 
+        layout.addStretch(1)
+        return tab
+
+    def _build_mods_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        # Profile first: its refresh also refreshes the mod art list once that exists.
+        self._add_profile_section(layout)
+        self._add_mod_art_section(layout)
         layout.addStretch(1)
         return tab
 
@@ -1086,7 +1108,8 @@ class SettingsDialog(QDialog):
             "measured safe for memory. With the game's free Enhanced Graphics "
             "DLC installed, Enhanced also draws units and buildings from its "
             "high-resolution art when zoomed in; without it, they use their "
-            "regular art."
+            "regular art. Return of Rome scenarios use Return of Rome's own "
+            "high-resolution art, which needs no DLC."
         )
         self.graphics_quality_slider.setValue(settings.get_graphics_quality())
         self.graphics_quality_label = QLabel()
@@ -1949,6 +1972,8 @@ class SettingsDialog(QDialog):
             text = "Enhanced Graphics DLC: detected. Enhanced draws its high-resolution unit art when zoomed in."
         else:
             text = "Enhanced Graphics DLC: not detected. Enhanced uses the regular unit art."
+        if unit_sprites.ror_x2_art_installed():
+            text += " Return of Rome scenarios draw Return of Rome's own high-resolution art either way."
         # Green when detected; a missing DLC is a normal setup, not an error, so it stays plain.
         self.x2_art_label.setStyleSheet(f"color: {status_color(True, on_tab_page=True)};" if detected else "")
         self.x2_art_label.setText(text)
@@ -2049,6 +2074,40 @@ class SettingsDialog(QDialog):
         "tool": "Tools",
         "adjust": "Tool Value",
     }
+
+    def _build_advanced_tab(self) -> QWidget:
+        """Game data (GH #67): which game draws every opened scenario. A setting
+        rather than a View toggle, since anything but Auto shows the other
+        game's file read-only. Set before connecting, like the Saving tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Game data:"))
+        self.game_data_combo = QComboBox()
+        for choice_id, label in settings.GAME_DATA_CHOICES:
+            self.game_data_combo.addItem(label, choice_id)
+        self.game_data_combo.setCurrentIndex(self.game_data_combo.findData(settings.get_game_data()))
+        self.game_data_combo.setToolTip(
+            "Which game's units, names and art draw a scenario. Auto uses the game the "
+            "file was made for. The other two show every file in that game's data, and a "
+            "file made for the other game opens read-only."
+        )
+        self.game_data_combo.currentIndexChanged.connect(self._on_game_data_changed)
+        row.addWidget(self.game_data_combo)
+        row.addStretch(1)
+        layout.addLayout(row)
+        note = QLabel(
+            "Leave this on Auto unless a file names the wrong game. Applies to the open "
+            "scenario now and to every scenario opened later."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return tab
+
+    def _on_game_data_changed(self, index: int) -> None:
+        self._window.set_game_data(self.game_data_combo.itemData(index))
+        self._window._log_status(f"Game data: {self.game_data_combo.itemText(index)}")
 
     def _build_saving_tab(self) -> QWidget:
         """Autosave's four controls plus the .bak/.orig switch.
@@ -2325,8 +2384,9 @@ class SettingsDialog(QDialog):
             combo = _WholeLabelComboBox()
             # The widest action label widens the dialog; the tab still never scrolls sideways.
             combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-            for action in settings.WHEEL_ACTIONS:
+            for i, action in enumerate(settings.WHEEL_ACTIONS):
                 combo.addItem(settings.WHEEL_ACTION_LABELS[action], action)
+                combo.setItemData(i, settings.WHEEL_ACTION_HINTS[action], Qt.ToolTipRole)
             combo.setCurrentIndex(settings.WHEEL_ACTIONS.index(bindings[slot]))
             combo.currentIndexChanged.connect(lambda _index, s=slot: self._on_wheel_binding_changed(s))
             # Spans the key-box and Default columns, and Default takes Clear's, so no label is cut.
@@ -2345,7 +2405,8 @@ class SettingsDialog(QDialog):
         self._wheel_note = QLabel(
             "Two rows may share an action. Any other modifier combination zooms. "
             "Holding Shift or Alt for a tool's own modifier (a straight wall run, off-grid placement) "
-            "uses that row. Some desktops take Alt + Wheel for themselves."
+            "uses that row. Some desktops take Alt + Wheel for themselves. "
+            "Brush size and Rotate preview zoom in a tool they don't apply to."
         )
         self._wheel_note.setWordWrap(True)
         grid.addWidget(self._wheel_note, row, 0, 1, 4)
@@ -2655,7 +2716,7 @@ class SettingsDialog(QDialog):
             item.setToolTip(str(root.path))
             self.profile_roots_list.addItem(item)
         if self.profile_roots_list.count() == 0:
-            self.profile_roots_list.addItem("Nothing yet: set the install path above.")
+            self.profile_roots_list.addItem("Nothing yet: set the install path on the General tab.")
         skipped = content_roots.skipped_mods(profile) if profile is not None else []
         self.profile_skipped_label.setText(
             f"{len(skipped)} mod{'s' if len(skipped) != 1 else ''} disabled in the game's mod list "
@@ -3121,9 +3182,10 @@ class ViewerWindow(QMainWindow):
         # so a release that somehow arrives without a matching press is a
         # no-op instead of an AttributeError.
         self._cliff_stroke: cliff_chain.ChainStroke | None = None
-        # The map's cliffs and scenario.unit_gen as that stroke's press saw them.
+        # The map's cliffs, the scenario and its unit_gen as that stroke's press saw them.
         self._cliff_stroke_existing: list[cliff_chain.ExistingCliff] = []
         self._cliff_stroke_gen = 0
+        self._cliff_stroke_scenario: weakref.ref | None = None
         # One of terrain_style.TERRAIN_STYLES -- see the toolbar combo built
         # in _build_toolbar(). Defaults to "stepped" (Flat alone no longer
         # shows elevation at all -- see render_tile()'s docstring). Persists
@@ -3552,6 +3614,16 @@ class ViewerWindow(QMainWindow):
             lambda: self.brush_size_spin.isEnabled(),  # noqa: PLW0108
             lambda steps: self.brush_size_spin.stepBy(steps),  # noqa: PLW0108
         )
+        # GH #245: the rotate binding also turns a just-pasted region, through the Rotate keys' own path.
+        self.map_view.set_wheel_paste_hooks(
+            # Mid-stroke or mid-drag on_region_transform() refuses, so the wheel zooms there instead.
+            lambda: self._region_turn_target() and not (self._stroke_in_progress() or self.map_view.region_drag_live()),
+            lambda direction: self.on_region_transform(
+                region_transform.ROTATE_CW
+                if direction * MapView.PLACE_WHEEL_DIRECTION > 0
+                else region_transform.ROTATE_CCW
+            ),
+        )
         self.map_view.set_cliff_preview(self.on_cliff_preview)
         # The Move tool's press picks what to drag; GH #75: a drag on a group member moves the group.
         self.map_view.set_unit_drag_hooks(self.on_move_press, self._is_group_key)
@@ -3819,13 +3891,10 @@ class ViewerWindow(QMainWindow):
         self.deselect_action = QAction("&Deselect", self)
         self.deselect_action.triggered.connect(self._dispatch_deselect)
         edit_menu.addAction(self.deselect_action)
-        # Gated on the committed region alone, like Copy/Paste above, so it
-        # needs no round trip back to Terrain mode to stay reachable.
-        # "U&nits": Cut owns T in every one of its texts.
+        # Enabled by a committed region (in any mode) or a Units-mode selection
+        # (GH #196); _update_tool_enabled() owns the gate. "U&nits": Cut owns T.
         self.scatter_action = QAction("Scatter U&nits in Region…", self)
-        self.scatter_action.setToolTip(
-            "Place random copies of the Units panel's object across the selected region, or move the selected units into it"
-        )
+        self.scatter_action.setToolTip(_SCATTER_TIP)
         self.scatter_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.scatter_action.triggered.connect(self.scatter_units_in_region)
         edit_menu.addAction(self.scatter_action)
@@ -5897,22 +5966,27 @@ class ViewerWindow(QMainWindow):
 
     def scatter_units_in_region(self) -> None:
         """Edit > Scatter Units in Region…: N randomized copies of the Units
-        panel's chosen object across the committed Select region, as one undo
-        step.
+        panel's chosen object across an area, as one undo step. The area is
+        the committed Select region or, with none, the Units-mode selection's
+        bounding box grown by the dialog's Grow (GH #196); the dialog picks.
 
         The object and the default owner come from the Units panel, which is
-        a persistent widget whose readers work in every mode, so this action
-        needs no mode gate of its own (see _update_tool_enabled). The
-        dialog's other mode moves the Units-mode selection instead (GH #105,
+        a persistent widget whose readers work in every mode, so a region
+        needs no mode gate (see _update_tool_enabled). The dialog's other mode
+        moves the Units-mode selection instead (GH #105,
         _scatter_selected_units).
         """
         if self.scenario is None:
             return
-        if self._region is None:
-            self._log_status("Scatter: select a region first (Terrain mode, Select tool)")
-            return
         object_id = self.units_panel.selected_object_const()
         selected = self._selected_unit_entries()
+        mm = self.scenario.map_manager
+        if self._region is None and units_region([e.unit for e in selected], mm.map_width, mm.map_height) is None:
+            self._log_status(
+                "Scatter: no area yet. Drag one with Select in Terrain mode, "
+                "or select units in Units mode to scatter around them"
+            )
+            return
         if object_id is None and not selected:
             # Place Unit's own rule, so a scatter with nothing chosen says so
             # rather than opening a dialog that cannot be completed.
@@ -6075,18 +6149,47 @@ class ViewerWindow(QMainWindow):
         self._last_wall_const = const
         self._refresh_wall_pick_button()
 
+    def _refresh_wall_menu(self) -> None:
+        """The wall button's menu: the active dataset's wall family, less what its
+        editor hides (GH #67: none in AoE2; 119, 370, 788 and 1062 in Return of
+        Rome). The last-used wall falls back to the default when it is gone."""
+        listed = {entry.id for entry in object_catalog.objects() if not entry.hidden}
+        consts = [const for const in unit_sprites.wall_family_consts() if const in listed]
+        menu = self.wall_pick_button.menu()
+        menu.clear()
+        for const in consts:
+            action = menu.addAction(_unit_name(const))
+            action.setData(const)
+            action.triggered.connect(lambda _=False, c=const: self._arm_wall(c))
+        if self._last_wall_const not in consts:
+            self._last_wall_const = _DEFAULT_WALL_CONST
+        self._refresh_wall_pick_button()
+
+    def _refresh_unit_tool_menus(self) -> None:
+        """GH #67: the wall menu and the cliff families follow the active game dataset."""
+        self._refresh_wall_menu()
+        self._populate_cliff_families()
+
     def _refresh_wall_pick_button(self) -> None:
         # _unit_name(), as the wall-run status line: object_name() reads "WALL2" with no install.
         self.wall_pick_button.setText(f"Wall: {_unit_name(self._last_wall_const)}")
 
     def _populate_cliff_families(self) -> None:
-        """One-time (construction-time) fill of the Family combo -- cliff
-        families are static within a session, unlike Piece (repopulated per
-        family) and Frame (re-ranged per piece) below."""
+        """Fills the Family combo, at construction and on every game dataset
+        change (GH #67: Return of Rome has no Short Marble). Keeps the picked
+        family and piece when the new lists still have them."""
+        current = self.cliff_family_combo.currentData()
+        piece = self.cliff_piece_combo.currentData()
         self._cliff_families = cliff_catalog.families()
+        self.cliff_family_combo.blockSignals(True)
+        self.cliff_family_combo.clear()
         for file_name in sorted(self._cliff_families, key=cliff_catalog.family_label):
             self.cliff_family_combo.addItem(cliff_catalog.family_label(file_name), file_name)
+        self.cliff_family_combo.setCurrentIndex(max(0, self.cliff_family_combo.findData(current)))
+        self.cliff_family_combo.blockSignals(False)
         self._on_cliff_family_changed(self.cliff_family_combo.currentIndex())
+        if piece is not None and self.cliff_piece_combo.findData(piece) >= 0:
+            self.cliff_piece_combo.setCurrentIndex(self.cliff_piece_combo.findData(piece))
 
     def _on_cliff_family_changed(self, _index: int) -> None:
         """Repopulates Piece for the newly-selected family. Signals blocked
@@ -6129,9 +6232,9 @@ class ViewerWindow(QMainWindow):
     # the node after it exists). One undo record per stroke either way.
     #
     # A press-release without moving is a one-tile stroke, so Stage 1's
-    # click-to-place gesture survives the widening unchanged: a lone node
-    # has no neighbours, and cliff_chain falls that case back to the
-    # Piece/Frame picker's own values rather than the connectivity table.
+    # click-to-place gesture survives the widening: a lone node places the
+    # Piece/Frame picker's own piece and frame, unless it touches an
+    # existing cliff, whose contact shapes it (and may reshape that cliff).
     #
     # Consequence worth naming: nothing repaints until release, since the
     # stroke mutates nothing before then. That's Convert's own established
@@ -6155,8 +6258,10 @@ class ViewerWindow(QMainWindow):
             return
         mm = self.scenario.map_manager
         self._cliff_stroke_existing, index = self._cliff_existing()
-        # A join rewrites live units: a mid-drag undo would leave them stale.
+        # A join rewrites live units: a mid-drag undo or document swap would leave them stale.
+        # unit_gen restarts per loaded file, so the scenario's identity is kept too.
         self._cliff_stroke_gen = self.scenario.unit_gen
+        self._cliff_stroke_scenario = weakref.ref(self.scenario)
         self._cliff_stroke = cliff_chain.ChainStroke(
             map_width=mm.map_width,
             map_height=mm.map_height,
@@ -6289,9 +6394,10 @@ class ViewerWindow(QMainWindow):
             self.map_view.refresh_cliff_ghost()
 
     def _commit_cliff_stroke(self, stroke: cliff_chain.ChainStroke, existing: list) -> None:
-        if self.scenario.unit_gen != self._cliff_stroke_gen:
-            # An undo or redo mid-drag: the stroke's view of the map's cliffs
-            # is stale, and a rewrite raising after the adds would not roll back.
+        pressed_on = self._cliff_stroke_scenario
+        if pressed_on is None or pressed_on() is not self.scenario or self.scenario.unit_gen != self._cliff_stroke_gen:
+            # An undo, redo or document swap mid-drag: the stroke's view of
+            # the map's cliffs is stale, and a rewrite would raise on it.
             self._log_status("Cliff: the map's units changed during the drag, so nothing was placed")
             return
         nodes = stroke.nodes()
@@ -6311,27 +6417,32 @@ class ViewerWindow(QMainWindow):
         # an index that this mutation doesn't rebuild.
         players = sorted({GAIA_PLAYER_ID, *(cliff.player for cliff, _ in rewrites)})
         with self._unit_edit(model, label, players):
+            # Rewrites first: an abort does not roll back, so a raise there must precede every add.
+            for cliff, frame in rewrites:
+                model.set_cliff_frame(cliff.unit, frame)
             for node in nodes:
                 model.add(
                     GAIA_PLAYER_ID, node.unit_const, node.x, node.y,
                     rotation=float(node.rotation), initial_animation_frame=node.rotation,
                 )
-            for cliff, frame in rewrites:
-                model.set_cliff_frame(cliff.unit, frame)
         # object_catalog.object_name(), not the usual _unit_name(): cliffs
         # are largely absent from the four library datasets _unit_name()'s
         # combined_object_name() merges (confirmed for 1339/2178/2199), so
         # that path falls through to "UNKNOWN_<id>" for most of them. The
         # piece combo's own label is already resolved correctly (Piece
         # combo, added via cliff_catalog.families()); reuse it instead of
-        # re-resolving the name a second, worse way. A run picks each node's
-        # piece size per junction, so only a lone node still on the combo's
-        # own piece is named.
+        # re-resolving the name a second, worse way. A run's pieces come from
+        # the drag direction and their neighbours, so only a lone node still
+        # on the combo's own piece is named.
         if len(nodes) == 1 and nodes[0].unit_const == self.cliff_piece_combo.currentData():
             status = f"Placed {self.cliff_piece_combo.currentText()} at ({nodes[0].x:g}, {nodes[0].y:g})"
         else:
-            what = "a cliff, its piece size" if len(nodes) == 1 else f"a run of {len(nodes)} cliffs, piece sizes"
-            status = f"Placed {what} chosen per junction from the picked family"
+            status = (
+                "Placed a cliff from the picked family, shaped to join the cliff beside it"
+                if len(nodes) == 1
+                else f"Placed a run of {len(nodes)} cliffs from the picked family, "
+                "shaped by the drag direction and their neighbours"
+            )
             unresolved = sum(1 for node in nodes if not node.resolved)
             if unresolved:
                 status += f" ({unresolved} at a junction with no matching piece)"
@@ -8621,15 +8732,10 @@ class ViewerWindow(QMainWindow):
             "Pick a wall to place. Click for the last-used wall, ▾ for another."
         )
         self.wall_pick_button.setEnabled(False)  # re-gated by _update_tool_enabled()
-        wall_menu = QMenu(self.wall_pick_button)
-        for const in unit_sprites.wall_family_consts():
-            action = wall_menu.addAction(_unit_name(const))
-            action.setData(const)
-            action.triggered.connect(lambda _=False, c=const: self._arm_wall(c))
-        self.wall_pick_button.setMenu(wall_menu)
+        self.wall_pick_button.setMenu(QMenu(self.wall_pick_button))  # filled by _refresh_wall_menu()
         self.wall_pick_button.clicked.connect(lambda: self._arm_wall(self._last_wall_const))
         self.wall_pick_param_action = param_toolbar.addWidget(self.wall_pick_button)
-        self._refresh_wall_pick_button()
+        self._refresh_wall_menu()
         # Carries the unit_wall_pick shortcut only, like the mode_* actions: no menu entry.
         self.wall_pick_action = QAction("Pick Last-Used Wall", self)
         self.wall_pick_action.setEnabled(False)  # re-gated by _update_tool_enabled()
@@ -8792,6 +8898,10 @@ class ViewerWindow(QMainWindow):
         self.ruler_hint_param_action = param_toolbar.addWidget(self.ruler_hint_label)
 
     def _build_status_bar(self) -> None:
+        # GH #67: why the document is read-only, while it is (_show_game_data_status()).
+        self.game_data_banner = QLabel()
+        self.game_data_banner.setVisible(False)
+        self.statusBar().addPermanentWidget(self.game_data_banner)
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
         self._update_mode_status()
@@ -9800,6 +9910,8 @@ class ViewerWindow(QMainWindow):
         anchor can still edit exec-order, and a file that failed the trigger
         alignment gate can still edit every scalar.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         specs = option_fields.specs_for(self.scenario)
         editable = set()
         if options_write_supported(self.scenario, specs):
@@ -9970,6 +10082,8 @@ class ViewerWindow(QMainWindow):
         than swallowed, since silently ignoring an edit the user made is the
         worse failure.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.option_edits is not None:
             return self.option_edits
         if self.scenario is None:
@@ -9999,6 +10113,8 @@ class ViewerWindow(QMainWindow):
         reentrancy hole, and the setEnabled(False)/_busy pair those sites
         use to close it cannot nest.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.unit_edits is not None:
             return self.unit_edits
         if self.scenario is None:
@@ -10214,6 +10330,8 @@ class ViewerWindow(QMainWindow):
         a players_write_supported() failure, and can fail on its own while
         every per-player row here stays editable.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         if self.scenario is None:
             return frozenset()
         if not options_write_supported(self.scenario, option_fields.specs_for(self.scenario)):
@@ -10570,6 +10688,8 @@ class ViewerWindow(QMainWindow):
         direction, so an Options-region failure must not grey out a single
         Map Options row.
         """
+        if self.game_data_lock_reason() is not None:
+            return False  # GH #67
         if self.scenario is None:
             return False
         if not self._options_carrier_ok():
@@ -10819,6 +10939,8 @@ class ViewerWindow(QMainWindow):
         independent in the other direction: a Diplomacy-section-only failure
         must not grey out Map Options or Players mode.
         """
+        if self.game_data_lock_reason() is not None:
+            return frozenset()  # GH #67
         if self.scenario is None:
             return frozenset()
         if not options_write_supported(self.scenario, option_fields.specs_for(self.scenario)):
@@ -10914,7 +11036,7 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None:
             self.messages_panel.clear_document()
             return
-        editable = self.scenario.messages_write_supported
+        editable = self.scenario.messages_write_supported and self.game_data_lock_reason() is None
         self.messages_panel.show_scenario(
             self.scenario,
             values=self._pending_message_values(),
@@ -10968,6 +11090,8 @@ class ViewerWindow(QMainWindow):
         rather than swallowed, since silently ignoring an edit the user made
         is the worse failure.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.message_edits is not None:
             return self.message_edits
         if self.scenario is None:
@@ -11042,8 +11166,10 @@ class ViewerWindow(QMainWindow):
     def _region_turn_target(self) -> bool:
         """Whether Rotate turns the armed pasted region (GH #197): one is armed,
         outside Triggers mode, and Units mode has no selection or Place target,
-        which keep today's Rotate. A pure read with no side effect: it never
-        runs the validity sweep, since _set_paste_move() re-gates through here."""
+        which keep today's Rotate. The wheel's rotate binding asks the same
+        (GH #245) and zooms where this says no. A pure read with no side
+        effect: it never runs the validity sweep, since _set_paste_move()
+        re-gates through here."""
         if not self._paste_armed() or self.mode == "triggers":
             return False
         return not (self.mode == "units" and (self._selection or self._place_rotate_armed()))
@@ -11068,7 +11194,9 @@ class ViewerWindow(QMainWindow):
         # never calls get_tile()/set_elevation() either, so squareness is
         # irrelevant to it too.
         has_map = self.scenario is not None
-        write_ok = has_map and self.scenario.terrain_write_supported
+        # GH #67: a document shown in the other game's data is read-only.
+        unlocked = self.game_data_lock_reason() is None
+        write_ok = has_map and self.scenario.terrain_write_supported and unlocked
         elevation_ok = write_ok and self.scenario.map_is_square
         # Phase 3's decision #6 scope cut (Stepped had no bounded
         # incremental redraw, so editing there meant a full ~1-2s
@@ -11082,7 +11210,7 @@ class ViewerWindow(QMainWindow):
         # the first real attempt, same as every trigger/option edit action.
         # Mode-inapplicability is handled separately, by ToolDef.modes'
         # visibility loop below, same as the four Terrain tools.
-        unit_editable = has_map and self.mode == "units"
+        unit_editable = has_map and self.mode == "units" and unlocked
         # The four tools below carried a `sloped_editable` gate until Track
         # C4's Step 4: Sloped had no hit-testing, so none of them could
         # resolve a click to a tile there. C4 landed (pick plane, warped
@@ -11151,10 +11279,10 @@ class ViewerWindow(QMainWindow):
         self.wall_pick_action.setEnabled(unit_editable)
         self.convert_action.setEnabled(unit_editable)
         # GH #184: has_map only, in both its modes; ToolDef.modes hides it elsewhere.
-        self.eraser_action.setEnabled(has_map)
+        self.eraser_action.setEnabled(has_map and unlocked)
         # Deliberately coarse: this runs on mode changes, not entry-tree
         # clicks, so the template itself is validated per click instead.
-        trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable
+        trigger_editable = has_map and self.mode == "triggers" and self.trigger_panel._editable and unlocked
         self.create_objects_action.setEnabled(trigger_editable)
         self._area_edit_editable = trigger_editable
         # Cycle Variant needs a selection as well as Units mode -- it acts on
@@ -11416,10 +11544,11 @@ class ViewerWindow(QMainWindow):
             self.deselect_action.setToolTip("Clear the selected region")
             self.select_all_action.setEnabled(has_map)
             self.deselect_action.setEnabled(has_map and self._region is not None)
-        # No mode gate, for Copy/Paste's reason above: a region is only drawn
-        # in Terrain mode, so gating scatter on Units mode would force a round
-        # trip through Terrain, Select, drag, Units on every use.
-        self.scatter_action.setEnabled(has_map and self._region is not None)
+        # A region enables it in any mode (Copy/Paste's reason above); so does a
+        # Units-mode selection, whose bounding box is the area (GH #196).
+        scatter_ok = has_map and (self._region is not None or (self.mode == "units" and bool(self._selection)))
+        self.scatter_action.setEnabled(scatter_ok)
+        self.scatter_action.setToolTip(_SCATTER_TIP if scatter_ok or not has_map else _SCATTER_NO_AREA_TIP)
 
         # The paste filter checkboxes: visible only while Select is active in
         # Terrain mode (in Units mode it picks units, not a region), same
@@ -12652,6 +12781,7 @@ class ViewerWindow(QMainWindow):
     def _push_clipboard(self, block) -> None:
         """Makes `block` the new active clipboard entry: the shared tail of
         Copy Region and Copy Units."""
+        block = self._with_file_game(block)
         with perf_trace.phase("thumbnail"):
             thumbnail = clipboard_history.thumbnail_rgb(block)
         self._clipboard_history.push(block, thumbnail, clipboard_history.default_label(block))
@@ -12746,6 +12876,8 @@ class ViewerWindow(QMainWindow):
     def _on_history_jump(self, target: int) -> None:
         with perf_trace.op("history"):
             self._history_jump(target)
+        # As _move_history(): the Cliff hover ghost reads the map's cliffs.
+        self.map_view.refresh_cliff_ghost()
 
     def _history_jump(self, target: int) -> None:
         """Undo or redo the whole span between the cursor and `target` as one
@@ -12830,6 +12962,9 @@ class ViewerWindow(QMainWindow):
         other children there are."""
         block = self._clipboard_history.active_block
         if self.scenario is None or block is None:
+            return
+        if refusal := self._cross_game_refusal(block):
+            self._log_status(f"Paste refused: {refusal}")
             return
         # A coalesced move still pending would leave _hover_tile one tile behind the cursor.
         self.map_view.flush_pending_move()
@@ -13002,6 +13137,8 @@ class ViewerWindow(QMainWindow):
         accumulated since, about a pivot fixed at the first turn, so four
         quarter turns give back the very first paste. The paste's own category
         flags are replayed, not the checkboxes. The clipboard is untouched.
+        The Rotate and Flip actions call this, and so does the wheel's rotate
+        binding (GH #245, MapView.set_wheel_paste_hooks), one call per notch.
         A handle (TASK-255) would call this too."""
         verb = "Rotate" if step in (region_transform.ROTATE_CW, region_transform.ROTATE_CCW) else "Flip"
         if self.scenario is None or self._stroke_in_progress() or self.map_view.region_drag_live():
@@ -13960,6 +14097,8 @@ class ViewerWindow(QMainWindow):
         edited (the alignment gate), so this can return None after a
         successful parse.
         """
+        if self._refuse_locked_edit():
+            return None
         if self.trigger_edits is not None:
             return self.trigger_edits
         if self.scenario is None:
@@ -14386,8 +14525,8 @@ class ViewerWindow(QMainWindow):
         indices = self.trigger_panel.selected_block_indices()
         if manager is None or not indices:
             return
-        self._trigger_clipboard = trigger_clipboard.copy_block(
-            manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version
+        self._trigger_clipboard = self._with_file_game(
+            trigger_clipboard.copy_block(manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
         )
         self._log_status(f"Copied {self._trigger_clipboard.label} to the clipboard.")
         self._sync_trigger_clipboard_state()
@@ -14592,6 +14731,8 @@ class ViewerWindow(QMainWindow):
         (cross-version paste is not supported)."""
         if block is None or self.scenario is None:
             return "Nothing to paste."
+        if refusal := self._cross_game_refusal(block):
+            return refusal
         here = self.scenario.scenario_version
         if block.scenario_version != here:
             return f"Copied from a {block.scenario_version} scenario; this one is {here}."
@@ -14630,8 +14771,8 @@ class ViewerWindow(QMainWindow):
         manager = parse_triggers(self.scenario)
         if manager is None or not 0 <= index < len(manager.triggers):
             return
-        self._entry_clipboard = trigger_clipboard.copy_entries(
-            manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version
+        self._entry_clipboard = self._with_file_game(
+            trigger_clipboard.copy_entries(manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
         )
         self._log_status(f"Copied {self._entry_clipboard.label} to the clipboard.")
         self._sync_entry_clipboard_state()
@@ -15766,13 +15907,17 @@ class ViewerWindow(QMainWindow):
         wall/connector const, or a shared-tile component past its cap -- see render_cache.
         _splice_plan()) -- that only changes how the SOURCE data got
         refreshed, never how much of the canvas needs recompositing, since
-        nothing but this edit's own unit(s) actually changed.
+        nothing but this edit's own unit(s) actually changed. Stepped/Sloped
+        pass the visible level as cap_levels, so a batch past both splice caps
+        still splices that level alone (TASK-031.61 c2x) and the split finds it
+        current instead of rebuilding it.
 
         Stepped/Sloped with sprites on size the VISIBLE level's repaint
         (map_view.viewport_chunk_target()'s mip) from the edited units' real
         extents: the tile term (terrain, marks' footprints, farm tiles) plus
         cache.sprite_extent_before(), read from that level's layer, and
-        cache.sprite_extent_after(), resolved per unit. Every other resident
+        cache.sprite_extent_after(), read from the spliced layer when that
+        level is current, else resolved per unit. Every other resident
         level evicts today's reach-padded bbox instead, so no non-visible level
         is resolved or recomposited here. Qt repaints only the visible level.
 
@@ -15847,7 +15992,7 @@ class ViewerWindow(QMainWindow):
                     else:
                         pre = self._cache.sprite_extent_before(changed, visible_mip)
         with perf_trace.phase("unit_sources"):
-            self._cache.invalidate_units(changed)
+            self._cache.invalidate_units(changed, cap_levels=None if visible_mip is None else (visible_mip,))
         old_tiles = {t for s in changed for t in s.old_tiles}
         new_tiles = {t for s in changed for t in s.new_tiles}
         touched = old_tiles | new_tiles
@@ -15935,9 +16080,10 @@ class ViewerWindow(QMainWindow):
         inside `bbox`, unless those rects are past their own ratio or cannot
         be sized; then it evicts as before, having paid for the sizing
         (1-19 ms on the 2026-10-12 sweep). A visible level the batch left
-        stale (an over-cap gen bump) then rebuilds here, inside the first
-        rect, not at the next paint. The other levels' eviction and the
-        region Qt repaints do not change."""
+        stale (a gen bump past VISIBLE_SPLICE_MAX_UNITS, or with sprites off)
+        then rebuilds here, inside the first rect, not at the next paint; one
+        under that bound was spliced current (TASK-031.61 c2x). The other
+        levels' eviction and the region Qt repaints do not change."""
         others = [mip for mip in self._cache.resident_levels() if mip != visible_mip]
         if others and reach is None:
             with perf_trace.phase("unit_bbox"):
@@ -16360,8 +16506,9 @@ class ViewerWindow(QMainWindow):
         pass none since TASK-031.61 A3, leaving the cap to the cache).
 
         Stepped/Sloped: always `splices`. invalidate_units(splices) either
-        splices or falls back to a source rebuild that the sprite memo keeps
-        cheap, and the whole-canvas path pays that same rebuild. Whether the
+        splices every level, splices the visible one alone past the caps
+        (TASK-031.61 c2x), or falls back to a source rebuild that the sprite
+        memo keeps cheap, and the whole-canvas path pays that same rebuild. Whether the
         bbox is then patched eagerly or only evicted is
         _patch_unit_edit_cache()'s call, by area.
 
@@ -16435,8 +16582,9 @@ class ViewerWindow(QMainWindow):
         snapshots. None unless every unit on both sides keeps an identical
         state and its relative order, and on Flat the change is within
         UNIT_SPLICE_MAX_UNITS. Stepped/Sloped have no cap here (TASK-031.61
-        A3): the cache refuses an over-cap batch with `cap`, then updates
-        units_by_tile in place or rebuilds it, and the repaint stays scoped."""
+        A3): past the caps the cache splices the visible level alone up to
+        VISIBLE_SPLICE_MAX_UNITS (TASK-031.61 c2x), else refuses with `cap` and
+        updates units_by_tile in place or rebuilds it; the repaint stays scoped."""
         capped = self._render_style == "flat"
         if capped and abs(len(now.units) - len(then.units)) > render_cache.UNIT_SPLICE_MAX_UNITS:
             return None
@@ -16612,7 +16760,123 @@ class ViewerWindow(QMainWindow):
             self.setWindowTitle("DEscape")
             return
         marker = "*" if self.edit_history.is_dirty else ""
-        self.setWindowTitle(f"{marker}{self.scenario.path.name} — DEscape")
+        game = " [Return of Rome]" if game_dataset.is_ror() else ""
+        self.setWindowTitle(f"{marker}{self.scenario.path.name}{game} — DEscape")
+
+    # -- game data (GH #67) ------------------------------------------------
+
+    def _file_game_dataset(self) -> str:
+        """The open file's own game: its header variant flag, AoE2 with no document."""
+        return game_dataset.from_variant(None if self.scenario is None else self.scenario.game_variant)
+
+    def _shown_game_dataset(self) -> str:
+        """Settings > Advanced > Game data's choice, or the file's own game under Auto."""
+        choice = settings.get_game_data()
+        return self._file_game_dataset() if choice == settings.GAME_DATA_DEFAULT else choice
+
+    def game_data_lock_reason(self) -> str | None:
+        """Why the open document may not be written, or None. Shown in the
+        status bar while it applies. GH #67: a file is editable only with its
+        own game's data shown (Return of Rome included)."""
+        if self.scenario is None:
+            return None
+        file_game, shown = self._file_game_dataset(), self._shown_game_dataset()
+        if shown != file_game:
+            return (
+                f"Read-only: showing {game_dataset.DISPLAY_NAMES[shown]} game data for a "
+                f"{game_dataset.DISPLAY_NAMES[file_game]} file. Set Settings > Advanced > Game data to Auto to edit it."
+            )
+        return None
+
+    def _cross_game_refusal(self, block) -> str:
+        """Why a clipboard block copied from the other game's file may not be pasted here, or "".
+        Compares the two files' own games, not the shown data: a locked view's copy keeps its file's ids."""
+        copied = getattr(block, "dataset", game_dataset.AOE2)
+        here = self._file_game_dataset()
+        if copied == here:
+            return ""
+        return (
+            f"Copied with {game_dataset.DISPLAY_NAMES[copied]} game data; this document is a "
+            f"{game_dataset.DISPLAY_NAMES[here]} file, where the same ids are other objects."
+        )
+
+    def _with_file_game(self, block):
+        """`block` stamped with the open file's own game, which its ids belong to (GH #67)."""
+        return dataclasses.replace(block, dataset=self._file_game_dataset())
+
+    def _refuse_locked_save(self) -> bool:
+        reason = self.game_data_lock_reason()
+        if reason is None:
+            return False
+        self._log_status(f"Save refused. {reason}")
+        QMessageBox.information(self, "Read-only", reason)
+        return True
+
+    def _refuse_locked_edit(self) -> bool:
+        """True (and says why) when an edit model is asked for on a locked document."""
+        reason = self.game_data_lock_reason()
+        if reason is not None:
+            self._log_status(f"Edit refused. {reason}")
+        return reason is not None
+
+    def set_game_data(self, choice: str) -> None:
+        """Settings > Advanced > Game data: saves `choice` (a settings.GAME_DATA_CHOICES id)
+        and redraws the open document in it. Display only: the file's own flag is never
+        changed, and a mismatch locks the document."""
+        settings.set_game_data(choice)
+        if game_dataset.set_active(self._shown_game_dataset()):
+            self._refresh_game_assets()
+        self._after_game_data_change()
+
+    def _refresh_game_lists(self) -> None:
+        """Every long-lived list built from game data: the Units catalog and its
+        thumbnails, the terrain swatches, the wall and cliff menus, the AI list."""
+        self.units_panel.reload_catalog()
+        self.units_panel.refresh_thumbnails()
+        self.terrain_panel.view.refresh_swatches()
+        self._refresh_unit_tool_menus()
+        self._ai_choices = None
+        self._ai_roots = None
+        self._ai_unresolvable = {}
+
+    def _refresh_game_assets(self) -> None:
+        """After a dataset switch on an open document: the lists, the map, the
+        unit pick index, the labels and the open mode's panel. The Find and
+        Map Analysis dialogs close, since their rows name the other game's objects."""
+        self._refresh_game_lists()
+        self._close_analysis_dialog()
+        self._close_find_dialog()
+        if self.scenario is None:
+            return  # Settings > Advanced with no document open
+        self.refresh_map()
+        if self.map_view._unit_index is not None:
+            self._rebuild_unit_index()
+        self._refresh_player_labels()
+        self._update_info()
+
+    def _after_game_data_change(self) -> None:
+        """Re-gates everything the lock reaches: tools, edit actions, the open panel, the title and banner."""
+        self._repopulate_players()
+        self._repopulate_map_options()
+        self._repopulate_diplomacy()
+        self._repopulate_messages()
+        self._update_tool_enabled()
+        self._update_edit_actions()
+        self._update_title()
+        self._show_game_data_status()
+
+    def _show_game_data_status(self) -> None:
+        """The status bar's lock banner, and one line when RoR art is missing."""
+        reason = self.game_data_lock_reason()
+        self.game_data_banner.setText(reason or "")
+        self.game_data_banner.setVisible(reason is not None)
+        install = asset_source.get_install_path()
+        ror_root = game_dataset.ror_root(install)
+        if game_dataset.is_ror() and ror_root is not None and not ror_root.is_dir():
+            self._log_status(
+                "Return of Rome art is not installed: names and stats are Return of Rome's, "
+                "units draw as coloured marks."
+            )
 
     def _confirm_discard_changes(self) -> bool:
         """True if it's OK to proceed: no scenario loaded, no unsaved edits,
@@ -16733,6 +16997,8 @@ class ViewerWindow(QMainWindow):
         """
         if self.scenario is None or not settings.get_autosave_enabled():
             return
+        if self.game_data_lock_reason() is not None:  # GH #67: a locked document is never written
+            return
         if not self.edit_history.is_dirty:
             return
         if self.edit_history.content_key == self._autosaved_content:
@@ -16785,7 +17051,7 @@ class ViewerWindow(QMainWindow):
         self._log_status(f"Autosaved to {slot.name}")
 
     def save(self) -> None:
-        if self.scenario is None:
+        if self.scenario is None or self._refuse_locked_save():
             return
         if self._untitled:
             # No path to write back to yet -- same first-save-needs-a-name
@@ -16824,7 +17090,7 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Saved to {path}{suffix}")
 
     def save_as(self) -> None:
-        if self.scenario is None:
+        if self.scenario is None or self._refuse_locked_save():
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save scenario as", self._save_as_start_path(), "AoE2 Scenario (*.aoe2scenario)"
@@ -17852,6 +18118,8 @@ class ViewerWindow(QMainWindow):
                     unit_filter=self._unit_filter, sprites=self._sprites_enabled,
                     layers=self._layers,
                 )
+                # Before set_source(): the new item's first paint can fire inside it (TASK-031.64).
+                self._cache.set_chunk_executor(*margin_warm.chunk_pool())
                 self.map_view.set_source(
                     tile_px, terrain_style="stepped", cache=self._cache, elevations=elevations, proj=proj,
                     reset_view=reset_view, on_paint_timed=self._on_canvas_paint_timed,
@@ -17872,6 +18140,7 @@ class ViewerWindow(QMainWindow):
                     self.scenario, elevations, corner_rise, proj, tile_px, unit_filter=self._unit_filter,
                     sprites=self._sprites_enabled, layers=self._layers,
                 )
+                self._cache.set_chunk_executor(*margin_warm.chunk_pool())
                 self.map_view.set_source(
                     tile_px, terrain_style="sloped", cache=self._cache, elevations=elevations, proj=proj,
                     reset_view=reset_view, on_paint_timed=self._on_canvas_paint_timed,
@@ -17885,6 +18154,8 @@ class ViewerWindow(QMainWindow):
                     self.scenario, tile_px, unit_filter=self._unit_filter,
                     sprites=self._sprites_enabled, layers=self._layers,
                 )
+                # Flat has no job path, so this stays serial; set for one rule across styles.
+                self._cache.set_chunk_executor(*margin_warm.chunk_pool())
                 self.map_view.set_source(
                     tile_px, terrain_style="flat", cache=self._cache, reset_view=reset_view,
                     on_paint_timed=self._on_canvas_paint_timed,
@@ -18285,6 +18556,9 @@ class ViewerWindow(QMainWindow):
             # mislabel whatever was previously open (self.scenario still holds it,
             # untouched, if the try block above returned early).
             self._untitled = untitled
+            # GH #67: before the first paint, the game data Settings > Advanced picks for this file.
+            if game_dataset.set_active(self._shown_game_dataset()):
+                self._refresh_game_lists()
             if untitled:
                 self.scenario.path = UNTITLED_PATH
             else:
@@ -18384,6 +18658,7 @@ class ViewerWindow(QMainWindow):
             self._update_edit_actions()
             self._update_title()
             self.statusBar().clearMessage()
+            self._show_game_data_status()
             total_elapsed = (generate_elapsed or 0.0) + parse_elapsed + elapsed
             generate_part = "" if generate_elapsed is None else f"generate {generate_elapsed:.2f}s, "
             self._log_status(
@@ -18473,6 +18748,7 @@ class ViewerWindow(QMainWindow):
         self.players_panel.clear_document()
         self.diplomacy_panel.clear_document()
         self.messages_panel.clear_document()
+        self._show_game_data_status()
         self._set_hover_text(HOVER_IDLE_TEXT)
         # A stale (x, y) from the just-closed map must not outlive it -- the
         # bounds check in paste_region()/copy_region() would likely catch a

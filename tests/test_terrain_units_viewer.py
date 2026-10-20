@@ -393,10 +393,10 @@ def _spy(window, monkeypatch):
         calls["changed"].append(changed)
         return real_after(changed, **kwargs)
 
-    def invalidate(changed=None, splice_levels=True):
+    def invalidate(changed=None, splice_levels=True, **kwargs):
         inside[0] = True
         try:
-            return real_invalidate(changed, splice_levels=splice_levels)
+            return real_invalidate(changed, splice_levels=splice_levels, **kwargs)
         finally:
             inside[0] = False
 
@@ -536,6 +536,7 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(
         request.getfixturevalue("sprite_install")
     if path == "wholesale":
         monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
     _splice_any_batch(monkeypatch)
     if repaint == "evict":
         _pin_area_ratio(monkeypatch, 0)
@@ -988,8 +989,9 @@ def _ids_by_tile(by_tile: dict) -> dict:
 
 def _oracle_levels(window) -> tuple[int, ...]:
     """The visible level (mip 0, pinned) and a second resident one (1, else
-    -1, the only one on Sloped's coarser ladder), then mip -1 too when both
-    exist (A4's terrain eviction)."""
+    -1), then mip -1 too when both exist (A4's terrain eviction). Stepped and
+    Sloped share one ladder since TASK-146, so both get (0, 1, -1): Sloped's
+    -1 stays checked as the third level."""
     levels = window._cache.mip_levels()
     return (0, *(mip for mip in (1, -1) if mip in levels)) if len(levels) > 1 else (0,)
 
@@ -1040,10 +1042,13 @@ def _check_against_fresh(window, step: str, numpy: bool = False) -> None:
             )
 
 
-def _over_cap_window(style: str, monkeypatch):
+def _over_cap_window(style: str, monkeypatch, visible: int = 0):
     """_styled_window() with sprites on, the cap pinned under a stroke's trees,
-    mip 0 shown (the whole canvas) and every oracle level resident."""
+    mip 0 shown (the whole canvas) and every oracle level resident. `visible`
+    is VISIBLE_SPLICE_MAX_UNITS: 0 (the default) keeps the in-place and
+    wholesale fallbacks, which stay the path past that bound."""
     monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", visible)
     window = _styled_window(style)
     window.show_sprites_action.setChecked(True)
     assert window._cache.sprites_enabled
@@ -1328,10 +1333,10 @@ def test_the_over_cap_history_check_names_the_one_step_whose_units_went_stale(
         real = cache.invalidate_units
         current = {}
 
-        def invalidate(changed=None, splice_levels=True):
+        def invalidate(changed=None, splice_levels=True, **kwargs):
             if current.get("step") == broken:
                 return None
-            return real(changed, splice_levels=splice_levels)
+            return real(changed, splice_levels=splice_levels, **kwargs)
 
         monkeypatch.setattr(cache, "invalidate_units", invalidate)
         with pytest.raises(AssertionError, match=f"{broken}: "):
@@ -1456,16 +1461,16 @@ def _blocked_stroke_history(window, monkeypatch, before_step=None, block=None) -
 @pytest.mark.parametrize("repaint", ["patch", "evict", "rects", "no_target"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_a_history_moves_terrain_past_its_units_is_repainted_with_them(style, repaint, tree_sprites, monkeypatch) -> None:
-    """Stepped checks mip 0 (visible), 1 and -1, all resident; Sloped, whose
-    ladder has no finer level (TASK-031.60), 0 and -1. `rects` is Stepped's
-    per-chunk patch (C1), which sizes the terrain from the move's tiles."""
+    """Both styles check mip 0 (visible), 1 and -1, all resident (Sloped's
+    finer level since TASK-146). `rects` is Stepped's per-chunk patch (C1),
+    which sizes the terrain from the move's tiles."""
     _pin_area_ratio(
         monkeypatch, 0 if repaint in ("evict", "rects") else float("inf"),
         rects=float("inf") if repaint == "rects" else 0,
     )
     window = _over_cap_window(style, monkeypatch)
     try:
-        assert _oracle_levels(window) == ((0, 1, -1) if style == "Stepped" else (0, -1))
+        assert _oracle_levels(window) == (0, 1, -1)
         if repaint == "no_target":
             monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: None)
         _blocked_stroke_history(window, monkeypatch)
@@ -1610,7 +1615,7 @@ def blended_trees(tree_sprites, blend_install):  # noqa: F811
     install). Its table holds FOREST_OAK, FOREST_PALM and LAYER_ID."""
 
 
-def _blended_window(style: str, monkeypatch, repaint: str = "evict"):
+def _blended_window(style: str, monkeypatch, repaint: str = "evict", visible: int = 0):
     """_over_cap_window() with terrain blending effective (the tests request
     blended_trees) and the batch repaint pinned. Evict is the path that skips
     the re-read, so a stale mirror would be composited as it stands. `rects`
@@ -1621,7 +1626,7 @@ def _blended_window(style: str, monkeypatch, repaint: str = "evict"):
     _pin_area_ratio(
         monkeypatch, float("inf") if repaint == "patch" else 0, rects=float("inf") if repaint == "rects" else 0
     )
-    window = _over_cap_window(style, monkeypatch)
+    window = _over_cap_window(style, monkeypatch, visible)
     assert render.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
     return window
 
@@ -2445,6 +2450,188 @@ def test_chunk_rects_keeps_one_rect_per_chunk_and_clips_to_the_level(tree_sprite
         assert cache.chunk_rects([(edge - scale, 0, edge + scale, scale)], -1) == [
             (edge - scale, 0, edge, scale), (edge, 0, edge + scale, scale)
         ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Past both caps the visible level splices alone (TASK-031.61 c2x) ---
+
+WIDE = 10**6  # VISIBLE_SPLICE_MAX_UNITS live, far past every batch here
+
+
+def _spy_visible_splices(window, monkeypatch) -> list:
+    """Each cache._splice_visible() answer from here on, in order."""
+    answers = []
+    real = window._cache._splice_visible
+    monkeypatch.setattr(window._cache, "_splice_visible", lambda *a: (answers.append(real(*a)), answers[-1])[1])
+    return answers
+
+
+def _count_builds_and_walks(monkeypatch) -> dict:
+    """Calls into the two sliced walks every level build runs with sprites on
+    (`builds`), and into render._units_by_tile() (`walks`)."""
+    from descape import render
+
+    counts = {"builds": 0, "walks": 0}
+
+    def counted(name: str, key: str) -> None:
+        real = getattr(render, name)
+
+        def call(*args, **kwargs):
+            counts[key] += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(render, name, call)
+
+    counted("_building_bboxes_iso_sliced", "builds")
+    counted("sprite_draws_by_anchor_sliced", "builds")
+    counted("_units_by_tile", "walks")
+    return counts
+
+
+def _spy_phase_names(monkeypatch) -> list:
+    """Every Perf Trace phase name opened from here on, trace on or off."""
+    from descape import perf_trace
+
+    names = []
+    real = perf_trace.phase
+    monkeypatch.setattr(perf_trace, "phase", lambda name, *a, **k: (names.append(name), real(name, *a, **k))[1])
+    return names
+
+
+def _wide_history(window, monkeypatch, before_step=None) -> None:
+    """_blended_history()'s steps (a stroke of 8 oaks over 4 of 8 palms, its
+    undo, which puts palms back mid-list, and its redo), each past OVER_CAP.
+    Each step and the next paint of the visible level must build no level and
+    walk no unit, open the splice_visible= phase, and leave every oracle
+    level equal to a fresh build, failing as `<step>: ...`."""
+    _draw(window, FOREST_PALM, EARLIER_TILES)
+    acts = {"stroke": lambda: _draw(window, FOREST_OAK, STROKE_TILES), "undo": window.undo, "redo": window.redo}
+    counts = _count_builds_and_walks(monkeypatch)
+    phases = _spy_phase_names(monkeypatch)
+    cache = window._cache
+    for step in BLENDED_STEPS:
+        _render_levels(window)
+        if before_step is not None:
+            before_step(step)
+        counts.update(builds=0, walks=0)
+        del phases[:]
+        acts[step]()
+        cache.render_rect(0, 0, *cache.canvas_dims(0), mip=0)
+        assert counts == {"builds": 0, "walks": 0}, f"{step}: {counts}"
+        tokens = [n.split("=")[0] for n in phases if n.startswith("splice_")]
+        assert tokens == ["splice_visible"], f"{step}: {phases}"
+        _check_against_fresh(window, step)
+
+
+@pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_past_the_caps_a_draw_its_undo_and_redo_splice_the_visible_level_and_match_a_fresh_render(
+    style, repaint, blended_trees, monkeypatch
+) -> None:
+    """The wide bound live, sprites and blending on: the stroke end, its undo
+    and its redo each splice the visible level, which the patch, the
+    eviction or Stepped's per-chunk rects then composite as current."""
+    window = _blended_window(style, monkeypatch, repaint, visible=WIDE)
+    try:
+        _wide_history(window, monkeypatch)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("broken", BLENDED_STEPS)
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_wide_splice_check_names_the_one_step_whose_visible_level_was_not_spliced(
+    style, broken, blended_trees, monkeypatch
+) -> None:
+    """Control (GOTCHAS: a step-k break fails naming step k): on step
+    `broken` only, the visible level is restamped current but not spliced."""
+    window = _blended_window(style, monkeypatch, visible=WIDE)
+    try:
+        cache = window._cache
+        real = cache._splice_level
+        current = {}
+        monkeypatch.setattr(
+            cache, "_splice_level", lambda *a: None if current.get("step") == broken else real(*a)
+        )
+        with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
+            _wide_history(window, monkeypatch, before_step=lambda step: current.update(step=step))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_past_the_caps_a_sprites_off_stroke_end_keeps_the_in_place_update(style, tree_sprites, monkeypatch) -> None:
+    """With sprites off a level build is cheap, so the wide splice declines
+    and both strokes take today's in-place update, matching a fresh build."""
+    window = _over_cap_window(style, monkeypatch, visible=WIDE)
+    try:
+        window.show_sprites_action.setChecked(False)
+        assert not window._cache.sprites_enabled
+        calls = _spy(window, monkeypatch)
+        answers = _spy_visible_splices(window, monkeypatch)
+        _over_cap_strokes(window)
+        assert answers == [False, False] and calls["in_place"] == 2 and calls["wholesale"] == 0, (answers, calls)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_past_the_caps_a_terrain_overlay_erase_flush_matches_a_fresh_render(style, blended_trees, monkeypatch) -> None:
+    """An Eraser flush of 6 oaks (past OVER_CAP), two of them on layered
+    tiles, Trees and Terrain Overlay ticked: it splices the visible level and
+    still repaints both cleared layers."""
+    window = _blended_window(style, monkeypatch, visible=WIDE)
+    try:
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        mm = window.scenario.map_manager
+        layered = [y * mm.map_width + x for x, y in (ERASED_FIRST, ERASED_LAST)]
+        for i in layered:
+            mm.terrain[i].layer = LAYER_ID
+        window._apply_dirty(layered)
+        _render_levels(window)
+        _check_against_fresh(window, "layered")
+        trees = len(window.scenario.unit_manager.units[0])
+        answers = _spy_visible_splices(window, monkeypatch)
+        _open_erase_stroke(window, trees=True, overlay=True)
+        assert window._erase.overlay, "Terrain Overlay does not apply to this file"
+        window.on_edit_stroke_tiles(STROKE_TILES[:6], 0)
+        window._erase_refresh_timer.stop()
+        window._flush_erase_refresh()
+        assert window._erase is not None  # still mid-stroke
+        assert all(mm.terrain[i].layer == -1 for i in layered)
+        assert len(window.scenario.unit_manager.units[0]) == trees - 6
+        assert answers == [True], answers
+        _check_against_fresh(window, "erase flush")
+        window.on_edit_stroke_end()
+        _check_against_fresh(window, "erase end")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_past_the_caps_a_second_undo_before_any_paint_matches_a_fresh_render(style, tree_sprites, monkeypatch) -> None:
+    """Two over-cap undos with no paint between them both splice the visible
+    level, the second over the first's spliced layer; so do the two redos."""
+    window = _over_cap_window(style, monkeypatch, visible=WIDE)
+    try:
+        _draw(window, FOREST_OAK, STROKE_TILES)
+        _draw(window, FOREST_PALM, EARLIER_TILES)
+        _render_levels(window)
+        answers = _spy_visible_splices(window, monkeypatch)
+        window.undo()
+        window.undo()
+        assert answers == [True, True], answers
+        _check_against_fresh(window, "two undos")
+        window.redo()
+        window.redo()
+        assert answers == [True] * 4, answers
+        _check_against_fresh(window, "two redos")
     finally:
         window.edit_history.mark_saved()
         window.close()

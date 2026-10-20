@@ -332,8 +332,9 @@ def test_resolve_shape_takes_the_commonest_row_over_the_floor_and_ties_low() -> 
 
 def test_resolve_shape_filters_frame_24_the_family_limit_and_cap_frames() -> None:
     """Frame 24 is stored in the corpus but no family has 25 frames; Marble
-    has 23, so its thin north cap (frame 23) has nothing; and a two-arm row
-    topped by a cap frame is two runs abutting, not a corner."""
+    has 23, so its thin north cap (frame 23) takes the row's next frame, the
+    thin straight 7, alone (TASK-358, user decision 2026-10-19); and a two-arm
+    row topped by a cap frame is two runs abutting, not a corner."""
     tables = cliff_connectivity.ShapeTables(
         _shape_doc(
             ((N, E), 8, [[24, 150], [13, 140]]), ((S, W), 1, [[17, 110], [15, 20]]), ((N,), 2, [[23, 165], [7, 17]]),
@@ -349,12 +350,13 @@ def test_resolve_shape_filters_frame_24_the_family_limit_and_cap_frames() -> Non
     assert resolve({E: t}, limit=25) is None
     assert resolve({S: T, W: T}) is None
     assert resolve({N: t}) == (2, (23,))  # a cap frame is right on a one-arm row
-    assert resolve({N: t}, limit=23) is None
+    assert resolve({N: t}, limit=23) == (2, (7,))
     assert resolve({N: T, S: T}, limit=2) == (1, (1,))  # the twin past the limit is dropped
     # No install: frame_count() falls back to the .dat's 25, which must not admit 24.
     assert resolve({N: t, E: t}, limit=25) is None
     shipped = cliff_connectivity.resolve_shape
-    assert shipped({N: t}, allowed_suffixes=ALL_SUFFIXES, frame_limit=23) is None
+    assert shipped({N: t}, allowed_suffixes=ALL_SUFFIXES, frame_limit=23) == (2, (7,))
+    assert cliff_connectivity.rewrite_frames(frozenset({N}), 2, frame_limit=23) == (7,)
     assert shipped({S: t}, allowed_suffixes=ALL_SUFFIXES, frame_limit=23) == (2, (22,))
 
 

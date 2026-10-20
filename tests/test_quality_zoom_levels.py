@@ -42,9 +42,4 @@ def _finest(style: str) -> int:
 @pytest.mark.parametrize("style", ["stepped", "sloped", "flat"])
 def test_every_view_stops_at_its_qualitys_finest_level(style, quality):
     settings.set_graphics_quality(quality)
-    finest = _finest(style)
-    if style == "sloped" and quality < settings.GRAPHICS_QUALITY_MAX:
-        # Sloped keeps only level 0 and coarser below Enhanced (TASK-031.60).
-        assert finest == render.tile_pixels_for_map(20, 20)
-    else:
-        assert finest == render.FINEST_TILE_PIXELS[quality]
+    assert _finest(style) == render.FINEST_TILE_PIXELS[quality]

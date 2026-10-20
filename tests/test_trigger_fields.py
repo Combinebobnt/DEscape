@@ -86,6 +86,42 @@ def test_no_shipped_type_derives_an_unsupported_field() -> None:
     assert offenders == [], f"fields with no widget: {offenders}"
 
 
+def _structure_types(version: str) -> dict[str, dict[str, str]]:
+    """{"conditions"/"effects": {retriever: datatype}} from `version`'s
+    structure.json, the library's or this repo's."""
+    import json
+
+    for base in (library_compat.VERSIONS_DIR, library_compat.REPO_VERSIONS_DIR):
+        path = base / f"v{version}" / "structure.json"
+        if path.is_file():
+            structs = json.loads(path.read_text(encoding="utf-8"))["Triggers"]["structs"]["TriggerStruct"]["structs"]
+            return {
+                kind: {name: r["type"] for name, r in structs[struct]["retrievers"].items()}
+                for kind, struct in (("conditions", "ConditionStruct"), ("effects", "EffectStruct"))
+            }
+    raise FileNotFoundError(version)
+
+
+def test_every_string_stored_field_is_a_str_spec() -> None:
+    """TASK-396: the library's JSON presents create_decision's message_option1/2
+    as "" (a number) though they are str32, so an int typed there failed the save."""
+    offenders = []
+    for version in library_compat.vocabulary_versions():
+        vocab = library_compat.load_vocabulary(version)
+        types = _structure_types(version)
+        for kind, entries, presentation, type_attribute in (
+            ("conditions", vocab.conditions, vocab.condition_presentation, "condition_type"),
+            ("effects", vocab.effects, vocab.effect_presentation, "effect_type"),
+        ):
+            for entry in entries.values():
+                offenders.extend(
+                    f"v{version}/{entry.name}.{spec.name}: {spec.kind}"
+                    for spec in trigger_fields.field_specs(entry, presentation, type_attribute)
+                    if types[kind].get(spec.name, "").startswith("str") and spec.kind != trigger_fields.STR
+                )
+    assert offenders == [], f"str-stored fields not given a text field: {offenders}"
+
+
 # -- kind derivation ---------------------------------------------------------
 
 

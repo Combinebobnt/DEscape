@@ -518,8 +518,9 @@ def _textures(
     arrays: list = []
     flat = np.zeros((max(uniq.size, 1), 3), dtype=np.uint8)
     sizes = np.zeros(max(uniq.size, 1), dtype=np.int64)
+    size = asset_source.terrain_texture_size(tile_px)
     for i, tid in enumerate(uniq.tolist()):
-        tex = asset_source.get_terrain_texture_array(tid) if textures else None
+        tex = asset_source.terrain_texture_at(tid, size) if textures else None
         if tex is None:
             flat[i] = render.color_for_terrain_id(tid)
             arrays.append(None)
@@ -584,7 +585,8 @@ def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridd
         _own, layer_tid, entries = keys[sid]
         if layer_tid >= 0:
             name = terrain_blend.layer_mask_name(layer_tid)
-            ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), asset_source.get_terrain_mask_array(name))))
+            mask = asset_source.terrain_mask_at(name, asset_source.terrain_texture_size(tile_px))
+            ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), mask)))
         for n_tid, mode, tile in entries:
             ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id((mode, tile), asset_source.get_blend_mask(mode, tile, tile_px))))
         starts.append(len(ops))
@@ -728,10 +730,12 @@ def composite_iso(native, scratch, scenario, x0, y0, candidates, elevations, pro
 
 def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: UnitPack | None,
                 textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None,
-                blend: terrain_blend.RectKeys | None = None) -> tuple | None:
+                blend: terrain_blend.RectKeys | None = None, snapshot: np.ndarray | None = None) -> tuple | None:
     """native.composite_iso's arguments after the scratch, or None for the
     per-tile path. share=True is for a call on another thread: elevations is
-    copied and the pack is marked shared (UnitPack.kernel_units). terrain_ids
+    copied and the pack is marked shared (UnitPack.kernel_units). snapshot: a
+    copy of elevations the caller already owns (a pooled paint batch takes one
+    for all its jobs), handed to the kernel as is instead. terrain_ids
     is the owning cache's per-tile mirror, None to read the tiles live.
     blend: render's terrain_blend.RectKeys for the candidates (spec ids into
     the caller's KeyMap, read on this thread before any worker runs), or None;
@@ -755,7 +759,10 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     tables = stepped_tables(tile_px, proj.elev_step)
     geom = (proj.origin_x, proj.origin_y, proj.half_w, proj.half_h, proj.elev_step, tile_px, MAX_RISE)
     # The bbox functions write elevations in place; a worker reads a copy.
-    elev = elevations.copy() if share else elevations
+    if snapshot is not None:
+        elev = snapshot
+    else:
+        elev = elevations.copy() if share else elevations
     return (
         x0, y0, cx, cy, slots, cand_grid, elev, geom, tables.kernel_tables(), tex_tables,
         stamps, pack.kernel_units(share) if pack is not None else None, blend_tables,

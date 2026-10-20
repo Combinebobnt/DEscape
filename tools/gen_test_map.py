@@ -49,10 +49,6 @@ What the app's models cannot author, and what was done instead:
 - Every condition and effect field is set to a non-default value except the
   inert quantity-cluster slots (trigger_fields.apply_quantity_cluster_rule),
   which the property form keeps read-only for that entry's live slot.
-- A field kind trigger_fields.field_specs() gets wrong, so the value the
-  file needs is written instead of the one the spec allows: create_decision's
-  message_option1/2 are str32 but read as INT (an int there fails the save,
-  TASK-396).
 - Long strings stop at 32000 bytes: a message of 32768 bytes or more passes
   MessagesEditModel (its limit is 65535) but writes a file that no longer
   loads (TASK-397).
@@ -1069,8 +1065,6 @@ def _build_odd_values(m: _Map) -> None:
 
 
 _VARIABLES = ("tm_counter", "tm_ünïcode", "tm_flag", "tm_last")
-# create_decision's two str32 options, which field_specs() reads as INT (no presentation, default None; TASK-396).
-STR32_AS_INT = frozenset({"message_option1", "message_option2"})
 
 
 def _area(m: _Map) -> tuple[int, int, int, int]:
@@ -1091,8 +1085,6 @@ def _field_value(m: _Map, spec: trigger_fields.FieldSpec, default, k: int, trigg
     refs = _unit_refs(m)
     if name in coords:
         return coords[name]
-    if name in STR32_AS_INT:
-        return MULTIBYTE
     if kind == trigger_fields.BOOL:
         return 0 if default == 1 else 1
     if kind == trigger_fields.ENUM:

@@ -42,7 +42,7 @@ FILES = (
     "2_Joan_coop_1_v0_13.aoe2scenario",
 )
 ROUNDS = 8
-STEPPED_MIPS = (0, 1)
+LEVEL_MIPS = (0, 1)
 WINDOW_W, WINDOW_H = 5, 8
 VIEW_PX = 1024
 
@@ -62,7 +62,7 @@ def _make_cache(style: str, scenario, unit_filter: UnitFilter):
 
 
 def _mips(cache) -> tuple[int, ...]:
-    return STEPPED_MIPS if isinstance(cache, IsoChunkCache) else (0,)
+    return LEVEL_MIPS
 
 
 def _draw_key(keys: dict, rgba: np.ndarray, hx: int, hy: int) -> tuple:

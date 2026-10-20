@@ -30,9 +30,7 @@ a building put there has no visible button, though its hotkey works.
 
 from __future__ import annotations
 
-from functools import lru_cache
-
-from descape import object_catalog
+from descape import game_dataset, object_catalog
 
 UNIT = "unit"
 TECH = "tech"
@@ -93,7 +91,7 @@ def is_builder(object_id: int) -> bool:
     return object_id == BUILDER_UNIT
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _rows() -> dict[str, dict[int, dict]]:
     """{UNIT: object rows, TECH: tech rows}. From the committed table alone,
     never an install, so like object_catalog._dat_table() it outlives
@@ -111,7 +109,7 @@ def villager_page(object_id: int) -> str | None:
     return _PAGE_BY_INTERFACE_KIND.get(_row(object_id, UNIT).get("interface_kind"))
 
 
-@lru_cache(maxsize=1)
+@game_dataset.cache(maxsize=1)
 def _index() -> dict[tuple[str, int], dict[int, tuple[int, ...]]]:
     """(kind, building) -> {button: ids}."""
     index: dict[tuple[str, int], dict[int, list[int]]] = {}

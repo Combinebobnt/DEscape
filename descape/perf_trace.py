@@ -25,7 +25,13 @@ mouseMoveEvent, so it never nests inside a step() boundary -- reported as
 its own call count/total/max instead of being forced into a ms/step
 column it cannot honestly belong to. Work inside a paint is split with
 repaint_phase() (chunk `composite`, `blit`), printed in brackets after the
-repaint total with `other` for the rest outside the level events.
+repaint total with `other` for the rest outside the level events. A chunk
+composited on the worker pool (render_cache's pooled render_rect(),
+TASK-031.64) is not a `composite`: its GUI-thread half is `prepare` (one per
+chunk, plus one per batch that derives unit-pack tiles up front) and the wait
+for the batch, kernels the GUI thread ran itself included, is `join` (one per
+batch of at most 64 chunks). A chunk with no job path, or whose job declined,
+still reports `composite`.
 
 Margin-warm ticks (descape.margin_warm) are idle-time work outside any
 step, so they are reported the same way, as a `warm:` bucket on the `perf
@@ -66,7 +72,7 @@ still counts as a file. Terrain texture loads (`textures +N files X ms`,
 asset_source) are recorded as they happen instead: files decoded, and X the
 ms a caller was blocked loading one or waiting on a prefetched one, with the
 wait and the prefetch pool's own decodes in parentheses when there were any.
-Chunk `composite` still includes the blocked time.
+Chunk `composite` (or `prepare`, for a pooled chunk) still includes the blocked time.
 stall() is the event-loop watchdog's report (timer in
 viewer_canvas); it names the op, phase, span or level event that covered the
 stall, or says it was untimed (during a drag if one was active anywhere in the

@@ -70,9 +70,8 @@ def neighbour_mips_of(cache, mip: int) -> list[int]:
     already built -- just wasteful.)
 
     Empty for a single-level ladder: any small map whose tile_px has no
-    exact power-of-two neighbour. Sloped's ladder stops at level 0
-    (TASK-031.60), so its level 0 has only the coarser neighbour, except at
-    Graphics Quality Enhanced, where it keeps level 1 too (GH #241)."""
+    exact power-of-two neighbour. Sloped shares Stepped's ladder (TASK-031.60
+    coarser, TASK-146 finer), so its neighbours are Stepped's."""
     levels = cache.mip_levels()
     return [m for m in (mip - 1, mip + 1) if levels[0] <= m <= levels[-1]]
 

@@ -123,6 +123,36 @@ def test_keybinds_never_scrolls_sideways() -> None:
         conftest.close_window(window)
 
 
+def test_mods_never_scrolls_sideways(monkeypatch, tmp_path) -> None:
+    """GH #244: long scanned paths and mod titles scroll inside their own lists,
+    never widening the Mods page past the dialog's default width."""
+    from PyQt5.QtWidgets import QScrollArea
+
+    from descape import content_roots, mod_graphics
+
+    long_path = tmp_path.joinpath(*(["a_rather_long_folder_name"] * 12))
+    root = content_roots.ContentRoot(content_roots.KIND_PROFILE, "Profile 0", long_path, profile_id="0")
+    monkeypatch.setattr(content_roots, "content_roots", lambda: [root])
+    title = "A cosmetic mod with a very long workshop title " * 6
+    mod = mod_graphics.ModArt("subscribed//1_Long", title, 1, 3, 0, 0, False)
+    monkeypatch.setattr(mod_graphics, "mods_with_art", lambda: [mod])
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tabs, index = _tab(dialog, "Mods")
+        dialog.show()
+        tabs.setCurrentIndex(index)
+        _pump()
+        scroll = tabs.widget(index)
+        assert isinstance(scroll, QScrollArea)
+        assert dialog.mod_art_list.item(0).text() == title
+        for view in (dialog.profile_roots_list, dialog.mod_art_list):
+            assert view.horizontalScrollBar().maximum() > 0, "the long row scrolls inside its list"
+        _assert_no_sideways_scroll(scroll)
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_a_live_ui_font_bump_widens_the_dialog_not_the_page(font_baseline) -> None:
     """The UI font spin lives on this very tab, and a bigger font widens the
     page; the dialog must grow with it rather than scroll sideways."""

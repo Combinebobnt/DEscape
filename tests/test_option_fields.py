@@ -94,6 +94,16 @@ def test_a_zero_length_retriever_is_treated_as_absent() -> None:
     assert "all_techs" in ids
 
 
+def test_a_bytes_retriever_is_treated_as_absent() -> None:
+    """The 1.49 shape (GH #240): the library types secondary_game_modes as
+    raw type "4" there, so its data is four bytes, not an int."""
+    raw = b"\x00\x00\x00\x00"
+    loaded = _stub_loaded({("Map", "secondary_game_modes"): _StubRetriever(raw, data=raw)})
+    ids = {s.field_id for s in specs_for(loaded)}
+    assert "secondary_game_modes" not in ids
+    assert "no_waves_on_shore" in ids
+
+
 def test_current_value_reads_the_stub_data() -> None:
     loaded = _stub_loaded({("Map", "collide_and_correct"): _StubRetriever(b"\x01", data=1)})
     spec = next(s for s in specs_for(loaded) if s.field_id == "collide_and_correct")
@@ -125,6 +135,25 @@ def test_specs_for_a_real_file_before_and_after_trigger_parse() -> None:
     scenario_io.parse_triggers(loaded)
     after = {s.field_id for s in specs_for(loaded)}
     assert after == {s.field_id for s in option_fields._SPECS}
+
+
+def test_a_1_49_shaped_file_keeps_its_other_map_options_writable() -> None:
+    """GH #240: with secondary_game_modes typed raw "4" (as v1.49's structure
+    does), the row drops out and the all-or-nothing write gate opens."""
+    from AoE2ScenarioParser.sections.retrievers.datatype import DataType
+
+    from descape import options_model
+
+    loaded = scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH)
+    scenario_io.parse_triggers(loaded)
+    retriever = loaded._scenario.sections["Map"].retriever_map["secondary_game_modes"]
+    retriever.datatype = DataType("4")
+    retriever.data = b"\x00\x00\x00\x00"
+    specs = specs_for(loaded)
+    assert "secondary_game_modes" not in {s.field_id for s in specs}
+    assert "script_name" in {s.field_id for s in specs}
+    assert options_model.options_write_supported(loaded, specs)
+    assert not options_model.options_write_supported(loaded, option_fields._SPECS)
 
 
 def test_every_spec_resolves_to_a_scalar_int() -> None:
@@ -177,6 +206,17 @@ def test_current_value_of_a_text_spec_refuses_a_non_str() -> None:
     spec = next(s for s in specs_for(loaded) if s.field_id == "script_name")
     with pytest.raises(TypeError):
         current_value(loaded, spec)
+
+
+@pytest.mark.corpus
+def test_every_spec_resolves_to_a_scalar_int_across_the_corpus(scenario_path) -> None:
+    """The same invariant on real files (GH #240's 1.49 files crashed here;
+    the shipped corpus has none, so the bytes stub above pins that case)."""
+    loaded = scenario_io.load_map_and_units(scenario_path)
+    scenario_io.parse_triggers(loaded)
+    for spec in specs_for(loaded):
+        expected = str if spec.kind == option_fields.TEXT else int
+        assert isinstance(current_value(loaded, spec), expected), (scenario_path.name, spec.field_id)
 
 
 def test_current_value_matches_known_blank_template_defaults() -> None:

@@ -230,7 +230,7 @@ LAYERS: tuple[LayerSpec, ...] = (
         tooltip=(
             "Draw the art your enabled AoE2:DE cosmetic mods ship (trees, "
             "buildings, units, walls, terrain textures) in place of the "
-            "game's own, in the game's mod order. Settings > General lists "
+            "game's own, in the game's mod order. Settings > Mods lists "
             "the mods and can leave single ones out. Off, only the game's "
             "own art draws."
         ),
@@ -275,5 +275,5 @@ def availability(
     if spec.requires_textures and not terrain_textures:
         return False, "Needs View > Layers > Terrain Textures, which is what this blends"
     if spec.requires_mod_art and not has_mod_art:
-        return False, "No enabled mod ships art (Settings > General shows the profile folder scanned)"
+        return False, "No enabled mod ships art (Settings > Mods shows the profile folder scanned)"
     return True, spec.tooltip

@@ -385,7 +385,7 @@ def set_view_layer(layer_id: str, on: bool) -> None:
     _save_config(config)
 
 
-# Settings > General's Mod art opt-outs (TASK-378): mod-status.json Path strings
+# Mod art opt-outs from Settings > Mods (TASK-378): mod-status.json Path strings
 # ("subscribed//<folder>") whose art the Mod Art layer skips. A mod that is gone stays listed.
 _mod_art_excluded: frozenset[str] | None = None
 
@@ -540,6 +540,38 @@ def set_terrain_picker_mode(mode: str) -> None:
     _terrain_picker_mode = mode
     config = _load_config()
     config["terrain_picker_mode"] = mode
+    _save_config(config)
+
+
+# GH #67: which game's data draws every opened scenario, Settings > Advanced. "auto"
+# follows the file's own header; the other two show it in that game's data, read-only
+# when it is the other game's file.
+GAME_DATA_CHOICES: list[tuple[str, str]] = [
+    ("auto", "Auto: the file's own game"),
+    ("aoe2", "Age of Empires II"),
+    ("ror", "Return of Rome"),
+]
+GAME_DATA_DEFAULT = "auto"
+_GAME_DATA_IDS = tuple(cid for cid, _label in GAME_DATA_CHOICES)
+_game_data: str | None = None
+
+
+def get_game_data() -> str:
+    """One of GAME_DATA_CHOICES' ids; an off-list value falls back to the default."""
+    global _game_data
+    if _game_data is None:
+        raw = _load_config().get("game_data")
+        _game_data = raw if raw in _GAME_DATA_IDS else GAME_DATA_DEFAULT
+    return _game_data
+
+
+def set_game_data(choice: str) -> None:
+    if choice not in _GAME_DATA_IDS:
+        raise ValueError(f"game_data must be one of {list(_GAME_DATA_IDS)}, got {choice!r}")
+    global _game_data
+    _game_data = choice
+    config = _load_config()
+    config["game_data"] = choice
     _save_config(config)
 
 
@@ -2326,6 +2358,22 @@ WHEEL_ACTION_LABELS: dict[str, str] = {
     "pan_vertical": "Pan up / down",
     "pan_horizontal": "Pan left / right",
     "none": "Nothing",
+}
+# Each dropdown item's tooltip: where the action applies (GH #245).
+WHEEL_ACTION_HINTS: dict[str, str] = {
+    "zoom": "Zooms the map in or out.",
+    "tool": (
+        "Whichever applies: turns Place Unit's preview, steps the size in tools with a Brush size box, "
+        "or turns a just-pasted region. Zooms anywhere else."
+    ),
+    "brush_size": "Steps the size in tools with a Brush size box. Zooms anywhere else.",
+    "rotate": (
+        "Turns Place Unit's preview or a just-pasted region, even in a tool with a Brush size box. "
+        "Zooms anywhere else."
+    ),
+    "pan_vertical": "Scrolls the map up or down.",
+    "pan_horizontal": "Scrolls the map left or right.",
+    "none": "The wheel does nothing with this modifier.",
 }
 DEFAULT_WHEEL_BINDINGS: dict[str, str] = {"plain": "zoom", "ctrl": "tool", "shift": "zoom", "alt": "zoom"}
 

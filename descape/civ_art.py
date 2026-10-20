@@ -12,6 +12,9 @@ that pair from the scenario's own player fields. Qt-free.
 - `age` is the StartingAge value, 2..5: 6 (Post-Imperial) draws as 5, and
   anything else (0 and 4294967295 appear on inactive players) as 2.
 - GAIA is always `GAIA_ART`, so Gaia's buildings keep today's art.
+- A Return of Rome file (GH #67) indexes its own .dat's civs: ints 1..17, and
+  tokens through `player_fields.ROR_CIVILIZATIONS` (its PERSIAN-CIV is RoR 9,
+  not AoE2's Persians). Its ages are stored 2..6 like AoE2's (Post-Iron draws as Iron).
 
 Civilization values are ints below scenario version 1.56 (CivilizationOld,
 equal to the .dat civ index) and str16 tokens such as 'HUN-CIV' from 1.56 on
@@ -33,6 +36,9 @@ GAIA_ART: tuple[int | None, int] = (None, 2)
 MAX_CIV_INDEX = 62
 """The .dat's last civ index (Danes)."""
 
+ROR_MAX_CIV_INDEX = 17
+"""The Return of Rome .dat's last civ index (Lac Viet)."""
+
 DARK_AGE = 2
 IMPERIAL_AGE = 5
 POST_IMPERIAL_AGE = 6
@@ -47,11 +53,14 @@ PLAYER_COUNT = 9
 """player_id 0 (GAIA) .. 8, the length of every per-player render tuple."""
 
 
-def civ_index(value: object) -> int | None:
+def civ_index(value: object, ror: bool = False) -> int | None:
     """The .dat civ index a raw civilization/architecture value names, or None
-    when it names no concrete civ (GAIA, a random choice, an unknown token)."""
+    when it names no concrete civ (GAIA, a random choice, an unknown token).
+    `ror`: the value comes from a Return of Rome file (GH #67)."""
     if isinstance(value, bool):
         return None
+    if ror:
+        return _ror_civ_index(value)
     if isinstance(value, int):
         return value if 1 <= value <= MAX_CIV_INDEX else None
     if not isinstance(value, str):
@@ -69,6 +78,14 @@ def civ_index(value: object) -> int | None:
     return index if 1 <= index <= MAX_CIV_INDEX else None
 
 
+def _ror_civ_index(value: object) -> int | None:
+    if isinstance(value, int):
+        return value if 1 <= value <= ROR_MAX_CIV_INDEX else None
+    from descape import player_fields
+
+    return next((civ_id for civ_id, token, _name in player_fields.ROR_CIVILIZATIONS if token == value), None)
+
+
 def art_age(value: object) -> int:
     """The StartingAge a building draws at: 2..5 as-is, Post-Imperial as
     Imperial, anything else as Dark Age."""
@@ -79,11 +96,13 @@ def art_age(value: object) -> int:
     return value if DARK_AGE <= value <= IMPERIAL_AGE else DARK_AGE
 
 
-def resolve(civilization: object, architecture: object, starting_age: object) -> tuple[int | None, int]:
-    """One player's (art_civ, age) from its three raw values."""
-    art_civ = civ_index(architecture)
+def resolve(
+    civilization: object, architecture: object, starting_age: object, ror: bool = False,
+) -> tuple[int | None, int]:
+    """One player's (art_civ, age) from its three raw values; `ror` as civ_index()."""
+    art_civ = civ_index(architecture, ror)
     if art_civ is None:
-        art_civ = civ_index(civilization)
+        art_civ = civ_index(civilization, ror)
     return art_civ, art_age(starting_age)
 
 
@@ -96,8 +115,11 @@ def player_art(
     """(art_civ, age) for player_id 0..8 on `loaded`, the stored values
     overlaid with `pending` ({field_id: {player_id: value}}, the viewer's
     pending Players-mode edits). A field the file does not carry reads as
-    missing, which falls through like a random value."""
-    from descape import player_fields
+    missing, which falls through like a random value. Civs are indexed in
+    the file's own game (GH #67), whatever dataset is active."""
+    from descape import game_dataset, player_fields
+
+    ror = game_dataset.from_variant(getattr(loaded, "game_variant", None)) == game_dataset.ROR
 
     specs = {s.field_id: s for s in player_fields.specs_for(loaded) if s.field_id in _FIELDS}
     pending = pending or {}
@@ -112,5 +134,5 @@ def player_art(
                 values.append(player_fields.current_value(loaded, specs[field_id], player_id))
             else:
                 values.append(None)
-        result.append(resolve(*values))
+        result.append(resolve(*values, ror=ror))
     return tuple(result)

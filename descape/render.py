@@ -20,6 +20,7 @@ import numpy as np
 from descape import (
     asset_source,
     composite_backend,
+    game_dataset,
     grid_overlay,
     iso_geometry,
     mod_graphics,
@@ -215,7 +216,8 @@ def _top_block(
     no-install render rather than a second, drifting code path. The
     returned array may be a read-only view of a cached texture or block."""
     terrain_id = tile.terrain_id if terrain_override is None else terrain_override
-    texture = asset_source.get_terrain_texture_array(terrain_id) if textures else None
+    size = asset_source.terrain_texture_size(tile_px)
+    texture = asset_source.terrain_texture_at(terrain_id, size) if textures else None
     if texture is not None:
         ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
         # key[0] is the mirror's tid: a stale mirror keeps the live tile's plain crop.
@@ -2387,11 +2389,14 @@ def prepare_rect_native(
     proj: iso_geometry.IsoProjection, tile_px: int, building_bboxes: dict, with_units: bool,
     bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
     terrain_ids: np.ndarray | None = None, layer_ids: np.ndarray | None = None,
-    key_map: terrain_blend.KeyMap | None = None,
+    key_map: terrain_blend.KeyMap | None = None, snapshot: np.ndarray | None = None,
 ) -> tuple | None:
     """composite_rect_iso (heights = elevations) or composite_rect_sloped
     (heights = corner_rise) with every Python step done here and only the
-    nogil kernel left, for margin_warm's worker threads (Batch F T2).
+    nogil kernel left, for margin_warm's worker threads (Batch F T2) and a
+    pooled render_rect() (TASK-031.64). snapshot (Stepped only): a copy of
+    heights the caller owns, passed to the kernel uncopied
+    (native_composite.prepare_iso).
 
     Returns (kernel, scratch, args, holds): kernel(scratch, *args) paints what
     the composite would return, or returns False having painted nothing (take
@@ -2412,9 +2417,10 @@ def prepare_rect_native(
     from descape import native_composite
 
     prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
+    extra = {} if sloped else {"snapshot": snapshot}
     args = prepare(
         scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
-        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend=blend,
+        layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend=blend, **extra,
     )
     if args is None:
         return None
@@ -3712,9 +3718,12 @@ def _flat_unit_icon(
 def player_art_for(scenario, player_id: int) -> tuple[int | None, int] | None:
     """`player_id`'s (art_civ, age) building-art pair (GH #48, civ_art), or
     None for today's Gaia-table art: a duck-typed fake scenario carries no
-    player_art."""
+    player_art, and a file shown with the other game's data (GH #67) indexes
+    civs the active art tables do not have."""
     art = getattr(scenario, "player_art", None)
     if art is None or not 0 <= player_id < len(art):
+        return None
+    if game_dataset.from_variant(getattr(scenario, "game_variant", None)) != game_dataset.active():
         return None
     return art[player_id]
 
@@ -4791,6 +4800,15 @@ _FARM_EDGE_BITS = (
 # instead of it: placed Pastures, whose annex-tree art (GH #66) is a hut,
 # posts and fences standing on the pasture ground, not a ground cover itself.
 DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({1893, 1897})
+# Return of Rome (GH #67, 2026-10-17): Farm 50 and RiceFarm 1187 have a sprite there, only
+# the vases a rotation picks; the field is their foundation terrain (7, 63), as in game.
+_ROR_DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({50, 1187, 1893, 1897})
+
+
+def draped_sprite_consts() -> frozenset[int]:
+    """The active game dataset's DRAPED_SPRITE_CONSTS, read at call time so a
+    monkeypatch of either set holds."""
+    return _ROR_DRAPED_SPRITE_CONSTS if game_dataset.is_ror() else DRAPED_SPRITE_CONSTS
 
 
 def _farm_footprint_tiles(
@@ -4880,9 +4898,9 @@ def _terrain_overlay_for(unit_const: int) -> int | None:
     success, so behavior stays deterministic across installs: a const
     whose .sld happens to be unreadable on THIS install must still fall
     back to the coloured mark, never silently pick up a terrain override
-    instead. DRAPED_SPRITE_CONSTS are the exception: their drape is
+    instead. draped_sprite_consts() are the exception: their drape is
     unconditional, so it is just as deterministic."""
-    if unit_const in unit_sprites.graphic_map() and unit_const not in DRAPED_SPRITE_CONSTS:
+    if unit_const in unit_sprites.graphic_map() and unit_const not in draped_sprite_consts():
         return None
     return FOUNDATION_TERRAIN.get(unit_const)
 
@@ -5028,10 +5046,10 @@ def _resolve_unit_sprite(
         art=player_art_for(scenario, player_id),
         wall_alpha=wall_alpha if is_faded_wall else 1.0,
     )
-    # A pasture (DRAPED_SPRITE_CONSTS) carries both: its drape plus its annex-tree art.
+    # A pasture (draped_sprite_consts()) carries both: its drape plus its annex-tree art.
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
     terrain_id = _terrain_overlay_for(unit.unit_const) if with_farms else None
-    if terrain_id is not None and (not pieces or unit.unit_const in DRAPED_SPRITE_CONSTS):
+    if terrain_id is not None and (not pieces or unit.unit_const in draped_sprite_consts()):
         player_color = scenario.player_colors[player_id]
         farm_tiles = _farm_footprint_tiles(bounds, terrain_id, _unit_color(unit, player_color))
     if not pieces:

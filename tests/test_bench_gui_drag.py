@@ -64,6 +64,23 @@ def test_a_log_from_before_the_in_place_refresh_reads_as_a_rerender():
     assert " G4_undo2_path=rerender:22455 " in bench_gui_drag.gh180_gates(sections, stalls)
 
 
+@pytest.mark.parametrize(
+    ("phases", "want"),
+    [
+        ("[prepare 30.7 x24; join 12.0 x1; blit 3.0 x4; other 1.0]", "43x24"),
+        ("[prepare 30.7 x24; composite 6.2 x5; join 12.0 x1; blit 3.0 x4; other 1.0]", "49x29"),
+    ],
+    ids=["all-pooled", "pooled-and-declined"],
+)
+def test_a_pooled_post_stroke_repaint_sums_prepare_join_and_composite(phases, want):
+    """TASK-031.64: a fully pooled repaint has no `composite` token at all;
+    the selector must still take it, not a later line."""
+    later = "perf view: repaint: 2 calls, 9ms total (max 5.0) [composite 7.0 x2; blit 1.0 x2; other 1.0]"
+    draw = [*_SECTIONS["draw"][:4], f"perf view: repaint: 27 calls, 60ms total (max 50.0) {phases}", later]
+    stalls = dict.fromkeys(("draw", "undo1", "undo2"), (0.0, 0.0, 0.0))
+    assert f" post_stroke_composite={want} " in bench_gui_drag.gh180_gates({**_SECTIONS, "draw": draw}, stalls)
+
+
 def test_the_post_stroke_composite_is_the_first_after_the_drag_line_not_before():
     sections = {**_SECTIONS, "draw": [_SECTIONS["draw"][4], *_SECTIONS["draw"][:4]]}
     stalls = dict.fromkeys(("draw", "undo1", "undo2"), (0.0, 0.0, 0.0))

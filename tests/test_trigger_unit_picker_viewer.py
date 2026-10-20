@@ -251,7 +251,7 @@ def _escape(view):
     view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
 
 
-@pytest.mark.parametrize("how", ["escape", "right_click", "button", "mode", "entry", "trigger"])
+@pytest.mark.parametrize("how", ["escape", "right_click", "button", "mode", "entry", "trigger", "tool"])
 def test_each_cancel_disarms_without_writing(how) -> None:
     from PyQt5.QtCore import QEvent, QPointF, Qt
     from PyQt5.QtGui import QMouseEvent
@@ -280,6 +280,10 @@ def test_each_cancel_disarms_without_writing(how) -> None:
             window.mode_combo.setCurrentText("View")
         elif how == "entry":
             panel.select_entry("effect", gen.PATROL_IDS_EFFECT)
+        elif how == "tool":
+            # Triggers mode's only other tool (TASK-088 step 5).
+            window.ruler_action.trigger()
+            assert window._current_tool == "ruler"
         else:
             panel.select_trigger(0)
         assert window._unit_picker is None and not view.unit_picker_active()
@@ -343,5 +347,152 @@ def test_a_none_defaulted_unit_list_is_a_list_editor_not_a_spinbox() -> None:
         editor.editingFinished.emit()
         assert list(_live(window, "effect", gen.TASK_OBJECT_EFFECT, "selected_object_ids")) == [gen.REF_ARCHER_B]
         assert _texts(host) == [_describe(window, gen.REF_ARCHER_B)]
+    finally:
+        conftest.close_window(window)
+
+
+def test_every_none_defaulted_unit_list_builds_a_list_editor_in_every_version() -> None:
+    """TASK-088 step 7, through the panel's own widget builder. Pass conditions, for each
+    effect of each shipped vocabulary whose selected_object_ids defaults to None (nine names
+    in all, change_object_caption among them): _build_widget() for a stored [500, 501] gives
+    no spinbox, one line edit reading "500, 501", and the resolved line per id under it."""
+    from PyQt5.QtWidgets import QAbstractSpinBox, QLineEdit
+
+    from descape import library_compat, trigger_fields, unit_references
+    from descape.trigger_panel import TriggerPanel
+
+    conftest.ensure_qapp()
+    panel = TriggerPanel()
+    panel.describe_unit_reference = lambda ref_id: f"unit {ref_id}"
+    built = set()
+    for version in library_compat.vocabulary_versions():
+        vocabulary = library_compat.load_vocabulary(version)
+        for definition in vocabulary.effects.values():
+            for spec in trigger_fields.field_specs(definition, vocabulary.effect_presentation, "effect_type"):
+                if spec.presentation != unit_references.LIST_PRESENTATION:
+                    continue
+                if definition.default_attributes.get(spec.name) is not None:
+                    continue
+                where = (version, definition.name)
+                host = panel._build_widget(spec, [("effect", 0)], [500, 501])
+                assert not host.findChildren(QAbstractSpinBox), where
+                (editor,) = host.findChildren(QLineEdit)
+                assert editor.text() == "500, 501", where
+                assert "unit 500\nunit 501" in _texts(host), where
+                built.add(definition.name)
+    assert "change_object_caption" in built and len(built) == 9, sorted(built)
+
+
+# -- the owed in-app passes, offscreen (TASK-088) ------------------------------------
+
+
+def test_typing_an_unplaced_id_into_the_scalar_field_relabels_it_not_placed() -> None:
+    """TASK-088 step 2. Pass conditions, the Destroy Object condition selected (its unit_object
+    names the house): typing 777, an id no unit carries, into the field's spinbox and pressing
+    Enter writes 777, and the line under the spinbox reads exactly "777: not placed on the map"
+    in place of the house's line."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QSpinBox
+
+    gen = _gen()
+    unplaced = 777
+    assert unplaced not in gen.PLACED_REFERENCE_IDS
+    window = _window()
+    try:
+        panel = window.trigger_panel
+        panel.select_entry("condition", gen.DESTROY_CONDITION)
+        host = _row(panel, "unit_object")
+        house = _describe(window, gen.REF_HOUSE)
+        assert house in _texts(host)
+        (spin,) = host.findChildren(QSpinBox)
+        spin.setFocus()
+        spin.lineEdit().selectAll()
+        QTest.keyClicks(spin, str(unplaced))
+        QTest.keyClick(spin, Qt.Key_Return)
+        assert _live(window, "condition", gen.DESTROY_CONDITION, "unit_object") == unplaced
+        texts = _texts(_row(panel, "unit_object"))
+        assert f"{unplaced}: not placed on the map" in texts
+        assert house not in texts
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("garrisoned_shown", [False, True], ids=["default_filters", "nothing_filtered"])
+def test_the_scalar_pick_button_forces_pan_says_so_and_unchecks_after_its_pick(garrisoned_shown) -> None:
+    """TASK-088 step 3. Pass conditions, the Destroy Object condition selected and the Ruler
+    the current tool: clicking the unit_object row's Pick button arms the picker on that field
+    and checks the button, the tool is Pan (action checked, view tool too), and the status log's
+    last line is exactly "Click a unit to set unit object; Esc to finish", plus
+    " (units hidden by Filters can't be picked)" only while a filter hides something (the
+    Filters menu ships Show Garrisoned unchecked, so the default carries it). Picking archer B
+    writes its id, disarms, and leaves that field's Pick button unchecked; one Undo restores
+    the house's id."""
+    from descape.unit_filter import UnitFilter
+
+    gen = _gen()
+    window = _window()
+    try:
+        panel = window.trigger_panel
+        panel.select_entry("condition", gen.DESTROY_CONDITION)
+        hint = "Click a unit to set unit object; Esc to finish"
+        if garrisoned_shown:
+            window.show_garrisoned_action.setChecked(True)
+            assert window._unit_filter == UnitFilter()
+        else:
+            assert window._unit_filter != UnitFilter(), "the default Filters menu hides garrisoned units"
+            hint += " (units hidden by Filters can't be picked)"
+        window.ruler_action.trigger()
+        assert window._current_tool == "ruler"
+        target = _target(window, "condition", gen.DESTROY_CONDITION, "unit_object", False)
+        button = panel._pick_buttons[target]
+        assert button.text() == "Pick"
+        button.click()
+        assert window._unit_picker == target and button.isChecked()
+        assert window._current_tool == "pan" and window.pan_action.isChecked()
+        assert window.map_view._tool == "pan"
+        assert window.status_log.toPlainText().splitlines()[-1] == hint
+        window.map_view.on_unit_pick(_key(gen.REF_ARCHER_B))
+        assert _live(window, "condition", gen.DESTROY_CONDITION, "unit_object") == gen.REF_ARCHER_B
+        assert window._unit_picker is None
+        assert not panel._pick_buttons[target].isChecked(), "Pick stayed checked after its one-shot pick"
+        window.undo()
+        assert _live(window, "condition", gen.DESTROY_CONDITION, "unit_object") == gen.REF_HOUSE
+    finally:
+        conftest.close_window(window)
+
+
+def test_each_list_pick_through_the_objects_set_names_the_unit_in_the_status_log() -> None:
+    """TASK-088 step 4, through the Objects row's Set (GH #138 moved the list Pick there). Pass
+    conditions, the Task Object effect selected: Set arms the list picker, highlighting the
+    field's two archers; picking the house adds it, stays armed and the status log's last line
+    is exactly "Picked " + the house's resolved line; picking archer A again removes it and the
+    last line names archer A the same way; Esc then disarms and writes nothing more."""
+    gen = _gen()
+    window = _window()
+    try:
+        panel = window.trigger_panel
+        effect = gen.TASK_OBJECT_EFFECT
+        panel.select_entry("effect", effect)
+        set_button = panel._group_rows["objects"].set_button
+        set_button.click()
+        target = _target(window, "effect", effect, "selected_object_ids", True)
+        assert window._unit_picker == target
+        assert sorted(window.map_view._unit_select_keys) == sorted(_key(i) for i in gen.TASK_SELECTED_IDS)
+
+        def last_line() -> str:
+            return window.status_log.toPlainText().splitlines()[-1]
+
+        window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert window._unit_picker == target
+        assert last_line() == f"Picked {_describe(window, gen.REF_HOUSE)}"
+        window.map_view.on_unit_pick(_key(gen.REF_ARCHER_A))
+        assert list(_live(window, "effect", effect, "selected_object_ids")) == [gen.REF_ARCHER_B, gen.REF_HOUSE]
+        assert last_line() == f"Picked {_describe(window, gen.REF_ARCHER_A)}"
+        records = _records(window)
+        _escape(window.map_view)
+        assert window._unit_picker is None and not set_button.isChecked()
+        assert _records(window) == records
+        assert list(_live(window, "effect", effect, "selected_object_ids")) == [gen.REF_ARCHER_B, gen.REF_HOUSE]
     finally:
         conftest.close_window(window)
