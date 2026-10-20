@@ -2842,7 +2842,10 @@ class IsoChunkCache(_LeveledChunkCache):
         # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
         mm = scenario.map_manager
         self._init_levels(
-            iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
+            iso_geometry.mip_projections_for(
+                mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
+                max_tile_px=render.finest_tile_pixels(),
+            )
         )
         # canvas_dims()'s own exactness assert: is_exact_mip() proves every
         # IsoProjection field scales exactly, but canvas_dims() adds the
@@ -3030,7 +3033,7 @@ class FlatChunkCache(_ChunkCacheBase):
         # Stepped's mip_projections_for() which must filter through a real
         # exactness check. Must precede _init_max_chunks(), which reads
         # canvas_dims().
-        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px))
+        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px, render.finest_tile_pixels()))
         # Per-level unit_draws (Phase B-D: "Flat's real
         # per-level work is unit_draws"). Level 0's draws live in
         # self.unit_draws (unchanged attribute, still read directly by
@@ -3537,7 +3540,9 @@ class SlopedChunkCache(_LeveledChunkCache):
 
     The mip ladder (TASK-031.60) is Stepped's mip_projections_for() set
     filtered to the coarser levels (k <= 0), so zoomed in Sloped renders at
-    level 0 exactly as before. Each level's corner_rise and headroom are
+    level 0 exactly as before. At Graphics Quality Enhanced (GH #241) it
+    keeps level 1 too: x1 art drawn there at 1.33x keeps every pixel the 64 px
+    level drops, and with the Enhanced Graphics DLC it draws the x2 art. Each level's corner_rise and headroom are
     recomputed at its own proj (_level_rise()), never scaled from level 0, so
     a level depends on elevations and its own proj only, never on level 0's
     array, at the same cost as scaling. (At exact power-of-two levels a
@@ -3596,8 +3601,11 @@ class SlopedChunkCache(_LeveledChunkCache):
         projs = iso_geometry.mip_projections_for(
             mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
             corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
+            max_tile_px=render.finest_tile_pixels(),
         )
-        self._init_levels({level: p for level, p in projs.items() if level <= 0})
+        # One finer level at Enhanced (GH #241): sprites keep their detail there, DLC or not.
+        finest = 1 if settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_MAX else 0
+        self._init_levels({level: p for level, p in projs.items() if level <= finest})
         # Both canvas_dims() answers (sprites off and on) must scale exactly, as IsoChunkCache asserts.
         for lvl in self._levels.values():
             for dims in (lambda p: (p.canvas_w, p.canvas_h), render._canvas_pixel_dims):
@@ -3637,6 +3645,25 @@ class SlopedChunkCache(_LeveledChunkCache):
 
     def _level_extra_top(self, lvl: _IsoLevel) -> int:
         return self._level_rise(lvl).headroom
+
+    def _bbox_to_level(self, mip: int, bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """The base conversion, widened at a level finer than the reference
+        (GH #241's Enhanced level 1). A finer level rasterizes each sloped
+        edge per column of its own, so a tile reaches up to 1 px past its
+        scaled reference footprint across and, on a slope, about one column's
+        rise of the steepest edge possible (the whole elevation range over
+        half a tile) up and down. Padded by twice that, so a patch stays a
+        superset. Cache-side only: the Qt repaint rect stays the reference
+        bbox, which is safe because every Sloped dirty bbox already spans the
+        edited tiles' neighbours (test_sloped_mip's Enhanced edit oracle).
+        Measured over every 4-corner elevation combination: at most 1 px
+        across and 14 px up or down at pct 200, against a 31 px pad."""
+        lx0, ly0, lx1, ly1 = super()._bbox_to_level(mip, bbox)
+        proj = self._levels[mip].proj
+        if proj.tile_px <= self._mip_tile_px[0]:
+            return lx0, ly0, lx1, ly1
+        pad_y = 2 * math.ceil((proj.max_elev - proj.min_elev) * proj.elev_step / proj.half_w) + 1
+        return lx0 - 1, ly0 - pad_y, lx1 + 1, ly1 + pad_y
 
     def _refresh_corner_rise(self) -> None:
         """corner_rise rebuilt from self.elevations (a new array, never

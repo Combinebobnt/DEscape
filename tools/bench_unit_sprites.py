@@ -52,6 +52,12 @@ _level(), as a load followed by zooming in does, then a fresh IsoChunkCache
 builds them again with the process-wide sprite caches kept (pass `rewarm`,
 the floor a level still costs when a paint reaches it before its warm).
 
+`--hi-res` (GH #241) runs any of the above at Graphics Quality Enhanced: x2
+art where x1 would be enlarged, at the committed x2 budgets. With --ladder
+each file's lines end with the x2 caches' contents. `--x2-uncapped` lifts
+those budgets, so the line is the x2 working set NATIVE_X2_CACHE_BYTES and
+SLD_X2_BYTES_CACHE_BYTES are sized from.
+
 `--mod-art` replaces all of the above with the cosmetic-mod row (see
 bench_mod_art): the cold Stepped sprite layer with Mod Art off against on,
 the first sprite_reach() walk after a change, and .smx against .sld decode.
@@ -228,7 +234,7 @@ def _bench_stepped_sprites(scenario, proj, elevations) -> list[str]:
     """
     mm = scenario.map_manager
     projs = iso_geometry.mip_projections_for(
-        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct()
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels()
     )
     levels = sorted(projs)
     lines = ["    stepped sprites, adjacent-level thrashing (Item 24):"]
@@ -269,7 +275,7 @@ def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     unit_sprites.clear_caches()
     unit_sprites._icon_cache.clear()
     lines = ["    flat icons (P3-g7):"]
-    for level, px in sorted(iso_geometry.mip_tile_px_candidates(tile_px).items()):
+    for level, px in sorted(iso_geometry.mip_tile_px_candidates(tile_px, render.finest_tile_pixels()).items()):
         cold = _time(lambda: render._flat_icon_layer(scenario, px))
         warm = min(_time(lambda: render._flat_icon_layer(scenario, px)) for _ in range(3))
         icons, rows = render._flat_icon_layer(scenario, px)
@@ -570,6 +576,14 @@ def main() -> None:
         help="Only the zoom-in row: every Stepped level coarsest to finest on one cache, then again on a fresh one",
     )
     parser.add_argument(
+        "--hi-res", action="store_true",
+        help="Enhanced: draw x2 art where x1 is enlarged (GH #241)",
+    )
+    parser.add_argument(
+        "--x2-uncapped", action="store_true",
+        help="With --hi-res: lift the x2 cache budgets to measure the x2 working set",
+    )
+    parser.add_argument(
         "--mod-art", action="store_true",
         help="Only the TASK-378 row: cold Stepped layer with Mod Art off vs on, first reach walk, .smx vs .sld decode",
     )
@@ -598,8 +612,18 @@ def main() -> None:
         f"scaled budget {unit_sprites.SCALED_CACHE_BYTES / 1e6:.0f}MB, "
         f"icon budget {unit_sprites.ICON_CACHE_BYTES / 1e6:.0f}MB"
     )
+    if args.hi_res:
+        unit_sprites.set_hi_res(True)
+        if args.x2_uncapped:
+            unit_sprites._native_x2_cache.capacity_bytes = unit_sprites._x2_bytes_cache.capacity_bytes = 1 << 40
+        print(
+            f"hi-res: x2 budgets native {unit_sprites.NATIVE_X2_CACHE_BYTES / 1e6:.0f}MB, "
+            f"bytes {unit_sprites.SLD_X2_BYTES_CACHE_BYTES / 1e6:.0f}MB{' (uncapped)' if args.x2_uncapped else ''}"
+        )
     worsts = []
     for path in files:
+        if args.hi_res:
+            unit_sprites.clear_caches()
         if args.mod_art:
             print(bench_mod_art(path))
         elif args.ladder:
@@ -608,6 +632,13 @@ def main() -> None:
             print(bench_cold_levels(path, args.level))
         else:
             print(bench_file(path))
+        if args.hi_res and args.ladder:
+            # The other modes clear the caches between their rows, so only the ladder's are left to read.
+            native, held = unit_sprites._native_x2_cache, unit_sprites._x2_bytes_cache
+            print(
+                f"      x2 native: {native._bytes / 1e6:.1f}MB in {len(native)} frames; "
+                f"x2 file bytes: {held._bytes / 1e6:.1f}MB in {len(held)} files"
+            )
         worsts.append(path)
     print(f"\nMeasured {len(worsts)} file(s). See this module's docstring for what each line means.")
 

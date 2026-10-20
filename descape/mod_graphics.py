@@ -14,7 +14,8 @@ opt-out list, the status line):
   mods the status file does not list, by folder name, minus the Settings
   exclusions (`status_path` strings).
 - **Inside one mod, .sld beats .smx**; stems and folder names match
-  case-insensitively. Only `_x1` names are ever asked for (DEscape draws x1).
+  case-insensitively. `_x1` names are asked for, and their `_x2` copies at
+  Graphics Quality Enhanced (GH #241).
 - generation() moves on every change, for caches keyed on the active art
   (render's sprite memo); asset_source.clear_art_caches() is the one call
   that drops the art-derived caches when it does.

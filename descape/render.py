@@ -145,6 +145,23 @@ def tile_pixels_for_map(map_width: int, map_height: int) -> int:
     return base << delta if delta >= 0 else base >> (-delta)
 
 
+# The finest zoom level each graphics quality builds (GH #241). Quality used to
+# set only the base resolution above, so a fully zoomed-in Potatest view built
+# the same 128 px level as Default, at the same memory and build cost. Past its
+# finest level a view enlarges that level, as every quality already does past 128.
+FINEST_TILE_PIXELS = {
+    1: 32,
+    2: 64,
+    3: iso_geometry.MIP_MAX_TILE_PIXELS,
+    4: iso_geometry.MIP_MAX_TILE_PIXELS,
+}
+
+
+def finest_tile_pixels() -> int:
+    """The finest mip level's tile_px at the current graphics quality."""
+    return FINEST_TILE_PIXELS[settings.get_graphics_quality()]
+
+
 def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
     """Crop origin into a cached terrain texture array for tile (x, y), chosen
     so same-terrain neighboring tiles sample *contiguous* texture regions
@@ -5118,7 +5135,7 @@ def _sprite_memo_invariants(
 ) -> tuple:
     return (
         proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow, wall_alpha,
-        mod_graphics.generation(),
+        mod_graphics.generation(), unit_sprites.hi_res_generation(),
     )
 
 

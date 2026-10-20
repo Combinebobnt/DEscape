@@ -1,6 +1,8 @@
 """Sloped's coarser mip ladder (TASK-031.60): SlopedChunkCache enumerates
 Stepped's mip_projections_for() set filtered to k <= 0, with each level's
-corner_rise and headroom recomputed at its own proj.
+corner_rise and headroom recomputed at its own proj. At Enhanced
+(Graphics Quality, GH #241) it keeps level 1 too; the `hi_res` fixture
+runs the ladder tests at Default and Enhanced.
 
 Every pixel oracle compares a level's stitched chunks against an independent
 render: a full render_terrain_sloped_with_proj() with tile_pixels_for_map()
@@ -66,6 +68,18 @@ def _scenario(units: bool = True, elevation_of=_bumpy) -> FakeScenario:
     return FakeScenario(MAP_W, MAP_H, tiles, players)
 
 
+@pytest.fixture(params=[False, True], ids=["default", "enhanced"])
+def hi_res(request):
+    """Graphics Quality Enhanced (True) or Default for the test; conftest
+    isolates the setting per test."""
+    _enhanced(request.param)
+    return request.param
+
+
+def _enhanced(on: bool = True) -> None:
+    settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX if on else settings.GRAPHICS_QUALITY_DEFAULT)
+
+
 def _cache(scn, **kwargs) -> SlopedChunkCache:
     elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px, **kwargs)
@@ -93,10 +107,10 @@ def _assert_same(got: np.ndarray, want: np.ndarray, what: str) -> None:
 
 
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
-def test_each_level_matches_a_full_render_at_its_own_tile_px(sprite_install, sprites) -> None:  # noqa: F811
+def test_each_level_matches_a_full_render_at_its_own_tile_px(sprite_install, sprites, hi_res) -> None:  # noqa: F811
     scn = _scenario()
     cache = _cache(scn, sprites=sprites)
-    assert cache.mip_levels() == [-2, -1, 0]
+    assert cache.mip_levels() == ([-2, -1, 0, 1] if hi_res else [-2, -1, 0])
     stitched = {mip: _whole(cache, mip) for mip in cache.mip_levels()}
     for mip, got in stitched.items():
         lvl = cache._levels[mip]
@@ -120,7 +134,7 @@ def test_the_levels_really_differ(sprite_install) -> None:  # noqa: F811
 
 
 @pytest.mark.parametrize("rule", ["max", "average"])
-def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monkeypatch, rule) -> None:
+def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monkeypatch, rule, hi_res) -> None:
     """Values under both rules, and the spy: level steps are exact powers of
     two, so level 0 floor-divided down agrees with the recompute under `max`
     and `average` alike (floor(floor(a)/n) == floor(a/n)), and only the spy
@@ -143,12 +157,13 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
         assert np.array_equal(rise, real(cache.elevations, lvl.proj, rule=rule)), f"level {mip}"
         assert cache._level_extra_top(lvl) == render._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
     assert cache._level_corner_rise(cache._levels[0]) is cache.corner_rise
-    assert sorted(calls) == [16, 32], "level 0 shares self.corner_rise; each coarser level computes its own"
+    want = [16, 32, 128] if hi_res else [16, 32]
+    assert sorted(calls) == want, "level 0 shares self.corner_rise; each other level computes its own"
     assert cache._levels[-1].headroom > 0, "a flat field has headroom 0 at every level -- vacuous"
 
     for mip in cache.mip_levels():
         cache._level_corner_rise(cache._levels[mip])
-    assert len(calls) == 2, "re-derived without level 0's corner_rise changing"
+    assert len(calls) == len(want), "re-derived without level 0's corner_rise changing"
 
     cache.elevations[3, 3] += 1
     cache.patch((0, 0, *cache.canvas_dims(0)), elevation_changed={(3, 3)})
@@ -192,13 +207,15 @@ def test_a_sprite_toggle_while_level_minus_2_is_shown_paints_its_grown_canvas(sp
 
 
 @pytest.mark.parametrize("pct", [25, 50, 100, 200])
-def test_the_ladder_is_steppeds_coarser_levels_at_every_pct(monkeypatch, pct) -> None:
+def test_the_ladder_is_steppeds_coarser_levels_at_every_pct(monkeypatch, pct, hi_res) -> None:
+    """Plus Stepped's level 1 at Enhanced (GH #241)."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
     scn = _scenario(units=False)
     elevations, proj = render.elevations_and_proj(scn)
     stepped = IsoChunkCache(scn, elevations, proj, proj.tile_px).mip_levels()
     cache = _cache(scn)
-    assert cache.mip_levels() == [mip for mip in stepped if mip <= 0]
+    assert cache.mip_levels() == [mip for mip in stepped if mip <= (1 if hi_res else 0)]
+    assert not hi_res or 1 in cache.mip_levels(), f"pct {pct}: no finer level at Enhanced"
     assert len(cache.mip_levels()) > 1, f"pct {pct}: no coarser level -- vacuous"
 
 
@@ -211,11 +228,13 @@ def _footprint(tx: int, ty: int, proj, corner_rise) -> tuple[int, int, int, int]
 
 
 @pytest.mark.parametrize("pct", [25, 50, 100, 200])
-def test_a_coarser_tile_never_paints_outside_its_scaled_reference_footprint(monkeypatch, pct) -> None:
+def test_a_coarser_tile_never_paints_outside_its_scaled_reference_footprint(monkeypatch, pct, hi_res) -> None:
     """_sloped_column_runs' max(_, 1) clamp lengthens a run at small tile_px;
     a level-L tile must still sit inside its level-0 footprint converted by
     _bbox_to_level(), the conversion every patch bbox takes. At pct 200 the
-    clamp must actually fire somewhere, or that case proves nothing."""
+    clamp must actually fire somewhere, or that case proves nothing. At
+    Enhanced the finer level 1 is held to the same bound, through the
+    padding SlopedChunkCache._bbox_to_level() adds there (GH #241)."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
     scn = _scenario(units=False, elevation_of=lambda x, y: min(2, (x // 2 + y // 3) % 3))
     cache = _cache(scn)
@@ -430,6 +449,33 @@ def _run_steps(scn, levels, broken=None) -> list[str]:
 @pytest.mark.parametrize("levels", [(-1,), (-2,), (0, -1, -2)], ids=["-1", "-2", "all"])
 def test_every_edit_kind_patched_at_a_coarser_level_matches_a_fresh_cache(shared_art_install, levels) -> None:  # noqa: F811
     assert _run_steps(_edit_scenario(), levels) == []
+
+
+@pytest.mark.parametrize("levels", [(1,), (0, 1)], ids=["1", "0+1"])
+def test_every_edit_kind_patched_at_the_enhanced_finer_level_matches_a_fresh_cache(shared_art_install, levels) -> None:  # noqa: F811
+    """GH #241: Enhanced's level 1 under the same edit oracle."""
+    _enhanced()
+    assert _run_steps(_edit_scenario(), levels) == []
+
+
+def test_the_finer_level_needs_its_patch_padding(monkeypatch) -> None:
+    """Control for the footprint test's Enhanced case: with the base
+    conversion alone, a level-1 tile paints outside its converted footprint.
+    Real edit bboxes cover neighbouring tiles too, so the edit oracle above
+    passes either way; the padding is what makes one tile's bound hold."""
+    monkeypatch.setattr(settings, "_elev_step_pct", 50)
+    _enhanced()
+    cache = _cache(_scenario(units=False, elevation_of=lambda x, y: min(2, (x // 2 + y // 3) % 3)))
+    lvl, ref = cache._levels[1], cache._levels[0]
+    rise = cache._level_corner_rise(lvl)
+    base = render_cache._ChunkCacheBase._bbox_to_level
+    outside = 0
+    for ty in range(MAP_H):
+        for tx in range(MAP_W):
+            got = _footprint(tx, ty, lvl.proj, rise)
+            bound = base(cache, 1, _footprint(tx, ty, ref.proj, cache.corner_rise))
+            outside += int(got[0] < bound[0] or got[1] < bound[1] or got[2] > bound[2] or got[3] > bound[3])
+    assert outside
 
 
 @pytest.mark.parametrize("step", ["draw", "headroom_up", "elev_splice", "over_cap", "unit_add", "unit_remove", "headroom_down"])

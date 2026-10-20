@@ -858,6 +858,18 @@ class _WholeLabelComboBox(NoWheelComboBox):
         return QSize(hint.width() + self.fontMetrics().horizontalAdvance(" "), hint.height())
 
 
+def _sync_hi_res() -> str:
+    """unit_sprites.set_hi_res() from Graphics Quality and the install (GH
+    #241): x2 art only at Enhanced with the Enhanced Graphics DLC installed.
+    Returns a status-log suffix at Enhanced, else ""."""
+    enhanced = settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_MAX
+    installed = enhanced and unit_sprites.x2_art_installed()
+    unit_sprites.set_hi_res(installed)
+    if not enhanced:
+        return ""
+    return " (high-resolution unit art on)" if installed else " (Enhanced Graphics DLC not installed: regular unit art)"
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
@@ -1071,7 +1083,10 @@ class SettingsDialog(QDialog):
             "applies to the next render. Enhanced only doubles resolution on "
             "large maps (already-downscaled); on small maps it's a no-op, "
             "since doubling their base resolution is well past what's been "
-            "measured safe for memory."
+            "measured safe for memory. With the game's free Enhanced Graphics "
+            "DLC installed, Enhanced also draws units and buildings from its "
+            "high-resolution art when zoomed in; without it, they use their "
+            "regular art."
         )
         self.graphics_quality_slider.setValue(settings.get_graphics_quality())
         self.graphics_quality_label = QLabel()
@@ -1083,6 +1098,11 @@ class SettingsDialog(QDialog):
         quality_row.addWidget(self.graphics_quality_slider, stretch=1)
         quality_row.addWidget(self.graphics_quality_label)
         layout.addLayout(quality_row)
+        # GH #241: whether Enhanced can draw the high-resolution unit art.
+        self.x2_art_label = QLabel()
+        self.x2_art_label.setWordWrap(True)
+        self._update_x2_art_label()
+        layout.addWidget(self.x2_art_label)
 
         height_row = QHBoxLayout()
         height_row.addWidget(QLabel("Isometric elevation height:"))
@@ -1920,6 +1940,19 @@ class SettingsDialog(QDialog):
             self._window._cancel_warms()
         self._window._log_status(f"Preload zoom levels: {'on' if enabled else 'off'}")
 
+    def _update_x2_art_label(self) -> None:
+        detected = False
+        if asset_source.get_install_path() is None:
+            text = "Enhanced Graphics DLC: no install configured."
+        elif unit_sprites.x2_art_installed():
+            detected = True
+            text = "Enhanced Graphics DLC: detected. Enhanced draws its high-resolution unit art when zoomed in."
+        else:
+            text = "Enhanced Graphics DLC: not detected. Enhanced uses the regular unit art."
+        # Green when detected; a missing DLC is a normal setup, not an error, so it stays plain.
+        self.x2_art_label.setStyleSheet(f"color: {status_color(True, on_tab_page=True)};" if detected else "")
+        self.x2_art_label.setText(text)
+
     def _update_graphics_quality_label(self, quality: int) -> None:
         self.graphics_quality_label.setText(settings.GRAPHICS_QUALITY_LABELS[quality])
 
@@ -1934,7 +1967,7 @@ class SettingsDialog(QDialog):
     def _apply_graphics_quality(self) -> None:
         value = self.graphics_quality_slider.value()
         settings.set_graphics_quality(value)
-        self._window._log_status(f"Graphics quality: {settings.GRAPHICS_QUALITY_LABELS[value]}")
+        self._window._log_status(f"Graphics quality: {settings.GRAPHICS_QUALITY_LABELS[value]}{_sync_hi_res()}")
         self._window.refresh_map()
 
     def _update_elev_step_label(self, pct: int) -> None:
@@ -2465,7 +2498,8 @@ class SettingsDialog(QDialog):
         asset_source.set_install_path_override(path)
         asset_source.save_install_path_to_config(path)
         self._set_install_status(message, ok=True)
-        self._window._log_status(f"Install path set to {path}: {message}")
+        self._window._log_status(f"Install path set to {path}: {message}{_sync_hi_res()}")
+        self._update_x2_art_label()
         self._window.refresh_map()
         # The long-lived picker keeps its old swatches otherwise (see refresh_swatches()).
         self._window.terrain_panel.view.refresh_swatches()
@@ -3031,6 +3065,8 @@ class ViewerWindow(QMainWindow):
         # Terrain panel's swatches resolve textures at construction, and that lookup is cached.
         mod_graphics.set_enabled(settings.get_view_layers().mod_art)
         mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        # GH #241: Enhanced draws the game's x2 unit art where x1 would be enlarged.
+        _sync_hi_res()
         asset_source.clear_art_caches()
         # (mod_graphics.generation(), whether any scanned mod ships art), for the row's greying.
         self._mod_art_available: tuple[int, bool] | None = None
