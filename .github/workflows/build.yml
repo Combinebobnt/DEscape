@@ -16,6 +16,7 @@ jobs:
           - {runner: macos-15,     label: macos-arm64}
           - {runner: windows-2025, label: windows-x86_64}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -47,15 +48,11 @@ jobs:
 
       - uses: ./.github/actions/install-and-build
 
-      # Every OS, not only Linux: this is the one place the MSVC and arm64
-      # clang builds are compared byte for byte against numpy.
-      - name: Native kernel oracle
-        env:
-          DESCAPE_REQUIRE_NATIVE: '1'
-        run: python -m pytest tests/test_native_composite.py tests/test_sld_native.py tests/test_terrain_blend_render.py
-
+      # Every OS, not only Linux: besides the tier itself, this is the one
+      # place the MSVC and arm64 clang builds are compared byte for byte
+      # against numpy (the native kernel oracle tests run inside the tier).
       - uses: ./.github/actions/default-tier
-        if: runner.os == 'Linux'
+        timeout-minutes: 90
 
       - name: Build frozen bundle
         if: runner.os != 'Linux'

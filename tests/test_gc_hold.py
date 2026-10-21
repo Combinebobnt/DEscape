@@ -3,6 +3,8 @@ a warm raises threshold2 only, the deferred collection runs once every warm
 has gone quiet and no mouse button is held, collects before it restores the
 exact saved tuple, an overdue hold is a warm tick's only work, and every
 document lifetime boundary leaves the original threshold and no idle timer.
+gc_hold.paused() turns gc off for one block and puts the caller's
+gc.isenabled() back, after a raise too.
 
 The collector and the hold's clock are fakes (gc_hold._collect, gc_hold._now),
 set by autouse fixtures and never undone mid-test: monkeypatch.undo() would
@@ -471,3 +473,57 @@ def test_closing_the_window_resets_the_hold(qapp, monkeypatch) -> None:
     conftest.close_window(window)
     assert gc.get_threshold() == ODD, "closeEvent left the threshold raised"
     assert not _idle_armed(), "closeEvent left the idle timer armed"
+
+
+# --- paused(): gc off for one block ----------------------------------------------
+
+
+@pytest.fixture
+def restore_gc():
+    """Yields a setter for gc.isenabled(), and puts the caller's state back after."""
+    was_enabled = gc.isenabled()
+
+    def set_enabled(enabled: bool) -> None:
+        if enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+    yield set_enabled
+    set_enabled(was_enabled)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_paused_disables_inside_and_restores_the_callers_state(restore_gc, enabled: bool) -> None:
+    restore_gc(enabled)
+    with gc_hold.paused():
+        assert not gc.isenabled()
+    assert gc.isenabled() is enabled
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_paused_restores_the_callers_state_after_a_raise(restore_gc, enabled: bool) -> None:
+    restore_gc(enabled)
+    with pytest.raises(RuntimeError, match="inside"), gc_hold.paused():
+        assert not gc.isenabled()
+        raise RuntimeError("inside")
+    assert gc.isenabled() is enabled
+
+
+def test_paused_as_a_decorator_pauses_every_call(restore_gc) -> None:
+    restore_gc(True)
+
+    @gc_hold.paused()
+    def enabled_inside() -> bool:
+        return gc.isenabled()
+
+    assert [enabled_inside(), enabled_inside()] == [False, False]
+    assert gc.isenabled()
+
+
+def test_paused_leaves_the_threshold_alone(restore_gc) -> None:
+    restore_gc(True)
+    gc.set_threshold(*ODD)
+    with gc_hold.paused():
+        assert gc.get_threshold() == ODD
+    assert gc.get_threshold() == ODD

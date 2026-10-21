@@ -817,6 +817,14 @@ def reorient_gate_const(unit_const: int, name: Element) -> int:
     return siblings[gate_orientation_map(name)[siblings.index(unit_const)]]
 
 
+# What plan_mirror_units() does with an image that lands on a source unit:
+# refuse the whole mirror (the default), leave that copy out, or place it.
+OVERLAPS_REFUSE = "refuse"
+OVERLAPS_SKIP = "skip"
+OVERLAPS_PLACE = "place"
+OVERLAP_POLICIES = (OVERLAPS_REFUSE, OVERLAPS_SKIP, OVERLAPS_PLACE)
+
+
 @dataclass(frozen=True)
 class UnitImage:
     """One unit to create: a source unit's image under `element`."""
@@ -835,10 +843,11 @@ class UnitMirrorPlan:
     # remove first. Both empty when the map is already symmetric.
     images: list[UnitImage]
     removals: list[object]
-    # Refusal lists. Any non-empty one means "do not apply" -- the caller
-    # reports them rather than repairing, exactly as Stage 1's elevation seam
-    # check does, since every repair would break the symmetry that was asked
-    # for.
+    # Refusal lists. A non-empty garrisoned_blockers always means "do not
+    # apply"; straddling does only under OVERLAPS_REFUSE (see `blocked`). The
+    # caller reports them rather than repairing, exactly as Stage 1's
+    # elevation seam check does, since every repair would break the symmetry
+    # that was asked for.
     garrisoned_blockers: list[object]
     straddling: list[object]
     # Report-only: a source unit whose footprint is not square cannot be
@@ -856,10 +865,21 @@ class UnitMirrorPlan:
     # land on a tile the terrain half leaves untouched (unreachable), or
     # overlap a unit kept there.
     off_map: list[tuple[object, Element]] = field(default_factory=list)
+    # Report-only: every image withheld because its footprint lands on a
+    # source unit's, one per image, under every policy. OVERLAPS_PLACE also
+    # appends them to `images`, after everything else.
+    overlapping: list[UnitImage] = field(default_factory=list)
+    # The overlap policy the plan was built with (OVERLAP_POLICIES).
+    overlaps: str = OVERLAPS_REFUSE
+
+    @property
+    def overlap_blocked(self) -> bool:
+        """Whether the straddlers alone refuse the plan: only under OVERLAPS_REFUSE."""
+        return bool(self.straddling) and self.overlaps == OVERLAPS_REFUSE
 
     @property
     def blocked(self) -> bool:
-        return bool(self.garrisoned_blockers or self.straddling)
+        return bool(self.garrisoned_blockers) or self.overlap_blocked
 
 
 def _key(x: float, y: float) -> tuple[int, int]:
@@ -890,6 +910,7 @@ def _image_position(
     gathered by a snap that need not agree), and a building rotates its
     footprint CENTRE and re-anchors the same axis-aligned span around it:
     AoE2 has no rotated footprint, so the image is the closest placeable one.
+    Images are never checked against each other, so two may overlap (accepted, root AGENTS.md).
     """
     if isinstance(element, AngularElement):
         if element in _D4_EQUIVALENT:
@@ -1060,6 +1081,7 @@ def plan_mirror_units(
     ownership_steps: int = 0,
     referencing: Callable[[object], Sequence] | None = None,
     unreachable: frozenset[int] = frozenset(),
+    overlaps: str = OVERLAPS_REFUSE,
 ) -> UnitMirrorPlan:
     """Computes (but does not apply) the unit half of a mirror.
 
@@ -1081,7 +1103,16 @@ def plan_mirror_units(
     `unreachable` is plan_mirror()'s own (angular modes): a unit anchored on
     one of those tiles is neither a source nor removed, since nothing would
     arrive to replace it, and no image may land on or over one.
+
+    `overlaps` (OVERLAP_POLICIES) decides what an image landing on a source
+    unit does. Every policy records it in `overlapping` and its source in
+    `straddling`; OVERLAPS_REFUSE blocks the plan, OVERLAPS_SKIP leaves the
+    copy out, OVERLAPS_PLACE adds it to `images` after the emit loop. It
+    never touches `garrisoned_blockers`, and plan_mirror()'s elevation check
+    has no such parameter at all.
     """
+    if overlaps not in OVERLAP_POLICIES:
+        raise ValueError(f"unknown overlap policy {overlaps!r}: expected one of {OVERLAP_POLICIES}")
     mode = MODE_BY_ID[mode_id]
     n = mm.map_width
     width, height = mm.map_width, mm.map_height
@@ -1128,8 +1159,22 @@ def plan_mirror_units(
     for unit in sources:
         source_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
 
+    def image_of(unit, index: int, element: Element, new_const: int, x: float, y: float) -> UnitImage:
+        # The one place an image is built, so a placed overlap and a normal copy cannot drift.
+        steps = (index - slice_index) % len(elements) * ownership_steps
+        return UnitImage(
+            source=unit,
+            element=element,
+            player=_rotated_owner(unit.player, player_ids, steps),
+            unit_const=new_const,
+            x=x,
+            y=y,
+            rotation=_image_rotation(unit, element, file_radian),
+        )
+
     images: list[UnitImage] = []
     straddling: list[object] = []
+    overlapping: list[UnitImage] = []
     unsquare_spans: list[object] = []
     gates: list[object] = []
     off_map: list[tuple[object, Element]] = []
@@ -1168,23 +1213,15 @@ def plan_mirror_units(
                 # own footprint crosses the symmetry axis: dedup cannot catch
                 # it (the two anchors genuinely differ), and no repair exists
                 # that preserves the symmetry. Reported once per unit however
-                # many of its images overlap.
+                # many of its images overlap; the image itself, once per image.
                 if unit not in straddling:
                     straddling.append(unit)
+                overlapping.append(image_of(unit, index, element, new_const, x, y))
                 continue
-            images.append(
-                UnitImage(
-                    source=unit,
-                    element=element,
-                    player=_rotated_owner(
-                        unit.player, player_ids, (index - slice_index) % len(elements) * ownership_steps
-                    ),
-                    unit_const=new_const,
-                    x=x,
-                    y=y,
-                    rotation=_image_rotation(unit, element, file_radian),
-                )
-            )
+            images.append(image_of(unit, index, element, new_const, x, y))
+    if overlaps == OVERLAPS_PLACE:
+        # Last, so "place anyway" puts each copy exactly where the mirror sends it.
+        images.extend(overlapping)
 
     return UnitMirrorPlan(
         images=images,
@@ -1194,6 +1231,8 @@ def plan_mirror_units(
         unsquare_spans=unsquare_spans,
         gates=gates,
         off_map=off_map,
+        overlapping=overlapping,
+        overlaps=overlaps,
     )
 
 

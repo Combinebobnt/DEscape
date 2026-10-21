@@ -228,6 +228,42 @@ def test_sentinels_belong_only_to_numeric_kinds() -> None:
     }
 
 
+# -- TASK-059: allow_in_fog, a BOOL that keeps its sentinel --------------------
+
+_FOG = FieldSpec("allow_in_fog", trigger_fields.BOOL, sentinel=trigger_fields.UNSET)
+_PLAIN_BOOL = FieldSpec("inverted", trigger_fields.BOOL, sentinel=None)
+
+
+def test_allow_in_fog_is_a_bool_by_name_with_the_unset_sentinel() -> None:
+    """Its presentation is "", which alone would make it an INT spinbox."""
+    entry = _entry(["condition_type", "allow_in_fog", "inverted"], {"condition_type": 27})
+    specs = trigger_fields.field_specs(entry, {"allow_in_fog": "", "inverted": "bool"}, "condition_type")
+    assert [(s.name, s.kind, s.sentinel) for s in specs] == [
+        ("allow_in_fog", trigger_fields.BOOL, trigger_fields.UNSET),
+        ("inverted", trigger_fields.BOOL, None),
+    ]
+
+
+@pytest.mark.parametrize(("value", "checked"), [(-1, False), (0, False), (1, True), (2, True)])
+def test_a_sentinel_bool_shows_unset_as_unticked(value: int, checked: bool) -> None:
+    assert trigger_fields.checkbox_checked(_FOG, value) is checked
+
+
+@pytest.mark.parametrize(("value", "checked"), [(0, False), (1, True), (-1, True)])
+def test_a_plain_bool_keeps_bool_of_its_value(value: int, checked: bool) -> None:
+    """inverted's -1 stays ticked: whether the game reads it so is unmeasured."""
+    assert trigger_fields.checkbox_checked(_PLAIN_BOOL, value) is checked
+
+
+def test_form_value_maps_the_sentinel_to_zero_for_a_sentinel_bool_only() -> None:
+    assert trigger_fields.form_value(_FOG, -1) == 0
+    assert trigger_fields.form_value(_FOG, 0) == 0
+    assert trigger_fields.form_value(_FOG, 1) == 1
+    assert trigger_fields.form_value(_PLAIN_BOOL, -1) == -1
+    assert trigger_fields.form_value(FieldSpec("timer", trigger_fields.INT), -1) == -1
+    assert trigger_fields.form_value(_FOG, trigger_fields.MIXED) is trigger_fields.MIXED
+
+
 # -- enum choices and reference resolution -----------------------------------
 
 
@@ -789,6 +825,90 @@ def test_an_unreadable_field_is_simply_not_carried() -> None:
     applied, dropped = trigger_fields.retype_carryover(entry, old, new, "effect_type")
     assert applied == {"source_player": 2}
     assert dropped == ()
+
+
+def _v159_trigger():
+    """(loaded, a trigger) of the 1.59 fixture. Loading also initialises the
+    library's module-global vocabulary, which _add_condition() builds from.
+    The caller keeps `loaded` alive: the library's scenario store does not."""
+    from pathlib import Path
+
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    loaded = load_map_and_units(Path(__file__).resolve().parent / "fixtures" / "v159_units_triggers.aoe2scenario")
+    return loaded, parse_triggers(loaded).triggers[1]
+
+
+def _fresh(trigger, kind: str, type_id: int):
+    """One fresh entry through the library's own construction path, left out of the trigger."""
+    entries = trigger.conditions if kind == "condition" else trigger.effects
+    (trigger._add_condition if kind == "condition" else trigger._add_effect)(type_id)
+    return entries.pop(len(entries) - 1)
+
+
+def test_retyping_a_fresh_entry_reports_nothing_dropped() -> None:
+    """TASK-059's trap 2: Object Attacked lists no default for five fields that
+    a fresh one holds at type 0's -1, which retype used to name as dropped."""
+    vocabulary = library_compat.load_vocabulary("1.59")
+    by_name = {entry.name: entry.id for entry in vocabulary.conditions.values()}
+    attacked, timer = by_name["object_attacked"], by_name["timer"]
+    definition = vocabulary.conditions[attacked]
+    missing = {a for a in definition.attributes if a not in definition.default_attributes}
+    assert {"unit_object", "object_list"} <= missing, "fixture assumption: fields with no listed default"
+
+    _loaded, trigger = _v159_trigger()
+    trigger._add_condition(attacked)
+    index = len(trigger.conditions) - 1
+    assert trigger_fields.retype_entry(trigger, "condition", index, timer, vocabulary.conditions, "condition_type") == ()
+
+    trigger._add_condition(attacked).unit_object = 200
+    index = len(trigger.conditions) - 1
+    dropped = trigger_fields.retype_entry(trigger, "condition", index, timer, vocabulary.conditions, "condition_type")
+    assert dropped == ("unit_object",)
+
+
+def test_a_fresh_entry_holds_type_0_s_value_where_its_type_lists_no_default() -> None:
+    """The fallback retype_carryover() takes is right only if this holds: for
+    every 1.54+ (type, field) pair with no listed default, the library's fresh
+    entry carries the type-0 value. Unreadable cluster slots (None) are never
+    compared, and must stay inside the effect exclusion set."""
+    from AoE2ScenarioParser.datasets import conditions as condition_data
+    from AoE2ScenarioParser.datasets import effects as effect_data
+    from AoE2ScenarioParser.scenarios.aoe2_scenario import _initialise_version_dependencies
+
+    _loaded, trigger = _v159_trigger()
+    modules = (condition_data, effect_data)
+    names = ("condition_names", "effect_names", "default_attributes", "attributes", "attribute_presentation")
+    saved = {(m, n): dict(getattr(m, n)) for m in modules for n in names if hasattr(m, n)}
+    versions = [v for v in library_compat.vocabulary_versions() if tuple(map(int, v.split("."))) >= (1, 54)]
+    assert "1.59" in versions
+    pairs, wrong = 0, []
+    try:
+        for version in versions:
+            vocabulary = library_compat.load_vocabulary(version)
+            _initialise_version_dependencies("DE", version)
+            for kind, entries, type_attribute in (
+                ("condition", vocabulary.conditions, "condition_type"),
+                ("effect", vocabulary.effects, "effect_type"),
+            ):
+                base = entries[0].default_attributes
+                for type_id, entry in entries.items():
+                    unlisted = [a for a in entry.attributes if a != type_attribute and a not in entry.default_attributes]
+                    if type_id == 0 or not unlisted:
+                        continue
+                    fresh = _fresh(trigger, kind, type_id)
+                    for attribute in unlisted:
+                        pairs += 1
+                        value = trigger_fields._live_value(fresh, attribute)
+                        unread = value is None and kind == "effect" and attribute in trigger_fields._RETYPE_EXCLUDED
+                        if value != base.get(attribute) and not unread:
+                            wrong.append((version, kind, type_id, attribute, value, base.get(attribute)))
+    finally:
+        for (module, name), value in saved.items():
+            getattr(module, name).clear()
+            getattr(module, name).update(value)
+    assert pairs > 150
+    assert wrong == []
 
 
 # -- intersecting several entries' forms (GH #60) ----------------------------

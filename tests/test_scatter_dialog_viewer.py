@@ -93,7 +93,7 @@ def test_a_one_tile_region_with_a_house_selected_enables_ok_in_the_real_dialog()
     """GH #105 step 2. Pass conditions:
     - the real ScatterDialog opens modal from Edit > Scatter Units in Region;
     - switched to "Move the selected units", its count line reads "1 selected
-      units, 1 eligible tiles in a 1x1 region (1 tiles)" and OK is enabled;
+      units, 1 eligible tiles in a 1x1 area (1 tiles)" and OK is enabled;
     - OK accepts: the 2x2 house cannot fit one tile, so it stays put, nothing
       is recorded and the status says nothing moved."""
     from PyQt5.QtWidgets import QDialogButtonBox
@@ -122,7 +122,7 @@ def test_a_one_tile_region_with_a_house_selected_enables_ok_in_the_real_dialog()
         assert record["error"] is None, record["error"]
         assert record["seen"] is not None, "the real dialog never showed"
         assert record["modal"]
-        assert checked["count"] == "1 selected units, 1 eligible tiles in a 1x1 region (1 tiles)"
+        assert checked["count"] == "1 selected units, 1 eligible tiles in a 1x1 area (1 tiles)"
         assert checked["ok"], "OK is disabled on a one-tile region with a house selected"
         assert (house.unit.x, house.unit.y) == position
         assert len(window.edit_history.records) == records

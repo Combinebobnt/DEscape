@@ -18,8 +18,10 @@ under an edit: elevations and corner_rise, the textures and blend masks
 LUT, shade and grid-stamp table (from render's lru caches, which tests
 rebind and cache_clear()).
 Cached across calls: pure index geometry keyed by (tile_px, elev_step) or by a
-normalized Sloped shape, and the UnitPack, which its owning cache refreshes
-through the same splice funnels that update its SpriteLayer (see UnitPack).
+normalized Sloped shape, the blend sample list derived from it (the texels a
+blended tile's paint reads, SteppedTables/SlopedShapes.blend_samples), and the
+UnitPack, which its owning cache refreshes through the same splice funnels that
+update its SpriteLayer (see UnitPack).
 
 Terrain ids are read live too, unless the caller passes `terrain_ids`: a flat
 per-tile mirror its owning chunk cache keeps and refreshes in patch() and
@@ -45,6 +47,7 @@ from descape import asset_source, iso_geometry, render, terrain_blend
 from descape.edge_ticks import MAJORS_PER_MINOR
 
 # Stepped op-table layout, mirrored by DEF constants in _composite_native.pyx.
+OP_DIAMOND = 0
 N_FIXED = 8
 PER_RISE = 5
 MAX_RISE = iso_geometry.MAX_ELEVATION - iso_geometry.MIN_ELEVATION
@@ -75,6 +78,14 @@ def _i32(parts: list[np.ndarray]) -> np.ndarray:
     if not np.array_equal(out, wide):
         raise OverflowError("an index table value does not fit in int32")
     return out
+
+
+def _blend_samples(tile_px: int, sy: list[np.ndarray], sx: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """The distinct (sy, sx) across the given source columns, row-major, as
+    two contiguous int32 arrays: the texels the kernel composes per blended
+    tile. Built fresh, never written in place, since a worker may hold it."""
+    flat = np.unique(np.concatenate([np.zeros(0, np.int64), *(y.astype(np.int64) * tile_px + x for y, x in zip(sy, sx, strict=True))]))
+    return np.ascontiguousarray(flat // tile_px, dtype=np.int32), np.ascontiguousarray(flat % tile_px, dtype=np.int32)
 
 
 def _csr(ops: list[tuple], src: bool) -> dict:
@@ -136,6 +147,13 @@ class SteppedTables:
         self.cols = cols
         self.factor_keys = keys
         self.op_len = np.diff(cols["start"])
+        # Every op whose paint reads a Src (the kernel's _op_scatter calls):
+        # the diamond and both skirts of every rise.
+        start = cols["start"]
+        reads = [OP_DIAMOND, *(N_FIXED + (r - 1) * PER_RISE + side for r in range(1, MAX_RISE + 1) for side in (0, 1))]
+        self.blend_samples = _blend_samples(
+            tile_px, [cols["sy"][start[i]:start[i + 1]] for i in reads], [cols["sx"][start[i]:start[i + 1]] for i in reads],
+        )
         fstart = np.full(len(ops), -1, dtype=np.int64)
         total = 0
         for i, key in enumerate(keys):
@@ -192,7 +210,9 @@ class SlopedShapes:
         self._quads: list[tuple] = []
         self._edges: list[tuple] = []
         self._packed: tuple | None = None
-        self.diamond = _pack_ops([iso_geometry.diamond_indices(tile_px)[:2]])
+        diamond = iso_geometry.diamond_indices(tile_px)
+        self.diamond = _pack_ops([diamond[:2]])
+        self._diamond_src = diamond[2:4]
 
     def shape_ids(self, keys: list[tuple[int, int, int, int]]) -> list[int]:
         out = []
@@ -213,15 +233,25 @@ class SlopedShapes:
             out.append(sid)
         return out
 
-    def packed(self) -> tuple[tuple, tuple]:
+    def packed(self) -> tuple[tuple, tuple, tuple[np.ndarray, np.ndarray]]:
+        """(quad Ops, edge Ops, blend_samples), rebuilt together whenever a
+        shape is registered, so the samples always cover the quads."""
         if self._packed is None:
             quads = _csr([q[:4] for q in self._quads], src=True)
             uv = _i32([q[4] for q in self._quads])
+            dsy, dsx = self._diamond_src
             self._packed = (
                 (quads["dy"], quads["dx"], quads["sy"], quads["sx"], uv, quads["start"], quads["ext"], None, None),
                 _pack_ops(self._edges),
+                _blend_samples(self.tile_px, [dsy, quads["sy"]], [dsx, quads["sx"]]),
             )
         return self._packed
+
+    @property
+    def blend_samples(self) -> tuple[np.ndarray, np.ndarray]:
+        """Every (sy, sx) a registered quad reads (the kernel's _op_shade),
+        plus the diamond's."""
+        return self.packed()[2]
 
 
 def _pack_ops(ops: list[tuple]) -> tuple:
@@ -739,7 +769,8 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     is the owning cache's per-tile mirror, None to read the tiles live.
     blend: render's terrain_blend.RectKeys for the candidates (spec ids into
     the caller's KeyMap, read on this thread before any worker runs), or None;
-    the kernel composes each blended top block itself (_blend_tables()). The last
+    the kernel composes each blended top block itself (_blend_tables(), plus
+    the geometry's blend_samples: only the texels a paint reads). The last
     argument is the pack's two_pass: terrain then objects, when sprites are on."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
@@ -757,6 +788,8 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
             keys = _edge_states(cx, cy, w, h, draw_minors, elevations)
             cand_grid, stamps = _grid_stamps(tile_px, grid, keys)
     tables = stepped_tables(tile_px, proj.elev_step)
+    if blend_tables is not None:
+        blend_tables = (*blend_tables, *tables.blend_samples)
     geom = (proj.origin_x, proj.origin_y, proj.half_w, proj.half_h, proj.elev_step, tile_px, MAX_RISE)
     # The bbox functions write elevations in place; a worker reads a copy.
     if snapshot is not None:
@@ -829,7 +862,9 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
             cand_grid, stamps = _grid_stamps(
                 tile_px, grid, pair, split=lambda p: (p // len(shape_keys), shape_keys[p % len(shape_keys)]),
             )
-    quads, edges = registry.packed()
+    quads, edges, samples = registry.packed()
+    if blend_tables is not None:
+        blend_tables = (*blend_tables, *samples)
     geom = (proj.origin_x, proj.origin_y, proj.half_w, proj.half_h, tile_px)
     return (
         x0, y0, cx, cy, slots, cand_grid, cand_shape, cand_shade, corner_rise, geom,

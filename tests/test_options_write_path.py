@@ -639,3 +639,29 @@ def test_exec_order_survives_an_unrelated_trigger_edit_across_the_corpus(
         f"{scenario_path.name}: the edit itself was lost"
     )
     assert exec_order_value(reloaded) == before, scenario_path.name
+
+
+def test_exec_order_writes_after_a_committed_new_trigger(tmp_path: Path) -> None:
+    """TASK-404: a structural edit commits a rebuilt Triggers section, after
+    which the module gate walks the edited section against the original bytes
+    and answers False. The model's own answer, taken before that commit, must
+    still hold, and the flag it then writes must land in the saved file."""
+    loaded = _loaded()
+    model = TriggerEditModel(loaded)
+    before = exec_order_value(loaded)
+    assert before in (0, 1)
+    count = model.trigger_count
+    model.structural_edit(lambda manager: manager.add_trigger("TASK-404 probe"))
+    model.serialize()  # the commit that moved the live section's walk off the file's bytes
+    assert model.exec_order_supported
+    model.set_exec_order(1 - before)
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+
+    reloaded = _loaded(out)
+    assert exec_order_value(reloaded) == 1 - before
+    reloaded_manager = parse_triggers(reloaded)
+    assert reloaded_manager is not None
+    assert len(reloaded_manager.triggers) == count + 1
+    assert reloaded_manager.triggers[-1].name == "TASK-404 probe"

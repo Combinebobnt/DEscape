@@ -34,7 +34,7 @@ def _font_baseline():
     conftest.ensure_qapp()
     from PyQt5.QtWidgets import QApplication
 
-    from descape import viewer_dialogs
+    from descape import gc_hold, viewer_dialogs
 
     app = QApplication.instance()
     saved_font = app.font()
@@ -42,7 +42,8 @@ def _font_baseline():
     viewer_dialogs._DEFAULT_FONT = None
     yield
     viewer_dialogs._DEFAULT_FONT = saved_default
-    app.setFont(saved_font)
+    with gc_hold.paused():
+        app.setFont(saved_font)
 
 
 def _other_family() -> str:

@@ -1,8 +1,9 @@
-name: Default test tier (Linux)
+name: Default test tier
 description: >
-  Runs the default pytest tier, then the test map items, under xvfb with the
-  native kernel required.
-  Assumes the qt-linux-libs and install-and-build actions already ran.
+  Runs the default pytest tier, then the test map items, with the native
+  kernel required. On Linux xvfb-run wraps each run; other OSes need no
+  display (the tests use Qt's offscreen platform).
+  Assumes the install-and-build action already ran, and qt-linux-libs on Linux.
 runs:
   using: composite
   steps:
@@ -10,11 +11,19 @@ runs:
       shell: bash
       env:
         DESCAPE_REQUIRE_NATIVE: '1'
-      run: xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup
+      run: |
+        wrap=()
+        if [ "$RUNNER_OS" = Linux ]; then wrap=(xvfb-run -a); fi
+        "${wrap[@]}" python -m pytest -n auto --maxprocesses 16 --dist loadgroup
 
     # pytest.ini leaves test_map out of the default tier; it needs no examples/.
+    # Runs after a red default tier too, so one run reports both steps.
     - name: Run the test map items
+      if: ${{ !cancelled() }}
       shell: bash
       env:
         DESCAPE_REQUIRE_NATIVE: '1'
-      run: xvfb-run -a python -m pytest -n auto --maxprocesses 16 --dist loadgroup -m "test_map and not corpus"
+      run: |
+        wrap=()
+        if [ "$RUNNER_OS" = Linux ]; then wrap=(xvfb-run -a); fi
+        "${wrap[@]}" python -m pytest -n auto --maxprocesses 16 --dist loadgroup -m "test_map and not corpus"

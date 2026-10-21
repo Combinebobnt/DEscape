@@ -19,6 +19,8 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from AoE2ScenarioParser.datasets.conditions import ConditionId
+from AoE2ScenarioParser.datasets.effects import EffectId
 from test_trigger_write_path import _object_fields
 
 from descape import disables_fields, player_fields
@@ -112,14 +114,27 @@ def test_terrain_differs_only_by_the_editors_conversions() -> None:
     assert seen["conversion"] and seen["foundation"], seen
 
 
-_STALE_RESAVE = pytest.mark.xfail(
-    strict=True,
-    reason="STALE RESAVE: the generator moved after the 2026-10-17 in-game save (TASK-358 lays Short Marble "
-    "2190 runs flush, TASK-396 types create_decision's options as text). Refresh the resave in AoE2:DE.",
-)
+# STALE RESAVE, waiting on TASK-434 (refresh the resave in AoE2:DE): the generator moved after the
+# 2026-10-17 save. TASK-358 lays Short Marble 2190 runs flush, so their rotation and y differ.
+STALE_UNIT_CONSTS = {2190}
+# TASK-399 closes the Limestone loop: its closing 2070 at (205.5, 27.5) is frame 8, 22 in the resave.
+STALE_UNIT_REFS = {5027}
+# TASK-396 types create_decision's options as text, so option 2's stored string differs (TASK-434).
+STALE_EFFECT_FIELDS = {int(EffectId.CREATE_DECISION): {"message_option2"}}
+# TASK-059 makes allow_in_fog editable, so the generator writes 1 where the resave holds -1 (TASK-434).
+STALE_CONDITION_FIELDS = {int(ConditionId.OBJECT_VISIBLE_MULTIPLAYER): {"allow_in_fog"}}
 
 
-@_STALE_RESAVE
+def _effect_fields(effect) -> tuple:
+    stale = STALE_EFFECT_FIELDS.get(effect.effect_type, set())
+    return tuple(item for item in _object_fields(effect) if item[0] not in stale)
+
+
+def _condition_fields(condition) -> tuple:
+    stale = STALE_CONDITION_FIELDS.get(condition.condition_type, set())
+    return tuple(item for item in _object_fields(condition) if item[0] not in stale)
+
+
 def test_units_differ_only_by_the_measured_rewrites() -> None:
     generated, resaved = _units(MAP_PATH), _units(RESAVE_PATH)
     dropped: dict[int, set[int]] = {}
@@ -131,11 +146,14 @@ def test_units_differ_only_by_the_measured_rewrites() -> None:
     unexplained = []
     for ref in generated.keys() & resaved.keys():
         (owner_a, a), (owner_b, b) = generated[ref], resaved[ref]
+        if a.unit_const in STALE_UNIT_CONSTS:
+            continue
+        stale_frame = ref in STALE_UNIT_REFS  # only rotation and frame are excused for these
         if owner_a != owner_b:
             unexplained.append((ref, "owner", owner_a, owner_b))
         if a.unit_const != b.unit_const and (a.unit_const, b.unit_const) not in CONST_REWRITES:
             unexplained.append((ref, "unit_const", a.unit_const, b.unit_const))
-        if a.rotation != b.rotation and (a.unit_const, a.rotation, b.rotation) not in ROTATION_REWRITES:
+        if not stale_frame and a.rotation != b.rotation and (a.unit_const, a.rotation, b.rotation) not in ROTATION_REWRITES:
             unexplained.append((ref, "rotation", a.unit_const, a.rotation, b.rotation))
         for axis in ("x", "y"):
             va, vb = getattr(a, axis), getattr(b, axis)
@@ -143,7 +161,7 @@ def test_units_differ_only_by_the_measured_rewrites() -> None:
             if va != vb and EDGE_CLAMP.get(va) != vb and a.garrisoned_in_id == -1:
                 unexplained.append((ref, axis, va, vb))
         frame_a, frame_b = a.initial_animation_frame, b.initial_animation_frame
-        if frame_a != frame_b and frame_b != b.rotation and a.unit_const not in FRAME_REWRITE_CONSTS:
+        if not stale_frame and frame_a != frame_b and frame_b != b.rotation and a.unit_const not in FRAME_REWRITE_CONSTS:
             unexplained.append((ref, "initial_animation_frame", a.unit_const, frame_a, frame_b))
         unexplained.extend(
             (ref, name, getattr(a, name), getattr(b, name))
@@ -161,7 +179,6 @@ def test_each_recomputed_field_really_changes(field: str) -> None:
     assert any(getattr(generated[ref][1], field) != getattr(resaved[ref][1], field) for ref in generated.keys() & resaved.keys())
 
 
-@_STALE_RESAVE
 def test_triggers_and_variables_survive_unchanged() -> None:
     generated = parse_triggers(_loaded(MAP_PATH))
     resaved = parse_triggers(_loaded(RESAVE_PATH))
@@ -169,8 +186,39 @@ def test_triggers_and_variables_survive_unchanged() -> None:
     assert [(v.variable_id, v.name) for v in generated.variables] == [(v.variable_id, v.name) for v in resaved.variables]
     for a, b in zip(generated.triggers, resaved.triggers, strict=True):
         assert _object_fields(a) == _object_fields(b), a.name
-        for kind in ("conditions", "effects"):
-            assert [_object_fields(e) for e in getattr(a, kind)] == [_object_fields(e) for e in getattr(b, kind)], a.name
+        assert [_condition_fields(c) for c in a.conditions] == [_condition_fields(c) for c in b.conditions], a.name
+        assert [_effect_fields(e) for e in a.effects] == [_effect_fields(e) for e in b.effects], a.name
+
+
+def test_each_stale_exclusion_still_differs() -> None:
+    """Fails once TASK-434 refreshes the resave: then delete every STALE_* table above."""
+    generated, resaved = _units(MAP_PATH), _units(RESAVE_PATH)
+    for const in STALE_UNIT_CONSTS:
+        pairs = [(a, resaved[ref][1]) for ref, (_owner, a) in generated.items() if ref in resaved and a.unit_const == const]
+        assert any((a.rotation, a.y) != (b.rotation, b.y) for a, b in pairs), const
+    for ref in STALE_UNIT_REFS:
+        a, b = generated[ref][1], resaved[ref][1]
+        assert a.unit_const == b.unit_const and (a.rotation, a.y) != (b.rotation, b.y), ref
+    triggers_a = parse_triggers(_loaded(MAP_PATH)).triggers
+    triggers_b = parse_triggers(_loaded(RESAVE_PATH)).triggers
+    for effect_type, fields in STALE_EFFECT_FIELDS.items():
+        for name in fields:
+            differs = [
+                dict(_object_fields(ea))[name] != dict(_object_fields(eb))[name]
+                for ta, tb in zip(triggers_a, triggers_b, strict=True)
+                for ea, eb in zip(ta.effects, tb.effects, strict=True)
+                if ea.effect_type == effect_type
+            ]
+            assert any(differs), (effect_type, name)
+    for condition_type, fields in STALE_CONDITION_FIELDS.items():
+        for name in fields:
+            differs = [
+                dict(_object_fields(ca))[name] != dict(_object_fields(cb))[name]
+                for ta, tb in zip(triggers_a, triggers_b, strict=True)
+                for ca, cb in zip(ta.conditions, tb.conditions, strict=True)
+                if ca.condition_type == condition_type
+            ]
+            assert any(differs), (condition_type, name)
 
 
 def _option_field_ids(model: OptionsEditModel, loaded) -> list[str]:

@@ -13,12 +13,12 @@ No index producer repeats a destination within one call, so writing in place
 reads each pixel once, the same as numpy's fancy-index read-modify-write."""
 
 from libc.stdint cimport int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t, uintptr_t
-from libc.stdlib cimport free, malloc
+from libc.stdlib cimport calloc, free, malloc
 from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 7
+KERNEL_ABI = 8
 
 
 cdef inline bint _gather_scatter(
@@ -289,7 +289,10 @@ ctypedef struct Units:
 
 # Terrain blending (TASK-143): per candidate a spec id or -1, each spec a run
 # of (kind, texture slot, mask id) ops in terrain_blend._compose's order.
-# block is the per-call scratch a blended top block is composed into.
+# block is the per-call scratch a blended top block is composed into, at the
+# n_samp (samp_y, samp_x) texels only (TASK-031.66), zeroed once per call.
+# Invariant: the samples are the union of every Src-reading op's (sy, sx),
+# so a new op that reads a Src must join SteppedTables/SlopedShapes' union.
 ctypedef struct Blend:
     const int32_t* cand
     const int64_t* start
@@ -297,6 +300,9 @@ ctypedef struct Blend:
     const uint8_t** masks
     Py_ssize_t* mask_stride
     uint8_t* block
+    const int32_t* samp_y
+    const int32_t* samp_x
+    Py_ssize_t n_samp
 
 # Blend op kinds (native_composite.BLEND_LAYER/BLEND_NEIGHBOUR).
 DEF BLEND_LAYER = 0
@@ -635,17 +641,45 @@ cdef bint _two_pass_planes(const Canvas* c, uint8_t** snap, int32_t** ink) noexc
 
 
 cdef void _compose(const Blend* b, Py_ssize_t spec, Py_ssize_t px, const Src* own, const Src* srcs) noexcept nogil:
-    """terrain_blend._compose into b.block: the own crop, then each op. A
-    layer is (d*(256 - m) + t*m + 128) >> 8 with m cropped like the texture;
-    a neighbour (d*a + t*(128 - a) + 64) >> 7 with a the square-space alpha.
-    Every value stays in 0..255, so uint8 storage between ops is exact."""
-    cdef Py_ssize_t r, col, j, ch, slot, mid, stride, ms
-    cdef const uint8_t* trow
-    cdef const uint8_t* mrow
+    """terrain_blend._compose into b.block at the sample texels: the own
+    crop, then each op. A layer is (d*(256 - m) + t*m + 128) >> 8 with m
+    cropped like the texture; a neighbour (d*a + t*(128 - a) + 64) >> 7 with
+    a the square-space alpha. Every value stays in 0..255, so uint8 storage
+    between ops is exact, and no op reads another texel, so a subset of the
+    square composes to the same bytes there."""
+    # Locals, not b's fields: a uint8_t store may alias the struct, so a
+    # field read in the loop would be reloaded after every store. Row
+    # pointers move only when sy does (the list is row-major, for speed only).
+    cdef const int32_t* samp_y = b.samp_y
+    cdef const int32_t* samp_x = b.samp_x
+    cdef uint8_t* block = b.block
+    cdef Py_ssize_t n = b.n_samp, i, j, slot, mid, stride, ms, sy, sx, row
+    cdef const uint8_t* trow = NULL
+    cdef const uint8_t* mrow = NULL
+    cdef const uint8_t* tex
+    cdef const uint8_t* mask
+    cdef const uint8_t* q
+    cdef uint8_t* drow = NULL
     cdef uint8_t* d
-    cdef unsigned int a
-    for r in range(px):
-        memcpy(b.block + r * px * 3, own.tex + (own.oy + r) * own.stride + own.ox * 3, px * 3)
+    cdef unsigned int a, d0, d1, d2
+    tex = own.tex + own.oy * own.stride + own.ox * 3
+    stride = own.stride
+    row = -1
+    for i in range(n):
+        sy = samp_y[i]
+        sx = samp_x[i]
+        if sy != row:
+            row = sy
+            trow = tex + sy * stride
+            drow = block + sy * px * 3
+        q = trow + sx * 3
+        d = drow + sx * 3
+        d0 = q[0]
+        d1 = q[1]
+        d2 = q[2]
+        d[0] = <uint8_t>d0
+        d[1] = <uint8_t>d1
+        d[2] = <uint8_t>d2
     for j in range(b.start[spec], b.start[spec + 1]):
         slot = b.ops[3 * j + 1]
         mid = b.ops[3 * j + 2]
@@ -653,27 +687,48 @@ cdef void _compose(const Blend* b, Py_ssize_t spec, Py_ssize_t px, const Src* ow
             continue
         stride = srcs[slot].stride
         ms = b.mask_stride[mid]
-        for r in range(px):
-            trow = srcs[slot].tex + (own.oy + r) * stride + own.ox * 3
-            d = b.block + r * px * 3
-            if b.ops[3 * j] == BLEND_LAYER:
-                mrow = b.masks[mid] + (own.oy + r) * ms + own.ox
-                for col in range(px):
-                    a = mrow[col]
-                    for ch in range(3):
-                        d[ch] = <uint8_t>((d[ch] * (256 - a) + trow[ch] * a + 128) >> 8)
-                    d += 3
-                    trow += 3
-            else:
-                mrow = b.masks[mid] + r * ms
-                for col in range(px):
-                    a = mrow[col]
-                    # a == 128 keeps d exactly.
-                    if a != 128:
-                        for ch in range(3):
-                            d[ch] = <uint8_t>((d[ch] * a + trow[ch] * (128 - a) + 64) >> 7)
-                    d += 3
-                    trow += 3
+        tex = srcs[slot].tex + own.oy * stride + own.ox * 3
+        row = -1
+        if b.ops[3 * j] == BLEND_LAYER:
+            mask = b.masks[mid] + own.oy * ms + own.ox
+            for i in range(n):
+                sy = samp_y[i]
+                sx = samp_x[i]
+                if sy != row:
+                    row = sy
+                    trow = tex + sy * stride
+                    mrow = mask + sy * ms
+                    drow = block + sy * px * 3
+                a = mrow[sx]
+                q = trow + sx * 3
+                d = drow + sx * 3
+                d0 = (d[0] * (256 - a) + q[0] * a + 128) >> 8
+                d1 = (d[1] * (256 - a) + q[1] * a + 128) >> 8
+                d2 = (d[2] * (256 - a) + q[2] * a + 128) >> 8
+                d[0] = <uint8_t>d0
+                d[1] = <uint8_t>d1
+                d[2] = <uint8_t>d2
+        else:
+            mask = b.masks[mid]
+            for i in range(n):
+                sy = samp_y[i]
+                sx = samp_x[i]
+                if sy != row:
+                    row = sy
+                    trow = tex + sy * stride
+                    mrow = mask + sy * ms
+                    drow = block + sy * px * 3
+                a = mrow[sx]
+                # a == 128 keeps d exactly.
+                if a != 128:
+                    q = trow + sx * 3
+                    d = drow + sx * 3
+                    d0 = (d[0] * a + q[0] * (128 - a) + 64) >> 7
+                    d1 = (d[1] * a + q[1] * (128 - a) + 64) >> 7
+                    d2 = (d[2] * a + q[2] * (128 - a) + 64) >> 7
+                    d[0] = <uint8_t>d0
+                    d[1] = <uint8_t>d1
+                    d[2] = <uint8_t>d2
 
 
 cdef inline void _blend_src(Src* s, const Blend* b, Py_ssize_t k, Py_ssize_t px, const Src* srcs) noexcept nogil:
@@ -693,18 +748,28 @@ cdef inline void _blend_src(Src* s, const Blend* b, Py_ssize_t k, Py_ssize_t px,
 
 cdef int _blend_init(Blend* b, tuple blend, Py_ssize_t n, Py_ssize_t px, list textures,
                      const int64_t[::1] tex_size) except -1:
-    """Fills b from (cand, start, ops, masks), validating the spec, slot
-    and mask indices and the mask shapes. Crop bounds rest on the caller's
-    tex_size and the tables' own checks, as for a plain crop. The caller
-    frees b with _blend_free even on error."""
+    """Fills b from (cand, start, ops, masks, samp_y, samp_x), validating the
+    spec, slot and mask indices, the mask shapes and the samples (each inside
+    the px block). Crop bounds rest on the caller's tex_size and the tables'
+    own checks, as for a plain crop. The caller frees b with _blend_free even
+    on error."""
+    if len(blend) != 6:
+        raise ValueError("blend tables malformed")
     cdef const int32_t[::1] cand = blend[0]
     cdef const int64_t[::1] start = blend[1]
     cdef const int32_t[::1] ops = blend[2]
     cdef list masks = blend[3]
+    cdef const int32_t[::1] samp_y = blend[4]
+    cdef const int32_t[::1] samp_x = blend[5]
     cdef const uint8_t[:, ::1] mv
     cdef Py_ssize_t i, nops, nspec, nm = len(masks), nt = len(textures), size = 0, kind, slot, mid, need
     if cand.shape[0] != n or ops.shape[0] % 3 or start.shape[0] < 1:
         raise ValueError("blend tables malformed")
+    if samp_y.shape[0] != samp_x.shape[0]:
+        raise ValueError("blend sample columns differ in length")
+    for i in range(samp_y.shape[0]):
+        if not (0 <= samp_y[i] < px and 0 <= samp_x[i] < px):
+            raise ValueError("blend sample outside the tile block")
     nops = ops.shape[0] // 3
     nspec = start.shape[0] - 1
     if start[0] != 0 or start[nspec] != nops:
@@ -736,9 +801,13 @@ cdef int _blend_init(Blend* b, tuple blend, Py_ssize_t n, Py_ssize_t px, list te
     b.ops = _p32(ops)
     b.masks = <const uint8_t**>malloc(max(nm, 1) * sizeof(uint8_t*))
     b.mask_stride = <Py_ssize_t*>malloc(max(nm, 1) * sizeof(Py_ssize_t))
-    b.block = <uint8_t*>malloc(max(px * px * 3, 1))
+    # Zeroed once: a texel no compose wrote reads 0 0 0, never a leftover.
+    b.block = <uint8_t*>calloc(max(px * px * 3, 1), 1)
     if b.masks == NULL or b.mask_stride == NULL or b.block == NULL:
         raise MemoryError()
+    b.samp_y = _p32(samp_y)
+    b.samp_x = _p32(samp_x)
+    b.n_samp = samp_y.shape[0]
     for i in range(nm):
         mv = masks[i]
         b.masks[i] = &mv[0, 0] if mv.shape[0] and mv.shape[1] else NULL
@@ -853,8 +922,9 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
     geom is (origin_x, origin_y, half_w, half_h, elev_step, tile_px,
     max_rise). Returns False, having painted nothing, when a neighbour rise
     is past the tables' max_rise; the caller then takes the per-tile path.
-    blend is native_composite._blend_tables()' tuple, or None: a blended
-    candidate's top block is composed here and painted in place of its crop.
+    blend is native_composite._blend_tables()' tuple plus the geometry's
+    blend_samples (samp_y, samp_x), or None: a blended candidate's top block
+    is composed here, at those texels only, and painted in place of its crop.
     two_pass (sprites on): every terrain half, then every tile's objects,
     with a higher nearer tile's terrain restored over lower ink first. The
     snapshot and ink plane exist only when some tile is above some ink."""

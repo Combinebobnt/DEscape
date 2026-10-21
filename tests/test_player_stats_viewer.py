@@ -356,6 +356,36 @@ def test_the_combo_is_wide_enough_for_a_long_player_label() -> None:
         conftest.close_window(window)
 
 
+@pytest.mark.font_sensitive
+def test_at_the_view_floor_a_hidden_note_still_copies_and_map_size_reads_as_free_text() -> None:
+    """TASK-407. Pass conditions, View entered from a 150 px Units pane (its floor): the Note
+    column is hidden; copying Player 1's "Other" units row gives its count and note; the File
+    section's Map size is one free-text line, "Map size: 120 x 120"."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_window(1500, 900)
+    try:
+        window.load_scenario(UNITS_FIXTURE)
+        window.mode_combo.setCurrentText("Units")
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([150, total - 150])
+        QApplication.processEvents()
+        window.mode_combo.setCurrentText("View")
+        QApplication.processEvents()
+        assert window.content_splitter.sizes()[0] == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        window._select_player(1)
+        tree = window.info_tree
+        assert tree.header().isSectionHidden(2)
+        other = _player_items(window)[("Units", "Other")]
+        tree.clearSelection()
+        other.setSelected(True)
+        count = _row(window, "Other", "Units").split()[0]
+        assert tree.selected_text() == f"Other\t{count}\tflags, revealers, markers"
+        assert "Map size: 120 x 120" in window._info_text().splitlines()
+    finally:
+        conftest.close_window(window)
+
+
 def test_changing_the_combo_rebuilds_only_the_player_children() -> None:
     window = _window(UNITS_FIXTURE)
     try:

@@ -1000,7 +1000,10 @@ class UnitEditModel:
         `initial_animation_frame`, for a Cliff drag's join rewrites (GH #44):
         an existing end cap or lone piece that gains a neighbour from the
         drag takes the frame the measured shape table gives its new
-        neighbours at its own size (cliff_chain.ChainStroke.rewrites()).
+        neighbours at its own size (cliff_chain.ChainStroke.rewrites()); and
+        for a Cliff tool right-button erase's end rewrites (GH #247): a
+        survivor left joined to exactly one neighbour takes that arm's end
+        cap at its own size (cliff_chain.erase_rewrites()).
 
         An exception to AGENTS.md's "verbatim" rule on set_wall_variant()'s
         ground: the value is derived from the neighbours the piece now has,

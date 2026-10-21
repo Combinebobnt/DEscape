@@ -694,6 +694,106 @@ def test_dragging_back_over_the_run_does_not_step_onto_it():
     assert len(stroke.nodes()) == 3
 
 
+# -- self contacts: a run that touches itself (TASK-399) ----------------------
+
+LIMESTONE_01 = 2069
+SHORT_MARBLE_01 = 2190
+
+
+def _unjoined(nodes):
+    """The test map fixture's measure: nodes whose frame is not the table's
+    for their realized cardinal neighbours at their own size."""
+    suffixes = cliff_catalog.suffixes()
+    out = []
+    for node in nodes:
+        arms = frozenset(_realized(node, nodes, ()) & {N, S, W, E})
+        if not arms:
+            continue
+        frames = cliff_connectivity.rewrite_frames(
+            arms, suffixes[node.unit_const], frame_limit=cliff_catalog.frame_count(node.unit_const)
+        )
+        if frames is None or node.rotation not in frames:
+            out.append(node)
+    return out
+
+
+def test_a_one_drag_loop_closes_on_its_first_node():
+    """The test map's Limestone loop. One contact pass typed node 11's
+    contact by node 0's first shape, an E cap with a tall S leg, so node 11
+    stayed the S cap 22 beside node 0's thin leg. Typed by node 0's final
+    corner it is the thin straight."""
+    nodes = _path((206, 24), [E, E, E, S, S, S, W, W, W, N, N], const=LIMESTONE_01, width=240, height=240)
+    assert [n.index for n in nodes] == list(range(12))
+    assert all(n.resolved for n in nodes)
+    assert (nodes[0].unit_const, nodes[0].rotation) == (2072, 12)
+    last = nodes[-1]
+    assert (last.unit_const, last.bounds) == (2070, (205, 206, 26, 29))
+    assert last.rotation == _twin((7, 8), last.bounds) == 8
+    assert _unjoined(nodes) == []
+
+
+def test_every_rectangle_loop_closes():
+    """Every a x b rectangle in all eight start-and-turn senses: each one
+    whose nodes are all placed and whose last node meets node 0 edge-on is
+    shaped for its realized neighbours throughout. One pass closed half."""
+    closed = 0
+    for a in range(1, 8):
+        for b in range(1, 8):
+            for d0, d1 in _TURNS:
+                d2, d3 = (-d0[0], -d0[1]), (-d1[0], -d1[1])
+                steps = [d0] * a + [d1] * b + [d2] * a + [d3] * (b - 1)
+                nodes = _path((60, 60), steps)
+                if len(nodes) != len(steps) + 1:
+                    continue
+                if cliff_connectivity.adjacency_dir(nodes[-1].bounds, nodes[0].bounds) not in {N, S, W, E}:
+                    continue
+                closed += 1
+                assert _unjoined(nodes) == [], (a, b, d0, d1)
+    # 168 of the 392 close (measured 2026-10-20); a floor so the loop cannot pass vacuously.
+    assert closed >= 168
+
+
+def test_a_run_that_never_settles_keeps_its_first_pass(monkeypatch):
+    """Short Marble 01 is 3x2, off its suffix's nominal 3x3, so it lays out
+    flush: here each reshape shifts the layout and toggles a contact, a true
+    cycle. The pass bound stops it, and the run keeps its first pass, which
+    is the one-pass resolve."""
+    # Short Marble's real .sld count, so an install cannot change the example.
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    press, steps = (100, 100), [W, N, E, S, E, S]
+    with monkeypatch.context() as one_pass:
+        one_pass.setattr(cliff_chain, "_MAX_CONTACT_PASSES", 1)
+        first_pass = _rows(_path(press, steps, const=SHORT_MARBLE_01, width=200, height=200))
+    passes, laid = [], []
+    real_lay, real_contacts, real_layout = (
+        cliff_chain.ChainStroke._lay, cliff_chain.ChainStroke._contacts, cliff_chain.ChainStroke._layout,
+    )
+
+    def lay(self, side):
+        passes.append(0)
+        laid.append([])
+        return real_lay(self, side)
+
+    def contacts(self, plan):
+        passes[-1] += 1
+        return real_contacts(self, plan)
+
+    def layout(self, side, shapes):
+        laid[-1].append(list(shapes))
+        return real_layout(self, side, shapes)
+
+    monkeypatch.setattr(cliff_chain.ChainStroke, "_lay", lay)
+    monkeypatch.setattr(cliff_chain.ChainStroke, "_contacts", contacts)
+    monkeypatch.setattr(cliff_chain.ChainStroke, "_layout", layout)
+    nodes = _path(press, steps, const=SHORT_MARBLE_01, width=200, height=200)
+    # The example must not settle: it hits the bound, and its third pass is its first again.
+    assert passes == [cliff_chain._MAX_CONTACT_PASSES]
+    first, second, third = laid[0][1:4]
+    assert second != first and third == first
+    assert len(nodes) == len(steps) + 1
+    assert _rows(nodes) == first_pass
+
+
 # -- a press on an existing cliff anchors the run on it ----------------------
 
 _TALL_CAP_FRAME = {E: 16, W: 17, S: 18, N: 19}
@@ -1046,6 +1146,141 @@ def test_random_drags_keep_every_layout_invariant():
         resolved += sum(n.resolved for n in nodes)
         total += len(nodes)
     assert resolved > total * 3 // 4
+
+
+# -- an erase re-caps the ends it leaves (GH #247) --------------------------
+
+MARBLE_02 = 2179
+
+
+def _column(suffix, frames, x=40, y=40, const=None):
+    """A north-south run, top first, of `suffix`'s span, on `frames`."""
+    sx, sy = _SPANS[suffix]
+    const = DEFAULT[suffix] if const is None else const
+    return [
+        cliff_chain.ExistingCliff(unit_const=const, bounds=(x, x + sx, y + i * sy, y + (i + 1) * sy), rotation=f)
+        for i, f in enumerate(frames)
+    ]
+
+
+def _erase(existing, erased):
+    return cliff_chain.erase_rewrites(existing, cliff_chain.index_cliffs(existing), set(erased))
+
+
+def test_shaped_arms_is_what_every_row_giving_the_frame_agrees_on(monkeypatch):
+    shaped = cliff_chain.shaped_arms
+    # Frame 1 also tops the {W,N,S} and {N,S,E} rows: only the straight's two arms are common.
+    assert shaped(DEFAULT_01, 1) == {N, S}
+    assert shaped(DEFAULT_01, 4) == {W, E}
+    assert shaped(DEFAULT_01, 19) == {N}
+    assert shaped(DEFAULT[3], 20) == {E}
+    assert shaped(DEFAULT_01, 3) == {N, E}
+    assert shaped(DEFAULT_01, 15) == {W, S}
+    assert shaped(DEFAULT_02, 7) == {N, S}
+    # Unmapped: a thin cap frame on a 3x3, no frame at all, a non-cliff const.
+    assert shaped(DEFAULT_01, 22) == frozenset()
+    assert shaped(DEFAULT_01, None) == frozenset()
+    assert shaped(4, 1) == frozenset()
+    # Marble's 23 frames: 7 is the thin straight and the fallback north cap, so {N} alone.
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    assert shaped(MARBLE_02, 7) == {N}
+    assert shaped(MARBLE_02, 8) == {N, S}
+
+
+def test_erasing_the_middle_of_a_tall_straight_caps_both_sides():
+    run = _column(1, [18, 2, 1, 2, 19])
+    assert _erase(run, {2}) == ([cliff_chain.ChainRewrite(1, 19), cliff_chain.ChainRewrite(3, 18)], 0)
+
+
+def test_erasing_the_middle_of_a_thin_straight_caps_both_sides_and_leaves_the_ends():
+    run = _column(2, [22, 7, 8, 7, 23])
+    assert _erase(run, {2}) == ([cliff_chain.ChainRewrite(1, 23), cliff_chain.ChainRewrite(3, 22)], 0)
+
+
+def test_erasing_one_end_of_a_three_run_caps_the_middle_and_leaves_the_far_end():
+    assert _erase(_column(1, [18, 1, 19]), {0}) == ([cliff_chain.ChainRewrite(1, 18)], 0)
+    assert _erase(_column(1, [18, 1, 19]), {2}) == ([cliff_chain.ChainRewrite(1, 19)], 0)
+
+
+@pytest.mark.parametrize(("const", "limit", "north_cap"), [(DEFAULT_02, 24, 23), (MARBLE_02, 23, 7)], ids=["default", "marble"])
+def test_the_north_cap_an_erase_leaves_is_the_family_s_own(const, limit, north_cap, monkeypatch):
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: limit)
+    run = _column(2, [22, 8, north_cap], const=const)
+    assert _erase(run, {2}) == ([cliff_chain.ChainRewrite(1, north_cap)], 0)
+
+
+def test_a_marble_thin_straight_on_frame_8_is_recapped_when_its_north_neighbour_goes(monkeypatch):
+    """TASK-435 review: 8 is a plain thin straight on Marble, so erasing the
+    cliff north of it still re-caps it to the south cap 22."""
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    run = _column(2, [22, 8, 7, 23], const=MARBLE_02)
+    assert _erase(run, {0}) == ([cliff_chain.ChainRewrite(1, 22)], 0)
+
+
+def test_a_marble_thin_straight_on_frame_7_is_not_recapped_from_its_south_side(monkeypatch):
+    """The plan's accepted loss: 7 is shaped for north only under Marble's 23 frames."""
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    assert _erase(_column(2, [22, 7, 7], const=MARBLE_02), {2}) == ([], 0)
+
+
+def test_a_tall_corner_losing_its_east_leg_becomes_the_north_cap():
+    corner = [_cliff(1, (40, 43, 40, 43), rotation=3), _cliff(1, (40, 43, 37, 40), rotation=18),
+              _cliff(1, (43, 46, 40, 43), rotation=17)]
+    assert _erase(corner, {2}) == ([cliff_chain.ChainRewrite(0, 19)], 0)
+
+
+def test_a_corner_with_no_cap_at_its_size_is_left_alone_and_counted():
+    """A 2x3 corner {S: thin, E: tall} (suffix 4, frame 12): no suffix 4 row has one arm."""
+    corner = [_cliff(4, (40, 42, 40, 43), rotation=12), _cliff(1, (42, 45, 40, 43), rotation=17),
+              _cliff(2, (40, 41, 43, 46), rotation=23)]
+    assert _erase(corner, {1}) == ([], 1)
+
+
+def test_survivors_with_nothing_to_recap_are_untouched_and_uncounted():
+    # Already on its cap: two caps sit on its north edge, and one stays.
+    on_cap = [_cliff(1, (40, 43, 40, 43), rotation=19), _cliff(1, (38, 41, 37, 40), rotation=18),
+              _cliff(1, (41, 44, 37, 40), rotation=18)]
+    assert _erase(on_cap, {1}) == ([], 0)
+    # A whole run erased, and a survivor left with no neighbour.
+    assert _erase(_column(1, [18, 1, 19]), {0, 1, 2}) == ([], 0)
+    assert _erase(_column(1, [18, 19]), {0}) == ([], 0)
+    # A junction losing its branch: a straight's frame is not shaped for the branch side.
+    tee = [_cliff(1, (40, 43, 40, 43), rotation=1), _cliff(1, (40, 43, 37, 40), rotation=18),
+           _cliff(1, (40, 43, 43, 46), rotation=19), _cliff(1, (37, 40, 40, 43), rotation=16)]
+    assert _erase(tee, {3}) == ([], 0)
+    # Or a through leg: the branch still touches it, so it is a junction's centre, not a run's end.
+    assert _erase(tee, {1}) == ([], 0)
+    # Or one of two pieces on one side: still joined both ways.
+    two_up = [_cliff(1, (40, 43, 40, 43), rotation=1), _cliff(1, (38, 41, 37, 40), rotation=18),
+              _cliff(1, (41, 44, 37, 40), rotation=18), _cliff(1, (40, 43, 43, 46), rotation=19)]
+    assert _erase(two_up, {1}) == ([], 0)
+
+
+def test_a_survivor_not_joined_to_the_erased_cliff_is_untouched():
+    """Two runs abutting, never joined: a tall run end-on to a thin one (legs
+    differ), and a tall run off a 1x3's long side (`broadside`'s layout, the
+    1x3 not shaped for that side). Erasing the other run leaves each alone."""
+    opposite = [_cliff(3, (60, 63, 40, 41), rotation=10), _cliff(3, (63, 66, 40, 41), rotation=21),
+                _cliff(1, (57, 60, 39, 42), rotation=4), _cliff(1, (54, 57, 39, 42), rotation=16)]
+    assert _erase(opposite, {2, 3}) == ([], 0)
+    broadside = [_cliff(2, (40, 41, 40, 43), rotation=7), _cliff(1, (41, 44, 40, 43), rotation=4),
+                 _cliff(1, (44, 47, 40, 43), rotation=17)]
+    assert _erase(broadside, {0}) == ([], 0)
+
+
+def test_a_survivor_whose_own_frame_is_not_shaped_for_the_erased_side_is_untouched():
+    """A straight with a cap abutting its side: the cap is shaped toward it,
+    the straight's frame is not shaped toward the cap, so they were never joined."""
+    side = [_cliff(1, (40, 43, 40, 43), rotation=1), _cliff(1, (40, 43, 43, 46), rotation=19),
+            _cliff(1, (37, 40, 40, 43), rotation=16)]
+    assert _erase(side, {2}) == ([], 0)
+
+
+def test_joined_arms_skips_the_given_cliffs():
+    run = _column(1, [18, 2, 19])
+    index = cliff_chain.index_cliffs(run)
+    assert cliff_chain.joined_arms(run, index, 1) == {N, S}
+    assert cliff_chain.joined_arms(run, index, 1, skip={0}) == {S}
 
 
 # -- ground truth: the drawn run's ink (needs a real AoE2:DE install) ----

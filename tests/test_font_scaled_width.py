@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from descape import gc_hold
+
 import conftest
 
 pytestmark = [
@@ -25,7 +27,8 @@ def app_font():
     app = QApplication.instance()
     saved = app.font()
     yield app
-    app.setFont(saved)
+    with gc_hold.paused():
+        app.setFont(saved)
 
 
 def _gh142_panels():
@@ -63,7 +66,8 @@ def test_a_larger_font_widens_and_a_smaller_one_does_not_narrow(app_font) -> Non
     from descape.trigger_panel import TriggerPanel
 
     family = app_font.font().family()
-    app_font.setFont(QFont(family, 18))
+    with gc_hold.paused():
+        app_font.setFont(QFont(family, 18))
     assert MapOptionsPanel.MIN_USEFUL_WIDTH >= 440
     assert TriggerPanel.MIN_USEFUL_WIDTH >= 500
     assert MapOptionsPanel.MIN_USEFUL_WIDTH < TriggerPanel.MIN_USEFUL_WIDTH
@@ -71,7 +75,8 @@ def test_a_larger_font_widens_and_a_smaller_one_does_not_narrow(app_font) -> Non
         # 18pt over the pinned 12pt is about 1.5x; 1.45x leaves room for hinting.
         assert getattr(owner, attribute) >= base_px * 1.45, owner.__name__
 
-    app_font.setFont(QFont(family, 8))
+    with gc_hold.paused():
+        app_font.setFont(QFont(family, 8))
     assert MapOptionsPanel.MIN_USEFUL_WIDTH == 300
     assert TriggerPanel.MIN_USEFUL_WIDTH == 340
     for owner, attribute, base_px in _gh142_panels():

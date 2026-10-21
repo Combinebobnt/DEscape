@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import random
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QFont, QPalette
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -295,10 +295,8 @@ class UnitsPanel(QWidget):
         # vertical resize, the inspector keeps whatever height it was given.
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 0)
-        # Qt normalizes setSizes() to a ratio of whatever height the
-        # splitter ends up with, even called before the first show/resize --
-        # this is the initial default, not a floor; dragging overrides it.
-        self.splitter.setSizes([2, 1])
+        # The default split is set in pixels on the first show (_default_split, TASK-420).
+        self._split_sized = False
 
         self._show_inspector_fields(False)
         self._sync_team_colors()
@@ -1086,9 +1084,8 @@ class UnitsPanel(QWidget):
         )
 
     def clear(self) -> None:
-        """Blanks the inspector with no count to report -- the mode-switch
-        paths (on_mode_changed, _force_mode), which reset the selection
-        outright rather than reconciling it."""
+        """Blanks the inspector with no count to report, for _force_mode,
+        which resets the selection outright rather than reconciling it."""
         self.show_unit(None)
 
     def show_selection_count(self, count: int) -> None:
@@ -1118,6 +1115,27 @@ class UnitsPanel(QWidget):
         function of the pane width -- see TriggerPanel.resizeEvent()."""
         super().resizeEvent(event)
         self._fit_inspector_height()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._split_sized:
+            # After the show's layout and resizes: a standalone show() resizes while still hidden.
+            QTimer.singleShot(0, self._default_split)
+
+    def _default_split(self) -> None:
+        """Once, on the first show: give the inspector its content's height, capped at a
+        third of the split, so the placing card shows whole (TASK-420). setSizes([2, 1])
+        never did: both values sit under each pane's minimum, and stretch (1, 0) then
+        hands every extra pixel to the catalog. A later drag is never overridden."""
+        self._fit_inspector_height()
+        if self._split_sized or not self.isVisible():
+            return
+        total = sum(self.splitter.sizes())
+        catalog_min = self.splitter.widget(0).minimumSizeHint().height()
+        want = self.inspector_host.minimumHeight() + 2 * self.inspector_area.frameWidth()
+        want = max(self.inspector_area.minimumSizeHint().height(), min(want, total // 3, total - catalog_min))
+        self.splitter.setSizes([total - want, want])
+        self._split_sized = True
 
     # -- garrison block (GH #42) ---------------------------------------------
 

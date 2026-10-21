@@ -345,10 +345,12 @@ def test_dark_is_built_on_the_given_base_not_the_live_app_palette(qt_app) -> Non
     checked directly with a foreign palette live."""
     from PyQt5.QtGui import QColor, QPalette
 
+    from descape import gc_hold
     from descape.viewer_dialogs import build_theme_palette
 
     standard = qt_app.style().standardPalette()
-    qt_app.setPalette(QPalette(QColor("#8b140d")))
+    with gc_hold.paused():
+        qt_app.setPalette(QPalette(QColor("#8b140d")))
     built = build_theme_palette(standard, "dark", {})
     assert _all_colors(built) == _all_colors(_legacy_dark_recipe(standard))
 
@@ -701,16 +703,31 @@ def test_theme_combo_lists_every_preset_in_order_and_opens_on_the_persisted_one(
 
 
 @pytest.mark.gui
-def test_choosing_a_preset_persists_and_applies_it_live(qt_app, dialog) -> None:
+@pytest.mark.parametrize("preset_id", list(themes.PRESETS))
+def test_choosing_a_preset_persists_and_applies_it_live(qt_app, dialog, preset_id) -> None:
+    """Pass conditions, for every preset (TASK-099), after picking it in the Theme combo:
+    - settings.get_theme() returns it, before and after the cached value is dropped;
+    - the live app palette's Active Window is the preset's window colour;
+    - every Chrome colour swatch shows the preset's own colour for its role.
+    `light` declares no colours: its expected colours are Fusion's standard palette."""
     from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QStyleFactory
 
-    _choose(dialog, "high_contrast_light")
-    assert settings.get_theme() == "high_contrast_light"
+    if settings.get_theme() == preset_id:
+        _choose(dialog, next(pid for pid in themes.PRESETS if pid != preset_id))
+        assert settings.get_theme() != preset_id
+    _choose(dialog, preset_id)
+    assert settings.get_theme() == preset_id
     settings._theme = None
-    assert settings.get_theme() == "high_contrast_light"
-    window_hex = themes.PRESETS["high_contrast_light"][1]["window"]
-    assert qt_app.palette().color(QPalette.Active, QPalette.Window).name() == window_hex
-    assert dialog._theme_swatches["window"].toolTip() == window_hex
+    assert settings.get_theme() == preset_id
+    colors = themes.PRESETS[preset_id][1]
+    if not colors:
+        standard = QStyleFactory.create("Fusion").standardPalette()
+        colors = {role_id: standard.color(QPalette.Active, _role(role_id)).name() for role_id in themes.ROLE_IDS}
+    assert qt_app.palette().color(QPalette.Active, QPalette.Window).name() == colors["window"]
+    shown = {role_id: dialog._theme_swatches[role_id].toolTip() for role_id in themes.ROLE_IDS}
+    expected = {role_id: themes.normalize_hex(colors[role_id]) for role_id in themes.ROLE_IDS}
+    assert shown == expected
 
 
 @pytest.mark.gui
@@ -889,3 +906,104 @@ def test_a_theme_change_restyles_both_of_finds_pattern_error_labels(qt_app) -> N
         assert [label.styleSheet() for label in labels] == [after, after]
     finally:
         dialog.close()
+
+
+# --- gc paused across the app-wide broadcast -------------------------------------
+# A gc inside a Python changeEvent can finalize a leaked widget that Qt's
+# allWidgets() snapshot still points at, and the next event segfaults (TASK-379).
+
+
+@pytest.fixture
+def font_baseline(qt_app):
+    """test_ui_font's baseline: the app font and apply_ui_font()'s cached default, put back after."""
+    from descape import gc_hold, viewer_dialogs
+
+    saved_font = qt_app.font()
+    saved_default = viewer_dialogs._DEFAULT_FONT
+    viewer_dialogs._DEFAULT_FONT = None
+    yield qt_app
+    viewer_dialogs._DEFAULT_FONT = saved_default
+    with gc_hold.paused():
+        qt_app.setFont(saved_font)
+
+
+def _set_gc(enabled: bool) -> None:
+    import gc
+
+    if enabled:
+        gc.enable()
+    else:
+        gc.disable()
+
+
+def _gc_probe(*event_names: str):
+    """A parentless, never shown widget recording (event name, gc.isenabled())
+    for each change event of the named QEvent types."""
+    import gc
+
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtWidgets import QWidget
+
+    kinds = {getattr(QEvent, name): name for name in event_names}
+
+    class Probe(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[tuple[str, bool]] = []
+
+        def changeEvent(self, event) -> None:
+            if event.type() in kinds:
+                self.seen.append((kinds[event.type()], gc.isenabled()))
+            super().changeEvent(event)
+
+    return Probe()
+
+
+def _probed(probe, enabled: bool, call) -> tuple[list[tuple[str, bool]], bool]:
+    """`call()` with gc set to `enabled`: what the probe saw, and gc.isenabled()
+    after. The probe is deleted before returning, so it never becomes a leak."""
+    import gc
+
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtWidgets import QApplication
+
+    was_enabled = gc.isenabled()
+    try:
+        _set_gc(enabled)
+        call()
+        after = gc.isenabled()
+    finally:
+        _set_gc(was_enabled)
+        seen = list(probe.seen)
+        probe.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    return seen, after
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("enabled", [True, False])
+def test_apply_theme_runs_every_change_handler_with_gc_paused(qt_app, enabled: bool) -> None:
+    """Light first, so the dark call is a real palette change. Run with gc
+    disabled too: it must stay disabled, as during an edit stroke."""
+    from descape.viewer_dialogs import apply_theme
+
+    apply_theme(qt_app, "light")
+    probe = _gc_probe("PaletteChange", "StyleChange")
+    seen, after = _probed(probe, enabled, lambda: apply_theme(qt_app, "dark"))
+    assert {name for name, _ in seen} == {"PaletteChange", "StyleChange"}, f"vacuous: the probe saw {seen}"
+    assert [name for name, on in seen if on] == [], "a change handler ran with gc enabled"
+    assert after is enabled, "apply_theme() did not put the caller's gc state back"
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("enabled", [True, False])
+def test_apply_ui_font_runs_every_change_handler_with_gc_paused(font_baseline, enabled: bool) -> None:
+    from descape.viewer_dialogs import apply_ui_font
+
+    app = font_baseline
+    apply_ui_font(app, "", None)
+    probe = _gc_probe("FontChange")
+    seen, after = _probed(probe, enabled, lambda: apply_ui_font(app, "", settings.UI_FONT_SIZE_MAX))
+    assert seen, "vacuous: the probe saw no FontChange"
+    assert [name for name, on in seen if on] == [], "a change handler ran with gc enabled"
+    assert after is enabled, "apply_ui_font() did not put the caller's gc state back"

@@ -78,7 +78,8 @@ instead of the 1:1 pin, on rows clipped to the map diamond. --scale F drags
 them at zoom F instead (QTransform.fromScale, centred like 1:1), e.g. 1.25
 or 2.0 to measure a finer mip level. --level N sets Set elevation's target
 level first (default: the spin box's own). --trees leaves Trees on (Eye
-candy keeps its default, off) instead of forcing both off. --window WxH
+candy keeps its default, off) instead of forcing both off. --sprites-off
+unticks Show sprites (sprites stay on otherwise). --window WxH
 sizes the main window (default 1600x1000). Per-brush mode prints the debug
 log up to the first drag (the load, the first paint and the paint at the
 bench zoom, with its level build) under `--- settle log`, and each drag's
@@ -425,6 +426,8 @@ def _run(args) -> list[str]:
         if args.level is not None:
             window.elevation_level_spin.setValue(args.level)
         window.paint_trees_check.setChecked(args.trees)
+        if args.sprites_off:
+            window.show_sprites_action.setChecked(False)  # a real toggle: rebuilds the cache before the settle
         window.paint_eye_candy_check.setChecked(False)
         window.move(0, 0)
         window.resize(*args.window)
@@ -1364,6 +1367,7 @@ def main() -> None:
     zoom.add_argument("--scale", type=float, help="per-brush drags at this zoom, not 1:1 (see above)")
     parser.add_argument("--level", type=int, help="Set elevation's target level (default: the spin box's)")
     parser.add_argument("--trees", action="store_true", help="leave Trees on (Eye candy stays off)")
+    parser.add_argument("--sprites-off", action="store_true", help="per-brush mode: untick Show sprites before the settle")
     parser.add_argument("--window", type=_size, default=(1600, 1000), help="main window size WxH (default 1600x1000)")
     parser.add_argument("--flow", choices=["gh180"], help="a scripted tester flow (see above)")
     parser.add_argument("--flow-brush", type=int, default=9, help="--flow brush size (default 9)")

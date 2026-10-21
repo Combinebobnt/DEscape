@@ -29,6 +29,7 @@ def _linked_subscribed_dir(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.parametrize("tool", ["gen_v159_fixture", "gen_units_fixture", "gen_trigger_fixture", "gen_blank_template"])
+@conftest.requires_symlinks
 def test_a_fixture_generator_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch, tool) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module(tool)
@@ -39,6 +40,7 @@ def test_a_fixture_generator_refuses_a_linked_subscribed_folder(tmp_path, monkey
     assert list(real.iterdir()) == []  # neither the file nor its parent's mkdir
 
 
+@conftest.requires_symlinks
 def test_gen_test_map_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
     """--no-bisect: without it main() also writes the bisect set into build/, whatever --out says."""
     real, link = _linked_subscribed_dir(tmp_path)
@@ -54,6 +56,7 @@ def test_gen_test_map_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) 
     assert list(real.iterdir()) == []
 
 
+@conftest.requires_symlinks
 def test_gen_blank_maps_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module("gen_blank_maps")
@@ -64,6 +67,7 @@ def test_gen_blank_maps_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch
     assert list(real.iterdir()) == []
 
 
+@conftest.requires_symlinks
 def test_gen_resize_pair_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module("gen_resize_pair")
@@ -88,6 +92,7 @@ def test_a_fixture_generator_writes_into_a_compatdata_folder(tmp_path, monkeypat
 @pytest.mark.parametrize(
     "tool", ["gen_building_place_pair", "gen_gh206_pair", "gen_gh187_pair", "gen_ship_sails_pair"]
 )
+@conftest.requires_symlinks
 def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch, tool) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     module = conftest.load_verify_module(tool)
@@ -98,6 +103,7 @@ def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, 
     assert list(real.iterdir()) == []
 
 
+@conftest.requires_symlinks
 def test_gen_blank_maps_refuses_a_linked_output_file(tmp_path, monkeypatch) -> None:
     """--out itself is clean; only the per-size file inside it links into mods/subscribed/."""
     real, _link = _linked_subscribed_dir(tmp_path)
@@ -114,6 +120,7 @@ def test_gen_blank_maps_refuses_a_linked_output_file(tmp_path, monkeypatch) -> N
     assert target.read_bytes() == b"keep"
 
 
+@conftest.requires_symlinks
 def test_strip_units_refuses_a_file_in_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
     real, link = _linked_subscribed_dir(tmp_path)
     shutil.copyfile(BLANK_TEMPLATE_PATH, real / "map.aoe2scenario")

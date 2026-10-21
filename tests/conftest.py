@@ -13,9 +13,11 @@ gui-tier tests that actually need it.
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,23 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     if start is not None:
         ranges.append((start, len(before)))
     return ranges
+
+
+@functools.cache
+def symlinks_supported() -> bool:
+    """False for a Windows user without the symlink privilege (unelevated, no
+    Developer Mode). CI runners can create them, so a skip there is a finding."""
+    with tempfile.TemporaryDirectory() as d:
+        target = Path(d) / "target"
+        target.write_bytes(b"")
+        try:
+            (Path(d) / "link").symlink_to(target)
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+requires_symlinks = pytest.mark.skipif(not symlinks_supported(), reason="this OS user cannot create symlinks")
 
 
 def symlink_loop(tmp_path: Path) -> Path:
@@ -276,7 +295,7 @@ def restoring_app_theme():
     from PyQt5.QtGui import QPalette
     from PyQt5.QtWidgets import QApplication
 
-    from descape import viewer_dialogs
+    from descape import gc_hold, viewer_dialogs
 
     ensure_qapp()
     app = QApplication.instance()
@@ -289,9 +308,11 @@ def restoring_app_theme():
         yield app
     finally:
         viewer_dialogs._LIGHT_PALETTE = saved_light
-        app.setStyle(saved_style)
-        app.setPalette(saved_palette)
-        app.setPalette(saved_class_palette, "QPushButton")
+        # Under apply_theme()'s gc pause: a gc in a changeEvent here can delete a widget mid-broadcast too.
+        with gc_hold.paused():
+            app.setStyle(saved_style)
+            app.setPalette(saved_palette)
+            app.setPalette(saved_class_palette, "QPushButton")
 
 
 def viewport_pos(map_view, tile_x: int, tile_y: int):
@@ -340,6 +361,9 @@ def pytest_configure(config) -> None:
     to pytest_report_header: `--no-header` skips that hook."""
     if PYQT5_AVAILABLE:
         ensure_qapp()
+    # A CI runner can create symlinks, so requires_symlinks skipping there would hide hard-rule guards.
+    if os.environ.get("GITHUB_ACTIONS") == "true" and not symlinks_supported():
+        raise pytest.UsageError("this CI runner cannot create symlinks; requires_symlinks would skip hard-rule tests")
 
 
 def pytest_report_header(config) -> str | None:

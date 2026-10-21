@@ -35,11 +35,31 @@ content, link the doc instead of summarizing it.
 - **The mouse wheel turns a just-pasted region** when bound to Rotate preview
   (or Brush size or rotate preview where no brush applies), and each wheel
   choice's tooltip in Settings > Keybinds says where it applies (GH #245).
+- **Cliff tool: right-click or right-drag erases cliffs**, as in the in-game
+  editor, and caps the run ends it leaves (GH #247).
+- **Select All, Deselect and Escape work on units under the Units Select
+  tool**: Edit > Select All (Ctrl+A) selects every unit the filters show,
+  and Deselect (Ctrl+Shift+A) and Escape clear the unit selection before the
+  region. Escape also cancels a unit marquee in progress. Under the other
+  Units tools the three still act on the tile region.
+- **Allow In Fog on Object Visible Multiplayer** is a checkbox in the
+  trigger form (scenarios saved by the September 2026 update, 1.59).
+- **Mirror Map can skip, or place anyway, unit copies that would overlap
+  the original** instead of refusing the whole mirror (*Overlapping copies*
+  under Units); elevation seams still refuse.
+- **Set the map's water definition in Map Options**: a *Water definition*
+  row under *No waves on shore* picks the map-wide water look from the same
+  21 presets as the in-game Terrain > Map > Water Definitions list. An older
+  file's legacy name (Preset_Main, FE1) or an unset value is shown as stored
+  and kept unless another entry is picked. DEscape does not preview the look.
 
 ### Changed
 
 - **Settings has a Mods tab** holding the profile folder and the Mod art
   list (GH #244).
+- **Smoother zooming with Show sprites off** in Stepped and Sloped: the
+  neighbouring zoom levels are prepared in the background, so the first
+  visit to a level no longer pauses (GH #181, in part).
 - **Faster large stroke ends and undos with Trees on** in Stepped and
   Sloped views: a batch of over 1000 trees updates the visible zoom level in
   place instead of rebuilding it.
@@ -52,10 +72,31 @@ content, link the doc instead of summarizing it.
 - **Faster large undos and big stroke ends** in Stepped and Sloped views on
   multi-core machines: a large patch of the map redraws on worker threads,
   with identical pixels.
+- **Faster undo and redo of large terrain edits** in the isometric views and
+  Flat: the terrain blending of restored tiles is reused instead of
+  recomputed.
+- **Faster repaints with Terrain Blending on** in the Stepped and Sloped
+  views: the blending share of a repaint takes about half as long, with
+  identical pixels.
+- **Faster top-down Flat terrain edits**: an edit repaints only the zoom
+  level in view instead of every cached one.
 - **Edit > Scatter Units in Region… works from a Units-mode selection**
   (GH #196): with no Select region, the area is the selected units'
   bounding box plus a *Grow by* margin (default 2 tiles), and the greyed
   item's tooltip says how to get an area.
+- **Colour Selection by Owner uses the game's team colours**, the same tint
+  as the unit sprites, so a selected unit's highlight matches its sprite and
+  follows a file's stored player colour. GAIA and the marquee keep the
+  configured colour.
+- **Footprint outlines and range rings coloured by owner use the game's team
+  colours too**, so a selected building's outline, ring and highlight share
+  one colour.
+- **The Units inspector opens tall enough to show the whole placing card**
+  at the default window size.
+- **The unit selection survives a mode switch**: it stays highlighted in
+  Terrain, and Edit > Scatter Units in Region's move mode works with units
+  selected before the region is drawn. Other modes hide it until you return;
+  opening or closing a map clears it.
 
 ### Fixed
 
@@ -88,6 +129,24 @@ content, link the doc instead of summarizing it.
   #131): past 100% Sloped now draws the map at full detail instead of
   enlarging its 100% image, so with Follow Terrain Elevation on the grid no
   longer looks darker there.
+- **The Map Options Execution order row no longer greys out** after adding
+  or removing a trigger.
+- **Messages: *Use my text (clear string ID)* sits under its warning**, so a
+  field with a language-file string no longer runs off a narrow side panel
+  (GH #142).
+- **The View stats table fits a narrow side panel** (GH #142): the Note
+  column hides and labels elide when there is no room, with the full text in
+  tooltips and Copy.
+- **The stacked-unit badge's bottom positions no longer draw above its top
+  ones** when the badge outgrows a small tile; it settles on the tile's
+  middle row instead (GH #100).
+- **A Cliff drag that closes a loop on its own first piece joins the closing
+  end** instead of leaving it an end cap.
+- **Changing a condition's or effect's type no longer lists fields that were
+  never set** as not carried over.
+- **Mirror Map with Units works on older scenarios** (file version 1.54 and
+  earlier): Preview and Apply failed with an error there instead of
+  mirroring.
 
 ## [0.10] - 2026-10-18
 

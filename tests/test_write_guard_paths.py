@@ -10,6 +10,8 @@ import pytest
 
 from descape.scenario_io import is_in_game_profile, is_workshop_subscribed, names_workshop_subscribed
 
+import conftest
+
 
 @pytest.mark.parametrize("path, expected", [
     ("/p/Games/Age of Empires 2 DE/1/mods/subscribed/m/x.aoe2scenario", True),
@@ -35,6 +37,7 @@ def test_is_in_game_profile(path, expected) -> None:
     assert is_in_game_profile(Path(path)) is expected
 
 
+@conftest.requires_symlinks
 def test_a_symlink_into_either_is_caught_once_resolved(tmp_path) -> None:
     subscribed = tmp_path / "mods" / "subscribed"
     profile = tmp_path / "compatdata" / "813780"

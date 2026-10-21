@@ -104,7 +104,11 @@ commands, and architecture.
     linear action rather than hand-typed. A building keeps its const's
     axis-aligned span: its footprint centre is rotated and the same span is
     re-anchored around it on whole tiles, since AoE2 has no rotated
-    footprint. A gate's image takes the orientation sibling nearest the
+    footprint. Two building images may therefore overlap each other
+    (abutting farms, a farm beside a Town Center): the plan checks an image
+    against source and kept units only, never against the other images, and
+    that overlap is accepted, not repaired. A gate's image takes the
+    orientation sibling nearest the
     rotated run direction (always 15 degrees off, never a tie), still via
     `reorient_gate_const()`. A wall's axis-run index (0 or 1) swaps when the
     element carries the x axis nearer the y axis (60 and 120 degrees and `a`
@@ -160,8 +164,20 @@ commands, and architecture.
     type (tall or thin), and only the frame the measured shape table gives
     for its new neighbours at its own size
     (`cliff_connectivity.rewrite_frames()`, read by
-    `cliff_chain.ChainStroke.rewrites()`). Where that join would need a
-    different-size piece the old cliff is left alone. Allowed for the wall
+    `cliff_chain.ChainStroke.rewrites()`), or, where the family lacks that
+    frame, the row's next frame it has, alone (user decision 2026-10-19).
+    Where that join would need a
+    different-size piece the old cliff is left alone. The erase trigger
+    (GH #247): only a Cliff tool right-button stroke, only a surviving
+    cliff that was joined to a cliff the stroke erased and is left joined
+    to exactly one and touching no other surviving cliff (a junction's
+    centre is left as it is), "joined" meaning a shared edge with legs of the same
+    type where each piece's stored frame is shaped for that side
+    (`cliff_chain.shaped_arms()`), and only the frame
+    `cliff_connectivity.rewrite_frames()` gives that one arm at its own
+    size (`cliff_chain.erase_rewrites()`), hidden survivors included. Else
+    it is left alone, and none is rewritten if the map's units changed
+    during the drag. Allowed for the wall
     bullet's reason: the value is derived from the neighbours the piece now
     has, where an author-picked one is not.
   - *Replace* (Edit > Find and Replace, GH #144), via

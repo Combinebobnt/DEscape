@@ -35,8 +35,8 @@ def test_every_mapped_field_verifies_on_the_blank_template() -> None:
     offsets, all_available = field_offsets(loaded, specs)
 
     assert all_available
-    # A TEXT spec (script_name) is not byte-patched, so the walk skips it.
-    assert len(offsets) == sum(1 for s in specs if s.kind != option_fields.TEXT)
+    # TEXT (script_name) and STRING_COMBO (water_definition) are not byte-patched, so the walk skips them.
+    assert len(offsets) == sum(1 for s in specs if s.kind not in (option_fields.TEXT, option_fields.STRING_COMBO))
     assert verify_options_block(loaded, specs)
 
 

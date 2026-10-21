@@ -345,8 +345,8 @@ def resize_body(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor
     size_at = t - _SIZE_STRUCT.size
     if _SIZE_STRUCT.unpack_from(body, size_at) != (old_w, old_h):
         raise WriteBlockedError(f"The size pair before the terrain block is not ({old_w}, {old_h}).")
-    # Map (initial_player_views) and Units.player_data_3 both sit after every
-    # upstream splice and before the terrain splice below, so one shift fits both.
+    # Map (initial_player_views) and Units.player_data_3 sit after every upstream
+    # splice (the Map strings included) and before the terrain splice: one shift fits both.
     _clamp_cameras(body, scenario, t - scenario.terrain_block_offset, new_w, new_h)
     old_end = t + TERRAIN_STRUCT_SIZE * old_w * old_h
     block = remap_terrain(bytes(body[t:old_end]), old_w, old_h, new_w, new_h, dx, dy)

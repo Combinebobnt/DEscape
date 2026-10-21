@@ -582,19 +582,45 @@ def _edit_round(rng, tids, layers) -> np.ndarray:
     return idx[(tids[ys, xs] != old[0]) | (layers[ys, xs] != old[1])]
 
 
-def _run_rounds(key_map, invalidate: bool, rounds: int = 12, seed: int = 20261012) -> list[bool]:
-    """Per round, whether the map decoded to influences() of the live grids."""
+def _run_rounds(
+    key_map, invalidate: bool, rounds: int = 12, seed: int = 20261012, restore: bool = False, derived=None
+) -> list[bool]:
+    """Per round, whether the map decoded to influences() of the live grids.
+
+    restore: the stash's rounds. The map is bound with mirrors, every
+    round looks up the whole map (plus duplicates), and every third
+    round's edit puts back the grids the round before it edited, as an
+    undo would (two edits first, so the base moves on and is not one
+    state restored over and over). derived: a list that gets each
+    round's count of tiles the lookup derived."""
     rng = np.random.default_rng(seed)
     w, h = key_map.w, key_map.h
     tids, layers = _random_grid(rng, w, h)
-    key_map.bind((tids, layers))
+    key_map.bind((tids, layers), mirrors=(tids, layers) if restore else None)
     agreed = []
-    for _ in range(rounds):
+    before = None
+    for r in range(rounds):
         idx = rng.integers(0, w * h, size=3 * w * h // 2)  # duplicates, and most of the map
+        if restore:
+            idx = np.concatenate([idx, rng.permutation(w * h)])
         ys, xs = np.divmod(idx, w)
-        got = _decode(key_map, key_map.lookup(idx, _derive(tids, layers)))
+        count = [0]
+        derive = _derive(tids, layers)
+
+        def spy(dx, dy, count=count, derive=derive):
+            count[0] += len(dx)
+            return derive(dx, dy)
+
+        got = _decode(key_map, key_map.lookup(idx, spy))
         agreed.append(got == influences(tids, layers, xs, ys))
-        changed = _edit_round(rng, tids, layers)
+        if derived is not None:
+            derived.append(count[0])
+        if restore and r % 3 == 2:
+            changed = np.flatnonzero((tids != before[0]) | (layers != before[1]))
+            tids[:], layers[:] = before
+        else:
+            before = tids.copy(), layers.copy()
+            changed = _edit_round(rng, tids, layers)
         assert changed.size, "the round changed nothing (vacuous)"
         if invalidate:
             key_map.invalidate(changed)
@@ -662,6 +688,170 @@ def test_binding_a_replaced_source_resets_and_the_same_sources_keep_every_id(syn
         assert (key_map.ids == terrain_blend.UNKNOWN).all() and not key_map.keys, f"source {i} replaced, map kept"
         fill(sources)
         assert key_map.ids is fill(sources)
+
+
+# --- KeyMap stash (TASK-031.69) ---
+
+
+def _lookup_all(key_map, tids, layers) -> set:
+    """Looks up every tile of the map, checks the decode against influences()
+    of the live grids, and returns the tile indices it derived."""
+    w = key_map.w
+    idx = np.arange(w * key_map.h)
+    derive = _derive(tids, layers)
+    derived: set = set()
+
+    def spy(xs, ys):
+        derived.update((np.asarray(ys) * w + np.asarray(xs)).tolist())
+        return derive(xs, ys)
+
+    ys, xs = np.divmod(idx, w)
+    assert _decode(key_map, key_map.lookup(idx, spy)) == influences(tids, layers, xs, ys)
+    return derived
+
+
+def _stashed_map(tids, layers):
+    """A KeyMap over the 2-D grids with the stash on, every tile looked up once."""
+    h, w = tids.shape
+    key_map = terrain_blend.KeyMap(w, h)
+    key_map.bind((tids, layers), mirrors=(tids, layers))
+    assert len(_lookup_all(key_map, tids, layers)) == w * h
+    return key_map
+
+
+def test_a_stashed_key_map_decodes_to_influences_and_a_restore_derives_nothing(synthetic):
+    """T1 with the stash on: every third round's edit undoes the one before it,
+    and every round looks up the whole map. Each round decodes to
+    influences() of the live grids, the round after each restore derives no
+    tile, and every other round derives some (so the edits are not vacuous)."""
+    derived: list = []
+    agreed = _run_rounds(terrain_blend.KeyMap(11, 7), invalidate=True, restore=True, derived=derived)
+    assert all(agreed), agreed
+    after_restore = derived[3::3]
+    assert len(after_restore) == 3 and not any(after_restore), derived
+    assert all(n for i, n in enumerate(derived) if i % 3 or not i), derived
+
+
+def test_a_painted_block_restored_derives_nothing_and_gets_its_old_ids_back(synthetic):
+    """T2: paint a block (tid and layer), then put it back, as an undo."""
+    rng = np.random.default_rng(5)
+    tids, layers = _random_grid(rng, 12, 9)
+    key_map = _stashed_map(tids, layers)
+    ids = key_map.ids.copy()
+    saved = tids.copy(), layers.copy()
+    tids[2:6, 3:8] = HIGH
+    layers[2:6, 3:8] = LAYER
+    changed = np.flatnonzero((tids != saved[0]) | (layers != saved[1]))
+    key_map.invalidate(changed)
+    assert _lookup_all(key_map, tids, layers), "painting the block derived nothing (vacuous)"
+    tids[:], layers[:] = saved
+    key_map.invalidate(changed)
+    assert _lookup_all(key_map, tids, layers) == set()
+    assert np.array_equal(key_map.ids, ids)
+
+
+@pytest.mark.parametrize(
+    ("x", "y"), [(4, 3), (0, 0), (8, 6), (0, 3), (4, 0)], ids=["interior", "corner", "far-corner", "edge-x", "edge-y"]
+)
+def test_a_near_miss_neighbourhood_is_derived_and_its_exact_return_is_a_hit(synthetic, x, y):
+    """T3: from a stashed map, one change to (x, y)'s neighbourhood (an in-map
+    neighbour's tid, its own layer alone, its own tid) is a state the stash
+    never held, so (x, y) is derived; putting it back is a hit. A neighbour's
+    layer is not an influences() input, so changing it alone is a hit too.
+    Edge and corner tiles have off-map neighbours (-1)."""
+    w, h = 9, 7
+    me = y * w + x
+    near = [(x + dx, y + dy, "tid") for dx, dy in NEIGHBOURS if 0 <= x + dx < w and 0 <= y + dy < h]
+    for cx, cy, field in [*near, (x, y, "layer"), (x, y, "tid"), (*near[0][:2], "layer")]:
+        tids, layers = _random_grid(np.random.default_rng(7), w, h)
+        key_map = _stashed_map(tids, layers)
+        grid = tids if field == "tid" else layers
+        old = int(grid[cy, cx])
+        grid[cy, cx] = HIGHER if old != HIGHER else HIGH
+        key_map.invalidate([cy * w + cx])
+        derived = _lookup_all(key_map, tids, layers)
+        if (cx, cy, field) == (*near[0][:2], "layer"):
+            assert me not in derived, f"a neighbour's layer at ({cx}, {cy}) changed, so ({x}, {y}) was derived"
+        else:
+            assert me in derived, f"{field} at ({cx}, {cy}) changed, so ({x}, {y}) came from the stash"
+        grid[cy, cx] = old
+        key_map.invalidate([cy * w + cx])
+        assert me not in _lookup_all(key_map, tids, layers), f"{field} at ({cx}, {cy}) put back, ({x}, {y}) derived"
+
+
+@pytest.mark.parametrize(("value", "stashed"), [(4094, True), (4095, False), (-2, False)])
+def test_only_a_neighbourhood_inside_the_signature_range_is_stashed(synthetic, value, stashed):
+    """T3, last leg: one tile's tid is `value`. Invalidated with nothing
+    changed, it and its 8 neighbours (whose signatures hold it) come back
+    from the stash only when the value is inside [-1, 4094]."""
+    w, h = 9, 7
+    tids, layers = _random_grid(np.random.default_rng(11), w, h)
+    tids[3, 4] = value
+    key_map = _stashed_map(tids, layers)
+    key_map.invalidate([3 * w + 4])
+    ring = {(3 + dy) * w + 4 + dx for dx, dy in [(0, 0), *NEIGHBOURS]}
+    assert _lookup_all(key_map, tids, layers) == (set() if stashed else ring)
+
+
+def test_a_replaced_source_empties_the_stash(synthetic):
+    """T4: after a bind() that replaces a source, no spec id comes back from
+    the stash (it would index a table that no longer holds it)."""
+    w, h = 8, 6
+    tids, layers = _random_grid(np.random.default_rng(13), w, h)
+    derive, table = _derive(tids, layers), terrain_blend.BLEND_TABLE
+    key_map = terrain_blend.KeyMap(w, h)
+    key_map.bind((tids, layers, table, derive), mirrors=(tids, layers))
+    assert len(_lookup_all(key_map, tids, layers)) == w * h
+    key_map.bind((tids, layers, dict(table), derive), mirrors=(tids, layers))
+    assert (key_map.ids == terrain_blend.UNKNOWN).all() and not key_map.keys
+    assert len(_lookup_all(key_map, tids, layers)) == w * h, "a stashed spec id outlived the reset"
+
+
+def test_a_stashed_key_map_past_its_spec_cap_resets_and_still_decodes(synthetic, monkeypatch):
+    """T4, the cap leg: T1's stash rounds with the cap at 4 specs cross the
+    reset several times, and every lookup still decodes to influences()."""
+    monkeypatch.setattr(terrain_blend, "KEY_MAP_MAX_SPECS", 4)
+    key_map = terrain_blend.KeyMap(11, 7)
+    resets = []
+    real = key_map.reset
+    monkeypatch.setattr(key_map, "reset", lambda: (resets.append(1), real())[1])
+    assert all(_run_rounds(key_map, invalidate=True, restore=True))
+    assert len(resets) >= 3, resets
+
+
+def test_the_stash_keeps_each_tiles_last_states_first_in_first_out(synthetic):
+    """T5: one tile through KEY_STASH_SLOTS + 1 distinct states (its own
+    tid), each derived. Then the oldest state still kept is a hit, the first
+    is derived, and that store takes the slot of the one just hit (a hit is
+    not a use), while the newest is still kept."""
+    k = terrain_blend.KEY_STASH_SLOTS
+    w = h = 5
+    tids, layers = _grid(w, h)
+    key_map = _stashed_map(tids, layers)
+    me = 2 * w + 2
+    states = [LOW, *range(100, 100 + k)]
+
+    def visit(tid) -> bool:
+        tids[2, 2] = tid
+        key_map.invalidate([me])
+        return me in _lookup_all(key_map, tids, layers)
+
+    assert all(visit(tid) for tid in states[1:]), "a new state came from the stash"
+    assert not visit(states[1]), "the oldest kept state was evicted early"
+    assert visit(states[0]), f"the state {k} stores back was still kept"
+    assert visit(states[1]), "a hit refreshed its slot"
+    assert not visit(states[-1]), "the newest state was evicted"
+
+
+def test_a_key_map_bound_without_mirrors_has_no_stash(synthetic):
+    """T6: T1's rounds bind no mirrors, so nothing is allocated; and a mirror
+    must be one of the bound sources."""
+    key_map = terrain_blend.KeyMap(11, 7)
+    assert all(_run_rounds(key_map, invalidate=True))
+    assert key_map._stash is None
+    tids, layers = _grid(11, 7)
+    with pytest.raises(AssertionError, match="bound source"):
+        key_map.bind((tids, layers), mirrors=(tids.copy(), layers))
 
 
 @pytest.mark.parametrize("x", [0, 3, 6])

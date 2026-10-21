@@ -236,6 +236,7 @@ def test_a_patch_landing_inside_the_units_region_is_refused_not_dropped(tmp_path
         has_disables_edits = False
         has_personality_edits = False
         has_script_name_edit = False
+        has_map_string_edits = False
         specs = model.specs
 
         def serialize_patches(self):

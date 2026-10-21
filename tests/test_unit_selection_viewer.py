@@ -461,39 +461,48 @@ def test_hover_memoizes_on_the_unit_key() -> None:
         _close(window)
 
 
-def test_leaving_units_mode_clears_the_selection_key_not_just_the_cue() -> None:
-    """MapView.set_mode() drops the visual selection on its own, so a stale
-    ViewerWindow._selection would be invisible until something resolved it
-    -- an inspector showing "No unit selected" while _selection still held a
-    key. Phase 3.5 inherits _selection as the selection API; it must not
-    lie."""
+def test_the_selection_survives_mode_switches_and_is_drawn_only_where_live() -> None:
+    """TASK-359: a mode switch keeps the keys. Terrain keeps the highlight
+    too, View keeps the key but hides it, and back in Units the highlight
+    and the inspector's single-unit fields both return."""
     window = _window()
     try:
+        mv = window.map_view
         window.mode_combo.setCurrentText("Units")
         entry = _select_first_unit(window)
-        assert window._selection == [(entry.player_id, entry.unit.reference_id)]
+        key = (entry.player_id, entry.unit.reference_id)
+
+        window.mode_combo.setCurrentText("Terrain")
+        assert window._selection == [key]
+        assert mv._unit_select_keys == [key] and mv._unit_select_groups
 
         window.mode_combo.setCurrentText("View")
-        assert window._selection == []
+        assert window._selection == [key]
+        assert mv._unit_select_keys == [] and not mv._unit_select_groups
 
         window.mode_combo.setCurrentText("Units")
-        assert window._selection == []
-        assert not window.map_view._unit_select_groups
-        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window._selection == [key]
+        assert mv._unit_select_keys == [key] and mv._unit_select_groups
+        panel = window.units_panel
+        assert panel.unit_field_labels["reference_id"].text() == str(entry.unit.reference_id)
+        assert panel.unit_field_labels["reference_id"].isVisibleTo(window.left_stack)
     finally:
         _close(window)
 
 
-def test_leaving_units_mode_clears_both_cues() -> None:
+def test_leaving_units_mode_clears_the_hover_and_hides_the_selection_only_where_dormant() -> None:
     window = _window()
     try:
+        mv = window.map_view
         window.mode_combo.setCurrentText("Units")
-        index = window.map_view._unit_index
-        window.map_view._update_unit_hover(index.entries[0])
-        window.map_view.set_unit_selection([index.entries[1]])
-        window.mode_combo.setCurrentText("View")
-        assert window.map_view._unit_hover_item is None
-        assert not window.map_view._unit_select_groups
+        _select_first_unit(window)
+        for mode in ("Terrain", "View"):
+            window.mode_combo.setCurrentText("Units")
+            mv._update_unit_hover(mv._unit_index.entries[0])
+            assert mv._unit_hover_item is not None
+            window.mode_combo.setCurrentText(mode)
+            assert mv._unit_hover_item is None, f"{mode}: the hover outlived Units mode"
+            assert bool(mv._unit_select_groups) is (mode == "Terrain"), mode
     finally:
         _close(window)
 
@@ -508,6 +517,187 @@ def test_leave_event_clears_hover_but_keeps_selection() -> None:
         window.map_view.leaveEvent(None)
         assert window.map_view._unit_hover_item is None
         assert bool(window.map_view._unit_select_groups), "selection must survive the cursor leaving"
+    finally:
+        _close(window)
+
+
+# --- TASK-359: the selection kept across mode switches -------------------
+
+
+def _select(window, *entries) -> None:
+    """A viewer selection, through the reconciliation point every real path uses."""
+    window._selection = [(e.player_id, e.unit.reference_id) for e in entries]
+    window._refresh_selection_view()
+
+
+def test_a_selected_unit_an_undo_in_terrain_mode_removes_is_dropped() -> None:
+    from PyQt5.QtCore import QPointF, Qt
+
+    window = _window(with_units=False)
+    try:
+        mv = window.map_view
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.mode_combo.setCurrentText("Units")
+        window.units_panel.select_object(_HOUSE_CONST)
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        tp = mv._tile_pixels
+        window.on_unit_place(QPointF(20 * tp + tp // 2, 20 * tp + tp // 2), Qt.NoModifier)
+        assert len(window._selection) == 1, "Place Unit selects what it placed"
+        window.mode_combo.setCurrentText("Terrain")
+        assert mv._unit_select_groups
+
+        window.undo()
+        assert window._selection == []
+        assert mv._unit_select_keys == [] and not mv._unit_select_groups
+
+        window.mode_combo.setCurrentText("Units")
+        assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert window.units_panel.unit_inspector_empty.text() == "No unit selected"
+    finally:
+        _close(window)
+
+
+def test_an_elevation_edit_in_terrain_moves_the_kept_highlight() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        mv = window.map_view
+        window.scenario.unit_manager.units[1].append(
+            SyntheticUnit(x=20.0, y=20.0, unit_const=_BUILDING_CONST, reference_id=102)
+        )
+        window.mode_combo.setCurrentText("Units")
+        _select(window, _entry_for(window, 1))
+        window.mode_combo.setCurrentText("Terrain")
+        (group,) = mv._unit_select_groups.values()
+        before = group[2].path().boundingRect()
+
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(20, 20, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        # Deferred to the event loop with the footprint outlines (MapView.refresh_elevation_overlays).
+        QApplication.processEvents()
+
+        (group,) = mv._unit_select_groups.values()
+        after = group[2].path().boundingRect()
+        assert after != before, "the elevation edit did not move the highlight"
+        assert after == mv._unit_path(mv._unit_index.entry_for_key((1, 102))).boundingRect()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_filter_toggle_in_terrain_drops_the_selected_unit_it_hides() -> None:
+    window = _window()
+    try:
+        mv = window.map_view
+        window.mode_combo.setCurrentText("Units")
+        building = _entry_for(window, 1)
+        _select(window, _entry_for(window, GAIA_PLAYER_ID), building)
+        window.mode_combo.setCurrentText("Terrain")
+        assert len(window._selection) == 2
+
+        window.show_gaia_action.setChecked(False)
+        key = (1, building.unit.reference_id)
+        assert window._selection == [key]
+        assert mv._unit_select_keys == [key]
+        assert list(mv._unit_select_groups) == [_tint(window, 1)]
+    finally:
+        _close(window)
+
+
+_TRIGGERS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+
+
+def test_a_dormant_selection_never_draws_over_pick_from_maps_highlight() -> None:
+    """In Triggers the selection layer is Pick from map's. A filter toggle
+    while it is armed, and a global undo of a unit edit (which disarms it,
+    as every history move does), prune the kept keys without drawing them."""
+    from PyQt5.QtCore import Qt
+
+    gen = conftest.load_verify_module("gen_trigger_fixture")
+    window = conftest.shown_window(1100, 760)
+    try:
+        mv = window.map_view
+        window.load_scenario(_TRIGGERS_FIXTURE)
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.mode_combo.setCurrentText("Units")
+        archer = (1, gen.REF_ARCHER_A)
+        _select(window, window.map_view._unit_index.entry_for_key(archer))
+        assert window.on_unit_nudge(1, 0, Qt.NoModifier), "the nudge is the unit edit undone below"
+
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_panel.select_trigger(gen.REFERENCE_TRIGGER)
+        window.trigger_panel.select_entry("condition", gen.DESTROY_CONDITION)
+        window.arm_unit_picker((gen.REFERENCE_TRIGGER, "condition", gen.DESTROY_CONDITION, "unit_object", False))
+        house = (1, gen.REF_HOUSE)
+        assert mv._unit_select_keys == [house] and mv._unit_select_groups
+
+        window.show_gaia_action.setChecked(False)
+        assert window._unit_picker is not None
+        assert mv._unit_select_keys == [house] and mv._unit_select_groups
+        assert window._selection == [archer]
+
+        window.undo()
+        assert window._unit_picker is None, "a history move disarms the picker"
+        assert mv._unit_select_keys == [] and not mv._unit_select_groups
+        assert window._selection == [archer]
+
+        window.mode_combo.setCurrentText("Units")
+        assert mv._unit_select_keys == [archer]
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_style_switch_keeps_the_selections_highlight_in_units_and_terrain() -> None:
+    """set_source() drops MapView's keys; the re-render re-pushes the kept selection."""
+    window = _window()
+    try:
+        mv = window.map_view
+        window.mode_combo.setCurrentText("Units")
+        entry = _select_first_unit(window)
+        key = (entry.player_id, entry.unit.reference_id)
+        for mode, style in (("Units", "Flat"), ("Terrain", "Stepped")):
+            window.mode_combo.setCurrentText(mode)
+            window.terrain_style_combo.setCurrentText(style)
+            assert window._selection == [key], mode
+            assert mv._unit_select_keys == [key] and mv._unit_select_groups, f"{mode}: the highlight was lost"
+    finally:
+        _close(window)
+
+
+def test_opening_or_closing_a_map_drops_a_dormant_selection() -> None:
+    """The same file reopened, so the old key resolves in the new document
+    and only the per-document reset drops it."""
+    window = _window(with_units=False)
+    try:
+        mv = window.map_view
+
+        def select_then_park():
+            window.mode_combo.setCurrentText("Units")
+            entry = _select_first_unit(window)
+            key = (entry.player_id, entry.unit.reference_id)
+            window.mode_combo.setCurrentText("Terrain")
+            window.mode_combo.setCurrentText("View")
+            assert window._selection == [key]
+            return key
+
+        window.load_scenario(_UNITS_FIXTURE)
+        key = select_then_park()
+        window.edit_history.mark_saved()
+        window.load_scenario(_UNITS_FIXTURE)
+        assert any(u.reference_id == key[1] for u in window.scenario.unit_manager.units[key[0]]), "precondition"
+        window.mode_combo.setCurrentText("Units")
+        assert window._selection == []
+        assert not mv._unit_select_groups
+
+        select_then_park()
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert window._selection == []
     finally:
         _close(window)
 
@@ -625,12 +815,19 @@ def _rgb(color) -> tuple[int, int, int]:
     return (color.red(), color.green(), color.blue())
 
 
+def _tint(window, player_id: int) -> tuple[int, int, int]:
+    """The player's sprite tint, the lookup render.py makes (TASK-115)."""
+    from descape.unit_sprites import TEAM_COLORS
+
+    return tuple(TEAM_COLORS[window.scenario.team_indices[player_id] % len(TEAM_COLORS)])
+
+
 def test_a_player_1_selection_is_one_group_in_player_1s_colour() -> None:
     window = _owner_window()
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, 1)])
-        p1 = tuple(window.scenario.player_colors[1])
+        p1 = _tint(window, 1)
         assert list(mv._unit_select_groups) == [p1]
         fill, under, outline = mv._unit_select_groups[p1]
         assert _rgb(outline.pen().color()) == p1
@@ -645,9 +842,9 @@ def test_a_player_1_selection_is_one_group_in_player_1s_colour() -> None:
 
 
 def test_a_reassigned_color_id_is_what_the_highlight_follows() -> None:
-    """player_colors, not PLAYER_COLORS: a file can give P1 any ColorId."""
+    """The file's ColorId, not the player slot: a file can give P1 any colour."""
     from descape.scenario_io import refresh_player_colors
-    from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS
+    from descape.unit_sprites import TEAM_COLORS
 
     window = _window()
     window.scenario.unit_manager.units[2].append(
@@ -658,8 +855,84 @@ def test_a_reassigned_color_id_is_what_the_highlight_follows() -> None:
         window.mode_combo.setCurrentText("Units")
         window.map_view.set_unit_selection([_entry_for(window, 1)])
         (key,) = window.map_view._unit_select_groups
-        assert key == PLAYER_COLOR_BY_ID[5]
-        assert key != tuple(PLAYER_COLORS[1])
+        assert key == TEAM_COLORS[5 + 1]
+        assert key != TEAM_COLORS[1]
+    finally:
+        _close(window)
+
+
+# AoE2:DE's spritecolors.json TeamColors, typed out so a drift in either source shows.
+_GAME_PURPLE = (138, 19, 247)
+_GAME_GREY = (102, 102, 102)
+
+
+def test_the_highlight_is_the_games_team_colour_not_the_hand_tuned_palette() -> None:
+    """TASK-115 (user, 2026-10-19): purple and grey owners highlight in the
+    game's own team colours, the sprite tint, by default and under a stored
+    colour override that swaps the two."""
+    from descape.scenario_io import refresh_player_colors
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    purple_id, grey_id = 5, 6  # ColorId PURPLE, GRAY
+    assert PLAYER_COLOR_BY_ID[purple_id] != _GAME_PURPLE and PLAYER_COLOR_BY_ID[grey_id] != _GAME_GREY, (
+        "precondition: the hand-tuned palette differs, or this pins nothing"
+    )
+    window = _window()
+    units = window.scenario.unit_manager.units
+    units[6].append(SyntheticUnit(x=12.5, y=12.5, unit_const=_BUILDING_CONST, reference_id=106))
+    units[7].append(SyntheticUnit(x=16.5, y=16.5, unit_const=_BUILDING_CONST, reference_id=107))
+    try:
+        assert window.scenario.team_indices[6] == purple_id + 1, "precondition: P6 defaults to purple"
+        assert window.scenario.team_indices[7] == grey_id + 1, "precondition: P7 defaults to grey"
+        window.mode_combo.setCurrentText("Units")
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 6), _entry_for(window, 7)])
+        assert set(mv._unit_select_groups) == {_GAME_PURPLE, _GAME_GREY}
+        assert _rgb(mv._unit_select_groups[_GAME_PURPLE][2].pen().color()) == _GAME_PURPLE
+        assert _rgb(mv._unit_select_groups[_GAME_GREY][0].brush().color()) == _GAME_GREY
+
+        # A stored override moves the tint index, and the highlight with it.
+        refresh_player_colors(window.scenario, {6: grey_id, 7: purple_id})
+        window.mode_combo.setCurrentText("View")
+        window.mode_combo.setCurrentText("Units")
+        mv.set_unit_selection([_entry_for(window, 6)])
+        assert list(mv._unit_select_groups) == [_GAME_GREY] == [_tint(window, 6)]
+        mv.set_unit_selection([_entry_for(window, 7)])
+        assert list(mv._unit_select_groups) == [_GAME_PURPLE] == [_tint(window, 7)]
+    finally:
+        _close(window)
+
+
+def test_a_purple_owners_outline_and_rings_take_the_highlights_team_colour() -> None:
+    """TASK-449: footprint outlines and range rings by owner use the same
+    team colour as the selection, so a purple building shows one purple."""
+    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+
+    purple_id = 5  # ColorId PURPLE
+    assert PLAYER_COLOR_BY_ID[purple_id] != _GAME_PURPLE, "precondition: the hand-tuned palette differs"
+    window = _window(with_units=False)
+    window.scenario.unit_manager.units[6].append(
+        SyntheticUnit(x=20.0, y=20.0, unit_const=_CASTLE_CONST, reference_id=106)
+    )
+    try:
+        assert window.scenario.team_indices[6] == purple_id + 1, "precondition: P6 defaults to purple"
+        window.mode_combo.setCurrentText("Units")
+        for action in (
+            window.footprint_action,
+            window.footprint_by_owner_action,
+            window.range_rings_action,
+            window.range_rings_buildings_action,
+            window.range_rings_by_owner_action,
+        ):
+            action.setChecked(True)
+        mv = window.map_view
+        mv.set_unit_selection([_entry_for(window, 6)])
+        assert list(mv._unit_select_groups) == [_GAME_PURPLE]
+        assert set(mv._footprint_items) == {None, _GAME_PURPLE}
+        assert list(mv._range_ring_items) == [_GAME_PURPLE]
+        assert list(mv._ring_layer_items) == [_GAME_PURPLE]
+        for items in (mv._footprint_items, mv._range_ring_items, mv._ring_layer_items):
+            assert _rgb(items[_GAME_PURPLE].pen().color()) == _GAME_PURPLE
     finally:
         _close(window)
 
@@ -703,8 +976,8 @@ def test_mixed_owners_make_three_groups_and_reselecting_one_drops_the_rest() -> 
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, p) for p in (0, 1, 2)])
-        p1 = tuple(window.scenario.player_colors[1])
-        p2 = tuple(window.scenario.player_colors[2])
+        p1 = _tint(window, 1)
+        p2 = _tint(window, 2)
         assert set(mv._unit_select_groups) == {None, p1, p2}
         dropped = [i for key in (None, p2) for i in mv._unit_select_groups[key] if i is not None]
 
@@ -744,7 +1017,7 @@ def test_toggle_off_is_one_configured_group_with_no_under_stroke() -> None:
 
 def test_a_colour_edit_recolours_a_live_selection() -> None:
     from descape import player_fields
-    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+    from descape.unit_sprites import TEAM_COLORS
 
     window = _owner_window()
     try:
@@ -753,8 +1026,8 @@ def test_a_colour_edit_recolours_a_live_selection() -> None:
         spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
         window.set_player_field(spec, 1, 5)
         (key,) = mv._unit_select_groups
-        assert key == PLAYER_COLOR_BY_ID[5]
-        assert _rgb(mv._unit_select_groups[key][2].pen().color()) == PLAYER_COLOR_BY_ID[5]
+        assert key == TEAM_COLORS[5 + 1]
+        assert _rgb(mv._unit_select_groups[key][2].pen().color()) == TEAM_COLORS[5 + 1]
     finally:
         _close(window)
 
@@ -788,7 +1061,7 @@ def test_the_dark_under_stroke_follows_every_owner_group_in_flat_and_sloped(styl
         mv = window.map_view
         assert window._render_style == mv._terrain_style == style.lower()
         mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
-        assert set(mv._unit_select_groups) == {None, tuple(window.scenario.player_colors[1])}
+        assert set(mv._unit_select_groups) == {None, _tint(window, 1)}
         for _fill, under, outline in mv._unit_select_groups.values():
             assert under is not None, f"no dark under-stroke in {style}"
             assert under.scene() is mv.scene()
@@ -801,40 +1074,45 @@ def test_the_dark_under_stroke_follows_every_owner_group_in_flat_and_sloped(styl
 
 
 def test_a_players_panel_recolour_shows_on_the_next_units_selection() -> None:
-    """TASK-115 3, the reachable version: leaving Units mode clears the
-    selection, so the recolour happens with none live.
+    """TASK-115 3, the reachable version: the selection is dormant in Players
+    mode (TASK-359), so the recolour happens with none drawn.
 
     Passes when P1's colour is changed through the Players panel's own colour
-    combo, and back in Units mode a P1 selection is one group keyed, outlined
-    and filled in the new colour, not the old one; and after an undo in
-    Players mode, the next Units-mode P1 selection is back in the old colour.
+    combo, and back in Units mode the kept P1 selection, and a fresh one, is
+    one group keyed, outlined and filled in the new colour, not the old one;
+    and after an undo in Players mode, both are back in the old colour.
 
     The mode-entry re-push alone is not what this pins: the edit-time push in
     _apply_player_color_change() covers the same path, so it fails only with
     both removed."""
-    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+    from descape.unit_sprites import TEAM_COLORS
 
     window = _owner_window()
     try:
         mv = window.map_view
-        mv.set_unit_selection([_entry_for(window, 1)])
-        old = tuple(window.scenario.player_colors[1])
+        p1 = _entry_for(window, 1)
+        window._selection = [(1, p1.unit.reference_id)]
+        window._refresh_selection_view()
+        old = _tint(window, 1)
         assert list(mv._unit_select_groups) == [old]
 
         window.mode_combo.setCurrentText("Players")
         assert mv._unit_select_groups == {}
+        assert window._selection == [(1, p1.unit.reference_id)], "kept while dormant"
         panel = window.players_panel
         assert panel.select_player(1)
         widget = panel.widget_for("color")
+        # The combo's value is a ColorId; its tint is TEAM_COLORS one up (GAIA-first).
         target = next(
             i for i in range(widget.count())
-            if widget.itemData(i) is not None and tuple(PLAYER_COLOR_BY_ID[widget.itemData(i)]) != old
+            if widget.itemData(i) is not None and TEAM_COLORS[widget.itemData(i) + 1] != old
         )
-        new = tuple(PLAYER_COLOR_BY_ID[widget.itemData(target)])
+        new = TEAM_COLORS[widget.itemData(target) + 1]
         widget.setCurrentIndex(target)
         assert window.edit_history.is_dirty
 
         window.mode_combo.setCurrentText("Units")
+        assert list(mv._unit_select_groups) == [new], "the kept selection came back in the old colour"
         mv.set_unit_selection([_entry_for(window, 1)])
         assert list(mv._unit_select_groups) == [new]
         fill, _under, outline = mv._unit_select_groups[new]
@@ -845,6 +1123,7 @@ def test_a_players_panel_recolour_shows_on_the_next_units_selection() -> None:
         window.undo()
         assert not window.edit_history.is_dirty
         window.mode_combo.setCurrentText("Units")
+        assert list(mv._unit_select_groups) == [old]
         mv.set_unit_selection([_entry_for(window, 1)])
         assert list(mv._unit_select_groups) == [old]
     finally:
@@ -872,7 +1151,7 @@ def test_a_settings_swatch_click_reinks_gaia_the_fill_and_the_marquee(monkeypatc
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
         mv._update_marquee(QPoint(0, 0), QPoint(40, 40))
-        p1 = tuple(window.scenario.player_colors[1])
+        p1 = _tint(window, 1)
         picks = iter([QColor("#ff00ff"), QColor("#00ff80")])
         monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: next(picks)))
 
@@ -904,7 +1183,7 @@ def test_an_appearance_change_reinks_only_the_configured_group() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, p) for p in (0, 1)])
-        p1 = tuple(window.scenario.player_colors[1])
+        p1 = _tint(window, 1)
         settings.set_overlay_color("unit_select", "#ff00ff")
         mv.apply_overlay_colors()
         assert _rgb(mv._unit_select_groups[None][2].pen().color()) == (255, 0, 255)
@@ -921,7 +1200,7 @@ def test_close_then_reopen_leaves_no_stale_group_refs() -> None:
         window.edit_history.mark_saved()
         window.close_scenario()
         assert mv._unit_select_groups == {}
-        assert mv._selection_player_colors is None
+        assert mv._team_colors is None
 
         window.load_scenario(BLANK_TEMPLATE_PATH)
         window.scenario.unit_manager.units[1].append(
@@ -932,7 +1211,7 @@ def test_close_then_reopen_leaves_no_stale_group_refs() -> None:
         window.mode_combo.setCurrentText("View")
         window.mode_combo.setCurrentText("Units")
         mv.set_unit_selection([_entry_for(window, 1)])
-        assert list(mv._unit_select_groups) == [tuple(window.scenario.player_colors[1])]
+        assert list(mv._unit_select_groups) == [_tint(window, 1)]
     finally:
         _close(window)
 
@@ -1316,7 +1595,7 @@ def test_a_player_1_castles_ring_is_player_1s_colour() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, 1)])
-        p1 = tuple(window.scenario.player_colors[1])
+        p1 = _tint(window, 1)
         assert list(mv._range_ring_items) == [p1]
         item = mv._range_ring_items[p1]
         assert _rgb(item.pen().color()) == p1
@@ -1344,8 +1623,8 @@ def test_two_owners_draw_two_ring_groups_and_toggling_off_collapses_them() -> No
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, p) for p in (1, 2)])
-        p1 = tuple(window.scenario.player_colors[1])
-        p2 = tuple(window.scenario.player_colors[2])
+        p1 = _tint(window, 1)
+        p2 = _tint(window, 2)
         assert p1 != p2
         assert set(mv._range_ring_items) == {p1, p2}
         assert [_subpath_count(path) for path in _ring_paths(mv)] == [1, 1]
@@ -1365,19 +1644,19 @@ def test_two_owners_draw_two_ring_groups_and_toggling_off_collapses_them() -> No
 
 def test_a_colour_edit_recolours_a_live_ring() -> None:
     from descape import player_fields
-    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+    from descape.unit_sprites import TEAM_COLORS
 
     window = _owner_ring_window()
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, 1)])
         (before,) = mv._range_ring_items
-        assert before != PLAYER_COLOR_BY_ID[5]
+        assert before != TEAM_COLORS[5 + 1]
         spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
         window.set_player_field(spec, 1, 5)
         (key,) = mv._range_ring_items
-        assert key == PLAYER_COLOR_BY_ID[5]
-        assert _rgb(mv._range_ring_items[key].pen().color()) == PLAYER_COLOR_BY_ID[5]
+        assert key == TEAM_COLORS[5 + 1]
+        assert _rgb(mv._range_ring_items[key].pen().color()) == TEAM_COLORS[5 + 1]
     finally:
         _close(window)
 
@@ -1389,7 +1668,7 @@ def test_an_appearance_change_reinks_only_the_configured_ring_group() -> None:
     try:
         mv = window.map_view
         mv.set_unit_selection([_entry_for(window, p) for p in (GAIA_PLAYER_ID, 1)])
-        p1 = tuple(window.scenario.player_colors[1])
+        p1 = _tint(window, 1)
         assert set(mv._range_ring_items) == {None, p1}
         settings.set_overlay_color("range_ring", "#ff00ff")
         mv.apply_overlay_colors()
@@ -1541,8 +1820,8 @@ def test_colour_by_owner_splits_the_revealer_rings_by_player() -> None:
         window.range_rings_revealers_action.setChecked(True)
         assert len(_layer_subpaths(mv)) == 3
         window.range_rings_by_owner_action.setChecked(True)
-        p1 = tuple(window.scenario.player_colors[1])
-        p2 = tuple(window.scenario.player_colors[2])
+        p1 = _tint(window, 1)
+        p2 = _tint(window, 2)
         assert set(mv._ring_layer_items) == {None, p1, p2}
         assert _rgb(mv._ring_layer_items[p1].pen().color()) == p1
         assert mv._ring_layer_items[p2].pen().widthF() == 0
@@ -1569,7 +1848,7 @@ def test_an_appearance_change_reinks_the_layers_configured_group() -> None:
 
 def test_a_colour_edit_recolours_an_owner_coloured_layer_ring() -> None:
     from descape import player_fields
-    from descape.terrain_palette import PLAYER_COLOR_BY_ID
+    from descape.unit_sprites import TEAM_COLORS
 
     window = _layer_window((1, 20.5, 20.5, _MAP_REVEALER_CONST))
     try:
@@ -1577,10 +1856,10 @@ def test_a_colour_edit_recolours_an_owner_coloured_layer_ring() -> None:
         window.range_rings_revealers_action.setChecked(True)
         window.range_rings_by_owner_action.setChecked(True)
         (before,) = mv._ring_layer_items
-        assert before != PLAYER_COLOR_BY_ID[5]
+        assert before != TEAM_COLORS[5 + 1]
         spec = next(s for s in player_fields.specs_for(window.scenario) if s.field_id == "color")
         window.set_player_field(spec, 1, 5)
-        assert list(mv._ring_layer_items) == [PLAYER_COLOR_BY_ID[5]]
+        assert list(mv._ring_layer_items) == [TEAM_COLORS[5 + 1]]
     finally:
         _close(window)
 

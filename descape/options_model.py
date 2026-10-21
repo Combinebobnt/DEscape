@@ -31,18 +31,20 @@ OptionsEditModel, at the bottom of this module, is the write half built on
 those offsets: one in-place byte patch per changed scalar, no offset shift,
 and nothing at all for a document that was only browsed.
 
-It also carries five additive field sets that are not offset-walked here at
-all, each behind its own independent gate: the Diplomacy grid, the Players
-mode rows, Number of Players, and two exceptions to "no offset shift". The
-per-player disable lists are variable-length and so ride a region splice
-(serialize_disables_resize()) rather than serialize_patches(); see
-descape/disables_fields.py. Each player's AI personality (GH #126) patches
-its ai_type byte in place but rides two splices for the rest:
+It also carries seven additive field sets that are not offset-walked here
+at all, each behind its own independent gate: the Diplomacy grid, the
+Players mode rows, Number of Players, and four exceptions to "no offset
+shift". The per-player disable lists are variable-length and so ride a
+region splice (serialize_disables_resize()) rather than serialize_patches();
+see descape/disables_fields.py. Each player's AI personality (GH #126)
+patches its ai_type byte in place but rides two splices for the rest:
 serialize_personality_resize() (PlayerDataTwo's names and embedded scripts)
 and serialize_ai_library_resize() (the Files AI script library). The XS
 script name (GH #216) rides two splices of its own:
 serialize_script_name_resize() (Map.script_name) and
-serialize_script_path_resize() (Files.script_file_path).
+serialize_script_path_resize() (Files.script_file_path). The water
+definition (TASK-333) rides serialize_map_strings_resize(), the Map string
+front ahead of script_name (descape/map_strings.py).
 """
 
 from __future__ import annotations
@@ -51,14 +53,14 @@ import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from descape import ai_scripts, disables_fields, player_fields
+from descape import ai_scripts, disables_fields, map_strings, player_fields
 from descape.ai_scripts import AiChoice
 from descape.diplomacy_fields import (
     allied_victory_offsets,
     stance_offsets,
     verify_diplomacy_block,
 )
-from descape.option_fields import TEXT, OptionFieldSpec, current_value, specs_for
+from descape.option_fields import STRING_COMBO, TEXT, OptionFieldSpec, current_value, specs_for
 from descape.scenario_io import LoadedScenario, retriever_length
 
 # The LoadedScenario attribute holding the trusted byte offset, within
@@ -124,11 +126,14 @@ def field_offsets(
     Specs whose section is "Triggers" (legacy_exec_order) are silently
     skipped: that field's offset is trigger_model.py's concern, not this
     module's. So are TEXT specs (script_name), which are not byte-patched:
-    see script_name_layout().
+    see script_name_layout(). So are STRING_COMBO specs (water_definition):
+    a backward walk across that field lands one byte off on a file storing a
+    trailing NUL (see descape/map_strings.py), and skipping it keeps the
+    scalar gate, `specs` and write_scenario()'s re-gate blind to it.
     """
     by_section: dict[str, list[OptionFieldSpec]] = {}
     for spec in specs:
-        if spec.section not in _ANCHOR_ATTR or spec.kind == TEXT:
+        if spec.section not in _ANCHOR_ATTR or spec.kind in (TEXT, STRING_COMBO):
             continue
         by_section.setdefault(spec.section, []).append(spec)
 
@@ -410,6 +415,15 @@ def script_path_for(name: str) -> str:
     return f"{name}.xs" if name else ""
 
 
+WATER_DEFINITION_FIELD_ID = "water_definition"
+
+
+def map_strings_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether the Water definition row can be written back (TASK-333): a
+    gate of its own, so a failure greys that one row only."""
+    return map_strings.write_supported(loaded)
+
+
 class OptionsEditModel:
     """Per-document map-option edit state: which scalars the user changed, and
     the byte patches that writes them back.
@@ -567,6 +581,13 @@ class OptionsEditModel:
         if map_name is not None and isinstance(map_name.data, str):
             self._original[SCRIPT_NAME_FIELD_ID] = map_name.data
 
+        # TASK-333 water definition: an eighth additive entry, gated by
+        # map_strings.write_supported(). No _offsets/_packers entry, like the
+        # disable lists: an edit can change the Map section's length.
+        self._map_strings_supported = map_strings.write_supported(loaded)
+        if self._map_strings_supported:
+            self._original[WATER_DEFINITION_FIELD_ID] = map_strings.current_value(loaded, map_strings.WATER_DEFINITION)
+
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
         # removes it, so a change made and undone leaves has_edits False rather
@@ -663,6 +684,16 @@ class OptionsEditModel:
         """The signal scenario_write.py re-gates script_name_write_supported() on."""
         return SCRIPT_NAME_FIELD_ID in self._pending
 
+    @property
+    def map_strings_supported(self) -> bool:
+        """Whether this model was seeded with the water definition entry."""
+        return self._map_strings_supported
+
+    @property
+    def has_map_string_edits(self) -> bool:
+        """The signal scenario_write.py re-gates map_strings_write_supported() on."""
+        return WATER_DEFINITION_FIELD_ID in self._pending
+
     def original_personality(self, player_id: int) -> AiChoice:
         return self._personality_choices[self._original[player_fields.personality_field_id(player_id)]]
 
@@ -741,6 +772,18 @@ class OptionsEditModel:
                 self._pending[field_id] = ids
             return
 
+        if field_id == WATER_DEFINITION_FIELD_ID:
+            if not self._map_strings_supported:
+                raise KeyError("Water definition is not writable on this file")
+            # The file's own value first: it keeps its stored bytes (a trailing
+            # NUL included), and an undo back to it can never raise.
+            if value == self._original[field_id]:
+                self._pending.pop(field_id, None)
+                return
+            map_strings.encode_str16(value)
+            self._pending[field_id] = value
+            return
+
         if field_id == SCRIPT_NAME_FIELD_ID:
             if not self.script_name_supported:
                 raise KeyError("Script filename is not writable on this file")
@@ -817,6 +860,9 @@ class OptionsEditModel:
                 continue
             if field_id == SCRIPT_NAME_FIELD_ID:
                 # Variable-length: rides the two script splices instead.
+                continue
+            if field_id == WATER_DEFINITION_FIELD_ID:
+                # Variable-length: rides serialize_map_strings_resize() instead.
                 continue
             if field_id in self._personality_field_ids:
                 # Only the ai_type byte is fixed-width; name and text ride
@@ -969,6 +1015,16 @@ class OptionsEditModel:
         span = self._script_name_layout.name
         value = self._pending[SCRIPT_NAME_FIELD_ID]
         return span.offset, span.offset + span.length, player_fields.encode_name_str16(value, "script name")
+
+    def serialize_map_strings_resize(self) -> tuple[int, int, bytes] | None:
+        """(start, end, replacement) in load-time offsets for the Map string
+        front up to map_color_mood, or None with no pending water definition.
+        No `body` argument: nothing else patches inside that region, and
+        scenario_write._patch_map_strings() asserts it."""
+        if not self.has_map_string_edits:
+            return None
+        edits = {map_strings.WATER_DEFINITION: self._pending[WATER_DEFINITION_FIELD_ID]}
+        return map_strings.splice(self.loaded, edits)
 
     def serialize_script_path_resize(self) -> tuple[int, int, bytes] | None:
         """(start, end, replacement) in load-time offsets for

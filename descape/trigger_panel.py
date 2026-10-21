@@ -2526,7 +2526,10 @@ class TriggerPanel(QWidget):
                 hint.setWordWrap(True)
                 self.property_form.addRow(hint)
             for spec in specs:
-                value = trigger_fields.shared_value(objects, spec.attribute, self._read)
+                # Compared as shown, so a sentinel BOOL's -1 and 0 share one unticked box.
+                value = trigger_fields.shared_value(
+                    objects, spec.attribute, lambda e, a, s=spec: trigger_fields.form_value(s, self._read(e, a))
+                )
                 widget = self._build_widget(spec, refs, value)
                 if spec.kind == trigger_fields.STR and spec.multiline:
                     # GH #38/#139: caption on its own row, the box (or a locked field's text) full width below.
@@ -2658,7 +2661,7 @@ class TriggerPanel(QWidget):
         if spec.multiline == trigger_fields.PROSE:
             return messages_fields.normalize_for_display("" if value is None else str(value))[0]
         if spec.kind == trigger_fields.BOOL:
-            return "yes" if value else "no"
+            return "yes" if trigger_fields.checkbox_checked(spec, value) else "no"
         if isinstance(value, float):
             return f"{value:g}"
         if spec.kind == trigger_fields.ENUM:
@@ -2705,7 +2708,7 @@ class TriggerPanel(QWidget):
                 widget.setTristate(True)
                 widget.setCheckState(Qt.PartiallyChecked)
             else:
-                widget.setChecked(bool(value))
+                widget.setChecked(trigger_fields.checkbox_checked(spec, value))
             widget.setEnabled(editable)
             widget.stateChanged.connect(
                 lambda state, s=spec, r=refs, w=widget: self._checkbox_changed(s, r, w, state)

@@ -359,12 +359,12 @@ def test_mirroring_keeps_capture_flag(tmp_path) -> None:
         window.close()
 
 
-# -- the vocabulary, the hidden field and the dormant carrier -----------------
+# -- the vocabulary, the fog checkbox and the dormant carrier -----------------
 
 
 def test_the_library_vocabulary_lists_allow_in_fog_on_condition_27_only() -> None:
     """1.59's vocabulary is the library's now, so nothing is filtered out of
-    it: allow_in_fog stays in the data and only the trigger form hides it."""
+    it: allow_in_fog comes from the data, on condition 27 alone."""
     for version in ("1.58", "1.59"):
         assert library_compat.repo_only_attributes(version) == {"conditions": frozenset(), "effects": frozenset()}
     vocabulary = library_compat.load_vocabulary("1.59")
@@ -372,26 +372,49 @@ def test_the_library_vocabulary_lists_allow_in_fog_on_condition_27_only() -> Non
     assert not any("allow_in_fog" in entry.attributes for entry in vocabulary.effects.values())
 
 
-def test_allow_in_fog_has_no_form_row_and_survives_a_sibling_edit(tmp_path) -> None:
-    """Hidden until its checkbox ships: condition 27 gets no allow_in_fog
-    spec and no retype carry, and editing a sibling field keeps the stored 1."""
+def _fog_specs(version: str) -> dict[tuple[str, int], object]:
+    """(kind, type id) -> allow_in_fog spec, for every type of `version` that has one."""
+    from descape import trigger_fields
+
+    vocabulary = library_compat.load_vocabulary(version)
+    found = {}
+    for kind, entries, presentation, type_attribute in (
+        ("condition", vocabulary.conditions, vocabulary.condition_presentation, "condition_type"),
+        ("effect", vocabulary.effects, vocabulary.effect_presentation, "effect_type"),
+    ):
+        for type_id, entry in entries.items():
+            for spec in trigger_fields.field_specs(entry, presentation, type_attribute):
+                if spec.name == "allow_in_fog":
+                    found[(kind, type_id)] = spec
+    return found
+
+
+def test_allow_in_fog_is_a_checkbox_on_condition_27(tmp_path) -> None:
+    """1.59's condition 27 gets a BOOL that keeps the UNSET sentinel and the
+    game's tooltip; nothing else, and 1.58, gets one. Editing a sibling field
+    keeps the stored 1."""
     from descape import trigger_fields
 
     gen = _gen()
-    vocabulary = library_compat.load_vocabulary("1.59")
-    specs = trigger_fields.field_specs(vocabulary.conditions[27], vocabulary.condition_presentation, "condition_type")
-    names = {spec.name for spec in specs}
-    assert "allow_in_fog" not in names and "unit_object" in names
+    found = _fog_specs("1.59")
+    assert list(found) == [("condition", 27)]
+    spec = found[("condition", 27)]
+    assert (spec.kind, spec.sentinel, spec.attribute, spec.label) == (
+        trigger_fields.BOOL,
+        trigger_fields.UNSET,
+        "allow_in_fog",
+        "allow in fog",
+    )
+    assert spec.tooltip == (
+        "When checked, passes the condition even if the object is in the Fog of War and not directly in the Line of Sight"
+    )
+    assert _fog_specs("1.58") == {}
 
     loaded = load_map_and_units(FIXTURE)
     model = TriggerEditModel(loaded)
     model.begin_trigger_edit(content_touched=[gen.FOG_TRIGGER])
     condition = model.manager().triggers[gen.FOG_TRIGGER].conditions[gen.FOG_CONDITION]
     assert condition.allow_in_fog == 1
-    _applied, dropped = trigger_fields.retype_carryover(
-        condition, vocabulary.conditions[27], vocabulary.conditions[10], "condition_type"
-    )
-    assert "allow_in_fog" not in dropped
     condition.source_player = 3
     model.commit_trigger_edit("Edit condition", _History())
 
@@ -400,6 +423,25 @@ def test_allow_in_fog_has_no_form_row_and_survives_a_sibling_edit(tmp_path) -> N
     saved = manager.triggers[gen.FOG_TRIGGER].conditions[gen.FOG_CONDITION]
     assert (saved.source_player, saved.allow_in_fog) == (3, 1)
     assert gen.read_allow_in_fog(reloaded) == gen.ALLOW_IN_FOG
+
+
+def test_retyping_condition_27_reports_allow_in_fog_only_when_it_was_set() -> None:
+    """Through retype_entry(), the panel's path: the ticked 1 is named as not
+    carried over, the untouched -1 is not."""
+    from descape import trigger_fields
+
+    gen = _gen()
+    vocabulary = library_compat.load_vocabulary("1.59")
+    loaded = load_map_and_units(FIXTURE)  # kept alive: the library's scenario store does not
+    manager = parse_triggers(loaded)
+    dropped = {}
+    for t, c in ((gen.FOG_TRIGGER, gen.FOG_CONDITION), (1, 0)):
+        assert manager.triggers[t].conditions[c].condition_type == 27
+        dropped[gen.ALLOW_IN_FOG[(t, c)]] = trigger_fields.retype_entry(
+            manager.triggers[t], "condition", c, 10, vocabulary.conditions, "condition_type"
+        )
+    assert "allow_in_fog" in dropped[1]
+    assert "allow_in_fog" not in dropped[-1]
 
 
 def _struct(structure: dict, name: str) -> dict | None:

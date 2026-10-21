@@ -72,11 +72,11 @@ def _shown_value(panel, spec) -> int:
 
 
 def _raw_value(loaded, spec):
-    """option_fields.current_value(), as an int except on a TEXT row."""
+    """option_fields.current_value(), as an int except on a TEXT or STRING_COMBO row."""
     from descape import option_fields
 
     value = option_fields.current_value(loaded, spec)
-    return value if spec.kind == option_fields.TEXT else int(value)
+    return value if spec.kind in (option_fields.TEXT, option_fields.STRING_COMBO) else int(value)
 
 
 def _browse(widget) -> None:
@@ -317,9 +317,9 @@ def test_every_row_shows_the_files_own_value() -> None:
             raw = _raw_value(window.scenario, spec)
             shown = _shown_value(panel, spec)
             assert shown == raw, f"{spec.field_id} shows {shown}, file holds {raw}"
-        # 16, not 20: the four Diplomacy-group scalars moved to
+        # 17, not 21: the four Diplomacy-group scalars moved to
         # DiplomacyPanel (step 5) and no longer count here.
-        assert len(panel._specs) == 16, f"{len(panel._specs)} rows -- the spec list changed"
+        assert len(panel._specs) == 17, f"{len(panel._specs)} rows -- the spec list changed"
     finally:
         _close(window)
 
@@ -1289,6 +1289,212 @@ def test_a_fully_read_only_file_reports_it_once_rather_than_per_row(monkeypatch)
             assert _is_read_only(panel.widget_for(spec.field_id))
     finally:
         panel.deleteLater()
+
+
+# --- the water definition row (TASK-333) ------------------------------------
+
+
+def _water_panel(loaded, values=None, editable=True):
+    from descape import option_fields
+    from descape.map_options_panel import MapOptionsPanel
+
+    conftest.ensure_qapp()
+    emitted = []
+    panel = MapOptionsPanel(on_option_field=lambda spec, value: emitted.append((spec.field_id, value)))
+    ids = {s.field_id for s in option_fields.specs_for(loaded)}
+    panel.show_scenario(loaded, values=values, editable_fields=ids if editable else ids - {"water_definition"})
+    return panel, emitted
+
+
+def _items(combo) -> list[tuple[str, object]]:
+    return [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())]
+
+
+def test_the_water_row_sits_under_no_waves_on_shore() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    panel, _ = _water_panel(load_map_and_units(TRIGGER_FIXTURE))
+    try:
+        ids = [s.field_id for s in panel._specs]
+        assert ids.index("water_definition") == ids.index("no_waves_on_shore") + 1
+        assert ids.index("script_name") == ids.index("water_definition") + 1
+    finally:
+        panel.deleteLater()
+
+
+def test_an_empty_value_lists_the_21_names_then_a_not_set_row() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QComboBox
+
+    from descape.option_fields import WATER_DEFINITIONS
+    from descape.scenario_io import load_map_and_units
+
+    panel, emitted = _water_panel(load_map_and_units(TRIGGER_FIXTURE))
+    try:
+        combo = panel.widget_for("water_definition")
+        assert isinstance(combo, QComboBox) and combo.isEnabled()
+        assert _items(combo) == [(n, n) for n in WATER_DEFINITIONS] + [("(not set)", "")]
+        assert combo.currentIndex() == 21 and combo.currentData() == ""
+        assert "Stored empty" in combo.itemData(21, Qt.ToolTipRole)
+        assert combo.toolTip() == _spec_tip("water_definition")
+        assert emitted == []
+    finally:
+        panel.deleteLater()
+
+
+def test_a_legacy_value_is_kept_as_its_own_row() -> None:
+    from PyQt5.QtCore import Qt
+    from test_map_strings import _variant
+
+    panel, _ = _water_panel(_variant(b"Preset_Main\x00"))
+    try:
+        combo = panel.widget_for("water_definition")
+        assert combo.count() == 22
+        assert _items(combo)[-1] == ("Preset_Main (as stored)", "Preset_Main")
+        assert combo.currentIndex() == 21
+        tip = combo.itemData(21, Qt.ToolTipRole)
+        assert '"Preset_Main"' in tip and "until another entry is picked" in tip
+    finally:
+        panel.deleteLater()
+
+
+def test_a_listed_value_gets_no_as_stored_row() -> None:
+    from test_map_strings import _variant
+
+    panel, _ = _water_panel(_variant(b"Default"))
+    try:
+        combo = panel.widget_for("water_definition")
+        assert combo.count() == 21
+        assert combo.currentData() == "Default"
+    finally:
+        panel.deleteLater()
+
+
+def test_the_as_stored_row_survives_a_pending_edit() -> None:
+    """The file's own value stays pickable, so going back needs no Undo."""
+    from descape.scenario_io import load_map_and_units
+
+    panel, emitted = _water_panel(load_map_and_units(TRIGGER_FIXTURE), values={"water_definition": "Arctic"})
+    try:
+        combo = panel.widget_for("water_definition")
+        assert combo.currentData() == "Arctic"
+        assert _items(combo)[-1] == ("(not set)", "")
+        combo.setCurrentIndex(combo.findData(""))
+        assert emitted == [("water_definition", "")]
+    finally:
+        panel.deleteLater()
+
+
+def test_a_pending_value_neither_listed_nor_stored_still_shows() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    panel, _ = _water_panel(load_map_and_units(TRIGGER_FIXTURE), values={"water_definition": "Mod Water"})
+    try:
+        combo = panel.widget_for("water_definition")
+        assert combo.count() == 23
+        assert combo.currentText() == "Mod Water" and combo.currentData() == "Mod Water"
+    finally:
+        panel.deleteLater()
+
+
+def test_picking_a_name_emits_the_name_and_int_rows_still_emit_ints() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    panel, emitted = _water_panel(load_map_and_units(TRIGGER_FIXTURE))
+    try:
+        combo = panel.widget_for("water_definition")
+        combo.setCurrentIndex(combo.findData("Red Tide"))
+        victory = panel.widget_for("victory_condition")
+        victory.setCurrentIndex(victory.findData(1))
+        assert emitted == [("water_definition", "Red Tide"), ("victory_condition", 1)]
+        assert panel.current_values()["water_definition"] == "Red Tide"
+    finally:
+        panel.deleteLater()
+
+
+def test_a_read_only_water_row_is_greyed_and_emits_nothing() -> None:
+    from descape.scenario_io import load_map_and_units
+
+    panel, emitted = _water_panel(load_map_and_units(TRIGGER_FIXTURE), editable=False)
+    try:
+        combo = panel.widget_for("water_definition")
+        assert not combo.isEnabled()
+        combo.setCurrentIndex(combo.findData("Arctic"))
+        assert emitted == []
+        assert panel.widget_for("collide_and_correct").isEnabled()
+    finally:
+        panel.deleteLater()
+
+
+def test_picking_undoing_and_saving_a_water_definition(tmp_path, monkeypatch) -> None:
+    """End to end through ViewerWindow: pick, undo, redo, Save As, reopen."""
+    from PyQt5.QtWidgets import QFileDialog
+
+    from descape import map_strings
+
+    out = tmp_path / "saved.aoe2scenario"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        combo = _row(window, "water_definition")
+        combo.setCurrentIndex(combo.findData("Arctic"))
+        assert window.option_edits.current_value("water_definition") == "Arctic"
+        assert [r.kind for r in window.edit_history.records] == ["options"]
+        assert window.edit_history.is_dirty
+
+        window.undo()
+        assert _row(window, "water_definition").currentData() == ""
+        assert _row(window, "water_definition").currentText() == "(not set)"
+        assert not window.option_edits.has_edits and not window.edit_history.is_dirty
+
+        window.redo()
+        assert _row(window, "water_definition").currentData() == "Arctic"
+        assert _row(window, "water_definition").count() == 22
+        window.save_as()
+        assert not window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+    reopened = _options_window(out)
+    try:
+        assert map_strings.current_value(reopened.scenario, "water_definition") == "Arctic"
+        combo = _row(reopened, "water_definition")
+        assert combo.currentData() == "Arctic" and combo.count() == 21
+    finally:
+        _close(reopened)
+
+
+def test_a_failed_string_gate_greys_only_the_water_row(monkeypatch) -> None:
+    from descape import viewer
+    from descape.viewer import ViewerWindow
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        assert "water_definition" in window._editable_option_fields()
+        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded: False)
+        window._show_map_options()
+        row = _row(window, "water_definition")
+        assert not row.isEnabled()
+        assert row.toolTip() == ViewerWindow._WATER_DEFINITION_READ_ONLY
+        assert _row(window, "collide_and_correct").isEnabled()
+        assert _row(window, "script_name").isEnabled()
+    finally:
+        _close(window)
+
+
+def test_a_failed_scalar_gate_gives_the_water_row_the_scalar_reason(monkeypatch) -> None:
+    """The model cannot be built without the scalar gate, so that is the reason shown."""
+    from descape.viewer import ViewerWindow
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        monkeypatch.setattr(window.scenario, "terrain_block_offset", -1)
+        window._show_map_options()
+        assert not _row(window, "water_definition").isEnabled()
+        assert _row(window, "water_definition").toolTip() == ViewerWindow._SCALARS_READ_ONLY
+    finally:
+        _close(window)
 
 
 # --- corpus -----------------------------------------------------------------

@@ -1,5 +1,6 @@
 """Units mode's Select and Move tools, and Pan as pure camera there
-(TASK-252, TASK-012, GH #47).
+(TASK-252, TASK-012, GH #47), plus Select All, Deselect and Escape on the
+unit selection under Select (TASK-325).
 
 Every unit gesture used to run under Pan, through a mode-level MapView branch
 that fired for any tool no earlier branch claimed. That branch is gated by
@@ -779,5 +780,167 @@ def test_units_with_move_into_terrain_lands_on_pan() -> None:
     try:
         window.mode_combo.setCurrentText("Terrain")
         assert window._current_tool == "pan"
+    finally:
+        _close(window)
+
+
+# --- Select All, Deselect and Escape under Units Select (TASK-325) -----------------
+
+_REGION = (10, 10, 20, 20)
+
+
+def _commit_region(window, region=_REGION) -> None:
+    window.map_view.set_region(region)
+    window.on_region_selected(region)
+
+
+def _escape(window) -> None:
+    window.map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
+def test_select_all_under_units_select_takes_every_on_map_index_key_and_leaves_the_region() -> None:
+    window = _window(show=False, tool="select")
+    try:
+        _add_units(window, [(64, _ROW), (67, _ROW)])
+        _commit_region(window)
+        index = window.map_view._unit_index
+        # An entry moved off the map stays indexed (patch_index_for_move) but isn't drawn.
+        width = window.scenario.map_manager.map_width
+        off = index.entries[-1]
+        index.entries[-1] = type(off)(off.player_id, off.unit, width, off.own_y, off.order)
+        expected = [(e.player_id, e.unit.reference_id) for e in index.entries[:-1]]
+        assert len(expected) > 2, "precondition: the fixture shows units"
+
+        window.select_all_action.trigger()
+
+        assert window._selection == expected
+        assert window.map_view._unit_select_keys == expected
+        assert window._region == _REGION
+        assert window.map_view._region == _REGION
+        assert _last_status(window).endswith(f"{len(expected)} units selected (all shown)")
+    finally:
+        _close(window)
+
+
+def test_select_all_under_units_select_skips_units_the_filters_hide() -> None:
+    window = _window(show=False, tool="select")
+    try:
+        assert any(e.player_id == 0 for e in window.map_view._unit_index.entries), "precondition: GAIA units"
+        window.show_gaia_action.setChecked(False)
+        window.select_all_action.trigger()
+        shown = [(e.player_id, e.unit.reference_id) for e in window.map_view._unit_index.entries]
+        assert shown and window._selection == shown
+        assert all(player != 0 for player, _ in window._selection)
+
+        window._set_all_filters(False)
+        window.select_all_action.trigger()
+        assert window._selection == []
+        assert _last_status(window).endswith("Select All: no units shown")
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("clear", ["deselect", "escape"])
+def test_deselect_and_escape_under_units_select_clear_the_units_then_the_region(clear) -> None:
+    window = _window(show=False, tool="select")
+    try:
+        a, b = _add_units(window, [(64, _ROW), (67, _ROW)])
+        _commit_region(window)
+        _select_keys(window, [a, b])
+
+        def press() -> None:
+            if clear == "deselect":
+                window.deselect_action.trigger()
+            else:
+                _escape(window)
+
+        press()
+        assert window._selection == []
+        assert window.map_view._unit_select_keys == []
+        assert window._region == _REGION
+        assert _last_status(window).endswith("Selection cleared")
+        press()
+        assert window._region is None
+        assert window.map_view._region is None
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("tool", ["pan", "move"])
+def test_select_all_deselect_and_escape_keep_acting_on_the_region_under_units_pan_and_move(tool) -> None:
+    window = _window(show=False, tool=tool)
+    try:
+        (a,) = _add_units(window, [(64, _ROW)])
+        _select_keys(window, [a])
+        mm = window.scenario.map_manager
+
+        window.select_all_action.trigger()
+        assert window._region == (0, 0, mm.map_width, mm.map_height)
+        assert window._selection == [a]
+        window.deselect_action.trigger()
+        assert window._region is None
+        assert window._selection == [a]
+
+        _commit_region(window)
+        _escape(window)
+        assert window._region is None
+        assert window._selection == [a]
+    finally:
+        _close(window)
+
+
+def test_escape_mid_marquee_cancels_the_rectangle_and_keeps_the_press_time_selection(monkeypatch) -> None:
+    window = _window(tool="select")
+    try:
+        view = window.map_view
+        a, _b = _add_units(window, [(64, _ROW), (66, _ROW)])
+        _commit_region(window)
+        _select_keys(window, [a])
+        calls = _spy(monkeypatch, view, "_on_marquee_select")
+        # Shift on empty ground keeps the selection, so a fall-through to the units clause would show.
+        _press(view, _vp(window, (63, _ROW - 1)), Qt.ShiftModifier)
+        end = _vp(window, (67, _ROW + 1))
+        _move(view, end, Qt.ShiftModifier)
+        assert view._marquee_item is not None, "precondition: the marquee engaged"
+
+        _escape(window)
+        assert view._marquee_item is None
+        _release(view, end, Qt.ShiftModifier)
+
+        assert calls == []
+        assert window._selection == [a]
+        assert window._region == _REGION
+        assert view._region == _REGION
+    finally:
+        _close(window)
+
+
+def test_select_all_and_deselect_tooltips_and_enablement_follow_units_select() -> None:
+    window = _window(show=False, tool="select")
+    try:
+        (a,) = _add_units(window, [(64, _ROW)])
+        select_all, deselect = window.select_all_action, window.deselect_action
+        _select_keys(window, [])
+        assert select_all.isEnabled() and select_all.toolTip() == "Select every unit the filters show"
+        assert not deselect.isEnabled()
+        assert deselect.toolTip() == "Clear the selected region"
+
+        _commit_region(window)
+        assert deselect.isEnabled() and deselect.toolTip() == "Clear the selected region"
+
+        _select_keys(window, [a])
+        assert deselect.isEnabled() and deselect.toolTip() == "Clear the unit selection"
+
+        window.on_region_selected(None)
+        assert deselect.isEnabled() and deselect.toolTip() == "Clear the unit selection"
+
+        window.pan_action.setChecked(True)
+        assert select_all.toolTip() == "Select the whole map as a region"
+        assert deselect.toolTip() == "Clear the selected region"
+        assert not deselect.isEnabled(), "a unit selection alone enables nothing outside Select"
     finally:
         _close(window)

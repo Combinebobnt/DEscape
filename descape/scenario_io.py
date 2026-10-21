@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import gc
 import io
 import itertools
 import json
@@ -73,7 +72,7 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import library_compat, unlinked_fields
+from descape import gc_hold, library_compat, unlinked_fields
 from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
 
@@ -1168,22 +1167,7 @@ def load_map_and_units_from_bytes(
     return _load_map_and_units(bytes(raw), Path(display_path), fast_terrain, fast_units)
 
 
-@contextlib.contextmanager
-def _gc_paused():
-    """GC off for a load, then back to whatever the caller had. The parse
-    allocates objects that live as long as the document, so the ~1000
-    collections it would otherwise run (25-35% of the parse, measured on a
-    240x240 map) free almost nothing."""
-    was_enabled = gc.isenabled()
-    gc.disable()
-    try:
-        yield
-    finally:
-        if was_enabled:
-            gc.enable()
-
-
-@_gc_paused()
+@gc_hold.paused()
 def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
     # IncrementalGenerator.from_file() is exactly `open(path,'rb').read()` followed by
     # this same constructor (name=str(path), file_content=raw) -- see its source in

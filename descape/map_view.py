@@ -669,6 +669,8 @@ class MapView(QGraphicsView):
         # The Move tool's press and GH #75's group test, set by set_unit_drag_hooks() for the same reason.
         self._on_move_press: Callable = lambda pos, modifiers: None
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
+        # TASK-325: True when Escape cleared a unit selection, set by set_unit_escape_hook().
+        self._on_unit_escape: Callable[[], bool] | None = None
         # Draw Rectangle's Fill/Outline state, pushed down from the toolbar
         # combo by ViewerWindow.set_rect_filled() the same way set_brush()
         # pushes brush size/shape.
@@ -773,8 +775,9 @@ class MapView(QGraphicsView):
         self._unit_select_groups: dict = {}
         # GH #129: a Settings slider's unpersisted percent, per opacity group.
         self._overlay_opacity_overrides: dict[str, int] = {}
-        # scenario.player_colors, pushed by ViewerWindow (MapView holds no scenario).
-        self._selection_player_colors: tuple | None = None
+        # Each player's sprite tint (TASK-115), pushed by ViewerWindow (MapView holds no scenario):
+        # the owner colour of the selection, footprint outlines and range rings (TASK-449).
+        self._team_colors: tuple | None = None
         self._selection_by_owner = settings.get_selection_by_owner()
         # One item per colour group (_owner_group_key) for the selected buildings'
         # rings, created lazily on the first draw like the selection groups above.
@@ -1248,6 +1251,10 @@ class MapView(QGraphicsView):
         drag's own run is the ghost, pushed by the stroke handler instead."""
         self._on_cliff_preview = fn
 
+    def stroke_button(self):
+        """The mouse button holding the open stroke, None between strokes."""
+        return self._stroke_button
+
     def refresh_cliff_ghost(self) -> None:
         """Re-runs the Cliff hover preview at the last hovered tile, for a
         picker change, a release or an undo with no mouse move. A no-op unless
@@ -1358,7 +1365,7 @@ class MapView(QGraphicsView):
         self._clear_ruler()
         if mode != "units":
             self._clear_unit_hover()
-            self._clear_unit_selection()
+            # Not the selection: ViewerWindow keeps it across modes and hides or re-pushes it (TASK-359).
             # A pending drag has no owner in the next mode either -- defensive
             # only, since a mode switch mid-press is not reachable through the
             # toolbar/combo UI, but leaving a stale key would misroute the
@@ -1735,10 +1742,13 @@ class MapView(QGraphicsView):
         self._stack_badges_enabled = enabled
         self._sync_stack_badges_visible()
 
-    def set_selection_player_colors(self, colors) -> None:
-        """Stores scenario.player_colors (or None). Stores only: callers
-        redraw explicitly, via set_unit_index() or refresh_unit_highlight()."""
-        self._selection_player_colors = None if colors is None else tuple(colors)
+    def set_team_colors(self, team_colors) -> None:
+        """Stores each player's unit_sprites.TEAM_COLORS tint, indexed by
+        player_id, or None: the owner colour of the selection (TASK-115),
+        footprint outlines and range rings (TASK-449). Stores only: callers
+        redraw explicitly, via set_unit_index(), refresh_unit_highlight() and
+        the refresh_*_owner_colors() pair."""
+        self._team_colors = None if team_colors is None else tuple(team_colors)
 
     def set_selection_by_owner(self, enabled: bool) -> None:
         """View > Colour Selection by Owner; redraws a live selection."""
@@ -1813,10 +1823,11 @@ class MapView(QGraphicsView):
         self._draw_unit_selection(entries)
 
     def _owner_group_key(self, player_id: int, by_owner: bool):
-        """The owner's RGB, or None for the configured colour (`by_owner` off,
-        GAIA, or no colours pushed). Shared by the selection, the footprint
-        outlines and the range rings, whose three by-owner toggles are independent."""
-        colors = self._selection_player_colors
+        """An owner-coloured overlay's group key: the owner's sprite tint, so
+        the selection, footprint outlines and range rings match the unit they
+        mark (TASK-115, TASK-449), or None for the configured colour (`by_owner`
+        off, GAIA, or no colours pushed). Each overlay has its own toggle."""
+        colors = self._team_colors
         if not by_owner or colors is None or player_id == GAIA_PLAYER_ID:
             return None
         if not 0 < player_id < len(colors):
@@ -2014,7 +2025,7 @@ class MapView(QGraphicsView):
         self.refresh_unit_highlight()
 
     def set_range_rings_by_owner(self, enabled: bool) -> None:
-        """GH #156: each ring in its owner's player colour, GAIA in the configured one.
+        """GH #156: each ring in its owner's team colour, GAIA in the configured one.
         Applies to the always-on layer too."""
         self._range_rings_by_owner = enabled
         self.refresh_unit_highlight()
@@ -2032,7 +2043,7 @@ class MapView(QGraphicsView):
         self.refresh_ring_layer()
 
     def refresh_ring_layer_owner_colors(self) -> None:
-        """For a player colour edit, after set_selection_player_colors(): only
+        """For a player colour edit, after set_team_colors(): only
         owner-coloured rings have anything to recolour."""
         if self._range_rings_by_owner:
             self.refresh_ring_layer()
@@ -2105,12 +2116,11 @@ class MapView(QGraphicsView):
         survive it), and set_unit_index() itself calls this after every
         index swap.
 
-        Deliberately NOT the elevation-edit case, though the mirrored
-        refresh_highlight() exists partly for that: terrain edits are only
-        reachable in Terrain mode, and leaving Units mode drops the
-        selection outright (see ViewerWindow.on_mode_changed), so a
-        selection can never be live across an elevation edit. Phase 3.5
-        gives this a second caller -- a unit mutation."""
+        The elevation-edit case comes through _flush_footprint_refresh():
+        the selection stays drawn in Terrain mode (TASK-359), so an
+        elevation edit made there moves it, deferred to the event loop like
+        the footprint outlines. Phase 3.5 gives this a further caller: a
+        unit mutation."""
         if not self._unit_select_keys:
             return
         entries = []
@@ -2152,6 +2162,11 @@ class MapView(QGraphicsView):
         None), and is_group_drag(key) says the drag moves a whole selection (GH #75)."""
         self._on_move_press = on_move_press
         self._is_group_drag = is_group_drag
+
+    def set_unit_escape_hook(self, on_unit_escape) -> None:
+        """Units Select's Escape (TASK-325): on_unit_escape() clears the unit
+        selection and returns True, or returns False to fall through to the region."""
+        self._on_unit_escape = on_unit_escape
 
     def region_drag_live(self) -> bool:
         """Whether a Select-tool region drag or pasted-region move is mid-gesture."""
@@ -2797,7 +2812,8 @@ class MapView(QGraphicsView):
             return
         # Right button starts a stroke exactly like left does -- the only
         # difference is _touch_tile()'s elevation-lowering synthesis above,
-        # which the "draw"/"set_level" tools simply don't look at. Click
+        # which the "draw"/"set_level" tools simply don't look at, and the
+        # Cliff tool's erase, which reads stroke_button() at start. Click
         # tools are excluded here too (not just above): the CLICK_TOOLS
         # branch above only returns for a LEFT press, so without this guard
         # a right-click on Paint Can would fall through and open a real
@@ -3007,9 +3023,11 @@ class MapView(QGraphicsView):
     }
 
     def keyPressEvent(self, event) -> None:
-        """Escape clears a live measurement; in Units mode, arrow keys nudge
-        the selection (b1.5) and Delete removes it (b1.6); anything bound to
-        view_pan_* starts a held-key pan.
+        """Escape cancels the nearest live thing, in order: tile picker, unit
+        picker, area drag, shape, ruler, unit drag, marquee, region move,
+        region drag, unit selection (Units Select only), committed region. In
+        Units mode, arrow keys nudge the selection (b1.5) and Delete removes it
+        (b1.6); anything bound to view_pan_* starts a held-key pan.
 
         Escape/Delete/the nudge mapping are not REBINDABLE_ACTIONS rows: they
         are platform conventions rather than commands, and every added row is
@@ -3065,12 +3083,14 @@ class MapView(QGraphicsView):
             self._unit_drag_press_pos = None
             self._clear_unit_ghost()
             return
-        # Select tool's Escape, in three ordered clauses: cancel a live MOVE,
-        # else cancel an in-progress selection drag, and only clear a
-        # committed region when neither is live -- the same ordering rule
-        # daubED's canvas_widget.py follows, so releasing Escape mid-gesture
-        # can never destroy a PREVIOUSLY committed region that gesture hadn't
-        # replaced yet.
+        # Cancels a live Units marquee, never the selection its press already made (TASK-325).
+        if event.key() == Qt.Key_Escape and self._marquee_start_pos is not None:
+            self._marquee_start_pos = None
+            self._marquee_press_tile = None
+            self._clear_marquee()
+            return
+        # Select tool's Escape: a live gesture first, then the unit selection, then the
+        # committed region, so Escape mid-gesture never destroys an earlier region (daubED's rule).
         if event.key() == Qt.Key_Escape and self._move_anchor is not None:
             self._move_anchor = None
             self._move_current = None
@@ -3080,6 +3100,13 @@ class MapView(QGraphicsView):
             self._select_anchor = None
             self._select_current = None
             self._update_region_overlay()
+            return
+        if (
+            event.key() == Qt.Key_Escape
+            and self._units_select()
+            and self._on_unit_escape is not None
+            and self._on_unit_escape()
+        ):
             return
         if event.key() == Qt.Key_Escape and self._region is not None:
             self.set_region(None)
@@ -4429,7 +4456,7 @@ class MapView(QGraphicsView):
         self._ring_layer_items = {}
         self._ring_layer_polygons = {}
         self._ring_layer_projection = None
-        self._selection_player_colors = None
+        self._team_colors = None
         self._unit_hover_key = None
         self._unit_select_keys = []
         self._marquee_item = None
@@ -5352,12 +5379,12 @@ class MapView(QGraphicsView):
         self.refresh_footprint_overlay()
 
     def set_footprint_by_owner(self, enabled: bool) -> None:
-        """GH #143: each outline in its owner's player colour, GAIA in the configured one."""
+        """GH #143: each outline in its owner's team colour, GAIA in the configured one."""
         self._footprint_by_owner = enabled
         self.refresh_footprint_overlay()
 
     def refresh_footprint_owner_colors(self) -> None:
-        """For a player colour edit, after set_selection_player_colors(): only
+        """For a player colour edit, after set_team_colors(): only
         owner-coloured outlines have anything to recolour."""
         if self._footprint_by_owner:
             self.refresh_footprint_overlay()
@@ -5372,11 +5399,9 @@ class MapView(QGraphicsView):
     def refresh_footprint_overlay(self) -> None:
         """Rebuilds the outline path from the live index and height field.
 
-        While enabled it runs in every mode, unlike refresh_unit_highlight,
-        which may skip elevation edits because terrain edits are only
-        reachable in Terrain mode and leaving Units mode drops the selection.
-        An enabled overlay voids that argument: it is live in Terrain mode
-        while the elevations under it change.
+        While enabled it runs in every mode: it is live in Terrain mode while
+        the elevations under it change, as the kept unit selection now is
+        too (TASK-359; both ride _flush_footprint_refresh()).
 
         While disabled it is skipped: the path of every multi-tile footprint
         cost 26 ms (Stepped) / 109 ms (Sloped) per unit edit on old-allies,
@@ -5582,13 +5607,13 @@ class MapView(QGraphicsView):
         self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
-        """Queues one rebuild of the footprint outlines and the always-on ring
-        layer, whichever of the two is live."""
+        """Queues one rebuild of the footprint outlines, the always-on ring
+        layer and a drawn unit selection (TASK-359), whichever is live."""
         if self._footprint_refresh_pending:
             return
         # Hidden: nothing to queue per drag step (refresh_footprint_overlay's invariant).
         footprints = bool(self._footprint_items) and self._footprint_enabled
-        if not footprints and not self._ring_layer_wanted():
+        if not footprints and not self._ring_layer_wanted() and not self._unit_select_keys:
             return
         self._footprint_refresh_pending = True
         QTimer.singleShot(0, self._flush_footprint_refresh)
@@ -5603,6 +5628,10 @@ class MapView(QGraphicsView):
         if self._ring_layer_wanted():
             with perf_trace.phase("ring_layer_refresh"):
                 self.refresh_ring_layer()
+        # Deferred like the outlines: a Select All selection can hold thousands of units.
+        if self._unit_select_keys:
+            with perf_trace.phase("selection_refresh"):
+                self.refresh_unit_highlight()
 
     def set_grid_appearance(self, blend: int, thickness: int) -> bool:
         """Stores the appearance for both halves. Evicts only when the bake

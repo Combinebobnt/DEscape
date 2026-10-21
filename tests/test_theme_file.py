@@ -305,6 +305,7 @@ def test_a_subscribed_path_is_refused_with_nothing_written(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("py313_resolve", [False, True])
+@conftest.requires_symlinks
 def test_a_looped_path_is_refused_with_nothing_written(tmp_path, monkeypatch, py313_resolve) -> None:
     out = tmp_path / "out"
     out.mkdir()
@@ -317,6 +318,7 @@ def test_a_looped_path_is_refused_with_nothing_written(tmp_path, monkeypatch, py
     assert sorted(p.name for p in out.iterdir()) == ["loop-a", "loop-b"]
 
 
+@conftest.requires_symlinks
 def test_a_symlink_into_mods_subscribed_is_refused_with_nothing_written(tmp_path) -> None:
     subscribed = tmp_path / "mods" / "subscribed" / "12345"
     subscribed.mkdir(parents=True)
@@ -373,7 +375,7 @@ def test_summary_of_a_no_op_file_says_so(tmp_path) -> None:
 def qt_dialog():
     if not conftest.PYQT5_AVAILABLE:
         pytest.skip("PyQt5 not importable")
-    from descape import viewer_dialogs
+    from descape import gc_hold, viewer_dialogs
 
     # The theme's own state (both palettes, style, _LIGHT_PALETTE) goes back through the shared helper.
     with conftest.restoring_app_theme() as app:
@@ -384,7 +386,8 @@ def qt_dialog():
         dialog.close()
         conftest.close_window(window)
         viewer_dialogs._DEFAULT_FONT = saved_default_font
-        app.setFont(saved_font)
+        with gc_hold.paused():
+            app.setFont(saved_font)
 
 
 def _answer_import(monkeypatch, path: Path, apply: bool) -> list[str]:

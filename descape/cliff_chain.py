@@ -32,22 +32,36 @@ that neighbour.
 path's node 0: fixed, never placed, and the walk steps from it. An end cap
 passes its own run's side on, so a run continued in line keeps its size.
 
-**Contacts get one bounded pass.** After the first layout, a node whose
+**Contacts repeat until they settle.** After the first layout, a node whose
 footprint shares an edge with an existing cliff or a non-adjacent node of
 the same stroke takes that neighbour's own leg as one more arm, and the path
-lays out once more. A node whose widened shape has no piece keeps its path
-shape.
+lays out again. Each pass types its contacts by the touched pieces' shapes
+from the pass before and starts over from the path shapes, until a pass
+changes no shape, so two nodes that touch each other agree on their shared
+edge and a one-drag loop closes. At most `_MAX_CONTACT_PASSES` run; a run
+that does not settle keeps its first pass. A node whose widened shape has no
+piece keeps its path shape.
 
 **Joins rewrite the old end, narrowly.** An existing end cap or lone piece
 that gains exactly one neighbour from the run takes the frame the table
 gives its new arms at its own size (`rewrites()`). Where that needs a
 different-size piece it is left alone and counted (`unjoined()`).
+
+**An erase re-caps the ends it leaves, as narrowly** (GH #247,
+`erase_rewrites()`). A surviving cliff that was joined to an erased one and
+is left joined to exactly one neighbour takes the end cap the table gives
+that arm at its own size. "Joined" is the drag's own test: a shared edge,
+legs of the same type, and each piece's stored frame shaped for that side
+(`shaped_arms()`). Where its size has no such cap it is left alone and
+counted; a survivor left with no joined neighbour, or with two, is not
+touched.
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import cache
 
 from descape import cliff_catalog, cliff_connectivity, unit_sprites
 from descape.cliff_connectivity import DRAG_FACE_SIDE, edge_tall, leg_tall
@@ -66,6 +80,8 @@ _MIN_STEP_BOX = 3
 # allows is a 1-wide piece across the largest corpus map, ~480 steps.
 _MAX_WALK_STEPS = 512
 _PLAN_CACHE_SIZE = 4
+# Contact passes per layout; a run with no fixpoint inside the bound keeps its first pass.
+_MAX_CONTACT_PASSES = 4
 
 
 @dataclass(frozen=True)
@@ -200,6 +216,103 @@ def index_cliffs(existing: list[ExistingCliff]) -> _TileIndex:
     for k, cliff in enumerate(existing):
         index.add(k, cliff.bounds)
     return index
+
+
+def _cardinal_contacts(existing: list[ExistingCliff], index: _TileIndex, k: int) -> list[tuple[Direction, int]]:
+    """(direction from cliff `k`, neighbour index) for every cliff sharing an edge with `k`."""
+    bounds = existing[k].bounds
+    out = []
+    for j in sorted(index.touching(bounds)):
+        if j != k:
+            d = cliff_connectivity.adjacency_dir(bounds, existing[j].bounds)
+            if d in _CARDINALS:
+                out.append((d, j))
+    return out
+
+
+@cache
+def _frame_arms(suffix: int, frame_limit: int) -> dict[int, frozenset[Direction]]:
+    """frame -> the intersection of every arm set whose row at `suffix` gives it."""
+    out: dict[int, frozenset[Direction]] = {}
+    for arms in cliff_connectivity.shape_tables().rows:
+        for frame in cliff_connectivity.rewrite_frames(arms, suffix, frame_limit=frame_limit) or ():
+            out[frame] = out[frame] & arms if frame in out else arms
+    return out
+
+
+def shaped_arms(unit_const: int, frame: int | None) -> frozenset[Direction]:
+    """The cardinal arms a cliff of `unit_const` stored on `frame` is shaped
+    for: what every table row at its suffix that gives that frame agrees on.
+    Frames repeat across rows (a 3x3 straight's 1/2 also top both T rows), so
+    a T's straight frame is shaped for its two through arms only. Empty for a
+    frame no row gives, or no frame at all."""
+    suffix = cliff_catalog.suffixes().get(unit_const)
+    if suffix is None or frame is None:
+        return frozenset()
+    return _frame_arms(suffix, cliff_catalog.frame_count(unit_const)).get(frame, frozenset())
+
+
+def _cliff_rewrite_frames(cliff: ExistingCliff, arms: frozenset[Direction]) -> tuple[int, ...] | None:
+    """`rewrite_frames()` for an existing cliff at its own suffix and frame count; None off the table."""
+    suffix = cliff_catalog.suffixes().get(cliff.unit_const)
+    if suffix is None:
+        return None
+    return cliff_connectivity.rewrite_frames(arms, suffix, frame_limit=cliff_catalog.frame_count(cliff.unit_const))
+
+
+def _joined(existing: list[ExistingCliff], k: int, d: Direction, j: int) -> bool:
+    """Whether cliff `k` is joined to its `d`-side neighbour `j`: legs of the
+    same type there, and each stored frame shaped for its side of the edge."""
+    a, b = existing[k], existing[j]
+    suffixes = cliff_catalog.suffixes()
+    suffix_a, suffix_b = suffixes.get(a.unit_const), suffixes.get(b.unit_const)
+    if suffix_a is None or suffix_b is None:
+        return False
+    back = _opposite(d)
+    return (
+        leg_tall(suffix_a, d) == leg_tall(suffix_b, back)
+        and d in shaped_arms(a.unit_const, a.rotation)
+        and back in shaped_arms(b.unit_const, b.rotation)
+    )
+
+
+def joined_arms(
+    existing: list[ExistingCliff], index: _TileIndex, k: int, *, skip: frozenset[int] | set[int] = frozenset()
+) -> frozenset[Direction]:
+    """The cardinal directions in which cliff `k` is joined to a cliff not in `skip`."""
+    return frozenset(d for d, j in _cardinal_contacts(existing, index, k) if j not in skip and _joined(existing, k, d, j))
+
+
+def erase_rewrites(
+    existing: list[ExistingCliff], index: _TileIndex, erased: set[int]
+) -> tuple[list[ChainRewrite], int]:
+    """(rewrites, left alone) for the survivors of erasing `erased` (indices
+    into `existing`). A survivor joined to an erased cliff and left joined to
+    exactly one other takes the end cap the table gives that arm at its own
+    size, unless it is on it already. Where its size has none it is left
+    alone and counted. Any other survivor is untouched and uncounted."""
+    erased = set(erased)
+    touched: set[int] = set()
+    for e in erased:
+        for d, j in _cardinal_contacts(existing, index, e):
+            if j not in erased and _joined(existing, j, _opposite(d), e):
+                touched.add(j)
+    rewrites: list[ChainRewrite] = []
+    left = 0
+    for k in sorted(touched):
+        surviving = [(d, j) for d, j in _cardinal_contacts(existing, index, k) if j not in erased]
+        joined = [(d, j) for d, j in surviving if _joined(existing, k, d, j)]
+        arms = frozenset(d for d, _ in joined)
+        # A junction's centre: an unjoined contact (a T's branch) still touches it, as in _joins().
+        if len(arms) != 1 or len(joined) != len(surviving):
+            continue
+        cliff = existing[k]
+        frames = _cliff_rewrite_frames(cliff, arms)
+        if frames is None:
+            left += 1
+        elif cliff.rotation not in frames:
+            rewrites.append(ChainRewrite(k, _twin(frames, (cliff.bounds[0], cliff.bounds[2]))))
+    return rewrites, left
 
 
 def path_dirsets(steps: list[Direction]) -> list[frozenset[Direction]]:
@@ -477,27 +590,35 @@ class ChainStroke:
 
     def _lay(self, side: int) -> _Plan:
         path_arms = _path_arms(self._steps, side)
-        shapes = [self._shape(arms) or self._picked(arms) for arms in path_arms]
+        base = [self._shape(arms) or self._picked(arms) for arms in path_arms]
         if self._anchor is not None:
-            shapes[0] = self._anchor_shape()
-        plan = self._layout(side, shapes)
-        contacts = self._contacts(plan)
-        if not any(arms for arms, _ in contacts):
-            return plan
-        start_touches = contacts[0][1]
-        start_joined = False
-        for i, (extra, _) in enumerate(contacts):
-            if not extra:
-                continue
-            # A path arm keeps its edge's type over a contact on the same side.
-            found = self._shape({**extra, **path_arms[i]})
-            if found is not None:
-                shapes[i] = found
-                start_joined = start_joined or i == 0
-        plan = self._layout(side, shapes)
-        plan.start_touches = start_touches
-        plan.start_joined = start_touches and start_joined
-        return plan
+            base[0] = self._anchor_shape()
+        plan = self._layout(side, base)
+        first: _Plan | None = None
+        for _ in range(_MAX_CONTACT_PASSES):
+            contacts = self._contacts(plan)
+            if first is None and not any(arms for arms, _ in contacts):
+                return plan
+            # Every pass starts over from the path shapes, so a node that lost its contact reverts.
+            shapes = list(base)
+            start_touches = contacts[0][1]
+            start_joined = False
+            for i, (extra, _) in enumerate(contacts):
+                if not extra:
+                    continue
+                # A path arm keeps its edge's type over a contact on the same side.
+                found = self._shape({**extra, **path_arms[i]})
+                if found is not None:
+                    shapes[i] = found
+                    start_joined = start_joined or i == 0
+            if first is not None and shapes == plan.shapes:
+                return plan
+            plan = self._layout(side, shapes)
+            plan.start_touches = start_touches
+            plan.start_joined = start_touches and start_joined
+            if first is None:
+                first = plan
+        return first
 
     def _shape(self, arms: dict[Direction, bool]) -> _Shape | None:
         """The table's piece for these typed arms, or None when it has none.
@@ -650,23 +771,12 @@ class ChainStroke:
         """The cardinal neighbours an existing cliff already has on the map."""
         arms = self._existing_arm_cache.get(k)
         if arms is None:
-            bounds = self._existing[k].bounds
-            found = {
-                cliff_connectivity.adjacency_dir(bounds, self._existing[j].bounds)
-                for j in self._existing_index.touching(bounds)
-                if j != k
-            }
-            arms = self._existing_arm_cache[k] = frozenset(found & _CARDINALS)
+            contacts = _cardinal_contacts(self._existing, self._existing_index, k)
+            arms = self._existing_arm_cache[k] = frozenset(d for d, _ in contacts)
         return arms
 
     def _rewrite_frames(self, k: int, arms: frozenset[Direction]) -> tuple[int, ...] | None:
-        cliff = self._existing[k]
-        suffix = cliff_catalog.suffixes().get(cliff.unit_const)
-        if suffix is None:
-            return None
-        return cliff_connectivity.rewrite_frames(
-            arms, suffix, frame_limit=cliff_catalog.frame_count(cliff.unit_const)
-        )
+        return _cliff_rewrite_frames(self._existing[k], arms)
 
     def _joins(self) -> tuple[list[ChainRewrite], int]:
         suffixes = cliff_catalog.suffixes()

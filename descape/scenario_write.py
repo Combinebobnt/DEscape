@@ -99,6 +99,13 @@ _patch_ai_library(), _patch_script_name() (Map.script_name, below Options and
 above Units), _patch_disables(), _patch_personality(), _patch_messages(), then
 _patch_player_data_1().
 
+TASK-333's water definition adds _patch_map_strings(), the Map string front
+from its first marker through map_color_mood. It sits just below
+Map.script_name, so it runs right after _patch_script_name() and before
+_patch_disables(). Like every splice from _patch_script_name() on, it is
+upstream of the terrain block, so it counts toward the terrain offset's
+shift.
+
 See tests/test_write_path.py, tests/test_trigger_write_path.py,
 tests/test_units_write_path.py, and tests/test_player_write_path.py for the
 evidence.
@@ -118,6 +125,7 @@ from descape.options_model import (
     OptionsEditModel,
     diplomacy_write_supported,
     disables_write_supported,
+    map_strings_write_supported,
     options_write_supported,
     personality_custom_supported,
     personality_write_supported,
@@ -462,6 +470,28 @@ def _patch_script_name(body: bytes, scenario: LoadedScenario, options: OptionsEd
         )
     assert body[start:end] == scenario.decompressed_body[start:end], (
         "something patched inside script_name before its splice"
+    )
+    return body[:start] + replacement + body[end:]
+
+
+def _patch_map_strings(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
+    """Returns `body` with the Map string front (first marker through
+    map_color_mood) rebuilt for a pending water definition; a no-op without
+    one. After _patch_script_name(), whose span sits just above this region,
+    and before _patch_disables(), so every offset here is still load-time.
+    Refuses a region outside Map's head (between Options and the terrain
+    block)."""
+    resize = options.serialize_map_strings_resize()
+    if resize is None:
+        return body
+    start, end, replacement = resize
+    if not (0 <= scenario.options_section_end <= start <= end <= scenario.terrain_block_offset):
+        raise WriteBlockedError(
+            f"A Map strings splice at {start}..{end} falls outside the Map region "
+            f"this write path owns ({scenario.options_section_end}..{scenario.terrain_block_offset})."
+        )
+    assert body[start:end] == scenario.decompressed_body[start:end], (
+        "something patched inside the Map strings before their splice"
     )
     return body[:start] + replacement + body[end:]
 
@@ -852,6 +882,11 @@ def build_patched(
                 "This file's script filename fields no longer verify -- splicing "
                 "would land at an offset that can't be trusted."
             )
+        if options.has_map_string_edits and not map_strings_write_supported(scenario):
+            raise WriteBlockedError(
+                "This file's water definition no longer verifies -- splicing "
+                "would land at an offset that can't be trusted."
+            )
         header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
 
@@ -897,6 +932,7 @@ def build_patched(
 
     if options is not None:
         patched_body = _patch_script_name(patched_body, scenario, options)
+        patched_body = _patch_map_strings(patched_body, scenario, options)
         # Runs unconditionally, like _patch_player_data_1() below and for the
         # same reason: serialize_disables_resize() already no-ops cleanly for
         # a model with no pending disable-list edit, and this keeps the whole

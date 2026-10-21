@@ -2127,7 +2127,7 @@ class _ChunkCacheBase:
                         area += w * h
         return area
 
-    def patch_rects(self, rects) -> None:
+    def patch_rects(self, rects, levels=None) -> None:
         """patch() for each rect in rects -- Phase B-E's Flat edits patch
         render.flat_tile_rects()' disjoint rects (one per block of tiles an
         edit touches, one a tile in a sparse block) rather than one union
@@ -2143,11 +2143,46 @@ class _ChunkCacheBase:
         Two passes, every rect's sources before any composite: a blended
         tile reads its neighbours' mirror entries, which a later rect may
         be the one refreshing. Between them the blend keys under every rect
-        are derived in one call, since a sparse block's rects are one tile each."""
+        are derived in one call, since a sparse block's rects are one tile each.
+
+        levels: None patches every resident level. Given (top-down Flat
+        passes the level in view, TASK-338), only those are patched, and every
+        other resident level drops its cached chunks under each rect, so no
+        level is left stale. The level warm refills the neighbour levels at
+        idle; the others recomposite on demand."""
         live = [rect for rect in rects if self.patch_sources(rect)]
         self._fill_blend_keys(live)
+        if levels is not None:
+            self._evict_rects(live, [mip for mip in self.resident_levels() if mip not in levels])
         for rect in live:
-            self.patch_composite(rect)
+            self.patch_composite(rect, levels)
+
+    def _evict_rects(self, rects, mips) -> None:
+        """Drops the cached chunks at each of `mips` that any of `rects`
+        (REFERENCE canvas pixels) reaches: per rect, not under their union,
+        so a scattered set does not drop a whole level."""
+        for mip in mips:
+            for rect in rects:
+                rng = self.chunk_range_under(rect, mip)
+                if rng is None:
+                    continue
+                cx0, cy0, cx1, cy1 = rng
+                for cy in range(cy0, cy1 + 1):
+                    for cx in range(cx0, cx1 + 1):
+                        chunk = self._cache.pop((mip, cx, cy), None)
+                        if chunk is not None:
+                            self._cache_bytes -= chunk.nbytes
+
+    def chunk_range_under(self, bbox: tuple[int, int, int, int], mip: int) -> tuple[int, int, int, int] | None:
+        """(cx0, cy0, cx1, cy1), the inclusive chunk range a REFERENCE bbox
+        reaches at level `mip`, clipped to that level's canvas; None when the
+        clipped bbox is empty."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
+        lx0, ly0, lx1, ly1 = self._bbox_to_level(mip, bbox)
+        lx0, ly0, lx1, ly1 = max(lx0, 0), max(ly0, 0), min(lx1, canvas_w), min(ly1, canvas_h)
+        if lx1 <= lx0 or ly1 <= ly0:
+            return None
+        return self.chunk_index_range(mip, lx0, ly0, lx1, ly1)
 
     def _fill_blend_keys(self, rects) -> None:
         """Derives every blend key Flat's patch rects `rects` (REFERENCE
@@ -2308,7 +2343,9 @@ class _ChunkCacheBase:
         neighbours). By value, not by bbox, so a re-read that changes nothing
         (an elevation-only edit, refresh_wholesale()) keeps every key. Any
         other mirror write must go through here or invalidate the map itself;
-        replacing a mirror array is safe, since the map is bound to both."""
+        replacing a mirror array is safe, since the map is bound to both. An
+        invalidated key may come back from the map's stash, but only for a
+        tile whose own and neighbours' values are exactly what it had then."""
         if self._terrain_ids is None:
             return
         px0, py0, px1, py1 = bbox
@@ -2927,9 +2964,11 @@ class _LeveledChunkCache(_ChunkCacheBase):
         predicate; each spliced level is then restamped current. A zero-length
         `splice_visible=<splices>` phase marks it.
 
-        False, touching nothing, with sprites off (a level build is then ~4 ms,
-        under the plan's own cost), with no cap_level current, or when the plan
-        is refused or holds more than VISIBLE_SPLICE_MAX_UNITS splices. The
+        False, touching nothing, with sprites off, with no cap_level current, or
+        when the plan is refused or holds more than VISIBLE_SPLICE_MAX_UNITS
+        splices. The sprites-off refusal dates from a ~4 ms level build; the
+        TASK-031.26 zoom pass measured that rebuild at 11.5-37.3 ms on old-allies
+        and June, and whether the splice beats it there is unmeasured. The
         targets are read before anything moves. A target with pending_elev
         keeps it: its later flush reads the consistent state this leaves."""
         if changed is None or not (self.with_units and self.sprites_enabled):
@@ -2964,11 +3003,13 @@ class _LeveledChunkCache(_ChunkCacheBase):
         """The resumable warm for one level -- see _ChunkCacheBase's own
         docstring for the shape.
 
-        None when there is nothing expensive left to warm: with sprites (or
-        units) off, a level costs only _building_bboxes_iso, measured at
-        3.9ms against sprite_draws_by_anchor's 676ms, so ticking for it would
-        be pure overhead. None too when the level is already current, which
-        is the common case for the level the opening paint just built.
+        None with units off (a level then has nothing to assemble) or when
+        the level is already current, which is the common case for the level
+        the opening paint just built. Sprites off still warms: the level's
+        assembly alone (_building_bboxes_iso, the bystander grid) measured
+        13.5-31.2 ms dev on old-allies and 11.5-37.3 on June (TASK-031.26 zoom
+        pass), built inside the first paint at that level, and with no warm the load warm never
+        composites its chunks either (_queue_load_warm waits for residency).
 
         **The install predicate is five checks, and `lvl.gen ==
         self._source_gen` is the one that isn't obvious.** The first two are
@@ -2994,7 +3035,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
         lvl = self._levels[mip]
         if lvl.gen == self._source_gen and lvl.pending_elev:
             return self._flush_warm_job(mip)
-        if not (self.with_units and self.sprites_enabled):
+        if not self.with_units:
             return None
         start_gen = self._source_gen
         start_epoch = self._splice_epoch
@@ -3046,10 +3087,10 @@ class _LeveledChunkCache(_ChunkCacheBase):
         self._source_gen`) rather than level_warm_job()'s None-or-not
         answer: the two predicates ask different questions (this one is a
         pure "is get_chunk() safe to call right now", level_warm_job() also
-        factors in "is there anything worth WARMING" -- with sprites off a
-        level can be resident yet still return a level_warm_job() of None,
-        since a cheap _building_bboxes_iso-only rebuild isn't worth
-        ticking for). tests/test_margin_warm.py pins the two together after
+        factors in "is there anything worth WARMING" -- with units off a
+        level can be stale yet still return a level_warm_job() of None,
+        since a terrain-only rebuild has nothing to assemble).
+        tests/test_margin_warm.py pins the two together after
         a completed warm so a future change to one can't silently diverge
         from the other.
 

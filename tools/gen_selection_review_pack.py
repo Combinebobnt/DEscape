@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Review pack for the Units-mode selection coloured by owner: each owner's
-outline in its player colour over a dark under-stroke, GAIA and the marquee in
+outline in its team colour (the sprite tint) over a dark under-stroke, GAIA and the marquee in
 the configured colour.
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
@@ -90,14 +90,14 @@ def _inject_swap():
 
 
 def _inject_gaia_owner():
-    """GAIA takes its own resolved player colour instead of the configured one."""
+    """GAIA takes its own resolved team colour instead of the configured one."""
     from descape.map_view import MapView
 
     real = MapView._selection_group_key
 
     def gaia(self, player_id):
-        if player_id == 0 and self._selection_player_colors is not None:
-            return tuple(self._selection_player_colors[0])
+        if player_id == 0 and self._team_colors is not None:
+            return tuple(self._team_colors[0])
         return real(self, player_id)
 
     return MapView, "_selection_group_key", gaia

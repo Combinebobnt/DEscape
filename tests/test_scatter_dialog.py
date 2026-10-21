@@ -312,7 +312,7 @@ def test_the_live_count_label_reports_eligible_and_region_size() -> None:
     dialog = _dialog(scenario, region=(0, 0, 5, 4))
     try:
         dialog.water_radio.setChecked(True)
-        assert "12 eligible tiles in a 5x4 region" in dialog.count_label.text()
+        assert "12 eligible tiles in a 5x4 area" in dialog.count_label.text()
     finally:
         dialog.deleteLater()
 
@@ -576,13 +576,13 @@ def test_move_mode_is_sticky_only_while_something_is_selected() -> None:
 @pytestmark_gui
 def test_move_mode_shows_the_full_count_line() -> None:
     """GH #105. Pass condition: in "Move the selected units" mode the count
-    line reads exactly "N selected units, M eligible tiles in a CxR region
+    line reads exactly "N selected units, M eligible tiles in a CxR area
     (K tiles)", here two movers over a free 4x3 region."""
     movers = [fakes.SyntheticUnit(x=0.5 + i, y=0.5, unit_const=_FISH, reference_id=i) for i in range(2)]
     dialog = _move_dialog(_scenario(), movers, region=(0, 0, 4, 3))
     try:
         dialog.move_radio.setChecked(True)
-        assert dialog.count_label.text() == "2 selected units, 12 eligible tiles in a 4x3 region (12 tiles)"
+        assert dialog.count_label.text() == "2 selected units, 12 eligible tiles in a 4x3 area (12 tiles)"
     finally:
         dialog.deleteLater()
 
@@ -652,13 +652,13 @@ def test_grow_starts_at_two_widens_the_box_clamps_at_the_edge_and_follows_the_la
         assert dialog.grow_spin.value() == scatter_dialog.DEFAULT_GROW == 2
         assert dialog.grow_spin.isEnabled()
         assert set(dialog.eligible()) == _blob(0, 0, 3, 4)  # clamped at x=0 and y=0
-        assert "eligible tiles in a 3x4 region (12 tiles)" in dialog.count_label.text()
+        assert "eligible tiles in a 3x4 area (12 tiles)" in dialog.count_label.text()
         dialog.grow_spin.setValue(4)
         assert set(dialog.eligible()) == _blob(0, 0, 5, 6)
-        assert "eligible tiles in a 5x6 region (30 tiles)" in dialog.count_label.text()
+        assert "eligible tiles in a 5x6 area (30 tiles)" in dialog.count_label.text()
         dialog.grow_spin.setValue(0)
         assert set(dialog.eligible()) == {(0, 1)}
-        assert "in a 1x1 region (1 tiles)" in dialog.count_label.text()
+        assert "in a 1x1 area (1 tiles)" in dialog.count_label.text()
     finally:
         dialog.deleteLater()
 

@@ -291,21 +291,56 @@ def test_a_warm_installs_a_flat_icon_layer(sprite_install, mixed_scenario) -> No
     assert {row: _draw_key(d) for row, d in warmed.items()} == {row: _draw_key(d) for row, d in fresh.items()}
 
 
-def test_nothing_is_queued_with_sprites_off(mixed_scenario) -> None:
-    """With sprites off a level costs only _building_bboxes_iso (3.9ms
-    measured, against the sprite walk's 676ms), so there is nothing worth
-    ticking for -- and level_warm_job() saying so is what leaves is_active
-    False rather than scheduling a timer to do nothing."""
-    from descape.render_cache import FlatChunkCache, IsoChunkCache
+def _leveled_cache(style: str, scn, sprites: bool):
+    from descape.render_cache import IsoChunkCache, SlopedChunkCache
 
     tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
-    elevations, proj = render.elevations_and_proj(mixed_scenario)
-    iso = IsoChunkCache(mixed_scenario, elevations, proj, tile_px, sprites=False)
-    flat = FlatChunkCache(mixed_scenario, tile_px, sprites=False)
+    if style == "stepped":
+        elevations, proj = render.elevations_and_proj(scn)
+        return IsoChunkCache(scn, elevations, proj, tile_px, sprites=sprites)
+    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    return SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=sprites)
 
-    assert iso.level_warm_job(1) is None
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_sprites_off_warm_installs_the_level_a_paint_would_build(style, mixed_scenario) -> None:
+    """With sprites off a level is still its building bboxes and bystander
+    grid. The early-out this replaces assumed that cost 3.9 ms
+    (_building_bboxes_iso alone, measured on June in 2026-09); the TASK-031.26
+    zoom pass measured the whole assembly at 13.5-31.2 ms dev on old-allies and
+    11.5-37.3 on June, built inside the first paint at that level. The warm
+    builds it instead, and notifies, so _queue_load_warm then warms the
+    level's chunks too."""
+    from test_bystander_grid_patch import grid_state
+
+    cache = _leveled_cache(style, mixed_scenario, sprites=False)
+    assert not cache.is_level_resident(1), "level 1 already resident -- vacuous"
+
+    warmer = level_warm.LevelWarmer()
+    assert warmer.start(cache, [1]) == {1}
+    assert warmer.is_active
+    warmer.run_to_completion()
+
+    assert cache.is_level_resident(1)
+    assert cache._levels[1].sprites is None
+    assert cache.level_warm_job(1) is None
+    fresh = _leveled_cache(style, mixed_scenario, sprites=False)
+    fresh._level(1)
+    assert cache._levels[1].building_bboxes, "no bboxes assembled -- vacuous"
+    assert cache._levels[1].building_bboxes == fresh._levels[1].building_bboxes
+    assert grid_state(fresh._levels[1].bystander_grid), "empty bystander grid -- vacuous"
+    assert grid_state(cache._levels[1].bystander_grid) == grid_state(fresh._levels[1].bystander_grid)
+
+
+def test_top_down_flat_queues_nothing_with_sprites_off(mixed_scenario) -> None:
+    """Top-down Flat's warm is its icon walk alone, so with sprites off
+    level_warm_job() says so and is_active stays False rather than a timer
+    being scheduled to do nothing."""
+    from descape.render_cache import FlatChunkCache
+
+    flat = FlatChunkCache(mixed_scenario, render.tile_pixels_for_map(MAP_W, MAP_H), sprites=False)
+
     assert flat.level_warm_job(1) is None
-    assert not _warm(iso, [1]).is_active
     assert not _warm(flat, [1]).is_active
 
 
@@ -493,11 +528,11 @@ def test_on_job_done_fires_once_per_queued_mip_in_order(sprite_install, mixed_sc
 
 
 def test_on_job_done_does_not_fire_for_a_mip_with_nothing_to_warm(mixed_scenario) -> None:
-    """With sprites off, level_warm_job() returns None for every mip -- no
-    job is ever queued for it, so on_job_done must never fire either. A
-    caller that also needs those mips covered checks is_level_resident()
-    itself; see _queue_load_warm's own docstring."""
-    cache = _iso_cache(mixed_scenario)
+    """With sprites off, top-down Flat's level_warm_job() returns None for
+    every mip -- no job is ever queued for it, so on_job_done must never fire
+    either. A caller that also needs those mips covered checks
+    is_level_resident() itself; see _queue_load_warm's own docstring."""
+    cache = _flat_cache(mixed_scenario)
     cache.set_sprites_enabled(False)
     warmer = level_warm.LevelWarmer()
     done = []

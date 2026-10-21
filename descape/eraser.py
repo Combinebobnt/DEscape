@@ -107,6 +107,18 @@ class EraseStroke:
     pending_splices: list = field(default_factory=list)  # render_cache.UnitSplice, not yet repainted
     # Resident mips not is_level_resident() at one of those erases: their layers can't size its repaint.
     pending_stale_levels: set[int] = field(default_factory=set)
+    # The Cliff tool's right-button erase (GH #247): the cursor tiles alone, no brush.
+    cursor_only: bool = False
+    # Re-caps the cliff ends the erase leaves at release (cliff_chain.erase_rewrites()).
+    cliff_ends: bool = False
+    cliffs: tuple | None = None  # (the press's ExistingCliff list, its tile index)
+    scenario_ref: object | None = None  # weakref to the scenario the press saw
+    # unit_gen after this stroke's own last removal; None once something else changed the units.
+    expected_gen: int | None = None
+    erased_ids: set[int] = field(default_factory=set)  # id() of each unit actually removed
+    reshaped: int = 0
+    left_alone: int = 0
+    ends_note: str | None = None
 
 
 def collect_hits(

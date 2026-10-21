@@ -356,3 +356,31 @@ def test_a_dialog_session_undoes_as_one_step() -> None:
     assert model.current_value("disabled:buildings:2") == (72,)
     assert model.current_value("disabled:techs:5") == (22, 23)
     assert model.has_disables_edits
+
+
+# -- the water definition (TASK-333) -------------------------------------------
+
+
+def test_a_water_definition_edit_undoes_and_redoes_through_a_diff_record() -> None:
+    """A str value through the same OptionsDiffRecord as the scalars; two
+    edits in a row unwind in order, back to the file's own empty value."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    history = EditHistory()
+    assert model.current_value("water_definition") == ""
+
+    _set(model, history, "water_definition", "Arctic")
+    _set(model, history, "water_definition", "Red Tide")
+    assert model.has_map_string_edits
+
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("water_definition") == "Arctic"
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("water_definition") == ""
+    assert not model.has_edits, "an undone water edit still reads as dirty"
+    assert model.serialize_map_strings_resize() is None
+
+    history.redo(loaded.map_manager.terrain, None, model)
+    history.redo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("water_definition") == "Red Tide"
+    assert model.has_map_string_edits

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from descape import map_strings
 from descape.scenario_io import LoadedScenario, retriever_length
 
 CHECKBOX = "checkbox"
@@ -18,6 +19,17 @@ SPINBOX = "spinbox"
 # A free-text str16 row (script_name). Not byte-patched: options_model gives
 # it its own gate and splice, so field_offsets() skips this kind.
 TEXT = "text"
+# A str16 picked from a list (water_definition). Not byte-patched either: it
+# rides map_strings' gate and splice, so field_offsets() skips it too.
+STRING_COMBO = "string_combo"
+
+# The in-game Terrain > Map > Water Definitions list, in its order: each name
+# is the water_type_name in the install's water_def.json and is stored as is.
+WATER_DEFINITIONS = (
+    "Default", "Afternoon", "Arctic", "Calm", "Choppy", "Dark Night", "Dimmed",
+    "Evening", "Hurricane", "Moonlit Night", "Morning", "Murky", "Night", "Noon",
+    "Ocean", "Red Tide", "Stormy", "Sunrise", "Sunset", "Swamp", "Tropical",
+)
 
 
 @dataclass(frozen=True)
@@ -27,8 +39,8 @@ class OptionFieldSpec:
     group: str  # panel group box title, e.g. "Global Victory"
     section: str  # scenario section name, e.g. "GlobalVictory"
     retriever: str  # retriever name within that section, e.g. "mode"
-    kind: str  # CHECKBOX / COMBO / SPINBOX / TEXT
-    choices: tuple[tuple[int, str], ...] = ()  # (value, label) pairs, COMBO only
+    kind: str  # CHECKBOX / COMBO / SPINBOX / TEXT / STRING_COMBO
+    choices: tuple[tuple[int | str, str], ...] = ()  # (value, label) pairs, COMBO and STRING_COMBO
     minimum: int | None = None  # SPINBOX bounds
     maximum: int | None = None
     scale: float = 1.0  # display_value = raw_value / scale, e.g. 10 for years
@@ -211,6 +223,18 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         tooltip="Hides the animated waves along shorelines.",
     ),
     OptionFieldSpec(
+        "water_definition", "Water definition", "Map",
+        "Map", map_strings.WATER_DEFINITION, STRING_COMBO,
+        tooltip=(
+            "The map-wide water look: sun, sky and water colours, waves and the "
+            "sea floor. The same list as the game's Terrain > Map > Water "
+            "Definitions. DEscape does not preview it."
+        ),
+        # A stored name outside the list (Preset_Main, FE1, or empty) is kept as
+        # its own row by the panel and never rewritten unless another is picked.
+        choices=tuple((name, name) for name in WATER_DEFINITIONS),
+    ),
+    OptionFieldSpec(
         "script_name", "Script filename", "Map",
         "Map", "script_name", TEXT,
         tooltip=(
@@ -277,7 +301,8 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
     library types secondary_game_modes as raw bytes on 1.49 files (GH #240),
     so that row is left out rather than crashing current_value(). Only that
     case: list data, or a TEXT spec's non-str, must still reach
-    current_value()'s raise.
+    current_value()'s raise. A STRING_COMBO spec whose data is not a str is
+    left out too: the combo has nothing truthful to show for it.
     """
     out = []
     for spec in _SPECS:
@@ -289,7 +314,10 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
             continue
         if retriever_length(retriever) == 0:
             continue
-        if spec.kind != TEXT and isinstance(retriever.data, (bytes, bytearray)):
+        if spec.kind == STRING_COMBO:
+            if not isinstance(retriever.data, str):
+                continue
+        elif spec.kind != TEXT and isinstance(retriever.data, (bytes, bytearray)):
             continue
         out.append(spec)
     return tuple(out)
@@ -299,7 +327,9 @@ def current_value(loaded: LoadedScenario, spec: OptionFieldSpec) -> int | str:
     """The field's current raw value, as parsed -- callers apply `scale`
     themselves (e.g. victory_years divides by 10 for display). Only valid
     for a spec that specs_for(loaded) actually returned. A TEXT spec's value
-    is its str ("" when the file stores none).
+    is its str ("" when the file stores none), and so is a STRING_COMBO's,
+    read through map_strings.current_value() so the panel and the model
+    share one reader.
 
     Every spec in _SPECS today resolves to a plain int, because none of them
     point at a repeat-driven retriever -- but two that would (
@@ -310,6 +340,8 @@ def current_value(loaded: LoadedScenario, spec: OptionFieldSpec) -> int | str:
     QSpinBox/QComboBox in the panel with a list. See
     test_option_fields.py's test_every_spec_resolves_to_a_scalar_int.
     """
+    if spec.kind == STRING_COMBO:
+        return map_strings.current_value(loaded, spec.retriever)
     value = loaded._scenario.sections[spec.section].retriever_map[spec.retriever].data
     if spec.kind == TEXT:
         if not isinstance(value, str):

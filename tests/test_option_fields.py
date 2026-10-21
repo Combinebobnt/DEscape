@@ -42,6 +42,9 @@ def _stub_loaded(overrides: dict[tuple[str, str], _StubRetriever] | None = None)
             value = overrides[key]
             if value is not None:
                 sections[spec.section][spec.retriever] = value
+        elif spec.kind == option_fields.STRING_COMBO:
+            # specs_for() drops a STRING_COMBO whose data is not a str.
+            sections[spec.section][spec.retriever] = _StubRetriever(b"\x00\x00", data="")
         else:
             sections[spec.section][spec.retriever] = _StubRetriever(b"\x00\x00\x00\x00")
 
@@ -161,11 +164,12 @@ def test_every_spec_resolves_to_a_scalar_int() -> None:
     points at a repeat-driven retriever. If a future spec (e.g. a
     Players-mode field) breaks this, it should fail here -- a plain,
     fast, default-tier sweep -- rather than surface as a mysterious list
-    reaching a Qt widget in the panel. A TEXT spec resolves to a str."""
+    reaching a Qt widget in the panel. A TEXT or STRING_COMBO spec resolves
+    to a str."""
     loaded = scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH)
     scenario_io.parse_triggers(loaded)
     for spec in specs_for(loaded):
-        expected = str if spec.kind == option_fields.TEXT else int
+        expected = str if spec.kind in (option_fields.TEXT, option_fields.STRING_COMBO) else int
         assert isinstance(current_value(loaded, spec), expected), spec.field_id
 
 
@@ -215,7 +219,7 @@ def test_every_spec_resolves_to_a_scalar_int_across_the_corpus(scenario_path) ->
     loaded = scenario_io.load_map_and_units(scenario_path)
     scenario_io.parse_triggers(loaded)
     for spec in specs_for(loaded):
-        expected = str if spec.kind == option_fields.TEXT else int
+        expected = str if spec.kind in (option_fields.TEXT, option_fields.STRING_COMBO) else int
         assert isinstance(current_value(loaded, spec), expected), (scenario_path.name, spec.field_id)
 
 

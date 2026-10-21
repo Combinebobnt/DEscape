@@ -761,6 +761,38 @@ def test_a_join_reshapes_a_player_owned_cap_and_undo_restores_it():
         _close(window)
 
 
+_MARBLE_01, _MARBLE_02 = 2178, 2179
+
+
+@pytest.mark.parametrize(("stored", "joined"), [(22, 7), (8, 7)], ids=["from-cap", "from-twin"])
+def test_a_marble_join_takes_the_fallback_north_cap(stored, joined, monkeypatch):
+    """TASK-358/435, user decision 2026-10-19: Marble's 23 frames lack the
+    thin north cap 23, so a lone 1x3 gaining a north neighbour takes the
+    row's next frame, 7, alone, through set_cliff_frame(); one on 7's twin 8
+    is rewritten to 7 too (user, 2026-10-20: the twin stays out)."""
+    monkeypatch.setattr(cliff_catalog, "frame_count", lambda _const: 23)
+    window = _window()
+    try:
+        _select_piece(window, _MARBLE_01)
+        window.cliff_action.setChecked(True)
+        model = window._ensure_unit_edits()
+        # Footprint (40,41,39,42): (40 + 39) // 3 is even, so the pair's lower frame.
+        with window._unit_edit(model, "A lone Marble piece", [GAIA_PLAYER_ID]):
+            model.add(GAIA_PLAYER_ID, _MARBLE_02, 40.5, 40.5, rotation=float(stored), initial_animation_frame=stored)
+        lone = _gaia(window)[-1]
+        before = _unit_count(window)
+
+        _stroke(window, [(40, y) for y in range(40, 33, -1)])
+
+        assert _unit_count(window) > before
+        assert all(u.unit_const == _MARBLE_02 for u in _gaia(window)[before - _unit_count(window):])
+        assert (lone.unit_const, lone.x, lone.y) == (_MARBLE_02, 40.5, 40.5)
+        assert (lone.rotation, lone.initial_animation_frame) == (float(joined), joined)
+        assert ("1 existing cliff reshaped to join" in _last_status(window)) == (stored != joined)
+    finally:
+        _close(window)
+
+
 def _press_a_join_on_a_reopened_run(window, tmp_path):
     """Saves the tall run and reopens it, so the press sees an unedited file
     (unit_gen 0), then holds a drag that would extend it and reshape its cap."""
@@ -840,5 +872,305 @@ def test_a_cliff_stroke_opens_no_terrain_stroke_alongside_it():
         _stroke(window, [(20, y) for y in range(20, 30)])
         assert len(window.edit_history.records) == before_records + 1
         assert window.edit_history.peek_undo().kind == "unit"
+    finally:
+        _close(window)
+
+
+# -- GH #247: right-click or right-drag erases cliffs -----------------------
+
+
+def _mouse(window, kind, tile, button, buttons) -> None:
+    from PyQt5.QtCore import QEvent
+
+    view = window.map_view
+    pos = conftest.viewport_pos(view, *tile)
+    event = conftest.mouse_event(getattr(QEvent, kind), pos, button, buttons)
+    getattr(view, {"MouseButtonPress": "mousePressEvent", "MouseMove": "mouseMoveEvent"}.get(kind, "mouseReleaseEvent"))(
+        event
+    )
+
+
+def _right_drag(window, tiles) -> None:
+    """A real right press, held moves and a release: MapView's own button routing."""
+    _mouse(window, "MouseButtonPress", tiles[0], Qt.RightButton, Qt.RightButton)
+    for tile in tiles[1:]:
+        _mouse(window, "MouseMove", tile, Qt.NoButton, Qt.RightButton)
+    _mouse(window, "MouseButtonRelease", tiles[-1], Qt.RightButton, Qt.NoButton)
+
+
+def _five_run(window):
+    """test_a_drag_places_a_connected_chain_as_one_undo_record's run: five 3x3
+    pieces on x 9-12, y 9 to 24, frames 18, 2, 1, 2, 19. Returns them."""
+    _stroke(window, [(10, y) for y in range(10, 24)])
+    run = _gaia(window)[-5:]
+    assert [(u.unit_const, u.y, u.rotation) for u in run] == [
+        (_DEFAULT_CLIFF, 10.5, 18.0), (_DEFAULT_CLIFF, 13.5, 2.0), (_DEFAULT_CLIFF, 16.5, 1.0),
+        (_DEFAULT_CLIFF, 19.5, 2.0), (_DEFAULT_CLIFF, 22.5, 19.0),
+    ]
+    return run
+
+
+def _cliffs_on_the_run(window):
+    """(y, rotation, initial_animation_frame) of every cliff now on x 10.5."""
+    return [
+        (u.y, u.rotation, u.initial_animation_frame)
+        for u in _gaia(window) if u.unit_const == _DEFAULT_CLIFF and u.x == 10.5
+    ]
+
+
+_FIVE_RUN = [(10.5, 18.0, 18), (13.5, 2.0, 2), (16.5, 1.0, 1), (19.5, 2.0, 2), (22.5, 19.0, 19)]
+
+
+def test_a_right_click_erases_the_cliff_and_caps_the_ends_it_leaves_in_one_undo_record():
+    window = _shown_window()
+    try:
+        run = _five_run(window)
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        _right_drag(window, [(10, 16)])
+
+        assert _unit_count(window) == before - 1
+        assert run[2] not in _gaia(window)
+        # The piece above keeps its north arm (cap 19), the one below its south arm (18).
+        assert _cliffs_on_the_run(window) == [(10.5, 18.0, 18), (13.5, 19.0, 19), (19.5, 18.0, 18), (22.5, 19.0, 19)]
+        assert len(window.edit_history.records) == records + 1
+        assert window.edit_history.peek_undo().label == "Erase cliff"
+        assert window.unit_edits._pending is None
+        assert _last_status(window) == "Erased 1 cliff(s), 2 reshaped to end caps"
+
+        window.undo()
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        window.redo()
+        assert _cliffs_on_the_run(window) == [(10.5, 18.0, 18), (13.5, 19.0, 19), (19.5, 18.0, 18), (22.5, 19.0, 19)]
+    finally:
+        _close(window)
+
+
+def test_a_right_drag_erases_every_cliff_its_path_crosses():
+    window = _shown_window()
+    try:
+        _five_run(window)
+        before = _unit_count(window)
+        _right_drag(window, [(10, 10), (10, 23)])
+        assert _unit_count(window) == before - 5
+        assert _cliffs_on_the_run(window) == []
+        assert window.edit_history.peek_undo().label == "Erase 5 cliffs"
+        assert _last_status(window) == "Erased 5 cliff(s)"
+        window.undo()
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+    finally:
+        _close(window)
+
+
+def test_a_right_click_erases_only_the_cliff_and_only_a_visible_one():
+    window = _shown_window()
+    try:
+        _five_run(window)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Plant a tree", [GAIA_PLAYER_ID]):
+            model.add(GAIA_PLAYER_ID, 284, 10.5, 16.5)
+        tree = _gaia(window)[-1]
+        records = len(window.edit_history.records)
+
+        window.show_gaia_action.setChecked(False)
+        _right_drag(window, [(10, 16)])
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        assert len(window.edit_history.records) == records
+        assert _last_status(window) == "Erased nothing (Show GAIA is off)"
+
+        window.show_gaia_action.setChecked(True)
+        _right_drag(window, [(10, 16)])
+        assert len(_cliffs_on_the_run(window)) == 4
+        assert tree in _gaia(window)
+    finally:
+        _close(window)
+
+
+def test_a_right_click_on_empty_ground_erases_nothing_and_records_nothing():
+    window = _shown_window()
+    try:
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+        _right_drag(window, [(60, 60)])
+        assert _unit_count(window) == before
+        assert len(window.edit_history.records) == records
+        assert window.unit_edits is None or window.unit_edits._pending is None
+        assert _last_status(window) == "Erased nothing"
+        # A player hidden is named too: the cliff might be theirs.
+        window.player_actions[1].setChecked(False)
+        _right_drag(window, [(60, 60)])
+        assert _last_status(window) == "Erased nothing (a Filters toggle may be hiding it)"
+    finally:
+        _close(window)
+
+
+def test_a_left_click_still_places_and_a_right_press_mid_drag_is_ignored():
+    window = _shown_window()
+    try:
+        _five_run(window)
+        before = _unit_count(window)
+        _mouse(window, "MouseButtonPress", (60, 60), Qt.LeftButton, Qt.LeftButton)
+        _mouse(window, "MouseMove", (60, 63), Qt.NoButton, Qt.LeftButton)
+        _mouse(window, "MouseButtonPress", (10, 16), Qt.RightButton, Qt.LeftButton | Qt.RightButton)
+        _mouse(window, "MouseButtonRelease", (10, 16), Qt.RightButton, Qt.LeftButton)
+        assert window.map_view._stroke_active and window._erase is None
+        _mouse(window, "MouseButtonRelease", (60, 63), Qt.LeftButton, Qt.NoButton)
+        assert _unit_count(window) == before + 2
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        assert window.edit_history.peek_undo().label == "Place 2 cliffs"
+    finally:
+        _close(window)
+
+
+def _press_an_erase_on_the_middle(window):
+    _five_run(window)
+    _mouse(window, "MouseButtonPress", (10, 16), Qt.RightButton, Qt.RightButton)
+    assert window._erase is not None and window._erase.erased == 1
+
+
+def _the_next_unit_edit_works(window) -> None:
+    before = _unit_count(window)
+    _stroke(window, [(60, 60)])
+    assert _unit_count(window) == before + 1
+    window.undo()
+    assert _unit_count(window) == before
+
+
+def test_a_mid_drag_undo_commits_the_removals_and_reshapes_no_end():
+    """The undo restores the units the press snapshotted under the stroke's
+    open edit: rewriting them from that snapshot is what the guard stops."""
+    window = _shown_window()
+    try:
+        _five_run(window)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Plant a tree", [GAIA_PLAYER_ID]):
+            model.add(GAIA_PLAYER_ID, 284, 60.5, 60.5)
+        _mouse(window, "MouseButtonPress", (10, 16), Qt.RightButton, Qt.RightButton)
+        assert window._erase.erased == 1
+        window.undo()
+        records = len(window.edit_history.records)
+
+        _mouse(window, "MouseButtonRelease", (10, 16), Qt.RightButton, Qt.NoButton)
+
+        assert window.edit_history.peek_undo().label == "Erase cliff"
+        assert len(window.edit_history.records) == records
+        assert window.unit_edits._pending is None
+        # The undo put back the run its record started from, middle included, and nothing reshaped it.
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        assert _last_status(window) == (
+            "Erased 1 cliff(s); the map's units changed during the drag, so no cliff ends were reshaped"
+        )
+        _the_next_unit_edit_works(window)
+    finally:
+        _close(window)
+
+
+def test_a_document_swap_mid_drag_drops_the_erase_so_later_moves_and_the_release_change_neither_file():
+    window = _shown_window()
+    try:
+        _press_an_erase_on_the_middle(window)
+        old = window.scenario
+
+        def old_cliffs():
+            return [u for u in old.unit_manager.units[GAIA_PLAYER_ID] if u.unit_const == _DEFAULT_CLIFF]
+
+        survivors = old_cliffs()
+        window.load_scenario(FIXTURE_PATH)
+        assert window._erase is None and not window._erase_refresh_timer.isActive()
+        assert "Erase: the document changed during the drag, so nothing was recorded" in window.status_log.toPlainText()
+        before = _unit_count(window)
+
+        # Still held: a move onto the closed file's next piece erases nothing in either file.
+        _mouse(window, "MouseMove", (10, 19), Qt.NoButton, Qt.RightButton)
+        assert len(old_cliffs()) == 4 and all(a is b for a, b in zip(old_cliffs(), survivors, strict=True))
+        assert window._erase is None and not window._erase_refresh_timer.isActive()
+        _mouse(window, "MouseButtonRelease", (10, 19), Qt.RightButton, Qt.NoButton)
+
+        assert _unit_count(window) == before
+        assert [u.rotation for u in survivors] == [18.0, 2.0, 2.0, 19.0]
+        # The closed file's edit is not pushed onto this one's history, where Ctrl+Z would raise on it.
+        assert window.edit_history.records == []
+        window.mode_combo.setCurrentText("Terrain")
+        window.cliff_action.setChecked(True)
+        _the_next_unit_edit_works(window)
+    finally:
+        _close(window)
+
+
+def test_the_release_backstop_records_nothing_for_a_model_dropped_mid_drag():
+    """_commit_erase_stroke()'s own guard, for a model replaced by any path
+    that does not go through _drop_erase_stroke(). Its note, not a filter hint."""
+    window = _shown_window()
+    try:
+        _press_an_erase_on_the_middle(window)
+        window.show_gaia_action.setChecked(False)
+        records = len(window.edit_history.records)
+        window.unit_edits = None
+
+        _mouse(window, "MouseButtonRelease", (10, 16), Qt.RightButton, Qt.NoButton)
+
+        assert window._erase is None
+        assert len(window.edit_history.records) == records
+        assert _last_status(window) == "Erased nothing; the document changed during the drag, so nothing was recorded"
+    finally:
+        _close(window)
+
+
+def test_a_rewrite_that_raises_still_records_the_removal(monkeypatch):
+    from descape.unit_model import UnitEditModel
+
+    window = _shown_window()
+    try:
+        _five_run(window)
+        records = len(window.edit_history.records)
+        real = UnitEditModel.set_cliff_frame
+        refusing = [True]
+
+        def refuse(self, unit, frame):
+            if refusing[0]:
+                raise ValueError("refused")
+            return real(self, unit, frame)
+
+        monkeypatch.setattr(UnitEditModel, "set_cliff_frame", refuse)
+        _right_drag(window, [(10, 16)])
+
+        assert len(window.edit_history.records) == records + 1
+        assert window.unit_edits._pending is None
+        assert _cliffs_on_the_run(window) == [(10.5, 18.0, 18), (13.5, 2.0, 2), (19.5, 2.0, 2), (22.5, 19.0, 19)]
+        assert _last_status(window) == (
+            "Erased 1 cliff(s); reshaping the cliff ends stopped: ValueError: refused"
+        )
+        window.undo()
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        refusing[0] = False
+
+        # A raise in working out the rewrites, before any is written: still one record.
+        from descape import cliff_chain
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(cliff_chain, "erase_rewrites", boom)
+        cursor = window.edit_history.cursor
+        _right_drag(window, [(10, 16)])
+        # One record: the undone one above is truncated by the push.
+        assert (window.edit_history.cursor, window.edit_history.peek_undo().label) == (cursor + 1, "Erase cliff")
+        assert window.unit_edits._pending is None
+        assert _cliffs_on_the_run(window) == [(10.5, 18.0, 18), (13.5, 2.0, 2), (19.5, 2.0, 2), (22.5, 19.0, 19)]
+        assert _last_status(window) == "Erased 1 cliff(s); reshaping the cliff ends stopped: RuntimeError: boom"
+        window.undo()
+        assert _cliffs_on_the_run(window) == _FIVE_RUN
+        _the_next_unit_edit_works(window)
+    finally:
+        _close(window)
+
+
+def test_the_cliff_tooltip_names_the_right_click_erase():
+    window = _window()
+    try:
+        assert window.cliff_action.toolTip().endswith(
+            "Right-click or right-drag to erase cliffs; a run left with one neighbour gets its end cap back."
+        )
     finally:
         _close(window)

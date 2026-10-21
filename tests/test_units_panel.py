@@ -494,14 +494,98 @@ def test_the_garrison_buttons_fit_the_floor_with_a_host_shown() -> None:
     assert width <= UnitsPanel.MIN_USEFUL_WIDTH, f"garrison buttons demand {width} px"
 
 
-def test_splitter_defaults_to_the_catalog_getting_at_least_two_thirds() -> None:
-    """The catalog is the thing being browsed; the inspector is a small
-    detail box below it -- default proportions should favor it, not split
-    evenly or worse. A user drag overrides this; this only covers the
-    as-constructed state."""
+def _units_window(width: int, height: int):
+    """A shown window at `width` x `height`, blank template loaded, in Units mode."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.shown_window(width, height)
+    window.load_scenario(BLANK_TEMPLATE_PATH)
+    window.mode_combo.setCurrentText("Units")
+    # Twice: the default split runs on a zero timer the first show arms.
+    QApplication.processEvents()
+    QApplication.processEvents()
+    assert window.units_panel.isVisible()
+    return window
+
+
+@pytest.mark.parametrize(("width", "height"), [(800, 600), (1280, 720), (1920, 1080)])
+def test_splitter_defaults_to_the_catalog_getting_at_least_two_thirds(width: int, height: int) -> None:
+    """The catalog is the thing being browsed; the inspector is a small detail box below it.
+    Pass conditions, on a shown window's first Units entry: catalog >= 2 x inspector, and the
+    catalog pane at least its own minimum height. A user drag overrides this."""
+    window = _units_window(width, height)
+    try:
+        panel = window.units_panel
+        catalog_size, inspector_size = panel.splitter.sizes()
+        assert catalog_size >= 2 * inspector_size, (catalog_size, inspector_size)
+        assert catalog_size >= panel.splitter.widget(0).minimumSizeHint().height()
+    finally:
+        conftest.close_window(window)
+
+
+def _assert_the_inspector_fits_its_content(panel) -> None:
+    from PyQt5.QtCore import QPoint
+
+    viewport = panel.inspector_area.viewport()
+    assert viewport.height() >= panel.inspector_host.minimumHeight(), (viewport.height(), panel.inspector_host.minimumHeight())
+    card = panel.placing_card
+    top = card.mapTo(viewport, QPoint(0, 0)).y()
+    assert top >= 0 and top + card.height() <= viewport.height(), (top, card.height(), viewport.height())
+
+
+def test_the_default_window_shows_the_whole_placing_card() -> None:
+    """TASK-420, 1280x720, Units mode, nothing selected, an Archer picked. Pass conditions: the
+    inspector viewport is at least its content's height, and the placing card lies inside it."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _units_window(1280, 720)
+    try:
+        panel = window.units_panel
+        panel.select_object(_ARCHER_CONST)
+        QApplication.processEvents()
+        assert panel.placing_card.isVisible()
+        _assert_the_inspector_fits_its_content(panel)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_dragged_split_survives_a_taller_window() -> None:
+    """TASK-420: the default split is one-shot. Pass condition: after setting the split to
+    [x, 120] and growing the window 200 px, the inspector is still 120 px."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _units_window(1280, 720)
+    try:
+        splitter = window.units_panel.splitter
+        total = sum(splitter.sizes())
+        splitter.setSizes([total - 120, 120])
+        QApplication.processEvents()
+        assert splitter.sizes()[1] == 120
+        window.resize(1280, 920)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        assert sum(splitter.sizes()) > total
+        assert splitter.sizes()[1] == 120
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_standalone_panel_shown_once_fits_its_inspector() -> None:
+    """TASK-420: the path a resize-only hook misses (a standalone show() resizes while hidden).
+    Pass condition: resize, show, two event passes, and the inspector fits its content."""
+    from PyQt5.QtWidgets import QApplication
+
     panel = _panel()
-    catalog_size, inspector_size = panel.splitter.sizes()
-    assert catalog_size >= 2 * inspector_size
+    try:
+        panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 600)
+        panel.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        _assert_the_inspector_fits_its_content(panel)
+    finally:
+        panel.close()
 
 
 # -- catalog pane (S5) -------------------------------------------------------

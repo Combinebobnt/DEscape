@@ -49,18 +49,25 @@ _TRIO_OWNERS = (1, 2, 6)
 _CUSTOM_BACKGROUND = "#c02040"
 # Device-pixel crop, the same for every frame so every frame gets the same upscale.
 _CROP_W, _CROP_H = 360, 270
-# frame id -> (style, iso view, position, background, badges on, target tiles)
+# Tiles fitted either side of the targets. The wide fit is a small-tile zoom where a
+# tucked box no longer fits on y, so it stops on the centre row (TASK-422).
+_FIT = 2
+_WIDE_FIT = 12
+# frame id -> (style, iso view, position, background, badges on, target tiles, fit margin)
 _FRAMES = {
-    "a_flat": ("Flat", False, "bottom_right", "#000000", True, [_LONE]),
-    "a_iso": ("Flat", True, "bottom_right", "#000000", True, [_LONE]),
-    "a_stepped": ("Stepped", False, "bottom_right", "#000000", True, [_LONE]),
-    "a_sloped": ("Sloped", False, "bottom_right", "#000000", True, [_LONE]),
-    "b_stepped": ("Stepped", False, "bottom_right", "#000000", True, _TRIO),
-    "b_flat": ("Flat", False, "bottom_right", "#000000", True, _TRIO),
-    "c_iso": ("Flat", True, "above", "#000000", True, [_LONE]),
-    "d_one": ("Stepped", False, "above", "#000000", True, [_LONE]),
-    "d_two": ("Stepped", False, "above", _CUSTOM_BACKGROUND, True, [_LONE]),
-    "ground": ("Stepped", False, "bottom_right", "#000000", False, [_LONE]),
+    "a_flat": ("Flat", False, "bottom_right", "#000000", True, [_LONE], _FIT),
+    "a_iso": ("Flat", True, "bottom_right", "#000000", True, [_LONE], _FIT),
+    "a_stepped": ("Stepped", False, "bottom_right", "#000000", True, [_LONE], _FIT),
+    "a_sloped": ("Sloped", False, "bottom_right", "#000000", True, [_LONE], _FIT),
+    "b_stepped": ("Stepped", False, "bottom_right", "#000000", True, _TRIO, _FIT),
+    "b_flat": ("Flat", False, "bottom_right", "#000000", True, _TRIO, _FIT),
+    "c_iso": ("Flat", True, "above", "#000000", True, [_LONE], _FIT),
+    "d_one": ("Stepped", False, "above", "#000000", True, [_LONE], _FIT),
+    "d_two": ("Stepped", False, "above", _CUSTOM_BACKGROUND, True, [_LONE], _FIT),
+    # Neutral ids: a frame's file name must not say which box should sit lower.
+    "e_one": ("Stepped", False, "bottom_right", "#000000", True, [_LONE], _WIDE_FIT),
+    "e_two": ("Stepped", False, "top_right", "#000000", True, [_LONE], _WIDE_FIT),
+    "ground": ("Stepped", False, "bottom_right", "#000000", False, [_LONE], _FIT),
 }
 
 
@@ -173,14 +180,39 @@ def _inject_opaque_custom():
     return [(StackBadgeItem, "set_background_color", opaque)]
 
 
+def _inject_unclamped():
+    """The pre-TASK-422 tucked box: the full offset toward the centre, even past the centre's line."""
+    from PyQt5.QtCore import QRectF
+
+    from descape.viewer_canvas import StackBadgeItem
+
+    real = StackBadgeItem._box
+
+    def unclamped(self, anchor, centre, w, h):
+        if not self._tucked:
+            return real(self, anchor, centre, w, h)
+
+        def side(delta):
+            return 0 if abs(delta) <= self.AXIS_TIE_PX else (1 if delta > 0 else -1)
+
+        cx = anchor.x() + side(centre.x() - anchor.x()) * (w / 2.0 + self.GAP_PX)
+        cy = anchor.y() + side(centre.y() - anchor.y()) * (h / 2.0 + self.GAP_PX)
+        return QRectF(cx - w / 2.0, cy - h / 2.0, w, h)
+
+    return [(StackBadgeItem, "_box", unclamped)]
+
+
 INJECTS = {
     "old-anchor": _inject_old_anchor,
     "vertex": _inject_vertex,
     "style-size": _inject_style_size,
     "above-edge": _inject_above_edge,
     "opaque-custom": _inject_opaque_custom,
+    "unclamped": _inject_unclamped,
 }
 COARSE_INJECT = "old-anchor"
+# Injects whose reach `--check` pins to an exact frame set.
+_INJECT_REACH = {"unclamped": {"e_one", "e_two"}}
 
 
 @contextmanager
@@ -205,7 +237,7 @@ def _show(window, frame_id: str) -> None:
 
     from descape import settings
 
-    style, iso, position, background, badges_on, tiles = _FRAMES[frame_id]
+    style, iso, position, background, badges_on, tiles, fit = _FRAMES[frame_id]
     if style == "Flat":
         window.iso_action.setChecked(iso)
     window.terrain_style_combo.setCurrentText(style)
@@ -218,8 +250,8 @@ def _show(window, frame_id: str) -> None:
     mv.set_stack_badge_position(position)
     rect = QRectF()
     for tx, ty in tiles:
-        for dx in (-2, 2):
-            for dy in (-2, 2):
+        for dx in (-fit, fit):
+            for dy in (-fit, fit):
                 rect = rect.united(mv._tile_polygon(tx + dx, ty + dy).boundingRect())
     mv.fitInView(rect, Qt.KeepAspectRatio)
     QApplication.processEvents()
@@ -302,6 +334,8 @@ def _spec() -> rp.PackSpec:
             ("c_iso", "A numbered box by a map object, angled view."),
             ("d_one", "A numbered box by a map object, angled view."),
             ("d_two", "The same, with a differently coloured box."),
+            ("e_one", "A numbered box by a map object, angled view, zoomed further out."),
+            ("e_two", "The same view, with the box placed differently."),
             ("ground", "Checkered ground with a map object, angled view."),
         )
     )
@@ -371,6 +405,21 @@ def _spec() -> rp.PackSpec:
             frames=("ground",),
             answers=("BOX", "NO-BOX", "CANNOT-TELL"),
         ),
+        rp.Check(
+            id="q7",
+            question=(
+                _CHECKER + "The two frames show the identical view of the same map object at the same "
+                "enlargement, so a position in one can be compared directly with the same position in the "
+                "other; each has one small numbered box. First describe, for each frame, which cell the box's "
+                "middle lies in and whether that middle is above, level with or below the middle of the map "
+                "object's cell. Then: is the box's middle inside the map object's cell in both frames, with the "
+                "FIRST frame's box at the same height as the second frame's or lower? LEVEL-OR-LOWER if so, "
+                "HIGHER if the first frame's box is clearly higher than the second's, OUTSIDE if either box's "
+                "middle lies outside the map object's cell."
+            ),
+            frames=("e_one", "e_two"),
+            answers=("LEVEL-OR-LOWER", "HIGHER", "OUTSIDE", "CANNOT-TELL"),
+        ),
     )
     return rp.PackSpec(
         id=PACK_ID,
@@ -435,6 +484,8 @@ def check() -> None:
             failures.append(f"inject {name}: changed no pixels")
         if "ground" in touched:
             failures.append(f"inject {name}: reached the bare-ground frame")
+        if name in _INJECT_REACH and set(touched) != _INJECT_REACH[name]:
+            failures.append(f"inject {name}: reached {sorted(touched)}, expected {sorted(_INJECT_REACH[name])}")
         reach[name] = touched
         shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
         print(f"reach: {name} -> {shown or 'nothing'}")

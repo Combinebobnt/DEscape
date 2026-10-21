@@ -561,13 +561,13 @@ def _fresh_levels(window, levels) -> dict:
 
 
 def _count_patch_rects(cache, monkeypatch) -> list:
-    """Every rect list patch_rects() is handed from here on, through a fake that delegates."""
+    """Every (rects, levels) patch_rects() is handed from here on, through a fake that delegates."""
     handed = []
     real = cache.patch_rects
 
-    def patch_rects(rects):
-        handed.append(list(rects))
-        return real(rects)
+    def patch_rects(rects, levels=None):
+        handed.append((list(rects), levels))
+        return real(rects, levels=levels)
 
     monkeypatch.setattr(cache, "patch_rects", patch_rects)
     return handed
@@ -581,7 +581,8 @@ def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_in
     (`ratio`): nothing is patched, every chunk under the region and its
     blend ring is dropped at every resident level, every other chunk stays
     the same object, and the canvas read back equals a fresh cache. The
-    same again for its undo."""
+    same again for its undo. Only the count logs a status line: a Draw step
+    past the ratio must not fill the log (TASK-338)."""
     from PyQt5.QtWidgets import QApplication
 
     import descape.viewer as viewer_module
@@ -617,7 +618,10 @@ def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_in
             assert all(k in cache._cache and id(cache._cache[k]) == v for k, v in outside.items()), (
                 f"{step}: a chunk outside the bbox was dropped or replaced"
             )
-            assert window.status_log.toPlainText().count(line) == n, f"{step}: no status line"
+            if rule == "count":
+                assert window.status_log.toPlainText().count(line) == n, f"{step}: no status line"
+            else:
+                assert _EVICTED not in window.status_log.toPlainText(), f"{step}: the ratio logged a status line"
             assert QApplication.overrideCursor() is None
             after = _levels(cache, levels)
             fresh = _fresh_levels(window, levels)
@@ -630,37 +634,101 @@ def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_in
         conftest.close_window(window)
 
 
-def test_a_small_flat_edit_patches_block_rects_and_evicts_nothing(blend_install, monkeypatch) -> None:  # noqa: F811
+_SMALL_STROKE = ((36, 36), (37, 36), (36, 37), (37, 37))  # each ring stays inside block (2, 2)
+
+
+def _draw_small_stroke(window) -> None:
+    window._on_tool_selected("draw")
+    window.on_edit_stroke_start()
+    for tile in _SMALL_STROKE:
+        window.on_edit_stroke_tile(*tile, 0)
+    window.on_edit_stroke_end()
+
+
+@pytest.mark.parametrize("levels", [(0,), (0, -1)], ids=["visible-level", "and-a-coarser-one"])
+def test_a_small_flat_edit_patches_the_visible_level_and_evicts_only_other_levels_under_its_rects(
+    levels, blend_install, monkeypatch,  # noqa: F811
+) -> None:
     """At the default ratio and threshold a few contiguous tiles are patched
-    in place, one rect a step, and no chunk is dropped."""
-    window, _bbox = _blended_flat_window((0,))
+    in place at the visible level, one rect a step, and no mip 0 chunk is
+    dropped or replaced. Every other level loses only its chunks under the
+    rects (TASK-338), and both levels read back equal a fresh cache."""
+    window, _bbox = _blended_flat_window(levels)
     try:
         cache = window._cache
         handed = _count_patch_rects(cache, monkeypatch)
-        before = _levels(cache, (0,))
-        warm = {k: id(chunk) for k, chunk in cache._cache.items()}
+        before = _levels(cache, levels)
+        warm = dict(cache._cache)
 
-        window._on_tool_selected("draw")
-        window.on_edit_stroke_start()
-        for tile in ((36, 36), (37, 36), (36, 37), (37, 37)):  # each ring stays inside block (2, 2)
-            window.on_edit_stroke_tile(*tile, 0)
-        window.on_edit_stroke_end()
+        _draw_small_stroke(window)
 
-        assert len(handed) == 4 and all(len(rects) == 1 for rects in handed), handed
-        assert all(k in cache._cache and id(cache._cache[k]) == v for k, v in warm.items()), "a small edit evicted a chunk"
+        assert len(handed) == 4 and all(len(rects) == 1 for rects, _levels_arg in handed), handed
+        assert all(levels_arg == (0,) for _rects, levels_arg in handed), handed
+        under = {
+            (mip, cx, cy)
+            for rects, _levels_arg in handed
+            for rect in rects
+            for mip in {k[0] for k in warm} - {0}
+            if (rng := cache.chunk_range_under(rect, mip)) is not None
+            for cx in range(rng[0], rng[2] + 1)
+            for cy in range(rng[1], rng[3] + 1)
+        } & warm.keys()
+        if -1 in levels:
+            assert any(k[0] == -1 for k in under), "no mip -1 chunk under the rects (vacuous)"
+        # Read before the levels are read back, which refills them; asserted after the pixels.
+        stale = under & cache._cache.keys()
+        kept = {k: chunk for k, chunk in warm.items() if k not in under}
+        replaced = [k for k, chunk in kept.items() if cache._cache.get(k) is not chunk]
         assert _EVICTED not in window.status_log.toPlainText()
-        after = _levels(cache, (0,))
-        assert not np.array_equal(after[0], before[0]), "the edit changed no pixel (vacuous)"
-        assert np.array_equal(after[0], _fresh_levels(window, (0,))[0]), "the patched canvas differs from a fresh render"
+        after = _levels(cache, levels)
+        fresh = _fresh_levels(window, levels)
+        for mip in levels:
+            assert np.array_equal(after[mip], fresh[mip]), f"mip {mip}: the patched canvas differs from a fresh render"
+            assert not np.array_equal(after[mip], before[mip]), f"mip {mip}: the edit changed no pixel (vacuous)"
+        assert not stale, f"chunks of a level not in view still cached under the rects: {sorted(stale)}"
+        assert not replaced, f"chunks dropped or replaced: {sorted(replaced)}"
     finally:
         conftest.close_window(window)
 
 
-def test_the_flat_evict_rule_weighs_covered_tiles_per_level_against_visible_tiles(monkeypatch) -> None:
-    """_flat_patch_exceeds_viewport() at its boundary: rect tiles times
-    resident levels against _FLAT_EVICT_RATIO times the tiles in the visible
-    chunks (a ragged edge chunk counted at its real size), strictly greater,
-    and never with no viewport target."""
+def test_a_flat_window_with_no_viewport_target_patches_every_level(blend_install, monkeypatch) -> None:  # noqa: F811
+    """With no viewport target a Flat edit hands patch_rects() levels=None,
+    so every resident level is patched in place, and both levels read back
+    equal a fresh cache. An unshown window still has a target (its default
+    viewport), so the target is pinned to None here."""
+    window = _edit_window("draw")
+    try:
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: None)
+        cache = window._cache
+        cache.max_bytes *= 4
+        levels = (0, -1)
+        before = _levels(cache, levels)
+        warm = dict(cache._cache)
+        handed = _count_patch_rects(cache, monkeypatch)
+
+        _draw_small_stroke(window)
+
+        assert len(handed) == 4 and all(levels_arg is None for _rects, levels_arg in handed), handed
+        assert all(cache._cache.get(k) is chunk for k, chunk in warm.items()), "a chunk was dropped or replaced"
+        after = _levels(cache, levels)
+        fresh = _fresh_levels(window, levels)
+        for mip in levels:
+            assert not np.array_equal(after[mip], before[mip]), f"mip {mip}: the edit changed no pixel (vacuous)"
+            assert np.array_equal(after[mip], fresh[mip]), f"mip {mip}: the patched canvas differs from a fresh render"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_flat_evict_rule_weighs_covered_tiles_against_the_tiles_an_eviction_recomposites(monkeypatch) -> None:
+    """_flat_patch_exceeds_viewport() at its boundary (TASK-338): the tiles
+    the rects cover against _FLAT_EVICT_RATIO times the tiles of the
+    visible-level chunks their bbox reaches and the viewport shows, a ragged
+    edge chunk at its real size, strictly greater, whatever the resident
+    levels. A bbox off screen evicts at any finite ratio; never with no
+    viewport target."""
     import descape.viewer as viewer_module
 
     window = _edit_window("draw")
@@ -670,31 +738,42 @@ def test_the_flat_evict_rule_weighs_covered_tiles_per_level_against_visible_tile
         cache = window._cache
         t = cache.tile_px
         assert cache.chunk_px == 8 * t and cache.mip_tile_px(-1) * 2 == t
-        exceeds = window._flat_patch_exceeds_viewport
-        target = [(0, 0, 0, 1, 1)]  # 2x2 chunks of 8x8 tiles: 256 visible
-        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: target[0])
 
-        assert not exceeds([(0, 0, 16 * t, 16 * t)], t), "an empty cache has nothing to patch, so nothing to evict"
-        cache.get_chunk(0, 0, 0)
-        assert cache.resident_levels() == [0]
-        assert not exceeds([(0, 0, 16 * t, 16 * t)], t), "256 tiles on one level is not past 256 visible"
-        assert exceeds([(0, 0, 16 * t, 16 * t), (16 * t, 0, 17 * t, t)], t)
-        cache.get_chunk(-1, 0, 0)
-        assert cache.resident_levels() == [-1, 0]
-        assert not exceeds([(0, 0, 16 * t, 8 * t)], t), "128 tiles on two levels is not past 256 visible"
-        assert exceeds([(0, 0, 16 * t, 8 * t), (16 * t, 0, 17 * t, t)], t)
+        def exceeds(rects, target):
+            return window._flat_patch_exceeds_viewport(rects, t, target)
 
-        # Mip -1 holds 16 tiles a chunk; the 120-tile map's last chunk is 8 wide and high: 64 visible.
-        target[0] = (-1, 7, 7, 7, 7)
-        assert not exceeds([(0, 0, 8 * t, 4 * t)], t)
-        assert exceeds([(0, 0, 8 * t, 4 * t), (16 * t, 0, 17 * t, t)], t)
+        view = (0, 0, 0, 1, 1)  # 2x2 chunks of 8x8 tiles: tiles 0..15 on screen
+        past = (16 * t, 0, 17 * t, t)  # one tile in chunk column 2, off screen
+        for resident in ([0], [-1, 0]):
+            cache.get_chunk(resident[0], 0, 0)
+            assert cache.resident_levels() == resident
+            # Inside the visible chunks the bbox's chunks are at least the rects' tiles.
+            assert not exceeds([(0, 0, 16 * t, 16 * t)], view), f"{resident}: 256 covered is not past 256"
+            assert not exceeds([(0, 0, t, t), (15 * t, 15 * t, 16 * t, 16 * t)], view), resident
+            # Past them, only the visible chunks under the bbox count.
+            assert not exceeds([(0, 0, 16 * t, 15 * t), past], view), f"{resident}: 241 covered is not past 256"
+            assert exceeds([(0, 0, 16 * t, 16 * t), past], view), f"{resident}: 257 covered is past 256"
 
+        # Chunks 1..2 on screen; the bbox reaches chunks 0..1, so only chunk (1, 1)'s 64 tiles would recomposite.
+        view = (0, 1, 1, 2, 2)
+        assert not exceeds([(8 * t, 8 * t, 16 * t, 15 * t), (0, 0, t, t)], view), "57 covered is not past 64"
+        assert exceeds([(8 * t, 8 * t, 16 * t, 16 * t), (0, 0, t, t)], view), "65 covered is past 64"
+
+        # Mip -1 holds 16 tiles a chunk; the 120-tile map's last chunk is 8 wide and high: 64 tiles.
+        view = (-1, 7, 7, 7, 7)
+        assert not exceeds([(112 * t, 112 * t, 120 * t, 120 * t)], view)
+        assert exceeds([(112 * t, 112 * t, 120 * t, 120 * t), (0, 0, t, t)], view)
+
+        # A bbox wholly off screen: an eviction recomposites nothing now.
+        off = [(100 * t, 100 * t, 101 * t, 101 * t)]
+        assert exceeds(off, (0, 0, 0, 1, 1)), "an off-screen bbox patched at ratio 1"
         monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", float("inf"))
-        assert not exceeds([(0, 0, 120 * t, 120 * t)], t)
+        assert not exceeds(off, (0, 0, 0, 1, 1)), "an off-screen bbox evicted at ratio inf"
+        assert not exceeds([(0, 0, 120 * t, 120 * t)], (0, 0, 0, 1, 1))
         monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", 0.0)
-        assert exceeds([(0, 0, t, t)], t)
-        target[0] = None
-        assert not exceeds([(0, 0, 120 * t, 120 * t)], t), "no viewport target, yet it priced an eviction"
+        assert exceeds([(0, 0, t, t)], (0, 0, 0, 1, 1))
+        assert not exceeds([(0, 0, 120 * t, 120 * t)], None), "no viewport target, yet it priced an eviction"
+        assert not exceeds([], (0, 0, 0, 1, 1))
     finally:
         window.edit_history.mark_saved()
         window.close()

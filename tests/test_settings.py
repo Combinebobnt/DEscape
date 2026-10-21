@@ -19,6 +19,8 @@ import pytest
 
 from descape import edge_ticks, grid_overlay, iso_geometry, settings, terrain_style, view_layers
 
+import conftest
+
 
 def _write_config(tmp_path: Path, text: str) -> None:
     (tmp_path / "config.yaml").write_text(text)
@@ -997,6 +999,7 @@ def _symlink_loop(tmp_path: Path) -> Path:
     return a
 
 
+@conftest.requires_symlinks
 def test_a_looped_autosave_folder_reads_back_as_default_with_its_reason(tmp_path: Path) -> None:
     loop = _symlink_loop(tmp_path)
     _write_config(tmp_path, f"autosave_dir: '{loop}'\n")
@@ -1007,6 +1010,7 @@ def test_a_looped_autosave_folder_reads_back_as_default_with_its_reason(tmp_path
     assert "cannot be resolved" in refusal[1]
 
 
+@conftest.requires_symlinks
 def test_the_default_folder_check_survives_a_symlink_loop(tmp_path: Path) -> None:
     assert settings._is_default_autosave_dir(str(_symlink_loop(tmp_path))) is False
 

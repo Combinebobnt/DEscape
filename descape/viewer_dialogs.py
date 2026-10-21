@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     debug_log,
+    gc_hold,
     settings,
     themes,
 )
@@ -167,13 +168,18 @@ def apply_theme(app: QApplication, preset_id: str, overrides: dict[str, str] | N
     an override of it. So a `button` override alone leaves a legacy app
     palette untouched, and a `surface` override alone the push-button one."""
     global _LIGHT_PALETTE
-    app.setStyle("Fusion")
+    # A gc inside a Python changeEvent can delete a widget Qt's broadcast is still iterating.
+    with gc_hold.paused():
+        app.setStyle("Fusion")
     if _LIGHT_PALETTE is None:
         _LIGHT_PALETTE = app.style().standardPalette()
     overrides = overrides or {}
+    app_palette = build_theme_palette(_LIGHT_PALETTE, preset_id, overrides)
+    push_button_palette = build_theme_palette(_LIGHT_PALETTE, preset_id, overrides, push_button=True)
     # Always both, app palette first: a different app palette clears the class one, an equal one leaves it stale.
-    app.setPalette(build_theme_palette(_LIGHT_PALETTE, preset_id, overrides))
-    app.setPalette(build_theme_palette(_LIGHT_PALETTE, preset_id, overrides, push_button=True), "QPushButton")
+    with gc_hold.paused():
+        app.setPalette(app_palette)
+        app.setPalette(push_button_palette, "QPushButton")
 
 
 def painted_tab_page(palette: QPalette) -> str:
@@ -227,7 +233,9 @@ def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:
         font.setFamily(family)
     if size is not None:
         font.setPointSize(size)
-    app.setFont(font)
+    # A gc inside a Python changeEvent can delete a widget Qt's broadcast is still iterating.
+    with gc_hold.paused():
+        app.setFont(font)
 
 
 class DebugLogDialog(QDialog):

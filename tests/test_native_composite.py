@@ -1341,6 +1341,113 @@ def test_sloped_index_producers_never_repeat_a_destination(tile_px):
                             _assert_unique(ey, ex, f"sloped_tile_edge_indices {side} {corners}")
 
 
+# --- blend sample lists (TASK-031.66) ---------------------------------------
+#
+# The kernel composes a blended tile's block only at blend_samples; a paint
+# that reads a texel outside it reads the zeroed block. So the list must cover
+# every (sy, sx) each Src-reading paint reads, taken here from the producers
+# themselves rather than from the tables the list was built from.
+
+
+def _sample_set(samples) -> set[tuple[int, int]]:
+    sy, sx = samples
+    assert sy.dtype == np.int32 and sx.dtype == np.int32 and sy.shape == sx.shape
+    return set(zip(sy.tolist(), sx.tolist(), strict=True))
+
+
+def _missing(samples: set, sy, sx) -> set:
+    return set(zip(np.asarray(sy).tolist(), np.asarray(sx).tolist(), strict=True)) - samples
+
+
+@pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
+def test_stepped_blend_samples_cover_every_scatter(tile_px):
+    steps = sorted(_elev_steps(tile_px))
+    for elev_step in (steps[0], steps[-1]):
+        samples = _sample_set(native_composite.SteppedTables(tile_px, elev_step).blend_samples)
+        _dy, _dx, sy, sx = iso_geometry.diamond_indices(tile_px)
+        assert not _missing(samples, sy, sx), f"diamond at tile_px {tile_px}"
+        for rise in RISES:
+            for side in ("left", "right"):
+                _dy, _dx, sy, sx = iso_geometry.skirt_quad_indices(tile_px, rise * elev_step, side)
+                assert sy.size, f"{side} skirt of rise {rise} reads nothing -- vacuous"
+                assert not _missing(samples, sy, sx), f"{side} skirt, rise {rise}, elev_step {elev_step}, tile_px {tile_px}"
+
+
+@pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
+def test_stepped_blend_samples_are_a_quarter_of_the_block(tile_px):
+    """The union is the diamond's lattice today. A geometry change that widens
+    it stays correct but costs the win; this names it."""
+    for elev_step in sorted(_elev_steps(tile_px)):
+        sy, sx = native_composite.SteppedTables(tile_px, elev_step).blend_samples
+        flat = sy.astype(np.int64) * tile_px + sx
+        assert sy.size == tile_px**2 // 4, (tile_px, elev_step, sy.size)
+        assert (np.diff(flat) > 0).all(), "not sorted row-major and distinct"
+        assert sy.flags.c_contiguous and sx.flags.c_contiguous
+
+
+@pytest.mark.parametrize("tile_px", TILE_PX_LADDER)
+def test_sloped_blend_samples_cover_every_quad_including_later_ones(tile_px):
+    s = max(_elev_steps(tile_px))
+    registry = native_composite.SlopedShapes(tile_px)
+    shapes = {
+        "flat": (0, 0, 0, 0), "one corner": (s, 0, 0, 0), "two corners": (s, s, 0, 0),
+        "ridge": (s, 0, 0, s), "diagonal": (0, s, s, 2 * s),
+    }
+    registry.shape_ids(list(shapes.values()))
+    before = registry.blend_samples
+    samples = _sample_set(before)
+    for name, corners in shapes.items():
+        _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *corners)
+        assert sy.size, f"{name} reads nothing -- vacuous"
+        assert not _missing(samples, sy, sx), f"{name} {corners} at tile_px {tile_px}"
+    late = (0, 2 * s, 0, s)
+    registry.shape_ids([late])
+    after = registry.blend_samples
+    assert after is not before, "a new shape did not rebuild the samples"
+    _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *late)
+    assert not _missing(_sample_set(after), sy, sx), f"a shape registered later, {late}"
+    assert registry.packed()[2] is after
+
+
+def _hand_built_iso_call(blend_tail: tuple):
+    """composite_iso on one blended tile with hand-built inputs; blend_tail
+    replaces the blend tuple's (samp_y, samp_x)."""
+    tile_px, elev_step = 16, 4
+    tables = native_composite.stepped_tables(tile_px, elev_step)
+    half_w, half_h = iso_geometry.half_dims(tile_px)
+    tex = _texture(TERRAIN_IDS[0])
+    textures = ([tex], np.zeros((1, 3), dtype=np.uint8), np.array([TEXTURE_SIZE], dtype=np.int64))
+    mask = np.full((tile_px, tile_px), 64, dtype=np.uint8)
+    blend = (
+        np.zeros(1, dtype=np.int32), np.array([0, 1], dtype=np.int64),
+        np.array([native_composite.BLEND_NEIGHBOUR, 0, 0], dtype=np.int32), [mask], *blend_tail,
+    )
+    one = np.zeros(1, dtype=np.int64)
+    return composite_backend._module.composite_iso(
+        np.zeros((tile_px, tile_px, 3), dtype=np.uint8), 0, 0, one, one, np.zeros(1, dtype=np.int32),
+        np.full(1, -1, dtype=np.int32), np.zeros((1, 1), dtype=np.int64),
+        (0, 0, half_w, half_h, elev_step, tile_px, native_composite.MAX_RISE), tables.kernel_tables(), textures,
+        None, None, blend, False,
+    )
+
+
+def test_blend_init_rejects_bad_samples(native_kernel):
+    good = native_composite.stepped_tables(16, 4).blend_samples
+    assert _hand_built_iso_call(good) is True
+    i32 = lambda *v: np.array(v, dtype=np.int32)  # noqa: E731
+    for what, tail in {
+        "unequal lengths": (i32(0, 1), i32(0)),
+        "sy past the block": (i32(16), i32(0)),
+        "sx past the block": (i32(0), i32(16)),
+        "negative sy": (i32(-1), i32(0)),
+        "negative sx": (i32(0), i32(-1)),
+        "no samples at all": (),
+    }.items():
+        with pytest.raises(ValueError):
+            _hand_built_iso_call(tail)
+            pytest.fail(f"{what} was accepted")
+
+
 # --- corpus -----------------------------------------------------------------
 
 

@@ -463,6 +463,36 @@ def _without_texture(monkeypatch, missing: int) -> None:
     asset_source.clear_install_caches()
 
 
+def _blended_skirts(composite, rects) -> int:
+    """How many blended candidates with a left or right skirt (dl or dr > 0)
+    the native composite_iso calls for `rects` were handed."""
+    found = 0
+    with composite_backend.use_backend("native"):
+        real = composite_backend.native
+
+        def recording(*args):
+            nonlocal found
+            cand_x, cand_y, elev, blend = args[3], args[4], args[7], args[13]
+            if blend is not None:
+                mh = elev.shape[0]
+                for k in np.flatnonzero(blend[0] >= 0).tolist():
+                    tx, ty = int(cand_x[k]), int(cand_y[k])
+                    own = elev[ty, tx]
+                    dl = own - elev[ty, tx - 1] if tx > 0 else 0
+                    dr = own - elev[ty + 1, tx] if ty + 1 < mh else 0
+                    found += dl > 0 or dr > 0
+            return real.composite_iso(*args)
+
+        class Recording:
+            def __getattr__(self, name):
+                return recording if name == "composite_iso" else getattr(real, name)
+
+        composite_backend.native = Recording()  # use_backend restores it
+        for rect in rects:
+            composite(*rect)
+    return found
+
+
 @pytest.mark.parametrize("missing", [None, LAYER_ID, TERRAIN_IDS[2]], ids=["all", "no-layer-texture", "no-texture"])
 @pytest.mark.parametrize("kind", ["stepped", "sloped"])
 def test_blended_rects_backends_agree(native_kernel, blend_install, monkeypatch, kind, missing):  # noqa: F811
@@ -487,6 +517,10 @@ def test_blended_rects_backends_agree(native_kernel, blend_install, monkeypatch,
                 f"mip {mip}: blending changed nothing natively -- vacuous"
             )
         _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), rects)
+        if kind == "stepped":
+            assert _blended_skirts(lambda *r, m=mip: cache._composite_rect(m, *r), rects), (
+                f"mip {mip}: no blended candidate has a skirt -- the skirt samples go untested"
+            )
         # The per-tile fallback blends too, so only the call count proves the kernel composed.
         calls = _count_native_calls(lambda *r, m=mip: cache._composite_rect(m, *r), cache.canvas_dims(mip))
         assert calls.keys() == {"composite_sloped" if kind == "sloped" else "composite_iso"}, (mip, calls)
@@ -819,6 +853,55 @@ def test_a_multi_block_flat_edit_derives_no_tile_key_twice(blend_install, backen
     with composite_backend.use_backend("numpy"):
         want = _stitched(_cache("flat", scenario))
     _assert_equal(after, want, f"flat after a four-block edit on {backend}")
+
+
+def test_a_flat_patch_of_one_level_evicts_the_others_under_its_rects(blend_install, backend):
+    """TASK-338: patch_rects(rects, levels=(0,)) with mip 0 and mip -1 warm,
+    for a block rect and a sparse scatter of one-tile rects. Every mip 0
+    chunk stays the same object and the level equals a fresh cache; at mip
+    -1 the chunks under a rect are gone, every other one (the one between
+    the two groups included) is the same object, the byte count matches,
+    and the level read back equals a fresh cache."""
+    scenario = _scenario("flat")
+    mm = scenario.map_manager
+    cache = _cache("flat", scenario)
+    cache.max_bytes *= 4  # room for both levels at once
+    t = cache.tile_px
+    assert cache.chunk_px == 8 * t and cache.mip_tile_px(-1) * 2 == t, "mip -1 chunks are not 16 tiles"
+    before = {mip: _stitched(cache, mip).copy() for mip in (0, -1)}
+    assert cache.resident_levels() == [-1, 0]
+    # A 5x5 block in mip -1 chunk (1, 1), and two lone tiles in chunk (5, 5); chunk (3, 3) lies between.
+    tiles = [(x, y) for x in range(20, 25) for y in range(20, 25)] + [(81, 81), (93, 93)]
+    for x, y in tiles:
+        mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
+    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+    block = [r for r in rects if r[0] < 40 * t]
+    sparse = [r for r in rects if r[0] >= 40 * t]
+    assert block == [(19 * t, 19 * t, 26 * t, 26 * t)], block
+    assert len(sparse) == 18 and all(r[2] - r[0] == t and r[3] - r[1] == t for r in sparse), sparse
+    under = {(-1, 1, 1), (-1, 5, 5)}
+    assert under <= cache._cache.keys() and (-1, 3, 3) in cache._cache
+    kept = {key: chunk for key, chunk in cache._cache.items() if key not in under}
+
+    cache.patch_rects(rects, levels=(0,))
+
+    # Read before the levels are read back, which refills them; asserted after the pixels.
+    stale = under & cache._cache.keys()
+    keys_kept = cache._cache.keys() - under == kept.keys()
+    same_objects = all(cache._cache.get(key) is chunk for key, chunk in kept.items())
+    bytes_right = cache._cache_bytes == sum(chunk.nbytes for chunk in cache._cache.values())
+    with composite_backend.use_backend("numpy"):
+        fresh = _cache("flat", scenario)
+        fresh.max_bytes *= 4
+        want = {mip: _stitched(fresh, mip) for mip in (0, -1)}
+    after = {mip: _stitched(cache, mip) for mip in (0, -1)}
+    for mip in (0, -1):
+        _assert_equal(after[mip], want[mip], f"mip {mip} after a one-level patch on {backend}")
+        assert not np.array_equal(after[mip], before[mip]), f"mip {mip}: the edit changed no pixel (vacuous)"
+    assert not stale, f"mip -1 chunks under a rect still cached: {sorted(stale)}"
+    assert keys_kept, "a chunk outside the rects' mip -1 chunks was dropped"
+    assert same_objects, "a kept chunk was replaced"
+    assert bytes_right, "_cache_bytes does not match the cached chunks"
 
 
 MIRRORS = ("_terrain_ids", "_layer_ids")

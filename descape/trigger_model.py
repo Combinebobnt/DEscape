@@ -138,6 +138,10 @@ def exec_order_write_supported(loaded: LoadedScenario) -> bool:
     are fine. The Map Options panel needs the answer at populate time, before
     any model exists.
 
+    Only valid before the first serialize() commit, which rebuilds the live
+    section this walks; a caller holding a TriggerEditModel reads its
+    exec_order_supported instead (TASK-404).
+
     Fails closed on every step: no parse, a header the walk does not recognise,
     a version that stores no such byte, or a byte that does not match what the
     retriever parsed.

@@ -132,7 +132,7 @@ class MapOptionsPanel(QWidget):
         self._row_labels: dict[str, QWidget] = {}
         self._base_tooltips: dict[str, str] = {}
         self._spec_tooltips: dict[str, str] = {}
-        self._values: dict[str, int] = {}
+        self._values: dict[str, int | str] = {}
         self._editable_fields: frozenset[str] = frozenset()
         self._read_only_reasons: dict[str, str] = {}
         # The window's status notes, kept so a mode flip can refresh the summary.
@@ -196,7 +196,7 @@ class MapOptionsPanel(QWidget):
     def show_scenario(
         self,
         loaded: LoadedScenario | None,
-        values: dict[str, int] | None = None,
+        values: dict[str, int | str] | None = None,
         editable_fields: Iterable[str] = (),
         read_only_reasons: Mapping[str, str] | None = None,
         notes: Sequence[str] = (),
@@ -418,6 +418,8 @@ class MapOptionsPanel(QWidget):
     def _build_widget(self, spec) -> QWidget:
         if spec.kind == option_fields.TEXT:
             return self._text_field(spec, spec.field_id in self._editable_fields)
+        if spec.kind == option_fields.STRING_COMBO:
+            return self._string_combo(spec, spec.field_id in self._editable_fields)
         # int() once, up front: a u8 retriever can parse as a bool, and both
         # QComboBox.findData and the range comparison below treat True and 1
         # as different keys.
@@ -573,6 +575,43 @@ class MapOptionsPanel(QWidget):
         edit.editingFinished.connect(commit)
         return edit
 
+    _NOT_SET_LABEL = "(not set)"
+    _AS_STORED_SUFFIX = " (as stored)"
+    _NOT_SET_TIP = (
+        "Stored empty: this file sets no water definition. Kept as stored until "
+        "another entry is picked."
+    )
+    _AS_STORED_TIP = (
+        "Stored as \"{value}\", a name the game's list does not offer today. Kept "
+        "as stored until another entry is picked."
+    )
+
+    def _string_combo(self, spec, editable: bool) -> QComboBox:
+        """A STRING_COMBO row (water_definition): the spec's list, then the
+        file's own value as a row of its own when the list lacks it, so a
+        legacy or empty name is shown and kept rather than snapped to an entry.
+        That row stays after an edit, so the user can go back without Undo."""
+        widget = QComboBox()
+        _fit_combo_width(widget)
+        for choice, label in spec.choices:
+            widget.addItem(label, choice)
+        stored = option_fields.current_value(self._loaded, spec)
+        value = self._values[spec.field_id]
+        if widget.findData(stored) < 0:
+            label = f"{stored}{self._AS_STORED_SUFFIX}" if stored else self._NOT_SET_LABEL
+            tip = self._AS_STORED_TIP.format(value=stored) if stored else self._NOT_SET_TIP
+            widget.addItem(label, stored)
+            widget.setItemData(widget.count() - 1, tip, Qt.ToolTipRole)
+        if widget.findData(value) < 0:
+            # Defensive: a pending value neither listed nor stored (a script set it).
+            widget.addItem(value or self._NOT_SET_LABEL, value)
+        widget.setCurrentIndex(widget.findData(value))
+        widget.setEnabled(editable)
+        widget.currentIndexChanged.connect(
+            lambda _, s=spec, w=widget: self._changed(s, w.currentData())
+        )
+        return widget
+
     def _plain_spinbox(self, spec, value: int, editable: bool) -> QSpinBox:
         spin = _make_spinbox(
             value, editable, minimum=spec.minimum, maximum=spec.maximum
@@ -625,7 +664,7 @@ class MapOptionsPanel(QWidget):
 
     # -- reporting an edit ---------------------------------------------------
 
-    def _changed(self, spec, value: int) -> None:
+    def _changed(self, spec, value: int | str) -> None:
         """The one place a widget signal becomes a reported edit.
 
         Both guards are needed, and TriggerPanel._changed()'s own docstring
@@ -657,7 +696,7 @@ class MapOptionsPanel(QWidget):
 
     # -- read access, for the window and for tests ---------------------------
 
-    def current_values(self) -> dict[str, int]:
+    def current_values(self) -> dict[str, int | str]:
         """Raw value per field_id, as currently shown."""
         return dict(self._values)
 

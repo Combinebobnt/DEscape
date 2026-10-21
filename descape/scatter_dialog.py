@@ -510,7 +510,7 @@ class ScatterDialog(QDialog):
         self._eligible = tiles
         mm = self._scenario.map_manager
         cols, rows, total = _region_size(area, mm.map_width, mm.map_height)
-        text = f"{len(tiles)} eligible tiles in a {cols}x{rows} region ({total} tiles)"
+        text = f"{len(tiles)} eligible tiles in a {cols}x{rows} area ({total} tiles)"
         if self.move_mode():
             moving = len(self._selected)
             text = f"{moving} selected units, {text}"

@@ -342,8 +342,15 @@ NO_KEY = -1
 UNKNOWN = -2
 # Past this many interned keys a KeyMap starts over (lookup()).
 KEY_MAP_MAX_SPECS = 1 << 16
+# Signatures a KeyMap's stash keeps per tile, FIFO (TASK-031.69 step 0: 3 hit 99.94% at undo 1).
+KEY_STASH_SLOTS = 3
 # A tile and its 8 neighbours, as (dy, dx) offsets.
 _RING_DY, _RING_DX = (a.ravel() for a in np.mgrid[-1:2, -1:2])
+# The 8 neighbours in influences()' order, as (dx, dy) offsets.
+_NB_DX, _NB_DY = (np.array(a, dtype=np.int64) for a in zip(*NEIGHBOURS, strict=True))
+# A stash signature: own tid, layer and the 8 neighbour tids, each as v + 1 in 12 bits, five per word.
+_SIG_SHIFTS = np.arange(5, dtype=np.int64) * 12
+_SIG_MAX = (1 << 12) - 2
 
 
 class KeyMap:
@@ -355,29 +362,63 @@ class KeyMap:
     The map equals influences() over its sources only while every write to
     them is followed by invalidate() of the tiles whose terrain id or layer
     changed, and every replaced source by bind(). Not thread-safe: one
-    thread reads and writes it (the GUI thread, for a chunk cache's)."""
+    thread reads and writes it (the GUI thread, for a chunk cache's).
+
+    With mirrors bound (bind(..., mirrors=)), a stash keeps the spec id of
+    the last KEY_STASH_SLOTS exact neighbourhoods each tile was derived in
+    (own tid, layer, 8 neighbour tids; off-map -1), and lookup() takes an
+    UNKNOWN tile's id from it on an exact match instead of deriving, so an
+    undo re-uses the keys its terrain had. That is exact only while a key
+    is a function of those 10 values, the tile's position and the bound
+    sources: a new input to influences() must reset the map when it
+    changes. invalidate() keeps the stash; reset() clears it."""
 
     def __init__(self, map_w: int, map_h: int):
         self.w, self.h = map_w, map_h
         self._sources: tuple = ()
+        self._mirrors: tuple | None = None
+        # (signatures (n, K, 2) int64, spec ids (n, K) int32, next slot (n,) uint8), on the first mirrored bind.
+        self._stash: tuple | None = None
         self.reset()
 
     def reset(self) -> None:
-        """Forgets every key. Spec ids handed out before this are void."""
+        """Forgets every key, the stash's included. Spec ids handed out
+        before this are void."""
         self.ids = np.full(self.w * self.h, UNKNOWN, dtype=np.int32)
         self.keys: list = []
         self.own = np.zeros(64, dtype=np.int64)
         self.extra: list[tuple[int, ...]] = []
         self._id_of: dict = {}
+        if self._stash is not None:
+            sig, sid, nxt = self._stash
+            sig.fill(-1)  # no packed signature is negative, so an empty slot never matches
+            sid.fill(UNKNOWN)
+            nxt.fill(0)
 
-    def bind(self, sources: tuple) -> None:
+    def bind(self, sources: tuple, mirrors: tuple | None = None) -> None:
         """Names what the keys were derived from. The objects are held and
         compared by identity (never id(), which a freed object's can reuse);
         any element replaced resets the map. An in-place change to one is the
-        caller's to invalidate()."""
+        caller's to invalidate().
+
+        mirrors: the (terrain id, layer) grids, flat or 2-D, each an element
+        of `sources`, turns the stash on (class docstring). lookup()'s derive
+        must then be influences() over exactly those two."""
         if len(sources) != len(self._sources) or any(a is not b for a, b in zip(sources, self._sources, strict=True)):
             self.reset()
             self._sources = sources
+        if mirrors is not None:
+            n = self.w * self.h
+            assert len(mirrors) == 2 and all(m.size == n for m in mirrors), "mirrors sized for another map"
+            assert all(any(m is s for s in sources) for m in mirrors), "a mirror must be a bound source"
+            if self._stash is None:
+                k = KEY_STASH_SLOTS
+                self._stash = (
+                    np.full((n, k, 2), -1, dtype=np.int64),
+                    np.full((n, k), UNKNOWN, dtype=np.int32),
+                    np.zeros(n, dtype=np.uint8),
+                )
+        self._mirrors = mirrors
 
     def _intern(self, key) -> int:
         sid = self._id_of.get(key)
@@ -404,11 +445,61 @@ class KeyMap:
         missing = ids == UNKNOWN
         if missing.any():
             miss = np.unique(idx[missing])
-            ys, xs = np.divmod(miss, self.w)
-            intern = self._intern
-            self.ids[miss] = [NO_KEY if key is None else intern(key) for key in derive(xs, ys)]
+            if self._mirrors is None or self._stash is None:
+                ys, xs = np.divmod(miss, self.w)
+                intern = self._intern
+                self.ids[miss] = [NO_KEY if key is None else intern(key) for key in derive(xs, ys)]
+            else:
+                self._lookup_stashed(miss, derive)
             ids = self.ids[idx]
         return ids
+
+    def _signatures(self, miss: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(signature (m, 2) int64, stashable (m,) bool) of each tile index in
+        miss, read from the bound mirrors now. A tile with any of its 10
+        values outside [-1, _SIG_MAX] is not stashable."""
+        tids = self._mirrors[0].reshape(-1)
+        layers = self._mirrors[1].reshape(-1)
+        w, h = self.w, self.h
+        ys, xs = np.divmod(miss, w)
+        nx = xs[:, None] + _NB_DX
+        ny = ys[:, None] + _NB_DY
+        inside = (nx >= 0) & (nx < w) & (ny >= 0) & (ny < h)
+        vals = np.empty((miss.size, 10), dtype=np.int64)
+        vals[:, 0] = tids[miss]
+        vals[:, 1] = layers[miss]
+        vals[:, 2:] = np.where(inside, tids[np.where(inside, ny * w + nx, 0)], -1)
+        vals += 1
+        ok = ((vals >= 0) & (vals <= _SIG_MAX + 1)).all(axis=1)
+        vals &= 0xFFF
+        sig = np.bitwise_or.reduce(vals.reshape(-1, 2, 5) << _SIG_SHIFTS, axis=2)
+        return sig, ok
+
+    def _lookup_stashed(self, miss: np.ndarray, derive) -> None:
+        """lookup()'s fill of the UNKNOWN tile indices `miss` (unique) with
+        the stash on: an exact signature match takes its spec id, the rest
+        are derived and stored in their tile's next FIFO slot."""
+        st_sig, st_sid, st_next = self._stash
+        sig, ok = self._signatures(miss)
+        match = (st_sig[miss] == sig[:, None, :]).all(axis=2)
+        hit = ok & match.any(axis=1)
+        if hit.any():
+            tiles = miss[hit]
+            self.ids[tiles] = st_sid[tiles, match[hit].argmax(axis=1)]
+        rest = ~hit
+        if not rest.any():
+            return
+        tiles = miss[rest]
+        ys, xs = np.divmod(tiles, self.w)
+        intern = self._intern
+        new = np.array([NO_KEY if key is None else intern(key) for key in derive(xs, ys)], dtype=np.int32)
+        self.ids[tiles] = new
+        keep = ok[rest]
+        tiles = tiles[keep]
+        slot = st_next[tiles]
+        st_sig[tiles, slot] = sig[rest][keep]
+        st_sid[tiles, slot] = new[keep]
+        st_next[tiles] = (slot + 1) % st_sid.shape[1]
 
     def invalidate(self, idx) -> None:
         """Marks each tile index in idx and its 8 neighbours UNKNOWN, clipped

@@ -185,6 +185,7 @@ def _linked_subscribed_folder(tmp_path: Path) -> tuple[Path, Path]:
     return real, link_dir / real.name
 
 
+@conftest.requires_symlinks
 def test_a_directory_symlink_into_a_subscribed_folder_is_refused(tmp_path) -> None:
     """The hard rule through a linked folder: the path as written carries no
     mods/subscribed/, so only the resolved check can catch it."""
@@ -205,6 +206,7 @@ def test_a_directory_symlink_into_a_subscribed_folder_is_refused(tmp_path) -> No
     assert sorted(p.name for p in real.parent.iterdir()) == [real.name]
 
 
+@conftest.requires_symlinks
 def test_a_file_symlink_into_a_subscribed_folder_is_refused_not_replaced(tmp_path) -> None:
     """Before the resolved check, Save replaced such a link with a real file."""
     real, _ = _linked_subscribed_folder(tmp_path)
@@ -234,6 +236,7 @@ def test_a_marked_path_is_blocked_before_resolve_can_fail(tmp_path, monkeypatch)
         write_scenario(s, tmp_path / "Mods" / "Subscribed" / "map.aoe2scenario")  # case-folded, for Windows
 
 
+@conftest.requires_symlinks
 def test_a_looped_save_path_is_refused_with_zero_backups(tmp_path) -> None:
     """Fail closed: a path that can't be resolved can't be shown to be outside
     a mods/subscribed/ folder. Unrefused, the atomic write would replace the link."""
@@ -251,6 +254,7 @@ def test_a_looped_save_path_is_refused_with_zero_backups(tmp_path) -> None:
         assert not orig_path(p).exists() and not orig_path(p).is_symlink()
 
 
+@conftest.requires_symlinks
 def test_a_looped_save_path_is_refused_when_resolve_does_not_raise(tmp_path, monkeypatch) -> None:
     """Python 3.13+ semantics: non-strict resolve() returns a loop unresolved
     instead of raising. Pins the stat() check on 3.11, where a real loop raises anyway."""
@@ -270,6 +274,7 @@ def test_a_looped_save_path_is_refused_when_resolve_does_not_raise(tmp_path, mon
 
 
 @pytest.mark.parametrize("py313_resolve", [False, True])
+@conftest.requires_symlinks
 def test_resolve_detecting_loops_raises_on_every_loop_shape(tmp_path, monkeypatch, py313_resolve) -> None:
     """Bare, with a missing tail (the Save As case), and with a ".." after the
     loop, which 3.13+ resolve() applies as text to land on a plain missing path."""
@@ -283,11 +288,12 @@ def test_resolve_detecting_loops_raises_on_every_loop_shape(tmp_path, monkeypatc
             assert info.value.errno == errno.ELOOP
 
 
+@conftest.requires_symlinks
 def test_resolve_detecting_loops_returns_a_missing_or_plain_path(tmp_path) -> None:
     plain = tmp_path / "plain.aoe2scenario"
     plain.write_bytes(b"")
     link = tmp_path / "link"
-    link.symlink_to(tmp_path)
+    link.symlink_to(tmp_path, target_is_directory=True)
     assert resolve_detecting_loops(plain) == plain.resolve()
     assert resolve_detecting_loops(tmp_path / "missing" / "new.aoe2scenario") == (
         tmp_path / "missing" / "new.aoe2scenario"

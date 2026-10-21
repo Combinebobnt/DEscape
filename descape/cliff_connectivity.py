@@ -189,7 +189,9 @@ class ShapeTables:
         family lacks. A cap frame topping a row of two or more arms is two
         runs abutting, not a shape: nothing. Where the family lacks the
         commonest frame (Marble's 23 frames have no thin north cap 23), the
-        row's next frame it has stands alone (user decision, 2026-10-19)."""
+        row's next frame it has stands alone (user decision, 2026-10-19).
+        Its twin stays out: a twin would read as a cap too and narrow
+        shaped_arms(), so erase would stop re-capping straights on it."""
         limit = min(frame_limit, _FRAME_COUNT)
         # Only a real frame this family lacks: a row topped by the stored 24 still gives nothing.
         if limit <= frames[0] < _FRAME_COUNT and not (arm_count >= 2 and frames[0] >= _FIRST_CAP_FRAME):

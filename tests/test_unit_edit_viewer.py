@@ -4731,14 +4731,19 @@ def test_the_scatter_action_is_gated_on_a_region_or_a_units_selection(monkeypatc
         _select_keys(window, [(2, 300)])
         assert window.scatter_action.isEnabled()
         assert window.scatter_action.toolTip() == viewer_mod._SCATTER_TIP
-        window.mode_combo.setCurrentText("Terrain")  # drops the selection
+        window.mode_combo.setCurrentText("Terrain")  # keeps the selection, live there (TASK-359)
+        assert window.scatter_action.isEnabled()
+        window.mode_combo.setCurrentText("View")  # keeps it dormant
         assert not window.scatter_action.isEnabled()
         assert window.scatter_action.toolTip() == viewer_mod._SCATTER_NO_AREA_TIP
+        window.mode_combo.setCurrentText("Terrain")
         window.on_region_selected(_POND)
-        assert window.scatter_action.isEnabled()  # Terrain mode
+        window.mode_combo.setCurrentText("View")
+        assert window.scatter_action.isEnabled()  # a region, in View mode
         window.mode_combo.setCurrentText("Units")
         assert window.scatter_action.isEnabled()  # and Units mode
         assert window.scatter_action.toolTip() == viewer_mod._SCATTER_TIP
+        window.deselect_units()
         window.deselect()
         assert not window.scatter_action.isEnabled()
     finally:
@@ -5092,7 +5097,7 @@ def test_scatter_move_changes_only_the_selections_x_y_in_one_undo_step(monkeypat
 
         after = _all_fields(window)
         assert len(window.edit_history.records) == records + 1
-        assert "Scattered 6 selected units across the region" in window.status_log.toPlainText()
+        assert "Scattered 6 selected units across the area" in window.status_log.toPlainText()
         # The house's garrisoned villager (203) rides to the house's new point (GH #42).
         house = _unit_by_ref(window, 1, 200)
         assert (after[(1, 203)]["x"], after[(1, 203)]["y"]) == (house.x, house.y)
@@ -5146,15 +5151,61 @@ def test_scatter_move_with_nothing_selected_refuses(monkeypatch) -> None:
         _close(window)
 
 
-def test_scatter_move_outside_units_mode_refuses(monkeypatch) -> None:
+def test_scatter_where_the_selection_is_dormant_is_handed_no_units_and_move_refuses(monkeypatch) -> None:
+    """TASK-359: View keeps the selection but dormant, so a region's Scatter
+    dialog gets no selected units and its move mode refuses."""
+    from descape import viewer as viewer_mod
+
     window = _window()
     try:
         _arm_move(window, monkeypatch, _SCATTER_KEYS)
-        window.mode_combo.setCurrentText("Terrain")
-        window._selection = list(_SCATTER_KEYS)
+        window.mode_combo.setCurrentText("View")
+        assert sorted(window._selection) == sorted(_SCATTER_KEYS), "kept while dormant"
+        answer = viewer_mod.ScatterDialog.exec_
+        handed = []
+
+        def record_exec(dialog):
+            handed.append(list(dialog._selected))
+            return answer(dialog)
+
+        monkeypatch.setattr(viewer_mod.ScatterDialog, "exec_", record_exec)
         before = _all_fields(window)
         window.scatter_units_in_region()
+        assert handed == [[]]
         assert "select the units to move in Units mode first" in window.status_log.toPlainText()
+        assert _all_fields(window) == before
+    finally:
+        _close(window)
+
+
+def test_scatter_move_in_terrain_moves_a_selection_made_in_units_mode(monkeypatch) -> None:
+    """TASK-359: select units, go to Terrain and draw a region; move mode moves
+    them in one undo step, and they stay selected with the highlight on them."""
+    window = _window()
+    try:
+        mv = window.map_view
+        _select_keys(window, _SCATTER_KEYS)
+        window.mode_combo.setCurrentText("Terrain")
+        _arm_scatter(window, monkeypatch, _move_mode())
+        before = _all_fields(window)
+        records = len(window.edit_history.records)
+
+        window.scatter_units_in_region()
+
+        assert len(window.edit_history.records) == records + 1
+        assert "Scattered 6 selected units across the area" in window.status_log.toPlainText()
+        for key in _SCATTER_KEYS:
+            assert _in_region(_unit_by_ref(window, *key), _POND), key
+        assert set(window._selection) == set(_SCATTER_KEYS)
+        assert set(mv._unit_select_keys) == set(_SCATTER_KEYS)
+        drawn, expected = QRectF(), QRectF()
+        for _fill, _under, outline in mv._unit_select_groups.values():
+            drawn = drawn.united(outline.path().boundingRect())
+        for key in _SCATTER_KEYS:
+            expected = expected.united(mv._unit_path(mv._unit_index.entry_for_key(key)).boundingRect())
+        assert drawn == expected
+
+        window.undo()
         assert _all_fields(window) == before
     finally:
         _close(window)
@@ -5326,7 +5377,7 @@ def test_only_buildings_that_cannot_fit_record_nothing(monkeypatch) -> None:
         records = len(window.edit_history.records)
         window.scatter_units_in_region()
         assert len(window.edit_history.records) == records
-        assert "nothing moved" in window.status_log.toPlainText()
+        assert "fits in the area; nothing moved" in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -5339,7 +5390,7 @@ def test_more_movers_than_tiles_share_tiles_and_say_so(monkeypatch) -> None:
         window.scatter_units_in_region()
         tiles = [(int(_unit_by_ref(window, *k).x), int(_unit_by_ref(window, *k).y)) for k in keys]
         assert set(tiles) == {(60, 60), (61, 60)}
-        assert "1 share a tile" in window.status_log.toPlainText()
+        assert "1 share a tile: the area has too few free tiles" in window.status_log.toPlainText()
     finally:
         _close(window)
 

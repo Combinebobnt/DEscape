@@ -20,6 +20,8 @@ from descape import library_compat, scenario_io
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import _patch_terrain_block
 
+import conftest
+
 TRIGGERS_FIXTURE = "tests/fixtures/triggers_120x120.aoe2scenario"
 
 
@@ -442,6 +444,7 @@ def _fresh_vocabulary_cache():
     library_compat.load_vocabulary.cache_clear()
 
 
+@conftest.requires_symlinks
 def test_repo_vocabulary_branch_reads_and_writes_triggers(tmp_path, monkeypatch) -> None:
     """The v1.59 shape: a repo structure with a repo vocabulary parses
     triggers like a library version, and a no-op save is byte-identical."""
@@ -462,6 +465,7 @@ def test_repo_vocabulary_branch_reads_and_writes_triggers(tmp_path, monkeypatch)
     assert out.read_bytes() == Path(TRIGGERS_FIXTURE).read_bytes()
 
 
+@conftest.requires_symlinks
 def test_repo_structure_branch_loads_and_saves_byte_identically(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 
@@ -475,6 +479,7 @@ def test_repo_structure_branch_loads_and_saves_byte_identically(tmp_path, monkey
     assert out.read_bytes() == Path(TRIGGERS_FIXTURE).read_bytes()
 
 
+@conftest.requires_symlinks
 def test_parse_triggers_refuses_a_repo_structure_file_without_parsing(tmp_path, monkeypatch) -> None:
     loaded = _load_via_repo_structure(tmp_path, monkeypatch)
 

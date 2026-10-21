@@ -236,8 +236,8 @@ class LevelWarmer(_IdleTimerDriver):
         `pack_only` mips not in `mips` get just the derive, queued last.
 
         A job with nothing worth doing is not queued at all -- the cache's
-        own level_warm_job()/pack_warm_job() decide that (sprites off, units
-        off, numpy, or the level already current), and they are asked HERE
+        own level_warm_job()/pack_warm_job() decide that (units off, top-down
+        Flat with sprites off, numpy, or the level already current), and they are asked HERE
         rather than at tick time, so an all-no-op start leaves is_active
         False and schedules no timer at all. That also fixes each job's
         revalidation baseline at warm start, which is the window the plan's

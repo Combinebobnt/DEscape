@@ -8136,6 +8136,157 @@ def test_other_effects_get_no_button_grid() -> None:
         window.close()
 
 
+# -- TASK-059: Allow In Fog on Object Visible Multiplayer -----------------------
+
+# tools/gen_v159_fixture.py: trigger 0 condition 1 holds allow_in_fog 1, trigger 1 condition 0 holds -1.
+V159_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "v159_units_triggers.aoe2scenario"
+_FOG_TICKED, _FOG_UNSET = (0, 1), (1, 0)
+
+
+def _fog_window():
+    window = _window()
+    window.load_scenario(V159_FIXTURE)
+    window.mode_combo.setCurrentText("Triggers")
+    return window
+
+
+def _fog_box(panel, where: tuple[int, int]):
+    trigger, condition = where
+    panel.select_trigger(trigger)
+    _select_entries(panel, ("condition", condition))
+    return _row_widget(panel, "allow_in_fog")
+
+
+def _fog(window, where: tuple[int, int]) -> int:
+    trigger, condition = where
+    return window.trigger_panel._manager().triggers[trigger].conditions[condition].allow_in_fog
+
+
+def test_allow_in_fog_shows_one_ticked_and_unset_unticked_with_the_games_tooltip() -> None:
+    from PyQt5.QtWidgets import QCheckBox
+
+    window = _fog_window()
+    try:
+        panel = window.trigger_panel
+        ticked = _fog_box(panel, _FOG_TICKED)
+        assert isinstance(ticked, QCheckBox) and ticked.isChecked() and not ticked.isTristate()
+        assert ticked.isEnabled()
+        label = panel.property_form.labelForField(ticked)
+        assert label is not None and label.text() == "allow in fog"
+        assert "passes the condition even if the object is in the Fog of War" in ticked.toolTip()
+        assert label.toolTip() == ticked.toolTip()
+        entry = panel._manager().triggers[0].conditions[1]
+        assert "allow_in_fog=1" in panel._describe("condition", entry)[1]
+
+        unset = _fog_box(panel, _FOG_UNSET)
+        assert isinstance(unset, QCheckBox) and not unset.isChecked() and not unset.isTristate()
+        assert "allow_in_fog" not in panel._describe("condition", panel._manager().triggers[1].conditions[0])[1]
+        assert window.trigger_edits is None, "building the form must record nothing"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_ticking_unset_allow_in_fog_stores_one_and_undo_restores_unset(tmp_path: Path) -> None:
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _fog_window()
+    try:
+        panel = window.trigger_panel
+        records = _record_count(window)
+        _fog_box(panel, _FOG_UNSET).setChecked(True)
+        assert (_fog(window, _FOG_UNSET), _record_count(window)) == (1, records + 1)
+
+        window.undo()
+        assert _fog(window, _FOG_UNSET) == -1
+        assert not window.edit_history.is_dirty
+        assert not _fog_box(panel, _FOG_UNSET).isChecked()
+
+        _fog_box(panel, _FOG_UNSET).setChecked(True)
+        box = _fog_box(panel, _FOG_UNSET)
+        assert box.isChecked()
+        box.setChecked(False)
+        assert _fog(window, _FOG_UNSET) == 0
+        assert not _fog_box(panel, _FOG_UNSET).isChecked()
+
+        out = tmp_path / "fog.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        conditions = parse_triggers(load_map_and_units(out)).triggers
+        assert (conditions[0].conditions[1].allow_in_fog, conditions[1].conditions[0].allow_in_fog) == (1, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_populating_and_tabbing_past_unset_allow_in_fog_writes_nothing() -> None:
+    window = _fog_window()
+    try:
+        panel = window.trigger_panel
+        records = _record_count(window)
+        _fog_box(panel, _FOG_UNSET)
+        _focus_out_every_row(panel)
+        assert _fog(window, _FOG_UNSET) == -1
+        assert _record_count(window) == records
+        assert window.trigger_edits is None and not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_selection_of_unset_and_zero_allow_in_fog_shows_one_unticked_box() -> None:
+    """1 beside -1 differs; 0 beside -1 shows plain unticked, as each shows
+    alone. Ticking that pair writes 1 to both, unticking writes 0 to both."""
+    from PyQt5.QtCore import Qt
+
+    window = _fog_window()
+    try:
+        panel = window.trigger_panel
+        window.entry_structural_edit("new", 0, "condition", -1, 27)
+        fresh = (0, len(panel._manager().triggers[0].conditions) - 1)
+        assert _fog(window, fresh) == -1
+        pair = [("condition", _FOG_TICKED[1]), ("condition", fresh[1])]
+
+        panel.select_trigger(0)
+        _select_entries(panel, *pair)
+        box = _row_widget(panel, "allow_in_fog")
+        assert box.isTristate() and box.checkState() == Qt.PartiallyChecked
+
+        entry = panel._manager().triggers[0].conditions[1]
+        window.set_entry_field(0, "condition", 1, _spec_named(panel, "condition", entry, "allow_in_fog"), 0)
+        _select_entries(panel, *pair)
+        box = _row_widget(panel, "allow_in_fog")
+        assert not box.isTristate() and box.checkState() == Qt.Unchecked
+
+        records = _record_count(window)
+        box.setChecked(True)
+        assert (_fog(window, _FOG_TICKED), _fog(window, fresh), _record_count(window)) == (1, 1, records + 1)
+        box.setChecked(False)
+        assert (_fog(window, _FOG_TICKED), _fog(window, fresh)) == (0, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_unticking_a_differing_allow_in_fog_selection_writes_zero_to_every_entry() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _fog_window()
+    try:
+        panel = window.trigger_panel
+        window.entry_structural_edit("new", 0, "condition", -1, 27)
+        fresh = (0, len(panel._manager().triggers[0].conditions) - 1)
+        panel.select_trigger(0)
+        _select_entries(panel, ("condition", _FOG_TICKED[1]), ("condition", fresh[1]))
+        box = _row_widget(panel, "allow_in_fog")
+        assert box.checkState() == Qt.PartiallyChecked
+        box.setCheckState(Qt.Unchecked)
+        assert (_fog(window, _FOG_TICKED), _fog(window, fresh)) == (0, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # -- GH #134: a collapsed section header counts as its whole section ------------
 
 
@@ -10582,35 +10733,44 @@ def test_a_pending_exec_order_flip_survives_each_grouped_repopulate(tmp_path: Pa
     [
         "none",
         "rename",
-        pytest.param(
-            "new trigger",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="DEFECT (sweep TASK-403 W1): exec_order_write_supported() walks the live, edited "
-                "Triggers section against the file's original bytes, so after New trigger the "
-                "Execution order row greys out with the 'failed the alignment gate' reason",
-            ),
-        ),
+        "new trigger",
+        "delete trigger",
+        "new trigger, saved",
     ],
 )
-def test_the_execution_order_row_stays_editable_after_a_trigger_edit(edit: str) -> None:
-    """Found by TASK-053.01's sweep test. Pass conditions, on the trigger fixture
-    in Triggers mode, after `edit`, then Map Options:
+def test_the_execution_order_row_stays_editable_after_a_trigger_edit(
+    edit: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by TASK-053.01's sweep test (TASK-404). Pass conditions, on the
+    trigger fixture in Triggers mode, after `edit`, then Map Options:
     - the Execution order row is enabled;
-    - its tooltip is not the alignment-gate read-only reason.
+    - its tooltip is not the alignment-gate read-only reason;
+    - the status-line notes carry no alignment-gate note.
     "none" and "rename" are the in-test controls: the same assertions pass
-    there, so the "new trigger" failure is the edit, not the probe."""
+    there, so a structural-edit failure is the edit, not the probe. Without the
+    fix both "new trigger" params fail; "delete trigger" passes either way and
+    stays as a control."""
+    from PyQt5.QtWidgets import QFileDialog
+
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         if edit == "rename":
             _rename(panel, 0, "a much longer name than the fixture's own")
-        elif edit == "new trigger":
+        elif edit.startswith("new trigger"):
             window.trigger_structural_edit("new", [])
+        elif edit == "delete trigger":
+            window.trigger_structural_edit("delete", [0])
+        if edit.endswith(", saved"):
+            target = tmp_path / "saved.aoe2scenario"
+            monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+            window.save_as()
+            assert target.is_file(), "the save landed"
         window.mode_combo.setCurrentText("Map Options")
         widget = window.map_options_panel.widget_for("legacy_exec_order")
         assert widget.isEnabled(), widget.toolTip()
         assert widget.toolTip() != window._EXEC_ORDER_READ_ONLY
+        assert window._map_options_notes() == []
     finally:
         window.edit_history.mark_saved()
         window.close()

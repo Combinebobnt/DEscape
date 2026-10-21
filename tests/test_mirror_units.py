@@ -8,7 +8,8 @@ permuted by wall_index_image() (axis runs under an axis-swapping element,
 diagonal runs under r, r3, mx, my) and only in an integer-encoded
 file, an ANGLE const's facing maps through facing_image() (derived from
 TRANSFORMS' linear part), ownership rotates along the scenario's own player list, and the two
-refusal sweeps (axis straddle, garrisoned destination unit) fire.
+refusal sweeps (axis straddle, garrisoned destination unit) fire, the straddle one only under
+the default overlap policy (TASK-250: skip and place go past it, never past a garrison).
 """
 
 from __future__ import annotations
@@ -23,9 +24,14 @@ from descape import render
 from descape.mirror_tools import (
     AXIS_SWAPPING,
     MODE_BY_ID,
+    OVERLAP_POLICIES,
+    OVERLAPS_PLACE,
+    OVERLAPS_REFUSE,
+    OVERLAPS_SKIP,
     POSITION_TRANSFORMS,
     TRANSFORMS,
     AngularElement,
+    _image_position,
     _linear_part,
     compose,
     doubled,
@@ -261,6 +267,90 @@ def test_a_garrisoned_destination_unit_blocks_the_plan():
     plan = _plan([source, holder], referencing=lambda u: [source] if u is holder else [])
     assert plan.garrisoned_blockers == [holder]
     assert plan.blocked
+
+
+# --- TASK-250: what an overlapping copy does (refuse / skip / place) ----------
+
+
+def _axis_castle() -> FakeUnit:
+    """test_a_straddling_building_is_refused_not_repaired's castle: its `a` image overlaps it."""
+    return FakeUnit(CASTLE, N / 2 - 1.0, N / 2 - 1.0)
+
+
+def _mode_8_straddler() -> FakeUnit:
+    """A castle reaching one column across mode 8's `mx` axis and clear of
+    `my`'s: its mx image overlaps it, its my and r2 images do not."""
+    return FakeUnit(CASTLE, *render.span_anchor(N // 2 - 1, 40, 4, 4))
+
+
+def test_skip_applies_the_plan_without_the_straddlers_copies():
+    castle = _axis_castle()
+    plan = _plan([castle], mode_id=1, overlaps=OVERLAPS_SKIP)
+    assert not plan.blocked
+    assert plan.images == []
+    assert plan.straddling == [castle]
+    (image,) = plan.overlapping
+    assert image.source is castle and image.element == "a"
+    assert (image.x, image.y) == _image_position(CASTLE, castle.x, castle.y, N, "a")
+
+
+def test_skip_keeps_a_straddlers_non_overlapping_copies():
+    castle = _mode_8_straddler()
+    plan = _plan([castle], mode_id=8, overlaps=OVERLAPS_SKIP)
+    assert not plan.blocked
+    assert plan.straddling == [castle]
+    assert [image.element for image in plan.overlapping] == ["mx"]
+    assert sorted(image.element for image in plan.images) == ["my", "r2"]
+    src_tiles = set(render.unit_occupied_tiles(castle, N, N))
+    for image in plan.images:
+        assert not src_tiles & set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+
+
+def test_refuse_is_the_default_and_unchanged():
+    """No `overlaps=` is OVERLAPS_REFUSE: blocked, the same images, and
+    `overlapping` filled under refuse too. Skip shares refuse's images, and
+    place is those plus the overlapping copies."""
+    castle = _mode_8_straddler()
+    default = _plan([castle], mode_id=8)
+    refuse = _plan([castle], mode_id=8, overlaps=OVERLAPS_REFUSE)
+    skip = _plan([castle], mode_id=8, overlaps=OVERLAPS_SKIP)
+    place = _plan([castle], mode_id=8, overlaps=OVERLAPS_PLACE)
+    assert default.overlaps == OVERLAPS_REFUSE
+    assert default.blocked and refuse.blocked and default.overlap_blocked
+    assert default.images == refuse.images == skip.images
+    assert default.overlapping == refuse.overlapping == skip.overlapping != []
+    assert place.images == skip.images + skip.overlapping
+
+
+@pytest.mark.parametrize("overlaps", OVERLAP_POLICIES)
+def test_a_garrison_block_ignores_the_overlap_policy(overlaps):
+    source = _at(OAK, 1, 0)
+    holder = FakeUnit(HOUSE, N - source.x - 0.5, N - source.y - 0.5)
+    castle = _axis_castle()
+    plan = _plan([source, holder, castle], referencing=lambda u: [source] if u is holder else [], overlaps=overlaps)
+    assert plan.garrisoned_blockers == [holder]
+    assert plan.straddling == [castle]
+    assert plan.blocked
+
+
+def test_an_unknown_overlap_policy_raises():
+    with pytest.raises(ValueError, match="overlap policy"):
+        _plan([_axis_castle()], mode_id=1, overlaps="ignore")
+
+
+def test_place_keeps_the_overlapping_copy():
+    """Under place the withheld copy is applied, at the end of `images`
+    (extended after the emit loop). TASK-427 settled on no image post-pass,
+    so there is nothing else for the copy to be ordered against."""
+    oak = _at(OAK, 1)
+    castle = _axis_castle()
+    plan = _plan([oak, castle], mode_id=1, overlaps=OVERLAPS_PLACE)
+    assert not plan.blocked
+    assert plan.straddling == [castle]
+    (overlap,) = plan.overlapping
+    assert overlap.source is castle
+    assert [image.source for image in plan.images] == [oak, castle]
+    assert plan.images[-1] is overlap
 
 
 @pytest.mark.parametrize("element,expected", [("a", 1.0), ("d", 1.0), ("mx", 0.0), ("r2", 0.0)])

@@ -1036,7 +1036,7 @@ _SLOPED_CROP_L0 = (768, 384)
 # frame id -> (map, mip, centre tile, units and sprites on). hill and forest are
 # ground_texture's two hillsides; farms is a plateau one level up with farms on
 # its edge, buildings a plateau with a player's buildings on it, level_ground
-# flat elevation 0 with a farm, a mill and buildings (the specificity frame).
+# flat elevation 0 with fields, walls and buildings (the specificity frame), off round 2's footprint ring.
 _SLOPED_FRAMES = {
     "hill_a": ("ground", -1, (219, 152), False),
     "hill_b": ("ground", -2, (219, 152), False),
@@ -1046,7 +1046,7 @@ _SLOPED_FRAMES = {
     "farms_b": ("farms", -2, (89, 215), True),
     "buildings_a": ("ground", -1, (22, 214), True),
     "buildings_b": ("ground", -2, (22, 214), True),
-    "level_ground": ("farms", -2, (43, 133), True),
+    "level_ground": ("farms", -2, (140, 44), True),
 }
 _SLOPED_SPECIFICITY = "level_ground"
 # The localized inject shifts one chunk in each of these frames.
@@ -1302,7 +1302,7 @@ def _sloped_mip_spec() -> rp.PackSpec:
         "farms_b": "The same farm fields, zoomed further out.",
         "buildings_a": "A group of buildings on and around a raised plateau, zoomed out.",
         "buildings_b": "The same buildings, zoomed further out.",
-        "level_ground": "Buildings, a farm field and other objects on perfectly level ground, zoomed far out.",
+        "level_ground": "Buildings, farm fields and other objects on perfectly level ground, zoomed far out.",
     }
     frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=captions[fid]) for fid in _SLOPED_FRAMES)
     checks = (
@@ -1313,16 +1313,19 @@ def _sloped_mip_spec() -> rp.PackSpec:
                 "map cells at different heights, drawn as one continuous sloping surface. First, in your own "
                 "words, describe how the ground runs across each frame: its slopes, its texture, and any place "
                 "where it looks interrupted.\n\n"
-                "Then the closed question, which is about the GROUND only. Is there a straight edge in the "
-                "ground, exactly vertical or exactly horizontal, where the ground on one side does not continue "
-                "on the other: its texture, shading or slope jumps, is offset up or down, or is cut off, or a "
-                "strip of black shows through? Any such edge counts, however short: one no longer than a single "
-                "map cell counts as much as one crossing the whole frame. NOT such an edge: (1) the border between grassland "
-                "and forest floor, which follows the diagonal cell grid and wanders; (2) a change of shading "
-                "where the slope bends, which runs along the diagonal grid and never forms an exactly vertical "
-                "or horizontal edge; (3) trees and anything else standing on the ground, however they are "
-                "placed; (4) the frame's own edges.\n\n"
-                "Answer BREAK if at least one such straight edge is visible, CONTINUOUS if the ground carries "
+                "Then the closed question, which is about the GROUND only. Is there an exactly vertical straight "
+                "edge in the ground where the ground on one side does not continue on the other: the ground on "
+                "one side is clearly lighter or darker than on the other along the edge's whole length, a "
+                "lighter or darker band or patch stops dead against it instead of carrying on, the ground is "
+                "offset up or down across it, or a strip of black shows through? Any such edge counts, however "
+                "short: one no longer than a single map cell counts as much as one crossing the whole frame. "
+                "NOT such an edge: (1) any exactly horizontal edge: at this zoom the outline of a lighter or "
+                "darker band running along the slope is drawn in short horizontal steps, and those steps are "
+                "expected; (2) a vertical speck or streak in the ground's own grain, where the ground just "
+                "beside it is equally bright on both sides; (3) the border between grassland and forest floor, "
+                "which follows the diagonal cell grid and wanders; (4) trees and anything else standing on the "
+                "ground, however they are placed; (5) the frame's own edges.\n\n"
+                "Answer BREAK if at least one such vertical edge is visible, CONTINUOUS if the ground carries "
                 "on across every frame."
             ),
             frames=("hill_a", "hill_b", "forest_a", "forest_b"),
@@ -1365,11 +1368,12 @@ def _sloped_mip_spec() -> rp.PackSpec:
         rp.Check(
             id="level_ground",
             question=(
-                "This frame shows perfectly level ground with buildings, a farm field and other objects on it. "
+                "This frame shows perfectly level ground with buildings, farm fields and other objects on it. "
                 "Is anything wrong with how it is drawn: any object or field detached from the ground under "
                 "it, or any straight horizontal or vertical line where the ground on one side is offset, cut "
                 "off or does not continue on the other? The border between two kinds of ground, which follows "
-                "the diagonal cell grid, does not count.\n\n"
+                "the diagonal cell grid, does not count, and neither do the thin coloured lines drawn on purpose "
+                "along the edges of farm fields.\n\n"
                 "Answer FLAWS-PRESENT if you see any of these, NO-FLAWS if the frame shows none."
             ),
             frames=(_SLOPED_SPECIFICITY,),

@@ -575,7 +575,7 @@ def _build_mosaic(m: _Map, region: Region) -> None:
 
 
 def _stroke(m: _Map, const: int, press: tuple[int, int], steps, frame: int = 0, *, truncates: bool = False) -> list:
-    """A Cliff tool stroke, committed as viewer._commit_cliff_stroke() does: nodes added, joins rewritten.
+    """A Cliff tool stroke, committed as viewer._commit_cliff_stroke() does: joins rewritten, then nodes added.
 
     Every path node must be placed, and resolved unless it is a lone piece (which keeps the picker's
     piece, never resolved), so a stroke laid into another cannot silently lose a node; only `truncates`
@@ -592,12 +592,13 @@ def _stroke(m: _Map, const: int, press: tuple[int, int], steps, frame: int = 0, 
         assert len(nodes) == expected and not short, (
             f"stroke {const} at {press}: {len(nodes)} of {expected} nodes placed, unresolved {short}"
         )
+    # Rewrites first, as the viewer commits them: a raise there must precede every add.
+    for rewrite in stroke.rewrites():
+        m.units.set_cliff_frame(existing[rewrite.existing_index].unit, rewrite.rotation)
     for node in nodes:
         m.tile(*node.bounds[::2])
         m.tile(node.bounds[1] - 1, node.bounds[3] - 1)
         m.add(GAIA, node.unit_const, node.x, node.y, rotation=float(node.rotation), initial_animation_frame=node.rotation)
-    for rewrite in stroke.rewrites():
-        m.units.set_cliff_frame(existing[rewrite.existing_index].unit, rewrite.rotation)
     return nodes
 
 
@@ -613,7 +614,7 @@ def _build_cliffs(m: _Map, region: Region) -> None:
     # The snow corner's north run stops 2 tiles short of the desert run's foot.
     _stroke(m, desert, (x0 + 12, y0 + 12), [E, E, E, S, S, S])
     _stroke(m, snow, (x0 + 12, y0 + 35), [E, E, E, N, N, N])
-    # One drag closing on its own first node; its closing end stays an end cap until TASK-399.
+    # One drag closing on its own first node.
     _stroke(m, limestone, (x0 + 26, y0 + 12), [E, E, E, S, S, S, W, W, W, N, N])
     capped = _stroke(m, short_marble, (x0 + 26, y0 + 30), [E] * 3)
     head = capped[-1].bounds

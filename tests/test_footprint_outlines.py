@@ -726,6 +726,8 @@ def test_an_elevation_edit_with_outlines_off_is_outlined_at_the_new_height_once_
         (centre,) = [e.unit for e in view._unit_index.entries if e.unit.unit_const == _TOWN_CENTRE]
         own = (int(centre.x), int(centre.y))
         at_old_height = _expected_points(view)
+        # Place selected it, and Terrain keeps a selection whose highlight queues its own refresh (TASK-359).
+        window.deselect_units()
         window.mode_combo.setCurrentText("Terrain")
         assert view._unit_index is not None
         window._on_tool_selected("elevation")
@@ -784,6 +786,8 @@ def test_an_elevation_stroke_with_outlines_off_builds_no_outline_geometry_throug
     try:
         view = window.map_view
         _place(window, _TOWN_CENTRE, (20, 20))
+        # Place selected it, and a selection kept in Terrain draws through unit_polygons() too (TASK-359).
+        window.deselect_units()
         window.mode_combo.setCurrentText("Terrain")
         assert view._unit_index is not None, "no live index -- vacuous"
         before = window.scenario.map_manager.get_tile(20, 20).elevation
@@ -928,6 +932,13 @@ def _group_points(item) -> set[tuple[float, float]]:
     return {(round(path.elementAt(i).x, 3), round(path.elementAt(i).y, 3)) for i in range(path.elementCount())}
 
 
+def _team_colour(window, player_id: int) -> tuple[int, int, int]:
+    """The owner's sprite tint, which an owner group is keyed and inked by (TASK-449)."""
+    from descape.unit_sprites import TEAM_COLORS
+
+    return tuple(TEAM_COLORS[window.scenario.team_indices[player_id] % len(TEAM_COLORS)])
+
+
 def _entry_points(view, player_id: int) -> set[tuple[float, float]]:
     return {
         (round(x, 3), round(y, 3))
@@ -944,8 +955,7 @@ def test_colour_by_owner_puts_each_player_in_their_colour_and_gaia_in_the_config
     window = _owner_window()
     try:
         view = window.map_view
-        colors = window.scenario.player_colors
-        p1, p2 = tuple(colors[1]), tuple(colors[2])
+        p1, p2 = _team_colour(window, 1), _team_colour(window, 2)
         assert p1 != p2
         assert list(view._footprint_items) == [None], "Colour by Owner ships off"
         window.footprint_by_owner_action.setChecked(True)
@@ -974,9 +984,9 @@ def _change_player_colour(window, pid: int) -> tuple[int, int, int]:
     # Off both owners' current colours, so the two groups never share a key.
     taken = {player_fields.current_value(window.scenario, spec, p) for p in (1, 2)}
     new_value = next(value for value, _label in spec.choices if value not in taken)
-    old_rgb = tuple(window.scenario.player_colors[pid])
+    old_rgb = _team_colour(window, pid)
     window.set_player_field(spec, pid, new_value)
-    new_rgb = tuple(window.scenario.player_colors[pid])
+    new_rgb = _team_colour(window, pid)
     assert new_rgb != old_rgb, "the colour edit changed nothing"
     return new_rgb
 
@@ -990,11 +1000,11 @@ def test_a_player_colour_edit_recolours_the_owner_outlines() -> None:
     try:
         view = window.map_view
         window.footprint_by_owner_action.setChecked(True)
-        old_p2 = tuple(window.scenario.player_colors[2])
+        old_p2 = _team_colour(window, 2)
         p2_points = _group_points(view._footprint_items[old_p2])
         new_p2 = _change_player_colour(window, 2)
         QApplication.processEvents()
-        assert old_p2 not in view._footprint_items or old_p2 == tuple(window.scenario.player_colors[1])
+        assert old_p2 not in view._footprint_items or old_p2 == _team_colour(window, 1)
         assert view._footprint_items[new_p2].pen().color().getRgb()[:3] == new_p2
         assert _group_points(view._footprint_items[new_p2]) == p2_points
     finally:

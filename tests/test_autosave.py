@@ -20,6 +20,8 @@ from descape import autosave
 from descape.scenario_io import BLANK_TEMPLATE_PATH, TEMPLATE_DIR, load_map_and_units
 from descape.scenario_write import write_scenario
 
+import conftest
+
 DOC_ID = "0123456789abcdef"
 
 
@@ -84,6 +86,7 @@ def test_two_documents_rotate_independently():
 @pytest.mark.parametrize(
     "name", ["subscribed", "subscribed_link", "compatdata", "compatdata_link", "windows_profile", "template", "untitled"]
 )
+@conftest.requires_symlinks
 def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name):
     """subscribed is the AGENTS.md hard rule: write_scenario() refuses there.
     The game-profile cases are writable but would list slots in the game's
@@ -121,6 +124,7 @@ def test_sidecar_falls_back_to_central_where_it_cannot_be_served(tmp_path, name)
     assert autosave.slot_path(key, "map.aoe2scenario", source, "sidecar", central=custom).parent == custom
 
 
+@conftest.requires_symlinks
 def test_sidecar_falls_back_to_central_for_a_looped_source(tmp_path):
     """An unresolvable source can't be shown to be outside mods/subscribed/."""
     source = _symlink_loop(tmp_path) / "map.aoe2scenario"
@@ -131,6 +135,7 @@ def test_sidecar_falls_back_to_central_for_a_looped_source(tmp_path):
     assert slot.parent == autosave.autosave_dir()
 
 
+@conftest.requires_symlinks
 def test_a_looped_path_still_gets_a_stable_key(tmp_path):
     source = _symlink_loop(tmp_path) / "map.aoe2scenario"
 
@@ -191,13 +196,14 @@ def test_central_dir_falls_back_to_the_default_folder(tmp_path):
     assert autosave.central_dir("relative") == autosave.autosave_dir()
 
 
+@conftest.requires_symlinks
 def test_autosave_dir_refusal(tmp_path):
     proton = tmp_path / "steamapps" / "compatdata" / "813780" / "pfx"
     proton.mkdir(parents=True)
     subscribed = proton / "Games" / "Age of Empires 2 DE" / "0" / "mods" / "subscribed"
     subscribed.mkdir(parents=True)
     link = tmp_path / "innocent-looking"
-    link.symlink_to(subscribed)
+    link.symlink_to(subscribed, target_is_directory=True)
     plain = tmp_path / "plain"
     plain.mkdir()
 

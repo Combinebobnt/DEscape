@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -175,15 +175,14 @@ class MessagesPanel(QWidget):
 
             string_id = self._values.get(f"{spec.field_id}_id", STRING_ID_UNSET)
             if string_id != STRING_ID_UNSET:
-                warning_row = QHBoxLayout()
                 warning = QLabel(self._SET_ID_WARNING.format(id=string_id))
                 warning.setWordWrap(True)
-                warning_row.addWidget(warning, stretch=1)
+                box_layout.addWidget(warning)
                 clear_button = QPushButton(self._CLEAR_ID_LABEL)
                 clear_button.setEnabled(self._editable)
                 clear_button.clicked.connect(lambda _=False, s=spec: self._clear_string_id(s))
-                warning_row.addWidget(clear_button)
-                box_layout.addLayout(warning_row)
+                # Stacked under the warning so the row fits the 300 px floor (GH #142).
+                box_layout.addWidget(clear_button, alignment=Qt.AlignLeft)
                 self._warning_labels[spec.field_id] = warning
                 self._clear_id_buttons[spec.field_id] = clear_button
 

@@ -90,8 +90,11 @@ MIXED = _Mixed()
 DISPLAY_ONLY: frozenset[str] = frozenset()
 
 # Vocabulary fields with no row, no detail text and no retype carry: the value
-# is preserved untouched. allow_in_fog (1.59, condition 27) waits for its checkbox.
-HIDDEN_FIELDS: frozenset[str] = frozenset({"allow_in_fog"})
+# is preserved untouched. Empty since allow_in_fog got its checkbox (TASK-059).
+HIDDEN_FIELDS: frozenset[str] = frozenset()
+
+# Int flags the vocabulary presents as a plain int, whose -1 means unset: a BOOL that keeps UNSET.
+_SENTINEL_BOOLS: frozenset[str] = frozenset({"allow_in_fog"})
 
 # Fields whose library attribute differs from the vocabulary name. Effect has
 # no public quantity_float; its value lives in Effect.quantity.
@@ -434,8 +437,13 @@ _BUTTON_LOCATION_TOOLTIP = (
     "is a building's second page, as on the Dock. For a villager's build menu, train the building at the builder "
     "(118); its row 3, col 4 and col 5 are the menu's own buttons."
 )
+# The game editor's own tooltip for "Allow In Fog" (string 31343).
+_ALLOW_IN_FOG_TOOLTIP = (
+    "When checked, passes the condition even if the object is in the Fog of War and not directly in the Line of Sight"
+)
 _FIELD_TOOLTIPS: Mapping[str, Mapping[str, str]] = {
-    name: {"button_location": _BUTTON_LOCATION_TOOLTIP} for name in _LOCATION_CAPTIONS
+    **{name: {"button_location": _BUTTON_LOCATION_TOOLTIP} for name in _LOCATION_CAPTIONS},
+    "object_visible_multiplayer": {"allow_in_fog": _ALLOW_IN_FOG_TOOLTIP},
 }
 
 
@@ -507,12 +515,15 @@ def field_specs(
             # By name: its version-JSON default is an int -1, so _kind_for()
             # cannot tell it from an INT.
             kind = FLOAT
+        if attribute in _SENTINEL_BOOLS:
+            # By name too: its presentation is "", which _kind_for() makes an INT.
+            kind = BOOL
         specs.append(
             FieldSpec(
                 name=attribute,
                 kind=kind,
                 choices=enum_choices(presentation) if kind == ENUM else (),
-                sentinel=None if kind in (STR, BOOL, INT_LIST) else UNSET,
+                sentinel=UNSET if attribute in _SENTINEL_BOOLS else (None if kind in (STR, BOOL, INT_LIST) else UNSET),
                 presentation=presentation,
                 read_only=attribute in DISPLAY_ONLY or kind == UNSUPPORTED,
                 multiline=_multiline_mode(entry.name, attribute, kind),
@@ -522,6 +533,21 @@ def field_specs(
             )
         )
     return tuple(specs)
+
+
+def checkbox_checked(spec: FieldSpec, value: Any) -> bool:
+    """Whether a BOOL spec's checkbox shows `value` ticked: truthy and not the
+    spec's sentinel, so allow_in_fog's -1 (unset) shows unticked like its 0."""
+    return bool(value) and (spec.sentinel is None or value != spec.sentinel)
+
+
+def form_value(spec: FieldSpec, value: Any) -> Any:
+    """`value` as the form shows it, for comparing a selection: a sentinel
+    BOOL's sentinel reads as 0, so -1 and 0 share one unticked box rather
+    than "(differs)". Every other spec, and MIXED, passes through."""
+    if spec.kind == BOOL and spec.sentinel is not None and value is not MIXED and value == spec.sentinel:
+        return 0
+    return value
 
 
 # -- retyping an existing condition or effect (GH #37) -----------------------
@@ -603,6 +629,7 @@ def retype_carryover(
     old_definition: VocabularyEntry | None,
     new_definition: VocabularyEntry,
     type_attribute: str,
+    base_defaults: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     """(values to re-apply, names that did not carry) for a retype.
 
@@ -615,6 +642,10 @@ def retype_carryover(
     default would clobber the new type's own non-(-1) default (change_object_
     attack defaults armour_attack_quantity to 1).
 
+    A field the old type lists with no default of its own falls back to
+    `base_defaults`: the type-0 ("none") values the library merges under every
+    fresh entry, so the comparison is against what a fresh entry really holds.
+
     `dropped` names every field the old type listed that held a real value and
     did not carry, excluded ones included, so the user is always told.
 
@@ -625,6 +656,7 @@ def retype_carryover(
     if old_definition is None:
         return ({}, ())
 
+    base_defaults = base_defaults or {}
     excluded = _RETYPE_EXCLUDED if type_attribute == "effect_type" else frozenset()
     # Effect types 77/78 (create_object_attack/_armor) omit effect_type from
     # their own `attributes` list. Harmless and deliberately left alone: the
@@ -636,7 +668,7 @@ def retype_carryover(
         if attribute == type_attribute or attribute in HIDDEN_FIELDS:
             continue
         value = _live_value(entry, attribute)
-        if value is None or value == old_definition.default_attributes.get(attribute):
+        if value is None or value == old_definition.default_attributes.get(attribute, base_defaults.get(attribute)):
             continue
         if attribute in shared and attribute not in excluded:
             # Copied, never aliased: the library mutates lists handed to it in
@@ -683,6 +715,7 @@ def retype_entry(
         definitions.get(_live_value(old, type_attribute)),
         definitions[type_id],
         type_attribute,
+        definitions[0].default_attributes if 0 in definitions else {},
     )
     if kind == "condition":
         trigger._add_condition(type_id)

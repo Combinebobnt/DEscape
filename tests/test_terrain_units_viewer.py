@@ -1736,6 +1736,66 @@ def test_the_blended_check_names_the_step_that_left_a_second_level_stale(
         window.close()
 
 
+def _spy_key_stash(window, monkeypatch) -> dict:
+    """Counts, over the window cache's key map lookups, the tiles found
+    UNKNOWN and the tiles derived; the rest came from its stash."""
+    from descape import terrain_blend
+
+    key_map = window._cache._blend_key_map
+    real = key_map.lookup
+    seen = {"unknown": 0, "derived": 0}
+
+    def lookup(idx, derive):
+        seen["unknown"] += int(np.unique(idx[key_map.ids[idx] == terrain_blend.UNKNOWN]).size)
+
+        def counted(xs, ys):
+            seen["derived"] += len(xs)
+            return derive(xs, ys)
+
+        return real(idx, counted)
+
+    monkeypatch.setattr(key_map, "lookup", lookup)
+    return seen
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+def test_a_blended_draw_undo_redo_undo_reuses_stashed_keys_and_matches_a_fresh_render(
+    style, blended_trees, monkeypatch
+) -> None:
+    """TASK-031.69 T7: sprites and blending on, a Draw stroke over palms, its
+    undo, redo and undo again. After each, every oracle level equals a fresh
+    build. The undos and the redo take keys from the stash: the first undo
+    some, and the second undo every one, since only the redo's states were
+    stored since the first."""
+    from descape import render
+
+    window = _blended_window(style, monkeypatch, "patch")
+    try:
+        assert render.blend_effective(window._cache.layers)
+        _draw(window, FOREST_PALM, EARLIER_TILES)
+        seen = _spy_key_stash(window, monkeypatch)
+        steps = (
+            ("stroke", lambda: _draw(window, FOREST_OAK, STROKE_TILES)),
+            ("undo", window.undo),
+            ("redo", window.redo),
+            ("undo 2", window.undo),
+        )
+        counts = {}
+        for step, act in steps:
+            _render_levels(window)
+            seen.update(unknown=0, derived=0)
+            act()
+            _check_against_fresh(window, step)
+            counts[step] = dict(seen)
+        assert counts["stroke"]["derived"] > 0, counts
+        for step in ("undo", "redo", "undo 2"):
+            assert counts[step]["unknown"] > counts[step]["derived"], f"{step}: no key came from the stash {counts}"
+        assert counts["undo 2"]["unknown"] > 0 and counts["undo 2"]["derived"] == 0, counts
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # Two of STROKE_TILES' oaks: each gets a layer, then the Eraser takes the oak and the layer.
 ERASED_FIRST, ERASED_LAST = STROKE_TILES[2], STROKE_TILES[5]
 # Grass with no unit near it, far enough from STROKE_TILES that no erased oak's bbox or rect reaches it.

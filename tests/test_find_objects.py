@@ -220,6 +220,7 @@ def test_csv_refuses_mods_subscribed(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("py313_resolve", [False, True])
+@conftest.requires_symlinks
 def test_csv_refuses_a_looped_path(tmp_path, monkeypatch, py313_resolve) -> None:
     out = tmp_path / "out"
     out.mkdir()
@@ -239,11 +240,12 @@ def test_csv_writes_into_compatdata(tmp_path) -> None:
     assert target.exists()
 
 
+@conftest.requires_symlinks
 def test_csv_refuses_a_symlink_into_mods_subscribed(tmp_path) -> None:
     real = tmp_path / "mods" / "subscribed"
     real.mkdir(parents=True)
     link = tmp_path / "exports"
-    link.symlink_to(real)
+    link.symlink_to(real, target_is_directory=True)
     with pytest.raises(WriteBlockedError):
         find_objects.rows_to_csv(_find(_scene()), link / "found.csv")
     assert not (real / "found.csv").exists()

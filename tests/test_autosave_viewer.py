@@ -267,6 +267,7 @@ def test_an_autosave_whose_slot_cannot_be_computed_logs_a_failure(tmp_path, monk
         conftest.close_window(window)
 
 
+@conftest.requires_symlinks
 def test_save_as_starts_beside_a_looped_source_unresolved(tmp_path) -> None:
     loop_a, loop_b = tmp_path / "loop-a", tmp_path / "loop-b"
     loop_a.symlink_to(loop_b)
@@ -508,6 +509,7 @@ def _autosaved_count(window) -> int:
     return window.status_log.toPlainText().count("Autosaved to ")
 
 
+@conftest.requires_symlinks
 def test_a_custom_folder_relinked_into_mods_subscribed_names_that_reason(tmp_path) -> None:
     """Refused at tick time, not missing: the line says why."""
     custom = tmp_path / "usb-stick"

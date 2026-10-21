@@ -73,10 +73,6 @@ MARBLE_CLIFF = 2178
 # Real .sld frame counts of the generator's shaped cliff families (the .dat declares 25, Short Marble 23).
 SHAPED_FAMILY_SLD_FRAMES = {264: 24, 1849: 24, 1858: 24, 2069: 24, 2190: 23, 2651: 24}
 
-# Cliff pieces not shaped for their realized neighbours, as (const, tile bounds). The loop's
-# closing end (TASK-399): the drag's contact pass leaves it an end cap beside its first node.
-KNOWN_UNJOINED_CLIFFS = frozenset({(2070, (205, 206, 26, 29))})
-
 
 def _generator():
     return conftest.load_verify_module("gen_test_map")
@@ -448,7 +444,7 @@ def _check_cliffs(m: _Map, region) -> None:
             )
             if want is None or int(u.rotation) not in want:
                 unjoined.add((u.unit_const, _bounds(u)))
-    assert unjoined == KNOWN_UNJOINED_CLIFFS, f"pieces not shaped for their neighbours: {sorted(unjoined)}"
+    assert unjoined == set(), f"pieces not shaped for their neighbours: {sorted(unjoined)}"
     graph = _cardinal_graph(pieces)
     groups = _components(pieces)
     assert any(len(g) >= 8 and all(len(graph[i]) == 2 for i in g) for g in groups), "no closed loop"

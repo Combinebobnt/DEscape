@@ -33,6 +33,7 @@ import conftest
 WALL_PX = 128
 GATE_TILE_PX = 64
 FENCE = 1062
+AQUEDUCT = 231
 # The cardinals' tolerance is verify_flat_facing's; the diagonals carry the squash.
 DIAGONAL_TOLERANCE_DEG = 20.0
 # Each orientation's Flat screen axis, in gate_orientation's A, C, B, D cycle order.
@@ -91,6 +92,18 @@ def test_the_fence_runs_along_its_flat_axes(tool):
     for shape, (axis, tolerance) in want.items():
         got = tool.principal_axis_deg(_wall_alpha(FENCE, shape))
         assert tool.axis_gap_deg(got, axis) <= tolerance, f"shape {shape}: axis {got:.2f}, want {axis}"
+
+
+def test_the_aqueduct_runs_along_its_flat_axes(tool):
+    """Aqueduct 231, a wall since GH #110, is turned by flat_art() too.
+    Measured 2026-10-20: 178.2 / 90.2 / 68.8 / 111.2 degrees at stored
+    0 / 1 / 3 / 4. Its diagonal icons are 74x128 to the fence's 123x128, so
+    they sit past the diagonal slack; they must still lean apart the right way."""
+    assert AQUEDUCT in unit_sprites.wall_family_consts()
+    axes = {shape: tool.principal_axis_deg(_wall_alpha(AQUEDUCT, shape)) for shape in (0, 1, 3, 4)}
+    assert tool.axis_gap_deg(axes[0], 0.0) <= tool.TOLERANCE_DEG, axes
+    assert tool.axis_gap_deg(axes[1], 90.0) <= tool.TOLERANCE_DEG, axes
+    assert 0.0 < axes[3] < 90.0 < axes[4] < 180.0, axes
 
 
 def _gate_icon(const: int):

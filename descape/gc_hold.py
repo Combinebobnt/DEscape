@@ -26,10 +26,16 @@ until a hold is engaged. engage() is called from _schedule() after its
 no-QApplication early return, from an active driver's overdue tick, and from
 viewer._freeze_loaded_document() only while one of the viewer's warms is active,
 which needs a shown window. So headless run_to_completion() never holds.
+
+paused() is the module's other tool: gc fully off for one block, then the
+caller's state back. Like the stroke it touches only gc.isenabled(), never the
+thresholds, so it composes with a hold. A load runs under it, and so does each
+Qt app-wide broadcast (viewer_dialogs.apply_theme() and apply_ui_font()).
 """
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import time
 import weakref
@@ -151,3 +157,26 @@ def reset() -> None:
 def _stop_idle_timer() -> None:
     if _timer is not None:
         _timer.stop()
+
+
+@contextlib.contextmanager
+def paused():
+    """GC off for the block, then back to whatever the caller had: never an
+    unconditional enable, since a stroke may be holding it off. Also a
+    decorator. Two uses:
+
+    - A load. The parse allocates objects that live as long as the document,
+      so the ~1000 collections it would otherwise run (25-35% of the parse,
+      measured on a 240x240 map) free almost nothing.
+    - A Qt app-wide broadcast (QApplication.setStyle/setPalette/setFont),
+      which sends each widget in a snapshot of allWidgets() a change event.
+      A collection inside a Python changeEvent can finalize an unreachable
+      widget in a reference cycle, and sip deletes its C++ object while the
+      snapshot still points at it, so Qt's next event segfaults (TASK-379)."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()

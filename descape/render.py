@@ -318,7 +318,8 @@ def _rect_blend_keys(
 
     key_map: the calling cache's KeyMap over the same two mirrors, which
     then derives only the tiles it has not seen since their last
-    invalidate(). Without one, or without both mirrors (tools, tests,
+    invalidate(), nor in their exact neighbourhood (its stash, bound to the
+    mirrors here). Without one, or without both mirrors (tools, tests,
     the review pack, refresh_region_iso), a throwaway map derives every
     candidate, so there is one code path. _blend_keys is looked up at call
     time, so a caller that rebinds it still reaches the fill."""
@@ -330,7 +331,7 @@ def _rect_blend_keys(
         key_map = terrain_blend.KeyMap(w, mm.map_height)
     else:
         assert terrain_ids.size == layer_ids.size == key_map.ids.size, "a key map sized for another map"
-        key_map.bind((terrain_ids, layer_ids, terrain_blend.BLEND_TABLE, _blend_keys))
+        key_map.bind((terrain_ids, layer_ids, terrain_blend.BLEND_TABLE, _blend_keys), mirrors=(terrain_ids, layer_ids))
     ids = key_map.lookup(
         candidates[:, 1] * w + candidates[:, 0], lambda xs, ys: _blend_keys(scenario, xs, ys, terrain_ids, layer_ids)
     )

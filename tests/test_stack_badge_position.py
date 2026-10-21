@@ -96,15 +96,10 @@ def test_above_keeps_the_original_box_exactly() -> None:
     assert box.bottom() == pytest.approx(100 - item.GAP_PX)
 
 
-@pytest.mark.parametrize(
-    "half_h",
-    [
-        100.0,
-        pytest.param(20.0, marks=pytest.mark.xfail(strict=True, reason="tucked box outgrows the tile (TASK-422)")),
-    ],
-)
+@pytest.mark.parametrize("half_h", [100.0, 20.0, 4.0])
 def test_a_bottom_position_never_draws_above_its_top_position(half_h: float) -> None:
-    """Bottom-right and top-right on one tile: the anchors are the right edges' midpoints."""
+    """Bottom-right and top-right on one tile: the anchors are the right edges' midpoints.
+    On a short tile (20, 4) both stop on the centre row (TASK-422); 100 fits, so they stay apart."""
     from PyQt5.QtCore import QPointF
 
     centre = QPointF(100, 100)
@@ -112,7 +107,55 @@ def test_a_bottom_position_never_draws_above_its_top_position(half_h: float) -> 
     item.set_badges([(QPointF(140, 100 + half_h / 2), centre, 3), (QPointF(140, 100 - half_h / 2), centre, 3)])
     _paint(item)
     bottom, top = item.drawn_boxes
-    assert bottom.center().y() > top.center().y()
+    assert bottom.center().y() >= top.center().y()
+    if half_h == 100.0:
+        assert bottom.center().y() > top.center().y()
+
+
+def test_a_tucked_box_stops_on_the_centre_line_when_the_tile_is_short() -> None:
+    """TASK-422: y can't fit (5 px to the centre), so it stops on the centre's row; x fits and is unchanged."""
+    from PyQt5.QtCore import QPointF
+
+    item = _item(QPointF(120, 105), QPointF(100, 100))
+    _paint(item)
+    (box,) = item.drawn_boxes
+    assert box.center().y() == pytest.approx(100)
+    assert box.center().x() == pytest.approx(120 - (box.width() / 2 + item.GAP_PX))
+
+
+def test_tucked_boxes_keep_their_quadrants_as_a_diamond_shrinks() -> None:
+    """TASK-422 sweep: one anchor per tucked quadrant on a diamond of height H (120 down to 8,
+    W = 1.85 H), anchors on the edge midpoints (+-W/4, +-H/4). Pass conditions, at every H:
+    - each box centre is in its named half of the tile, or on the centre's line, on both axes;
+    - bottom is never above top, and right never left of left;
+    - each box centre is strictly inside the diamond;
+    - each box centre moves by at most the 1 px step in H between neighbouring sizes."""
+    from PyQt5.QtCore import QPointF
+
+    cx, cy = 200.0, 200.0
+    quadrants = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+    previous = None
+    for height in range(120, 7, -1):
+        h = float(height)
+        w = 1.85 * h
+        centre = QPointF(cx, cy)
+        item = _item(centre, centre)
+        item.set_badges([(QPointF(cx + sx * w / 4, cy + sy * h / 4), centre, 3) for sx, sy in quadrants])
+        _paint(item)
+        centres = {q: box.center() for q, box in zip(quadrants, item.drawn_boxes, strict=True)}
+        for (sx, sy), p in centres.items():
+            assert (p.x() - cx) * sx >= -1e-9, (height, sx, sy, p)
+            assert (p.y() - cy) * sy >= -1e-9, (height, sx, sy, p)
+            assert abs(p.x() - cx) / (w / 2) + abs(p.y() - cy) / (h / 2) < 1.0, (height, sx, sy, p)
+        for sx in (1, -1):
+            assert centres[(sx, 1)].y() >= centres[(sx, -1)].y(), height
+        for sy in (1, -1):
+            assert centres[(1, sy)].x() >= centres[(-1, sy)].x(), height
+        if previous is not None:
+            for q, p in centres.items():
+                assert abs(p.x() - previous[q].x()) <= 1.0 + 1e-9, (height, q)
+                assert abs(p.y() - previous[q].y()) <= 1.0 + 1e-9, (height, q)
+        previous = centres
 
 
 def test_the_background_keeps_its_alpha_after_a_colour_change() -> None:
@@ -416,6 +459,53 @@ def test_a_tucked_badge_is_drawn_inside_its_own_tile(style: str, iso: bool, posi
         assert tile.containsPoint(box.center(), Qt.OddEvenFill), f"{box} outside {tile.boundingRect()}"
     finally:
         _close(window)
+
+
+_WIDE_MARGIN = 8
+
+
+def _zoom_on_stack_wide(map_view) -> None:
+    """A small-tile zoom where the tucked box no longer fits on y (TASK-422), kept well above
+    the badge layer's LOD floor (+-12 tiles sits within 10% of it in this window)."""
+    from PyQt5.QtCore import QRectF, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    rect = QRectF()
+    for dx in (-_WIDE_MARGIN, _WIDE_MARGIN):
+        for dy in (-_WIDE_MARGIN, _WIDE_MARGIN):
+            rect = rect.united(map_view._tile_polygon(_STACK_TILE[0] + dx, _STACK_TILE[1] + dy).boundingRect())
+    map_view.fitInView(rect, Qt.KeepAspectRatio)
+    QApplication.processEvents()
+    map_view.viewport().grab()
+
+
+@pytest.mark.parametrize(("style", "iso"), [("Stepped", False), ("Flat", True)])
+def test_on_a_small_tile_tucked_badges_stay_in_the_tile_and_bottom_never_above_top(style: str, iso: bool) -> None:
+    """TASK-422, real window. Pass conditions, at a zoom whose tile is under 46 px tall (the clamp range):
+    - each tucked position's box centre is inside the tile outline;
+    - bottom-right's box centre is level with or below top-right's, and the same on the left
+      (each position read from its own window)."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPolygonF
+
+    centres = {}
+    for position in _QUADRANTS:
+        window = _window(style, iso=iso, position=position)
+        try:
+            map_view = window.map_view
+            _zoom_on_stack_wide(map_view)
+            tile = QPolygonF(_outline(map_view))
+            assert tile.boundingRect().height() < 46, tile.boundingRect()
+            item = map_view._stack_badge_item
+            (box,) = item.drawn_boxes
+            # The anchor sits a quarter tile from the centre on y: closer than the unclamped offset.
+            assert tile.boundingRect().height() / 4 < box.height() / 2 + item.GAP_PX, (tile.boundingRect(), box)
+            assert tile.containsPoint(box.center(), Qt.OddEvenFill), (position, box, tile.boundingRect())
+            centres[position] = box.center()
+        finally:
+            _close(window)
+    assert centres["bottom_right"].y() >= centres["top_right"].y()
+    assert centres["bottom_left"].y() >= centres["top_left"].y()
 
 
 @pytest.mark.parametrize(("style", "iso"), _ALL_CASES)

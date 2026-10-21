@@ -39,17 +39,28 @@ so the next paint recomposites the whole visible map: at 240x240 that is all
 480 Sloped mip-0 chunks, where --resident canvas makes them resident but
 leaves the 1:1 viewport showing a few. The strokes are the same tiles.
 
+Each Draw stroke also reports its steps: the mean and max wall time of its
+on_edit_stroke_tiles() calls, and the chunks get_chunk() composited outside
+those calls while the stroke was open (the idle refill: the level warm
+recompositing what a step evicted, and the paints), with their ms and how
+many of them were inside a paint. --step-idle-ms N pumps the event loop for
+N ms between steps (default 0: no pump, every step back to back).
+
 --tool fill replaces the Draw strokes with one Paint Can over a small
 region with Trees/Eye candy on, then its undo: a non-Draw wholesale caller.
 --fill-side N[,N...] fills an N x N tile square at the map centre instead,
 one case per size. --trees off keeps Trees and Eye candy unchecked for the
 timed edits, so a fill is terrain only: with --styles flat2d that is
-top-down Flat's own choice between patching its block rects and evicting
-the region (viewer._FLAT_EVICT_RATIO, overridden by --flat-ratio: inf never
-evicts by the ratio, 0 always does; past STEPPED_FULL_RERENDER_THRESHOLD
-dirty tiles it evicts whatever the ratio). With --resident canvas a fill case
-re-renders the mip-0 canvas and repaints before each timed call, so an
-eviction by the setup or the fill leaves the next call no less to do.
+top-down Flat's own choice between patching its block rects at the visible
+level (evicting the other levels under them) and evicting the region
+(viewer._FLAT_EVICT_RATIO, overridden by --flat-ratio: the region is
+evicted once the rects cover more tiles than the ratio times the tiles of
+the visible-level chunks under their bbox that the viewport shows; inf
+never evicts by the ratio, 0 always does; past
+STEPPED_FULL_RERENDER_THRESHOLD dirty tiles it evicts whatever the ratio).
+With --resident canvas a fill case re-renders the mip-0 canvas and repaints
+before each timed call, so an eviction by the setup or the fill leaves the
+next call no less to do.
 
 --blend on|off sets View > Layers > Terrain Blending (on needs the game
 install's blendomatic and fails without it).
@@ -524,6 +535,58 @@ class _Timers:
         return ":R-base" if self.fallback is None else ":R-nobbox"
 
 
+class _StepProbe:
+    """One Draw stroke's steps: each on_edit_stroke_tiles() call's wall time,
+    and the chunks get_chunk() composited outside those calls while the
+    stroke is open (the idle refill), split by whether a paint asked."""
+
+    def __init__(self, cache) -> None:
+        self.steps: list[float] = []
+        # [chunks, ms] outside any paint (the level warm), and inside one.
+        self.idle = [0, 0.0]
+        self.paint = [0, 0.0]
+        self._in_step = False
+        self._cache = cache
+        self._previous = vars(cache).get("get_chunk", _MISSING)
+        inner = cache.get_chunk
+
+        def get_chunk(mip, cx, cy):
+            if self._in_step or (mip, cx, cy) in cache._cache:
+                return inner(mip, cx, cy)
+            t0 = time.perf_counter()
+            try:
+                return inner(mip, cx, cy)
+            finally:
+                bucket = self.paint if _IN_PAINT[0] else self.idle
+                bucket[0] += 1
+                bucket[1] += (time.perf_counter() - t0) * 1000
+
+        cache.get_chunk = get_chunk
+
+    def step(self, action) -> None:
+        self._in_step = True
+        t0 = time.perf_counter()
+        try:
+            action()
+        finally:
+            self.steps.append((time.perf_counter() - t0) * 1000)
+            self._in_step = False
+
+    def uninstall(self) -> None:
+        if self._previous is _MISSING:
+            del self._cache.get_chunk
+        else:
+            self._cache.get_chunk = self._previous
+
+    def line(self, paints: list) -> str:
+        steps = self.steps or [0.0]
+        return (
+            f"        steps {len(self.steps)} mean {sum(steps) / len(steps):.2f} max {max(steps):.2f}ms | "
+            f"idle refill {self.idle[0]} chunks {self.idle[1]:.1f}ms | paint refill {self.paint[0]} chunks "
+            f"{self.paint[1]:.1f}ms | paints {len(paints)} {sum(paints):.1f}ms"
+        )
+
+
 def _serpentine_tiles(w: int, h: int, n_rows: int) -> list[tuple[int, int]]:
     """GH #180's Draw drag (bench_gui_drag.py --flow gh180) in tile space:
     n_rows screen-horizontal rows (the tiles of one y - x), spread over +-0.6
@@ -628,7 +691,7 @@ def _row(label: str, result, before: int, after: int) -> str:
 
 def _run_case(
     window, timers: _Timers, paints: list, kind: str, brush: int, seed: int, rows: int = 4,
-    terrains: tuple[int, int] = (FOREST_A, FOREST_B),
+    terrains: tuple[int, int] = (FOREST_A, FOREST_B), step_idle_ms: float = 0.0,
 ) -> list[str]:
     from PyQt5.QtCore import Qt
 
@@ -644,10 +707,18 @@ def _run_case(
     for stroke_label, terrain_id, stroke_seed in (("A", terrains[0], seed), ("B", terrains[1], seed + 1)):
         window.terrain_panel.set_terrain(terrain_id)
         cursor = window.edit_history.cursor
-        window.on_edit_stroke_start()
-        for tile in tiles:
-            window.on_edit_stroke_tiles([tile], Qt.NoModifier)
-            perf_trace.step()
+        del paints[:]
+        probe = _StepProbe(window._cache)
+        try:
+            window.on_edit_stroke_start()
+            for tile in tiles:
+                probe.step(lambda tile=tile: window.on_edit_stroke_tiles([tile], Qt.NoModifier))
+                perf_trace.step()
+                if step_idle_ms:
+                    _pump(step_idle_ms / 1000)
+        finally:
+            probe.uninstall()
+        step_line = probe.line(paints)
 
         def seeded(*args, _seed=stroke_seed, **kwargs):
             kwargs["rng"] = random.Random(_seed)
@@ -658,6 +729,7 @@ def _run_case(
             before = _unit_count(window)
             result = _timed(window, timers, paints, window.on_edit_stroke_end)
             lines.append(_row(f"stroke {stroke_label}", result, before, _unit_count(window)))
+            lines.append(step_line)
         finally:
             terrain_units.plan_terrain_units = real_plan
         if window.edit_history.cursor != cursor:
@@ -758,6 +830,7 @@ def _bench_file(
     path: Path, styles, brushes, kinds, sprite_modes, resident: str, force_wholesale: bool, tool: str = "draw",
     force_reach: bool = False, zoom_cycle: bool = False, fit: bool = False, rows: int = 4,
     terrains: tuple[int, int] = (FOREST_A, FOREST_B), fill_sides: list[int] | None = None, units: bool = True,
+    step_idle_ms: float = 0.0,
 ) -> list[str]:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QTransform
@@ -859,7 +932,7 @@ def _bench_file(
                             emit(f"     {kind} brush={brush}" + (f" rows={rows}" if kind == "rows" else ""))
                             for line in _run_case(
                                 window, timers, paints, kind, brush, seed=1000 * brush + len(kind), rows=rows,
-                                terrains=terrains,
+                                terrains=terrains, step_idle_ms=step_idle_ms,
                             ):
                                 emit(line)
                 finally:
@@ -904,7 +977,15 @@ def main() -> None:
     parser.add_argument("--fit", action="store_true", help="Fit zoom (the zoom a load opens at), not 1:1")
     parser.add_argument(
         "--flat-ratio", type=float,
-        help="Override viewer._FLAT_EVICT_RATIO (top-down Flat's terrain patch; 0: always evict, inf: never by the ratio)",
+        help=(
+            "Override viewer._FLAT_EVICT_RATIO (top-down Flat evicts a terrain edit's bbox once its rects cover more "
+            "tiles than this times the tiles of the visible-level chunks under the bbox on screen; 0: always evict, "
+            "inf: never by the ratio)"
+        ),
+    )
+    parser.add_argument(
+        "--step-idle-ms", type=float, default=0.0,
+        help="Draw: pump the event loop this long between stroke steps (0: back to back, the default)",
     )
     parser.add_argument("--fill-side", help="--tool fill: comma-separated sides of square fill regions, one case each")
     parser.add_argument(
@@ -981,6 +1062,7 @@ def main() -> None:
                 path, styles, brushes, kinds, sprite_modes, args.resident, args.force_wholesale, args.tool,
                 force_reach=args.bbox == "reach", zoom_cycle=args.zoom_cycle, fit=args.fit, rows=args.rows,
                 terrains=(terrain_a, terrain_b), fill_sides=fill_sides, units=args.trees == "on",
+                step_idle_ms=args.step_idle_ms,
             )
 
 

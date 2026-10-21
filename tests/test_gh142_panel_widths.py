@@ -125,21 +125,13 @@ def test_messages_fits_the_floor_with_no_horizontal_scroll() -> None:
     _check_messages_fit_the_floor(string_ids=False)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason='DEFECT (TASK-149 sweep): at the 300 px Messages floor a field with a language-file string id '
-    'set pushes its "Use my text (clear string ID)" button past the viewport, with no horizontal scroll bar',
-)
+@pytest.mark.font_sensitive
 def test_messages_with_a_string_id_set_fits_the_floor_with_no_horizontal_scroll() -> None:
     """Every field showing its widest row: the language-file warning beside "Use my text"."""
     _check_messages_fit_the_floor(string_ids=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT (TASK-149 sweep): at the 210 px View floor the stats table's Stat column (180 px at "
-    "96 DPI) leaves the Value column mostly past the table's viewport",
-)
+@pytest.mark.font_sensitive
 def test_the_view_stats_value_column_shows_in_full_at_the_floor() -> None:
     """The blank template's Player 1 breakdown, at the pinned 96 DPI.
 
@@ -165,6 +157,144 @@ def test_the_view_stats_value_column_shows_in_full_at_the_floor() -> None:
         metrics = tree.fontMetrics()
         widest = max(metrics.horizontalAdvance(v) for v in values)
         assert widest <= header.sectionSize(1), f"widest value {widest} px, column {header.sectionSize(1)} px"
+    finally:
+        conftest.close_window(window)
+
+
+def _show_view_player(window, player_id: int) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    combo = window.stats_player_combo
+    combo.setCurrentIndex(combo.findData(player_id))
+    QApplication.processEvents()
+
+
+def _stat_rows(tree) -> list:
+    """Every three-column row: not a section header, not free text, not the combo's row."""
+    from PyQt5.QtWidgets import QTreeWidgetItemIterator
+
+    rows = []
+    iterator = QTreeWidgetItemIterator(tree)
+    while iterator.value() is not None:
+        item = iterator.value()
+        if not item.isFirstColumnSpanned() and tree.itemWidget(item, 0) is None:
+            rows.append(item)
+        iterator += 1
+    return rows
+
+
+@pytest.mark.font_sensitive
+@pytest.mark.parametrize("player_id", [1, 0])
+def test_the_view_table_fits_the_floor_with_note_hidden_and_full_labels_in_tooltips(player_id: int) -> None:
+    """TASK-407, Player 1 and GAIA at View's floor. Pass conditions:
+    - no horizontal scroll bar, and the Note column is hidden;
+    - every Stat row's column 0 tooltip is its full label, plus its note when it has one, so an
+      elided label ("Scenario version" at 96 DPI) and a hidden note stay readable.
+    """
+    window = _blank_window()
+    try:
+        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Units") == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        _show_view_player(window, player_id)
+        tree = window.info_tree
+        assert not tree.horizontalScrollBar().isVisible()
+        assert tree.header().isSectionHidden(2)
+        rows = _stat_rows(tree)
+        assert rows
+        for item in rows:
+            note = item.text(2)
+            assert item.toolTip(0) == (f"{item.text(0)}: {note}" if note else item.text(0)), item.text(0)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_a_wide_view_pane_shows_note_and_every_stat_label_in_full() -> None:
+    """TASK-407 at a 600 px pane, Player 1. Pass conditions: Note shown; Stat at its content
+    width and Value at no less than its own; no horizontal scroll bar."""
+    window = _blank_window()
+    try:
+        window.mode_combo.setCurrentText("View")
+        _set_left(window, 600)
+        _show_view_player(window, 1)
+        tree = window.info_tree
+        assert not tree.header().isSectionHidden(2)
+        assert tree.columnWidth(0) == tree.sizeHintForColumn(0)
+        assert tree.columnWidth(1) >= tree.sizeHintForColumn(1)
+        assert not tree.horizontalScrollBar().isVisible()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() -> None:
+    """TASK-407: the Note column's hiding follows the pane width, never sticks.
+    Pass conditions: at the floor, 600 px, then the floor again, Note is hidden, shown, hidden,
+    with no horizontal scroll bar at any of the three."""
+    window = _blank_window()
+    try:
+        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        _show_view_player(window, 1)
+        tree = window.info_tree
+        seen = []
+        for px in (floor, 600, floor):
+            _set_left(window, px)
+            seen.append(tree.header().isSectionHidden(2))
+            assert not tree.horizontalScrollBar().isVisible(), px
+        assert seen == [True, False, True]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
+    """TASK-407: a 1.5x tree font at View's floor (Player 1) leaves no horizontal scroll bar."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _blank_window()
+    try:
+        _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        _show_view_player(window, 1)
+        tree = window.info_tree
+        font = tree.font()
+        font.setPointSizeF(font.pointSizeF() * 1.5)
+        tree.setFont(font)
+        QApplication.processEvents()
+        assert not tree.horizontalScrollBar().isVisible()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_a_long_player_label_elides_inside_the_view_floor() -> None:
+    """TASK-407: Player 1 labelled with 40+ characters, at View's floor. Pass conditions: the
+    combo lies wholly inside the table's viewport with no horizontal scroll bar; it paints an
+    elided label; its popup's item text is the full label."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import player_labels
+
+    long = "P1 - The Very Long Tribe Name Of The North Coast"
+    assert len(long) >= 40
+    window = _blank_window()
+    try:
+        base = player_labels.DEFAULT_LABELS
+        window._player_labels = player_labels.PlayerLabels(
+            (base.text[0], long, *base.text[2:]), (base.full[0], long, *base.full[2:])
+        )
+        window._relabel_stats_players()
+        _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        _show_view_player(window, 1)
+        QApplication.processEvents()
+        tree = window.info_tree
+        combo = window.stats_player_combo
+        viewport = tree.viewport()
+        left = combo.mapTo(viewport, QPoint(0, 0)).x()
+        assert left >= 0 and left + combo.width() <= viewport.width(), (left, combo.width(), viewport.width())
+        assert not tree.horizontalScrollBar().isVisible()
+        shown = combo.displayed_text()
+        assert shown.endswith("…") and len(shown) < len(long), shown
+        assert combo.view().model().index(combo.currentIndex(), 0).data() == long
     finally:
         conftest.close_window(window)
 

@@ -870,9 +870,10 @@ class StackBadgeItem(QGraphicsItem):
     Each badge is an (anchor, centre) pair of scene points handed in by
     MapView (GH #100: the tile's named edge midpoint or corner, and the tile
     centre), so this item knows nothing about terrain styles. Tucked, the box
-    sits inside the tile against its anchor, on the centre's side per axis;
-    untucked it sits above the anchor (the original look). Drawn in device
-    space like EdgeTickItem, so a badge stays one size at every zoom; the
+    sits inside the tile against its anchor, on the centre's side per axis,
+    and on a tile too small for that it stops with its centre on the tile
+    centre's line; untucked it sits above the anchor (the original look).
+    Drawn in device space like EdgeTickItem, so a badge stays one size at every zoom; the
     whole layer drops out once a tile is too small on screen for a badge to
     say which tile it belongs to."""
 
@@ -948,10 +949,11 @@ class StackBadgeItem(QGraphicsItem):
         def _side(delta: float) -> int:
             return 0 if abs(delta) <= self.AXIS_TIE_PX else (1 if delta > 0 else -1)
 
-        sx = _side(centre.x() - anchor.x())
-        sy = _side(centre.y() - anchor.y())
-        cx = anchor.x() + sx * (w / 2.0 + self.GAP_PX)
-        cy = anchor.y() + sy * (h / 2.0 + self.GAP_PX)
+        dx = centre.x() - anchor.x()
+        dy = centre.y() - anchor.y()
+        # Capped at the centre's line, so on a short tile bottom never draws above top (TASK-422).
+        cx = anchor.x() + _side(dx) * min(w / 2.0 + self.GAP_PX, abs(dx))
+        cy = anchor.y() + _side(dy) * min(h / 2.0 + self.GAP_PX, abs(dy))
         return QRectF(cx - w / 2.0, cy - h / 2.0, w, h)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:

@@ -484,6 +484,242 @@ def test_the_dialogs_own_units_path_previews_and_auto_undoes() -> None:
         window.close()
 
 
+# --- TASK-250: the overlap policy ---------------------------------------------
+
+
+def _place_axis_castle(window):
+    """test_mirroring_units_refuses_a_straddling_building's castle: across
+    mode 1's axis, and across mode 5's centre too."""
+    n = window.scenario.map_manager.map_width
+    return _place(window, 82, n / 2 - 1.0, n / 2 - 1.0)
+
+
+def _units_dialog(window, mode_id: int, policy: str | None = None):
+    from descape.viewer import MirrorDialog
+
+    dialog = MirrorDialog(window)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(mode_id))
+    dialog.units_checkbox.setChecked(True)
+    if policy is not None:
+        dialog.overlaps_combo.setCurrentIndex(dialog.overlaps_combo.findData(policy))
+    return dialog
+
+
+def _log_since(window, before: str) -> str:
+    text = window.status_log.toPlainText()
+    assert text.startswith(before)
+    return text[len(before):]
+
+
+def test_overlap_control_follows_the_units_box() -> None:
+    from descape.mirror_tools import OVERLAP_POLICIES, OVERLAPS_PLACE, OVERLAPS_REFUSE
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        combo = dialog.overlaps_combo
+        assert dialog.overlaps_label.text() == "Overlapping copies:"
+        assert [combo.itemText(i) for i in range(combo.count())] == ["Refuse", "Skip them", "Place anyway"]
+        assert [combo.itemData(i) for i in range(combo.count())] == list(OVERLAP_POLICIES)
+        assert combo.currentData() == OVERLAPS_REFUSE
+        assert "Elevation seams and garrisoned units outside the source slice still refuse" in combo.toolTip()
+        dialog.layout().activate()
+        assert dialog.overlaps_label.geometry().x() > dialog.units_checkbox.geometry().x(), "not indented"
+
+        assert not combo.isEnabled() and not dialog.overlaps_label.isEnabled()
+        dialog.units_checkbox.setChecked(True)
+        assert combo.isEnabled() and dialog.overlaps_label.isEnabled()
+        dialog.units_checkbox.setChecked(False)
+        assert not combo.isEnabled() and not dialog.overlaps_label.isEnabled()
+
+        combo.setCurrentIndex(combo.findData(OVERLAPS_PLACE))
+        dialog.reject()
+        reopened = MirrorDialog(window)
+        assert reopened.overlaps_combo.currentData() == OVERLAPS_REFUSE, "the pick must not persist"
+        assert not reopened.overlaps_combo.isEnabled()
+        reopened.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize(("policy", "fate", "added"), [("skip", "skipped", 0), ("place", "placed overlapping", 1)])
+def test_skip_and_place_mirror_past_a_straddling_building(policy, fate, added) -> None:
+    from PyQt5.QtWidgets import QDialog
+
+    from descape.edit_history import tile_state
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        _paint_asymmetric_tiles(window)
+        castle = _place_axis_castle(window)
+        before_tiles = [tile_state(t) for t in mm.terrain]
+        before_units = len(_units(window))
+        before_cursor = window.edit_history.cursor
+        before_log = window.status_log.toPlainText()
+
+        dialog = _units_dialog(window, 1, policy)
+        (overlap,) = dialog._compute_unit_plan(dialog._compute_plan()).overlapping
+        dialog._on_apply()
+
+        assert dialog.result() == QDialog.Accepted
+        assert window.edit_history.cursor == before_cursor + 1
+        assert window.edit_history.peek_undo().label == "Mirror Map"
+        assert len(_units(window)) == before_units + added
+        if added:
+            placed = max(_units(window), key=lambda u: u.reference_id)
+            assert (placed.unit_const, placed.x, placed.y) == (castle.unit_const, overlap.x, overlap.y)
+        log = _log_since(window, before_log)
+        assert "Mirrored" in log
+        assert f"; 1 overlapping cop(ies) {fate} (e.g. ({int(overlap.x)}, {int(overlap.y)}))" in log
+
+        window.undo()
+        assert len(_units(window)) == before_units
+        assert [tile_state(t) for t in mm.terrain] == before_tiles
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("policy", ["refuse", "skip", "place"])
+def test_no_overlap_policy_gets_past_an_elevation_seam(policy) -> None:
+    """D3: the policy rides on the unit plan only, so with straddlers present
+    every policy still meets on_mirror()'s elevation refusal. Under refuse
+    the unit check fires first, so that arm asserts no message text."""
+    from descape.mirror_tools import OVERLAP_POLICIES, MirrorPlan, plan_mirror_units
+
+    assert policy in OVERLAP_POLICIES
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        _place_axis_castle(window)
+        source = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=False).source_indices
+        unit_plan = plan_mirror_units(mm, 1, 0, window.scenario.unit_manager.units, source, overlaps=policy)
+        assert unit_plan.straddling and unit_plan.overlapping, "no straddler, so the policy is never exercised"
+        seam = MirrorPlan(changes=[(0, (5, 0, -1))], source_indices=source, elevation_violations=[(0, 1)])
+        before_records = len(window.edit_history.records)
+        before_units = len(_units(window))
+        before_log = window.status_log.toPlainText()
+
+        assert window.on_mirror(seam, unit_plan) is None
+        assert len(window.edit_history.records) == before_records
+        assert len(_units(window)) == before_units
+        log = _log_since(window, before_log)
+        assert "refused" in log
+        if policy != "refuse":
+            assert "elevation seam" in log
+            assert "straddle" not in log
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_summary_under_skip_is_not_blocked_by_overlaps_alone() -> None:
+    window = _mirror_window()
+    try:
+        _place_axis_castle(window)
+        dialog = _units_dialog(window, 1)
+        text = dialog.summary_label.text()
+        assert "BLOCKED" in text and "straddle" in text  # refuse, the default
+        assert dialog.summary_label.styleSheet() != ""
+
+        dialog.overlaps_combo.setCurrentIndex(dialog.overlaps_combo.findData("skip"))
+        text = dialog.summary_label.text()
+        assert "BLOCKED" not in text and "straddle" not in text
+        assert "1 unit cop(ies) overlap the source and will be skipped" in text
+        assert dialog.summary_label.styleSheet() == ""
+
+        dialog.overlaps_combo.setCurrentIndex(dialog.overlaps_combo.findData("place"))
+        assert "1 unit cop(ies) overlap the source and will be placed overlapping" in dialog.summary_label.text()
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_summary_under_skip_is_blocked_by_an_elevation_seam() -> None:
+    """The reverse: a real seam (test_mirror_tools' ramp, under mode 5) keeps
+    the summary BLOCKED and Apply refusing, whatever the overlap pick."""
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        n = mm.map_width
+
+        def _ramp() -> None:
+            for y in range(n):
+                for x in range(n):
+                    mm.terrain[y * n + x].elevation = 0 if x < n // 2 else min(x - n // 2, 3)
+
+        window.edit_history.apply("Ramp", mm.terrain, _ramp)
+        _place_axis_castle(window)
+        assert plan_mirror(mm, 5, 0, do_terrain=True, do_elevation=True).elevation_violations
+        before_records = len(window.edit_history.records)
+
+        dialog = _units_dialog(window, 5, "skip")
+        assert dialog.elevation_checkbox.isChecked()
+        assert dialog._compute_unit_plan(dialog._compute_plan()).straddling
+        text = dialog.summary_label.text()
+        assert "BLOCKED" in text and "elevation seam" in text
+        assert "straddle" not in text
+        assert dialog.summary_label.styleSheet() != ""
+
+        dialog._on_apply()
+        assert dialog.result() != dialog.Accepted
+        assert len(window.edit_history.records) == before_records
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_changing_the_overlap_policy_undoes_a_live_preview() -> None:
+    """D4: the combo goes through _on_option_changed() like every other option."""
+    window = _mirror_window()
+    try:
+        _paint_asymmetric_tiles(window)
+        _place_axis_castle(window)
+        before = len(_units(window))
+        dialog = _units_dialog(window, 1, "place")
+        dialog._on_preview()
+        assert len(_units(window)) == before + 1
+        dialog.overlaps_combo.setCurrentIndex(dialog.overlaps_combo.findData("skip"))
+        assert len(_units(window)) == before, "changing the policy must undo the preview"
+        assert dialog._preview_record is None
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_garrison_block_under_skip_refuses_without_naming_the_straddlers() -> None:
+    """D2: skip waives the straddlers, never a garrison, and the refusal names
+    only what actually blocks."""
+    from descape.mirror_tools import plan_mirror_units
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        n = mm.map_width
+        oak = _place(window, 349, 10.5, 12.5, player=0)
+        holder = _place(window, 70, n - 10.0, n - 10.0)  # a house in the destination slice
+        _place_axis_castle(window)
+        plan = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=False)
+        unit_plan = plan_mirror_units(
+            mm, 1, 0, window.scenario.unit_manager.units, plan.source_indices,
+            referencing=lambda u: [oak] if u is holder else [], overlaps="skip",
+        )
+        assert unit_plan.garrisoned_blockers == [holder] and unit_plan.straddling
+        before_log = window.status_log.toPlainText()
+        assert window.on_mirror(plan, unit_plan) is None
+        log = _log_since(window, before_log)
+        assert "garrison" in log and "straddle" not in log
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # --- angular modes (6-way / 3-fold) ------------------------------------------
 
 
@@ -634,5 +870,58 @@ def test_a_six_way_mirror_with_units_is_one_undo_step() -> None:
         assert [tile_state(t) for t in mm.terrain] == before_tiles
         assert len(_units(window)) == before_units
     finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- TASK-450: a pre-1.55 file's units have no readable caption ---------------
+
+
+@pytest.mark.parametrize("error", ["UnsupportedAttributeError", "AttributeError"])
+def test_mirroring_units_survives_an_unreadable_caption(error) -> None:
+    """A pre-1.55 load leaves Unit's caption fields raising
+    UnsupportedAttributeError (test_unit_model's _poison_unit_caption_fields
+    shape); a unit parsed then reads as plain AttributeError once add() has
+    depoisoned the class (test_region_clipboard's poisoned-parse case). The
+    copy falls back to -1/"" only where the read raises: add() depoisons, so
+    the second source's real caption still copies."""
+    from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
+    from AoE2ScenarioParser.objects.data_objects.unit import Unit
+    from PyQt5.QtWidgets import QDialog
+
+    from descape import library_compat
+
+    exc = {"UnsupportedAttributeError": UnsupportedAttributeError, "AttributeError": AttributeError}[error]
+
+    def _raise(self_, val=None):
+        raise exc("synthetic pre-1.55 caption read")
+
+    window = _mirror_window()
+    try:
+        model = window._ensure_unit_edits()
+        model.begin_unit_edit([0])
+        for x, y in [(10.5, 12.5), (14.5, 20.5)]:  # two oaks inside mode 1's source slice
+            model.add(player=0, unit_const=349, x=x, y=y, caption_string_id=7, caption_string="Hi")
+        model.commit_unit_edit("Place oaks", window.edit_history)
+        window._after_unit_mutation()
+        before_units = len(_units(window))
+        before_cursor = window.edit_history.cursor
+        dialog = _units_dialog(window, 1)
+
+        Unit.caption_string_id = property(_raise, _raise)
+        Unit.caption_string = property(_raise, _raise)
+        try:
+            dialog._on_apply()
+        finally:
+            library_compat.depoison()
+
+        assert dialog.result() == QDialog.Accepted
+        assert window.edit_history.cursor == before_cursor + 1
+        copies = sorted(_units(window), key=lambda u: u.reference_id)[before_units:]
+        assert [(u.caption_string_id, u.caption_string) for u in copies] == [(-1, ""), (7, "Hi")]
+        window.undo()
+        assert len(_units(window)) == before_units
+    finally:
+        library_compat.depoison()
         window.edit_history.mark_saved()
         window.close()
