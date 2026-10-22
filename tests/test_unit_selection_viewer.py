@@ -265,6 +265,44 @@ def test_inspector_populates_and_clears() -> None:
         _close(window)
 
 
+@pytest.mark.parametrize("operation", ["open", "close"])
+@pytest.mark.parametrize("count", [1, 2])
+def test_opening_or_closing_a_map_clears_the_units_inspector(operation, count, tmp_path) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        panel = window.units_panel
+        _select(window, *window.map_view._unit_index.entries[:count])
+        assert len(window._selection) == count
+        assert panel.unit_inspector_grid.isVisibleTo(window.left_stack)
+        assert panel.unit_field_labels["name"].text()
+
+        if operation == "open":
+            window.load_scenario(_UNITS_FIXTURE)
+            assert window.scenario.path == _UNITS_FIXTURE
+        else:
+            window.close_scenario()
+            assert window.scenario is None
+
+        assert window.mode == "units"
+        assert window._selection == []
+        assert not window.map_view._unit_select_groups
+        assert panel.unit_inspector_empty.isVisibleTo(window.left_stack)
+        assert panel.unit_inspector_empty.text() == "No unit selected"
+        assert not panel.unit_inspector_grid.isVisibleTo(window.left_stack)
+        assert not panel.unit_header.isVisibleTo(window.left_stack)
+        assert not panel.unit_stats_grid.isVisibleTo(window.left_stack)
+        assert all(label.text() == "" for label in panel.unit_field_labels.values())
+        assert panel.placing_card.isVisibleTo(window.left_stack)
+        window.show()
+        QApplication.processEvents()
+        assert panel.grab().save(str(tmp_path / "empty_units_inspector.png"))
+    finally:
+        _close(window)
+
+
 def test_a_tree_shows_only_hit_points_no_combat_rows() -> None:
     """Const 349 (Oak tree, this file's _TREE_CONST) has hp=20 and neither a
     type_50 nor a creatable block -- the four combat rows must disappear
@@ -547,10 +585,12 @@ def test_a_selected_unit_an_undo_in_terrain_mode_removes_is_dropped() -> None:
         assert len(window._selection) == 1, "Place Unit selects what it placed"
         window.mode_combo.setCurrentText("Terrain")
         assert mv._unit_select_groups
+        assert window.scatter_action.isEnabled()
 
         window.undo()
         assert window._selection == []
         assert mv._unit_select_keys == [] and not mv._unit_select_groups
+        assert not window.scatter_action.isEnabled()
 
         window.mode_combo.setCurrentText("Units")
         assert window.units_panel.unit_inspector_empty.isVisibleTo(window.left_stack)
@@ -605,6 +645,92 @@ def test_a_filter_toggle_in_terrain_drops_the_selected_unit_it_hides() -> None:
         assert window._selection == [key]
         assert mv._unit_select_keys == [key]
         assert list(mv._unit_select_groups) == [_tint(window, 1)]
+        assert window.scatter_action.isEnabled(), "the surviving selection still supplies an area"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.parametrize("tool", ["elevation", "set_level"])
+@pytest.mark.parametrize("flush_last_step", [False, True])
+@pytest.mark.parametrize("end", ["release", "tool_switch"])
+def test_a_kept_selection_refreshes_once_after_an_elevation_drag(monkeypatch, style, tool, flush_last_step, end) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    held = {"value": False}
+    monkeypatch.setattr(QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if held["value"] else Qt.NoButton))
+    try:
+        mv = window.map_view
+        window.scenario.unit_manager.units[1].append(
+            SyntheticUnit(x=20.0, y=20.0, unit_const=_BUILDING_CONST, reference_id=102)
+        )
+        window.terrain_style_combo.setCurrentText(style)
+        assert mv._terrain_style == style.lower()
+        window.mode_combo.setCurrentText("Units")
+        _select(window, _entry_for(window, 1))
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected(tool)
+        window.elevation_level_spin.setValue(4)
+        QApplication.processEvents()
+        before = next(iter(mv._unit_select_groups.values()))[2].path()
+        calls = []
+        real_refresh = mv.refresh_unit_highlight
+
+        def refresh():
+            calls.append(mv._stroke_active)
+            real_refresh()
+
+        monkeypatch.setattr(mv, "refresh_unit_highlight", refresh)
+        held["value"] = True
+        mv.mousePressEvent(conftest.mouse_event(
+            QEvent.MouseButtonPress, conftest.polygon_viewport_pos(mv, 20, 20), Qt.LeftButton, Qt.LeftButton
+        ))
+        QApplication.processEvents()
+        for step in range(1, 8):
+            mv.mouseMoveEvent(conftest.mouse_event(
+                QEvent.MouseMove, conftest.polygon_viewport_pos(mv, 20 + step, 20), Qt.NoButton, Qt.LeftButton
+            ))
+            if step < 7 or flush_last_step:
+                QApplication.processEvents()
+        assert mv._stroke_active and window.edit_history.in_stroke, "the drag ended early"
+        held["value"] = False
+        if end == "release":
+            mv.mouseReleaseEvent(conftest.mouse_event(
+                QEvent.MouseButtonRelease, conftest.polygon_viewport_pos(mv, 27, 20), Qt.LeftButton, Qt.NoButton
+            ))
+        else:
+            window._on_tool_selected("pan")
+        QApplication.processEvents()
+        QApplication.processEvents()  # A leftover timer must not rebuild it a second time.
+        assert calls == [False], "refresh once after release, never between drag steps"
+        assert window._selection == [(1, 102)]
+        after = next(iter(mv._unit_select_groups.values()))[2].path()
+        assert after != before, "the stroke did not move the highlight"
+        assert after == mv._unit_path(mv._unit_index.entry_for_key((1, 102)))
+    finally:
+        held["value"] = False
+        if window.map_view._stroke_active:
+            window.map_view._end_stroke()
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("reconcile", ["filter", "render"])
+def test_losing_the_last_kept_key_disables_scatter_in_terrain(reconcile) -> None:
+    window = _window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        _select(window, _entry_for(window, GAIA_PLAYER_ID))
+        window.mode_combo.setCurrentText("Terrain")
+        assert window.scatter_action.isEnabled() and window._region is None
+        if reconcile == "filter":
+            window.show_gaia_action.setChecked(False)
+        else:
+            window.scenario.unit_manager.units[GAIA_PLAYER_ID].clear()
+            window._render_current(reset_view=False)
+        assert window._selection == []
+        assert not window.scatter_action.isEnabled()
     finally:
         _close(window)
 

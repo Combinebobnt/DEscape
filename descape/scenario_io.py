@@ -168,8 +168,16 @@ def is_in_game_profile(path: Path | str) -> bool:
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 BLANK_TEMPLATE_TILES = 120
 BLANK_TEMPLATE_PATH = TEMPLATE_DIR / f"blank_{BLANK_TEMPLATE_TILES}x{BLANK_TEMPLATE_TILES}.aoe2scenario"
+# The Return of Rome donor (GH #243): a blank 120x120 map saved by the 1.59 RoR
+# editor (header variant 2), with its Grass Green scatter removed by
+# tools/strip_units.py, with the FileHeader creator_name then set to "DEscape"
+# (tests/test_scenario_new.py checks it). Not generated: to refresh it for a new
+# scenario version, save a blank 120x120 map in the RoR editor and repeat both
+# steps; tests/test_blank_template.py fails until then.
+BLANK_ROR_TEMPLATE_PATH = TEMPLATE_DIR / f"blank_ror_{BLANK_TEMPLATE_TILES}x{BLANK_TEMPLATE_TILES}.aoe2scenario"
 
-# Sizes with a shipped template on disk in TEMPLATE_DIR -- just the one donor now.
+# Sizes with a shipped AoE2 template on disk in TEMPLATE_DIR -- just the one donor now
+# (the Return of Rome donor above is the same size).
 # The 240x240 and 480x480 exports that used to live here moved to
 # tests/fixtures/real_blank_*.aoe2scenario: descape/scenario_new.py's splice
 # reproduces them byte-for-byte from the 1.58 export this donor is generated

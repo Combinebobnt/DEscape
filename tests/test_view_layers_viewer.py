@@ -46,6 +46,9 @@ def sprite_install(tmp_path, monkeypatch):
     reachable at all -- tests/test_sprite_toggle_viewer.py's fixture of the
     same name, for the same reason (the farm layer is requires_sprites, so
     without this it is permanently greyed and half this file is vacuous)."""
+    # A hover can cache the fake table's empty wall set for later tests in the same worker.
+    viewer._wall_consts.cache_clear()
+    assert viewer._wall_consts(), "cache the real wall family before patching its source"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
@@ -57,6 +60,10 @@ def sprite_install(tmp_path, monkeypatch):
     asset_source.set_install_path_override(tmp_path)
     yield tmp_path
     asset_source.set_install_path_override(None)
+
+
+def test_the_synthetic_sprite_install_keeps_the_real_wall_run_consts(sprite_install) -> None:
+    assert {72, 117, 231} <= viewer._wall_consts(), "the fake sprite table poisoned the cached wall family"
 
 
 def test_the_submenu_has_one_checked_action_per_registry_row() -> None:

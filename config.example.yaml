@@ -280,6 +280,17 @@ units_catalog_mode: icons
 # recent_files:
 #   - /path/to/recent_scenario.aoe2scenario
 
+# File > New Map…'s last choices, saved automatically when you press Create in
+# that dialog -- not something you normally set by hand. Omitted entirely
+# until first saved; until then the dialog opens at the values below.
+# tiles is clamped to 61-480 and elevation to 0-15; game_data is
+# aoe2 or ror; terrain_id is a terrain id (0 is Grass 1).
+# new_map:
+#   tiles: 120
+#   game_data: aoe2
+#   terrain_id: 0
+#   elevation: 0
+
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.
 # Omit an entry to leave that action at its default; "" means unbound.

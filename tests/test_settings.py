@@ -939,6 +939,49 @@ def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> N
     assert settings.get_pan_speed() == settings.PAN_SPEED_MAX
 
 
+_NEW_MAP_DEFAULT = {"tiles": 120, "game_data": "aoe2", "terrain_id": 0, "elevation": 0}
+
+
+def test_new_map_choice_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    assert settings.get_new_map_choice() == _NEW_MAP_DEFAULT
+    choice = {"tiles": 300, "game_data": "ror", "terrain_id": 35, "elevation": 7}
+    settings.set_new_map_choice(choice)
+    monkeypatch.setattr(settings, "_new_map", None)
+    assert settings.get_new_map_choice() == choice
+    import yaml
+
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["new_map"] == choice
+
+
+def test_new_map_choice_returns_a_copy() -> None:
+    settings.get_new_map_choice()["tiles"] = 200
+    assert settings.get_new_map_choice()["tiles"] == 120
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("new_map: {tiles: 10}\n", {"tiles": 61}),
+    ("new_map: {tiles: 9999}\n", {"tiles": 480}),
+    ("new_map: {tiles: big}\n", {}),
+    ("new_map: {tiles: true}\n", {}),
+    ("new_map: {tiles: .inf}\n", {}),
+    ("new_map: {game_data: aok}\n", {}),
+    ("new_map: {terrain_id: 256}\n", {}),
+    ("new_map: {terrain_id: -1}\n", {}),
+    ("new_map: {terrain_id: 35, elevation: 99}\n", {"terrain_id": 35, "elevation": 15}),
+    ("new_map: {elevation: -3}\n", {"elevation": 0}),
+    ("new_map: [1, 2]\n", {}),
+    ("new_map:\n", {}),
+])
+def test_a_bad_new_map_field_falls_back_on_its_own(tmp_path: Path, raw: str, expected: dict) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_new_map_choice() == {**_NEW_MAP_DEFAULT, **expected}
+
+
+def test_the_new_map_setter_cleans_before_writing(tmp_path: Path) -> None:
+    settings.set_new_map_choice({"tiles": 5000, "game_data": "x", "terrain_id": 2, "elevation": 3})
+    assert settings.get_new_map_choice() == {**_NEW_MAP_DEFAULT, "tiles": 480, "terrain_id": 2, "elevation": 3}
+
+
 def test_wall_opacity_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
     assert settings.get_wall_opacity_pct() == view_layers.WALL_OPACITY_DEFAULT_PCT
     settings.set_wall_opacity_pct(30)

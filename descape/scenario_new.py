@@ -1,4 +1,4 @@
-"""Generates a blank N x N (or W x H) .aoe2scenario map on demand, for File > New Map --
+"""Generates a blank N x N (or W x H) .aoe2scenario map on demand, for File > New Map… --
 a sibling of descape/scenario_write.py, not a change to it. write_scenario()
 patches the terrain struct array in place at its original length and never
 touches map_width/map_height (see its own docstring); it structurally cannot
@@ -7,7 +7,10 @@ tools/strip_units.py already has to write_scenario().
 
 Why the splice works: a blank template's terrain array is BLANK_TERRAIN_STRUCT
 repeated once per tile (terrain_id 0, elevation 0, layer -1 -- confirmed
-against every tile of all three shipped templates, not sampled). In the
+against every tile of all three shipped templates, not sampled). That is
+the default fill; File > New Map…'s dialog can pick another terrain and
+elevation, which changes only bytes 0 and 1 of each struct
+(blank_terrain_struct()). In the
 decompressed body, map_width and map_height are two consecutive little-endian
 s32 immediately preceding the terrain array: Map's last three retrievers are
 map_width, map_height, terrain_data, in that order, in every DE
@@ -47,8 +50,11 @@ path.
 from __future__ import annotations
 
 import struct
+from pathlib import Path
 
+from descape import game_dataset, iso_geometry, player_fields
 from descape.scenario_io import (
+    BLANK_ROR_TEMPLATE_PATH,
     BLANK_TEMPLATE_PATH,
     TERRAIN_STRUCT_SIZE,
     LoadedScenario,
@@ -60,11 +66,11 @@ BLANK_TERRAIN_STRUCT = b"\x00\x00\x00\xff\xff\xff\xff"
 
 # The 7 sizes real AoE2:DE scenarios use -- confirmed empirically, not from
 # memory: every one of the 20 real campaign files in examples/ (scenario
-# versions 1.37-1.59) is exactly one of these. File > New Map's size submenu.
+# versions 1.37-1.59) is exactly one of these. File > New Map…'s Size presets.
 STANDARD_MAP_SIZES = (120, 144, 168, 200, 220, 240, 480)
 
 # In-game names for each STANDARD_MAP_SIZES entry, used to label File > New
-# Map's submenu. Sourced from AoE2:DE community references (Liquipedia et
+# Map…'s Size presets. Sourced from AoE2:DE community references (Liquipedia et
 # al.), not read off the real Scenario Editor's Map tab -- if the in-game
 # wording ever turns out to differ, fix it here.
 STANDARD_MAP_SIZE_NAMES = {
@@ -87,7 +93,7 @@ STANDARD_MAP_SIZE_NAMES = {
 MIN_MAP_TILES = 61
 MAX_MAP_TILES = 480
 
-# GUI-only: above this, File > New Map > Custom size... asks for confirmation
+# GUI-only: above this, File > New Map…'s Custom size asks for confirmation
 # before generating. Not enforced here -- validate_tiles() only knows the
 # hard bounds above. The labelled 480 preset does NOT confirm: it's a
 # deliberate choice on the one large size already in-game proven, not a
@@ -96,10 +102,21 @@ LARGE_MAP_CONFIRM_TILES = 240
 
 _SIZE_STRUCT = struct.Struct("<ii")
 
+_CAMERA_STRUCTS = {
+    "f32": struct.Struct("<f"),
+    "s16": struct.Struct("<h"),
+    "s32": struct.Struct("<i"),
+}
+
 
 class MapSizeError(ValueError):
     """Raised by validate_map_size()/blank_body() for a width or height
     outside [MIN_MAP_TILES, MAX_MAP_TILES]."""
+
+
+class BlankFillError(ValueError):
+    """Raised by blank_terrain_struct() for a terrain id outside 0..255 or
+    an elevation outside iso_geometry's MIN_ELEVATION..MAX_ELEVATION."""
 
 
 class BlankGenerationError(Exception):
@@ -132,13 +149,63 @@ def validate_tiles(tiles: int) -> int:
     return validate_map_size(tiles)[0]
 
 
-def blank_body(donor: LoadedScenario, width: int, height: int | None = None) -> bytes:
+def clamp_cameras(body: bytearray, fields, shift: int, new_w: int, new_h: int) -> int:
+    """Clamps every camera coordinate in `fields` (player_fields.camera_fields())
+    above the new map's last tile down to it, in place, reading the *current*
+    value from `body` at each field's offset plus `shift`. Values below 0 (the
+    unset -1) stay as they are. Returns how many were changed. Shared by File
+    > New Map… and Map > Resize Map…."""
+    changed = 0
+    for field in fields:
+        t = field.target
+        codec = _CAMERA_STRUCTS[t.codec]
+        offset = t.offset + shift
+        (value,) = codec.unpack_from(body, offset)
+        bound = (new_w if field.axis == "x" else new_h) - 1
+        if value > bound:
+            codec.pack_into(body, offset, float(bound) if t.codec == "f32" else bound)
+            changed += 1
+    return changed
+
+
+def blank_template_path_for(game_data: str) -> Path:
+    """The donor for a game_dataset id: Return of Rome's own blank map for
+    ROR, the AoE2 one for everything else."""
+    return BLANK_ROR_TEMPLATE_PATH if game_data == game_dataset.ROR else BLANK_TEMPLATE_PATH
+
+
+def blank_terrain_struct(terrain_id: int = 0, elevation: int = 0) -> bytes:
+    """BLANK_TERRAIN_STRUCT with its terrain_id (byte 0) and elevation (byte
+    1) replaced; the unused bytes and layer -1 stay. Raises BlankFillError
+    for a value outside its range. The defaults give BLANK_TERRAIN_STRUCT."""
+    for name, value, low, high in (
+        ("terrain id", terrain_id, 0, 255),
+        ("elevation", elevation, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+            raise BlankFillError(f"New map {name} {value!r} outside [{low}, {high}]")
+    return bytes((terrain_id, elevation)) + BLANK_TERRAIN_STRUCT[2:]
+
+
+def blank_body(
+    donor: LoadedScenario,
+    width: int,
+    height: int | None = None,
+    *,
+    terrain_id: int = 0,
+    elevation: int = 0,
+) -> bytes:
     """Returns a new decompressed body: donor.decompressed_body with
     map_width/map_height rewritten to (width, height) and the terrain struct
-    array replaced by width*height copies of BLANK_TERRAIN_STRUCT. height
+    array replaced by width*height copies of blank_terrain_struct(terrain_id,
+    elevation) (BLANK_TERRAIN_STRUCT by default). height
     defaults to width (square). Everything
     before map_width and everything after the old terrain array -- Units, the
-    never-parsed trigger tail -- is carried through byte-for-byte untouched.
+    never-parsed trigger tail -- is carried through byte-for-byte untouched,
+    except a player camera past the new map's last tile, which is clamped
+    onto it (clamp_cameras()). The Return of Rome donor has one at (29.8,
+    90.2), so a RoR map of 91 tiles or fewer needs it; every AoE2 donor camera is
+    at 60, so AoE2 output is unchanged.
 
     A non-square body is generated byte-correctly but does not load through
     the pinned library yet (its MapManager.terrain setter requires a perfect
@@ -146,6 +213,7 @@ def blank_body(donor: LoadedScenario, width: int, height: int | None = None) -> 
 
     Raises:
         MapSizeError: width or height is outside [MIN_MAP_TILES, MAX_MAP_TILES].
+        BlankFillError: terrain_id or elevation is out of range.
         BlankGenerationError: the donor doesn't meet this splice's
             preconditions -- either its own terrain block failed load-time
             verification (terrain_write_supported is False, so
@@ -154,9 +222,10 @@ def blank_body(donor: LoadedScenario, width: int, height: int | None = None) -> 
             terrain_block_offset - 8 don't match what was parsed (the same
             check scenario_io._verify_terrain_block() makes at load time, run
             again here because a caller could hand in a donor that was
-            mutated after loading).
+            mutated after loading), or its camera fields could not be located.
     """
     width, height = validate_map_size(width, height)
+    fill = blank_terrain_struct(terrain_id, elevation)
 
     if not donor.terrain_write_supported:
         raise BlankGenerationError(
@@ -181,28 +250,49 @@ def blank_body(donor: LoadedScenario, width: int, height: int | None = None) -> 
             f"match the parsed size ({old_w}, {old_h}) -- donor may be stale"
         )
 
-    return (
+    fields = player_fields.camera_fields(donor)
+    if fields is None:
+        raise BlankGenerationError(f"{donor.path}: camera positions could not be located")
+    # Before the splice, so the donor's own offsets still hold.
+    body = bytearray(body)
+    clamp_cameras(body, fields, 0, width, height)
+
+    return bytes(
         body[:size_offset]
         + _SIZE_STRUCT.pack(width, height)
-        + BLANK_TERRAIN_STRUCT * (width * height)
+        + fill * (width * height)
         + body[old_end:]
     )
 
 
 def blank_scenario_bytes(
-    width: int, donor: LoadedScenario | None = None, height: int | None = None
+    width: int,
+    donor: LoadedScenario | None = None,
+    height: int | None = None,
+    *,
+    terrain_id: int = 0,
+    elevation: int = 0,
+    game_data: str = game_dataset.AOE2,
 ) -> bytes:
     """Full .aoe2scenario file bytes for a blank width x height map (square
-    when height is None): donor's FileHeader verbatim, followed by the
-    recompressed spliced body. donor defaults to the shipped
-    BLANK_TEMPLATE_PATH (120x120)."""
+    when height is None), every tile terrain_id at elevation: donor's
+    FileHeader verbatim, followed by the recompressed spliced body. donor
+    defaults to game_data's shipped 120x120 template
+    (blank_template_path_for())."""
     if donor is None:
-        donor = load_map_and_units(BLANK_TEMPLATE_PATH)
-    return donor.header_bytes + _compress_bytes(blank_body(donor, width, height))
+        donor = load_map_and_units(blank_template_path_for(game_data))
+    body = blank_body(donor, width, height, terrain_id=terrain_id, elevation=elevation)
+    return donor.header_bytes + _compress_bytes(body)
 
 
 def load_blank_scenario(
-    width: int, donor: LoadedScenario | None = None, height: int | None = None
+    width: int,
+    donor: LoadedScenario | None = None,
+    height: int | None = None,
+    *,
+    terrain_id: int = 0,
+    elevation: int = 0,
+    game_data: str = game_dataset.AOE2,
 ) -> LoadedScenario:
     """blank_scenario_bytes() reloaded through the real loader -- offsets are
     never carried across a length-changing splice, the same discipline
@@ -212,7 +302,9 @@ def load_blank_scenario(
     from descape.scenario_io import load_map_and_units_from_bytes
 
     width, height = validate_map_size(width, height)
-    data = blank_scenario_bytes(width, donor, height)
+    data = blank_scenario_bytes(
+        width, donor, height, terrain_id=terrain_id, elevation=elevation, game_data=game_data
+    )
     return load_map_and_units_from_bytes(data, f"blank_{width}x{height}.aoe2scenario")
 
 
@@ -223,10 +315,14 @@ __all__ = [
     "MIN_MAP_TILES",
     "STANDARD_MAP_SIZES",
     "STANDARD_MAP_SIZE_NAMES",
+    "BlankFillError",
     "BlankGenerationError",
     "MapSizeError",
     "blank_body",
     "blank_scenario_bytes",
+    "blank_template_path_for",
+    "blank_terrain_struct",
+    "clamp_cameras",
     "load_blank_scenario",
     "validate_map_size",
     "validate_tiles",

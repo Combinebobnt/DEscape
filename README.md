@@ -541,7 +541,7 @@ regardless.
 The committed game-derived data files (`descape/terrain_texture_map.json`,
 `terrain_classes.json`, `terrain_blend_map.json`, `tree_unit_ids.json`, `unit_render_data.json`,
 `unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`) are factual id/name/filename correspondence tables, not
-game asset content. The six committed blank
+game asset content. The seven committed blank
 `.aoe2scenario` files hold default structural data containing no authored
 scenario content. Four under `tests/fixtures/` (`blank_120x120_v158`,
 `golden_blank_120x120`, `real_blank_240x240` and `real_blank_480x480`) are
@@ -549,7 +549,11 @@ unit-stripped exports of the in-game editor's own "Blank" map style, and
 `real_blank_120x120_v159` there is a blank map saved by the 1.59 game editor.
 `descape/templates/blank_120x120.aoe2scenario`, which every new map starts
 from, is the `blank_120x120_v158` export with its three version fields set to
-1.59 by `tools/gen_blank_template.py`. The exports and the game save are kept
+1.59 by `tools/gen_blank_template.py`.
+`descape/templates/blank_ror_120x120.aoe2scenario`, which every new Return
+of Rome map starts from, is a blank map saved by the 1.59 Return of Rome
+editor, unit-stripped the same way and with its creator name set to
+"DEscape". The exports and the game saves are kept
 as real game files rather than generated ones because
 `tests/test_scenario_new.py` and `tests/test_blank_template.py` use them as
 byte oracles (see `tests/README.md`). Nothing in this repository

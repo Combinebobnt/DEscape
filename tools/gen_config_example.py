@@ -32,6 +32,8 @@ from descape import (
     edge_ticks,
     grid_overlay,
     iso_geometry,
+    scenario_io,
+    scenario_new,
     settings,
     terrain_style,
     themes,
@@ -55,6 +57,9 @@ _GAME_DATA_IDS = " or ".join(cid for cid, _label in settings.GAME_DATA_CHOICES)
 _TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
+_NEW_MAP_GAME_DATA = " or ".join(settings.NEW_MAP_GAME_DATA)
+_NEW_MAP_TILES = f"{scenario_new.MIN_MAP_TILES}-{scenario_new.MAX_MAP_TILES}"
+_NEW_MAP_ELEVATIONS = f"{iso_geometry.MIN_ELEVATION}-{iso_geometry.MAX_ELEVATION}"
 _UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
 _VIEW_LAYER_LABELS = textwrap.fill(
     ", ".join(f"{spec.layer_id} ({spec.label.replace('&', '')})" for spec in view_layers.LAYERS),
@@ -373,6 +378,17 @@ units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 # only an example.
 # recent_files:
 #   - /path/to/recent_scenario.aoe2scenario
+
+# File > New Map…'s last choices, saved automatically when you press Create in
+# that dialog -- not something you normally set by hand. Omitted entirely
+# until first saved; until then the dialog opens at the values below.
+# tiles is clamped to {_NEW_MAP_TILES} and elevation to {_NEW_MAP_ELEVATIONS}; game_data is
+# {_NEW_MAP_GAME_DATA}; terrain_id is a terrain id (0 is Grass 1).
+# new_map:
+#   tiles: {scenario_io.BLANK_TEMPLATE_TILES}
+#   game_data: {settings.NEW_MAP_GAME_DATA[0]}
+#   terrain_id: {settings.NEW_MAP_DEFAULT_TERRAIN_ID}
+#   elevation: {settings.NEW_MAP_DEFAULT_ELEVATION}
 
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.

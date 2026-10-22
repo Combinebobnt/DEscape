@@ -5628,8 +5628,8 @@ class MapView(QGraphicsView):
         if self._ring_layer_wanted():
             with perf_trace.phase("ring_layer_refresh"):
                 self.refresh_ring_layer()
-        # Deferred like the outlines: a Select All selection can hold thousands of units.
-        if self._unit_select_keys:
+        # A timer can fire between every drag step; rebuild a large kept selection only at stroke end.
+        if self._unit_select_keys and not self._stroke_active:
             with perf_trace.phase("selection_refresh"):
                 self.refresh_unit_highlight()
 

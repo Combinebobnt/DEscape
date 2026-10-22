@@ -59,6 +59,7 @@ from descape.scenario_new import (
     MAX_MAP_TILES,
     MIN_MAP_TILES,
     MapSizeError,
+    clamp_cameras,
     validate_map_size,
 )
 from descape.scenario_write import PatchedBody, WriteBlockedError, _compress_bytes, build_patched
@@ -66,11 +67,6 @@ from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
 
 _SIZE_STRUCT = struct.Struct("<ii")
-_CAMERA_STRUCTS = {
-    "f32": struct.Struct("<f"),
-    "s16": struct.Struct("<h"),
-    "s32": struct.Struct("<i"),
-}
 
 
 class Anchor(Enum):
@@ -320,17 +316,7 @@ def _clamp_cameras(body: bytearray, scenario: LoadedScenario, shift: int, new_w:
     fields = player_fields.camera_fields(scenario)
     if fields is None:
         raise WriteBlockedError("This file's camera positions could not be located.")
-    changed = 0
-    for field in fields:
-        t = field.target
-        codec = _CAMERA_STRUCTS[t.codec]
-        offset = t.offset + shift
-        (value,) = codec.unpack_from(body, offset)
-        bound = (new_w if field.axis == "x" else new_h) - 1
-        if value > bound:
-            codec.pack_into(body, offset, float(bound) if t.codec == "f32" else bound)
-            changed += 1
-    return changed
+    return clamp_cameras(body, fields, shift, new_w, new_h)
 
 
 def resize_body(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor, patched: PatchedBody) -> bytes:

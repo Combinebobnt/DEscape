@@ -3,7 +3,7 @@ shipped donor template (descape.scenario_new.blank_scenario_bytes) and loads
 the result through the normal load path, marking the document untitled --
 rather than building a scenario from scratch through AoE2ScenarioParser's own
 (unverified, non-byte-stable) serializer. See scenario_new.py's docstring and
-descape/viewer.py's new_map()/new_map_custom().
+descape/viewer.py's new_map()/new_map_dialog().
 
 Non-GUI tests pin the donor template asset's own shape (dimensions, version,
 emptiness) and the write-guard that keeps Save As from ever overwriting a
@@ -11,7 +11,7 @@ shipped template -- both load-bearing for tests/test_write_path.py and
 tests/test_lazy_viewport.py, which assume this same file's geometry. The byte
 production itself -- reproducing real game exports at other sizes, bounds
 checking, precondition guards -- is tests/test_scenario_new.py's job, not
-this module's; GUI tests here trigger only a few of the seven standard sizes
+this module's; GUI tests here create only a few of the seven standard sizes
 to keep this file's own runtime down, on the understanding that the
 generator underneath every size is already covered there.
 
@@ -38,11 +38,7 @@ from descape.scenario_io import (
     blank_template_path,
     load_map_and_units,
 )
-from descape.scenario_new import (
-    LARGE_MAP_CONFIRM_TILES,
-    STANDARD_MAP_SIZE_NAMES,
-    STANDARD_MAP_SIZES,
-)
+from descape.scenario_new import LARGE_MAP_CONFIRM_TILES
 from descape.scenario_write import WriteBlockedError, write_scenario
 
 import conftest
@@ -90,6 +86,8 @@ def test_write_scenario_still_writes_elsewhere(tmp_path) -> None:
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_new_map_action_creates_untitled_document() -> None:
+    """file_new_default's action: a 120x120 Grass 1 map at elevation 0 with
+    no dialog (NewMapDialog.exec_in unpatched, so opening it would block)."""
     conftest.ensure_qapp()
     from PyQt5.QtGui import QKeySequence
 
@@ -98,7 +96,7 @@ def test_new_map_action_creates_untitled_document() -> None:
     window = ViewerWindow()
     try:
         # Trigger the QAction itself, not window.new_map() directly, so the
-        # menu wiring (_build_menu_bar's file_menu.addAction) is covered too.
+        # wiring is covered too.
         window.new_action.trigger()
 
         assert window.scenario is not None
@@ -112,10 +110,12 @@ def test_new_map_action_creates_untitled_document() -> None:
 
         mm = window.scenario.map_manager
         assert mm.map_width == mm.map_height == BLANK_TEMPLATE_TILES
+        assert all(t.terrain_id == 0 and t.elevation == 0 for t in mm.terrain)
 
         assert window.new_action.isEnabled()
         assert window.new_action.shortcut().isEmpty()
-        assert window.new_custom_action.shortcut() == QKeySequence("Ctrl+N")
+        assert window.new_action in window.actions()  # its keybind fires with no menu entry
+        assert window.new_map_action.shortcut() == QKeySequence("Ctrl+N")
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -123,40 +123,163 @@ def test_new_map_action_creates_untitled_document() -> None:
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-def test_new_map_size_submenu_actions_create_matching_size_document() -> None:
-    """window.new_size_actions holds one QAction per STANDARD_MAP_SIZES
-    (descape/viewer.py's File > New Map submenu), derived from the constant so
-    adding a size later needs no edit here, plus a separate Custom size…
-    action that is deliberately NOT part of new_size_actions (see
-    viewer.py's new_map_custom() docstring for why).
-
-    Triggers only three entries -- the 120 default, one mid-size (168), and
-    480 -- not all seven: each trigger is a full parse plus offscreen render,
-    and byte production at every size is already covered by
-    tests/test_scenario_new.py. This test's job is the signal wiring, not
-    the byte production."""
+def test_file_menu_has_new_map_dialog_action_and_no_size_submenu() -> None:
     conftest.ensure_qapp()
     from descape.viewer import ViewerWindow
 
     window = ViewerWindow()
     try:
-        assert [a.text() for a in window.new_size_actions] == [
-            f"{tiles}×{tiles} ({STANDARD_MAP_SIZE_NAMES[tiles]})" for tiles in STANDARD_MAP_SIZES
-        ]
-        assert window.new_custom_action.text() == "&Custom size…"
-        assert window.new_custom_action not in window.new_size_actions
+        file_menu = window.menuBar().actions()[0].menu()
+        actions = file_menu.actions()
+        assert actions[0] is window.new_map_action
+        assert window.new_map_action.text() == "&New Map…"
+        assert window.new_action not in actions
+        submenus = [a.text() for a in actions if a.menu() is not None]
+        assert "&New Map" not in submenus
+        assert window._keybind_actions["file_new"] is window.new_map_action
+        assert window._keybind_actions["file_new_default"] is window.new_action
+    finally:
+        window.close()
 
-        for tiles in (168, 480):
-            action = next(
-                a
-                for a in window.new_size_actions
-                if a.text() == f"{tiles}×{tiles} ({STANDARD_MAP_SIZE_NAMES[tiles]})"
-            )
-            action.trigger()
-            mm = window.scenario.map_manager
-            assert mm.map_width == mm.map_height == tiles
-            assert window._untitled is True
-            window.edit_history.mark_saved()  # keep _confirm_discard_changes() quiet for the next iteration
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_default_action_ignores_the_stored_dialog_choice() -> None:
+    """file_new_default stays 120x120 Grass 1 at 0 whatever New Map… last saved."""
+    conftest.ensure_qapp()
+    from descape import game_dataset, settings
+    from descape.viewer import ViewerWindow
+
+    settings.set_new_map_choice({"tiles": 144, "game_data": "ror", "terrain_id": _CORNER_TERRAIN, "elevation": 5})
+    window = ViewerWindow()
+    try:
+        window.new_action.trigger()
+        mm = window.scenario.map_manager
+        assert mm.map_width == mm.map_height == BLANK_TEMPLATE_TILES
+        assert all(t.terrain_id == 0 and t.elevation == 0 for t in mm.terrain)
+        assert game_dataset.from_variant(window.scenario.game_variant) == game_dataset.AOE2
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _patch_new_map_dialog(monkeypatch, *, tiles=None, terrain_id=None, elevation=None, accept=True, seen=None):
+    """NewMapDialog.exec_in without its event loop: records the dialog's
+    initial choice into `seen`, sets the given widgets, then accepts or
+    rejects. The size goes through the dialog's own Size/Custom logic."""
+    from PyQt5.QtWidgets import QDialog
+
+    from descape.new_map_dialog import NewMapDialog
+
+    def fake_exec(dialog, window):
+        if seen is not None:
+            seen.append(dialog.current_choice())
+        if not accept:
+            dialog.reject()
+            return QDialog.Rejected
+        if tiles is not None:
+            dialog._set_size(tiles)
+        if terrain_id is not None:
+            index = dialog.terrain_combo.findData(terrain_id)
+            assert index >= 0, terrain_id
+            dialog.terrain_combo.setCurrentIndex(index)
+        if elevation is not None:
+            dialog.elevation_spin.setValue(elevation)
+        dialog.accept()
+        return QDialog.Accepted
+
+    monkeypatch.setattr(NewMapDialog, "exec_in", fake_exec)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_new_map_dialog_creates_the_choice_and_remembers_it(monkeypatch) -> None:
+    """Ctrl+N's action through a patched dialog: the map gets the picked
+    size, terrain and elevation on every tile, the choice is saved to
+    config.yaml, and the next open starts from it."""
+    conftest.ensure_qapp()
+    from descape import settings
+    from descape.new_map_dialog import NewMapChoice
+    from descape.viewer import ViewerWindow
+
+    seen: list = []
+    _patch_new_map_dialog(monkeypatch, tiles=144, terrain_id=_CORNER_TERRAIN, elevation=3, seen=seen)
+
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        mm = window.scenario.map_manager
+        assert mm.map_width == mm.map_height == 144
+        assert all(t.terrain_id == _CORNER_TERRAIN and t.elevation == 3 for t in mm.terrain)
+        assert window._untitled is True
+        assert seen == [NewMapChoice()]
+
+        expected = {"tiles": 144, "game_data": "aoe2", "terrain_id": _CORNER_TERRAIN, "elevation": 3}
+        assert settings.get_new_map_choice() == expected
+        monkeypatch.setattr(settings, "_new_map", None)  # re-read from disk
+        assert settings.get_new_map_choice() == expected
+
+        window.edit_history.mark_saved()
+        _patch_new_map_dialog(monkeypatch, accept=False, seen=seen)
+        window.new_map_action.trigger()
+        assert seen[-1] == NewMapChoice.from_dict(expected)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_the_panel_is_built_once_and_rebuilt_for_other_game_data(monkeypatch) -> None:
+    """Reopening reuses the panel (its swatches stay decoded); a game data
+    switch, whose art the swatches come from, builds a new one."""
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QDialog
+
+    from descape import game_dataset
+    from descape.new_map_dialog import NewMapDialog
+    from descape.viewer import ViewerWindow
+
+    panels = []
+    monkeypatch.setattr(NewMapDialog, "exec_in", lambda dialog, window: panels.append(dialog) or QDialog.Rejected)
+
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        window.new_map_action.trigger()
+        assert len(panels) == 2 and panels[0] is panels[1]
+        game_dataset.set_active(game_dataset.ROR)
+        window.new_map_action.trigger()
+        assert panels[2] is not panels[0]
+        assert panels[2].built_for[0] == game_dataset.ROR
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_new_map_while_the_panel_is_open_does_nothing(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QDialog
+
+    from descape.new_map_dialog import NewMapDialog
+    from descape.viewer import ViewerWindow
+
+    opened = []
+
+    def reenter(dialog, window):
+        opened.append(dialog)
+        dialog.show()  # as exec_in leaves it while running
+        window.new_map_dialog()
+        dialog.hide()
+        return QDialog.Rejected
+
+    monkeypatch.setattr(NewMapDialog, "exec_in", reenter)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert len(opened) == 1
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -165,7 +288,7 @@ def test_new_map_size_submenu_actions_create_matching_size_document() -> None:
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_preset_480_does_not_confirm(monkeypatch) -> None:
-    """Pins the deliberate asymmetry in new_map_custom()'s docstring: the
+    """Pins the deliberate asymmetry in new_map_dialog()'s docstring: the
     labelled 480 preset never pops the large-map confirmation, only a typed
     Custom size above LARGE_MAP_CONFIRM_TILES does. Fails loudly (instead of
     hanging on an unclickable modal) if a future 'consistency fix' routes
@@ -178,11 +301,11 @@ def test_preset_480_does_not_confirm(monkeypatch) -> None:
         raise AssertionError("QMessageBox.question must not be called for the 480 preset")
 
     monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    _patch_new_map_dialog(monkeypatch, tiles=480)
 
     window = ViewerWindow()
     try:
-        action = next(a for a in window.new_size_actions if a.text() == "480×480 (Ludicrous)")
-        action.trigger()
+        window.new_map_action.trigger()
         mm = window.scenario.map_manager
         assert mm.map_width == mm.map_height == 480
     finally:
@@ -192,24 +315,21 @@ def test_preset_480_does_not_confirm(monkeypatch) -> None:
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-def test_custom_size_action_creates_that_size(monkeypatch) -> None:
-    """168 <= LARGE_MAP_CONFIRM_TILES, so this needs no QMessageBox patch at
-    all -- if new_map_custom() ever popped a confirm here, the unpatched
+def test_custom_size_creates_that_size(monkeypatch) -> None:
+    """170 <= LARGE_MAP_CONFIRM_TILES, so this needs no QMessageBox patch at
+    all -- if new_map_dialog() ever popped a confirm here, the unpatched
     QMessageBox.question would hang the offscreen run rather than silently
     pass, which is the point."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
 
-    monkeypatch.setattr(
-        viewer_module.QInputDialog, "getInt", staticmethod(lambda *a, **k: (168, True))
-    )
+    _patch_new_map_dialog(monkeypatch, tiles=170)
 
     window = ViewerWindow()
     try:
-        window.new_custom_action.trigger()
+        window.new_map_action.trigger()
         mm = window.scenario.map_manager
-        assert mm.map_width == mm.map_height == 168
+        assert mm.map_width == mm.map_height == 170
         assert window._untitled is True
     finally:
         window.edit_history.mark_saved()
@@ -218,22 +338,18 @@ def test_custom_size_action_creates_that_size(monkeypatch) -> None:
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-def test_custom_size_on_dirty_document_confirms_discard_exactly_once(monkeypatch) -> None:
-    """new_map_custom() checks _confirm_discard_changes() itself and then
+def test_new_map_dialog_on_dirty_document_confirms_discard_exactly_once(monkeypatch) -> None:
+    """new_map_dialog() checks _confirm_discard_changes() itself and then
     calls ViewerWindow._create_new_map() directly, not new_map() -- if it
     called new_map() instead, a dirty document would trigger the discard
-    prompt twice (once in new_map_custom(), once more inside new_map()),
-    after the user already answered the size dialog and possibly the
-    large-map confirm too."""
+    prompt twice, after the user already answered the dialog."""
     conftest.ensure_qapp()
     from PyQt5.QtWidgets import QMessageBox
 
     import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
 
-    monkeypatch.setattr(
-        viewer_module.QInputDialog, "getInt", staticmethod(lambda *a, **k: (168, True))
-    )
+    _patch_new_map_dialog(monkeypatch, tiles=168)
 
     window = ViewerWindow()
     try:
@@ -249,7 +365,7 @@ def test_custom_size_on_dirty_document_confirms_discard_exactly_once(monkeypatch
             return QMessageBox.Discard
 
         monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fake_discard_prompt))
-        window.new_map_custom()
+        window.new_map_dialog()
 
         assert len(discard_calls) == 1
         mm = window.scenario.map_manager
@@ -261,20 +377,21 @@ def test_custom_size_on_dirty_document_confirms_discard_exactly_once(monkeypatch
 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-def test_custom_size_cancelled_leaves_document_untouched(monkeypatch) -> None:
+def test_new_map_dialog_cancelled_leaves_document_and_settings_untouched(monkeypatch) -> None:
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from descape import settings
     from descape.viewer import ViewerWindow
 
-    monkeypatch.setattr(
-        viewer_module.QInputDialog, "getInt", staticmethod(lambda *a, **k: (300, False))
-    )
+    before = settings.get_new_map_choice()
+    _patch_new_map_dialog(monkeypatch, accept=False)
 
     window = ViewerWindow()
     try:
         assert window.scenario is None
-        window.new_custom_action.trigger()
+        window.new_map_action.trigger()
         assert window.scenario is None
+        assert settings.get_new_map_choice() == before
+        assert "new_map" not in settings._load_config()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -290,9 +407,7 @@ def test_custom_size_above_threshold_confirms_before_creating(monkeypatch) -> No
     from descape.viewer import ViewerWindow
 
     tiles = LARGE_MAP_CONFIRM_TILES + 60
-    monkeypatch.setattr(
-        viewer_module.QInputDialog, "getInt", staticmethod(lambda *a, **k: (tiles, True))
-    )
+    _patch_new_map_dialog(monkeypatch, tiles=tiles)
 
     window = ViewerWindow()
     try:
@@ -303,16 +418,183 @@ def test_custom_size_above_threshold_confirms_before_creating(monkeypatch) -> No
             return QMessageBox.Cancel
 
         monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(cancel))
-        window.new_custom_action.trigger()
+        window.new_map_action.trigger()
         assert len(calls) == 1
         assert window.scenario is None  # cancelled -- nothing created
 
         monkeypatch.setattr(
             viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
         )
-        window.new_custom_action.trigger()
+        window.new_map_action.trigger()
         mm = window.scenario.map_manager
         assert mm.map_width == mm.map_height == tiles
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_custom_set_to_a_preset_size_does_not_confirm(monkeypatch) -> None:
+    """Custom 480 is the Ludicrous size, so it gets the preset's no-prompt
+    treatment, and the saved 480 reopens on the Ludicrous row."""
+    conftest.ensure_qapp()
+    import descape.viewer as viewer_module
+    from descape.viewer import ViewerWindow
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("QMessageBox.question must not be called for a preset size")
+
+    def custom_480(dialog, window):
+        dialog.size_combo.setCurrentIndex(dialog.size_combo.count() - 1)
+        dialog.custom_spin.setValue(480)
+        assert dialog.is_custom
+        dialog.accept()
+        return viewer_module.QDialog.Accepted
+
+    from descape.new_map_dialog import NewMapDialog
+
+    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    monkeypatch.setattr(NewMapDialog, "exec_in", custom_480)
+
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        mm = window.scenario.map_manager
+        assert mm.map_width == mm.map_height == 480
+        reopened: list = []
+        window.edit_history.mark_saved()
+        monkeypatch.setattr(
+            NewMapDialog, "exec_in", lambda dialog, window: reopened.append(dialog.is_custom) or viewer_module.QDialog.Rejected
+        )
+        window.new_map_action.trigger()
+        assert reopened == [False]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_choice_is_saved_even_when_the_large_map_question_is_cancelled(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QMessageBox
+
+    import descape.viewer as viewer_module
+    from descape import settings
+    from descape.viewer import ViewerWindow
+
+    _patch_new_map_dialog(monkeypatch, tiles=300, elevation=4)
+    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Cancel))
+
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert window.scenario is None
+        assert settings.get_new_map_choice()["tiles"] == 300
+        assert settings.get_new_map_choice()["elevation"] == 4
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_create_new_map_reports_an_out_of_range_fill(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    import descape.viewer as viewer_module
+    from descape.viewer import ViewerWindow
+
+    errors = []
+    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
+
+    window = ViewerWindow()
+    try:
+        window._create_new_map(144, terrain_id=300)
+        assert window.scenario is None
+        assert len(errors) == 1
+        assert "terrain id 300" in errors[0][2]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_return_of_rome_choice_creates_a_ror_map_and_switches_back(monkeypatch) -> None:
+    """A Return of Rome choice builds from the RoR donor, so the new map's
+    header says RoR and the load switches the active dataset to it; a later
+    AoE2 choice switches back."""
+    conftest.ensure_qapp()
+    from descape import game_dataset
+    from descape.new_map_dialog import NewMapDialog
+    from descape.viewer import ViewerWindow
+
+    def pick(game_data, tiles):
+        def fake_exec(dialog, window):
+            dialog.game_data_combo.setCurrentIndex(dialog.game_data_combo.findData(game_data))
+            dialog._set_size(tiles)
+            dialog.accept()
+            return dialog.Accepted
+
+        monkeypatch.setattr(NewMapDialog, "exec_in", fake_exec)
+
+    window = ViewerWindow()
+    try:
+        pick(game_dataset.ROR, 144)
+        window.new_map_action.trigger()
+        mm = window.scenario.map_manager
+        assert mm.map_width == mm.map_height == 144
+        assert game_dataset.from_variant(window.scenario.game_variant) == game_dataset.ROR
+        assert game_dataset.active() == game_dataset.ROR
+        assert "[Return of Rome]" in window.windowTitle()
+        assert window.game_data_lock_reason() is None
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == 0
+
+        window.edit_history.mark_saved()
+        pick(game_dataset.AOE2, 120)
+        window.new_map_action.trigger()
+        assert game_dataset.from_variant(window.scenario.game_variant) == game_dataset.AOE2
+        assert game_dataset.active() == game_dataset.AOE2
+        assert "[Return of Rome]" not in window.windowTitle()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_new_return_of_rome_map_saves_and_reloads(tmp_path, monkeypatch) -> None:
+    """A RoR map from New Map… goes through Save As and reloads as a RoR 1.59 file of the picked size, terrain and height."""
+    conftest.ensure_qapp()
+    import descape.viewer as viewer_module
+    from descape import game_dataset
+    from descape.new_map_dialog import NewMapDialog
+    from descape.viewer import ViewerWindow
+
+    def fake_exec(dialog, window):
+        dialog.game_data_combo.setCurrentIndex(dialog.game_data_combo.findData(game_dataset.ROR))
+        dialog._set_size(144)
+        dialog.terrain_combo.setCurrentIndex(dialog.terrain_combo.findData(_CORNER_TERRAIN))
+        dialog.elevation_spin.setValue(4)
+        dialog.accept()
+        return dialog.Accepted
+
+    monkeypatch.setattr(NewMapDialog, "exec_in", fake_exec)
+    dest = tmp_path / "ror_new.aoe2scenario"
+    monkeypatch.setattr(
+        viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
+    )
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        window.save_as()
+        reloaded = load_map_and_units(dest)
+        assert game_dataset.from_variant(reloaded.game_variant) == game_dataset.ROR
+        assert reloaded.scenario_version == "1.59"
+        mm = reloaded.map_manager
+        assert mm.map_width == mm.map_height == 144
+        assert all(t.terrain_id == _CORNER_TERRAIN and t.elevation == 4 for t in mm.terrain)
     finally:
         window.edit_history.mark_saved()
         window.close()

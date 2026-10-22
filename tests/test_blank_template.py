@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from descape import library_compat, scenario_io
-from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.scenario_io import BLANK_ROR_TEMPLATE_PATH, BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_new import load_blank_scenario
 from descape.scenario_write import write_scenario
 from descape.unit_model import UnitEditModel
@@ -192,6 +192,16 @@ def test_the_template_is_the_newest_supported_scenario_version() -> None:
     assert template == newest, (
         f"blank template is {template}, the newest supported scenario version is {newest}: "
         "refresh it with tools/gen_blank_template.py"
+    )
+
+
+def test_the_ror_template_is_the_newest_supported_scenario_version() -> None:
+    """The Return of Rome donor (GH #243) is a game save, so its refresh is by hand (scenario_io's comment)."""
+    template = load_map_and_units(BLANK_ROR_TEMPLATE_PATH).scenario_version
+    newest = library_compat.vocabulary_versions()[-1]
+    assert template == newest, (
+        f"Return of Rome blank template is {template}, the newest supported scenario version is {newest}: "
+        "re-save it in the Return of Rome editor (see BLANK_ROR_TEMPLATE_PATH in descape/scenario_io.py)"
     )
 
 

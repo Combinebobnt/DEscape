@@ -26,6 +26,11 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **New Map dialog** (GH #243): File > New Map… (Ctrl+N) opens one panel
+  for the size (the game's sizes, or a square Custom 61-480), the game (Age
+  of Empires II or Return of Rome), the starting terrain and the elevation,
+  and remembers the last choice. The 120x120 Grass 1 action stays as the
+  *New Map (Default Size)* keybind. (contributed by @teslatankx, #251)
 - **Return of Rome scenarios** (GH #67): a Return of Rome file opens with
   Return of Rome's own units, names, art, portraits, civs, ages and terrain,
   and edits and saves with its own walls, cliffs and rules. Settings >
@@ -100,6 +105,11 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **The Units inspector clears when opening or closing a map**, instead of
+  keeping the previous file's selected unit or group fields.
+- **Keeping a large unit selection in Terrain no longer slows every elevation
+  drag step**: its highlight refreshes once on release. Scatter also disables
+  when an undo or filter removes the last kept unit and no region is selected.
 - **Walls and gates lie along the square grid in top-down Flat** (Isometric
   View off, GH #151): a wall run along x draws horizontal, along y
   vertical, and a gate along its own footprint, instead of keeping their

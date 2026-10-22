@@ -199,6 +199,16 @@ regenerate it on stock zlib.
   (`tests/fixtures/test_map_240x240.aoe2scenario`) has buildings, water
   beside dirt and elevation, so all nine `verify_batch_api` path checks now
   run on it in the quick and stress tiers (`map240`).
+- `descape/templates/blank_ror_120x120.aoe2scenario`
+  (`descape/scenario_io.BLANK_ROR_TEMPLATE_PATH`): the Return of Rome
+  donor every Return of Rome `File > New Map…` choice splices from (GH
+  #243). A blank 120x120 map saved by the 1.59 Return of Rome editor,
+  unit-stripped via `tools/strip_units.py`, with its creator name set to
+  "DEscape". **Not generated**: refresh it by hand from a newer game save
+  (the steps are on `BLANK_ROR_TEMPLATE_PATH`). `tests/test_scenario_new.py`
+  pins its preconditions (RoR header, unit-free, blank terrain, the creator
+  name), and `tests/test_blank_template.py` fails once a newer scenario
+  version is supported until it is refreshed.
 - `tests/fixtures/blank_120x120_v158.aoe2scenario`: the 1.58 donor, and the
   shipped template's own bytes until 1.59. A real in-game "Blank" map export,
   unit-stripped via `tools/strip_units.py`, since that map style actually
