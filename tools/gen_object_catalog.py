@@ -44,6 +44,41 @@ second page; 0 is no button), and a tech's `research` lists its
 `research_locations` the same way. An object trained at the builder task
 unit 118 (a building in a villager's build menu) also carries its raw
 `interface_kind`, which picks the menu page: 2 economic, 10 military.
+GH #230's `civs` key, only on objects with `train` and techs with
+`research`: the sorted civ indices that can have it, omitted when every civ
+can and `[]` when none can (heroes, retired techs). It is derived, not
+measured: a fixed point per civ where a tech is available when its `civ` is
+-1 or that civ, it is not disabled, and its available required techs, plus
+one for an available building that initiates it, reach its required count.
+Disabled means a type 102 command in the civ's tech tree effect, or in a
+tech that fires at start (no requirements, no research location, no cost:
+"Disable Regionals") unless the tree re-enables it (type 8, attribute 12,
+value 1). The model is a standard random map game: a tech whose
+`full_tech_mode` is another mode's ("Disable Spies (Regicide only)" 11,
+"[FTT] ..." -1, and scenario-only "[SCEN] ..." 13, left out on purpose)
+never fires. The mode meanings come from the techs' names; a negative -N is
+taken to mean every mode but N. A shadow tech, one with no research location
+and a cost ("Paphos Shadow Tech", team bonuses), fires only where the civ's
+tree or its own team bonus zeroes its cost (type 101: "Macedonian Team
+Bonus") or an available building initiates it.
+A unit is available when it is enabled in the civ's own list or an available
+tech enables it (type 2, any non-zero B: 27 of the game's enables, all
+named ones like "Hearth Troop (make avail)", store -1) and no available tech
+disables it (B 0), or an
+available tech upgrades an available unit into it (type 3), or nothing
+enables it anywhere and it trains only at buildings exactly one civ has
+(the Krepost's Konnik). A team bonus's effects on teammates, other game
+modes, and techs a building fires only in game (not through `tech_id`) are
+outside it.
+A tech's `gives` key lists the units with `train` it enables (type 2) or
+upgrades into (type 3), omitted when none: a trigger that enables or
+researches the tech makes them available (civ_availability.file_overrides()).
+A tech with `research` also carries `age`, the age it becomes researchable
+in: 2 Dark, 3 Feudal, 4 Castle, 5 Imperial, from the age techs (Feudal 101,
+Castle 102, Imperial 103) among its required techs, else the highest age of
+those it requires. Measured in game (2026-10-16, Spanish): a player starting
+in a later age already has every generic tech of an earlier one (Loom at a
+Feudal start, Bloodlines at Imperial, Chemistry only at Post-Imperial).
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -181,6 +216,199 @@ def _terrain_entries(terrains: list) -> dict[str, dict]:
     return entries
 
 
+# Effect command types and the tech attribute the civ availability model reads.
+_ENABLE_UNIT = 2
+_UPGRADE_UNIT = 3
+_MODIFY_TECH = 8
+_DISABLE_TECH = 102
+_TECH_ENABLED_ATTRIBUTE = 12
+
+
+_MODIFY_TECH_COST = 101
+# full_tech_mode values a standard random map game leaves out: -1 full tech tree only ("[FTT] ..."),
+# and each positive mode but 1, which only that mode fires (4 Empire Wars, 8 King of the Hill,
+# 11 Regicide, 13 scenario, 26 Antiquity). 0 and 1 fire always; a negative mode -N fires outside N.
+_FULL_TECH_TREE_ONLY = -1
+_STANDARD_MODES = (0, 1)
+
+
+def _civ_availability(data) -> dict[int, tuple[set[int], set[int]]]:
+    """{civ index: (available tech ids, available unit ids)} for every civ
+    but Gaia, by the fixed point the module docstring describes. A second
+    pass adds the units only a unique building trains (_unique_building_units())."""
+    civ_indices = range(1, len(data.civs))
+    first = {civ_index: _one_civ(data, civ_index, {}) for civ_index in civ_indices}
+    implicit = _unique_building_units(data, first)
+    return {civ_index: _one_civ(data, civ_index, implicit) for civ_index in civ_indices}
+
+
+def _unique_building_units(data, availability: dict) -> dict[int, set[int]]:
+    """{unit id: its train locations} for each trainable unit nothing ever
+    enables (no civ list, no type 2 enable, no type 3 upgrade) whose train
+    locations are all buildings exactly one civ has: Krepost's Konnik
+    (Bulgarians), Donjon's Serjeant and Spearman (Sicilians). The game trains
+    those there though no command enables them; heroes and scenario units,
+    whose locations several civs have, stay unavailable."""
+    targets = {uid for civ in data.civs for uid, unit in enumerate(civ.units) if unit is not None and unit.enabled}
+    for effect in data.effects:
+        for c in effect.effect_commands:
+            if c.type == _ENABLE_UNIT and c.b != 0:
+                targets.add(c.a)
+            elif c.type == _UPGRADE_UNIT:
+                targets.add(c.b)
+    holders: dict[int, int] = {}
+    for _techs, units in availability.values():
+        for unit_id in units:
+            holders[unit_id] = holders.get(unit_id, 0) + 1
+    implicit: dict[int, set[int]] = {}
+    for unit_id, unit in enumerate(data.civs[0].units):
+        if unit is None or unit.creatable is None or unit_id in targets:
+            continue
+        locations = {loc.unit_id for loc in unit.creatable.train_locations if loc.unit_id >= 0}
+        if locations and all(holders.get(loc) == 1 for loc in locations):
+            implicit[unit_id] = locations
+    return implicit
+
+
+def _commands(data, effect_id: int) -> list:
+    return data.effects[effect_id].effect_commands if 0 <= effect_id < len(data.effects) else []
+
+
+def _in_standard_game(tech) -> bool:
+    mode = tech.full_tech_mode
+    return mode in _STANDARD_MODES or (mode < 0 and mode != _FULL_TECH_TREE_ONLY)
+
+
+def _tech_costs(data, tree: list) -> dict[int, dict[int, float]]:
+    """{tech id: {resource: amount > 0}} after the civ tree's type 101 cost
+    commands (C 0 sets, 1 adds, 2 multiplies)."""
+    costs = {
+        tech_id: {cost.type: cost.amount for cost in tech.resource_costs if cost.type >= 0 and cost.amount > 0}
+        for tech_id, tech in enumerate(data.techs)
+        if tech is not None
+    }
+    for c in tree:
+        if c.type != _MODIFY_TECH_COST or c.a not in costs:
+            continue
+        old = costs[c.a].get(c.b, 0)
+        costs[c.a][c.b] = c.d if c.c == 0 else old + c.d if c.c == 1 else old * c.d if c.c == 2 else old
+    return {tech_id: {res: amount for res, amount in cost.items() if amount > 0} for tech_id, cost in costs.items()}
+
+
+def _one_civ(data, civ_index: int, implicit: dict[int, set[int]]) -> tuple[set[int], set[int]]:
+    civ = data.civs[civ_index]
+    tree = _commands(data, civ.tech_tree_id)
+    # The civ's own team bonus can zero a shadow tech's cost too (Macedonian Team Bonus 1269).
+    costs = _tech_costs(data, tree + _commands(data, civ.team_bonus_id))
+    disabled = {int(c.d) for c in tree if c.type == _DISABLE_TECH}
+    reenabled = {c.a for c in tree if c.type == _MODIFY_TECH and c.b == _TECH_ENABLED_ATTRIBUTE and c.d == 1}
+    for tech_id, tech in enumerate(data.techs):
+        if (
+            tech is not None
+            and tech.name
+            and tech.civ in (-1, civ_index)
+            and _in_standard_game(tech)
+            and tech.required_tech_count == 0
+            and not costs[tech_id]
+            and all(loc.location_id < 0 for loc in tech.research_locations)
+        ):
+            disabled |= {int(c.d) for c in _commands(data, tech.effect_id) if c.type == _DISABLE_TECH} - reenabled
+    initiators: dict[int, list[int]] = {}
+    for unit_id, unit in enumerate(civ.units):
+        if unit is not None and unit.building is not None and unit.building.tech_id >= 0:
+            initiators.setdefault(unit.building.tech_id, []).append(unit_id)
+    enabled = {unit_id for unit_id, unit in enumerate(civ.units) if unit is not None and unit.enabled}
+    techs: set[int] = set()
+    turned_on: set[int] = set()
+    turned_off: set[int] = set()
+    upgrades: list[tuple[int, int]] = []
+    units = set(enabled)
+    changed = True
+    while changed:
+        changed = False
+        for tech_id, tech in enumerate(data.techs):
+            if (
+                tech_id in techs
+                or tech is None
+                or not tech.name
+                or tech_id in disabled
+                or tech.civ not in (-1, civ_index)
+                or not _in_standard_game(tech)
+            ):
+                continue
+            initiated = any(unit_id in units for unit_id in initiators.get(tech_id, ()))
+            met = sum(req in techs for req in tech.required_techs if req >= 0) + initiated
+            if met < tech.required_tech_count:
+                continue
+            # A shadow tech (no research location, a cost: "Paphos Shadow Tech") fires only where the
+            # civ's tree zeroes its cost or a building initiates it.
+            if costs[tech_id] and not initiated and all(loc.location_id < 0 for loc in tech.research_locations):
+                continue
+            techs.add(tech_id)
+            changed = True
+            for c in _commands(data, tech.effect_id):
+                if c.type == _ENABLE_UNIT:
+                    # B is 0 to disable; every non-zero B (1, and the -1 of "Hearth Troop (make avail)") enables.
+                    (turned_on if c.b != 0 else turned_off).add(c.a)
+                elif c.type == _UPGRADE_UNIT:
+                    upgrades.append((c.a, c.b))
+        reached = (enabled - turned_off) | turned_on
+        reached |= {new for old, new in upgrades if old in units or old in reached}
+        reached |= {unit_id for unit_id, locations in implicit.items() if locations & reached}
+        if reached != units:
+            units = reached
+            changed = True
+    return techs, units
+
+
+def _add_civs(entries: dict[str, dict], key: str, availability: dict, pick) -> None:
+    """Sets `civs` on every entry carrying `key`, omitted when all civs have it."""
+    for id_, entry in entries.items():
+        if key not in entry:
+            continue
+        civs = [civ_index for civ_index, sets in availability.items() if int(id_) in pick(sets)]
+        if len(civs) < len(availability):
+            entry["civs"] = civs
+
+
+# The age techs a requirement list names, and the age each one starts (Dark Age 104 is the first).
+_AGE_TECHS = {104: 2, 101: 3, 102: 4, 103: 5}
+_DARK_AGE = 2
+
+
+def _add_ages(techs: dict[str, dict], data) -> None:
+    """Sets `age` on every tech with `research`."""
+    memo: dict[int, int] = {}
+
+    def age(tech_id: int) -> int:
+        if tech_id in memo:
+            return memo[tech_id]
+        memo[tech_id] = _DARK_AGE  # a requirement cycle reads as Dark Age
+        required = [r for r in data.techs[tech_id].required_techs if 0 <= r < len(data.techs)]
+        direct = [_AGE_TECHS[r] for r in required if r in _AGE_TECHS]
+        memo[tech_id] = max(direct) if direct else max((age(r) for r in required), default=_DARK_AGE)
+        return memo[tech_id]
+
+    for id_, entry in techs.items():
+        if "research" in entry:
+            entry["age"] = age(int(id_))
+
+
+def _add_gives(techs: dict[str, dict], objects: dict[str, dict], data) -> None:
+    """Sets `gives` on every tech whose effect enables or upgrades into a unit with `train`."""
+    trained = {int(id_) for id_, entry in objects.items() if "train" in entry}
+    for id_, entry in techs.items():
+        units = set()
+        for c in _commands(data, data.techs[int(id_)].effect_id):
+            if c.type == _ENABLE_UNIT and c.b != 0:
+                units.add(c.a)
+            elif c.type == _UPGRADE_UNIT:
+                units.add(c.b)
+        gives = sorted(units & trained)
+        if gives:
+            entry["gives"] = gives
+
+
 def _tech_entries(techs: list) -> dict[str, dict]:
     entries: dict[str, dict] = {}
     for tech_id, tech in enumerate(techs):
@@ -229,6 +457,11 @@ def main() -> None:
         raise SystemExit("No BLANK graphic in the .dat; the no_graphic rule needs re-checking")
     objects = _object_entries(data.civs[0].units, blank_ids)
     techs = _tech_entries(data.techs)
+    availability = _civ_availability(data)
+    _add_civs(objects, "train", availability, lambda sets: sets[1])
+    _add_civs(techs, "research", availability, lambda sets: sets[0])
+    _add_gives(techs, objects, data)
+    _add_ages(techs, data)
     terrains = _terrain_entries(data.terrain_block.terrains)
     for unit_const in _drop_unrowed_restrictions(data.terrain_restrictions, objects):
         print(f"Hidden object {unit_const}'s terrain restriction has no .dat row; left out")

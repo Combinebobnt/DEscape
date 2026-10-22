@@ -12,14 +12,23 @@ cell holds comes from command_buttons, which reads the .dat's train and
 research locations. The chosen cell shows the button the game shows there:
 the effect's own, or the slot's lower-id occupant that hides it
 (command_buttons.shown_in_slot()), and its tooltip says which.
+
+GH #230: the grid shows only what the effect player's civ can have
+(civ_availability, through the PlayerContext bind()'s `context` returns for
+the form's source_player), frames the cell the effect's own button lands in
+(green when it shows, red when it won't or it covers a tech), and with "Show
+all triggers' changes" applies the player's other location effects first
+(train_locations.apply()), framing each cell they put a button in the same
+way.
 """
 
 from __future__ import annotations
 
 from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QIcon, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QGridLayout,
     QHBoxLayout,
@@ -30,8 +39,19 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, command_buttons, object_catalog
+from descape import asset_source, civ_availability, command_buttons, object_catalog, settings, train_locations
 from descape.command_buttons import TECH, UNIT, building_name
+from descape.train_locations import (  # noqa: F401 -- callers read the effect names here
+    ADD_TRAIN,
+    BUILDING_FIELD,
+    CHANGE_RESEARCH,
+    CHANGE_TRAIN,
+    EFFECT_MOVERS,
+    NO_CONTEXT,
+    PLAYER_FIELD,
+    SLOT_FIELD,
+    PlayerContext,
+)
 from descape.value_picker import ValueLineEdit
 from descape.viewer_common import pixmap_from_rgba
 
@@ -40,18 +60,13 @@ CELL_PX = 44
 ICON_PX = 36
 _DIMMED_OPACITY = 0.35
 _MORE_LIMIT = 12
-
-CHANGE_TRAIN = "change_train_location"
-ADD_TRAIN = "add_train_location"
-CHANGE_RESEARCH = "change_research_location"
-# effect name -> (field naming what moves, its kind)
-EFFECT_MOVERS = {
-    CHANGE_TRAIN: ("object_list_unit_id", UNIT),
-    ADD_TRAIN: ("object_list_unit_id", UNIT),
-    CHANGE_RESEARCH: ("technology", TECH),
-}
-BUILDING_FIELD = "object_list_unit_id_2"
-SLOT_FIELD = "button_location"
+# The frame on a cell the effect (or, with the toggle, another effect) puts a button in:
+# green when the button shows, red when it won't or it covers a tech.
+FRAME_OK = "ok"
+FRAME_PROBLEM = "problem"
+FRAME_COLORS = {FRAME_OK: QColor(46, 170, 70), FRAME_PROBLEM: QColor(215, 48, 39)}
+FRAME_WIDTH = 2
+ALL_TRIGGERS_TEXT = "Show all triggers' changes"
 
 PAGE_1, PAGE_2 = "page 1", "page 2"
 _PAGE_TITLES = {
@@ -98,6 +113,25 @@ class _Cell(QToolButton):
         self.reserved = ""
         # The effect's tech shares this slot with others and takes turns with them.
         self.shared = False
+        # The effect's unit or tech is one the player's civ can't have: no button.
+        self.unavailable = False
+        # A button that won't show here (the civ can't have it), drawn dimmed in an otherwise empty cell.
+        self.ghost: tuple[int, str] | None = None
+        # FRAME_OK or FRAME_PROBLEM where the effect (or another one) puts a button, else "".
+        self.frame = ""
+        # Tooltip lines naming the other effects that changed this cell.
+        self.notes: tuple[str, ...] = ()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.frame:
+            return
+        painter = QPainter(self)
+        pen = QPen(FRAME_COLORS[self.frame])
+        pen.setWidth(FRAME_WIDTH)
+        painter.setPen(pen)
+        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        painter.end()
 
 
 class ButtonGrid(QWidget):
@@ -130,6 +164,15 @@ class ButtonGrid(QWidget):
             self.page_buttons[page] = button
             self.page_row.addWidget(button)
         self.page_row.addStretch(1)
+        # Below the footer: a view option, not a page control, and too wide for the page row.
+        self.all_triggers_check = QCheckBox(ALL_TRIGGERS_TEXT)
+        self.all_triggers_check.setFocusPolicy(Qt.NoFocus)
+        self.all_triggers_check.setToolTip(
+            "Also apply every other Change Train Location, Add Train Location and Change Research Location "
+            "effect for this player, in trigger order, before this one."
+        )
+        self.all_triggers_check.setChecked(settings.get_button_grid_all_triggers())
+        self.all_triggers_check.toggled.connect(self._all_triggers_toggled)
 
         self.cells: list[_Cell] = []
         grid = QGridLayout()
@@ -155,6 +198,7 @@ class ButtonGrid(QWidget):
         column.addLayout(self.page_row)
         column.addWidget(self.grid_host)
         column.addWidget(self.footer_label)
+        column.addWidget(self.all_triggers_check)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         self.page: str | None = None
@@ -164,31 +208,39 @@ class ButtonGrid(QWidget):
         self._entry = None
         self._on_resize = None
         self._layout_key: tuple | None = None
-        self._icons: dict[int, QPixmap | None] = {}
+        self._icons: dict[tuple[int, str], QPixmap | None] = {}
+        self._context_for = None
+        self.context: PlayerContext = NO_CONTEXT
+        self._applied: train_locations.Applied | None = None
 
     def minimumSizeHint(self) -> QSize:
         return QSize(command_buttons.COLUMNS * (CELL_PX + 2), super().minimumSizeHint().height())
 
     # -- wiring --------------------------------------------------------------
 
-    def bind(self, fields: dict, effect: str, read, entry=None, on_resize=None) -> None:
-        """Follow the mover, building and slot rows of `fields` (field name ->
-        row widget) for `effect`, one of EFFECT_MOVERS. `entry` is the entry
-        the form shows; `on_resize` runs when the row changes shape."""
+    def bind(self, fields: dict, effect: str, read, entry=None, on_resize=None, context=None) -> None:
+        """Follow the mover, building, slot and player rows of `fields`
+        (field name -> row widget) for `effect`, one of EFFECT_MOVERS.
+        `entry` is the entry the form shows; `on_resize` runs when the row
+        changes shape; `context(player)` returns the PlayerContext for a
+        source_player value (None: no civ filter, no other effects)."""
         mover, _kind = EFFECT_MOVERS[effect]
         self._effect = effect
-        self._fields = {name: fields[name] for name in (mover, BUILDING_FIELD, SLOT_FIELD) if name in fields}
+        names = (mover, BUILDING_FIELD, SLOT_FIELD, PLAYER_FIELD)
+        self._fields = {name: fields[name] for name in names if name in fields}
         self._read = read
         self._entry = entry
         self._on_resize = on_resize
-        for name in (mover, BUILDING_FIELD):
+        self._context_for = context
+        for name in (mover, BUILDING_FIELD, PLAYER_FIELD):
             widget = self._fields.get(name)
             if isinstance(widget, ValueLineEdit):
                 # Bound methods of this QObject: the connections die with it.
                 widget.committed.connect(self._field_changed)
-        combo = self._fields.get(SLOT_FIELD)
-        if isinstance(combo, QComboBox):
-            combo.currentIndexChanged.connect(self._field_changed)
+        for name in (SLOT_FIELD, PLAYER_FIELD):
+            combo = self._fields.get(name)
+            if isinstance(combo, QComboBox):
+                combo.currentIndexChanged.connect(self._field_changed)
         self.page = None
         self.refresh()
 
@@ -197,6 +249,7 @@ class ButtonGrid(QWidget):
         self._fields = {}
         self._entry = None
         self._on_resize = None
+        self._context_for = None
 
     def _field_changed(self, *_args) -> None:
         self.page = None
@@ -226,6 +279,18 @@ class ButtonGrid(QWidget):
     def value(self) -> int:
         return self._int(SLOT_FIELD)
 
+    def player(self) -> int:
+        return self._int(PLAYER_FIELD)
+
+    def _load_context(self) -> PlayerContext:
+        if self._context_for is None:
+            return NO_CONTEXT
+        return self._context_for(self.player())
+
+    @property
+    def all_triggers(self) -> bool:
+        return self.all_triggers_check.isChecked()
+
     @property
     def editable(self) -> bool:
         combo = self._fields.get(SLOT_FIELD)
@@ -245,10 +310,15 @@ class ButtonGrid(QWidget):
         of a plain building, one menu of the villager."""
         building = self.building()
         villager_page = page if command_buttons.is_builder(building) else None
+        keep = self.context.keep
         cells: dict[int, list[tuple[int, str]]] = {}
         for kind in (UNIT, TECH):
-            for button, ids in command_buttons.occupants(building, kind, villager_page).items():
+            for button, ids in command_buttons.occupants(building, kind, villager_page, keep).items():
                 cells.setdefault(button, []).extend((id_, kind) for id_ in command_buttons.ordered(ids, kind))
+        self._applied = None
+        if self.all_triggers and self.context.edits:
+            self._applied = train_locations.apply(cells, building, villager_page, self.context.edits, keep)
+            cells = self._applied.cells
         return {button: tuple(items) for button, items in cells.items()}
 
     def _page_of_value(self) -> str:
@@ -274,6 +344,9 @@ class ButtonGrid(QWidget):
         """The mover already sits in the chosen slot, so nothing is replaced."""
         building = self.building()
         return (building, self.value()) in command_buttons.home_slots(self.mover(), self.kind)
+
+    def _mover_available(self) -> bool:
+        return self.mover() < 0 or self.context.keep(self.mover(), self.kind)
 
     # -- rendering -----------------------------------------------------------
 
@@ -307,6 +380,7 @@ class ButtonGrid(QWidget):
     def refresh(self) -> None:
         if not self._fields:
             return
+        self.context = self._load_context()
         self._sync_choices()
         hint = self._hint()
         shown = not hint
@@ -324,6 +398,7 @@ class ButtonGrid(QWidget):
         for page, button in self.page_buttons.items():
             button.setVisible(len(pages) > 1 and page in pages)
             button.setChecked(page == self.page)
+        self.all_triggers_check.setVisible(shown and self._context_for is not None)
         self.grid_host.setVisible(shown)
         self.footer_label.setVisible(shown and bool(self.footer_label.text()))
         key = (shown, len(pages) > 1, hint, self.footer_label.text(), self.header_label.text())
@@ -353,7 +428,21 @@ class ButtonGrid(QWidget):
         if building < 0:
             return ""
         where = "Researched at" if self.kind == TECH else "Trained at"
-        return f"{where}: {building_name(building)}"
+        return f"{where}: {building_name(building)}{self._civ_note()}"
+
+    def _civ_note(self) -> str:
+        """" (Spanish)", or why nothing is filtered; "" without a context."""
+        if self._context_for is None:
+            return ""
+        context = self.context
+        if context.civ is not None:
+            return f" ({context.civ_text})"
+        if context.player == civ_availability.ALL_PLAYERS:
+            return " (any civ: every player)"
+        if not 1 <= context.player <= 8:
+            return " (any civ: no player set)"
+        civ = context.civ_text.lower() or "unknown"
+        return f" (any civ: player {context.player}'s civ is {civ})"
 
     def _render_page(self) -> None:
         contents = self._contents(self.page)
@@ -363,19 +452,28 @@ class ButtonGrid(QWidget):
         moves_away = self._effect != ADD_TRAIN
         clickable = self.editable and self._clickable_page()
         already_there = self._already_there()
+        available = self._mover_available()
         building = self.building()
         for cell in self.cells:
             button = command_buttons.button_value(number, cell.row, cell.col)
             items = contents.get(button, ())
-            cell.dimmed = cell.blocked = cell.shared = False
+            cell.dimmed = cell.blocked = cell.shared = cell.unavailable = False
+            cell.ghost = None
             cell.replaced = ()
             cell.reserved = command_buttons.reserved_label(building, button)
             if cell.reserved:
                 cell.items = ()
+            elif button == chosen and not available:
+                cell.items, cell.unavailable = tuple(item for item in items if item != (mover, kind)), True
+                cell.ghost = (mover, kind)
             elif button == chosen and not already_there:
                 others = tuple(item for item in items if item != (mover, kind))
                 rivals = [id_ for id_, item_kind in others if item_kind == kind]
-                if kind == TECH:
+                units = [item for item in others if item[1] == UNIT]
+                if kind == TECH and units:
+                    # A unit in the slot covers the tech.
+                    cell.items, cell.blocked = others, True
+                elif kind == TECH:
                     cell.items, cell.shared = ((mover, kind), *others), bool(rivals)
                 elif command_buttons.shown_in_slot(mover, rivals, kind):
                     cell.items, cell.replaced = ((mover, kind),), others
@@ -383,25 +481,67 @@ class ButtonGrid(QWidget):
                     cell.items, cell.blocked = others, True
             elif button == chosen:
                 cell.items = ((mover, kind), *(item for item in items if item != (mover, kind)))
-            elif moves_away and (mover, kind) in items:
+            elif moves_away and available and (mover, kind) in items:
                 cell.dimmed = True
                 cell.items = items
             else:
                 cell.items = items
+            self._mark(cell, button, button == chosen)
             cell.setChecked(button == chosen)
             cell.setEnabled(clickable and not cell.reserved)
             self._paint_cell(cell)
 
+    def _mark(self, cell: _Cell, button: int, chosen: bool) -> None:
+        """Set the cell's frame and the notes on the other effects that changed it."""
+        applied = self._applied
+        placed = applied.placed.get(button, ()) if applied is not None else ()
+        removed = applied.removed.get(button, ()) if applied is not None else ()
+        problems = []
+        if chosen:
+            covers = any(kind == TECH for _id, kind in cell.replaced)
+            problems.append(cell.blocked or cell.unavailable or bool(cell.reserved) or covers)
+        notes = []
+        for edit in placed:
+            problem = self._placed_problem(cell.items, edit.item)
+            problems.append(bool(problem))
+            notes.append(f"{edit.label}: {_name(*edit.item)} here{problem}")
+        for edit in applied.unavailable.get(button, ()) if applied is not None else ():
+            problems.append(True)
+            why = self.context.missing_text(edit.mover, edit.kind, _name(*edit.item))
+            notes.append(f"{edit.label}: {_name(*edit.item)} here, but {why}")
+            if cell.ghost is None:
+                cell.ghost = edit.item
+        notes += [f"{edit.label}: {_name(*edit.item)} moved away" for edit in removed]
+        cell.notes = tuple(notes)
+        cell.frame = "" if not problems else FRAME_PROBLEM if any(problems) else FRAME_OK
+
+    @staticmethod
+    def _placed_problem(items, item) -> str:
+        """" (hidden)" or " (covers a tech)" for another effect's button in a cell holding `items`, else ""."""
+        units = [entry for entry in items if entry[1] == UNIT]
+        if item[1] == TECH:
+            return " (hidden)" if units else ""
+        if not items or items[0] != item:
+            return " (hidden)"
+        return " (covers a tech)" if len(units) < len(items) else ""
+
     def _paint_cell(self, cell: _Cell) -> None:
         cell.setIcon(self._cell_icon(cell))
         cell.setText("")
+        cell.update()
         if cell.reserved:
             cell.setToolButtonStyle(Qt.ToolButtonTextOnly)
             cell.setText(cell.reserved)
             cell.setToolTip(self._RESERVED_TIP.format(cell.reserved))
             return
         if not cell.items:
-            cell.setToolTip("")
+            lines = [self._unavailable_tip()] if cell.unavailable else []
+            cell.setToolTip("\n".join([*lines, *cell.notes]))
+            if cell.ghost is not None and cell.icon().isNull():
+                cell.setToolButtonStyle(Qt.ToolButtonTextOnly)
+                cell.setText(cell.fontMetrics().elidedText(_name(*cell.ghost), Qt.ElideRight, CELL_PX - 4))
+            elif cell.ghost is not None:
+                cell.setToolButtonStyle(Qt.ToolButtonIconOnly)
             return
         base_id, base_kind = cell.items[0]
         if cell.icon().isNull():
@@ -417,21 +557,43 @@ class ButtonGrid(QWidget):
             tip = f"Moved away: {_name(*mover)}\n{rest}".rstrip()
         if cell.shared:
             tip += "\nTechs in one slot take turns: the first one researchable shows, then the next."
-        if cell.blocked:
+        if cell.blocked and self.kind == TECH:
+            tip += (
+                f"\nHidden here: {_name(self.mover(), self.kind)} (a unit in the slot covers it). "
+                f"Move or disable {_name(*cell.items[0])} to free the slot."
+            )
+        elif cell.blocked:
             tip += (
                 f"\nHidden here: {_name(self.mover(), self.kind)} (the lower id shows). "
                 f"Move or disable {_name(*cell.items[0])} to free the slot."
             )
+        covered = [item for item in cell.replaced if item[1] == TECH]
+        if covered:
+            names = ", ".join(_name(*item) for item in covered)
+            tip += f"\nCovers {names}: can't be researched while this unit is here."
+        if cell.unavailable:
+            tip += "\n" + self._unavailable_tip()
+        if cell.notes:
+            tip += "\n" + "\n".join(cell.notes)
         cell.setToolTip(tip)
+
+    def _unavailable_tip(self) -> str:
+        mover, kind = self.mover(), self.kind
+        tip = f"No button: {self.context.missing_text(mover, kind, _name(mover, kind))}."
+        how = train_locations.enable_hint(self.context.missing(mover, kind), kind)
+        return f"{tip} Enable it with {how} to show it." if how else tip
 
     _RESERVED_TIP = "The menu's own {} button. A building put here has no visible button; its hotkey still works."
 
     def _cell_icon(self, cell: _Cell) -> QIcon:
-        base = self._icon(*cell.items[0]) if cell.items else None
+        if cell.items:
+            # Dimmed only when the moved-away button is the one showing there.
+            base, dimmed = self._icon(*cell.items[0]), cell.dimmed and cell.items[0] == (self.mover(), self.kind)
+        else:
+            base, dimmed = (self._icon(*cell.ghost) if cell.ghost else None), True
         if base is None:
             return QIcon()
-        # Dimmed only when the moved-away button is the one showing there.
-        if not cell.dimmed or cell.items[0] != (self.mover(), self.kind):
+        if not dimmed:
             return QIcon(base)
         canvas = QPixmap(ICON_PX, ICON_PX)
         canvas.fill(Qt.transparent)
@@ -442,13 +604,17 @@ class ButtonGrid(QWidget):
         return QIcon(canvas)
 
     def _icon(self, id_: int, kind: str) -> QPixmap | None:
-        """A unit's portrait from the install, cached per id; techs have none."""
-        if kind != UNIT or id_ < 0:
+        """A unit's portrait or a tech's icon from the install, cached per id."""
+        if id_ < 0:
             return None
-        if id_ not in self._icons:
-            arr = asset_source.get_unit_icon(*object_catalog.portrait_for(id_))
-            self._icons[id_] = None if arr is None else pixmap_from_rgba(arr, ICON_PX)
-        return self._icons[id_]
+        key = (id_, kind)
+        if key not in self._icons:
+            if kind == TECH:
+                arr = asset_source.get_tech_icon(command_buttons.catalog_row(id_, TECH).get("icon"))
+            else:
+                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(id_))
+            self._icons[key] = None if arr is None else pixmap_from_rgba(arr, ICON_PX)
+        return self._icons[key]
 
     def _footer(self) -> str:
         """Where the unit, tech or building is trained or researched today."""
@@ -464,6 +630,10 @@ class ButtonGrid(QWidget):
 
     def _show_page(self, page: str) -> None:
         self.page = page
+        self.refresh()
+
+    def _all_triggers_toggled(self, checked: bool) -> None:
+        settings.set_button_grid_all_triggers(checked)
         self.refresh()
 
     def _cell_clicked(self, cell: _Cell) -> None:

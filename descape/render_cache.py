@@ -3354,7 +3354,10 @@ class IsoChunkCache(_LeveledChunkCache):
         # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
         mm = scenario.map_manager
         self._init_levels(
-            iso_geometry.mip_projections_for(mm.map_width, mm.map_height, proj, settings.get_elev_step_pct())
+            iso_geometry.mip_projections_for(
+                mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
+                max_tile_px=render.finest_tile_pixels(),
+            )
         )
         # canvas_dims()'s own exactness assert: is_exact_mip() proves every
         # IsoProjection field scales exactly, but canvas_dims() adds the
@@ -3552,7 +3555,7 @@ class FlatChunkCache(_ChunkCacheBase):
         # Stepped's mip_projections_for() which must filter through a real
         # exactness check. Must precede _init_max_chunks(), which reads
         # canvas_dims().
-        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px))
+        self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px, render.finest_tile_pixels()))
         # Per-level unit_draws (Phase B-D: "Flat's real
         # per-level work is unit_draws"). Level 0's draws live in
         # self.unit_draws (unchanged attribute, still read directly by
@@ -4121,6 +4124,7 @@ class SlopedChunkCache(_LeveledChunkCache):
         projs = iso_geometry.mip_projections_for(
             mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
             corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
+            max_tile_px=render.finest_tile_pixels(),
         )
         self._init_levels(projs)
         # Both canvas_dims() answers (sprites off and on) must scale exactly, as IsoChunkCache asserts.

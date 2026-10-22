@@ -291,7 +291,13 @@ out, and changes the two colours.
 **Button slots.** Change Train Location, Add Train Location and Change
 Research Location show the building's command buttons under the button slot
 field, as they will look after the trigger fires; click a cell to pick that
-slot.
+slot. The grid shows only what the effect player's civilization can have
+(all civs when it is random), frames the effect's own button in green, or
+in red when it won't show or covers a tech; hover a cell for the details. Tick "Show all triggers' changes" to apply
+the player's other such effects too. Map Analysis's "Train and research
+buttons" check warns when the button won't show: a unit the civ can't have,
+a tech the player's starting age already researched, one hidden by a
+lower-id unit, a covered tech, or a slot with no button.
 
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.

@@ -223,6 +223,14 @@ def _no_doodad_spans() -> None:
     terrain_palette.DOODAD_TILE_SPANS.clear()
 
 
+def _unturned_flat_walls() -> None:
+    """Put the pre-GH #151 Flat art back: a wall draws its stored shape and a gate its own const's art."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "flat_art")
+    unit_sprites.flat_art = lambda unit_const, rotation: (unit_const, rotation)
+
+
 # ---------------------------------------------------------------------------
 # Exclusions: each names the consts removed on both sides. Evaluated in the driver, against this checkout.
 
@@ -319,6 +327,12 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         "TASK-134: mountains, ruins and other large scenery cover their real footprint",
         since="v0.9", control_file=LELOI, must_fail=SPRITES_OFF | {("flat", True)},
         patch=_no_doodad_spans,
+    ),
+    Neutralization(
+        "flat-walls",
+        "GH #151 (TASK-227): walls and gates lie along the square grid in top-down Flat",
+        since="v0.9", control_file=OLD_ALLIES, must_fail=frozenset({("flat", True)}),
+        patch=_unturned_flat_walls,
     ),
     Neutralization(
         "gaia-facing",

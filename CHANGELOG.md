@@ -57,6 +57,22 @@ content, link the doc instead of summarizing it.
   21 presets as the in-game Terrain > Map > Water Definitions list. An older
   file's legacy name (Preset_Main, FE1) or an unset value is shown as stored
   and kept unless another entry is picked. DEscape does not preview the look.
+- **Sharper units and buildings at Graphics Quality Enhanced** (GH #241):
+  where the regular art would be enlarged, sprites come from the game's x2
+  art (the free Enhanced Graphics DLC; Return of Rome ships its own), falling
+  back to the regular art per file. Settings > Appearance says whether the
+  DLC is detected. Potatest and Potato now stop building sharper detail
+  levels past 32 and 64 px a tile, so fully zoomed in they draw softer and
+  use less memory; how far you can zoom is unchanged.
+  (contributed by @teslatankx, #257)
+- **The trigger button grid follows the player's civ and starting age**
+  (GH #230): under Change Train Location, Add Train Location and Change
+  Research Location it shows only what the effect player's civ can have and
+  drops techs the starting age already has, frames the effect's cell green,
+  or red with a tooltip when the button won't show, and can show every
+  trigger's location changes for that player. Map Analysis has a new *Train
+  and research buttons* check for location effects whose button won't show.
+  (contributed by @teslatankx, #231)
 
 ### Changed
 

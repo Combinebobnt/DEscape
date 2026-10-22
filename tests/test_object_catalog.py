@@ -448,3 +448,83 @@ def test_a_missing_json_still_gives_the_library_only_catalog(monkeypatch, tmp_pa
     finally:
         object_catalog._dat_table.cache_clear()
         object_catalog.clear_caches()
+
+
+# --- GH #230: which civs can have a trainable unit or a researchable tech -----
+
+
+def test_civs_lists_the_civs_that_can_have_a_unit() -> None:
+    """Mule Cart is Armenian and Georgian, Conquistador Spanish (14), Longbowman Briton (1), Krepost Bulgarian (32)."""
+    objects = object_catalog.dat_objects()
+    assert objects[1808]["civs"] == [44, 45]
+    assert objects[771]["civs"] == [14]
+    assert objects[8]["civs"] == [1]
+    assert objects[1251]["civs"] == [32]
+    assert 14 not in objects[39]["civs"], "Spanish have no Cavalry Archer"
+
+
+def test_civs_is_omitted_when_every_civ_can_and_only_set_with_a_location() -> None:
+    objects, techs = object_catalog.dat_objects(), object_catalog.dat_techs()
+    assert "civs" not in objects[74] and "civs" not in techs[22], "Militia and Loom are for everyone"
+    assert all("train" in row for row in objects.values() if "civs" in row)
+    assert all("research" in row for row in techs.values() if "civs" in row)
+    assert all(row["civs"] == sorted(row["civs"]) for row in [*objects.values(), *techs.values()] if "civs" in row)
+
+
+def test_regional_units_follow_the_civ_trees_re_enables() -> None:
+    """Disable Regionals takes camels from every civ; Saracens (9) get them back, Britons (1) do not."""
+    camel = object_catalog.dat_objects()[329]["civs"]
+    assert 9 in camel and 1 not in camel
+
+
+def test_gives_lists_the_trainable_units_a_tech_enables_or_upgrades_into() -> None:
+    techs = object_catalog.dat_techs()
+    assert techs[509]["gives"] == [881], "Elite Kamayuk upgrades Kamayuk into Elite Kamayuk"
+    assert "gives" not in techs[22]
+
+
+def test_age_is_the_age_a_tech_becomes_researchable_in() -> None:
+    """Measured: a later start has every generic tech of an earlier age (Loom 2, Bloodlines 3, Long Swordsman 4, Chemistry 5)."""
+    techs = object_catalog.dat_techs()
+    assert [techs[t]["age"] for t in (22, 435, 207, 47)] == [2, 3, 4, 5]
+    assert [techs[t]["age"] for t in (101, 102, 103)] == [2, 3, 4], "each age tech is researched in the age before"
+    assert all("age" in row for row in techs.values() if "research" in row)
+
+
+def test_every_civ_has_a_unit_at_castle_button_1() -> None:
+    """A type 2 enable with B = -1 is an enable: seven civs' unique units ("Hearth Troop (make avail)") use it."""
+    objects = object_catalog.dat_objects()
+    every_civ = {civ for row in objects.values() for civ in row.get("civs", ())}
+    assert len(every_civ) >= 62
+    trains_there = [row for row in objects.values() if [82, 1] in row.get("train", [])]
+    for civ in every_civ:
+        assert any(civ in row.get("civs", [civ]) for row in trains_there), civ
+
+
+def test_unique_units_enabled_with_b_minus_one_are_their_civs_own() -> None:
+    objects = object_catalog.dat_objects()
+    assert objects[2705]["civs"] == [60], "Hearth Troop is Saxon"
+    assert objects[2101]["civs"] == [46], "Immortal is Achaemenid"
+
+
+def test_other_game_modes_start_techs_do_not_fire() -> None:
+    """Disable Spies (Regicide only) leaves Spy Technology to every civ in a standard game."""
+    assert "civs" not in object_catalog.dat_techs()[408]
+
+
+def test_a_shadow_tech_fires_only_where_the_tree_zeroes_its_cost() -> None:
+    """Paphos Shadow Tech costs 1 food; only the Chronicles trees zero it, so Armenians (44) and Georgians (45) get no Lembos."""
+    assert object_catalog.dat_objects()[2123]["civs"] == [46, 47, 48, 54, 55, 56]
+
+
+def test_a_unit_only_a_unique_building_trains_is_that_civs() -> None:
+    """Nothing enables Konnik or Serjeant; the Krepost (Bulgarians) and Donjon (Sicilians) train them."""
+    objects = object_catalog.dat_objects()
+    assert objects[1254]["civs"] == [32]
+    assert objects[1660]["civs"] == [37]
+
+
+def test_a_team_bonus_that_zeroes_a_shadow_techs_cost_counts() -> None:
+    """Fortified Outpost needs Macedonian Team Bonus 1269, whose cost only the Macedonians' (54) team bonus zeroes."""
+    assert object_catalog.dat_objects()[2415]["civs"] == [54]
+    assert object_catalog.dat_techs()[1270]["civs"] == [54]

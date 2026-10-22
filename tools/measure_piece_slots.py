@@ -65,6 +65,9 @@ HALF_H = HALF_W // 2
 
 
 def _generator_module():
+    # The generator imports its sibling _game_root, which only a script run of a tools/ file finds on sys.path.
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
     spec = importlib.util.spec_from_file_location(
         "gen_unit_graphic_map", ROOT / "tools" / "gen_unit_graphic_map.py"
     )

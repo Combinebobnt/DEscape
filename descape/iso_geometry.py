@@ -375,9 +375,9 @@ def mip_projection(
     return candidate if is_exact_mip(base, candidate) else None
 
 
-def mip_tile_px_candidates(base_tile_px: int) -> dict[int, int]:
+def mip_tile_px_candidates(base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PIXELS) -> dict[int, int]:
     """Level index -> tile_px, for every power-of-two tile_px in
-    [MIP_MIN_TILE_PIXELS, MIP_MAX_TILE_PIXELS] reachable from
+    [MIP_MIN_TILE_PIXELS, max_tile_px] reachable from
     base_tile_px by a power-of-two ratio (tile_px = base_tile_px * 2**L,
     L any integer). Level 0 (tile_px == base_tile_px) is always present,
     even when base_tile_px itself falls outside [MIN, MAX] -- D2: scene
@@ -390,12 +390,15 @@ def mip_tile_px_candidates(base_tile_px: int) -> dict[int, int]:
     FlatChunkCache uses this ladder UNFILTERED; IsoChunkCache instead
     filters it through mip_projection()'s real exactness check, since
     Stepped's elev_step term can and does break exactness at some
-    elev_step_pct values (see mip_projections_for)."""
+    elev_step_pct values (see mip_projections_for).
+
+    `max_tile_px` is render.finest_tile_pixels(), the graphics quality's own
+    finest level (GH #241); it never removes level 0."""
     out = {0: base_tile_px}
     tile_px, level = base_tile_px, 1
     while True:
         tile_px *= 2
-        if tile_px > MIP_MAX_TILE_PIXELS:
+        if tile_px > min(max_tile_px, MIP_MAX_TILE_PIXELS):
             break
         out[level] = tile_px
         level += 1
@@ -410,7 +413,8 @@ def mip_tile_px_candidates(base_tile_px: int) -> dict[int, int]:
 
 
 def mip_projections_for(
-    w: int, h: int, base: IsoProjection, elev_step_pct: int, corner_headroom_steps: int = 0
+    w: int, h: int, base: IsoProjection, elev_step_pct: int, corner_headroom_steps: int = 0,
+    max_tile_px: int = MIP_MAX_TILE_PIXELS,
 ) -> dict[int, IsoProjection]:
     """Level index -> IsoProjection, for every exact mip of `base` among
     mip_tile_px_candidates(base.tile_px) (see is_exact_mip). Level L means
@@ -449,7 +453,7 @@ def mip_projections_for(
     The set is BASE-RELATIVE, not absolute: at elev_step_pct=10 with base
     16 it is the singleton {16}."""
     out: dict[int, IsoProjection] = {}
-    for level, tile_px in mip_tile_px_candidates(base.tile_px).items():
+    for level, tile_px in mip_tile_px_candidates(base.tile_px, max_tile_px).items():
         if level == 0:
             identity = canvas_size_and_origin(
                 w, h, tile_px, base.min_elev, base.max_elev, elev_step_pct=elev_step_pct,

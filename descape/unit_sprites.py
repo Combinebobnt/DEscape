@@ -321,7 +321,29 @@ SCALED_CACHE_BYTES = 256 * 1024 * 1024
 # clears that file's whole ladder; in practice only resident levels are ever
 # built (see FlatChunkCache._level_icons' laziness), so one or two of those
 # four is the normal steady state.
-ICON_CACHE_BYTES = 128 * 1024 * 1024
+#
+# 256MB since GH #241: old-allies-final-v3 (13,097 units) outgrew 128MB. With
+# all four levels built the cache sat full at 132.6MB and the tile_px=128
+# level's warm rebuild ran 644ms against a 794ms cold one at Default, and
+# 5243ms at Enhanced, where every miss re-assembles the icon from x2 art.
+ICON_CACHE_BYTES = 256 * 1024 * 1024
+
+# GH #241's _x2 (UHD) art, held apart from x1's so a zoomed-in level never
+# evicts the x1 entries every other level draws from. An x2 frame has 4x an
+# x1 frame's pixels and an x2 file about 3x its bytes (measured 2026-10-19:
+# 4269MB against 1386MB over the 2837 referenced files); x2 is only drawn at
+# the levels that enlarge x1, so one level's working set is what these must
+# hold, or a rebuild that misses _scaled_cache (a team colour change, a
+# Layers toggle, Flat's icons) re-decodes everything (see NATIVE_CACHE_BYTES).
+# Measured 2026-10-20 with tools/bench_unit_sprites.py --hi-res --ladder
+# --x2-uncapped on old-allies-final-v3 (13,097 units): the top Stepped level
+# holds 412.3MB of x2 frames in 1220 entries, so 512MB. Its 417 x2 files are
+# 769.6MB; holding them all is not worth it, so 128MB, checked against that
+# level's re-read count at this budget.
+# A mod's x2 files share the mod caches (_mod_index_cache, _sld_bytes_cache):
+# mods with art are few, so x2 evicting their x1 entries is accepted.
+NATIVE_X2_CACHE_BYTES = 512 * 1024 * 1024
+SLD_X2_BYTES_CACHE_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -437,8 +459,8 @@ _sld_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
 # The mod file drawing a stem (mod_graphics), walked, keyed like _sld_index_cache;
 # its bytes share _sld_bytes_cache under a ("mod", file_name) key.
 _mod_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
-# (mod_graphics.generation(), (left, right, up, down)) of the active mods' reach.
-_mod_reach: tuple[int, tuple[int, int, int, int]] | None = None
+# ((mod_graphics.generation(), hi_res_generation()), (left, right, up, down)) of the active mods' reach.
+_mod_reach: tuple[tuple[int, int], tuple[int, int, int, int]] | None = None
 # Stems whose mod file's frame count fits neither mapping, logged once each.
 _mod_mismatch_logged: set[str] = set()
 # Stems an active mod draws as no ink (an open town centre's blank back piece): a deliberate gap, not missing art.
@@ -446,6 +468,15 @@ _mod_blank_stems: set[str] = set()
 _sld_bytes_cache = _ByteLRU(SLD_BYTES_CACHE_BYTES)
 _scaled_cache = _ByteLRU(SCALED_CACHE_BYTES)
 _icon_cache = _ByteLRU(ICON_CACHE_BYTES)
+# GH #241: x2 frames keyed (x1 file_name, frame_index), x2 walks and bytes keyed by x2 stem.
+_native_x2_cache = _ByteLRU(NATIVE_X2_CACHE_BYTES)
+_x2_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
+_x2_bytes_cache = _ByteLRU(SLD_X2_BYTES_CACHE_BYTES)
+# x1 stems whose x2 file's frame count differs from the install's x1, logged once each.
+_x2_mismatch_logged: set[str] = set()
+# Draw x2 where x1 would be enlarged (Graphics Quality Enhanced); set by the viewer.
+_hi_res = False
+_hi_res_generation = 0
 
 # Cached in place of a sprite when a key resolves to nothing.
 #
@@ -474,7 +505,58 @@ def cache_counts() -> tuple[int, int]:
     """(SLD files indexed, native frames decoded), misses included. Read-only,
     for Perf Trace's cold-sprite deltas; a capped cache's evictions hide
     decodes from them."""
-    return len(_sld_index_cache), len(_native_cache)
+    return len(_sld_index_cache) + len(_x2_index_cache), len(_native_cache) + len(_native_x2_cache)
+
+
+def set_hi_res(flag: bool) -> bool:
+    """Whether to draw a graphic's _x2 art where its x1 would be enlarged (GH
+    #241). Module state like mod_graphics.set_enabled(), so this leaf module
+    never reads settings. True when the flag changed."""
+    global _hi_res, _hi_res_generation
+    flag = bool(flag)
+    if flag == _hi_res:
+        return False
+    _hi_res = flag
+    _hi_res_generation += 1
+    if not flag:
+        # Leaving Enhanced frees the x2 frames rather than holding them for the session.
+        _native_x2_cache.clear()
+        _x2_index_cache.clear()
+        _x2_bytes_cache.clear()
+    return True
+
+
+def hi_res() -> bool:
+    return _hi_res
+
+
+# The AoE2 male villager's x2 file, which stands for the whole x2 set.
+X2_PROBE_FILE = "u_vil_male_villager_idleA_x2.sld"
+
+
+@lru_cache(maxsize=1)
+def x2_art_installed() -> bool:
+    """Whether the install ships AoE2's _x2 art (the free Enhanced Graphics
+    DLC), probed by one file: Step 0 found x2 for every referenced stem with
+    the DLC and for none without it. For the viewer's message only: drawing
+    falls back to x1 file by file, and Return of Rome ships its own x2."""
+    directory = _graphics_dir()
+    return directory is not None and (directory / X2_PROBE_FILE).is_file()
+
+
+@lru_cache(maxsize=1)
+def ror_x2_art_installed() -> bool:
+    """Whether the Return of Rome folder ships its own _x2 art, which it does
+    without the Enhanced Graphics DLC (1041 files, 2026-10-20). Any one file
+    counts. For the viewer's message only, like x2_art_installed()."""
+    root = game_dataset.ror_root(asset_source.get_install_path())
+    directory = None if root is None else root / GRAPHICS_SUBPATH
+    return directory is not None and directory.is_dir() and next(directory.glob("*_x2.sld"), None) is not None
+
+
+def hi_res_generation() -> int:
+    """Bumped by every set_hi_res() change, for memos keyed on what draws."""
+    return _hi_res_generation
 
 
 def clear_caches() -> None:
@@ -492,6 +574,12 @@ def clear_caches() -> None:
     _sld_bytes_cache.clear()
     _scaled_cache.clear()
     _icon_cache.clear()
+    _native_x2_cache.clear()
+    _x2_index_cache.clear()
+    _x2_bytes_cache.clear()
+    _x2_mismatch_logged.clear()
+    x2_art_installed.cache_clear()
+    ror_x2_art_installed.cache_clear()
     sld_frame_count.cache_clear()
     wall_connector_consts.cache_clear()
     building_art.cache_clear()
@@ -1302,6 +1390,109 @@ def _native_frame(file_name: str, frame_index: int):
     return value
 
 
+def _x2_stem(file_name: str) -> str | None:
+    """`..._x1` -> `..._x2`, else None: only x1-named art has a UHD copy."""
+    return file_name[:-3] + "_x2" if file_name.endswith("_x1") else None
+
+
+def _x2_path(file_name: str, x2_name: str) -> Path | None:
+    """The x2 file beside the x1 file the install draws: under Return of Rome
+    the RoR root's when x1 comes from there (_sld_path()), so x2 never mixes
+    the two games' art."""
+    directory = _graphics_dir()
+    return None if directory is None else _sld_path(directory, file_name).parent / f"{x2_name}.sld"
+
+
+def _x2_index(file_name: str, x2_name: str):
+    """The install's walked x2 file holding no bytes, or None. _sld_index()'s
+    shape over x2's own caches."""
+    hit = _x2_index_cache.get_or_none(x2_name)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    path = _x2_path(file_name, x2_name)
+    sld = None if path is None or not path.is_file() else load_sld(path)
+    if sld is not None:
+        _x2_bytes_cache.put(x2_name, sld.release_data())
+    _x2_index_cache.put(x2_name, _MISS if sld is None else sld)
+    return sld
+
+
+def _x2_bytes(file_name: str, x2_name: str) -> bytes:
+    data = _x2_bytes_cache.get_or_none(x2_name)
+    if data is None:
+        data = _x2_path(file_name, x2_name).read_bytes()
+        _x2_bytes_cache.put(x2_name, data)
+    return data
+
+
+def _decode_x2_frame(file_name: str, x2_name: str, frame_index: int, install_count: int):
+    """The x2 frame drawn in place of x1's frame_index, or None. Raises like
+    decode_frame().
+
+    x2 comes from wherever x1 does (GH #241): a mod that draws the x1 stem
+    gives x2 only from its own folder, and the install gives x2 only while no
+    mod claims the x2 stem, so x1 and x2 never come from two sources. The
+    one exception is a mod x1 frame that fails to decode: x1 then falls back
+    to the install's while x2 stays the mod's. A mod's x2 must hold exactly
+    its x1's frame count, so both map an install frame the same way
+    (_mod_frame_index()); it shares the mod caches. The install's x2 must
+    hold exactly x1's frame count."""
+    x1_mod = _mod_index(file_name)
+    if x1_mod is not None and _mod_frame_index(file_name, frame_index, install_count, x1_mod[0].frame_count) is not None:
+        x2_mod = _mod_index(x2_name)
+        if x2_mod is None or x2_mod[1].parent != x1_mod[1].parent or x2_mod[0].frame_count != x1_mod[0].frame_count:
+            return None
+        return _decode_mod_frame(x2_name, frame_index, install_count)
+    if mod_graphics.resolve_sprite(x2_name) is not None:
+        return None
+    sld = _x2_index(file_name, x2_name)
+    if sld is None:
+        return None
+    if sld.frame_count != install_count:
+        if file_name not in _x2_mismatch_logged:
+            _x2_mismatch_logged.add(file_name)
+            debug_log.log(f"x2 art: {x2_name} has {sld.frame_count} frames against x1's {install_count}; drawing x1")
+        return None
+    return sld.decode_frame(
+        frame_index,
+        _x2_bytes(file_name, x2_name),
+        kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
+        window_to_main=True,
+    )
+
+
+def _x2_native_frame(file_name: str, frame_index: int):
+    """_native_frame()'s (main, playercolor, hotspot_x, hotspot_y) from the
+    x1 file's _x2 copy, in x2 px (2x x1's), or None to draw x1 (GH #241).
+
+    frame_index is x1's, resolved by the x1 entry's own dispatch: x2 only
+    swaps the pixels, never the frame or facing. The hotspot is x2's own,
+    measured within 1 x2 px of twice x1's on every referenced file. None for
+    a particle stem, a non-x1 name, a missing or unreadable x2 file, a frame
+    count that differs from x1's, and any decode failure."""
+    x2_name = _x2_stem(file_name)
+    if x2_name is None:
+        return None
+    key = (file_name, frame_index)
+    hit = _native_x2_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    if _graphics_dir() is None:
+        return None  # not negative-cached, as in _native_frame()
+    value = None
+    sld = None if file_name in _particle_stems() else _sld_index(file_name)
+    if sld is not None and 0 <= frame_index < sld.frame_count:
+        try:
+            frame = _decode_x2_frame(file_name, x2_name, frame_index, sld.frame_count)
+        except (SLDError, OSError) as exc:
+            debug_log.log(f"x2 art: {x2_name} frame {frame_index} failed to decode, drawing x1: {exc}")
+            frame = None
+        if frame is not None and frame.main is not None:
+            value = _cropped_to_ink(frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y)
+    _native_x2_cache.put(key, _MISS if value is None else value)
+    return value
+
+
 def referenced_entries() -> list[tuple[str, int, int]]:
     """Every (file_name, dx, dy) a unit can draw: unit_graphic_map.json's
     entries and pieces plus every per-civ building entry, each at its own
@@ -1339,22 +1530,27 @@ def _walked_reach(walked, fmt: str, dx: int, dy: int) -> tuple[int, int, int, in
 
 def _active_mod_reach() -> tuple[int, int, int, int]:
     """The farthest any active mod's drawn art reaches, (left, right, up,
-    down) native px; zeros when mod art is off. Recomputed per
-    mod_graphics.generation()."""
+    down) native px; zeros when mod art is off. At Enhanced a mod's _x2 art
+    counts too, halved and rounded up (GH #241). Recomputed per
+    mod_graphics.generation() and hi_res_generation()."""
     global _mod_reach
-    generation = mod_graphics.generation()
+    generation = (mod_graphics.generation(), _hi_res_generation)
     if _mod_reach is not None and _mod_reach[0] == generation:
         return _mod_reach[1]
     reach = (0, 0, 0, 0)
     if mod_graphics.enabled():
         for name, dx, dy in referenced_entries():
-            mod = _mod_index(name)
-            if mod is None:
-                continue
-            install_count = sld_frame_count(name)
-            if install_count is None or _mod_frame_index(name, 0, install_count, mod[0].frame_count) is None:
-                continue
-            reach = tuple(max(a, b) for a, b in zip(reach, _walked_reach(mod[0], mod[2], dx, dy), strict=True))
+            # x1's own mod file, then (at Enhanced) its x2 one at x2 px, halved.
+            x2_name = _x2_stem(name) if _hi_res else None
+            for stem, k in ((name, 1), (x2_name, 2)):
+                mod = None if stem is None else _mod_index(stem)
+                if mod is None:
+                    continue
+                install_count = sld_frame_count(name)
+                if install_count is None or _mod_frame_index(stem, 0, install_count, mod[0].frame_count) is None:
+                    continue
+                sides = (math.ceil(side / k) for side in _walked_reach(mod[0], mod[2], dx * k, dy * k))
+                reach = tuple(max(a, b) for a, b in zip(reach, sides, strict=True))
     _mod_reach = (generation, reach)
     return reach
 
@@ -1436,6 +1632,35 @@ def _resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
     xs = np.minimum((np.arange(width) * src_w) // width, src_w - 1)
     packed = np.ascontiguousarray(rgba).view(np.uint32).reshape(src_h, src_w)
     return packed.take(ys, axis=0).take(xs, axis=1).view(np.uint8).reshape(height, width, 4)
+
+
+def _area_taps(src: int, dst: int) -> tuple[np.ndarray, np.ndarray]:
+    """(dst, k) source indices and weights of a box (area-average) shrink of
+    src px to dst px: each output px averages the source span it covers."""
+    ratio = src / dst
+    lo = np.arange(dst) * ratio
+    idx = np.floor(lo).astype(np.int64)[:, None] + np.arange(math.ceil(ratio) + 1)
+    weights = np.clip(np.minimum(lo[:, None] + ratio, idx + 1) - np.maximum(lo[:, None], idx), 0, None)
+    weights /= weights.sum(axis=1, keepdims=True)
+    return np.minimum(idx, src - 1), weights.astype(np.float32)
+
+
+def _box_resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Premultiplied box shrink of an (H, W, 4) uint8 array (GH #241's x2 art
+    at the top level), so a transparent px adds no colour to its neighbours.
+    Falls back to _resize_rgba() on any axis that would grow."""
+    src_h, src_w = rgba.shape[:2]
+    if width > src_w or height > src_h:
+        return _resize_rgba(rgba, width, height)
+    alpha = rgba[..., 3:4].astype(np.float32)
+    premult = np.concatenate([rgba[..., :3] * (alpha / 255.0), alpha], axis=2)
+    ys, wy = _area_taps(src_h, height)
+    xs, wx = _area_taps(src_w, width)
+    rows = sum(wy[:, k, None, None] * premult[ys[:, k]] for k in range(wy.shape[1]))
+    out = sum(wx[None, :, k, None] * rows[:, xs[:, k]] for k in range(wx.shape[1]))
+    a = out[..., 3:4]
+    rgb = out[..., :3] * 255.0 / np.where(a > 0, a, 1.0)
+    return np.clip(np.concatenate([rgb, a], axis=2) + 0.5, 0, 255).astype(np.uint8)
 
 
 def sprite_scale(half_w: int) -> float:
@@ -1617,15 +1842,24 @@ def _draw_for_entry(
     # art leaks into a shrunk render and vice versa.
     # hero_glow is keyed for the same reason: the ringed draw is a different image.
     # art_scale too: it comes from the entry, and two entries can share a file.
+    # want_x2 (GH #241): x1 enlarged at Enhanced draws the _x2 art instead.
+    want_x2 = _hi_res and scale > 1.0
     key = (
         entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset,
-        art_scale,
+        art_scale, want_x2,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
 
-    native = _native_frame(entry["file_name"], index)
+    native = _x2_native_frame(entry["file_name"], index) if want_x2 else None
+    from_x2 = native is not None
+    if from_x2:
+        # x2 px are half an x1 px: the same canvas size from twice the pixels.
+        scale /= 2
+        offset = (offset[0] * 2, offset[1] * 2)
+    else:
+        native = _native_frame(entry["file_name"], index)
     if native is None:
         _scaled_cache.put(key, _MISS)  # see _MISS -- re-deriving this is expensive
         return None
@@ -1633,12 +1867,17 @@ def _draw_for_entry(
 
     width = max(1, round(main.shape[1] * scale))
     height = max(1, round(main.shape[0] * scale))
-    # Tint the decimated pair: a gather and a per-pixel tint commute exactly, and
-    # a native-size tint was ~16x the pixels at mip -2.
-    small_main = _resize_rgba(main, width, height)
-    small_pc = None if playercolor is None else _resize_rgba(playercolor, width, height)
+    if from_x2 and scale < 1.0:
+        # x2 shrunk to 2/3 at the top level: a nearest gather drops every third px and breaks thin lines.
+        rgba = _box_resize_rgba(_tinted(main, playercolor, team), width, height)
+    else:
+        # Tint the decimated pair: a gather and a per-pixel tint commute exactly, and
+        # a native-size tint was ~16x the pixels at mip -2.
+        small_main = _resize_rgba(main, width, height)
+        small_pc = None if playercolor is None else _resize_rgba(playercolor, width, height)
+        rgba = _tinted(small_main, small_pc, team)
     draw = SpriteDraw(
-        rgba=_tinted(small_main, small_pc, team),
+        rgba=rgba,
         hotspot_x=round((hx - offset[0]) * scale),
         hotspot_y=round((hy - offset[1]) * scale),
     )
@@ -1847,20 +2086,20 @@ class _NativePiece(NamedTuple):
 def _native_piece(
     unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
-    seed: int | None = None, piece_index: int = 0,
+    seed: int | None = None, piece_index: int = 0, x2: bool = False,
 ):
     """One piece's untinted (main, playercolor, hotspot_x, hotspot_y) at
     NATIVE scale, or None. The tint is _build_icon()'s call: which array size
-    it runs at depends on the piece count and the footprint."""
-    return _native_frame(
-        entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index)
-    )
+    it runs at depends on the piece count and the footprint. `x2` reads the
+    same frame's _x2 art instead (GH #241)."""
+    native = _x2_native_frame if x2 else _native_frame
+    return native(entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index))
 
 
 def _native_pieces_for(
     unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
-    seed: int | None = None,
+    seed: int | None = None, x2: bool = False,
 ) -> list[_NativePiece]:
     """sprite_pieces_for()'s walk at native scale, UNTINTED: same
     marked-parent rule, same skip-a-failed-non-parent rule, dx/dy unscaled.
@@ -1876,15 +2115,20 @@ def _native_pieces_for(
     LRU whose capacity P3-g4 sized for decimated tile-scale sprites --
     evicting Stepped's and Sloped's live entries to hold intermediates thrown
     away one line later. That is exactly the regression P3-g4's "sprites were
-    cached uncropped" finding fixed (7.27x -> 1.14x composite, ~8x memory)."""
+    cached uncropped" finding fixed (7.27x -> 1.14x composite, ~8x memory).
+
+    `x2` walks the same pieces from their _x2 art in x2 px, offsets doubled
+    (GH #241), and is [] unless every piece x1 draws has x2: one icon never
+    mixes the two."""
+    k = 2 if x2 else 1
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        native = _native_piece(unit_const, entry, rotation, angle_offset_deg)
+        native = _native_piece(unit_const, entry, rotation, angle_offset_deg, x2=x2)
         if native is None:
             return []
         main, playercolor, hx, hy = native
         dx, dy = _body_offset(entry)
-        return [_NativePiece(main, playercolor, hx - dx, hy - dy, 0, 0)]
+        return [_NativePiece(main, playercolor, hx - dx * k, hy - dy * k, 0, 0)]
 
     result: list[_NativePiece] = []
     for index, piece in enumerate(pieces_data):
@@ -1894,7 +2138,11 @@ def _native_pieces_for(
             if piece.get("parent") and piece["file_name"] not in _mod_blank_stems:
                 return []
             continue
-        result.append(_NativePiece(*native, int(piece["dx"]), int(piece["dy"])))
+        if x2:
+            native = _native_piece(piece["unit_id"], piece, rotation, angle_offset_deg, seed, index, x2=True)
+            if native is None:
+                return []
+        result.append(_NativePiece(*native, int(piece["dx"]) * k, int(piece["dy"]) * k))
     return result
 
 
@@ -1954,7 +2202,7 @@ def _wall_draw(
     team_slot = team_index % len(TEAM_COLORS)
     key = (
         "wall", unit_const, _art_key(entry), _body_offset(entry),
-        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha,
+        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha, _hi_res,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
@@ -2083,7 +2331,7 @@ def icon_for(
     key = (
         _art_key(entry),
         _frame_key(art_const, entry, art_rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
-        team_slot, footprint_w, footprint_h,
+        team_slot, footprint_w, footprint_h, _hi_res,
     )
     hit = _icon_cache.get_or_none(key)
     if hit is not None:
@@ -2101,27 +2349,23 @@ def _build_icon(
     unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG, seed: int | None = None,
 ) -> SpriteDraw | None:
-    """icon_for()'s uncached body."""
+    """icon_for()'s uncached body. At Enhanced an icon that would enlarge its
+    x1 ink is built from the _x2 art instead (GH #241)."""
     pieces = _native_pieces_for(unit_const, entry, rotation, angle_offset_deg, seed)
     if not pieces:
         return None
-    if len(pieces) == 1:
-        cropped = _cropped_to_ink(pieces[0].main, pieces[0].playercolor, 0, 0)
-        if cropped is None:
-            return None
-        ink, ink_pc = cropped[0], cropped[1]
-    else:
-        assembly = _assembled_native([
-            SpritePiece(
-                draw=SpriteDraw(rgba=_tinted(p.main, p.playercolor, team), hotspot_x=p.hotspot_x, hotspot_y=p.hotspot_y),
-                dx=p.dx, dy=p.dy,
-            )
-            for p in pieces
-        ])
-        cropped = _cropped_to_ink(assembly, None, 0, 0)
-        if cropped is None:
-            return None
-        ink, ink_pc = cropped[0], None
+    from_x2 = False
+    if _hi_res:
+        # x1's fit scale from the pieces' extent, so only the art drawn is assembled.
+        ext_w, ext_h = _pieces_extent(pieces)
+        if min(fw / ext_w, fh / ext_h) > 1.0:
+            pieces_x2 = _native_pieces_for(unit_const, entry, rotation, angle_offset_deg, seed, x2=True)
+            if pieces_x2:
+                pieces, from_x2 = pieces_x2, True
+    built = _icon_ink(pieces, team)
+    if built is None:
+        return None
+    ink, ink_pc = built
     ink_h, ink_w = ink.shape[:2]
     scale = min(fw / ink_w, fh / ink_h)
     # The min(fw/fh, ...) clamp is a guard, not a live correction, and that was
@@ -2134,6 +2378,10 @@ def _build_icon(
     # icon inside its footprint at all.
     iw = min(fw, max(1, round(ink_w * scale)))
     ih = min(fh, max(1, round(ink_h * scale)))
+    if from_x2 and scale < 1.0:
+        # Shrinking x2: box-filtered, as _draw_for_entry() does.
+        tinted = ink if len(pieces) > 1 else _tinted(ink, ink_pc, team)
+        return SpriteDraw(rgba=_box_resize_rgba(tinted, iw, ih), hotspot_x=0, hotspot_y=0)
     if len(pieces) > 1:
         return SpriteDraw(rgba=_resize_rgba(ink, iw, ih), hotspot_x=0, hotspot_y=0)
     # Tint commutes with the crop/resize gathers, so tint whichever array is
@@ -2144,6 +2392,36 @@ def _build_icon(
     else:
         rgba = _resize_rgba(_tinted(ink, ink_pc, team), iw, ih)
     return SpriteDraw(rgba=rgba, hotspot_x=0, hotspot_y=0)
+
+
+def _pieces_extent(pieces: list[_NativePiece]) -> tuple[int, int]:
+    """(w, h) of the pieces' union rect: _icon_ink()'s ink size, since every
+    piece is already cropped to its own ink."""
+    x0 = min(p.dx - p.hotspot_x for p in pieces)
+    y0 = min(p.dy - p.hotspot_y for p in pieces)
+    x1 = max(p.dx - p.hotspot_x + p.main.shape[1] for p in pieces)
+    y1 = max(p.dy - p.hotspot_y + p.main.shape[0] for p in pieces)
+    return x1 - x0, y1 - y0
+
+
+def _icon_ink(pieces: list[_NativePiece], team) -> tuple[np.ndarray, np.ndarray | None] | None:
+    """_build_icon()'s (ink, playercolor) cropped from its native pieces: one
+    piece untinted with its mask, several tinted and assembled. None when
+    there is no piece or no ink."""
+    if not pieces:
+        return None
+    if len(pieces) == 1:
+        cropped = _cropped_to_ink(pieces[0].main, pieces[0].playercolor, 0, 0)
+        return None if cropped is None else (cropped[0], cropped[1])
+    assembly = _assembled_native([
+        SpritePiece(
+            draw=SpriteDraw(rgba=_tinted(p.main, p.playercolor, team), hotspot_x=p.hotspot_x, hotspot_y=p.hotspot_y),
+            dx=p.dx, dy=p.dy,
+        )
+        for p in pieces
+    ])
+    cropped = _cropped_to_ink(assembly, None, 0, 0)
+    return None if cropped is None else (cropped[0], None)
 
 
 def anchor_tile_coords(
