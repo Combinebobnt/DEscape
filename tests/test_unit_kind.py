@@ -439,13 +439,67 @@ RUBBLE = 863  # class 14 eye candy the corpus places for players
 GUNPOWDER_KEG = 2607  # class 64, GAIA-only by the official editor (GH #208)
 
 
-def test_gaia_only_consts_holds_resources_trees_and_the_keg_only() -> None:
+# GH #32: AoE2 Units its 1.59 editor lists only for GAIA, and some it lists for Player 1 too.
+MACAW, DEER, GREY_WOLF, RABID_WOLF = 816, 65, 126, 202
+MILITIA, OUTLAW, ORNLU = 74, 158, 707
+AMPHORA = 2519  # Amphorae, an Other the 1.59 editor lists only for GAIA
+REVEALER_A, REVEALER_B, FURIOUS, HINT_OBJECT = 0, 127, 860, 2238
+
+
+def test_gaia_only_consts_holds_resources_trees_the_keg_and_wild_animals() -> None:
     gaia_only = unit_kind.gaia_only_consts()
     tree = sorted(TREE_UNIT_IDS)[0]
     # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree, the keg.
     assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree, GUNPOWDER_KEG} <= gaia_only
     assert gaia_only >= TREE_UNIT_IDS
-    assert gaia_only.isdisjoint({PILE1, PGOLD, SHEEP, RELIC, FLARE4, RUBBLE})
+    assert {MACAW, DEER, GREY_WOLF, RABID_WOLF, RELIC, AMPHORA} <= gaia_only
+    # FLARE4 is editor-hidden, so outside the rule; rubble is on the player Other tab.
+    assert gaia_only.isdisjoint({PILE1, PGOLD, SHEEP, FLARE4, RUBBLE})
+    # Listed for Player 1 in the 1.59 editor; Outlaw is hidden and player-owned in the corpus.
+    assert gaia_only.isdisjoint({MILITIA, OUTLAW, ORNLU, REVEALER_A, REVEALER_B, FURIOUS, HINT_OBJECT})
+
+
+def test_aoe2_gaia_only_units_are_the_ones_missing_from_the_editors_player_list() -> None:
+    """GH #32, measured 2026-10-21/22: of the 463 unhidden Units the catalog
+    lists, the 1.59 editor's Player 1 list leaves out 105. CUMAN DISABLED 1261
+    is in GAIA's list neither; the other 104 are exactly the rule's Units: 73
+    animals and Dummy Target, plus 30 player units the first screenshots
+    skipped (Donkey to Elite Fire Archer), all listed for Player 1."""
+    objects = unit_kind._objects()
+    units = {const for const in unit_kind._aoe2_gaia_only() if not unit_kind._is_other(objects[const])}
+    assert len(units) == 74
+    assert {89, 1301, 2737, 1956} <= units, "Dire Wolf, Elephant, Elk and Dummy Target"
+    assert 1261 not in units
+    animals = units - {1956}
+    assert {objects[const]["class"] for const in animals} == {9, 10, 11, 65}
+    assert all(objects[const]["type"] == 70 and not objects[const].get("hidden") for const in units)
+    # Livestock (class 58) stays ownable: the editor lists it for players.
+    assert not {const for const, entry in objects.items() if entry.get("class") == 58} & units
+
+
+def test_aoe2_gaia_only_others_are_every_other_off_the_player_tab() -> None:
+    """GH #32, measured 2026-10-22: the Player 1 Other tab lists 77 of the 366
+    unhidden Others plus Invisible Spawner A-J; the other 289 are GAIA-only
+    (288 by this rule, plus the keg)."""
+    objects = unit_kind._objects()
+    others = {const for const in unit_kind._aoe2_gaia_only() if unit_kind._is_other(objects[const])}
+    assert len(unit_kind._AOE2_PLAYER_OTHERS) == 87
+    assert len(others) == 288
+    assert not others & unit_kind._AOE2_PLAYER_OTHERS
+    assert {RELIC, AMPHORA} <= others
+    assert {RUBBLE, 1089, 837, 274} <= unit_kind._AOE2_PLAYER_OTHERS, "rubble, Granary, Map Revealer, Flare"
+
+
+def test_owner_refused_only_gives_gaia_only_consts_to_gaia() -> None:
+    from descape.unit_filter import GAIA_PLAYER_ID
+
+    for const in (MACAW, GOLD_MINE, sorted(TREE_UNIT_IDS)[0], GUNPOWDER_KEG):
+        assert unit_kind.owner_refused(const, 1)
+        assert unit_kind.owner_refused(const, 8)
+        assert not unit_kind.owner_refused(const, GAIA_PLAYER_ID)
+    for const in (83, SHEEP, RUBBLE, OUTLAW, REVEALER_A):
+        assert not unit_kind.owner_refused(const, 1)
+        assert not unit_kind.owner_refused(const, GAIA_PLAYER_ID)
 
 
 def test_placement_owner_coerces_only_gaia_only_consts() -> None:
@@ -461,6 +515,7 @@ def test_placement_owner_coerces_only_gaia_only_consts() -> None:
     assert unit_kind.placement_owner(SHEEP, 2) == 2
     assert unit_kind.placement_owner(RUBBLE, 4) == 4
     assert unit_kind.placement_owner(83, GAIA_PLAYER_ID) == GAIA_PLAYER_ID
+    assert unit_kind.placement_owner(MACAW, 1) == GAIA_PLAYER_ID
 
 
 @pytest.mark.corpus

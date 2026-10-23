@@ -32,11 +32,15 @@ off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
 Decorations, trees, fish and cliffs are left out on purpose.
 
 A GAIA-only object (unit_kind.gaia_only_consts(), the set Place Unit gives
-to GAIA: resources, trees and the Gunpowder Keg) in a player's list fires
-on 0/21 examples/ files and on the one known bad file, the GH #206
-tester's scenario (a player 1 Forage Bush that was missing in the official
-editor), so it is a WARNING. Its message states only that measured fact:
-whether the game drops such an object on its own is unconfirmed.
+to GAIA and no owner change gives to a player: resources, trees and the
+Gunpowder Keg, plus what each game's editor lists only for GAIA, GH #32:
+wild animals and birds, Dummy Target, and the Others outside its player
+list) in a player's list fires on 0/21 examples/ files (measured before
+GH #32 widened the set; 3 other AoE2 files have none of the wider set
+player-owned) and on the one known bad file, the GH #206 tester's scenario
+(a player 1 Forage Bush that was missing in the official editor), so it is
+a WARNING. Its message states only that measured fact: whether the game
+drops such an object on its own is unconfirmed.
 
 Objects in invalid positions (GH #173) reuse placement_rules' two rules,
 which are its approximations of the game's, not the game's own. Over the 21

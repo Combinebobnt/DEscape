@@ -154,6 +154,14 @@ terrain_picker_mode: list
 # Anything else falls back to the default on read. Default: auto.
 game_data: auto
 
+# Whether the Units catalog lists GAIA-only objects (wild animals, resources,
+# trees) while its Owner is a player, Settings > Advanced (GH #32):
+# hide or keep. hide lists them only for GAIA; keep lists them for
+# every owner. Either way a placement gives them to GAIA and no owner change
+# gives them to a player. Anything else falls back to the default on read.
+# Default: hide.
+gaia_only_catalog_mode: hide
+
 # The terrain grid's swatch size in px, Settings > Appearance: 32, 48, 64.
 # Anything else falls back to the default on read. Default: 48.
 terrain_grid_swatch_px: 48

@@ -294,3 +294,70 @@ def test_the_random_row_shows_its_preview_villager_with_a_badge(fake_install) ->
     assert badge.red() < 100 or badge.red() == badge.green() == badge.blue(), "a dark or white question-mark badge in the corner"
     plain = view._items[83].icon().pixmap(32, 32).toImage()
     assert plain.pixelColor(image.width() - 4, image.height() - 7).getRgb() == conftest._UNIT_RED
+
+
+# --- GH #32: GAIA-only objects hidden for a player owner ------------------------
+
+_DEER = 65  # class 9, Prey Animal
+_PREY_CLASS = 9
+
+
+def test_set_excluded_hides_rows_counts_and_an_emptied_class_then_restores_them() -> None:
+    view = _view()
+    before = _counts(view)
+    prey = {e.id for e in object_catalog.objects() if e.class_id == _PREY_CLASS and not e.hidden}
+    assert _DEER in prey and _DEER in _shown(view)
+    assert view.class_combo.findData(_PREY_CLASS) >= 0
+
+    view.set_excluded(frozenset(prey))
+
+    assert not prey & set(_shown(view))
+    assert _counts(view)["Units"] == f"Units ({_visible_count('Units') + 1 - len(prey)})"
+    assert _counts(view)["Buildings"] == before["Buildings"]
+    assert view.class_combo.findData(_PREY_CLASS) < 0, "a class with every row excluded leaves the combo"
+    view.filter_edit.setText("deer")
+    assert _DEER not in _shown(view)
+
+    view.set_excluded(frozenset())
+
+    assert _DEER in _shown(view)
+    view.filter_edit.clear()
+    assert _counts(view) == before
+    assert view.class_combo.findData(_PREY_CLASS) >= 0
+
+
+def test_a_random_pick_is_excluded_only_when_every_choice_is() -> None:
+    view = _view()
+    view.set_excluded(frozenset({83}))
+    assert RANDOM_VILLAGER in _shown(view) and 83 not in _shown(view)
+    view.set_excluded(frozenset({83, 293}))
+    assert RANDOM_VILLAGER not in _shown(view)
+
+
+def test_excluded_rows_survive_a_reload_of_the_entries() -> None:
+    view = _view()
+    view.set_excluded(frozenset({_DEER}))
+    view.reload_entries()
+    assert _DEER not in _shown(view)
+
+
+def test_cuman_disabled_is_editor_hidden() -> None:
+    """GH #32: the 1.59 editor lists it for neither Player 1 nor GAIA."""
+    entry = object_catalog.entry(object_catalog.objects(), 1261)
+    assert entry is not None and entry.hidden
+    view = _view()
+    view.filter_edit.setText("cuman disabled")
+    assert 1261 not in _shown(view)
+    view.show_hidden_checkbox.setChecked(True)
+    assert 1261 in _shown(view)
+
+
+def test_invisible_spawners_are_listed_under_other_like_the_editor() -> None:
+    """GH #32: the 1.59 Other tab lists Invisible Spawner A-J, which the .dat hides."""
+    spawners = (2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648)
+    for const in spawners:
+        entry = object_catalog.entry(object_catalog.objects(), const)
+        assert entry is not None and entry.category == "Others" and not entry.hidden
+    view = _view()
+    view.category_buttons["Others"].click()
+    assert set(spawners) <= set(_shown(view))

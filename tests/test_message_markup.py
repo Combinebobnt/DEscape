@@ -188,6 +188,7 @@ def test_portrait_for_follows_the_buildings_category() -> None:
     assert object_catalog.portrait_for(82) == (7, True)  # Castle
     assert object_catalog.portrait_for(4) == (17, False)  # Archer
     assert object_catalog.portrait_for(1690) == (94, False)  # packed trebuchet: siege class 54, type 80
+    assert object_catalog.portrait_for(1089) == (60, True)  # Granary: type 10, a building portrait (GH #32)
     assert object_catalog.portrait_for(999999) == (None, False)
 
 
@@ -272,3 +273,10 @@ def test_instruction_preview_string_id_resolves_from_the_install() -> None:
     text = asset_source.resource_string(60014)
     assert text is not None and text.startswith("<RED>")
     assert message_markup.parse(text)[0].color == message_markup.TEXT_COLORS["RED"]
+
+
+def test_the_ror_granary_takes_its_building_portrait_too() -> None:
+    from descape import game_dataset, object_catalog
+
+    game_dataset.set_active(game_dataset.ROR)
+    assert object_catalog.portrait_for(1089) == (91, True)

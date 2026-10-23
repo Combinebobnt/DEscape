@@ -52,6 +52,7 @@ from descape import (
     player_labels,
     settings,
     unit_fields,
+    unit_kind,
     unit_rotation,
     unit_variant,
 )
@@ -164,6 +165,19 @@ class _CoordSpinBox(QDoubleSpinBox):
         return super().stepEnabled()
 
 
+def _limit_owner_rows(combo, gaia_only: bool) -> None:
+    """Hides and disables every player row but GAIA's while `gaia_only` (GH
+    #32): hidden from the popup, disabled so the wheel and arrow keys skip
+    them too. The viewer refuses such a change anyway."""
+    model = combo.model()
+    for row in range(combo.count()):
+        player_id = combo.itemData(row)
+        if player_id is None or player_id == GAIA_PLAYER_ID:
+            continue
+        model.item(row).setEnabled(not gaia_only)
+        combo.view().setRowHidden(row, gaia_only)
+
+
 def _rotate_tail(units) -> str:
     """" Rotate (. and ,) still ..." for the members Rotate steps, or "" if none."""
     does = []
@@ -272,6 +286,8 @@ class UnitsPanel(QWidget):
         # filter or selection change that lands on nothing): the object the
         # next Place click/Enter places. See _on_catalog_current_changed.
         self._pending_object_const: int | None = None
+        # GH #32: the shown garrison's GAIA-only occupants, by reference_id (show_garrison()).
+        self._garrison_gaia_only: frozenset[int] = frozenset()
         self._pending_name: str | None = None
         # GH #130: what the owner combos show, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
@@ -300,6 +316,7 @@ class UnitsPanel(QWidget):
 
         self._show_inspector_fields(False)
         self._sync_team_colors()
+        self.refresh_owner_filter()
 
     # -- catalog pane ------------------------------------------------------
 
@@ -326,6 +343,7 @@ class UnitsPanel(QWidget):
         for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
             _add_player_item(self.owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.owner_combo.setCurrentIndex(1)  # Player 1, preserved default
+        self.owner_combo.currentIndexChanged.connect(lambda _index: self.refresh_owner_filter())
         self.owner_combo.currentIndexChanged.connect(lambda _index: self._on_pending_changed())
         self.owner_combo.currentIndexChanged.connect(lambda _index: self._sync_team_colors())
         owner_row.addWidget(self.owner_combo, stretch=1)
@@ -396,13 +414,17 @@ class UnitsPanel(QWidget):
 
     def pick_object(self, const: int) -> bool:
         """select_object() that also lands on a row the catalog filter hides,
-        by clearing that filter (GH #125's wall button), or on an editor-hidden
-        row, by ticking the show-hidden box. True if `const` is now the pending
+        by clearing that filter (GH #125's wall button), on an editor-hidden
+        row, by ticking the show-hidden box, or on a GAIA-only row hidden for a
+        player owner, by setting Owner to GAIA (GH #32). True if `const` is now the pending
         object; False, changing nothing, for a const the catalog doesn't list."""
         view = self.catalog_view
         entry = object_catalog.entry(object_catalog.objects(), const)
         if entry is None:
             return False
+        # GH #32: a GAIA-only object is listed only for GAIA in hide mode, so the eyedropper switches Owner.
+        if self._hides_gaia_only() and unit_kind.owner_refused(const, self.owner_id()):
+            self.select_owner(GAIA_PLAYER_ID)
         # Before select(), as TerrainPanel.set_terrain does: a row the box hides never reads as picked.
         if entry.hidden and view.show_hidden_checkbox is not None:
             view.show_hidden_checkbox.setChecked(True)
@@ -416,6 +438,19 @@ class UnitsPanel(QWidget):
 
     def owner_id(self) -> int:
         return self.owner_combo.currentData()
+
+    def _hides_gaia_only(self) -> bool:
+        return settings.get_gaia_only_catalog_mode() == "hide" and self.owner_id() != GAIA_PLAYER_ID
+
+    def refresh_owner_filter(self) -> None:
+        """GH #32: hides the GAIA-only objects from the catalog while Owner is a
+        player in hide mode, and drops a pending pick that leaves hidden."""
+        excluded = unit_kind.gaia_only_consts() if self._hides_gaia_only() else frozenset()
+        self.catalog_view.set_excluded(excluded)
+        pending = self._pending_object_const
+        if pending is not None and excluded.issuperset(place_random.choices(pending)):
+            self.catalog_view.clear_current()
+            self._clear_pending()
 
     def refresh_player_labels(self, labels, colors) -> None:
         """GH #130: relabel the Place owner combo and the inspector's Owner
@@ -679,6 +714,11 @@ class UnitsPanel(QWidget):
         pick_object() does. It is dropped otherwise: an empty slot (Mule Cart
         1808 under RoR) or a reused one (93, Spearman and Hoplite)."""
         self.catalog_view.reload_entries()
+        self._keep_pending_after_reload()
+        # The new dataset has its own GAIA-only set (GH #32).
+        self.refresh_owner_filter()
+
+    def _keep_pending_after_reload(self) -> None:
         pending = self._pending_object_const
         if pending is None or place_random.is_random(pending):
             return
@@ -688,6 +728,9 @@ class UnitsPanel(QWidget):
                 self.catalog_view.show_hidden_checkbox.setChecked(True)
             self._set_pending_object(pending)
             return
+        self._clear_pending()
+
+    def _clear_pending(self) -> None:
         self._pending_object_const = None
         self._rolled_const = None
         self._pending_name = None
@@ -748,6 +791,7 @@ class UnitsPanel(QWidget):
             self.unit_field_editors["player"].setCurrentIndex(
                 max(self.unit_field_editors["player"].findData(entry.player_id), 0)
             )
+            _limit_owner_rows(self.unit_field_editors["player"], unit.unit_const in unit_kind.gaia_only_consts())
             for field_id, value in (("x", unit.x), ("y", unit.y), ("z", getattr(unit, "z", 0.0))):
                 spin = self.unit_field_editors[field_id]
                 # Range before value, or setValue clamps silently to the
@@ -790,6 +834,8 @@ class UnitsPanel(QWidget):
         self._populating = True
         try:
             self._set_group_owner({entry.player_id for entry in entries})
+            gaia_only = unit_kind.gaia_only_consts()
+            _limit_owner_rows(self.unit_field_editors["player"], all(unit.unit_const in gaia_only for unit in units))
             for field_id, values in coords.items():
                 self._set_group_spin(field_id, values)
                 self.unit_field_editors[field_id].relative_steps = True
@@ -1139,7 +1185,9 @@ class UnitsPanel(QWidget):
 
     # -- garrison block (GH #42) ---------------------------------------------
 
-    def show_garrison(self, rows, capacity: int, wrong_type: int = 0, can_paste: bool = False, cut=()) -> None:
+    def show_garrison(
+        self, rows, capacity: int, wrong_type: int = 0, can_paste: bool = False, cut=(), gaia_only=()
+    ) -> None:
         """The Garrison block for the one selected host.
 
         `rows` is a sequence of (label, owner, reference_id) the viewer built
@@ -1149,9 +1197,12 @@ class UnitsPanel(QWidget):
         file is shown as it is. `can_paste` is the viewer's call (GH #115): a
         garrison clipboard holding something, and a host that can hold it.
         `cut` is the reference_ids a pending Cut marked here (GH #204).
+        `gaia_only` is the reference_ids of GAIA-only occupants (GH #32): a
+        selection of only those greys out the Owner combo's player rows.
         Pick from map's checked state is not touched; see set_garrison_pick_armed().
         """
         rows = list(rows)
+        self._garrison_gaia_only = frozenset(gaia_only)
         self.garrison_header.setText(f"<b>Garrison ({len(rows)} / {capacity})</b>")
         self.garrison_tree.clear()
         for label, owner, reference_id in rows:
@@ -1227,7 +1278,9 @@ class UnitsPanel(QWidget):
             widget.setEnabled(enabled)
 
     def _garrison_selection_changed(self) -> None:
-        self._set_garrison_row_actions_enabled(bool(self.garrison_tree.selectedItems()))
+        selected = self.garrison_selection()
+        self._set_garrison_row_actions_enabled(bool(selected))
+        _limit_owner_rows(self.garrison_owner_combo, bool(selected) and self._garrison_gaia_only.issuperset(selected))
 
     def _garrison_pick_toggled(self, checked: bool) -> None:
         self._on_garrison_pick(checked)

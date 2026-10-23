@@ -629,14 +629,14 @@ _SCATTER_TIP = (
 _SCATTER_NO_AREA_TIP = "Select an area first: drag one with Select in Terrain mode, or select units in Units mode"
 
 
-def _gaia_only_owner_note(units, new_player: int) -> str:
-    """TASK-288's reassign warning: how many of the moved `units` are
-    GAIA-only consts now handed to a player, or "" when none or to GAIA."""
-    if new_player == GAIA_PLAYER_ID:
-        return ""
-    gaia_only = unit_kind.gaia_only_consts()
-    count = sum(1 for unit in units if unit.unit_const in gaia_only)
-    return f"; {count} GAIA-only object(s) now player-owned" if count else ""
+# GH #32: Find and Replace's reason for a player's unit and a GAIA-only new type.
+GAIA_ONLY_REPLACE_REASON = "GAIA-only type; only GAIA can own it"
+
+
+def _gaia_only_refused_note(count: int) -> str:
+    """GH #32's owner-change note: how many GAIA-only objects (or hosts holding
+    one) were left with their owner, or "" for none."""
+    return f"; {count} GAIA-only object(s) left as they were (only GAIA can own them)" if count else ""
 
 
 # Sourced from iso_geometry, not redefined here, so Set Elevation's spinbox
@@ -2185,12 +2185,42 @@ class SettingsDialog(QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(divider)
+        # GH #32: whether the Units catalog lists GAIA-only objects for a player owner.
+        layout.addWidget(QLabel("GAIA-only objects:"))
+        self.gaia_only_hide_radio = QRadioButton("Hide from the catalog when the owner is a player")
+        self.gaia_only_keep_radio = QRadioButton("Keep listed; placement still gives them to GAIA")
+        tooltip = (
+            "Wild animals, resources and trees can only belong to GAIA, as in the game's editor. "
+            "Either way a placement gives them to GAIA, and no owner change gives one to a player."
+        )
+        gaia_only_group = QButtonGroup(tab)
+        for radio in (self.gaia_only_hide_radio, self.gaia_only_keep_radio):
+            radio.setToolTip(tooltip)
+            gaia_only_group.addButton(radio)
+            layout.addWidget(radio)
+        if settings.get_gaia_only_catalog_mode() == "hide":
+            self.gaia_only_hide_radio.setChecked(True)
+        else:
+            self.gaia_only_keep_radio.setChecked(True)
+        # One radio's toggled covers both directions inside an exclusive group.
+        self.gaia_only_hide_radio.toggled.connect(self._on_gaia_only_mode_toggled)
         layout.addStretch(1)
         return tab
 
     def _on_game_data_changed(self, index: int) -> None:
         self._window.set_game_data(self.game_data_combo.itemData(index))
         self._window._log_status(f"Game data: {self.game_data_combo.itemText(index)}")
+
+    def _on_gaia_only_mode_toggled(self, hide: bool) -> None:
+        settings.set_gaia_only_catalog_mode("hide" if hide else "keep")
+        self._window.units_panel.refresh_owner_filter()
+        shown = "hidden for a player owner" if hide else "listed for every owner"
+        self._window._log_status(f"GAIA-only objects: {shown}")
 
     def _build_saving_tab(self) -> QWidget:
         """Autosave's four controls plus the .bak/.orig switch.
@@ -3517,8 +3547,10 @@ class ViewerWindow(QMainWindow):
         # Built on first ask, dropped on any unit mutation or document change.
         self._unit_ref_index: unit_references.ReferenceIndex | None = None
         self._convert_done: set[tuple[int, int]] = set()
-        # The units this stroke reassigned, for TASK-288's GAIA-only note at stroke end.
-        self._convert_units: list = []
+        # GH #32: units this stroke left alone because the destination may not own them,
+        # and the occupants of such a refused host, which stay with it.
+        self._convert_refused: set[tuple[int, int]] = set()
+        self._convert_held: set[tuple[int, int]] = set()
         self._convert_touched_tiles: set[tuple[int, int]] = set()
         # One UnitSplice per reassign not yet handed to the cache, in mutation order.
         self._convert_pending_splices: list[UnitSplice] = []
@@ -4552,18 +4584,22 @@ class ViewerWindow(QMainWindow):
         if spec.field_id == "player":
             new_player = int(value)
 
-            def reselect(_old_to_new) -> None:
+            def reselect(old_to_new) -> None:
                 # Inside the block: _unit_edit's exit reconciles the selection
-                # and would drop the stale (old_player, ref) keys.
-                self._selection = [unit_pick.unit_key(new_player, e.unit) for e in entries]
+                # and would drop the stale (old_player, ref) keys. A refused
+                # GAIA-only entry (GH #32) keeps its own key.
+                self._selection = [old_to_new.get(key, key) for key in self._selection]
 
-            moved = [e.unit for e in entries if e.player_id != new_player]
-            changed, carried, _refused = self._reassign_units(entries, new_player, on_applied=reselect)
-            if not changed and not carried:
-                return
+            changed, carried, _refused, gaia_only = self._reassign_units(entries, new_player, on_applied=reselect)
             owner = "GAIA" if new_player == GAIA_PLAYER_ID else f"Player {new_player}"
+            if not changed and not carried:
+                if gaia_only:
+                    # The Owner field already shows the refused player: put it back.
+                    self._update_unit_inspector_from_selection()
+                    self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}")
+                return
             suffix = f" ({carried} garrisoned)" if carried else ""
-            suffix += _gaia_only_owner_note(moved, new_player)
+            suffix += _gaia_only_refused_note(gaia_only)
             if single:
                 self._log_status(f"Reassigned unit to {owner}{suffix}")
             else:
@@ -4893,8 +4929,14 @@ class ViewerWindow(QMainWindow):
         can_paste = (bool(self._garrison_clipboard) or cut is not None) and garrison.can_hold(unit.unit_const)
         # GH #204: the marks show only on the host the rows were cut from.
         marked = cut.occupants if cut is not None and cut.host == unit.reference_id else ()
+        gaia_only = unit_kind.gaia_only_consts()
         self.units_panel.show_garrison(
-            rows, garrison.capacity(unit.unit_const), wrong_type, can_paste=can_paste, cut=marked
+            rows,
+            garrison.capacity(unit.unit_const),
+            wrong_type,
+            can_paste=can_paste,
+            cut=marked,
+            gaia_only=[o.reference_id for _pid, o in occupants if o.unit_const in gaia_only],
         )
 
     def _selected_host_entry(self):
@@ -5343,7 +5385,13 @@ class ViewerWindow(QMainWindow):
         if entry is None:
             return
         changing = [(pid, u) for pid, u in self._selected_garrison_rows(entry, reference_ids) if pid != player_id]
+        # GH #32: a GAIA-only occupant stays with its owner.
+        gaia_only = sum(1 for _pid, u in changing if unit_kind.owner_refused(u.unit_const, player_id))
+        changing = [(pid, u) for pid, u in changing if not unit_kind.owner_refused(u.unit_const, player_id)]
+        owner = "GAIA" if player_id == GAIA_PLAYER_ID else f"Player {player_id}"
         if not changing:
+            if gaia_only:
+                self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}")
             return
         model = self._ensure_unit_edits()
         if model is None:
@@ -5353,8 +5401,7 @@ class ViewerWindow(QMainWindow):
         with self._unit_edit(model, label, players):
             for _pid, unit in changing:
                 model.reassign(unit, player_id)
-        owner = "GAIA" if player_id == GAIA_PLAYER_ID else f"Player {player_id}"
-        self._log_status(f"Reassigned {len(changing)} garrisoned unit(s) to {owner}")
+        self._log_status(f"Reassigned {len(changing)} garrisoned unit(s) to {owner}{_gaia_only_refused_note(gaia_only)}")
 
     def _build_filters_button(self, toolbar) -> None:
         """The Filters popup -- phase 3's P3-b.
@@ -7698,20 +7745,27 @@ class ViewerWindow(QMainWindow):
 
     def _reassign_units(
         self, entries, new_player: int, on_applied=None, skip_orphan_occupants: bool = False
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, int]:
         """Moves entries to `new_player` in one undo record, carrying every
-        host's garrison (GH #115). Returns (changed, carried, refused).
+        host's garrison (GH #115).
 
         `on_applied(old_to_new_keys)` runs inside the _unit_edit block, where
         a key rewrite has to happen: leaving the block drops keys that no
         longer resolve. `skip_orphan_occupants` (Find) refuses an occupant
         entry whose host is not in the batch rather than creating a
         mixed-owner garrison, which GH #115 Step 0 has not cleared in-game;
-        the Inspector keeps its per-unit behaviour."""
+        the Inspector keeps its per-unit behaviour.
+
+        GH #32: an entry whose own move or carried garrison would give a
+        GAIA-only object to a player is left out first. Returns (changed,
+        carried, refused, gaia_only_refused)."""
         model = self._ensure_unit_edits()
         if model is None:
-            return 0, 0, 0
+            return 0, 0, 0, 0
         refused = 0
+        kept = [e for e in entries if not self._owner_change_refused(model, e, new_player)]
+        gaia_only_refused = len(entries) - len(kept)
+        entries = kept
         if skip_orphan_occupants:
             batch_refs = {e.unit.reference_id for e in entries}
             kept = []
@@ -7731,7 +7785,7 @@ class ViewerWindow(QMainWindow):
             if e.player_id != new_player and id(e.unit) not in batch_ids
         ]
         if not changing and not carried:
-            return 0, 0, refused
+            return 0, 0, refused, gaia_only_refused
         label = "Reassign unit" if len(entries) == 1 else f"Reassign {len(changing)} units"
         players = sorted({e.player_id for e in changing + carried} | {new_player})
         with self._unit_edit(model, label, players):
@@ -7740,13 +7794,26 @@ class ViewerWindow(QMainWindow):
                 model.reassign(entry.unit, new_player)
             if on_applied is not None:
                 on_applied({old: (new_player, old[1]) for old in old_keys})
-        return len(changing), len(carried), refused
+        return len(changing), len(carried), refused, gaia_only_refused
+
+    def _owner_change_refused(self, model, entry, new_player: int) -> bool:
+        """GH #32: moving `entry` to `new_player` would give a GAIA-only object
+        to a player, itself or one of the garrison it carries."""
+        if new_player == GAIA_PLAYER_ID:
+            return False
+        if entry.player_id != new_player and unit_kind.owner_refused(entry.unit.unit_const, new_player):
+            return True
+        return any(
+            occupant.player_id != new_player and unit_kind.owner_refused(occupant.unit.unit_const, new_player)
+            for occupant in self._garrison_occupant_entries(model, [entry])
+        )
 
     def _replace_preflight(self, model, entries, new_const: int) -> tuple[list, dict]:
         """(the entries a Replace to `new_const` will change, {key: reason} for
         the rest), by UnitEditModel.replace_batch_refusals(): dropping one row
         can change what its host or occupant may become, either way. A
-        duplicated reference_id is refused outright."""
+        duplicated reference_id, and a player's unit for a GAIA-only
+        `new_const` (GH #32), are refused outright."""
         mm = self.scenario.map_manager
         ref_counts = Counter(int(u.reference_id) for _p, u in unit_references.all_units(self.scenario))
         refused: dict[tuple[int, int], str] = {}
@@ -7754,6 +7821,9 @@ class ViewerWindow(QMainWindow):
         for e in entries:
             if ref_counts[int(e.unit.reference_id)] > 1:
                 refused[unit_pick.unit_key(e.player_id, e.unit)] = "reference id placed more than once"
+            elif unit_kind.owner_refused(new_const, e.player_id):
+                # GH #32: a player's unit never becomes a GAIA-only object.
+                refused[unit_pick.unit_key(e.player_id, e.unit)] = GAIA_ONLY_REPLACE_REASON
             else:
                 pool.append(e)
         reasons = model.replace_batch_refusals([e.unit for e in pool], new_const, mm.map_width, mm.map_height)
@@ -12579,7 +12649,8 @@ class ViewerWindow(QMainWindow):
                 self._after_unit_mutation()
         self._convert_pending_splices = []
         self._convert_done = set()
-        self._convert_units = []
+        self._convert_refused = set()
+        self._convert_held = set()
         self._convert_touched_tiles = set()
         # Read once and held for the whole drag rather than re-read per
         # touched tile: the combo can't actually change while the mouse is
@@ -12612,9 +12683,18 @@ class ViewerWindow(QMainWindow):
                 entry = index.entries[order]
                 key = unit_pick.unit_key(entry.player_id, entry.unit)
                 # A multi-tile unit appears in several touched tiles' buckets.
-                if key in self._convert_done:
+                if key in self._convert_done or key in self._convert_refused or key in self._convert_held:
                     continue
                 if entry.player_id in sources and entry.player_id != destination:
+                    # GH #32: never a GAIA-only object (or a host carrying one) to a player.
+                    if self._owner_change_refused(model, entry, destination):
+                        self._convert_refused.add(key)
+                        # A refused host's visible occupants stay with it: no mixed-owner garrison.
+                        self._convert_held.update(
+                            unit_pick.unit_key(o.player_id, o.unit)
+                            for o in self._garrison_occupant_entries(model, [entry])
+                        )
+                        continue
                     self._convert_one(model, entry, key, destination, destination_units)
                     # by_tile lacks hidden occupants. They go with their host
                     # whatever their own owner, like the Inspector's Owner (GH #115).
@@ -12640,7 +12720,6 @@ class ViewerWindow(QMainWindow):
             old_own, old_own, old_tiles, old_tiles, old_player_id=entry.player_id,
         ))
         self._convert_done.add(key)
-        self._convert_units.append(entry.unit)
 
     def _flush_convert_refresh(self) -> None:
         """The mid-stroke repaint: cache and canvas only, index left stale
@@ -12654,14 +12733,19 @@ class ViewerWindow(QMainWindow):
         model = self._convert_model
         self._convert_model = None
         count = len(self._convert_done)
+        refused_note = _gaia_only_refused_note(len(self._convert_refused))
         self._convert_done = set()
-        units, self._convert_units = self._convert_units, []
+        self._convert_refused = set()
+        self._convert_held = set()
         self._convert_touched_tiles = set()
         pending, self._convert_pending_splices = self._convert_pending_splices, []
         if model is None:
             return
+        owner_text = "GAIA" if self._convert_destination == GAIA_PLAYER_ID else f"Player {self._convert_destination}"
         if not count:
             model.abort_unit_edit()
+            if refused_note:
+                self._log_status(f"Converted 0 units to {owner_text}{refused_note}")
             return
         label = "Convert unit" if count == 1 else f"Convert {count} units"
         model.commit_unit_edit(label, self.edit_history)
@@ -12669,9 +12753,7 @@ class ViewerWindow(QMainWindow):
         self._after_unit_mutation(changed=pending, rebuild_index=True)
         self._update_title()
         self._update_edit_actions()
-        owner_text = "GAIA" if self._convert_destination == GAIA_PLAYER_ID else f"Player {self._convert_destination}"
-        note = _gaia_only_owner_note(units, self._convert_destination)
-        self._log_status(f"Converted {count} unit(s) to {owner_text}{note}")
+        self._log_status(f"Converted {count} unit(s) to {owner_text}{refused_note}")
 
     # -- Eraser brush (GH #184) ---------------------------------------------
     #
@@ -13876,7 +13958,8 @@ class ViewerWindow(QMainWindow):
         if modifiers & Qt.ShiftModifier:
             self._log_status(f"Picked {name} from ({x}, {y}){note}")
             return
-        owner = entry.player_id
+        # GH #32: a bad file's player-owned GAIA-only object is picked for GAIA, where it places.
+        owner = unit_kind.placement_owner(const, entry.player_id)
         self.units_panel.select_owner(owner)
         parts = [name, "GAIA" if owner == GAIA_PLAYER_ID else f"Player {owner}"]
         if unit_rotation.rotation_is_angle(const):
@@ -17916,9 +17999,7 @@ class ViewerWindow(QMainWindow):
             return {}
         remapped: dict = {}
         entries = self._find_entries(keys)
-        # A refused orphan occupant is garrisoned, so never a resource or tree.
-        moved = [e.unit for e in entries if e.player_id != new_player]
-        changed, carried, refused = self._reassign_units(
+        changed, carried, refused, gaia_only = self._reassign_units(
             entries, new_player, on_applied=remapped.update, skip_orphan_occupants=True
         )
         owner = "GAIA" if new_player == GAIA_PLAYER_ID else f"Player {new_player}"
@@ -17927,7 +18008,7 @@ class ViewerWindow(QMainWindow):
             status += f" ({carried} garrisoned)"
         if refused:
             status += f"; {refused} refused (garrisoned in a host not being reassigned)"
-        status += _gaia_only_owner_note(moved, new_player)
+        status += _gaia_only_refused_note(gaia_only)
         self._log_status(status)
         return remapped
 

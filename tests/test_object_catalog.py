@@ -335,12 +335,14 @@ def test_objects_lists_the_gunpowder_keg_as_the_official_editor_does() -> None:
 
 
 def test_objects_adds_exactly_the_editor_visible_dat_only_ids_and_the_keg() -> None:
+    """Plus Invisible Spawner A-J, which the 1.59 editor lists under Other (GH #32)."""
     table = object_catalog._dat_table()["objects"]
     library = _library_categories()
     expected = {int(k) for k, v in table.items() if int(k) not in library and not v["hidden"]}
     assert len(expected) == 64  # measured 2026-09-27, unchanged by the 2026-10-07 regen
     added = {e.id for e in object_catalog.objects()} - set(library)
-    assert added == expected | {2607}
+    assert added == expected | set(object_catalog._EDITOR_LISTED_DAT_ONLY)
+    assert set(object_catalog._EDITOR_LISTED_DAT_ONLY) == {2607, 2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648}
 
 
 def test_display_name_names_a_dat_only_const_with_no_install() -> None:

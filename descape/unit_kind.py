@@ -186,13 +186,13 @@ BUILDING_TILE_SPANS membership with walls as a sub-count: net of walls, the two
 differ by exactly the 10 mobile-siege consts plus 1192. GH #143's "exclude
 buildings" should reuse this set.
 
-## gaia_only_consts(): resources, trees and the Gunpowder Keg (TASK-288)
+## gaia_only_consts(): resources, trees, the Gunpowder Keg and wild animals (TASK-288, GH #32)
 
 The consts a new placement (Place Unit, Scatter) always gives to GAIA,
-whatever the owner combo says, and whose reassignment to a player gets a
-status warning. Basis: _RESOURCE_CLASSES minus 40/41 (the hidden type-70
-PILE*/P* piles, which the corpus never places and which carry no resource),
-plus terrain_palette.TREE_UNIT_IDS. Measured 2026-10-11 over the 21-file
+whatever the owner combo says, and that no owner change gives to a player
+(owner_refused(), GH #32). Basis: _RESOURCE_CLASSES minus 40/41 (the
+hidden type-70 PILE*/P* piles, which the corpus never places and which carry
+no resource), plus terrain_palette.TREE_UNIT_IDS. Measured 2026-10-11 over the 21-file
 examples/ corpus: all 4,099 placements of the resource classes (fish
 53/450-458, FORAG 59, GOLDM 66, FISHS 69, STONM 102) and all 117,582 tree
 placements are GAIA. The rule is by class, not "all type 10": player-owned
@@ -203,6 +203,31 @@ Plus _GAIA_ONLY_EXTRA_CONSTS, named rather than derived from a class: the
 Gunpowder Keg 2607 (GH #208), which the official editor drops when it is set
 to a player (the PR #223 contributor's in-game check). The corpus agrees: all
 20 keg placements, in 2 of the 21 files, are GAIA (measured 2026-10-15).
+
+AoE2 follows its editor too (GH #32), with the same rule shape as Return of
+Rome below. Measured 2026-10-21/22 from the 1.59 editor's lists for Player 1
+against GAIA's:
+
+- Units: the 358 Player 1 names all match the catalog, and every unhidden
+  non-hero Units object of classes 9, 10, 11 and 65 (prey, predators, birds,
+  foxes, Butterflies, Seagulls, Stormy Dog) is missing from it, except
+  _AOE2_PLAYER_UNIT_EXCEPTIONS: Moveable Map Revealer A 0 and B 127, Furious
+  the Monkey Boy 860 and Hint Object 2238. The one GAIA-only Units object
+  outside those classes is Dummy Target 1956 (class 38,
+  _AOE2_GAIA_ONLY_EXTRA_UNITS). CUMAN DISABLED 1261 is in neither list, so
+  object_catalog lists it as editor-hidden. Hidden Outlaw 158 stays out: it
+  is in neither list and the corpus has it player-owned. Ornlu the Wolf 707
+  is a hero, and livestock (class 58) is listed for players.
+- Other: the Player 1 tab lists 77 of the catalog's 366 unhidden Others
+  plus Invisible Spawner A-J, which the .dat hides and object_catalog now
+  lists like the keg (_AOE2_PLAYER_OTHERS holds all 87). The other 289 are
+  exactly the unhidden eye-candy types and relics outside that list, plus
+  the keg; amphorae, rocks, plants, ruins and Relic 285 among them.
+- Buildings: not measured (user decision).
+
+Hidden objects are outside the rule, so the corpus's player-owned FLARE4 697
+and RUBL2 144 stay ownable. Corpus check (2026-10-22, 3 AoE2 files outside
+examples/, which was not on hand): every placement of the set is GAIA.
 
 Under Return of Rome (GH #67) the rule is the RoR editor's: everything its
 lists show only with GAIA selected. Measured 2026-10-17 from the in-game lists
@@ -255,9 +280,26 @@ _RESOURCE_CLASSES = frozenset({5, 7, 8, 31, 32, 33, 40, 41, 48, 63})
 _GAIA_ONLY_CLASSES = _RESOURCE_CLASSES - {40, 41}
 # Gunpowder Keg: the official editor drops it when a player owns it (GH #208).
 _GAIA_ONLY_EXTRA_CONSTS = frozenset({2607})
-# GH #67, Return of Rome: non-hero Units classes its editor lists for GAIA only, and the
-# extra Units ids it treats the same way (Discovery) or not (Moveable Map Revealer A, Furious the Monkey Boy).
-_ROR_GAIA_ONLY_CLASSES = frozenset({9, 10, 11, 65})
+# Non-hero Units classes both editors list for GAIA only (GH #67 RoR, GH #32 AoE2): prey, predators, birds, foxes.
+_GAIA_ONLY_UNIT_CLASSES = frozenset({9, 10, 11, 65})
+# GH #32, AoE2: the Units ids in those classes its editor lists for a player too (Moveable Map
+# Revealer A and B, Furious the Monkey Boy, Hint Object), and the one outside them it lists
+# for GAIA only (Dummy Target, class 38).
+_AOE2_PLAYER_UNIT_EXCEPTIONS = frozenset({0, 127, 860, 2238})
+_AOE2_GAIA_ONLY_EXTRA_UNITS = frozenset({1956})
+# GH #32, AoE2's Other tab for a player, the only Others a player may own: flags and banners,
+# flares, Granary, map revealers, rubble, shipwrecks, Smoke, statues and stelae, targets, torches,
+# and Invisible Spawner A-J (2616-2621, 2645-2648; hidden in the .dat, listed by object_catalog).
+_AOE2_PLAYER_OTHERS = frozenset({
+    2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648,
+    274, 304, 499, 600, 601, 602, 603, 604, 720, 721, 722, 837, 851, 863, 864, 865, 1089, 1092,
+    1093, 1094, 1150, 1151, 1152, 1153, 1270, 1279, 1282, 1283, 1284, 1285, 1307, 1308, 1315,
+    1376, 1497, 1498, 1564, 1565, 1689, 1774, 1775, 1785, 1836, 1943, 1986, 2010, 2011, 2012,
+    2013, 2014, 2015, 2253, 2254, 2255, 2256, 2257, 2258, 2259, 2260, 2261, 2352, 2353, 2354,
+    2355, 2456, 2498, 2499, 2500, 2513, 2520, 2576, 2601, 2602, 2603, 2604, 2605, 2749,
+})
+# GH #67, Return of Rome: the extra Units ids it treats as GAIA-only (Discovery) or not
+# (Moveable Map Revealer A, Furious the Monkey Boy).
 _ROR_GAIA_ONLY_EXTRA_CONSTS = frozenset({16})
 _ROR_PLAYER_UNIT_EXCEPTIONS = frozenset({0, 860})
 # Its Other tab for a player, the only Others a player may own: flags, flares, Granary,
@@ -397,7 +439,39 @@ def gaia_only_consts() -> frozenset[int]:
     resources = {const for const, entry in _objects().items() if entry.get("class") in _GAIA_ONLY_CLASSES}
     if game_dataset.is_ror():
         return frozenset(resources | TREE_UNIT_IDS | _ror_gaia_only())
-    return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_EXTRA_CONSTS)
+    return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_EXTRA_CONSTS | _aoe2_gaia_only())
+
+
+def _is_other(entry: dict) -> bool:
+    """An Other-tab object, as both editors' rules read it: eye candy types or a relic."""
+    return entry.get("type") in _EYE_CANDY_TYPES or entry.get("class") == _RELIC_CLASS
+
+
+def _gaia_only_unit(const: int, entry: dict, player_exceptions: frozenset[int]) -> bool:
+    """Whether a Units-tab object is one the editor lists for GAIA only: a
+    non-hero member of _GAIA_ONLY_UNIT_CLASSES outside `player_exceptions`."""
+    return (
+        entry.get("class") in _GAIA_ONLY_UNIT_CLASSES
+        and entry.get("type") not in _EYE_CANDY_TYPES
+        and not entry.get("hero_mode", 0) & 1
+        and const not in player_exceptions
+    )
+
+
+def _aoe2_gaia_only() -> set[int]:
+    """The unhidden AoE2 objects its 1.59 editor lists only for GAIA (GH #32):
+    every Other outside _AOE2_PLAYER_OTHERS, and the Units of the class rule
+    plus Dummy Target. See the module docstring."""
+    found = set(_AOE2_GAIA_ONLY_EXTRA_UNITS)
+    for const, entry in _objects().items():
+        if entry.get("hidden"):
+            continue
+        if _is_other(entry):
+            if const not in _AOE2_PLAYER_OTHERS:
+                found.add(const)
+        elif _gaia_only_unit(const, entry, _AOE2_PLAYER_UNIT_EXCEPTIONS):
+            found.add(const)
+    return found
 
 
 def _ror_gaia_only() -> set[int]:
@@ -412,10 +486,10 @@ def _ror_gaia_only() -> set[int]:
         shared = old is not None and (old.get("code"), old.get("class")) == (entry.get("code"), entry.get("class"))
         if (entry.get("hidden") and not shared) or const in _ROR_PLAYER_UNIT_EXCEPTIONS:
             continue
-        if entry.get("type") in _EYE_CANDY_TYPES or entry.get("class") == _RELIC_CLASS:
+        if _is_other(entry):
             if const not in _ROR_PLAYER_OTHERS:
                 found.add(const)
-        elif entry.get("class") in _ROR_GAIA_ONLY_CLASSES and not entry.get("hero_mode", 0) & 1:
+        elif _gaia_only_unit(const, entry, _ROR_PLAYER_UNIT_EXCEPTIONS):
             found.add(const)
     return found
 
@@ -424,6 +498,12 @@ def placement_owner(unit_const: int, owner: int) -> int:
     """The owner a new placement of `unit_const` gets: GAIA for a
     gaia_only_consts() member, `owner` otherwise."""
     return _GAIA_PLAYER_ID if unit_const in gaia_only_consts() else owner
+
+
+def owner_refused(unit_const: int, player: int) -> bool:
+    """Whether giving `unit_const` to `player` is refused (GH #32): a
+    gaia_only_consts() member may only belong to GAIA."""
+    return player != _GAIA_PLAYER_ID and unit_const in gaia_only_consts()
 
 
 @game_dataset.cache(maxsize=1)

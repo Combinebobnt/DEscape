@@ -1372,3 +1372,68 @@ def test_the_value_highlight_covers_the_matched_glyphs() -> None:
     want_last = match_ink[-1] + metrics.rightBearing("e")
     assert abs(fill_columns[0] - want_first) <= 1, (int(fill_columns[0]), want_first)
     assert abs(fill_columns[-1] - want_last) <= 1, (int(fill_columns[-1]), want_last)
+
+
+# --- GH #32: GAIA-only objects never go to a player ----------------------------
+
+_DEER = 65
+_GAIA_ONLY_NOTE = "1 GAIA-only object(s) left as they were (only GAIA can own them)"
+
+
+def test_replace_refuses_a_players_unit_for_a_gaia_only_type_and_allows_gaia() -> None:
+    from descape.viewer import GAIA_ONLY_REPLACE_REASON
+
+    window, _boxes = _window()
+    try:
+        keys = [(1, _REF_ARCHER_P1)]
+        assert window._find_replace_preflight(keys, _DEER) == {(1, _REF_ARCHER_P1): GAIA_ONLY_REPLACE_REASON}
+        replaced, refused = window._find_replace_keys(keys, _DEER)
+        assert replaced == 0 and refused == {(1, _REF_ARCHER_P1): GAIA_ONLY_REPLACE_REASON}
+        assert _unit(window, _REF_ARCHER_P1).unit_const != _DEER
+
+        assert window._find_replace_preflight([(0, _REF_OAK)], _DEER) == {}
+        replaced, _refused = window._find_replace_keys([(0, _REF_OAK)], _DEER)
+        assert replaced == 1 and _unit(window, _REF_OAK).unit_const == _DEER
+    finally:
+        _close(window)
+
+
+def test_a_host_holding_a_gaia_only_occupant_is_not_given_to_a_player() -> None:
+    """The occupant would go with its host (GH #115), so the host stays too."""
+    window, _boxes = _window()
+    try:
+        model = window._ensure_unit_edits()
+        villager = _unit(window, _REF_VILLAGER_P1)
+        with window._unit_edit(model, "test: bad file", [1]):
+            villager.unit_const = _DEER  # a player-owned deer inside the house, as a bad file has it
+        window._find_reassign_keys([(1, _REF_HOUSE)], 3)
+        assert (_owner(window, _REF_HOUSE), _owner(window, _REF_VILLAGER_P1)) == (1, 1)
+        assert window.status_log.toPlainText().splitlines()[-1].endswith(_GAIA_ONLY_NOTE)
+
+        window._find_reassign_keys([(1, _REF_HOUSE)], 0)
+        assert (_owner(window, _REF_HOUSE), _owner(window, _REF_VILLAGER_P1)) == (0, 0), "to GAIA always works"
+    finally:
+        _close(window)
+
+
+def test_the_garrison_owner_row_refuses_a_gaia_only_occupant() -> None:
+    window, _boxes = _window()
+    try:
+        model = window._ensure_unit_edits()
+        villager = _unit(window, _REF_VILLAGER_P1)
+        with window._unit_edit(model, "test: bad file", [1]):
+            villager.unit_const = _DEER
+        window.mode_combo.setCurrentText("Units")
+        window._selection = [(1, _REF_HOUSE)]
+        window._update_unit_inspector_from_selection()
+        before = window.edit_history.cursor
+
+        window._on_garrison_owner([_REF_VILLAGER_P1], 2)
+
+        assert _owner(window, _REF_VILLAGER_P1) == 1
+        assert window.edit_history.cursor == before
+        assert window.status_log.toPlainText().splitlines()[-1] == f"Not reassigned to Player 2; {_GAIA_ONLY_NOTE}"
+        window._on_garrison_owner([_REF_VILLAGER_P1], 0)
+        assert _owner(window, _REF_VILLAGER_P1) == 0
+    finally:
+        _close(window)

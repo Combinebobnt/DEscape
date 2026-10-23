@@ -23,7 +23,7 @@ import pytest
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from descape import render
+from descape import render, settings, unit_pick
 
 import conftest
 
@@ -337,11 +337,14 @@ _BERRY_BUSH = 59  # FORAG, GAIA in every corpus placement
 
 
 def test_placing_a_gaia_only_object_for_a_player_places_it_for_gaia() -> None:
+    """Keep listed (GH #32) is what lets a player owner pick one at all."""
+    settings.set_gaia_only_catalog_mode("keep")
     window = _window()
     try:
         window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
         window.units_panel.select_object(_BERRY_BUSH)
         window.units_panel.select_owner(1)
+        assert window.units_panel.selected_object_const() == _BERRY_BUSH
         window.place_unit_action.setChecked(True)
         before_gaia = len(window.scenario.unit_manager.units[0])
         before_p1 = len(window.scenario.unit_manager.units[1])
@@ -380,61 +383,104 @@ def test_placing_a_villager_for_a_player_keeps_the_player() -> None:
         _close(window)
 
 
-def test_reassigning_a_gaia_only_object_to_a_player_goes_through_with_a_note() -> None:
+def _place_gaia_bush(window, tile=(10, 10)):
+    """A GAIA Forage Bush at `tile`, selected; returns its index entry."""
+    window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
+    window.units_panel.select_owner(0)
+    window.units_panel.select_object(_BERRY_BUSH)
+    window.place_unit_action.setChecked(True)
+    window.on_unit_place(_pos_for_tile(window, *tile), Qt.NoModifier)
+    entry = window.map_view._unit_index.entry_for_key(window._selection[0])
+    assert entry.player_id == 0 and entry.unit.unit_const == _BERRY_BUSH
+    return entry
+
+
+def test_reassigning_a_gaia_only_object_to_a_player_is_refused() -> None:
+    """GH #32: the inspector's Owner never gives a GAIA-only object to a player."""
     window = _window()
     try:
-        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
-        window.units_panel.select_object(_BERRY_BUSH)
-        window.units_panel.select_owner(0)
-        window.place_unit_action.setChecked(True)
-        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
-        entry = window.map_view._unit_index.entry_for_key(window._selection[0])
-        assert entry.player_id == 0
+        entry = _place_gaia_bush(window)
         window.units_panel.show_unit(entry)
+        before_records = len(window.edit_history.records)
 
         combo = window.units_panel.unit_field_editors["player"]
         combo.setCurrentIndex(combo.findData(1))
 
-        assert window._selection == [(1, entry.unit.reference_id)]
-        assert window.scenario.unit_manager.units[1][-1] is entry.unit
+        assert entry.unit in window.scenario.unit_manager.units[0]
+        assert window._selection == [(0, entry.unit.reference_id)]
+        assert len(window.edit_history.records) == before_records
+        assert combo.currentData() == 0, "the Owner field shows the unit's real owner again"
         status = window.status_log.toPlainText().splitlines()[-1]
-        assert status == "Reassigned unit to Player 1; 1 GAIA-only object(s) now player-owned"
-
-        combo.setCurrentIndex(combo.findData(0))
-        status = window.status_log.toPlainText().splitlines()[-1]
-        assert status == "Reassigned unit to GAIA"
+        assert status == "Not reassigned to Player 1; 1 GAIA-only object(s) left as they were (only GAIA can own them)"
     finally:
         _close(window)
 
 
-def test_find_reassign_of_a_gaia_only_object_to_a_player_notes_it() -> None:
+def test_a_mixed_reassign_moves_the_others_and_notes_the_gaia_only_ones() -> None:
     window = _window()
     try:
-        window.unrestricted_check.setChecked(True)  # (10, 10) is under the fixture's House
-        window.units_panel.select_object(_BERRY_BUSH)
-        window.place_unit_action.setChecked(True)
-        window.on_unit_place(_pos_for_tile(window, 10, 10), Qt.NoModifier)
+        bush = _place_gaia_bush(window)
+        window.units_panel.select_object(_PLACE_CONST)
+        window.on_unit_place(_pos_for_tile(window, 12, 12), Qt.NoModifier)
+        villager = window.map_view._unit_index.entry_for_key(window._selection[0])
+        window._selection = [unit_pick.unit_key(0, bush.unit), unit_pick.unit_key(0, villager.unit)]
+        window._update_unit_inspector_from_selection()
+
+        combo = window.units_panel.unit_field_editors["player"]
+        combo.setCurrentIndex(combo.findData(2))
+
+        assert villager.unit in window.scenario.unit_manager.units[2]
+        assert bush.unit in window.scenario.unit_manager.units[0]
+        assert sorted(window._selection) == [(0, bush.unit.reference_id), (2, villager.unit.reference_id)]
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status.endswith("; 1 GAIA-only object(s) left as they were (only GAIA can own them)")
+    finally:
+        _close(window)
+
+
+def test_a_player_owned_gaia_only_object_can_be_given_to_gaia() -> None:
+    """A bad file's player-owned bush is fixed by giving it to GAIA, never moved to another player."""
+    window = _window()
+    try:
+        entry = _place_gaia_bush(window)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "test: bad file", [0, 1]):
+            model.reassign(entry.unit, 1)
+        window._selection = [unit_pick.unit_key(1, entry.unit)]
         key = window._selection[0]
-        assert key[0] == 0
+
+        window._find_reassign_keys([key], 3)
+        assert entry.unit in window.scenario.unit_manager.units[1]
+
+        window._find_reassign_keys([key], 0)
+        assert entry.unit in window.scenario.unit_manager.units[0]
+        assert window.status_log.toPlainText().splitlines()[-1] == "Reassigned 1 units to GAIA"
+    finally:
+        _close(window)
+
+
+def test_find_reassign_of_a_gaia_only_object_to_a_player_is_refused() -> None:
+    window = _window()
+    try:
+        entry = _place_gaia_bush(window)
+        key = window._selection[0]
 
         window._find_reassign_keys([key], 3)
 
-        assert window.scenario.unit_manager.units[3][-1].reference_id == key[1]
+        assert entry.unit in window.scenario.unit_manager.units[0]
         status = window.status_log.toPlainText().splitlines()[-1]
-        assert status == "Reassigned 1 units to Player 3; 1 GAIA-only object(s) now player-owned"
+        assert status == (
+            "Reassigned 0 units to Player 3; 1 GAIA-only object(s) left as they were (only GAIA can own them)"
+        )
     finally:
         _close(window)
 
 
-def test_the_gaia_only_owner_note_counts_only_members_handed_to_a_player() -> None:
-    from descape.viewer import _gaia_only_owner_note
-    from testkit import fakes
+def test_the_gaia_only_refused_note_is_empty_for_none() -> None:
+    from descape.viewer import _gaia_only_refused_note
 
-    bush = fakes.SyntheticUnit(x=5.5, y=5.5, unit_const=_BERRY_BUSH)
-    villager = fakes.SyntheticUnit(x=6.5, y=5.5, unit_const=_PLACE_CONST)
-    assert _gaia_only_owner_note([bush, bush, villager], 2) == "; 2 GAIA-only object(s) now player-owned"
-    assert _gaia_only_owner_note([villager], 2) == ""
-    assert _gaia_only_owner_note([bush], 0) == ""
+    assert _gaia_only_refused_note(0) == ""
+    assert _gaia_only_refused_note(2) == "; 2 GAIA-only object(s) left as they were (only GAIA can own them)"
 
 
 # --- b1.5: move + nudge ------------------------------------------------------
@@ -3957,11 +4003,12 @@ def test_a_convert_stroke_reassigns_live_and_records_one_undo_step() -> None:
         _close(window)
 
 
-def test_converting_a_gaia_only_object_to_a_player_notes_it() -> None:
-    """TASK-288: Convert still hands a GAIA bush to a player, with a warning."""
+def test_converting_a_gaia_only_object_to_a_player_is_refused() -> None:
+    """GH #32: Convert leaves a GAIA bush with GAIA and says so."""
     window = _window()
     try:
         tile = _empty_tile(window)
+        window.units_panel.select_owner(0)
         window.units_panel.select_object(_BERRY_BUSH)
         window.place_unit_action.setChecked(True)
         window.on_unit_place(_pos_for_tile(window, *tile), Qt.NoModifier)
@@ -3971,13 +4018,51 @@ def test_converting_a_gaia_only_object_to_a_player_notes_it() -> None:
         window.brush_size_spin.setValue(1)
         window.convert_source_actions[0].setChecked(True)
 
+        before_records = len(window.edit_history.records)
+
         window._begin_convert_stroke()
         window._convert_stroke_tile(*tile)
         window._end_convert_stroke()
 
-        assert bush in window.scenario.unit_manager.units[2]
+        assert bush in window.scenario.unit_manager.units[0]
+        assert len(window.edit_history.records) == before_records
         status = window.status_log.toPlainText().splitlines()[-1]
-        assert status == "Converted 1 unit(s) to Player 2; 1 GAIA-only object(s) now player-owned"
+        assert status == (
+            "Converted 0 units to Player 2; 1 GAIA-only object(s) left as they were (only GAIA can own them)"
+        )
+    finally:
+        _close(window)
+
+
+def test_converting_a_host_holding_a_gaia_only_occupant_to_a_player_is_refused() -> None:
+    """GH #32: the occupant would go with its host, so both stay; to GAIA both go."""
+    from descape.viewer import _gaia_only_refused_note
+
+    window = _window()
+    try:
+        (host_entry,) = _convert_setup(window, count=1)
+        host = host_entry.unit
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "test: bad file", [1]):
+            deer = model.add(1, 65, host.x, host.y, garrisoned_in_id=host.reference_id)
+        window.convert_source_actions[1].setChecked(True)
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(int(host.x), int(host.y))
+        window._end_convert_stroke()
+
+        # Another player-1 unit on the tile may convert; the host and its deer stay.
+        assert host in window.scenario.unit_manager.units[1] and deer in window.scenario.unit_manager.units[1]
+        assert window.status_log.toPlainText().splitlines()[-1].endswith(_gaia_only_refused_note(1))
+        before_records = len(window.edit_history.records)
+
+        window.units_panel.select_owner(0)
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(int(host.x), int(host.y))
+        window._end_convert_stroke()
+
+        assert host in window.scenario.unit_manager.units[0] and deer in window.scenario.unit_manager.units[0]
+        assert len(window.edit_history.records) == before_records + 1
     finally:
         _close(window)
 
@@ -4697,8 +4782,8 @@ def _arm_scatter(window, monkeypatch, configure=None, accept=True):
 
     from descape import viewer as viewer_mod
 
-    window.units_panel.select_object(_FISH_CONST)
     window.units_panel.select_owner(0)
+    window.units_panel.select_object(_FISH_CONST)
     window.on_region_selected(_POND)
 
     def fake_exec(dialog):
@@ -5002,7 +5087,9 @@ def test_a_real_ctrl_z_takes_a_scatter_back_and_ctrl_y_puts_it_back(monkeypatch)
 
 
 def test_scattering_a_gaia_only_object_for_a_player_places_it_for_gaia(monkeypatch) -> None:
-    """TASK-288: Scatter of a Forage Bush with Player 1 picked lands on GAIA."""
+    """TASK-288: Scatter of a Forage Bush with Player 1 picked lands on GAIA
+    (Keep listed, GH #32: in hide mode Player 1 drops the pick)."""
+    settings.set_gaia_only_catalog_mode("keep")
     window = _window()
     try:
 
@@ -5250,8 +5337,8 @@ def _arm_units_area(window, monkeypatch, keys, configure) -> None:
 
     from descape import viewer as viewer_mod
 
-    window.units_panel.select_object(_FISH_CONST)
     window.units_panel.select_owner(0)
+    window.units_panel.select_object(_FISH_CONST)
     window.on_region_selected(None)
     _select_keys(window, keys)
 

@@ -56,6 +56,7 @@ _TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_S
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
 _UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
+_GAIA_ONLY_CATALOG_MODES = " or ".join(settings.GAIA_ONLY_CATALOG_MODES)
 _VIEW_LAYER_LABELS = textwrap.fill(
     ", ".join(f"{spec.layer_id} ({spec.label.replace('&', '')})" for spec in view_layers.LAYERS),
     width=76,
@@ -247,6 +248,14 @@ terrain_picker_mode: {settings.TERRAIN_PICKER_MODE_DEFAULT}
 # file in that game's data, read-only when it is the other game's file.
 # Anything else falls back to the default on read. Default: {settings.GAME_DATA_DEFAULT}.
 game_data: {settings.GAME_DATA_DEFAULT}
+
+# Whether the Units catalog lists GAIA-only objects (wild animals, resources,
+# trees) while its Owner is a player, Settings > Advanced (GH #32):
+# {_GAIA_ONLY_CATALOG_MODES}. hide lists them only for GAIA; keep lists them for
+# every owner. Either way a placement gives them to GAIA and no owner change
+# gives them to a player. Anything else falls back to the default on read.
+# Default: {settings.GAIA_ONLY_CATALOG_MODE_DEFAULT}.
+gaia_only_catalog_mode: {settings.GAIA_ONLY_CATALOG_MODE_DEFAULT}
 
 # The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
 # Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.

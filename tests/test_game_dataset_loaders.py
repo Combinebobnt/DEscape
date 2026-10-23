@@ -84,9 +84,14 @@ def test_the_ror_list_leaves_out_what_its_editor_does_not_show():
         assert id_ not in listed
 
 
-def test_the_ror_spawners_stay_out_of_the_aoe2_list():
-    listed = {entry.id for entry in object_catalog.objects()}
-    assert listed.isdisjoint(object_catalog._ROR_EDITOR_LISTED_DAT_ONLY)
+def test_both_games_list_the_invisible_spawners_under_other():
+    """GH #67 measured them in RoR's editor, GH #32 in AoE2's 1.59 editor (same ids)."""
+    spawners = set(object_catalog._ROR_EDITOR_LISTED_DAT_ONLY)
+    aoe2 = {entry.id: entry.category for entry in object_catalog.objects()}
+    assert all(aoe2.get(const) == "Others" for const in spawners)
+    _ror()
+    ror = {entry.id: entry.category for entry in object_catalog.objects()}
+    assert all(ror.get(const) == "Others" for const in spawners)
 
 
 def test_the_ror_tech_list_comes_from_the_ror_dat():
@@ -161,9 +166,9 @@ def test_garrison_and_unit_kind_follow_the_dataset():
 
 
 def test_ror_gaia_only_follows_its_editors_player_lists():
-    """GH #67: what RoR's editor lists only for GAIA goes to GAIA on placement; AoE2's rule is unchanged."""
+    """GH #67: what RoR's editor lists only for GAIA goes to GAIA on placement; AoE2 has its own rule (GH #32)."""
     deer, lion, gazelle, discovery, gold, keg = 65, 1029, 22, 16, 66, 2607
-    assert unit_kind.placement_owner(deer, 1) == 1, "AoE2 lets a player own a Deer"
+    assert discovery not in unit_kind.gaia_only_consts(), "AoE2's 16 is not Discovery"
     assert keg in unit_kind.gaia_only_consts()
     _ror()
     gaia_only = unit_kind.gaia_only_consts()
@@ -172,6 +177,8 @@ def test_ror_gaia_only_follows_its_editors_player_lists():
     ornlu, revealer, furious, granary, bowman = 707, 0, 860, 1089, 4
     assert not {ornlu, revealer, furious, granary, bowman} & gaia_only
     assert not set(unit_kind._ROR_PLAYER_OTHERS) & gaia_only
+    assert unit_kind.owner_refused(gazelle, 1) and not unit_kind.owner_refused(gazelle, 0)
+    assert not unit_kind.owner_refused(granary, 1)
 
 
 def test_batch_api_is_building_reads_the_ror_dat():

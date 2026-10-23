@@ -150,12 +150,16 @@ def dat_terrain_restrictions() -> dict[int, frozenset[int]]:
 _SIEGE_BUILDING_CLASSES = frozenset({51, 54})
 _RELIC_CLASS = 42
 
-# Dat-only ids the .dat hides but the official editor lists, by its category: Gunpowder Keg (GH #208).
-_EDITOR_LISTED_DAT_ONLY = {2607: "Others"}
+# Dat-only ids the .dat hides but the official editor lists, by its category: Gunpowder Keg (GH #208)
+# and Invisible Spawner A-J, which its 1.59 Other tab lists for a player (GH #32, as RoR's below).
+_EDITOR_LISTED_DAT_ONLY = dict.fromkeys((2607, 2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648), "Others")
 # The same for Return of Rome, from its in-game editor's Other tab: Invisible Spawner A-J (GH #67).
 _ROR_EDITOR_LISTED_DAT_ONLY = dict.fromkeys((2616, 2617, 2618, 2619, 2620, 2621, 2645, 2646, 2647, 2648), "Others")
 # The reverse: unhidden RoR .dat ids its editor leaves out, a nameless wolf and pyramid (measured, GH #67).
 _ROR_EDITOR_UNLISTED = frozenset({89, 689})
+# Unhidden AoE2 ids its 1.59 editor lists for neither Player 1 nor GAIA, listed here as
+# editor-hidden: CUMAN DISABLED (measured 2026-10-21, GH #32).
+_EDITOR_UNLISTED = frozenset({1261})
 
 
 def derived_category(dat_entry: dict) -> str:
@@ -188,9 +192,15 @@ def is_building(object_id: int) -> bool:
     return entry is not None and derived_category(entry) == "Buildings"
 
 
+# Other-tab objects whose .dat icon index points into the building portraits: Granary
+# (eye-candy type 10, same id in both games), which both editors draw with a building icon (GH #32).
+_BUILDING_PORTRAIT_CONSTS = frozenset({1089})
+
+
 def portrait_for(object_id: int) -> tuple[int | None, bool]:
-    """(icon_for(), is_building()): asset_source.get_unit_icon()'s arguments."""
-    return icon_for(object_id), is_building(object_id)
+    """(icon_for(), is_building() or a _BUILDING_PORTRAIT_CONSTS member):
+    asset_source.get_unit_icon()'s arguments."""
+    return icon_for(object_id), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
 
 
 def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None) -> str:
@@ -332,6 +342,8 @@ def objects() -> tuple[CatalogEntry, ...]:
                 continue
             seen.add(member.ID)
             dat_entry = _dat_entry("objects", member.ID)
+            if dat_entry is not None and member.ID in _EDITOR_UNLISTED:
+                dat_entry = {**dat_entry, "hidden": True}
             name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
             entries.append(_entry(member.ID, name, category, dat_entry))
     for key, raw_entry in _dat_table()["objects"].items():
@@ -340,6 +352,8 @@ def objects() -> tuple[CatalogEntry, ...]:
         if id_ in seen or (raw_entry.get("hidden") and category is None) or (ror and id_ in _ROR_EDITOR_UNLISTED):
             continue
         dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
+        if not ror and id_ in _EDITOR_UNLISTED:
+            dat_entry = {**dat_entry, "hidden": True}
         name = resolve_name(id_, "", dat_entry, lang)
         entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
         seen.add(id_)

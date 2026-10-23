@@ -151,6 +151,9 @@ class CatalogBrowserView(QWidget):
         self._mode = settings.get_units_catalog_mode()
         # Behind a portrait's player-colour region: the Owner combo's, pushed by set_team_color().
         self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
+        # GH #32: consts set_excluded() hides, and the row values that hides.
+        self._excluded: frozenset[int] = frozenset()
+        self._excluded_rows: frozenset[int] = frozenset()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -247,6 +250,13 @@ class CatalogBrowserView(QWidget):
             self.list.setCurrentItem(item)
             self.list.scrollToItem(item)
 
+    def clear_current(self) -> None:
+        """No current row, and no current_changed: a row left current while
+        hidden would come back looking picked, and a click on it emits nothing."""
+        self.list.blockSignals(True)
+        self.list.setCurrentRow(-1)
+        self.list.blockSignals(False)
+
     def current_value(self) -> int | None:
         """The current row's value, or None for no row or a row a filter hides."""
         item = self.list.currentItem()
@@ -268,8 +278,24 @@ class CatalogBrowserView(QWidget):
     def reload_entries(self) -> None:
         """After a game dataset switch: rows rebuilt from the new dataset's catalog."""
         self._entries, self._by_id = self._load_entries()
+        self._excluded_rows = self._rows_excluded_by(self._excluded)
         self.class_combo.setProperty("category", None)
         self._populate()
+
+    def set_excluded(self, consts: frozenset[int]) -> None:
+        """Hides every row for these consts from the list, the counts and the
+        class combo (GH #32). A random pick is hidden only when all its choices are."""
+        consts = frozenset(consts)
+        if consts == self._excluded:
+            return
+        self._excluded = consts
+        self._excluded_rows = self._rows_excluded_by(consts)
+        self._fill_class_combo()
+        self._apply_filter()
+        self._update_counts()
+
+    def _rows_excluded_by(self, consts: frozenset[int]) -> frozenset[int]:
+        return frozenset(entry.id for entry in self._entries if consts.issuperset(place_random.choices(entry.id)))
 
     def refresh_thumbnails(self) -> None:
         """After an install change: icon modes on or off, icons cleared, the viewport re-requested."""
@@ -300,7 +326,11 @@ class CatalogBrowserView(QWidget):
         self._update_counts()
 
     def _passes(self, entry, needle: str, show_hidden: bool) -> bool:
-        return (show_hidden or not entry.hidden) and (not needle or needle in entry.search_text)
+        return self._listed(entry, show_hidden) and (not needle or needle in entry.search_text)
+
+    def _listed(self, entry, show_hidden: bool) -> bool:
+        """Whether a row passes the hidden box and set_excluded(), before any text or class filter."""
+        return (show_hidden or not entry.hidden) and entry.id not in self._excluded_rows
 
     def _update_counts(self) -> None:
         """Each button counts the rows passing the text filter and the hidden
@@ -313,12 +343,12 @@ class CatalogBrowserView(QWidget):
 
     def _fill_class_combo(self) -> None:
         """"All classes", then each class in the active category (after the
-        hidden box) by count, most first. Keeps the chosen class if it is still there."""
+        hidden box and set_excluded()) by count, most first. Keeps the chosen class if it is still there."""
         show_hidden = self.show_hidden_checkbox.isChecked()
         counts = Counter(
             entry.class_id
             for entry in self._entries
-            if entry.category == self._category and (show_hidden or not entry.hidden)
+            if entry.category == self._category and self._listed(entry, show_hidden)
         )
         chosen = self.class_combo.currentData()
         self.class_combo.blockSignals(True)
