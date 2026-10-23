@@ -73,6 +73,11 @@ content, link the doc instead of summarizing it.
   trigger's location changes for that player. Map Analysis has a new *Train
   and research buttons* check for location effects whose button won't show.
   (contributed by @teslatankx, #231)
+- **Garrisoned buildings show the in-game garrison flag** (GH #203): a
+  building holding units draws its flag in the Stepped and Sloped views, in
+  its owner's architecture style and at the game's own position, whether or
+  not Show Garrisoned is on. Rams, siege towers and transport ships show
+  theirs too.
 
 ### Changed
 
@@ -118,6 +123,13 @@ content, link the doc instead of summarizing it.
   Terrain, and Edit > Scatter Units in Region's move mode works with units
   selected before the region is drawn. Other modes hide it until you return;
   opening or closing a map clears it.
+- **`tools/release_render_diff.py` compares against the latest release**
+  (now v0.10), and a new `--inject shift-skirts` control fails if the
+  comparison stops covering the vertical faces below raised Stepped tiles.
+- **Smoother units and buildings when zoomed out** (GH #254): at Graphics
+  Quality Default and Enhanced, sprites drawn below their native size are
+  shrunk with an area average, so spears, bows and outlines no longer break
+  into dashes. Needs the native renderer, which release builds include.
 
 ### Fixed
 
@@ -173,6 +185,11 @@ content, link the doc instead of summarizing it.
 - **Mirror Map with Units works on older scenarios** (file version 1.54 and
   earlier): Preview and Apply failed with an error there instead of
   mirroring.
+- **Objects a cosmetic mod hides in game draw their game art**: with Mod Art
+  on, grass, bushes and flowers that a mod such as Useless Plants Remover
+  blanks draw the game's own art instead of a grey mark. A mod's deliberately
+  blank building piece (Open TC with Range's town centre back) still draws as
+  a gap.
 
 ## [0.10] - 2026-10-18
 

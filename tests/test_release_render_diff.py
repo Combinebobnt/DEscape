@@ -7,10 +7,11 @@ the comparison and why: one entry per change made on purpose since that release.
 
 The controls below are what make a pass mean something, and they are generated
 from that registry, so an entry cannot exist without its control. A single
-retextured tile fails every comparison, and dropping any one entry fails exactly
-the comparisons that entry declares, so none of them is hiding more than it has
-to. The Stepped mask's size is pinned too: it may not grow past its measured
-fraction of the canvas.
+retextured tile fails every comparison, a render whose Stepped skirts sample
+another part of their tile's texture fails both Stepped comparisons, and dropping
+any one entry fails exactly the comparisons that entry declares, so none of them
+is hiding more than it has to. While a mask entry exists, the Stepped mask's size
+is pinned too: it may not grow past its measured fraction of the canvas.
 
 Corpus-marked: it needs the real examples/, an install via AOE2DE_INSTALL_PATH
 (conftest hides config.yaml from the suite), and the base tag in this clone.
@@ -34,8 +35,8 @@ pytestmark = pytest.mark.corpus
 tool = conftest.load_verify_module("release_render_diff")
 
 MATCH_PCTS = (25, 50, 100, 200)
-# Control files outside the quick corpus: no scenario_path cell renders them, so they get a match test of their own.
-EXTRA_CONTROL_FILES = sorted({file for _inject, file, _configs in tool.controls()} - set(tool.QUICK_CORPUS))
+# Files outside the quick corpus, the controls' and the tool's own: no scenario_path cell renders them, so they get a match test.
+EXTRA_FILES = sorted(({file for _inject, file, _configs in tool.controls()} - set(tool.QUICK_CORPUS)) | set(tool.EXTRA_MATCH_FILES))
 
 
 def _require_install_and_tag():
@@ -79,10 +80,9 @@ def test_the_render_matches_the_last_release_outside_the_intended_changes(scenar
     _assert_matches(scenario_path, tmp_path)
 
 
-def test_the_control_files_outside_the_quick_corpus_match_too(tmp_path):
-    # A loop, not a parametrization: an empty list would report a skipped cell.
-    for name in EXTRA_CONTROL_FILES:
-        _assert_matches(_example(name), tmp_path)
+@pytest.mark.parametrize("name", EXTRA_FILES)
+def test_the_files_outside_the_quick_corpus_match_too(name, tmp_path):
+    _assert_matches(_example(name), tmp_path)
 
 
 @pytest.mark.parametrize(("inject", "control_file", "must_fail"), tool.controls(), ids=[c[0] for c in tool.controls()])

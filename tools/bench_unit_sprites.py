@@ -61,6 +61,15 @@ SLD_X2_BYTES_CACHE_BYTES are sized from.
 `--mod-art` replaces all of the above with the cosmetic-mod row (see
 bench_mod_art): the cold Stepped sprite layer with Mod Art off against on,
 the first sprite_reach() walk after a change, and .smx against .sld decode.
+
+`--smooth` (GH #254) runs any of the above with box-filtered shrinking on, as
+the app does at Graphics Quality Default and above (the quality in use is
+printed; the app pairs it with --hi-res at Enhanced). Interleave runs with
+and without it for an A/B on one tree: the off path is the nearest gather.
+
+`--single-sprite` replaces all of the above with the worst single unit of
+work a level-warm tick can hit (see bench_single_sprite): the largest native
+frame the file draws, shrunk to each level's scale nearest and box-filtered.
 """
 
 from __future__ import annotations
@@ -525,6 +534,92 @@ def bench_ladder(path: Path) -> str:
     return "\n".join(lines)
 
 
+SINGLE_SPRITE_REPEATS = 7
+
+
+def _largest_drawn_frame(scenario):
+    """(unit_const, entry, rotation, seed, piece_index, single, (w, h)) of the
+    largest native frame, by MAIN area, that _draw_for_entry() draws for any
+    unit in the file; a composite's pieces count one by one, as they draw."""
+    graphics = unit_sprites.graphic_map()
+    best, seen = None, set()
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        for unit in units:
+            entry = graphics.get(unit.unit_const)
+            if entry is None:
+                continue
+            rotation = render.stored_rotation(player_id, unit)
+            seed = getattr(unit, "reference_id", None)
+            pieces = entry.get("pieces")
+            draws = (
+                [(unit.unit_const, entry, None, 0, True)] if not pieces
+                else [(p["unit_id"], p, seed, i, False) for i, p in enumerate(pieces)]
+            )
+            for const, piece, piece_seed, index, single in draws:
+                frame = unit_sprites._frame_for(const, piece, rotation, seed=piece_seed, piece_index=index)
+                if (piece["file_name"], frame) in seen:
+                    continue
+                seen.add((piece["file_name"], frame))
+                native = unit_sprites._drawn_frame(piece["file_name"], frame, single)
+                if native is None:
+                    continue
+                h, w = native[0].shape[:2]
+                if best is None or w * h > best[-1][0] * best[-1][1]:
+                    best = (const, piece, rotation, piece_seed, index, single, (w, h))
+    return best
+
+
+def bench_single_sprite(path: Path) -> str:
+    """The GH #254 worst-single-sprite row: the largest native frame this file
+    draws, through _draw_for_entry() at every mip level that shrinks it, with
+    smooth shrinking off (nearest) and on (box), interleaved per level, min of
+    SINGLE_SPRITE_REPEATS each. The scaled cache is dropped before every call
+    and the native frame is decoded beforehand, so a timing is the tint and
+    the resize alone. Team 1, so the tint runs. x4 is the tester's machine."""
+    scenario = load_map_and_units(path)
+    mm = scenario.map_manager
+    _elevations, proj, _tile_px = _projection(scenario)
+    projs = iso_geometry.mip_projections_for(
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels()
+    )
+    unit_sprites.clear_caches()
+    best = _largest_drawn_frame(scenario)
+    if best is None:
+        return f"  {path.name}\n    no unit draws a sprite"
+    const, entry, rotation, seed, index, single, (w, h) = best
+    offset = unit_sprites._body_offset(entry) if single else (0, 0)
+    lines = [
+        f"  {path.name}",
+        f"    largest native frame: {entry['file_name']} {w}x{h} (const {const}), min of {SINGLE_SPRITE_REPEATS}:",
+    ]
+    was = unit_sprites.smooth_shrink()
+    for mip in sorted(projs):
+        half_w = projs[mip].half_w
+        scale = unit_sprites.sprite_scale(half_w)
+        if scale >= 1.0:
+            continue
+        times = {}
+        for smooth in (False, True):
+            unit_sprites.set_smooth_shrink(smooth)
+
+            def draw():
+                unit_sprites._scaled_cache.clear()
+                unit_sprites._draw_for_entry(
+                    const, entry, rotation, 1, half_w, seed=seed, piece_index=index, offset=offset,
+                    blank_mod_fallback=single,
+                )
+
+            draw()
+            times[smooth] = min(_time(draw) for _ in range(SINGLE_SPRITE_REPEATS))
+        nearest, box = times[False], times[True]
+        lines.append(
+            f"      single mip {mip:>2} scale {scale:.3f}: nearest {_ms(nearest)} (x4 {_ms(4 * nearest)}) | "
+            f"box {_ms(box)} (x4 {_ms(4 * box)})" + ("  <-- OVER the 8ms x4 gate" if 4 * box > 0.008 else "")
+        )
+    unit_sprites.set_smooth_shrink(was)
+    return "\n".join(lines)
+
+
 def _index_line() -> list[str]:
     # Feature-detected so this mode also runs on code without the SLD index.
     index = getattr(unit_sprites, "_sld_index_cache", None)
@@ -587,9 +682,17 @@ def main() -> None:
         "--mod-art", action="store_true",
         help="Only the TASK-378 row: cold Stepped layer with Mod Art off vs on, first reach walk, .smx vs .sld decode",
     )
+    parser.add_argument(
+        "--smooth", action="store_true",
+        help="Default and above: box-filter art drawn below its native size (GH #254)",
+    )
+    parser.add_argument(
+        "--single-sprite", action="store_true",
+        help="Only the GH #254 row: the largest native frame shrunk to each level, nearest vs box",
+    )
     args = parser.parse_args()
-    if sum((args.ladder, args.cold_levels, args.mod_art)) > 1:
-        parser.error("--ladder, --cold-levels and --mod-art are separate modes")
+    if sum((args.ladder, args.cold_levels, args.mod_art, args.single_sprite)) > 1:
+        parser.error("--ladder, --cold-levels, --mod-art and --single-sprite are separate modes")
 
     if args.install:
         asset_source.set_install_path_override(args.install)
@@ -622,12 +725,19 @@ def main() -> None:
             f"hi-res: x2 budgets native {unit_sprites.NATIVE_X2_CACHE_BYTES / 1e6:.0f}MB, "
             f"bytes {unit_sprites.SLD_X2_BYTES_CACHE_BYTES / 1e6:.0f}MB{' (uncapped)' if args.x2_uncapped else ''}"
         )
+    unit_sprites.set_smooth_shrink(args.smooth)
+    print(
+        f"graphics quality {settings.get_graphics_quality()} | smooth shrink {'on' if args.smooth else 'off'}"
+        + (" (both sides, --single-sprite)" if args.single_sprite else "")
+    )
     worsts = []
     for path in files:
         if args.hi_res:
             unit_sprites.clear_caches()
         if args.mod_art:
             print(bench_mod_art(path))
+        elif args.single_sprite:
+            print(bench_single_sprite(path))
         elif args.ladder:
             print(bench_ladder(path))
         elif args.cold_levels:

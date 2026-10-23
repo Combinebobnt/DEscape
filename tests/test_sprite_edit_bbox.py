@@ -875,3 +875,27 @@ def test_no_real_sprite_reaches_past_its_committed_constant():
             f"sprite fragment. Re-run tools/scan_sprite_reach.py and update the four "
             f"constants in descape/unit_sprites.py together"
         )
+
+
+def _offset_reach_frame():
+    """One frame, hotspot (50, 80), MAIN box x 10..110, y 20..140: reach (40, 60, 60, 60) at offset 0."""
+    from types import SimpleNamespace
+
+    from descape.sld_decoder import LayerKind
+
+    main = SimpleNamespace(kind=LayerKind.MAIN, x1=10, y1=20, width=100, height=120)
+    return SimpleNamespace(hotspot_x=50, hotspot_y=80, layers=[main])
+
+
+def test_reach_scans_measure_a_piece_where_the_renderer_paints_it():
+    """A piece paints at anchor + (dx, dy) (render.py's px = ax + piece.dx), so a piece
+    10 px right and 50 px up reaches 10 less left, 10 more right, 50 more up and 50 less
+    down. Both scans used to add the offset, mirroring the piece through its anchor."""
+    from types import SimpleNamespace
+
+    scan = conftest.load_verify_module("scan_sprite_reach")
+    frame = _offset_reach_frame()
+    assert scan.frame_reach(frame, 0, 0) == (40, 60, 60, 60)
+    assert scan.frame_reach(frame, 10, -50) == (30, 110, 70, 10)  # (left, up, right, down)
+    walked = SimpleNamespace(frames=[frame])
+    assert unit_sprites._walked_reach(walked, "sld", 10, -50) == (30, 70, 110, 10)  # (left, right, up, down)

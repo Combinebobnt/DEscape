@@ -3,8 +3,9 @@
 descape/composite_backend.py, which falls back to numpy when this is missing
 or its KERNEL_ABI doesn't match. Every function must stay byte-identical to
 the numpy code it replaces (tests/test_native_composite.py,
-tests/test_terrain_blend_render.py for blended top blocks, and
-tests/test_sld_native.py for the SLD walk and decode at the end).
+tests/test_terrain_blend_render.py for blended top blocks,
+tests/test_sld_native.py for the SLD walk and decode, and
+tests/test_unit_sprites.py for the sprite tint and box shrink at the end).
 
 Arithmetic mirrors numpy's dtypes exactly: opaque scatters are uint8, darken
 and slope shade are float32 multiplies truncated to uint8 (never a double
@@ -18,7 +19,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 8
+KERNEL_ABI = 9
 
 
 cdef inline bint _gather_scatter(
@@ -1489,3 +1490,164 @@ def sld_decode_layer(const uint8_t[::1] data, const uint32_t[::1] layers, const 
         free(cur)
         free(prev)
     return ok
+
+
+# ---------------------------------------------------------------------------
+# Sprites (GH #254): unit_sprites._tinted past its early return, and
+# _box_resize_rgba's premultiplied area average with _area_taps' taps. float32
+# op for op in numpy's order (no FMA, see tools/build_native.py), truncated.
+
+
+cdef inline uint8_t _clip_u8(float v) noexcept nogil:
+    if v > <float>255.0:
+        return 255
+    if v < <float>0.0:
+        return 0
+    return <uint8_t>v
+
+
+def tint_rgba(uint8_t[:, :, ::1] out, const uint8_t[:, :, ::1] playercolor, int r, int g, int b):
+    """unit_sprites._tinted on `out`, a copy of main, in place: each pixel
+    playercolor covers (alpha > 0 and red > 0) becomes rgb * (1 - cov) +
+    rgb * t * cov, with cov = red / 255 and t = (r, g, b) / 255."""
+    cdef Py_ssize_t h = out.shape[0], w = out.shape[1], y, x, c
+    cdef float t[3]
+    cdef float cov, keep, v
+    if out.shape[2] != 4 or playercolor.shape[0] != h or playercolor.shape[1] != w or playercolor.shape[2] != 4:
+        raise ValueError("out and playercolor must be (h, w, 4) and the same size")
+    t[0] = <float>r / <float>255.0
+    t[1] = <float>g / <float>255.0
+    t[2] = <float>b / <float>255.0
+    with nogil:
+        for y in range(h):
+            for x in range(w):
+                if playercolor[y, x, 3] == 0 or playercolor[y, x, 0] == 0:
+                    continue
+                cov = <float>playercolor[y, x, 0] / <float>255.0
+                keep = <float>1.0 - cov
+                for c in range(3):
+                    v = <float>out[y, x, c]
+                    out[y, x, c] = _clip_u8(v * keep + v * t[c] * cov)
+
+
+def box_shrink_rgba(const uint8_t[:, :, ::1] rgba, const int64_t[:, ::1] ys, const float[:, ::1] wy,
+                    const int64_t[:, ::1] xs, const float[:, ::1] wx, uint8_t[:, :, ::1] out):
+    """unit_sprites._box_resize_rgba's shrink into out (h, w, 4), with ys/wy
+    _area_taps(H, h) and xs/wx _area_taps(W, w): premultiply, the row taps
+    then the column taps summed in tap order, un-premultiply where alpha > 0,
+    + 0.5, clip, truncate. One output row at a time, each source row
+    premultiplied once into one of two slots (taps advance a row at a time,
+    so y's parity picks the slot). Exactly +0.0 is all a zero-weight row tap
+    or an alpha-0 px adds, so each source row is read only across its alpha
+    span, and an output px whose taps miss every span is (0, 0, 0, 0)."""
+    cdef Py_ssize_t H = rgba.shape[0], W = rgba.shape[1], h = ys.shape[0], kn = ys.shape[1]
+    cdef Py_ssize_t w = xs.shape[0], ln = xs.shape[1], i, j, k, c, n, x, y
+    cdef Py_ssize_t x0, x1, ux0, ux1, px0 = 0, px1 = 0
+    cdef float* row = NULL
+    cdef float* prem = NULL
+    cdef float* p
+    cdef const float* r
+    cdef const float* wrow
+    cdef const int64_t* xrow
+    cdef Py_ssize_t slot_y[2]
+    cdef Py_ssize_t slot_x0[2]
+    cdef Py_ssize_t slot_x1[2]
+    cdef const uint8_t* s
+    cdef uint8_t* o
+    cdef float acc[4]
+    cdef float wt, ps, a
+    if rgba.shape[2] != 4 or out.shape[2] != 4:
+        raise ValueError("rgba and out must have 4 channels")
+    if wy.shape[0] != h or wy.shape[1] != kn or wx.shape[0] != w or wx.shape[1] != ln:
+        raise ValueError("each axis needs as many weights as taps")
+    if out.shape[0] != h or out.shape[1] != w:
+        raise ValueError("out must be (len(ys), len(xs), 4)")
+    for i in range(h):
+        for k in range(kn):
+            if ys[i, k] < 0 or ys[i, k] >= H:
+                raise ValueError("a row tap is outside rgba")
+    for j in range(w):
+        for k in range(ln):
+            if xs[j, k] < 0 or xs[j, k] >= W:
+                raise ValueError("a column tap is outside rgba")
+    if h == 0 or w == 0:
+        return
+    row = <float*>malloc(W * 4 * sizeof(float))
+    prem = <float*>malloc(2 * W * 4 * sizeof(float))
+    if row == NULL or prem == NULL:
+        free(row)
+        free(prem)
+        raise MemoryError()
+    slot_y[0] = slot_y[1] = -1
+    memset(row, 0, W * 4 * sizeof(float))
+    try:
+        with nogil:
+            for i in range(h):
+                # Only the previous row's union span can be non-zero.
+                memset(row + 4 * px0, 0, (px1 - px0) * 4 * sizeof(float))
+                ux0 = W
+                ux1 = 0
+                for k in range(kn):
+                    wt = wy[i, k]
+                    if wt == 0:
+                        continue
+                    y = ys[i, k]
+                    p = prem + (y & 1) * W * 4
+                    if slot_y[y & 1] != y:
+                        slot_y[y & 1] = y
+                        s = &rgba[y, 0, 0]
+                        x0 = 0
+                        x1 = W
+                        while x0 < W and s[4 * x0 + 3] == 0:
+                            x0 += 1
+                        while x1 > x0 and s[4 * x1 - 1] == 0:
+                            x1 -= 1
+                        slot_x0[y & 1] = x0
+                        slot_x1[y & 1] = x1
+                        for x in range(x0, x1):
+                            n = 4 * x
+                            ps = <float>s[n + 3] / <float>255.0
+                            p[n] = <float>s[n] * ps
+                            p[n + 1] = <float>s[n + 1] * ps
+                            p[n + 2] = <float>s[n + 2] * ps
+                            p[n + 3] = <float>s[n + 3]
+                    x0 = slot_x0[y & 1]
+                    x1 = slot_x1[y & 1]
+                    if x0 >= x1:
+                        continue
+                    if x0 < ux0:
+                        ux0 = x0
+                    if x1 > ux1:
+                        ux1 = x1
+                    for n in range(4 * x0, 4 * x1):
+                        row[n] = row[n] + wt * p[n]
+                if ux0 < ux1:
+                    px0 = ux0
+                    px1 = ux1
+                else:
+                    px0 = px1 = 0
+                # Every column tap, zero weights included, and the where(a > 0, a, 1) divide, as numpy does.
+                o = &out[i, 0, 0]
+                for j in range(w):
+                    n = 4 * j
+                    if xs[j, ln - 1] < px0 or xs[j, 0] >= px1:
+                        memset(o + n, 0, 4)
+                        continue
+                    wrow = &wx[j, 0]
+                    xrow = &xs[j, 0]
+                    acc[0] = acc[1] = acc[2] = acc[3] = 0
+                    for k in range(ln):
+                        wt = wrow[k]
+                        r = row + 4 * xrow[k]
+                        acc[0] = acc[0] + wt * r[0]
+                        acc[1] = acc[1] + wt * r[1]
+                        acc[2] = acc[2] + wt * r[2]
+                        acc[3] = acc[3] + wt * r[3]
+                    a = acc[3] if acc[3] > 0 else <float>1.0
+                    o[n] = _clip_u8(acc[0] * <float>255.0 / a + <float>0.5)
+                    o[n + 1] = _clip_u8(acc[1] * <float>255.0 / a + <float>0.5)
+                    o[n + 2] = _clip_u8(acc[2] * <float>255.0 / a + <float>0.5)
+                    o[n + 3] = _clip_u8(acc[3] + <float>0.5)
+    finally:
+        free(row)
+        free(prem)

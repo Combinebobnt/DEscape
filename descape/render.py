@@ -4333,6 +4333,7 @@ def stored_rotation(player_id: int, unit) -> float:
 _ANCHOR_TILES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _WALL_OVERRIDES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _OWN_TILE_INDEX_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_GARRISON_HOSTS_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _unit_gen_cached(memo: weakref.WeakKeyDictionary, scenario, compute):
@@ -4382,6 +4383,25 @@ def unit_own_tile_index(scenario) -> dict[tuple[int, int], list[tuple[int, int, 
         return out
 
     return _unit_gen_cached(_OWN_TILE_INDEX_MEMO, scenario, _compute)
+
+
+def garrison_host_ids(scenario) -> frozenset[int]:
+    """Every reference_id some unit is garrisoned in (GH #203): the hosts
+    that draw a garrison flag. An occupant is UnitFilter.matches()' own rule,
+    a garrisoned_in_id other than -1 and the unit's own reference_id. Over ALL
+    units, blind to every filter, since the flag is the host's state, and
+    memoized like anchor_tiles(). An id no live unit carries draws nothing."""
+
+    def _compute() -> frozenset[int]:
+        hosts = set()
+        for units in scenario.unit_manager.units:
+            for u in units:
+                host = getattr(u, "garrisoned_in_id", -1)
+                if host != -1 and host != getattr(u, "reference_id", None):
+                    hosts.add(host)
+        return frozenset(hosts)
+
+    return _unit_gen_cached(_GARRISON_HOSTS_MEMO, scenario, _compute)
 
 
 def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
@@ -5005,6 +5025,7 @@ def _resolve_unit_sprite(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
+    flag_hosts: frozenset[int] | None = None,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -5013,6 +5034,11 @@ def _resolve_unit_sprite(
     own `continue` (filtered out, off-map, or resolves to neither a sprite
     nor a farm override) -- the caller's contract is identical to that
     `continue`.
+
+    A unit that draws a sprite and holds a garrison (garrison_host_ids(),
+    GH #203) also paints its garrison flag pieces, slot-free, so they key on
+    its anchor tile after its own pieces. `flag_hosts` is that set when the
+    caller already holds it (a walk fetches it once); None looks it up.
 
     `i` must be the unit's own position in scenario.unit_manager.units
     [player_id] -- see wall_variant_rotation_overrides()'s own docstring for
@@ -5039,12 +5065,14 @@ def _resolve_unit_sprite(
     team_index = scenario.team_indices[player_id]
     # Short-circuits, so the wall set is only looked up with the wall row on.
     is_faded_wall = wall_alpha < 1.0 and unit.unit_const in unit_kind.wall_consts()
+    art = player_art_for(scenario, player_id)
+    reference_id = getattr(unit, "reference_id", None)
     pieces = unit_sprites.sprite_pieces_for(
         unit.unit_const, rotation, team_index, half_w,
         tree_scale if unit.unit_const in TREE_UNIT_IDS else 1.0,
-        getattr(unit, "reference_id", None),
+        reference_id,
         hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
-        art=player_art_for(scenario, player_id),
+        art=art,
         wall_alpha=wall_alpha if is_faded_wall else 1.0,
     )
     # A pasture (draped_sprite_consts()) carries both: its drape plus its annex-tree art.
@@ -5059,6 +5087,9 @@ def _resolve_unit_sprite(
         return _SpriteContribution(
             skip_id=id(unit), by_anchor={}, bboxes={}, farm_tiles=farm_tiles
         )
+    if reference_id in (garrison_host_ids(scenario) if flag_hosts is None else flag_hosts):
+        # A new list: sprite_pieces_for()'s may be a cached one.
+        pieces = [*pieces, *unit_sprites.garrison_flag_pieces_for(unit.unit_const, team_index, half_w, art)]
 
     span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
     # The UNCLAMPED footprint start, so a building hanging off a map
@@ -5158,13 +5189,17 @@ def _sprite_memo_invariants(
     )
 
 
-def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit) -> tuple:
+def _sprite_memo_key(
+    scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit, flag_hosts: frozenset[int],
+) -> tuple:
     """Every per-unit input of _resolve_unit_sprite() that isn't a memo
     invariant. `heights` is elevations (Stepped) or corner_rise (Sloped) as
     nested lists, read with the resolver's own indices so an elevation edit
     under a unit changes its key; Sloped keys the four corners, which with
     x/y fully determine unit_rise_px(). An index the resolver would fail on
-    keys as None and the resolver decides."""
+    keys as None and the resolver decides. `flag_hosts` is the walk's
+    garrison_host_ids(): whether the unit draws a garrison flag is set by
+    other units' links, which no field of its own carries (GH #203)."""
     ux, uy = int(unit.x), int(unit.y)
     try:
         if sloped:
@@ -5174,12 +5209,13 @@ def _sprite_memo_key(scenario, heights: list, sloped: bool, overrides: dict, pla
             rise = heights[uy][ux]
     except IndexError:
         rise = None
+    reference_id = getattr(unit, "reference_id", None)
     return (
         unit.x, unit.y, unit.unit_const,
         overrides.get((player_id, i), stored_rotation(player_id, unit)),
-        getattr(unit, "reference_id", None), player_id,
+        reference_id, player_id,
         scenario.team_indices[player_id], scenario.player_colors[player_id], rise,
-        player_art_for(scenario, player_id),
+        player_art_for(scenario, player_id), reference_id in flag_hosts,
     )
 
 
@@ -5250,6 +5286,7 @@ def sprite_draws_by_anchor_sliced(
     out of every contribution, never aliasing its lists, so a memoized one
     stays untouched by later layer splices."""
     overrides = wall_variant_rotation_overrides(scenario)
+    flag_hosts = garrison_host_ids(scenario)
     by_anchor: dict[tuple[int, int], list] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     skip_ids: set[int] = set()
@@ -5270,7 +5307,7 @@ def sprite_draws_by_anchor_sliced(
             if memo is None:
                 contribution = _resolve_unit_sprite(
                     scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                    player_id, i, unit, tree_scale, hero_glow, wall_alpha,
+                    player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts,
                 )
             else:
                 if not unit_filter.matches(player_id, unit):
@@ -5279,14 +5316,14 @@ def sprite_draws_by_anchor_sliced(
                     if entry is not None:
                         entries[id(unit)] = entry
                     continue
-                key = _sprite_memo_key(scenario, heights, sloped, overrides, player_id, i, unit)
+                key = _sprite_memo_key(scenario, heights, sloped, overrides, player_id, i, unit, flag_hosts)
                 entry = old.get(id(unit))
                 if entry is not None and entry[0] is unit and entry[1] == key:
                     contribution = entry[2]
                 else:
                     contribution = _resolve_unit_sprite(
                         scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                        player_id, i, unit, tree_scale, hero_glow, wall_alpha,
+                        player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts,
                     )
                 entries[id(unit)] = (unit, key, contribution)
             if contribution is not None:

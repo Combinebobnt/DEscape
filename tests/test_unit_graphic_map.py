@@ -22,6 +22,7 @@ Two kinds of assertion, deliberately separated:
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -296,7 +297,7 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
         assert key.isdigit(), f"key {key!r} is not a unit_const"
         fields = set(entry) - {
             "pieces", "rotation_is_variant", "variant_count", "frame_offset", "dx", "dy",
-            "particle", "art_scale",
+            "particle", "art_scale", "garrison_flags",
         }
         assert fields == set(FIELDS), f"unit_const {key} has fields {sorted(entry)}"
         for field, kind in FIELDS.items():
@@ -347,12 +348,29 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
                     assert "parent" not in piece, (key, i)
                 for field, kind in shape.items():
                     assert isinstance(piece[field], kind), f"unit_const {key} piece {i}.{field}"
+        if "garrison_flags" in entry:
+            _assert_garrison_flags(key, entry["garrison_flags"])
+
+
+def _assert_garrison_flags(key: str, flags) -> None:
+    """GH #203: omitted when empty, one or two pieces, each a static one-angle
+    graphic dispatched on the host's own const."""
+    assert isinstance(flags, list) and 1 <= len(flags) <= 2, f"unit_const {key}: {flags!r}"
+    for i, flag in enumerate(flags):
+        assert set(flag) == set(PIECE_FIELDS), f"unit_const {key} flag {i}: {sorted(flag)}"
+        for field, kind in PIECE_FIELDS.items():
+            assert isinstance(flag[field], kind), f"unit_const {key} flag {i}.{field}"
+        assert flag["unit_id"] == int(key) and flag["angle_count"] == 1, (key, flag)
+        assert flag["file_name"].endswith("_garrison_flag_x1"), (key, flag)
 
 
 def test_file_names_are_bare_stems(graphics):
     """The renderer builds `<graphics dir>/<file_name>.sld` itself."""
     for key, entry in graphics.items():
-        names = [entry["file_name"], *(p["file_name"] for p in entry.get("pieces", []))]
+        names = [
+            entry["file_name"],
+            *(p["file_name"] for p in (*entry.get("pieces", ()), *entry.get("garrison_flags", ()))),
+        ]
         for name in names:
             assert name, f"unit_const {key} has an empty file_name"
             assert "/" not in name and "\\" not in name, f"unit_const {key}: {name!r}"
@@ -724,6 +742,109 @@ PARTICLE_ENTRIES = {
     1609: (12301, "butterflies_2_low", 0.5),
     1610: (12302, "butterflies_3_low", 0.5),
 }
+
+
+BUILDING_ART_PATH = GRAPHIC_MAP_PATH.parent / "building_art_map.json"
+
+# GH #203: unit_const -> its Gaia garrison flags as (file_name, dx, dy), read off
+# the real .dat 2026-10-12 (each const's creatable.garrison_graphic shell).
+KNOWN_GARRISON_FLAGS = {
+    109: [("b_misc_garrison_flag_x1", -31, -158)],  # Town Center
+    79: [("b_west_garrison_flag_x1", -1, -179)],  # Watch Tower
+    12: [("b_misc_garrison_flag_x1", 84, -59), ("b_misc_garrison_flag_x1", -7, -101)],  # Barracks
+    70: [("b_seas_garrison_flag_x1", -17, -61)],  # House: a flag with 0 places
+    545: [("b_west_garrison_flag_x1", 2, -24)],  # Transport Ship, a non-building host
+}
+# Mosque 655 holds units in game but has no garrison graphic, so it draws no flag.
+NO_FLAG_HOSTS = (655,)
+JAPANESE = 5
+# Japanese Castle: its own asia art and two asia flags, not Gaia's single west one.
+JAPANESE_CASTLE_FLAGS = [("b_asia_garrison_flag_x1", -54, -276), ("b_asia_garrison_flag_x1", 23, -314)]
+
+
+def _flag_tuples(entry) -> list[tuple[str, int, int]]:
+    return [(f["file_name"], f["dx"], f["dy"]) for f in entry.get("garrison_flags", ())]
+
+
+def test_garrisoned_hosts_carry_their_measured_flags(graphics):
+    for unit_const, expected in KNOWN_GARRISON_FLAGS.items():
+        assert _flag_tuples(graphics[str(unit_const)]) == expected, unit_const
+    for unit_const in NO_FLAG_HOSTS:
+        assert "garrison_flags" not in graphics[str(unit_const)], unit_const
+    flagged = {k for k, e in graphics.items() if "garrison_flags" in e}
+    # The 99 consts with a garrison graphic, measured over every civ table.
+    assert len(flagged) == 99, len(flagged)
+
+
+def test_a_civs_building_art_carries_its_own_flags():
+    """The flag is attached where per-civ art is built, so a civ's castle
+    draws its own set's flags at its own offsets."""
+    art = json.loads(BUILDING_ART_PATH.read_text())
+    entry = art["entries"][art["civ_art"][str(JAPANESE)]["82"]]
+    assert entry["file_name"] == "b_asia_castle_age3_x1"
+    assert _flag_tuples(entry) == JAPANESE_CASTLE_FLAGS
+    flagged = [item["garrison_flags"] for item in art["entries"] if "garrison_flags" in item]
+    assert flagged
+    for flags in flagged:
+        _assert_garrison_flags(str(flags[0]["unit_id"]), flags)
+
+
+def _shell_case(copies: int = 1, **change):
+    """(unit, graphics) for one garrison shell in the measured shape, Town
+    Center 109's, with `copies` deltas and `change` applied to the shell, its
+    delta or its flag."""
+    from types import SimpleNamespace as NS
+
+    flag = NS(file_name="b_misc_garrison_flag_x1", deltas=[], angle_count=1, frame_count=90)
+    delta = NS(graphic_id=1, display_angle=-1, offset_x=-31, offset_y=-158)
+    shell = NS(file_name="None", deltas=[delta] * copies, angle_count=1)
+    parts = {"shell": shell, "delta": delta, "flag": flag}
+    for name, value in change.items():
+        part, field = name.split("__")
+        setattr(parts[part], field, value)
+    return NS(creatable=NS(garrison_graphic=0)), [shell, flag]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"shell__file_name": "b_misc_garrison_shell_x1"},
+        {"copies": 0},
+        {"copies": 3},
+        {"delta__display_angle": 2},
+        {"delta__graphic_id": 7},
+        {"flag__file_name": "GARRFLAG"},
+        {"flag__angle_count": 8},
+        {"flag__deltas": ["a sub-delta"]},
+    ],
+    ids=[
+        "modern_shell", "no_delta", "three_deltas", "one_angle_only", "dangling", "legacy_flag", "many_angles",
+        "flag_deltas",
+    ],
+)
+def test_the_generator_refuses_a_garrison_shell_outside_the_measured_shape(monkeypatch, change):
+    """The renderer draws each flag as one static frame-0 piece at its delta's
+    offset; a shell that stops matching the 2026-10-12 measurement must stop
+    the generator rather than emit something drawn wrong. Install-free: the
+    check runs on stand-ins shaped like genieutils' objects."""
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    gen = importlib.import_module("gen_unit_graphic_map")
+    flag = {"unit_id": 109, "file_name": "b_misc_garrison_flag_x1", "angle_count": 1, "frame_count": 90,
+            "dx": -31, "dy": -158}
+    assert gen._garrison_flags(*_shell_case(), 109) == [flag]
+    assert gen._garrison_flags(*_shell_case(copies=2), 109) == [flag, flag]
+    unit, graphics = _shell_case(**change)
+    with pytest.raises(SystemExit, match="re-verify the garrison flag rule"):
+        gen._garrison_flags(unit, graphics, 109)
+
+
+def test_the_generator_gives_a_unit_without_a_garrison_graphic_no_flags(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    gen = importlib.import_module("gen_unit_graphic_map")
+    assert gen._garrison_flags(NS(creatable=None), [], 1) == []
+    assert gen._garrison_flags(NS(creatable=NS(garrison_graphic=-1)), [], 655) == []
 
 
 def test_only_the_butterflies_and_seagulls_are_particle_entries(graphics):

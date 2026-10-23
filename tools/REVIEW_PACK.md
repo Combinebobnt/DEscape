@@ -20,6 +20,8 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --check --pack sloped_mip   # needs examples/ + install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack sloped_fine   # needs examples/ + install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack ground_borders   # needs examples/ + install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack sprite_shrink   # needs install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack garrison_flags   # needs examples/ + install
 ```
 
 Each run prints the opaque directory it wrote to. Record that pairing somewhere

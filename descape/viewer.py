@@ -990,11 +990,17 @@ class _ComboCell(QWidget):
 
 def _sync_hi_res() -> str:
     """unit_sprites.set_hi_res() from Graphics Quality (GH #241): x2 art at
-    Enhanced, each file falling back to x1 where the install has no x2.
-    Returns a status-log suffix at Enhanced naming the Enhanced Graphics DLC,
+    Enhanced, each file falling back to x1 where the install has no x2. And
+    set_smooth_shrink() (GH #254): box-filtered shrinking at Default and above,
+    on the native kernel only. Returns a status-log suffix at Enhanced naming the Enhanced Graphics DLC,
     or Return of Rome's own x2 art under Return of Rome, else ""."""
-    enhanced = settings.get_graphics_quality() == settings.GRAPHICS_QUALITY_MAX
+    quality = settings.get_graphics_quality()
+    enhanced = quality == settings.GRAPHICS_QUALITY_MAX
     unit_sprites.set_hi_res(enhanced)
+    # On numpy the box shrink costs +46-80% at first paint (TASK-440 bench), so it stays nearest there.
+    unit_sprites.set_smooth_shrink(
+        quality >= settings.GRAPHICS_QUALITY_DEFAULT and composite_backend.active_backend() == "native"
+    )
     if not enhanced:
         return ""
     if asset_source.get_install_path() is None:
@@ -1234,7 +1240,9 @@ class SettingsDialog(QDialog):
             "DLC installed, Enhanced also draws units and buildings from its "
             "high-resolution art when zoomed in; without it, they use their "
             "regular art. Return of Rome scenarios use Return of Rome's own "
-            "high-resolution art, which needs no DLC."
+            "high-resolution art, which needs no DLC. Default and Enhanced "
+            "also draw zoomed-out units and buildings with smooth shrinking, "
+            "when the native renderer is built."
         )
         self.graphics_quality_slider.setValue(settings.get_graphics_quality())
         self.graphics_quality_label = QLabel()
@@ -13669,7 +13677,9 @@ class ViewerWindow(QMainWindow):
                     with perf_trace.phase("elev_predict"):
                         bumps = self._elevation_bumps_anyway(self._elevation_changed_tiles(tile_record))
                     with perf_trace.phase("unit_sources"):
-                        self._cache.invalidate_units(unit_splices, splice_levels=not bumps)
+                        self._cache.invalidate_units(
+                            unit_splices + self._flag_flip_splices(unit_splices), splice_levels=not bumps
+                        )
                 self._apply_dirty(dirty)
                 self._after_unit_mutation(sources_refreshed=True)
             else:
@@ -16339,7 +16349,11 @@ class ViewerWindow(QMainWindow):
         pre_stale_levels (the Eraser's mark, TASK-318): a visible level in it
         skips the pre read, so the batch takes the reach branch with no
         blocks. Its units left the model while that level was stale, so a
-        rebuild since may have dropped them from the layer the read uses."""
+        rebuild since may have dropped them from the layer the read uses.
+
+        Stepped/Sloped first add _flag_flip_splices(): a garrison edit names
+        only its occupants, while the host's flag (GH #203) appears or
+        clears. Both extents and the source splice see the hosts."""
         # Convert's stroke end can drain an empty list; Flat would treat [] as wholesale.
         if not changed:
             self._composite_deferred_terrain(terrain_bbox)
@@ -16348,6 +16362,8 @@ class ViewerWindow(QMainWindow):
         visible_mip = None
         blocks = None
         if self._render_style != "flat":
+            # A new list, never the caller's: it also feeds the pick index, which must not see host re-anchors.
+            changed = changed + self._flag_flip_splices(changed)
             target = self.map_view.viewport_chunk_target()
             visible_mip = None if target is None else target[0]
             if self._cache.sprites_enabled and visible_mip not in pre_stale_levels:
@@ -16413,6 +16429,31 @@ class ViewerWindow(QMainWindow):
         with perf_trace.phase("unit_patch"):
             self._cache.patch(bbox, elevation_changed=elevation_changed)
         self.map_view.invalidate_region(bbox)
+
+    def _flag_flip_splices(self, changed: list[UnitSplice]) -> list[UnitSplice]:
+        """A re-anchor splice for each live host whose garrison flag (GH #203)
+        appeared or cleared since the cache's last unit-source refresh and
+        that `changed` does not already carry. A link, unload, Garrison Add
+        or Paste, a delete or an Eraser stroke splices only the occupant, so
+        without these the host keeps its old flag. Every caller that passes
+        invalidate_units() a list goes through here, before that call, which
+        stamps the flips as reflected. [] with sprites or units off, where no
+        flag draws, and when nothing flipped: the unit walk runs only then."""
+        cache = self._cache
+        if cache is None or not (cache.with_units and cache.sprites_enabled):
+            return []
+        flips = cache.flag_flips()
+        if not flips:
+            return []
+        known = {id(s.unit) for s in changed}
+        splices: list[UnitSplice] = []
+        for player_id, units in enumerate(self.scenario.unit_manager.units):
+            for index, unit in enumerate(units):
+                if unit.reference_id in flips and id(unit) not in known:
+                    own, tiles = self._unit_footprint(unit)
+                    if tiles:
+                        splices.append(UnitSplice(player_id, index, unit, own, own, tiles, tiles))
+        return splices
 
     def _composite_deferred_terrain(self, terrain_bbox: tuple[int, int, int, int] | None) -> None:
         """The tile patch _apply_dirty() deferred (A4), for a unit step that
@@ -17054,7 +17095,9 @@ class ViewerWindow(QMainWindow):
             with perf_trace.phase("elev_predict"):
                 bumps = self._elevation_bumps_anyway(elev_changed)
             with perf_trace.phase("unit_sources"):
-                self._cache.invalidate_units(splices or None, splice_levels=not bumps)
+                self._cache.invalidate_units(
+                    splices + self._flag_flip_splices(splices) if splices else None, splice_levels=not bumps
+                )
             self._apply_dirty(dirty)
             self._after_unit_mutation(sources_refreshed=True)
         else:

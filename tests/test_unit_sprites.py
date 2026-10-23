@@ -28,13 +28,15 @@ rather than read off a spec, so each one records what would break:
 from __future__ import annotations
 
 import math
+import os
 import struct
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from descape import asset_source, sld_decoder, unit_sprites
+from descape import asset_source, composite_backend, sld_decoder, unit_sprites
+from testkit.review_pack import components
 
 MAGIC = b"SLDX"
 _HEADER = struct.Struct("<4s4HI")
@@ -2043,3 +2045,339 @@ def test_a_native_miss_is_shared_across_scales(install, monkeypatch):
     monkeypatch.setattr(unit_sprites, "load_sld", boom)
     assert unit_sprites.icon_for(CONST, 0.0, 0, 64, 64) is None
     assert unit_sprites.sprite_for(CONST, 0.0, 0, 16) is None
+
+
+# --- smooth shrink (GH #254) --------------------------------------------
+#
+# At Graphics Quality Default and above, art drawn below its native size is
+# box-filtered (_box_resize_rgba(), a premultiplied area average) and tinted at
+# native size first. Potato and below keep the nearest gather, pinned above.
+
+
+@pytest.fixture(params=["numpy", "native"])
+def backend(request):
+    """Runs a test on each composite backend; the native kernel skips when it
+    isn't built, unless DESCAPE_REQUIRE_NATIVE=1 (as tests/test_sld_native.py)."""
+    if request.param == "native" and not composite_backend.available():
+        if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+            pytest.fail(f"DESCAPE_REQUIRE_NATIVE=1 but {composite_backend.unavailable_reason}")
+        pytest.skip(composite_backend.unavailable_reason)
+    with composite_backend.use_backend(request.param):
+        yield request.param
+
+
+def _reference_box(rgba, width, height):
+    """A float64 premultiplied area average, pixel by pixel: each output px
+    averages the exact source rectangle it covers, un-premultiplies where its
+    alpha is non-zero, then + 0.5 truncated as _box_resize_rgba() rounds."""
+    src_h, src_w = rgba.shape[:2]
+    src = rgba.astype(np.float64)
+    premult = np.concatenate([src[..., :3] * src[..., 3:] / 255, src[..., 3:]], axis=2)
+    out = np.zeros((height, width, 4))
+    for i in range(height):
+        y0, y1 = i * src_h / height, (i + 1) * src_h / height
+        for j in range(width):
+            x0, x1 = j * src_w / width, (j + 1) * src_w / width
+            acc = np.zeros(4)
+            for y in range(math.floor(y0), math.ceil(y1)):
+                for x in range(math.floor(x0), math.ceil(x1)):
+                    acc += (min(y1, y + 1) - max(y0, y)) * (min(x1, x + 1) - max(x0, x)) * premult[y, x]
+            acc /= (y1 - y0) * (x1 - x0)
+            out[i, j, :3] = acc[:3] * 255 / acc[3] if acc[3] > 0 else 0
+            out[i, j, 3] = acc[3]
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
+
+
+def _random_rgba(rng, h, w):
+    rgba = rng.integers(0, 256, (h, w, 4), dtype=np.uint8)
+    rgba[..., 3][rng.random((h, w)) < 0.3] = 0
+    return rgba
+
+
+@pytest.mark.parametrize(("h", "w", "out_h", "out_w"), [
+    (12, 18, 6, 9), (12, 18, 4, 6),  # 2x and 3x
+    (27, 39, 18, 26), (27, 39, 9, 13), (29, 41, 5, 7),  # 0.67, 0.33 and 0.17 of odd sizes
+    (13, 7, 1, 1), (9, 31, 1, 10), (31, 9, 10, 1),  # 1-px results, non-square
+])
+def test_box_resize_matches_a_float64_area_average(backend, h, w, out_h, out_w):
+    rng = np.random.default_rng(h * 1000 + w * 10 + out_h)
+    src = _random_rgba(rng, h, w)
+    got = unit_sprites._box_resize_rgba(src, out_w, out_h)
+    assert got.dtype == np.uint8 and got.shape == (out_h, out_w, 4)
+    assert np.abs(got.astype(int) - _reference_box(src, out_w, out_h)).max() <= 1
+
+
+def test_box_resize_reads_a_non_contiguous_view(backend):
+    big = _random_rgba(np.random.default_rng(9), 40, 30)
+    view = big[3:35:2, ::3]
+    assert not view.flags.c_contiguous
+    got = unit_sprites._box_resize_rgba(view, 7, 11)
+    assert np.array_equal(got, unit_sprites._box_resize_rgba(np.ascontiguousarray(view), 7, 11))
+    assert np.abs(got.astype(int) - _reference_box(view, 7, 11)).max() <= 1
+
+
+def test_box_resize_reproduces_an_opaque_block_and_zeroes_a_transparent_one(backend):
+    """Whole output px inside an opaque block keep its bytes exactly; those
+    inside a transparent one are (0, 0, 0, 0), whatever colour sits under
+    alpha 0 there."""
+    src = np.zeros((27, 39, 4), np.uint8)
+    src[:, :21] = (77, 133, 201, 255)
+    src[:, 21:] = (90, 200, 10, 0)
+    for out_w, out_h in ((26, 18), (13, 9), (7, 5)):
+        got = unit_sprites._box_resize_rgba(src, out_w, out_h)
+        opaque = [j for j in range(out_w) if (j + 1) * 39 / out_w <= 21]
+        clear = [j for j in range(out_w) if j * 39 / out_w >= 21]
+        assert opaque and clear
+        assert (got[:, opaque] == (77, 133, 201, 255)).all()
+        assert (got[:, clear] == 0).all()
+
+
+def test_box_resize_keeps_an_opaque_edges_colour_beside_transparency(backend):
+    """Opaque red beside transparent black: the edge px take fractional alpha
+    and keep RGB exactly (255, 0, 0). A straight (non-premultiplied) average
+    would darken them toward the transparent px's black."""
+    src = np.zeros((9, 13, 4), np.uint8)
+    src[:, :5] = (255, 0, 0, 255)
+    got = unit_sprites._box_resize_rgba(src, 6, 4)
+    edge = (got[..., 3] > 0) & (got[..., 3] < 255)
+    assert edge.any()
+    assert (got[edge][:, :3] == (255, 0, 0)).all()
+
+
+@pytest.mark.parametrize(("out_w", "out_h"), [(26, 18), (13, 9), (5, 7)])
+def test_box_resize_conserves_ink(backend, out_w, out_h):
+    """Premultiplied ink summed over the output, times the source px each one
+    covers, is the source's own sum within rounding: one unit per output px."""
+    src = _random_rgba(np.random.default_rng(out_w), 27, 39)
+    got = unit_sprites._box_resize_rgba(src, out_w, out_h)
+
+    def ink(img):
+        f = img.astype(np.float64)
+        return np.concatenate([f[..., :3] * f[..., 3:] / 255, f[..., 3:]], axis=2).sum(axis=(0, 1))
+
+    area = 27 * 39 / (out_w * out_h)
+    assert np.abs(ink(got) * area - ink(src)).max() <= out_w * out_h * area
+
+
+def test_a_one_to_one_axis_takes_identity_taps(backend):
+    """A shrink along x only leaves every row as its own single-row shrink."""
+    src = _random_rgba(np.random.default_rng(4), 9, 31)
+    got = unit_sprites._box_resize_rgba(src, 10, 9)
+    for y in range(9):
+        assert np.array_equal(got[y], unit_sprites._box_resize_rgba(src[y:y + 1], 10, 1)[0])
+
+
+def test_set_smooth_shrink_reports_a_change_and_bumps_the_generation_only_then():
+    start = unit_sprites.hi_res_generation()
+    assert not unit_sprites.smooth_shrink(), "a test starts at the module default, nearest"
+    assert not unit_sprites.set_smooth_shrink(False)
+    assert unit_sprites.set_smooth_shrink(True) and unit_sprites.smooth_shrink()
+    assert not unit_sprites.set_smooth_shrink(True)
+    assert unit_sprites.hi_res_generation() == start + 1
+
+
+def _line_frame(kind: str) -> np.ndarray:
+    """A 33x45 transparent frame holding one 1-px line."""
+    main = np.zeros((45, 33, 4), np.uint8)
+    for y in range(45):
+        x = {"vertical": 2, "diagonal": y + 1, "steep": y // 2}[kind]
+        if x < 33:
+            main[y, x] = (230, 220, 40, 255)
+    return main
+
+
+@pytest.mark.parametrize("kind", ["vertical", "diagonal", "steep"])
+@pytest.mark.parametrize("half_w", [32, 16], ids=["0.67x", "0.33x"])
+def test_a_thin_line_stays_whole_when_shrunk_smoothly(install, monkeypatch, kind, half_w):
+    """Through sprite_for(): one 8-connected run of ink with smooth shrinking
+    on, where the nearest gather breaks the same line into dashes or drops it
+    (checked, so the fixture is a real control)."""
+    install.write(build_sld(1))
+    install.register(angle_count=1, frame_count=1)
+    main = _line_frame(kind)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, None, 16, 44))
+    unit_sprites.clear_caches()
+    nearest = unit_sprites.sprite_for(CONST, 0.0, 0, half_w)
+    assert components(nearest.rgba[..., 3] > 0) != 1, "the nearest gather keeps this line whole -- vacuous"
+    unit_sprites.set_smooth_shrink(True)
+    smooth = unit_sprites.sprite_for(CONST, 0.0, 0, half_w)
+    assert smooth.rgba.shape == nearest.rgba.shape
+    assert components(smooth.rgba[..., 3] > 0) == 1
+
+
+def _random_native(install, monkeypatch, seed: int = 7):
+    """CONST drawn from one random-content 90x70 frame with a playercolor mask."""
+    install.write(build_sld(4))
+    install.register(angle_count=1, frame_count=1)
+    main, pc = _random_layers(np.random.default_rng(seed), 90, 70)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 35, 80))
+    unit_sprites.clear_caches()
+    return main, pc
+
+
+def test_a_smooth_tinted_sprite_is_the_box_of_the_native_tint(install, monkeypatch):
+    """With smooth shrinking on, sprite_for equals box(_tinted(native)), and
+    _tinted sees only the native frame: an area average does not commute with
+    the tint, so the nearest path's tint-the-small-pair order would be wrong."""
+    main, pc = _random_native(install, monkeypatch)
+    seen, real_tinted = _tint_spy(monkeypatch)
+    unit_sprites.set_smooth_shrink(True)
+    draw = unit_sprites.sprite_for(CONST, 0.0, 3, 32)
+    want = unit_sprites._box_resize_rgba(real_tinted(main, pc, unit_sprites.TEAM_COLORS[3]), *draw.rgba.shape[1::-1])
+    assert draw.rgba.shape[:2] != main.shape[:2]
+    assert np.array_equal(draw.rgba, want)
+    assert seen == [main.shape]
+
+
+@pytest.mark.parametrize("half_w", [48, 64], ids=["1:1", "enlarged"])
+def test_smooth_shrink_leaves_one_to_one_and_enlargement_to_the_gather(install, monkeypatch, half_w):
+    _random_native(install, monkeypatch)
+    off = unit_sprites.sprite_for(CONST, 0.0, 3, half_w)
+    unit_sprites.set_smooth_shrink(True)
+    on = unit_sprites.sprite_for(CONST, 0.0, 3, half_w)
+    assert np.array_equal(on.rgba, off.rgba) and (on.hotspot_x, on.hotspot_y) == (off.hotspot_x, off.hotspot_y)
+
+
+def test_a_smooth_single_piece_icon_is_the_box_of_its_native_tinted_ink(install, monkeypatch):
+    main, pc = _random_native(install, monkeypatch, seed=11)
+    main[:4, :, 3] = 0
+    main[:, -2:, 3] = 0
+    seen, real_tinted = _tint_spy(monkeypatch)
+    unit_sprites.set_smooth_shrink(True)
+    icon = unit_sprites.icon_for(CONST, 0.0, 3, 32, 32)
+    ink = unit_sprites._cropped_to_ink(real_tinted(main, pc, unit_sprites.TEAM_COLORS[3]), None, 0, 0)[0]
+    assert np.array_equal(icon.rgba, unit_sprites._box_resize_rgba(ink, *icon.rgba.shape[1::-1]))
+    assert seen == [ink.shape]
+
+
+def test_a_smooth_composite_icon_is_the_box_of_its_assembly(install, monkeypatch):
+    _register_tall_composite(install)
+    main, pc = _random_layers(np.random.default_rng(5), 12, 10)
+    monkeypatch.setattr(unit_sprites, "_native_frame", lambda file_name, index: (main, pc, 5, 6))
+    unit_sprites.clear_caches()
+    unit_sprites.set_smooth_shrink(True)
+    icon = unit_sprites.icon_for(CONST, 0.0, 2, 9, 9)
+    tinted = unit_sprites.SpriteDraw(rgba=unit_sprites._tinted(main, pc, unit_sprites.TEAM_COLORS[2]), hotspot_x=5, hotspot_y=6)
+    assembly = unit_sprites._assembled_native([
+        unit_sprites.SpritePiece(draw=tinted, dx=0, dy=0),
+        unit_sprites.SpritePiece(draw=tinted, dx=0, dy=8),
+    ])
+    ink = unit_sprites._cropped_to_ink(assembly, None, 0, 0)[0]
+    assert icon.rgba.shape[0] < ink.shape[0]
+    assert np.array_equal(icon.rgba, unit_sprites._box_resize_rgba(ink, *icon.rgba.shape[1::-1]))
+
+
+def test_the_smooth_flag_keys_the_scaled_cache_apart(install, monkeypatch):
+    """half_w 32 is the 64 px/tile level at Default and the same half_w at
+    another quality's level, so the flag must be in the key or the LRU serves
+    one filter's art at the other's."""
+    _random_native(install, monkeypatch)
+    draws = []
+    for flag in (False, True, False):
+        unit_sprites.set_smooth_shrink(flag)
+        draws.append(unit_sprites.sprite_for(CONST, 0.0, 3, 32).rgba)
+    assert not np.array_equal(draws[0], draws[1]) and np.array_equal(draws[0], draws[2])
+
+
+def test_the_smooth_flag_keys_the_icon_cache_apart(install, monkeypatch):
+    _random_native(install, monkeypatch)
+    icons = []
+    for flag in (False, True, False):
+        unit_sprites.set_smooth_shrink(flag)
+        icons.append(unit_sprites.icon_for(CONST, 0.0, 3, 32, 32).rgba)
+    assert not np.array_equal(icons[0], icons[1]) and np.array_equal(icons[0], icons[2])
+
+
+def test_the_smooth_flag_keys_translucent_walls_apart(install, monkeypatch):
+    _random_native(install, monkeypatch)
+    entry = unit_sprites.graphic_map()[CONST]
+    walls = []
+    for flag in (False, True, False):
+        unit_sprites.set_smooth_shrink(flag)
+        walls.append(unit_sprites._wall_draw(CONST, entry, 0.0, 3, 32, None, 0.5).rgba)
+    assert not np.array_equal(walls[0], walls[1]) and np.array_equal(walls[0], walls[2])
+
+
+# The native kernel's tint_rgba() and box_shrink_rgba() against the numpy code they replace,
+# byte for byte; numpy is pinned above against _reference_tint and _reference_box.
+
+
+@pytest.fixture
+def native_kernel():
+    if composite_backend.available():
+        return
+    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
+        pytest.fail(f"DESCAPE_REQUIRE_NATIVE=1 but {composite_backend.unavailable_reason}")
+    pytest.skip(composite_backend.unavailable_reason)
+
+
+def _both_backends(fn):
+    with composite_backend.use_backend("native"):
+        native = fn()
+    with composite_backend.use_backend("numpy"):
+        numpy_out = fn()
+    return native, numpy_out
+
+
+@pytest.mark.parametrize("kind", ["random", "sparse", "dense", "none", "zero_strength"])
+@pytest.mark.parametrize(("h", "w"), [(23, 17), (1, 1), (8, 31)])
+def test_the_native_tint_is_byte_identical_to_numpy(native_kernel, kind, h, w):
+    rng = np.random.default_rng(h * 100 + w + 7)
+    main, pc = _random_layers(rng, h, w)
+    pc = _coverage(rng, pc, kind)
+    for team in _TEAMS:
+        native, numpy_out = _both_backends(lambda team=team: unit_sprites._tinted(main, pc, team))
+        assert np.array_equal(native, numpy_out), team
+    view = main[::2, ::-1]
+    native, numpy_out = _both_backends(lambda: unit_sprites._tinted(view, pc[::2, ::-1], (37, 201, 90)))
+    assert np.array_equal(native, numpy_out)
+
+
+def _box_fixture(rng, h, w):
+    """Random RGBA with fully transparent leading and trailing rows and
+    columns, alpha-0 holes and partial alpha, so the kernel's alpha spans and
+    empty rows are all exercised."""
+    rgba = _random_rgba(rng, h, w)
+    rgba[: rng.integers(0, h // 3 + 1), :, 3] = 0
+    rgba[:, : rng.integers(0, w // 3 + 1), 3] = 0
+    rgba[h - rng.integers(0, h // 3 + 1):, :, 3] = 0
+    rgba[:, w - rng.integers(0, w // 3 + 1):, 3] = 0
+    return rgba
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_the_native_box_is_byte_identical_to_numpy(native_kernel, seed):
+    rng = np.random.default_rng(seed)
+    h, w = (int(v) for v in rng.integers(1, 80, 2))
+    rgba = _box_fixture(rng, h, w)
+    for _ in range(6):
+        out_h, out_w = int(rng.integers(1, h + 1)), int(rng.integers(1, w + 1))
+        native, numpy_out = _both_backends(lambda out_h=out_h, out_w=out_w: unit_sprites._box_resize_rgba(rgba, out_w, out_h))
+        assert np.array_equal(native, numpy_out), (h, w, out_h, out_w)
+
+
+def test_the_native_box_handles_empty_frames_rows_and_views(native_kernel):
+    clear = np.zeros((20, 30, 4), np.uint8)
+    clear[..., :3] = 99
+    native, numpy_out = _both_backends(lambda: unit_sprites._box_resize_rgba(clear, 7, 5))
+    assert np.array_equal(native, numpy_out) and not native.any()
+    rgba = _box_fixture(np.random.default_rng(3), 41, 37)
+    rgba[10:20, :, 3] = 0
+    view = rgba[::-1, 1::2]
+    for out_w, out_h in ((1, 1), (18, 41), (6, 13)):
+        native, numpy_out = _both_backends(lambda out_w=out_w, out_h=out_h: unit_sprites._box_resize_rgba(view, out_w, out_h))
+        assert np.array_equal(native, numpy_out), (out_w, out_h)
+
+
+def test_the_native_box_refuses_taps_outside_its_source(native_kernel):
+    rgba = np.zeros((4, 4, 4), np.uint8)
+    ys, wy = unit_sprites._area_taps(4, 2)
+    xs, wx = unit_sprites._area_taps(5, 2)  # taps reach column 4 of a 4-wide source
+    with composite_backend.use_backend("native"), pytest.raises(ValueError, match="outside"):
+        composite_backend.native.box_shrink_rgba(rgba, ys, wy, xs, wx, np.empty((2, 2, 4), np.uint8))
+
+
+def test_area_taps_are_cached_read_only():
+    taps, weights = unit_sprites._area_taps(9, 4)
+    assert unit_sprites._area_taps(9, 4)[0] is taps
+    assert not taps.flags.writeable and not weights.flags.writeable

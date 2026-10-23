@@ -193,6 +193,122 @@ def test_a_mod_blanked_composite_parent_still_draws_the_other_pieces(tmp_path, m
     assert len(unit_sprites._native_pieces_for(109, entry, 0.0)) == 1  # Flat's icon path
 
 
+GRASS, GRASS_STEM = 1358, "n_plant_grass_green_x1"
+_BLANK = _file(_frame([None], width=4))
+_INKED = _file(_frame([(0, [(DRAW, [(77, 0)] * 2)])], width=2))  # (77, 0, 0) where the install paints 255
+
+
+def _remover(tmp_path: Path, monkeypatch, frame: bytes) -> None:
+    """Grass, Green as one graphic over install_with()'s red frame, plus an
+    enabled mod shipping `frame` for its x1 and x2 stems, as Useless Plants
+    Remover does (Mod Art still off)."""
+    _install_with(tmp_path, monkeypatch, GRASS_STEM, frames=1)
+    entry = {"file_name": GRASS_STEM, "angle_count": 1, "mirroring_mode": 0, "frame_count": 1}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {GRASS: entry})
+    x2 = GRASS_STEM[:-3] + "_x2"
+    _mod(tmp_path / "profile", "1205_Remover", {f"drs/graphics/{GRASS_STEM}.smx": frame, f"drs/graphics/{x2}.smx": frame})
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+
+
+def _draws(half_w: int = 32) -> list:
+    """Every path a single graphic draws through: Stepped/Sloped, the composite walk, Flat's icon."""
+    unit_sprites.clear_caches()
+    pieces = unit_sprites.sprite_pieces_for(GRASS, 0.0, 0, half_w)
+    return [
+        unit_sprites.sprite_for(GRASS, 0.0, 0, half_w),
+        pieces[0].draw if len(pieces) == 1 else None,
+        unit_sprites.icon_for(GRASS, 0.0, 0, 16, 16),
+    ]
+
+
+def _same(a, b) -> bool:
+    if a is None or b is None:
+        return False
+    return np.array_equal(a.rgba, b.rgba) and (a.hotspot_x, a.hotspot_y) == (b.hotspot_x, b.hotspot_y)
+
+
+@pytest.mark.parametrize("hi_res", [False, True])
+def test_a_mod_blanked_single_graphic_draws_the_install_art(tmp_path, monkeypatch, hi_res):
+    """A blank mod frame on a single-graphic unit draws the install's art,
+    pixel-equal to Mod Art off, not the coloured mark (TASK-437). half_w 64
+    enlarges x1, so at Enhanced the mod's blank x2 is asked first."""
+    _remover(tmp_path, monkeypatch, _BLANK)
+    monkeypatch.setattr(unit_sprites, "_hi_res", hi_res)
+    half_w = 64 if hi_res else 32
+    off = _draws(half_w)
+    assert all(draw is not None for draw in off), "the install must draw with Mod Art off, or the identity is vacuous"
+    mod_graphics.set_enabled(True)
+    on = _draws(half_w)
+    assert GRASS_STEM in unit_sprites._mod_blank_stems, "the mod's blank frame must be what was read"
+    for path, (got, want) in enumerate(zip(on, off, strict=True)):
+        assert _same(got, want), f"draw path {path} lost the install's art"
+
+
+def test_a_mod_frame_with_ink_still_wins_over_the_install(tmp_path, monkeypatch):
+    _remover(tmp_path, monkeypatch, _INKED)
+    mod_graphics.set_enabled(True)
+    for path, draw in enumerate(_draws()):
+        ink = draw.rgba[draw.rgba[..., 3] > 0]
+        assert ink.size and (ink[:, 0] == 77).all(), f"draw path {path} did not draw the mod's art"
+    assert not unit_sprites._mod_blank_stems
+
+
+def test_one_blank_stem_is_a_gap_as_a_piece_and_install_art_as_a_single_graphic(tmp_path, monkeypatch):
+    """The same stem, frame, team and scale through a composite and a single
+    graphic: _scaled_cache must not serve one's answer to the other, in
+    either order."""
+    back, main = "b_tc_back_x1", "b_tc_main_x1"
+    install = _install_with(tmp_path, monkeypatch, back, frames=1)
+    graphics = install / "resources" / "_common" / "drs" / "graphics"
+    (graphics / f"{main}.smx").write_bytes(_file(_frame([(0, [(DRAW, [(9, 0)] * 4)])], width=4)))
+    piece = {"angle_count": 1, "frame_count": 1, "dx": 0, "dy": 0}
+    single = {"file_name": back, "angle_count": 1, "mirroring_mode": 0, "frame_count": 1}
+    composite = {**single, "pieces": [
+        {**piece, "unit_id": 618, "file_name": main},
+        {**piece, "unit_id": 109, "file_name": back, "parent": True},
+    ]}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {109: composite, GRASS: single})
+    _mod(tmp_path / "profile", "1_Open", {f"drs/graphics/{back}.smx": _BLANK})
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+    mod_graphics.set_enabled(True)
+    for order in ((109, GRASS), (GRASS, 109)):
+        unit_sprites.clear_caches()
+        got = {const: unit_sprites.sprite_pieces_for(const, 0.0, 0, 32) for const in order}
+        assert len(got[109]) == 1, f"{order}: the composite's blank back piece must stay a gap"
+        assert len(got[GRASS]) == 1, f"{order}: the single graphic must draw the install's art"
+
+
+@pytest.mark.corpus
+def test_no_eye_candy_const_that_draws_without_mods_is_lost_to_a_blank_mod_frame(monkeypatch):
+    """Real install and profile: with Mod Art on, every eye-candy const that
+    draws with it off still draws. Needs a profile whose mods blank some (the
+    Useless Plants Remover blanked 19 before TASK-437)."""
+    from descape import unit_kind
+
+    def unmet(reason: str):
+        if _REQUIRE:
+            pytest.fail(f"DESCAPE_REQUIRE_MODS=1 but {reason}")
+        pytest.skip(reason)
+
+    if asset_source.get_install_path() is None or not _PROFILE:
+        unmet("needs AOE2DE_INSTALL_PATH and AOE2DE_PROFILE_PATH")
+    consts = sorted(unit_kind.eye_candy_consts())
+
+    def drawn() -> set[int]:
+        unit_sprites.clear_caches()
+        return {c for c in consts if unit_sprites.sprite_for(c, 0.0, 0, 32) and unit_sprites.icon_for(c, 0.0, 0, 16, 16)}
+
+    off = drawn()
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", _PROFILE)
+    mod_graphics.clear()
+    mod_graphics.set_enabled(True)
+    on = drawn()
+    if not unit_sprites._mod_blank_stems:
+        unmet("no active mod blanks an eye-candy stem")
+    assert off, "nothing draws with Mod Art off: the check is vacuous"
+    assert not off - on, f"lost to a blank mod frame: {sorted(off - on)}"
+
+
 def test_sprite_reach_px_keeps_its_side_order(monkeypatch):
     from types import SimpleNamespace
 

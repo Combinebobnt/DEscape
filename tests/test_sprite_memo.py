@@ -351,6 +351,35 @@ def test_sprites_off_drops_the_memo():
     assert sloped._sprite_memo is None
 
 
+@pytest.mark.parametrize("sloped", [False, True], ids=["stepped", "sloped"])
+def test_a_garrison_link_reresolves_its_host_alone(monkeypatch, sloped):
+    """GH #203: a host draws its garrison flag while another unit names it,
+    which no field of the host carries, so garrison_host_ids() is in the key.
+    A link and an unload each re-resolve the host only: under the default
+    filter the occupant draws the same either way."""
+    entry = dict(render.unit_sprites.graphic_map()[CONST])
+    entry["garrison_flags"] = [
+        {"unit_id": CONST, "file_name": entry["file_name"], "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
+    ]
+    monkeypatch.setattr(render.unit_sprites, "graphic_map", lambda: {CONST: entry})
+    scenario = _scenario()
+    host, occupant = _units(scenario)[1][0], _units(scenario)[2][0]
+    host.reference_id, occupant.reference_id, occupant.garrisoned_in_id = 500, 501, -1
+    style = _Style(sloped, scenario)
+    unlinked = _normalized(_fresh(style))
+    _layer, memo = _walk(style, render.SpriteMemo())
+    counter = _ResolveCounter(monkeypatch)
+    for link in (host.reference_id, -1):
+        # UnitEditModel.set_garrisoned_in() bumps unit_gen, which garrison_host_ids() is memoized on.
+        occupant.garrisoned_in_id = link
+        scenario.unit_gen += 1
+        counter.calls = 0
+        layer, memo = _walk(style, memo)
+        assert counter.calls == 1, link
+        assert _normalized(layer) == _normalized(_fresh(style))
+        assert (_normalized(layer) == unlinked) == (link == -1), "the link must change the layer"
+
+
 def test_patch_area_counts_what_patch_recomposites(monkeypatch):
     """viewer._if_spliceable() prices the eager patch with patch_area(); it
     must be exactly the pixel count patch() hands to _composite_rect()."""
@@ -390,5 +419,25 @@ def test_a_mod_art_generation_change_invalidates_the_memo(monkeypatch):
     _walk(style, memo)
     assert counter.calls == 0 < misses
     mod_graphics.set_enabled(True)
+    _walk(style, memo)
+    assert counter.calls == misses
+
+
+def test_a_smooth_shrink_change_invalidates_the_memo(monkeypatch):
+    """Graphics Quality across Potato and Default switches box-filtered
+    shrinking (GH #254); set_smooth_shrink() bumps hi_res_generation(), an
+    invariant, so every unit re-resolves rather than serving the other
+    filter's art."""
+    from descape import unit_sprites
+
+    scenario = _scenario()
+    style = _Style(False, scenario)
+    _layer, memo = _walk(style, render.SpriteMemo())
+    counter = _ResolveCounter(monkeypatch)
+    _walk(style, render.SpriteMemo())
+    misses, counter.calls = counter.calls, 0
+    _walk(style, memo)
+    assert counter.calls == 0 < misses
+    unit_sprites.set_smooth_shrink(True)
     _walk(style, memo)
     assert counter.calls == misses

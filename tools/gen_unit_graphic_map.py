@@ -74,6 +74,15 @@ resolves to a named graphic:
                                   -- unit_id == unit_const, which every piece
                                   -- of a direct-delta gate or a wall shares.
         ...                       -- Depth-sorted: draw in list order.
+      ],
+      "garrison_flags": [   -- OPTIONAL, omitted when empty: the flag a
+                              -- garrisoned host shows, one piece-shaped dict
+                              -- per garrison-shell delta in .dat order. See
+                              -- "Garrison flags".
+        {"unit_id": int,       -- this const, the frame dispatch's input
+         "file_name": str, "angle_count": 1, "frame_count": int,
+         "dx": int, "dy": int},  -- native-pixel offset from the unit's anchor
+        ...
       ]
     }
 
@@ -276,6 +285,25 @@ frame. The generator fails unless the effect has an AtlasFile and no
 `ImageAngles` (per-angle frame runs, which the waterfalls use and
 descape.particle_art does not read). Every other particle-only const (FLAME,
 SMOKE, the waterfalls) is still skipped.
+
+**Garrison flags (GH #203).** A unit's `creatable.garrison_graphic` names the
+flag the game draws on it while it holds units: a legacy shell (never `_x1`,
+layer 20, angle_count 1) whose only content is one or two deltas, each at
+display_angle -1, pointing at one of 14 delta-free `b_<set>_garrison_flag_x1`
+graphics (misc, west, east, asia, medi, slav, ande, seas, nors, indi, orie,
+meso, ceas, afri). Measured 2026-10-12 over all 63 civ tables: 522 shells (366
+with one delta, 156 with two), no exception to that shape; 99 consts carry one,
+90 buildings plus rams 35, 422, 548, 1258, siege towers 885, 1105, 2444 and
+transport ships 545, 2148, and 75 of them vary by civ. Town Center 109's flag
+sits at (-31, -158), Watch Tower 79's at (-1, -179), Barracks 12 has two, at
+(84, -59) and (-7, -101): native px from the unit's anchor, the convention of
+the palisade flag piece and the ship sails. Each delta becomes one
+`garrison_flags` item, attached in `_entry_for()` so per-civ art carries its
+own set; a civ whose only difference from Gaia is its flag still gets an
+entry. The generator fails unless every shell keeps that shape. Hosts with
+capacity but no garrison graphic (Mosque 655, cavalry) carry none; 27 consts
+carry one with capacity 0 (House 70), and the renderer draws by the table,
+not by capacity.
 
 Normally run through tools/regen_game_data.py, which also restamps
 tools/game_data_stamp.json.
@@ -1291,6 +1319,45 @@ def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
     return positions
 
 
+def _garrison_flags(unit, graphics: list, unit_const: int) -> list[dict[str, object]]:
+    """The `garrison_flags` items for one unit: one piece-shaped dict per
+    delta of its garrison shell, in .dat order, or [] when it has none. Fails
+    loudly on a shell outside the measured shape (module docstring, "Garrison
+    flags"), since the renderer draws each item as one static frame-0 piece."""
+    creatable = unit.creatable
+    shell_id = -1 if creatable is None else creatable.garrison_graphic
+    if shell_id is None or shell_id < 0:
+        return []
+    shell = graphics[shell_id] if shell_id < len(graphics) else None
+    if shell is None or _looks_modern(shell.file_name) or not 1 <= len(shell.deltas) <= 2:
+        raise SystemExit(
+            f"unit_const {unit_const}'s garrison graphic {shell_id} is not a legacy shell with "
+            f"1 or 2 deltas -- re-verify the garrison flag rule against the .dat"
+        )
+    flags: list[dict[str, object]] = []
+    for delta in shell.deltas:
+        dg_id = delta.graphic_id
+        flag = graphics[dg_id] if dg_id is not None and 0 <= dg_id < len(graphics) else None
+        if (
+            delta.display_angle != -1 or flag is None or not _looks_modern(flag.file_name)
+            or flag.deltas or flag.angle_count != 1
+        ):
+            raise SystemExit(
+                f"unit_const {unit_const}'s garrison shell {shell_id} has a delta to {dg_id} at "
+                f"display_angle {delta.display_angle}, not a delta-free one-angle modern graphic "
+                f"at every angle (-1) -- re-verify the garrison flag rule against the .dat"
+            )
+        flags.append({
+            "unit_id": unit_const,
+            "file_name": flag.file_name,
+            "angle_count": 1,
+            "frame_count": flag.frame_count,
+            "dx": delta.offset_x,
+            "dy": delta.offset_y,
+        })
+    return flags
+
+
 def _entry_for(
     units: list, graphics: list, graphics_dir: Path, unit_const: int,
     body_positions: dict[int, int],
@@ -1304,7 +1371,25 @@ def _entry_for(
     every civ (GH #48), so nothing in here may read a Gaia-only fact.
     `annex_upgrades` is `_annex_upgrades()`'s table, keyed by composite const.
     `particles_dir` is the install's particle folder; without it the
-    _PARTICLE_CONSTS are skipped like any other legacy graphic."""
+    _PARTICLE_CONSTS are skipped like any other legacy graphic. Every entry
+    then carries the unit's own `garrison_flags`, when it has any."""
+    entry, kind = _graphic_entry_for(
+        units, graphics, graphics_dir, unit_const, body_positions, annex_upgrades, particles_dir
+    )
+    if entry is not None:
+        flags = _garrison_flags(units[unit_const], graphics, unit_const)
+        if flags:
+            entry["garrison_flags"] = flags
+    return entry, kind
+
+
+def _graphic_entry_for(
+    units: list, graphics: list, graphics_dir: Path, unit_const: int,
+    body_positions: dict[int, int],
+    annex_upgrades: dict[int, dict[int, int]] | None,
+    particles_dir: Path | None,
+) -> tuple[dict[str, object] | None, str]:
+    """_entry_for()'s entry before its garrison flags: every graphic branch."""
     unit = units[unit_const]
     if unit is None:
         return None, "no_unit"
@@ -1819,6 +1904,10 @@ def main() -> None:
     print(f"  particle entries: {len(particles)}/{len(_PARTICLE_CONSTS)}")
     for const, effect in sorted(particles.items()):
         print(f"    {const}: {effect} at scale {entries[str(const)]['art_scale']}")
+    flagged = {c: e["garrison_flags"] for c, e in entries.items() if "garrison_flags" in e}
+    flag_counts = Counter(len(flags) for flags in flagged.values())
+    print(f"  garrison-flag entries: {len(flagged)}, flags per entry {dict(sorted(flag_counts.items()))}")
+    print(f"    flag files: {sorted({f['file_name'] for flags in flagged.values() for f in flags})}")
     print(f"  standing_graphic[1]: {dict(sorted(secondary.items()))}")
     print(f"  composite (pieces) entries: {len(composited)}/{len(_COMPOSITE_SCOPE)} scoped consts")
     not_composited = sorted(_COMPOSITE_SCOPE - composited)

@@ -27,14 +27,21 @@ three ways, in order of preference:
   sides before rendering, in sprites-on runs or in every run. For per-unit
   art with no small patch surface. `--frames-dir` writes base / HEAD /
   amplified-diff crops of the excluded units for a side-by-side look.
-- **A mask** ignores a screen region. Only the Stepped contact-shadow terrace
-  band: the screen bounds, over their 3x3 neighbourhood's height range, of
-  every tile with a neighbour at a different height.
+- **A mask** ignores a screen region in Stepped. The last resort, with its
+  canvas fraction pinned per file by MASK_MEASURED. `_terrace_mask` is the
+  only shape the code supports: the screen bounds, over their 3x3
+  neighbourhood's height range, of every tile with a neighbour at a
+  different height. That band covers every skirt, so a mask entry fails the
+  `shift-skirts` control below by design: a new mask needs a shape that
+  leaves the skirts uncovered, never a weaker control.
 
 Every entry has a control, `--inject no-<name>`, which drops that one entry
 and must then fail on the entry's own `must_fail` configs of its
-`control_file` and nowhere else. `--inject repaint-tile` retextures one tile
-and must fail everywhere.
+`control_file` and nowhere else. Two controls stay across every bump:
+`--inject repaint-tile` retextures one tile and must fail everywhere, and
+`--inject shift-skirts` samples every Stepped skirt from another part of its
+tile's texture and must fail both Stepped cells of ElCid, so a mask that
+swallows the skirts fails a control instead of passing quietly.
 
 Sprites-off runs keep every unit an every-run exclusion does not name. Each
 Stepped sprites-on run also asserts that both sides resolve the same number of
@@ -72,10 +79,11 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE_REF = "v0.9"
+BASE_REF = "v0.10"
 STYLES = ("flat", "stepped", "sloped")
 DEFAULT_PCTS = (50, 200)
 # The same four files as tests/conftest.py's QUICK_CORPUS_NAMES.
+# No examples/ file places town centres 71, 141 or 142, so their art is not compared (decided 2026-10-20, record only).
 QUICK_CORPUS = (
     "0_June_Event_Scenario.aoe2scenario",
     "2_Joan_coop_1_v0_13.aoe2scenario",
@@ -91,6 +99,8 @@ ELCID = "C2_ElCid_coop_1_v0_16.aoe2scenario"
 JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
 OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
 LELOI = "R4_LeLoi_4.aoe2scenario"
+# Matched by the release gate beside the quick corpus whatever entries exist (tests/test_release_render_diff.py).
+EXTRA_MATCH_FILES = (OLD_ALLIES, LELOI)
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
 CROP_W, CROP_H, UPSCALE = 240, 180, 5
@@ -110,117 +120,12 @@ def _require(module, *names: str) -> None:
             raise SystemExit(f"{module.__name__}.{name} is gone: update its patch in {Path(__file__).name} to match the refactor")
 
 
-def _legacy_paint_order() -> None:
-    """Put the pre-GH #107 composite back: terrain and objects interleaved per tile, sprites on or off."""
-    from descape import render
+def _unconformed_blend_edges() -> None:
+    """Put the pre-TASK-284 blend masks back: each blendomatic tile keeps its own non-bleeding edges."""
+    from descape import terrain_blend
 
-    _require(
-        render, "_paint_candidates_iso", "_paint_candidates_sloped", "_paint_tile_and_units_iso", "_paint_tile_and_units_sloped"
-    )
-
-    def interleaved(per_tile):
-        def paint(img, tiles, keys, units_by_tile, tile_px, proj, heights, map_w, map_h, **kwargs):
-            for i, tile in enumerate(tiles):
-                blend = None if keys is None else keys[i]
-                per_tile(img, tile, units_by_tile, tile_px, proj, heights, map_w, map_h, blend=blend, **kwargs)
-
-        return paint
-
-    render._paint_candidates_iso = interleaved(render._paint_tile_and_units_iso)
-    render._paint_candidates_sloped = interleaved(render._paint_tile_and_units_sloped)
-
-
-def _no_terrain_blending() -> None:
-    """Render with blend=False, the pre-blending terrain. The base has no such argument and never gets one."""
-    from descape import render
-
-    names = ("render_terrain", "render_terrain_iso_with_proj", "render_terrain_sloped_with_proj")
-    _require(render, *names)
-    for name in names:
-        setattr(render, name, functools.partial(getattr(render, name), blend=False))
-
-
-def _v09_texture_sampling() -> None:
-    """Put the pre-TASK-201 iso texture sampling back: the diamond reads the centre quarter of its crop
-    in the rotated (a, b) basis, and a skirt column samples one row below the diamond's edge pixel."""
-    from descape import iso_geometry
-
-    _require(iso_geometry, "_inverse_sample", "skirt_quad_indices", "diamond_indices", "sloped_quad_indices", "index_extent")
-
-    def inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
-        u = (dst_x + 0.5 - half_w) / half_w
-        v = (dst_y + 0.5 - half_h) / half_h
-        a = (u + v) / 2.0
-        b = (v - u) / 2.0
-        src_x = np.clip(np.floor((a + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
-        src_y = np.clip(np.floor((b + 1.0) / 2.0 * tile_px), 0, tile_px - 1).astype(np.int64)
-        return src_y, src_x
-
-    def one_row_down(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
-        return inverse_sample(dst_x, dst_y + 1, half_w, half_h, tile_px)
-
-    skirt = iso_geometry.skirt_quad_indices.__wrapped__
-
-    @functools.lru_cache(maxsize=256)
-    def skirt_quad_indices(tile_px: int, drop_px: int, side: str):
-        # This checkout's skirt asks for row edge_y - 1; the release sampled edge_y.
-        iso_geometry._inverse_sample = one_row_down
-        try:
-            return skirt(tile_px, drop_px, side)
-        finally:
-            iso_geometry._inverse_sample = inverse_sample
-
-    iso_geometry._inverse_sample = inverse_sample
-    iso_geometry.skirt_quad_indices = skirt_quad_indices
-    for cached in (iso_geometry.diamond_indices, iso_geometry.sloped_quad_indices, iso_geometry.index_extent):
-        cached.cache_clear()
-
-
-def _v09_building_art() -> None:
-    """Put the pre-GH #48 art lookup back: every owner draws the Gaia-table entry of the placed const."""
-    from descape import unit_sprites
-
-    _require(unit_sprites, "resolve_entry", "graphic_map")
-    unit_sprites.resolve_entry = lambda unit_const, art_civ, age: unit_sprites.graphic_map().get(unit_const)
-
-
-def _no_fish_spans() -> None:
-    """Put the pre-GH #178 fish footprint back: every fish is 1x1 (marks, outlines and anchors)."""
-    from descape import terrain_palette
-
-    _require(terrain_palette, "FISH_TILE_SPANS", "tile_span")
-    terrain_palette.FISH_TILE_SPANS = {}
-
-
-def _no_blocker_spans() -> None:
-    """Put the pre-GH #121 blocker footprint back: a 1x3 or 3x1 blocker marks its centre tile only."""
-    from descape import terrain_palette
-
-    _require(terrain_palette, "BLOCKER_TILE_SPANS", "tile_span")
-    terrain_palette.BLOCKER_TILE_SPANS = {}
-
-
-def _v09_gaia_facing() -> None:
-    """Put the pre-GH #217 facing back: a GAIA unit whose rotation is not a variant index draws facing 0."""
-    from descape import render, unit_sprites
-
-    _require(render, "stored_rotation")
-
-    def stored_rotation(player_id: int, unit) -> float:
-        if player_id == 0 and not unit_sprites.rotation_is_variant(unit.unit_const):
-            return 0.0
-        return float(unit.rotation)
-
-    render.stored_rotation = stored_rotation
-
-
-def _no_doodad_spans() -> None:
-    """Put the pre-TASK-134 doodad footprint back: a mountain, ruin or other large class-14 doodad marks one tile."""
-    from descape import terrain_palette
-
-    _require(terrain_palette, "DOODAD_TILE_SPANS", "tile_span")
-    # In place: render and placement_rules import the dict by name.
-    terrain_palette.DOODAD_TILE_SPANS.clear()
+    _require(terrain_blend, "conform_edges")
+    terrain_blend.conform_edges = lambda alpha, tile_index: alpha
 
 
 def _unturned_flat_walls() -> None:
@@ -229,21 +134,6 @@ def _unturned_flat_walls() -> None:
 
     _require(unit_sprites, "flat_art")
     unit_sprites.flat_art = lambda unit_const, rotation: (unit_const, rotation)
-
-
-# ---------------------------------------------------------------------------
-# Exclusions: each names the consts removed on both sides. Evaluated in the driver, against this checkout.
-
-
-def _fish_art_consts() -> frozenset[int]:
-    """The consts whose unit_graphic_map.json entry GH #178 changed: the eight spanned fish, Shore Fish, a Marlin, Box Turtles."""
-    return frozenset({53, 61, 69, 450, 451, 455, 456, 457, 458, 1141, 2625})
-
-
-def _ship_and_butterfly_consts() -> frozenset[int]:
-    """The consts GH #20 gave new art: the 20 sailing ships that gained sail pieces, and the three Butterflies doodads."""
-    ships = {17, 21, 114, 420, 442, 527, 528, 529, 532, 535, 536, 539, 545, 691, 1103, 1104, 2626, 2627, 2628, 2633}
-    return frozenset(ships | {1608, 1609, 1610})
 
 
 # ---------------------------------------------------------------------------
@@ -281,89 +171,22 @@ class Neutralization:
 
 NEUTRALIZATIONS: tuple[Neutralization, ...] = (
     Neutralization(
-        "terrain-blending",
-        "GH #13, TASK-143: terrain blending and layered terrain",
-        since="v0.9", control_file=ELCID, must_fail=ALL_CONFIGS,
-        patch=_no_terrain_blending,
-    ),
-    Neutralization(
-        "texture-sampling",
-        "TASK-201: Stepped and Sloped terrain textures continue across tile edges",
-        since="v0.9", control_file=ELCID, must_fail=ISO_CONFIGS,
-        patch=_v09_texture_sampling,
-    ),
-    Neutralization(
-        "fish-spans",
-        "GH #178: deep fish outline, pick and occupy 2x2 tiles and the Whale 3x3",
-        since="v0.9", control_file=ELCID, must_fail=SPRITES_OFF,
-        patch=_no_fish_spans,
-    ),
-    Neutralization(
-        "building-art",
-        "GH #48: buildings draw in their owner's architecture and starting age",
-        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
-        patch=_v09_building_art,
-    ),
-    Neutralization(
-        "fish-art",
-        "GH #178: fish draw at their in-game size and show their bodies",
-        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
-        consts=_fish_art_consts,
-    ),
-    Neutralization(
-        "ships-and-butterflies",
-        "GH #20: ships draw their sails and their owner's colour, and Butterflies draw as butterflies",
-        since="v0.9", control_file=JOAN, must_fail=SPRITES_ON,
-        consts=_ship_and_butterfly_consts,
-    ),
-    Neutralization(
-        "blocker-spans",
-        "GH #121: 1x3 and 3x1 blockers cover their full three tiles",
-        since="v0.9", control_file=OLD_ALLIES, must_fail=ALL_CONFIGS,
-        patch=_no_blocker_spans,
-    ),
-    Neutralization(
-        "doodad-spans",
-        "TASK-134: mountains, ruins and other large scenery cover their real footprint",
-        since="v0.9", control_file=LELOI, must_fail=SPRITES_OFF | {("flat", True)},
-        patch=_no_doodad_spans,
+        "blend-seams",
+        "TASK-284: terrain blending has no square steps in coastlines and water inlets",
+        since="v0.10", control_file=ELCID, must_fail=ALL_CONFIGS,
+        patch=_unconformed_blend_edges,
     ),
     Neutralization(
         "flat-walls",
         "GH #151 (TASK-227): walls and gates lie along the square grid in top-down Flat",
-        since="v0.9", control_file=OLD_ALLIES, must_fail=frozenset({("flat", True)}),
+        since="v0.10", control_file=OLD_ALLIES, must_fail=frozenset({("flat", True)}),
         patch=_unturned_flat_walls,
-    ),
-    Neutralization(
-        "gaia-facing",
-        "GH #217 (PR #218): GAIA creatables such as wildlife draw their stored facing",
-        since="v0.9", control_file=ELCID, must_fail=SPRITES_ON,
-        patch=_v09_gaia_facing,
-    ),
-    Neutralization(
-        "paint-order",
-        "GH #107: with sprites on, all terrain paints first, then objects",
-        since="v0.9", control_file=ELCID, must_fail=ISO_CONFIGS & SPRITES_ON,
-        patch=_legacy_paint_order,
-    ),
-    Neutralization(
-        "contact-shadows",
-        "GH #15: Stepped contact shadows are back to the earlier line style",
-        since="v0.9", control_file=ELCID, must_fail=frozenset({("stepped", False), ("stepped", True)}),
-        mask=True,
     ),
 )
 
-# The Stepped mask's measured canvas fraction against BASE_REF, by file and elev_step_pct (emptied with the mask entry).
+# A mask entry's measured Stepped canvas fraction against BASE_REF, by file and elev_step_pct (empty while none exists).
 # A run over measured + MASK_MARGIN fails: a mask grown to cover the canvas would pass every Stepped cell and its control.
-MASK_MEASURED: dict[str, dict[int, float]] = {
-    "0_June_Event_Scenario.aoe2scenario": {25: 0.0742, 50: 0.0729, 100: 0.0704, 200: 0.0659},
-    JOAN: {25: 0.1029, 50: 0.1005, 100: 0.0960, 200: 0.0881},
-    ELCID: {25: 0.1601, 50: 0.1548, 100: 0.1452, 200: 0.1288},
-    "F7_2_Dos Pilas (648).aoe2scenario": {25: 0.0579, 50: 0.0574, 100: 0.0566, 200: 0.0549},
-    OLD_ALLIES: {25: 0.2136, 50: 0.2111, 100: 0.2063, 200: 0.1973},
-    LELOI: {25: 0.0494, 50: 0.0486, 100: 0.0470, 200: 0.0441},
-}
+MASK_MEASURED: dict[str, dict[int, float]] = {}
 MASK_MARGIN = 0.005
 
 
@@ -374,11 +197,13 @@ def mask_ceiling(scenario_name: str, pct: int) -> float | None:
 
 
 REPAINT_TILE = "repaint-tile"
+SHIFT_SKIRTS = "shift-skirts"
 
 
 def controls() -> list[tuple[str, str, frozenset[tuple[str, bool]]]]:
     """(inject, control file, the configs it must fail) for every control run."""
-    return [(REPAINT_TILE, ELCID, ALL_CONFIGS)] + [(f"no-{n.name}", n.control_file, n.must_fail) for n in NEUTRALIZATIONS]
+    fixed = [(REPAINT_TILE, ELCID, ALL_CONFIGS), (SHIFT_SKIRTS, ELCID, frozenset({("stepped", False), ("stepped", True)}))]
+    return fixed + [(f"no-{n.name}", n.control_file, n.must_fail) for n in NEUTRALIZATIONS]
 
 
 INJECTS = tuple(inject for inject, _file, _configs in controls())
@@ -400,7 +225,7 @@ def check_registry() -> None:
                 f"release shipped its change, else re-measure it (--attribute) and update its `since`"
             )
     if sum(n.mask for n in NEUTRALIZATIONS) > 1:
-        raise ValueError("more than one mask entry: there is only the contact-shadow terrace mask")
+        raise ValueError("more than one mask entry: _terrace_mask is the only mask shape, so their controls could not tell them apart")
 
 
 def intended_change_consts(active: tuple[Neutralization, ...] = NEUTRALIZATIONS) -> dict[str, frozenset[int]]:
@@ -442,6 +267,23 @@ def _repaint_one_flat_tile(scenario) -> None:
     raise SystemExit("no flat, unit-free tile to repaint")
 
 
+def _shift_skirts() -> None:
+    """The skirt control: every Stepped skirt samples its tile's texture half a tile down and a third across."""
+    from descape import iso_geometry
+
+    _require(iso_geometry, "skirt_quad_indices", "index_extent")
+    skirt = iso_geometry.skirt_quad_indices
+
+    @functools.lru_cache(maxsize=256)
+    def shifted(tile_px: int, drop_px: int, side: str):
+        dst_y, dst_x, src_y, src_x = skirt(tile_px, drop_px, side)
+        return dst_y, dst_x, (src_y + tile_px // 2) % tile_px, (src_x + tile_px // 3) % tile_px
+
+    # Render's per-tile paint reads the producer through the module attribute, on both backends.
+    iso_geometry.skirt_quad_indices = shifted
+    iso_geometry.index_extent.cache_clear()
+
+
 def _load_without(spec: dict):
     """(scenario with spec's excluded consts removed, how many units that removed)."""
     from descape.scenario_io import load_map_and_units
@@ -466,6 +308,8 @@ def _worker(spec: dict) -> None:
     patches = {n.name: n.patch for n in NEUTRALIZATIONS if n.patch is not None}
     for name in spec["patches"]:
         patches[name]()
+    if spec.get("shift_skirts"):
+        _shift_skirts()
     scenario, removed = _load_without(spec)
     if spec.get("repaint_tile"):
         _repaint_one_flat_tile(scenario)
@@ -671,7 +515,7 @@ def _compare(a_path: Path, b_path: Path, mask_path: Path | None) -> tuple[int, i
 
 
 def _write_frames(result_job: Job, a_path: Path, b_path: Path, diff: np.ndarray, out_dir: Path, per_config: int) -> list[str]:
-    """Crops the densest clusters of `diff` (already outside the contact-shadow mask) as a/b/amplified-diff PNGs."""
+    """Crops the densest clusters of `diff` (already outside any mask) as a/b/amplified-diff PNGs."""
     from PIL import Image
 
     a = np.load(a_path, mmap_mode="r")
@@ -799,6 +643,7 @@ def run(
                 "exclude": excluded_for(job),
                 "patches": patches if side == "b" else [],
                 "repaint_tile": side == "b" and inject == REPAINT_TILE,
+                "shift_skirts": side == "b" and inject == SHIFT_SKIRTS,
                 "out": str(out / f"{job.key}_{side}.npy"),
                 "meta_out": str(out / f"{job.key}_{side}.json"),
                 "mask_out": str(out / f"{job.key}_mask.npy") if side == "b" and job.style == "stepped" else None,

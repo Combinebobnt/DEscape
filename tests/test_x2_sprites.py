@@ -229,13 +229,13 @@ def test_mod_reach_counts_a_mods_x2_art_at_enhanced(monkeypatch):
     wide = SimpleNamespace(frame_count=1, frames=[])
     monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [("b_wide_x1", 10, 0)])
     monkeypatch.setattr(unit_sprites, "_mod_index", lambda name: (wide, Path("w"), "sld") if name == "b_wide_x2" else None)
-    # As _walked_reach() moves the hotspot: the piece offset reaches the left side whole.
-    monkeypatch.setattr(unit_sprites, "_walked_reach", lambda walked, fmt, dx, dy: (2001 + dx, 0, 0, 0))
+    # As _walked_reach() moves the anchor: a piece offset to the right shortens the left reach.
+    monkeypatch.setattr(unit_sprites, "_walked_reach", lambda walked, fmt, dx, dy: (2001 - dx, 0, 0, 0))
     monkeypatch.setattr(unit_sprites, "sld_frame_count", lambda name: 1)
     mod_graphics.set_enabled(True)
     assert unit_sprites.sprite_reach()[0] == unit_sprites.MAX_SPRITE_REACH_LEFT
     unit_sprites.set_hi_res(True)
-    assert unit_sprites.sprite_reach()[0] == 1011  # (2001 + 2 * 10) x2 px, halved and rounded up
+    assert unit_sprites.sprite_reach()[0] == 991  # (2001 - 2 * 10) x2 px, halved and rounded up
 
 
 # --- composites, walls and Flat ----------------------------------------------
@@ -490,6 +490,23 @@ def test_the_status_log_names_no_unit_art_without_an_install(monkeypatch):
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX)
     assert viewer._sync_hi_res() == ""
     assert unit_sprites.hi_res()
+
+
+@_GUI[0]
+@_GUI[1]
+@pytest.mark.parametrize("native", [True, False], ids=["native", "numpy"])
+@pytest.mark.parametrize(("quality", "smooth"), [(1, False), (2, False), (3, True), (4, True)])
+def test_default_and_above_shrink_smoothly(monkeypatch, quality, smooth, native):
+    """GH #254: box-filtered shrinking from Default up, the nearest gather at
+    Potato and below, set beside the x2 flag. Never on numpy (TASK-440's
+    load budget)."""
+    from descape import composite_backend, settings, viewer
+
+    monkeypatch.setattr(settings, "_graphics_quality", quality)
+    monkeypatch.setattr(composite_backend, "native", object() if native else None)
+    viewer._sync_hi_res()
+    assert unit_sprites.smooth_shrink() is (smooth and native)
+    assert unit_sprites.hi_res() is (quality == settings.GRAPHICS_QUALITY_MAX)
 
 
 # --- the real install --------------------------------------------------------

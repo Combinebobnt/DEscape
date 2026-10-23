@@ -1060,6 +1060,8 @@ class _ChunkCacheBase:
     POOL_BATCH = 64
     # Fewest summed slice tiles (level px / tile_px**2) a patch pools; TASK-031.67 step 0's 280,000 px at tile_px 16.
     POOL_MIN_PATCH_TILE_AREA = 1100
+    # The garrison hosts this cache's unit sources reflect (_record_flag_hosts(), GH #203).
+    _flag_hosts: frozenset[int] = frozenset()
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -1496,7 +1498,23 @@ class _ChunkCacheBase:
         caps may still splice. Ignored here and on Flat.
         """
         self._mutation_epoch += 1
+        self._record_flag_hosts()
         self._refresh_source_caches()
+
+    def _record_flag_hosts(self) -> None:
+        """Stamps the live garrison hosts as the ones this cache's unit sources
+        now reflect. Called at construction and by every unit-source refresh
+        (invalidate_units(), _refresh_unit_sources()), never by an elevation
+        patch, which a mutate-first tool (the Eraser) can run before its
+        flush: stamping there would hide a flip from that flush."""
+        self._flag_hosts = render.garrison_host_ids(self.scenario)
+
+    def flag_flips(self) -> frozenset[int]:
+        """The hosts whose garrison flag appeared or cleared since the last
+        unit-source refresh (GH #203): the live garrison_host_ids() against
+        what this cache's sources reflect. A pure read, for a scoped edit to
+        add the hosts its own splices do not name (viewer._flag_flip_splices())."""
+        return render.garrison_host_ids(self.scenario) ^ self._flag_hosts
 
     def _model_unit_gen(self):
         """scenario.unit_gen, which every UnitEditModel mutator bumps, or None
@@ -2380,6 +2398,7 @@ class _ChunkCacheBase:
         _refresh_source_caches() is a deliberate no-op once unit_draws
         exists."""
         self._mutation_epoch += 1
+        self._record_flag_hosts()
         self._refresh_source_caches()
 
     def set_unit_filter(self, unit_filter: UnitFilter) -> None:
@@ -2934,8 +2953,13 @@ class _LeveledChunkCache(_ChunkCacheBase):
         be wasted), first tries _update_units_by_tile_in_place(): units_by_tile
         does not depend on elevation, so a membership-only batch patches it in
         place and bumps the gen, leaving every level stale exactly as the
-        wholesale path does. A zero-length `units_in_place` phase marks it."""
+        wholesale path does. A zero-length `units_in_place` phase marks it.
+
+        A garrison flag flip on a host outside `changed` is the caller's to
+        add (viewer._flag_flip_splices()); every path here stamps the live
+        hosts as reflected (_record_flag_hosts())."""
         self._mutation_epoch += 1
+        self._record_flag_hosts()
         plan = self._unit_splice_plan(changed) if splice_levels else None
         if plan is None:
             if splice_levels and cap_levels and self._splice_visible(changed, cap_levels):
@@ -3373,6 +3397,7 @@ class IsoChunkCache(_LeveledChunkCache):
                 f"exact mip of the reference's -- {(lw, lh)} vs reference {(ref_w, ref_h)}"
             )
         self._init_terrain_ids()
+        self._record_flag_hosts()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -3580,6 +3605,7 @@ class FlatChunkCache(_ChunkCacheBase):
         # _refresh_source_caches() also sets self._row_uid/_row_player, one
         # entry per row of every level's draws (identical across levels).
         self._init_terrain_ids()
+        self._record_flag_hosts()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -3644,6 +3670,7 @@ class FlatChunkCache(_ChunkCacheBase):
         everything and rebuilds level 0's draws now and the rest lazily.
         splice_levels and cap_levels are Stepped/Sloped keywords, ignored here."""
         self._mutation_epoch += 1
+        self._record_flag_hosts()
         if self.can_splice(changed):
             self._splice_rows(changed)
             return
@@ -4135,6 +4162,7 @@ class SlopedChunkCache(_LeveledChunkCache):
                     f"level tile_px={lvl.tile_px}'s canvas {(lw, lh)} isn't an exact mip of {(rw, rh)}"
                 )
         self._init_terrain_ids()
+        self._record_flag_hosts()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 

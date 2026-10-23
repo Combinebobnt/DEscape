@@ -1024,6 +1024,347 @@ def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:
     return next(c.frames for c in spec.checks if c.id == check_id)
 
 
+# ------------------------------------------------------ sprite_shrink pack
+#
+# GH #254 (TASK-440): Graphics Quality Default and above shrinks sprites with a premultiplied box
+# filter instead of the nearest gather. Real install sprites only, on a flat grey ground; units
+# and the building are composited piece by piece through render._clipped_paint_rgba, as the map does.
+
+
+# (const, rotation): an archer, a spearman and a farmer with a hoe, and a market, each at a facing
+# where the nearest gather breaks the most thin parts (measured: ink components per figure). The
+# units get frames of their own, or the market's width would set their enlargement.
+_SHRINK_GROUPS = {"figures": ((4, 0.0), (93, 3.142), (259, 1.571)), "building": ((84, 0.0),)}
+_SHRINK_TEAM = 1
+# frame id -> (group, half_w): 0.67x and 0.33x (the 64 and 32 px/tile levels at Default), and 1x,
+# where neither filter changes a pixel, so neither symptom can occur.
+_SHRINK_FRAMES = {
+    "figures_1": ("figures", 32), "building_1": ("building", 32),
+    "figures_2": ("figures", 48), "building_2": ("building", 48),
+    "figures_3": ("figures", 16), "building_3": ("building", 16),
+}
+_SHRINK_SPECIFICITY = ("figures_2", "building_2")
+_SHRINK_SHRUNK = ("figures_1", "building_1", "figures_3", "building_3")
+_SHRINK_GROUND = 128
+_SHRINK_PAD = 8
+SHRINK_INJECTS = {"nearest": None, "straight-average": "edge-px"}
+SHRINK_COARSE_INJECT = "nearest"
+# The fringe measure (_shrink_fringe()): edge px whose own colour, in the clean render, is at
+# least SHRINK_LIGHT above the ground, rendered at least SHRINK_FRINGE_DELTA below it. A correct
+# blend of a light colour and the ground never lands below the ground, so clean's is 0 by
+# construction. Straight-average measured 0.73 and 0.89 on the building frames (234 and 73 light
+# edge px, 2026-10-22), 0.35 and 0.83 on the figures (17 and 6 px, too few to gate on), so a
+# frame with SHRINK_LIGHT_MIN_PX light edge px must reach SHRINK_STRAIGHT_FRINGE_MIN.
+SHRINK_LIGHT = 16
+SHRINK_FRINGE_DELTA = 8
+SHRINK_LIGHT_MIN_PX = 50
+SHRINK_STRAIGHT_FRINGE_MIN = 0.5
+SHRINK_STRAY_DELTA_MAX = 1
+
+
+def _straight_box(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
+    """The straight-average inject: _box_resize_rgba()'s taps without premultiplying, so a
+    transparent px's colour (black) is averaged into its opaque neighbours'."""
+    from descape import unit_sprites
+
+    src_h, src_w = rgba.shape[:2]
+    if width > src_w or height > src_h:
+        return unit_sprites._resize_rgba(rgba, width, height)
+    ys, wy = unit_sprites._area_taps(src_h, height)
+    xs, wx = unit_sprites._area_taps(src_w, width)
+    src = rgba.astype(np.float32)
+    rows = sum(wy[:, k, None, None] * src[ys[:, k]] for k in range(wy.shape[1]))
+    out = sum(wx[None, :, k, None] * rows[:, xs[:, k]] for k in range(wx.shape[1]))
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
+
+
+@contextmanager
+def _shrink_inject(name: str | None):
+    """Smooth shrinking on (the clean run and straight-average) or off (nearest), with the scaled
+    cache dropped on both sides so no run reads another's sprites."""
+    from descape import unit_sprites
+
+    was, real = unit_sprites.smooth_shrink(), unit_sprites._box_resize_rgba
+    unit_sprites.set_smooth_shrink(name != "nearest")
+    if name == "straight-average":
+        unit_sprites._box_resize_rgba = _straight_box
+    unit_sprites._scaled_cache.clear()
+    try:
+        yield
+    finally:
+        unit_sprites._box_resize_rgba = real
+        unit_sprites.set_smooth_shrink(was)
+        unit_sprites._scaled_cache.clear()
+
+
+def _shrink_lineup(frame_id: str) -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
+    """(frame, figures): the frame's group left to right, hotspots on one baseline, each piece
+    painted onto the grey ground; figures are (rgba, x0, y0), each figure's own pieces flattened
+    by source-over at its place in the frame, for the --check measurements."""
+    from descape import unit_sprites
+
+    group, half_w = _SHRINK_FRAMES[frame_id]
+    placed = []
+    for const, rotation in _SHRINK_GROUPS[group]:
+        pieces = unit_sprites.sprite_pieces_for(const, rotation, _SHRINK_TEAM, half_w)
+        if not pieces:
+            raise SystemExit(f"sprite_shrink: const {const} draws no sprite on this install")
+        boxes = [
+            (p.dx - p.draw.hotspot_x, p.dy - p.draw.hotspot_y, p.draw.rgba.shape[1], p.draw.rgba.shape[0]) for p in pieces
+        ]
+        left, top = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        right, bottom = max(b[0] + b[2] for b in boxes), max(b[1] + b[3] for b in boxes)
+        placed.append((pieces, boxes, left, top, right, bottom))
+    above = max(-p[3] for p in placed)
+    below = max(p[5] for p in placed)
+    width = sum(p[4] - p[2] for p in placed) + _SHRINK_PAD * (len(placed) + 1)
+    frame = np.full((above + below + 2 * _SHRINK_PAD, width, 3), _SHRINK_GROUND, dtype=np.uint8)
+    figures = []
+    x = _SHRINK_PAD
+    for pieces, boxes, left, top, right, bottom in placed:
+        ax, ay = x - left, _SHRINK_PAD + above  # the hotspot
+        flat = np.zeros((bottom - top, right - left, 4), dtype=np.uint8)
+        for piece, (bx, by, _w, _h) in zip(pieces, boxes, strict=True):
+            render._clipped_paint_rgba(frame, ay + by, ax + bx, piece.draw.rgba)
+            unit_sprites._source_over(flat, by - top, bx - left, piece.draw.rgba)
+        figures.append((flat, ax + left, ay + top))
+        x += right - left + _SHRINK_PAD
+    return frame, figures
+
+
+def _shrink_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    with _shrink_inject(inject):
+        return {fid: _shrink_lineup(fid)[0] for fid in _SHRINK_FRAMES}
+
+
+def _sprite_shrink_spec() -> rp.PackSpec:
+    """GH #254's box-filtered sprite shrink: thin parts and outlines at the two shrinking levels,
+    and the 1x frames where neither filter can change a pixel (specificity)."""
+    captions = {
+        "figures": "Three figures standing on a plain grey background, left to right: an archer, a spearman and a "
+        "farmer holding a hoe.",
+        "building": "A market building with stalls, a bell tower and a rope, on a plain grey background.",
+    }
+    frames = tuple(
+        rp.Frame(fid, f"{fid}.png", "raw", caption=captions[group]) for fid, (group, _hw) in _SHRINK_FRAMES.items()
+    )
+    small, large = ", ".join(_SHRINK_SHRUNK), " and ".join(_SHRINK_SPECIFICITY)
+    sizes = (
+        f"Frames {small} show three figures and a market building at two smaller sizes; frames {large} show the same "
+        "figures and building drawn larger, for comparison."
+    )
+    not_broken = (
+        "(1) a part that stays continuous but changes in thickness, colour or brightness along its length, faint, "
+        "greyish or see-through stretches included; (2) a part passing behind another part; (3) a gap that the larger "
+        "frames show too, such as between two separate stalls, crates or barrels"
+    )
+    checks = (
+        rp.Check(
+            id="thin_parts",
+            question=(
+                f"{sizes} First, in your own words, describe the thinnest straight parts in the smaller frames, such "
+                "as the bow and its string, the spear's shaft, the hoe's handle, and the market's rope, poles, "
+                "railings and beams, and how each one looks along its length.\n\n"
+                "Then the closed question. In the smaller frames, is any such thin straight part drawn broken: "
+                "interrupted by gaps of grey background so that it shows as a row of separate dashes or dots, or with "
+                "a stretch missing so that its pieces float apart, where the larger frames show one continuous piece? "
+                f"NOT broken: {not_broken}.\n\n"
+                "Answer BROKEN if at least one thin straight part is broken, WHOLE if every one runs unbroken."
+            ),
+            frames=(*_SHRINK_SHRUNK, *_SHRINK_SPECIFICITY),
+            answers=("BROKEN", "WHOLE", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="edge_tone",
+            question=(
+                f"{sizes} First, in your own words, describe the outer edges of the figures and the building in the "
+                "smaller frames, where they meet the grey background, and the colour of their thin parts (the spear "
+                "shaft, the hoe handle, the bow, the market's rope and poles), each compared with how the same edge "
+                "or part looks in the larger frames.\n\n"
+                "Then the closed question. In the smaller frames, is there a dark fringe that the larger frames do not "
+                "have: pixels along the edge of a light-coloured part, or along a light-coloured thin part, that are "
+                "darker than both that part's own colour in the larger frames and the grey background? NOT a dark "
+                "fringe: (1) a dark outline or dark colour that the same part also has in the larger frames; (2) an "
+                "edge or thin part that looks paler, greyer or fainter than in the larger frames, blending toward the "
+                "grey; (3) a part that is missing or broken in places.\n\n"
+                "Answer DARK-FRINGE if you see such a fringe, CLEAN if you do not."
+            ),
+            frames=(*_SHRINK_SHRUNK, *_SHRINK_SPECIFICITY),
+            answers=("DARK-FRINGE", "CLEAN", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="large_figures",
+            question=(
+                f"Frames {large} show three figures and a market building. Is any thin straight part in them, such as "
+                "the bow, the spear's shaft, the hoe's handle, or the market's rope, poles and railings, drawn broken "
+                "into a row of separate dashes or dots by gaps of grey background, where the object itself would be "
+                "one continuous piece? Not counted: a part that changes in thickness or colour along its length, a "
+                "part passing behind another part, and gaps between separate objects such as stalls, crates or "
+                "barrels.\n\n"
+                "Answer PRESENT if you see such a broken part, NONE if you do not."
+            ),
+            frames=_SHRINK_SPECIFICITY,
+            answers=("PRESENT", "NONE", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="sprite_shrink",
+        title="Figure detail review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders from a map editor for an isometric strategy game: game figures drawn over a "
+            "flat grey ground. Each frame is enlarged by a whole-number factor with no smoothing, so one original "
+            "pixel appears as a square block of pixels. Judge only what you can actually see."
+        ),
+        injects=tuple(SHRINK_INJECTS),
+    )
+
+
+def _shrink_prerequisites() -> str | None:
+    if asset_source.get_install_path() is None:
+        return "needs a configured AoE2:DE install for the unit and building art"
+    return None
+
+
+def _shrink_luma(frame: np.ndarray) -> np.ndarray:
+    return frame.astype(np.float64) @ np.array([0.299, 0.587, 0.114])
+
+
+def _shrink_edges() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Per shrunk frame, two masks from the clean render: its edge px (figure px with 0 < alpha
+    < 255, the only px premultiplying changes) and the light ones among them, whose own colour
+    is at least SHRINK_LIGHT above the ground."""
+    masks = {}
+    with _shrink_inject(None):
+        for fid in _SHRINK_SHRUNK:
+            frame, figures = _shrink_lineup(fid)
+            edge = np.zeros(frame.shape[:2], dtype=bool)
+            light = np.zeros(frame.shape[:2], dtype=bool)
+            for rgba, x0, y0 in figures:
+                at = (slice(y0, y0 + rgba.shape[0]), slice(x0, x0 + rgba.shape[1]))
+                partial = (rgba[..., 3] > 0) & (rgba[..., 3] < 255)
+                edge[at] |= partial
+                light[at] |= partial & (_shrink_luma(rgba[..., :3]) >= _SHRINK_GROUND + SHRINK_LIGHT)
+            masks[fid] = (edge, light)
+    return masks
+
+
+def _shrink_components(inject: str | None) -> dict[str, int]:
+    """Per shrunk frame, ink (alpha > 0) components summed over its figures."""
+    with _shrink_inject(inject):
+        return {
+            fid: sum(rp.components(rgba[..., 3] > 0) for rgba, _x0, _y0 in _shrink_lineup(fid)[1])
+            for fid in _SHRINK_SHRUNK
+        }
+
+
+def _shrink_fringe(frame: np.ndarray, light: np.ndarray) -> float:
+    """The fraction of the light edge px rendered at least SHRINK_FRINGE_DELTA below the ground."""
+    if not light.any():
+        return 0.0
+    return float(np.mean(_shrink_luma(frame)[light] <= _SHRINK_GROUND - SHRINK_FRINGE_DELTA))
+
+
+def _check_sprite_shrink() -> None:
+    """--check for sprite_shrink: spec coupling, frame band, both 1x frames untouched by every
+    inject, each inject reaching every shrunk frame, straight-average moving nothing off the edge
+    px beyond float rounding and staying under nearest's largest delta; then the symptom each
+    check rests on, measured per shrunk frame. thin_parts: nearest breaks the ink into more
+    components than the clean render, straight-average keeps the clean count (its alpha is the
+    same). edge_tone: the clean render puts no light edge px below the ground (_shrink_fringe(),
+    0 by construction), nearest none either, straight-average at least SHRINK_STRAIGHT_FRINGE_MIN."""
+    reason = _shrink_prerequisites()
+    if reason:
+        raise SystemExit(f"sprite_shrink: {reason}")
+    failures: list[str] = []
+    spec = _sprite_shrink_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+    clean = _shrink_frame_images(None)
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+
+    edges = _shrink_edges()
+    images = {None: clean}
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name, bound in SHRINK_INJECTS.items():
+        injected = images[name] = _shrink_frame_images(name)
+        touched = {}
+        for fid in _SHRINK_FRAMES:
+            mask = rp.changed_pixels(clean[fid], injected[fid])
+            if mask.any():
+                touched[fid] = (int(np.count_nonzero(mask)), rp.largest_component_px(mask))
+            if bound is not None and fid in edges:
+                # Off the edge px, only float rounding may move a byte.
+                delta = np.abs(clean[fid].astype(int) - injected[fid].astype(int))[~edges[fid][0]]
+                if delta.size and delta.max() > SHRINK_STRAY_DELTA_MAX:
+                    failures.append(f"inject {name} on {fid}: moves a px off the edge px by {delta.max()}")
+        if stray := [fid for fid in _SHRINK_SPECIFICITY if fid in touched]:
+            failures.append(f"inject {name} changed the 1x frames {', '.join(stray)}, where no filter should")
+        if missed := [fid for fid in _SHRINK_SHRUNK if fid not in touched]:
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+    coarse = reach[SHRINK_COARSE_INJECT]
+    for name, bound in SHRINK_INJECTS.items():
+        if bound is None:
+            continue
+        for fid, (_px, comp) in sorted(reach[name].items()):
+            if fid in coarse and comp >= coarse[fid][1]:
+                failures.append(
+                    f"inject {name} on {fid}: largest delta {comp} px is not under the coarse inject's "
+                    f"{coarse[fid][1]} px there, so the two no longer differ in size"
+                )
+
+    components = {name: _shrink_components(name) for name in (None, *SHRINK_INJECTS)}
+    gated: set[int] = set()
+    for fid in _SHRINK_SHRUNK:
+        c_count, n_count, s_count = (components[name][fid] for name in (None, "nearest", "straight-average"))
+        light = edges[fid][1]
+        c_fringe, n_fringe, s_fringe = (
+            _shrink_fringe(images[name][fid], light) for name in (None, "nearest", "straight-average")
+        )
+        print(
+            f"{fid}: ink components clean {c_count} / nearest {n_count} / straight-average {s_count}; light edge px "
+            f"{int(light.sum())}, below the ground: clean {c_fringe:.2f} / nearest {n_fringe:.2f} / "
+            f"straight-average {s_fringe:.2f}"
+        )
+        if n_count <= c_count:
+            failures.append(f"{fid}: nearest leaves {n_count} ink components, not more than the clean {c_count}")
+        if s_count != c_count:
+            failures.append(f"{fid}: straight-average moved the ink components {c_count} -> {s_count}; its alpha should not")
+        if c_fringe:
+            failures.append(f"{fid}: the clean render puts {c_fringe:.2f} of the light edge px below the ground")
+        if light.sum() >= SHRINK_LIGHT_MIN_PX:
+            gated.add(_SHRINK_FRAMES[fid][1])
+            if s_fringe < SHRINK_STRAIGHT_FRINGE_MIN:
+                failures.append(
+                    f"{fid}: straight-average puts {s_fringe:.2f} of the light edge px below the ground, "
+                    f"under {SHRINK_STRAIGHT_FRINGE_MIN}"
+                )
+    if missing := {_SHRINK_FRAMES[fid][1] for fid in _SHRINK_SHRUNK} - gated:
+        failures.append(f"half_w {sorted(missing)}: no frame has {SHRINK_LIGHT_MIN_PX} light edge px to gate edge_tone on")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: sprite_shrink frames couple to its checks and land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px; no inject "
+        f"touches the 1x frames; nearest breaks the ink into more components on every shrunk frame; straight-average "
+        f"keeps the components, puts light edge px below the ground where the clean render puts none, moves nothing "
+        f"else, and stays under nearest's largest delta"
+    )
+
+
 # --------------------------------------------------------- sloped_mip pack
 
 
@@ -1806,8 +2147,10 @@ def _sloped_fine_spec() -> rp.PackSpec:
                 "These two frames show the same perfectly level ground with buildings, farm fields and other "
                 "objects on it. Is anything wrong with how either is drawn: any object or field detached from "
                 "the ground under it, or any straight horizontal or vertical line where the ground on one side "
-                "is offset, cut off or does not continue on the other? The border between two kinds of ground, "
-                "which follows the diagonal cell grid, does not count.\n\n"
+                "is offset, cut off or does not continue on the other? NOT such a flaw: (1) the border between "
+                "two kinds of ground, which follows the diagonal cell grid; (2) the thin coloured lines drawn on "
+                "purpose along the edges of farm fields; (3) the straight sides of walls, towers, buildings and "
+                "other objects standing on the ground, which are part of the object, not the ground.\n\n"
                 "Answer FLAWS-PRESENT if you see any of these, NO-FLAWS if neither frame shows any."
             ),
             frames=_FINE_SPECIFICITY,
@@ -2581,12 +2924,334 @@ def _check_ground_borders() -> None:
     )
 
 
+# ------------------------------------------------------------ garrison_flags
+#
+# TASK-264 (GH #203): a garrisoned host draws the game's garrison flag. Every
+# frame is one pair of twins from tools/gen_garrison_flags_scenario.py's scene,
+# the same build() that writes build/garrison_flags/ for the in-game check:
+# the garrisoned twin on the left, its empty twin on the right, on flat grass
+# or water, Stepped, Show Garrisoned off (the app's default), through a fresh
+# IsoChunkCache at the scene's own 64 px tiles.
+
+# frame id -> (player, host const). P1 Franks, P2 Japanese, P3 Persians, Castle Age.
+_GARRISON_FRAMES = {
+    "pair_1": (1, 109), "pair_2": (2, 109), "pair_3": (3, 109), "pair_4": (1, 82), "pair_5": (2, 82),
+    "pair_6": (3, 79), "pair_7": (1, 45), "pair_8": (2, 655),
+}
+_GARRISON_SPECIFICITY = "pair_8"  # Mosque: no garrison graphic, so no flag can appear
+_GARRISON_LOCALIZED_HOST = 79  # the Watch Tower, in pair_6 only
+_GARRISON_PAD_PX = 12
+GARRISON_TILE_PX = 64
+_GARRISON_SCENE: dict[str, object] = {}
+
+
+def _garrison_scene() -> dict[str, object]:
+    """{loaded, placed}: the scenario tool's own build(), once per process."""
+    if not _GARRISON_SCENE:
+        import gen_garrison_flags_scenario as scene
+
+        loaded, _options, _units, placed = scene.build()
+        _GARRISON_SCENE.update(loaded=loaded, placed=placed)
+    return _GARRISON_SCENE
+
+
+def _garrison_pair(frame_id: str) -> list[tuple[object, object | None]]:
+    """[(host, occupant or None)] of one frame, the garrisoned twin first."""
+    player, const = _GARRISON_FRAMES[frame_id]
+    placed = _garrison_scene()["placed"]
+    return [(host, occ) for twin, host, occ in placed if (twin.player, twin.const) == (player, const)]
+
+
+@contextmanager
+def _garrison_kept(frame_id: str | None):
+    """The scene with only `frame_id`'s pair and its occupants left in it (None keeps all)."""
+    loaded = _garrison_scene()["loaded"]
+    lists = loaded.unit_manager.units
+    saved = [list(units) for units in lists]
+    if frame_id is not None:
+        keep = {id(u) for pair in _garrison_pair(frame_id) for u in pair if u is not None}
+        for units in lists:
+            units[:] = [u for u in units if id(u) in keep]
+    loaded.unit_gen += 1
+    try:
+        yield loaded
+    finally:
+        for units, before in zip(lists, saved, strict=True):
+            units[:] = before
+        loaded.unit_gen += 1
+
+
+@contextmanager
+def _garrison_flags_patched(wrap):
+    """unit_sprites.garrison_flag_pieces_for() wrapped for the run (None: as shipped)."""
+    from descape import unit_sprites
+
+    real = unit_sprites.garrison_flag_pieces_for
+    if wrap is not None:
+        unit_sprites.garrison_flag_pieces_for = wrap(real)
+    try:
+        yield
+    finally:
+        unit_sprites.garrison_flag_pieces_for = real
+
+
+def _zero_offsets(real):
+    """COARSE. Every flag at its host's anchor, (0, 0), as if the .dat offsets were dropped."""
+    from dataclasses import replace
+
+    def pieces(unit_const, team_index, half_w, art=None):
+        return [replace(p, dx=0, dy=0) for p in real(unit_const, team_index, half_w, art)]
+    return pieces
+
+
+def _one_untinted(real):
+    """LOCALIZED. The Watch Tower's flag alone drawn in no team colour (GAIA's untinted art)."""
+    def pieces(unit_const, team_index, half_w, art=None):
+        return real(unit_const, 0 if unit_const == _GARRISON_LOCALIZED_HOST else team_index, half_w, art)
+    return pieces
+
+
+def _no_flags(_real):
+    """Not a reviewer run: --check's flag-free reference, to measure where flags paint."""
+    return lambda *_args, **_kwargs: []
+
+
+GARRISON_INJECTS = {"zero-offsets": _zero_offsets, "one-untinted": _one_untinted}
+GARRISON_COARSE_INJECT = "zero-offsets"
+# Measured 2026-10-22: one-untinted changes 171 px of pair_6's 230x189 (0.39%), one component;
+# zero-offsets changes 728 px there, 364 in its largest.
+GARRISON_LOCALIZED_BOUND = rp.LocalizedBound(max_changed_fraction=0.008, max_component_px=250)
+# Summed |dRGB| per changed px one-untinted must reach, so its flag reads as off-colour.
+GARRISON_MIN_COLOUR_SHIFT = 60
+
+
+def _garrison_cache(loaded):
+    """A fresh Stepped cache over the scene, Show Garrisoned off as the app ships."""
+    from descape.render_cache import IsoChunkCache
+    from descape.unit_filter import UnitFilter
+
+    elevations, proj = render.elevations_and_proj(loaded)
+    return IsoChunkCache(loaded, elevations, proj, GARRISON_TILE_PX, unit_filter=UnitFilter(show_garrisoned=False), sprites=True)
+
+
+def _garrison_ink_box(cache, units) -> tuple[int, int, int, int]:
+    """Level-0 bbox of every sprite piece `units` paint, flags included."""
+    loaded = cache.scenario
+    boxes = []
+    for unit in units:
+        player = next(p for p, us in enumerate(loaded.unit_manager.units) if any(u is unit for u in us))
+        for draw, px, py in render.unit_sprite_draws_at(loaded, cache.proj, cache.elevations, None, player, unit):
+            h, w = draw.rgba.shape[:2]
+            boxes.append((px - draw.hotspot_x, py - draw.hotspot_y, px - draw.hotspot_x + w, py - draw.hotspot_y + h))
+    return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
+
+
+def _garrison_boxes() -> dict[str, tuple[int, int, int, int]]:
+    """Each frame's crop: its pair's clean ink plus a pad, measured once."""
+    if "boxes" not in _GARRISON_SCENE:
+        with _garrison_kept(None) as loaded:
+            cache = _garrison_cache(loaded)
+            boxes = {}
+            for frame_id in _GARRISON_FRAMES:
+                x0, y0, x1, y1 = _garrison_ink_box(cache, [host for host, _occ in _garrison_pair(frame_id)])
+                pad = _GARRISON_PAD_PX
+                boxes[frame_id] = (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+        _GARRISON_SCENE["boxes"] = boxes
+    return _GARRISON_SCENE["boxes"]
+
+
+def _garrison_frame_images(inject: str | None, wrap=None, frame_id: str | None = None) -> dict[str, np.ndarray]:
+    """Every garrison_flags frame at 1:1 under `inject` (or a raw `wrap`); with
+    `frame_id`, that frame alone, rendered from a scene holding only its pair."""
+    from descape import unit_sprites
+
+    boxes = _garrison_boxes()
+    wrap = GARRISON_INJECTS[inject] if inject else wrap
+    with _garrison_flags_patched(wrap), _garrison_kept(frame_id) as loaded:
+        unit_sprites._scaled_cache.clear()
+        cache = _garrison_cache(loaded)
+        frames = [frame_id] if frame_id else list(_GARRISON_FRAMES)
+        return {fid: cache.render_rect(*boxes[fid], mip=0).copy() for fid in frames}
+
+
+def _garrison_foot_fractions(frame_id: str, wrap=None) -> list[float]:
+    """Per flag on the frame's garrisoned twin, where its pole's foot sits down
+    the host's own body ink: 0 its top row, 1 its bottom row. The place checks'
+    UPPER / LOWER is this against 0.5; the lowest foot answers for a host with two."""
+    from descape import unit_sprites
+
+    loaded = _garrison_scene()["loaded"]
+    (host, _occupant), _empty = _garrison_pair(frame_id)
+    player = next(p for p, us in enumerate(loaded.unit_manager.units) if any(u is host for u in us))
+    half_w = GARRISON_TILE_PX // 2
+    art = render.player_art_for(loaded, player)
+    team = loaded.team_indices[player]
+    body = unit_sprites.sprite_pieces_for(host.unit_const, render.stored_rotation(player, host), team, half_w, art=art)
+    tops, bottoms = [], []
+    for p in body:
+        ys = np.nonzero((p.draw.rgba[..., 3] > 0).any(axis=1))[0]
+        tops.append(p.dy - p.draw.hotspot_y + int(ys[0]))
+        bottoms.append(p.dy - p.draw.hotspot_y + int(ys[-1]) + 1)
+    top, bottom = min(tops), max(bottoms)
+    with _garrison_flags_patched(wrap):
+        flags = unit_sprites.garrison_flag_pieces_for(host.unit_const, team, half_w, art)
+    return [(f.dy - top) / (bottom - top) for f in flags]
+
+
+def _garrison_flags_spec() -> rp.PackSpec:
+    """TASK-264's garrison flags (GH #203): eight pairs of a building and its
+    twin, the left one holding a unit. Seven hosts draw a flag; the Mosque
+    pair can draw none. zero-offsets is the place checks' matching inject,
+    one-untinted (the Watch Tower's flag in no team colour) the tint check's."""
+    frames = tuple(
+        rp.Frame(fid, f"{fid}.png", "raw", caption="Two copies of one building, on open ground or water.")
+        for fid in _GARRISON_FRAMES
+    )
+
+    def place(n: int) -> rp.Check:
+        return rp.Check(
+            id=f"place_{n}",
+            question=(
+                f"Frame pair_{n} shows two copies of the same building, a left one and a right one. First, in your "
+                "own words, describe every difference you can see between the two copies.\n\n"
+                "Then the closed question. If one copy carries a small pennant on a thin pole that the other copy "
+                "lacks, look at where that pole's foot (its lowest point) touches the building. Measure it against "
+                "that building's own height, from the highest to the lowest pixel of the building itself, not "
+                "counting the pennant: is the foot in the upper half of that height (UPPER) or the lower half "
+                "(LOWER)? If the copy carries two such pennants, answer for the lower foot. Answer NONE if neither "
+                "copy carries a pennant the other lacks."
+            ),
+            frames=(f"pair_{n}",),
+            answers=("UPPER", "LOWER", "NONE", "CANNOT-TELL"),
+        )
+
+    tint = rp.Check(
+        id="tint",
+        question=(
+            "Look at every frame. In each, the buildings carry patches of one team colour (blue, red or green). "
+            "First, for each frame where one copy carries a small pennant that the other lacks, describe the "
+            "pennant's colours.\n\n"
+            "Then the closed question. Is every such pennant's coloured cloth in the same team colour as the "
+            "patches on its own building (ALL-SAME), or is at least one pennant clearly not in its building's team "
+            "colour, for example plain white, grey or another team's colour (SOME-DIFFERENT)? Answer NONE if no "
+            "frame shows such a pennant."
+        ),
+        frames=tuple(_GARRISON_FRAMES),
+        answers=("ALL-SAME", "SOME-DIFFERENT", "NONE", "CANNOT-TELL"),
+    )
+    return rp.PackSpec(
+        id="garrison_flags",
+        title="Building pairs review",
+        frames=frames,
+        checks=(*(place(n) for n in range(1, len(_GARRISON_FRAMES) + 1)), tint),
+        preamble=(
+            "These are offscreen renders from an isometric map editor for a strategy game. Each frame is a crop, "
+            "enlarged by a whole-number factor with no smoothing, of two copies of one building standing side by "
+            "side. Judge only what you can actually see."
+        ),
+        injects=tuple(GARRISON_INJECTS),
+    )
+
+
+def _garrison_prerequisites() -> str | None:
+    """Why the garrison_flags pack cannot render here, or None."""
+    if asset_source.get_install_path() is None:
+        return "no AoE2:DE install visible (set AOE2DE_INSTALL_PATH)"
+    if not (ROOT / "examples" / "blank_map.aoe2scenario").is_file():
+        return "examples/blank_map.aoe2scenario is missing"
+    return None
+
+
+def _check_garrison_flags() -> None:
+    """--check for garrison_flags: spec coupling and frame band; each crop holds
+    its own pair and nothing else; flags paint on every frame but the
+    specificity one; every clean foot is UPPER and every zero-offsets foot
+    LOWER (the place checks' discriminator, measured); each inject's reach,
+    with one-untinted inside its bound, on pair_6 alone, under the coarse
+    inject there, and a visible colour shift."""
+    if reason := _garrison_prerequisites():
+        raise SystemExit(f"garrison_flags: {reason}")
+    failures: list[str] = []
+    spec = PACKS["garrison_flags"]()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+
+    clean = _garrison_frame_images(None)
+    bare = _garrison_frame_images(None, wrap=_no_flags)
+    for frame_id, img in clean.items():
+        try:
+            scaled, _factor = rp.frame_to_band(img)
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame_id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+        alone = _garrison_frame_images(None, frame_id=frame_id)[frame_id]
+        if not np.array_equal(img, alone):
+            failures.append(f"{frame_id}: {int(np.count_nonzero(rp.changed_pixels(img, alone)))} px come from another pair")
+        flag_px = int(np.count_nonzero(rp.changed_pixels(img, bare[frame_id])))
+        if (flag_px > 0) == (frame_id == _GARRISON_SPECIFICITY):
+            failures.append(f"{frame_id}: flags paint {flag_px} px")
+        print(f"flag ink: {frame_id} {flag_px}px")
+
+    for frame_id in _GARRISON_FRAMES:
+        if frame_id == _GARRISON_SPECIFICITY:
+            continue
+        for label, wrap, upper in (("clean", None, True), (GARRISON_COARSE_INJECT, _zero_offsets, False)):
+            fractions = _garrison_foot_fractions(frame_id, wrap)
+            lowest = max(fractions)
+            print(f"feet: {frame_id} {label} {', '.join(f'{f:.2f}' for f in fractions)}")
+            if (lowest < 0.5) != upper:
+                failures.append(f"{frame_id} {label}: lowest foot at {lowest:.2f}, not {'UPPER' if upper else 'LOWER'}")
+
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name in GARRISON_INJECTS:
+        injected = _garrison_frame_images(name)
+        touched: dict[str, tuple[int, int]] = {}
+        for frame_id in _GARRISON_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            if np.any(mask):
+                touched[frame_id] = (int(np.count_nonzero(mask)), rp.largest_component_px(mask))
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+        if _GARRISON_SPECIFICITY in touched:
+            failures.append(f"inject {name} reaches the specificity frame {_GARRISON_SPECIFICITY}")
+    flagged = set(_GARRISON_FRAMES) - {_GARRISON_SPECIFICITY}
+    if set(reach[GARRISON_COARSE_INJECT]) != flagged:
+        failures.append(f"zero-offsets touches {sorted(reach[GARRISON_COARSE_INJECT])}, not every flagged frame")
+    if set(reach["one-untinted"]) != {"pair_6"}:
+        failures.append(f"one-untinted touches {sorted(reach['one-untinted'])}, not pair_6 alone")
+    else:
+        injected = _garrison_frame_images("one-untinted")["pair_6"]
+        mask = rp.changed_pixels(clean["pair_6"], injected)
+        failures += GARRISON_LOCALIZED_BOUND.failures(mask, "inject one-untinted on pair_6")
+        if reach["one-untinted"]["pair_6"][1] >= reach[GARRISON_COARSE_INJECT]["pair_6"][1]:
+            failures.append("one-untinted's largest delta on pair_6 is not under zero-offsets' there")
+        shift = float(np.abs(clean["pair_6"][mask].astype(int) - injected[mask].astype(int)).sum(axis=1).mean())
+        print(f"one-untinted colour shift: mean |dRGB| {shift:.0f} over {int(np.count_nonzero(mask))} px")
+        if shift < GARRISON_MIN_COLOUR_SHIFT:
+            failures.append(f"one-untinted shifts the tower flag's colour by only {shift:.0f}, under {GARRISON_MIN_COLOUR_SHIFT}")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: garrison_flags frames couple to its checks and land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px, each "
+        f"crop holds only its pair, flags paint on every frame but {_GARRISON_SPECIFICITY}, every clean foot is UPPER "
+        f"and every zero-offsets foot LOWER, and both injects reach only their own frames"
+    )
+
+
 PACKS = {
+    "sprite_shrink": _sprite_shrink_spec,
     "shadow_band": _shadow_band_spec,
     "ground_texture": _ground_texture_spec,
     "sloped_mip": _sloped_mip_spec,
     "sloped_fine": _sloped_fine_spec,
     "ground_borders": _ground_borders_spec,
+    "garrison_flags": _garrison_flags_spec,
 }
 
 
@@ -2687,12 +3352,16 @@ def _run_token(pack_id: str, inject: str | None, replica: int = 0) -> str:
 
 def _pack_injects(pack_id: str) -> dict:
     return {
+        "sprite_shrink": SHRINK_INJECTS,
         "ground_texture": GROUND_INJECTS, "sloped_mip": SLOPED_INJECTS, "sloped_fine": FINE_INJECTS,
         "ground_borders": BORDER_INJECTS,
+        "garrison_flags": GARRISON_INJECTS,
     }.get(pack_id, INJECTS)
 
 
 def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
+    if pack_id == "sprite_shrink":
+        return _shrink_frame_images(inject)
     if pack_id == "ground_texture":
         return _ground_frame_images(inject)
     if pack_id == "sloped_mip":
@@ -2701,10 +3370,14 @@ def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
         return _fine_frame_images(inject)
     if pack_id == "ground_borders":
         return _border_frame_images(inject)
+    if pack_id == "garrison_flags":
+        return _garrison_frame_images(inject)
     return _frame_images(inject)
 
 
 def _frame_tile_px(pack_id: str, frame_id: str) -> int:
+    if pack_id == "sprite_shrink":
+        return 2 * _SHRINK_FRAMES[frame_id]
     if pack_id == "ground_texture":
         return _GROUND_FRAMES[frame_id][1]
     if pack_id in ("sloped_mip", "sloped_fine"):
@@ -2712,6 +3385,8 @@ def _frame_tile_px(pack_id: str, frame_id: str) -> int:
         return _level_px(64, (_SLOPED_FRAMES if pack_id == "sloped_mip" else _FINE_FRAMES)[frame_id][1])
     if pack_id == "ground_borders":
         return BORDER_TILE_PX
+    if pack_id == "garrison_flags":
+        return GARRISON_TILE_PX
     return TILE_PX
 
 
@@ -2721,12 +3396,16 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
     injects = _pack_injects(pack_id)
     if inject is not None and inject not in injects:
         raise SystemExit(f"unknown inject {inject!r} for {pack_id}; choose from {', '.join(injects)}")
+    if pack_id == "sprite_shrink" and (reason := _shrink_prerequisites()):
+        raise SystemExit(f"sprite_shrink: {reason}")
     if pack_id == "ground_texture" and (reason := _ground_prerequisites()):
         raise SystemExit(f"ground_texture: {reason}")
     if pack_id in ("sloped_mip", "sloped_fine") and (reason := _sloped_prerequisites()):
         raise SystemExit(f"{pack_id}: {reason}")
     if pack_id == "ground_borders" and (reason := _border_prerequisites()):
         raise SystemExit(f"ground_borders: {reason}")
+    if pack_id == "garrison_flags" and (reason := _garrison_prerequisites()):
+        raise SystemExit(f"garrison_flags: {reason}")
 
     pack_dir = out_dir / pack_id / _run_token(pack_id, inject, replica)
     pack_dir.mkdir(parents=True, exist_ok=True)
@@ -2783,6 +3462,9 @@ def _component_count(scene: str, inject: str | None, pct: int = 100) -> int:
 
 def check(pack_id: str = "shadow_band") -> None:
     """--check for one pack; see each pack's own check for what it asserts."""
+    if pack_id == "sprite_shrink":
+        _check_sprite_shrink()
+        return
     if pack_id == "ground_texture":
         _check_ground_texture()
     elif pack_id == "sloped_mip":
@@ -2791,6 +3473,8 @@ def check(pack_id: str = "shadow_band") -> None:
         _check_sloped_fine()
     elif pack_id == "ground_borders":
         _check_ground_borders()
+    elif pack_id == "garrison_flags":
+        _check_garrison_flags()
     else:
         _check_shadow_band()
 
@@ -2894,7 +3578,10 @@ def main() -> None:
     parser.add_argument("--pack", default="shadow_band", choices=sorted(PACKS), help="Which pack to render")
     parser.add_argument(
         "--inject",
-        choices=sorted({*INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *FINE_INJECTS, *BORDER_INJECTS}),
+        choices=sorted({
+            *INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *FINE_INJECTS, *BORDER_INJECTS, *SHRINK_INJECTS,
+            *GARRISON_INJECTS,
+        }),
         help="Render the pack with one known defect applied",
     )
     parser.add_argument(

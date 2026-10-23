@@ -70,6 +70,28 @@ def test_ground_borders_pack_check_passes() -> None:
     gen.check("ground_borders")
 
 
+@pytest.mark.corpus
+def test_sprite_shrink_pack_check_passes() -> None:
+    """Needs the real install (AOE2DE_INSTALL_PATH under pytest): real unit and
+    building art shrunk by the box filter and by both injects (GH #254)."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._shrink_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("sprite_shrink")
+
+
+@pytest.mark.corpus
+def test_garrison_flags_pack_check_passes() -> None:
+    """Needs examples/blank_map.aoe2scenario and the real install's building
+    and flag art (TASK-264, GH #203)."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._garrison_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("garrison_flags")
+
+
 # ------------------------------------------------------------ spec coupling
 
 

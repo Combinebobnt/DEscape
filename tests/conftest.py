@@ -673,10 +673,11 @@ def _isolated_settings(tmp_path, monkeypatch):
     from descape import mod_graphics
 
     mod_graphics.reset()
-    # So is x2 art (GH #241): a window at Enhanced turns it on.
+    # So is x2 art (GH #241): a window at Enhanced turns it on. And box-filtered shrinking (GH #254), at Default.
     from descape import unit_sprites
 
     unit_sprites.set_hi_res(False)
+    unit_sprites.set_smooth_shrink(False)
     # A window turns it on, and with AOE2DE_INSTALL_PATH set the profile autodetects to this
     # machine's own mods; only a test that names a profile in AOE2DE_PROFILE_PATH gets any.
     real_roots = mod_graphics._candidate_roots

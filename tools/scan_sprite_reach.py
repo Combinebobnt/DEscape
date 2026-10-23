@@ -91,7 +91,8 @@ def frame_reach(frame, dx: int = 0, dy: int = 0) -> tuple[int, int, int, int] | 
     main = next((layer for layer in frame.layers if layer.kind == LayerKind.MAIN), None)
     if main is None:
         return None
-    hx, hy = frame.hotspot_x + dx, frame.hotspot_y + dy
+    # A piece paints at anchor + (dx, dy), so the anchor sits at hotspot - (dx, dy) in its frame.
+    hx, hy = frame.hotspot_x - dx, frame.hotspot_y - dy
     return (
         hx - main.x1,
         hy - main.y1,
@@ -163,7 +164,7 @@ def referenced_entries() -> list[tuple[str, int, int]]:
     """scan()'s input: every (file_name, dx, dy) a unit can draw, from
     unit_graphic_map.json and, since GH #48, every per-civ building entry in
     building_art_map.json (age targets are ordinary consts, already in the
-    first table)."""
+    first table), garrison flags (GH #203) included."""
     return unit_sprites.referenced_entries()
 
 

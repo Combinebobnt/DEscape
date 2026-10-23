@@ -9,6 +9,7 @@ on:
       - descape/composite_backend.py
       - descape/render.py
       - descape/render_cache.py
+      - descape/unit_sprites.py
       - descape/sld_decoder.py
       - tools/build_native.py
       - tools/ci_bootstrap_native.py
@@ -66,4 +67,4 @@ jobs:
       - name: Native kernel oracle
         env:
           DESCAPE_REQUIRE_NATIVE: '1'
-        run: python -m pytest tests/test_native_composite.py tests/test_sld_native.py tests/test_terrain_blend_render.py
+        run: python -m pytest tests/test_native_composite.py tests/test_sld_native.py tests/test_terrain_blend_render.py tests/test_unit_sprites.py

@@ -13,7 +13,10 @@ game's unit and graphic tables, not asset content.
 Everything below falls back to None rather than raising. A caller that gets
 None draws today's coloured mark, so an absent install, an absent file, an
 unreadable file and an undecodable frame are all exactly as safe as "no install
-configured" already is.
+configured" already is. An active mod's frame that fails (a frame count that
+maps to neither rule, a decode that raises) draws the install's instead, and
+so does a blank one on a single-graphic unit; a blank composite piece stays a
+gap and the other pieces draw.
 
 ## How a unit becomes a frame
 
@@ -59,6 +62,7 @@ import numpy as np
 
 from descape import (
     asset_source,
+    composite_backend,
     debug_log,
     editor_markers,
     game_dataset,
@@ -98,14 +102,13 @@ NATIVE_TILE_W = 96
 # says which graphic grew. UP dominates by a wide margin -- wonders and
 # cathedrals out-reach every horizontal case by 50%.
 #
-# DOWN grew from 200 to 316 with the class-39 gate composite (2026-09-02):
-# a bare directional city gate's own
-# flag POSITION is its corner-pillar annex's misplacement, but the flag
-# GRAPHIC's own delta offset (dy=-240, roughly double the west-stone gate
-# family's -120) is a property of that piece alone -- composited pieces can
-# out-reach every plain single-graphic unit measured before them, which is
-# exactly why scan_sprite_reach.py scans pieces at their own offset rather
-# than the parent's.
+# DOWN is 316 from the class-39 gate composite (2026-09-02), measured when the
+# scan added a piece's offset to its hotspot, which mirrors the piece through
+# its anchor: the city gate flag (dy=-312) stands ABOVE its anchor. With the
+# sign fixed (2026-10-22, TASK-264) the worst DOWN is 200,
+# b_scen_colosseum_x1. 316 is kept as margin: lowering it would shrink every
+# sprite edit's dirty bbox, a change of its own. Pieces still out-reach plain units (UP), which
+# is why scan_sprite_reach.py scans each piece at its own offset.
 #
 # UP grew from 650 to 700 with per-civ building art (GH #48): the scan now
 # also walks building_art_map.json, and the Burgundian Wonder out-reaches the
@@ -113,7 +116,7 @@ NATIVE_TILE_W = 96
 MAX_SPRITE_REACH_LEFT = 404   # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_RIGHT = 424  # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_UP = 700     # b_west_wonder_burgundians_x1
-MAX_SPRITE_REACH_DOWN = 316   # b_scen_gate_city_flag_x1 (piece, dx=0 dy=-312)
+MAX_SPRITE_REACH_DOWN = 316   # margin; measured 200, b_scen_colosseum_x1 (see above)
 
 # How far the stored angle set is rotated from the scenario's own `rotation`
 # field, in degrees, and which way the index walks as rotation increases.
@@ -463,7 +466,8 @@ _mod_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
 _mod_reach: tuple[tuple[int, int], tuple[int, int, int, int]] | None = None
 # Stems whose mod file's frame count fits neither mapping, logged once each.
 _mod_mismatch_logged: set[str] = set()
-# Stems an active mod draws as no ink (an open town centre's blank back piece): a deliberate gap, not missing art.
+# Stems an active mod draws as no ink: a composite piece's gap (an open town centre's back piece) is
+# deliberate, while a single graphic (a remover mod's grass) draws the install's art (_drawn_frame()).
 _mod_blank_stems: set[str] = set()
 _sld_bytes_cache = _ByteLRU(SLD_BYTES_CACHE_BYTES)
 _scaled_cache = _ByteLRU(SCALED_CACHE_BYTES)
@@ -477,6 +481,8 @@ _x2_mismatch_logged: set[str] = set()
 # Draw x2 where x1 would be enlarged (Graphics Quality Enhanced); set by the viewer.
 _hi_res = False
 _hi_res_generation = 0
+# Box-filter art drawn below its native size (Graphics Quality Default and above, GH #254); set by the viewer.
+_smooth_shrink = False
 
 # Cached in place of a sprite when a key resolves to nothing.
 #
@@ -530,6 +536,24 @@ def hi_res() -> bool:
     return _hi_res
 
 
+def set_smooth_shrink(flag: bool) -> bool:
+    """Whether to shrink art with a box (area-average) filter rather than a
+    nearest gather wherever it is drawn below its native size (GH #254).
+    Module state like set_hi_res(), whose generation a change bumps, so every
+    memo keyed on what draws misses. True when the flag changed."""
+    global _smooth_shrink, _hi_res_generation
+    flag = bool(flag)
+    if flag == _smooth_shrink:
+        return False
+    _smooth_shrink = flag
+    _hi_res_generation += 1
+    return True
+
+
+def smooth_shrink() -> bool:
+    return _smooth_shrink
+
+
 # The AoE2 male villager's x2 file, which stands for the whole x2 set.
 X2_PROBE_FILE = "u_vil_male_villager_idleA_x2.sld"
 
@@ -555,7 +579,8 @@ def ror_x2_art_installed() -> bool:
 
 
 def hi_res_generation() -> int:
-    """Bumped by every set_hi_res() change, for memos keyed on what draws."""
+    """Bumped by every set_hi_res() and set_smooth_shrink() change, for memos
+    keyed on what draws."""
     return _hi_res_generation
 
 
@@ -1362,32 +1387,70 @@ def _native_frame(file_name: str, frame_index: int):
     except (SLDError, OSError) as exc:
         debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, drawing the install's: {exc}")
         frame = None
-    from_mod = frame is not None
+    if frame is None:
+        value = _decoded_install_frame(sld, directory, file_name, frame_index)
+    else:
+        value = None if frame.main is None else _cropped_to_ink(
+            frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y
+        )
+        if value is None:
+            _mod_blank_stems.add(file_name)
+    _native_cache.put(key, _MISS if value is None else value)
+    return value
+
+
+def _decoded_install_frame(sld, directory: Path, file_name: str, frame_index: int):
+    """The install file's frame cropped to ink, or None (no ink, or a decode
+    that raises, logged). Uncached: _native_frame() caches it under its own
+    key, and _install_frame() is reached only for a mod-blank frame, which
+    _native_frame() holds as a miss, so no frame's bytes are held twice."""
     try:
-        if frame is None:
-            frame = sld.decode_frame(
-                frame_index,
-                _sld_bytes(directory, file_name),
-                kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
-                window_to_main=True,
-            )
+        frame = sld.decode_frame(
+            frame_index,
+            _sld_bytes(directory, file_name),
+            kinds=(LayerKind.MAIN, LayerKind.PLAYERCOLOR),
+            window_to_main=True,
+        )
     except (SLDError, OSError) as exc:
         debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}")
-        _native_cache.put(key, _MISS)
         return None
     # DAMAGE is deliberately not composited: it is a packed mask that BC1
     # happens to carry, not colour. SHADOW and OUTLINE are likewise skipped.
     # Neither DAMAGE nor SHADOW is even decoded any more: see kinds= above.
-    value = None if frame.main is None else _cropped_to_ink(
+    return None if frame.main is None else _cropped_to_ink(
         frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y
     )
-    if value is None:
-        if from_mod:
-            _mod_blank_stems.add(file_name)
-        _native_cache.put(key, _MISS)
-        return None
-    _native_cache.put(key, value)
+
+
+def _install_frame(file_name: str, frame_index: int):
+    """_native_frame()'s result from the install's own file, as if no mod were
+    active: what a single-graphic unit draws where an active mod's frame is
+    blank (TASK-437). Negative-cached like _native_frame(), in _native_cache
+    under ("install", file_name, frame_index). Never a particle stem: no mod
+    reaches those, so none is ever mod-blank."""
+    key = ("install", file_name, frame_index)
+    hit = _native_cache.get_or_none(key)
+    if hit is not None:
+        return None if hit is _MISS else hit
+    directory = _graphics_dir()
+    if directory is None:
+        return None  # not negative-cached, as in _native_frame()
+    sld = _sld_index(file_name)
+    value = None
+    if sld is not None and 0 <= frame_index < sld.frame_count:
+        value = _decoded_install_frame(sld, directory, file_name, frame_index)
+    _native_cache.put(key, _MISS if value is None else value)
     return value
+
+
+def _drawn_frame(file_name: str, frame_index: int, blank_mod_fallback: bool = False):
+    """_native_frame(), or with blank_mod_fallback the install's frame where an
+    active mod's own is blank. A composite piece passes False: its mod-blank
+    piece is a deliberate gap (_mod_blank_stems)."""
+    native = _native_frame(file_name, frame_index)
+    if native is None and blank_mod_fallback and file_name in _mod_blank_stems:
+        native = _install_frame(file_name, frame_index)
+    return native
 
 
 def _x2_stem(file_name: str) -> str | None:
@@ -1495,14 +1558,15 @@ def _x2_native_frame(file_name: str, frame_index: int):
 
 def referenced_entries() -> list[tuple[str, int, int]]:
     """Every (file_name, dx, dy) a unit can draw: unit_graphic_map.json's
-    entries and pieces plus every per-civ building entry, each at its own
-    offset from the unit's anchor (tools/scan_sprite_reach.py's input)."""
+    entries, pieces and garrison flags (GH #203) plus every per-civ building
+    entry, each at its own offset from the unit's anchor
+    (tools/scan_sprite_reach.py's input)."""
     entries: set[tuple[str, int, int]] = set()
     per_civ = [e for art in building_art().civ_art.values() for e in art.values()]
     for entry in [*graphic_map().values(), *per_civ]:
         # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
         entries.add((entry["file_name"], *_body_offset(entry)))
-        for piece in entry.get("pieces", ()):
+        for piece in (*entry.get("pieces", ()), *entry.get("garrison_flags", ())):
             entries.add((piece["file_name"], piece["dx"], piece["dy"]))
     return sorted(entries)
 
@@ -1512,7 +1576,8 @@ def _walked_reach(walked, fmt: str, dx: int, dy: int) -> tuple[int, int, int, in
     by (dx, dy), as tools/scan_sprite_reach.py measures the install."""
     reach = [0, 0, 0, 0]
     for frame in walked.frames:
-        hx, hy = frame.hotspot_x + dx, frame.hotspot_y + dy
+        # A piece paints at anchor + (dx, dy), so the anchor sits at hotspot - (dx, dy).
+        hx, hy = frame.hotspot_x - dx, frame.hotspot_y - dy
         if fmt == "smx":
             if frame.main_offset is None:
                 continue
@@ -1606,9 +1671,16 @@ def _tinted(main: np.ndarray, playercolor: np.ndarray | None, team: tuple[int, i
     Only covered pixels (alpha > 0 and a non-zero strength) run the float
     math. An uncovered pixel's result is exactly its own rgb (integers up to
     255 are exact in float32), so skipping it leaves the same bytes. Past the
-    early return the result is always a copy, even with nothing covered."""
+    early return the result is always a copy, even with nothing covered. The
+    native kernel's tint_rgba() is the same float32 math, op for op (GH #254:
+    the box path tints at native size)."""
     if playercolor is None or team == (255, 255, 255):
         return main
+    kernel = composite_backend.native
+    if kernel is not None:
+        out = np.array(main, order="C")
+        kernel.tint_rgba(out, np.ascontiguousarray(playercolor), *team)
+        return out
     out = main.copy()
     covered = (playercolor[..., 3] > 0) & (playercolor[..., 0] > 0)
     rgb = main[covered, :3].astype(np.float32)
@@ -1619,8 +1691,9 @@ def _tinted(main: np.ndarray, playercolor: np.ndarray | None, team: tuple[int, i
 
 
 def _resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Nearest-neighbour resample of an (H, W, 4) uint8 array: a decimation
-    below level 0, an enlargement above it. Deliberately not Pillow: this
+    """Nearest-neighbour resample of an (H, W, 4) uint8 array: every
+    enlargement, and every x1 shrink while smooth_shrink() is off (Graphics
+    Quality Potato and below). Deliberately not Pillow: this
     module stays Qt-free and image-library-free like the rest of the render
     path.
 
@@ -1634,28 +1707,39 @@ def _resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
     return packed.take(ys, axis=0).take(xs, axis=1).view(np.uint8).reshape(height, width, 4)
 
 
+@lru_cache(maxsize=4096)
 def _area_taps(src: int, dst: int) -> tuple[np.ndarray, np.ndarray]:
     """(dst, k) source indices and weights of a box (area-average) shrink of
-    src px to dst px: each output px averages the source span it covers."""
+    src px to dst px: each output px averages the source span it covers.
+    Cached per (src, dst), so both arrays are read-only."""
     ratio = src / dst
     lo = np.arange(dst) * ratio
     idx = np.floor(lo).astype(np.int64)[:, None] + np.arange(math.ceil(ratio) + 1)
     weights = np.clip(np.minimum(lo[:, None] + ratio, idx + 1) - np.maximum(lo[:, None], idx), 0, None)
     weights /= weights.sum(axis=1, keepdims=True)
-    return np.minimum(idx, src - 1), weights.astype(np.float32)
+    taps, weights = np.minimum(idx, src - 1), weights.astype(np.float32)
+    taps.flags.writeable = weights.flags.writeable = False
+    return taps, weights
 
 
 def _box_resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
     """Premultiplied box shrink of an (H, W, 4) uint8 array (GH #241's x2 art
-    at the top level), so a transparent px adds no colour to its neighbours.
-    Falls back to _resize_rgba() on any axis that would grow."""
+    at the top level, and any art below its native size while smooth_shrink()
+    holds, GH #254), so a transparent px adds no colour to its neighbours.
+    Falls back to _resize_rgba() on any axis that would grow. The native
+    kernel's box_shrink_rgba() is the same float32 math, op for op."""
     src_h, src_w = rgba.shape[:2]
     if width > src_w or height > src_h:
         return _resize_rgba(rgba, width, height)
-    alpha = rgba[..., 3:4].astype(np.float32)
-    premult = np.concatenate([rgba[..., :3] * (alpha / 255.0), alpha], axis=2)
     ys, wy = _area_taps(src_h, height)
     xs, wx = _area_taps(src_w, width)
+    kernel = composite_backend.native
+    if kernel is not None:
+        out = np.empty((height, width, 4), dtype=np.uint8)
+        kernel.box_shrink_rgba(np.ascontiguousarray(rgba), ys, wy, xs, wx, out)
+        return out
+    alpha = rgba[..., 3:4].astype(np.float32)
+    premult = np.concatenate([rgba[..., :3] * (alpha / 255.0), alpha], axis=2)
     rows = sum(wy[:, k, None, None] * premult[ys[:, k]] for k in range(wy.shape[1]))
     out = sum(wx[None, :, k, None] * rows[:, xs[:, k]] for k in range(wx.shape[1]))
     a = out[..., 3:4]
@@ -1794,7 +1878,7 @@ def _with_glow(draw: SpriteDraw) -> SpriteDraw:
 def _draw_for_entry(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
     tree_scale: float = 1.0, seed: int | None = None, piece_index: int = 0,
-    hero_glow: bool = False, offset: tuple[int, int] = (0, 0),
+    hero_glow: bool = False, offset: tuple[int, int] = (0, 0), blank_mod_fallback: bool = False,
 ) -> SpriteDraw | None:
     """The tinted, scaled sprite `entry` (one graphic_map() record) resolves
     to, or None on any of the failure paths sprite_for()'s docstring lists.
@@ -1828,7 +1912,9 @@ def _draw_for_entry(
     SpritePiece instead.
 
     An entry's `art_scale` (_art_scale(), a particle effect's own Scale) joins
-    the same product, for the same one-resample reason as tree_scale."""
+    the same product, for the same one-resample reason as tree_scale.
+
+    `blank_mod_fallback` is _drawn_frame()'s: True for a single graphic only."""
     index = _frame_for(unit_const, entry, rotation, seed=seed, piece_index=piece_index)
 
     art_scale = _art_scale(entry)
@@ -1843,10 +1929,13 @@ def _draw_for_entry(
     # hero_glow is keyed for the same reason: the ringed draw is a different image.
     # art_scale too: it comes from the entry, and two entries can share a file.
     # want_x2 (GH #241): x1 enlarged at Enhanced draws the _x2 art instead.
+    # blank_mod_fallback: one stem can be a piece (a gap) and a single graphic (the install's art).
+    # smooth (GH #254): x1 shrunk at Default and above is box-filtered, so half_w alone collides across qualities.
     want_x2 = _hi_res and scale > 1.0
+    smooth = _smooth_shrink and scale < 1.0
     key = (
         entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset,
-        art_scale, want_x2,
+        art_scale, want_x2, blank_mod_fallback, smooth,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
@@ -1859,7 +1948,7 @@ def _draw_for_entry(
         scale /= 2
         offset = (offset[0] * 2, offset[1] * 2)
     else:
-        native = _native_frame(entry["file_name"], index)
+        native = _drawn_frame(entry["file_name"], index, blank_mod_fallback)
     if native is None:
         _scaled_cache.put(key, _MISS)  # see _MISS -- re-deriving this is expensive
         return None
@@ -1867,12 +1956,13 @@ def _draw_for_entry(
 
     width = max(1, round(main.shape[1] * scale))
     height = max(1, round(main.shape[0] * scale))
-    if from_x2 and scale < 1.0:
-        # x2 shrunk to 2/3 at the top level: a nearest gather drops every third px and breaks thin lines.
+    if (from_x2 or smooth) and scale < 1.0:
+        # A nearest gather drops whole rows and columns and breaks thin lines. Tinted at native:
+        # an area average does not commute with the tint's per-pixel coverage multiply.
         rgba = _box_resize_rgba(_tinted(main, playercolor, team), width, height)
     else:
-        # Tint the decimated pair: a gather and a per-pixel tint commute exactly, and
-        # a native-size tint was ~16x the pixels at mip -2.
+        # The nearest path tints the decimated pair: a gather and a per-pixel tint commute
+        # exactly, and a native-size tint was ~16x the pixels at mip -2.
         small_main = _resize_rgba(main, width, height)
         small_pc = None if playercolor is None else _resize_rgba(playercolor, width, height)
         rgba = _tinted(small_main, small_pc, team)
@@ -1946,7 +2036,7 @@ def sprite_for(
     if entry is None:
         return None
     return _draw_for_entry(
-        unit_const, entry, rotation, team_index, half_w, offset=_body_offset(entry)
+        unit_const, entry, rotation, team_index, half_w, offset=_body_offset(entry), blank_mod_fallback=True
     )
 
 
@@ -2011,6 +2101,32 @@ def sprite_pieces_for(
     return _opaque_pieces(unit_const, entry, rotation, team_index, half_w, tree_scale, seed, hero_glow)
 
 
+def garrison_flag_pieces_for(
+    unit_const: int, team_index: int, half_w: int, art: tuple[int | None, int] | None = None,
+) -> list[SpritePiece]:
+    """The garrison flag(s) a host shows while it holds units (GH #203): one
+    SpritePiece per `garrison_flags` item of the entry its body draws from
+    (`art` as sprite_for()'s, so age upgrades and civ art pick their own
+    flags), at the item's native offset from the anchor scaled like a
+    composite piece's, with no depth slot. [] for a const with none.
+
+    Every flag is frame 0: its graphic has one angle, dispatched at rotation
+    0.0 through _draw_for_entry(), so the host's facing never reaches it. A
+    flag whose file fails to draw is skipped. A separate function rather than
+    a sprite_pieces_for() parameter, so that function's other callers (icons,
+    the panel, the placement ghost) never draw one."""
+    entry = _entry_for_art(unit_const, art)
+    if entry is None:
+        return []
+    scale = sprite_scale(half_w)
+    result: list[SpritePiece] = []
+    for flag in entry.get("garrison_flags", ()):
+        draw = _draw_for_entry(flag["unit_id"], flag, 0.0, team_index, half_w)
+        if draw is not None:
+            result.append(SpritePiece(draw=draw, dx=round(flag["dx"] * scale), dy=round(flag["dy"] * scale)))
+    return result
+
+
 def _opaque_pieces(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int, tree_scale: float,
     seed: int | None, hero_glow: bool,
@@ -2020,7 +2136,7 @@ def _opaque_pieces(
     if not pieces_data:
         draw = _draw_for_entry(
             unit_const, entry, rotation, team_index, half_w, tree_scale, hero_glow=hero_glow,
-            offset=_body_offset(entry),
+            offset=_body_offset(entry), blank_mod_fallback=True,
         )
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
 
@@ -2086,14 +2202,17 @@ class _NativePiece(NamedTuple):
 def _native_piece(
     unit_const: int, entry: dict, rotation: float,
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG,
-    seed: int | None = None, piece_index: int = 0, x2: bool = False,
+    seed: int | None = None, piece_index: int = 0, x2: bool = False, blank_mod_fallback: bool = False,
 ):
     """One piece's untinted (main, playercolor, hotspot_x, hotspot_y) at
     NATIVE scale, or None. The tint is _build_icon()'s call: which array size
     it runs at depends on the piece count and the footprint. `x2` reads the
-    same frame's _x2 art instead (GH #241)."""
-    native = _x2_native_frame if x2 else _native_frame
-    return native(entry["file_name"], _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index))
+    same frame's _x2 art instead (GH #241). `blank_mod_fallback` is
+    _drawn_frame()'s, x1 only: x2 has no install fallback."""
+    index = _frame_for(unit_const, entry, rotation, angle_offset_deg, seed, piece_index)
+    if x2:
+        return _x2_native_frame(entry["file_name"], index)
+    return _drawn_frame(entry["file_name"], index, blank_mod_fallback)
 
 
 def _native_pieces_for(
@@ -2123,7 +2242,7 @@ def _native_pieces_for(
     k = 2 if x2 else 1
     pieces_data = entry.get("pieces")
     if not pieces_data:
-        native = _native_piece(unit_const, entry, rotation, angle_offset_deg, x2=x2)
+        native = _native_piece(unit_const, entry, rotation, angle_offset_deg, x2=x2, blank_mod_fallback=True)
         if native is None:
             return []
         main, playercolor, hx, hy = native
@@ -2202,7 +2321,7 @@ def _wall_draw(
     team_slot = team_index % len(TEAM_COLORS)
     key = (
         "wall", unit_const, _art_key(entry), _body_offset(entry),
-        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha, _hi_res,
+        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha, _hi_res, _smooth_shrink,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
@@ -2331,7 +2450,7 @@ def icon_for(
     key = (
         _art_key(entry),
         _frame_key(art_const, entry, art_rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
-        team_slot, footprint_w, footprint_h, _hi_res,
+        team_slot, footprint_w, footprint_h, _hi_res, _smooth_shrink,
     )
     hit = _icon_cache.get_or_none(key)
     if hit is not None:
@@ -2350,7 +2469,8 @@ def _build_icon(
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG, seed: int | None = None,
 ) -> SpriteDraw | None:
     """icon_for()'s uncached body. At Enhanced an icon that would enlarge its
-    x1 ink is built from the _x2 art instead (GH #241)."""
+    x1 ink is built from the _x2 art instead (GH #241); one that shrinks it
+    is box-filtered while smooth_shrink() holds (GH #254)."""
     pieces = _native_pieces_for(unit_const, entry, rotation, angle_offset_deg, seed)
     if not pieces:
         return None
@@ -2378,14 +2498,14 @@ def _build_icon(
     # icon inside its footprint at all.
     iw = min(fw, max(1, round(ink_w * scale)))
     ih = min(fh, max(1, round(ink_h * scale)))
-    if from_x2 and scale < 1.0:
-        # Shrinking x2: box-filtered, as _draw_for_entry() does.
+    if (from_x2 or _smooth_shrink) and scale < 1.0:
+        # Shrinking x2, or x1 at Default and above: box-filtered and tinted at native, as _draw_for_entry() does.
         tinted = ink if len(pieces) > 1 else _tinted(ink, ink_pc, team)
         return SpriteDraw(rgba=_box_resize_rgba(tinted, iw, ih), hotspot_x=0, hotspot_y=0)
     if len(pieces) > 1:
         return SpriteDraw(rgba=_resize_rgba(ink, iw, ih), hotspot_x=0, hotspot_y=0)
-    # Tint commutes with the crop/resize gathers, so tint whichever array is
-    # smaller; composites stay native above because the blend doesn't commute.
+    # The nearest path: tint commutes with the crop/resize gathers, so tint whichever
+    # array is smaller; composites stay native above because the blend doesn't commute.
     if iw * ih < ink_w * ink_h:
         small_pc = None if ink_pc is None else _resize_rgba(ink_pc, iw, ih)
         rgba = _tinted(_resize_rgba(ink, iw, ih), small_pc, team)
