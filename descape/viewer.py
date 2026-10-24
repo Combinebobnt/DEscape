@@ -858,9 +858,16 @@ class _InfoTree(QTreeWidget):
 
     def fit_columns(self) -> None:
         """Size Stat and Value and show or hide Note for the current viewport."""
-        viewport = self.viewport().width()
-        if viewport <= 0 or self.columnCount() < 3:
-            return
+        # A width set below can show a scroll bar, whose nested refit this pass's stale widths then undo.
+        for _ in range(3):
+            viewport = self.viewport().width()
+            if viewport <= 0 or self.columnCount() < 3:
+                return
+            self._fit_columns_to(viewport)
+            if self.viewport().width() == viewport:
+                return
+
+    def _fit_columns_to(self, viewport: int) -> None:
         header = self.header()
         chars = self.fontMetrics().averageCharWidth()
         value = self.sizeHintForColumn(1)
@@ -879,9 +886,12 @@ class _InfoTree(QTreeWidget):
             self.setColumnWidth(0, stat)
             self.setColumnWidth(1, max(value, viewport - stat))
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self.fit_columns()
+    def viewportEvent(self, event) -> bool:
+        handled = super().viewportEvent(event)
+        # The viewport, not the tree: a vertical scroll bar appearing narrows it with no tree resize.
+        if event.type() == QEvent.Resize:
+            self.fit_columns()
+        return handled
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)

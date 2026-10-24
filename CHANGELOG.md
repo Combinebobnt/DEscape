@@ -208,7 +208,7 @@ content, link the doc instead of summarizing it.
   (GH #142).
 - **The View stats table fits a narrow side panel** (GH #142): the Note
   column hides and labels elide when there is no room, with the full text in
-  tooltips and Copy.
+  tooltips and Copy, and the columns re-fit when a vertical scroll bar appears.
 - **The stacked-unit badge's bottom positions no longer draw above its top
   ones** when the badge outgrows a small tile; it settles on the tile's
   middle row instead (GH #100).

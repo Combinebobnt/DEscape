@@ -249,8 +249,8 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
 def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
     """TASK-407: a 1.25x tree font at View's floor (Player 1) leaves no horizontal scroll bar.
     The floor follows the app font only (FontScaledWidth), so this checks fit_columns() re-fits on
-    a tree font change. 1.5x left 5-12 px at 96-120 DPI under Linux's FreeType and none under the
-    Windows rasteriser (TASK-409); 1.25x leaves 30+ px on Linux at every swept DPI."""
+    a tree font change, including after a vertical scroll bar it brings narrows the viewport
+    (TASK-409). 1.5x left 5-12 px at 96-120 DPI on Linux; 1.25x leaves 30+ px at every swept DPI."""
     from PyQt5.QtWidgets import QApplication
 
     window = _blank_window()
@@ -264,6 +264,9 @@ def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
         QApplication.processEvents()
         room = tree.viewport().width() - tree.sizeHintForColumn(1)
         least = 3 * tree.indentation() + tree._STAT_MIN_CHARS * tree.fontMetrics().averageCharWidth()
+        # The column sum, not only the bar: Linux paints the bar a turn after the overflow (TASK-409).
+        shown = sum(tree.columnWidth(c) for c in range(3) if not tree.header().isSectionHidden(c))
+        assert shown <= tree.viewport().width(), f"columns {shown} px in a {tree.viewport().width()} px viewport"
         assert not tree.horizontalScrollBar().isVisible(), f"Stat room {room} px, its minimum {least} px"
     finally:
         conftest.close_window(window)
