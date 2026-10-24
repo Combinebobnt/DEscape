@@ -7,9 +7,14 @@ concurrency:
   group: test-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  test:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 150
+  # The same three runners and test steps as build.yml's legs, minus the bundle.
+  tier:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -20,9 +25,25 @@ jobs:
           cache-dependency-path: requirements*.txt
 
       - uses: ./.github/actions/qt-linux-libs
+        if: runner.os == 'Linux'
+
+      # Before anything builds the kernel in place, as in build.yml.
+      - name: From-source bootstrap builds the native kernel
+        run: python tools/ci_bootstrap_native.py
 
       - uses: ./.github/actions/install-and-build
 
-      # The tier contains tests/test_native_composite.py, so the Linux oracle
-      # runs here too.
+      # The tier contains the native kernel oracle tests, so each OS's build
+      # is compared against numpy here too.
       - uses: ./.github/actions/default-tier
+        timeout-minutes: 130
+
+  # Keeps the required status context `test`; the matrix reports
+  # `tier (<runner>)` instead. always(): a skipped required check passes.
+  test:
+    needs: tier
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Every tier leg passed
+        run: test "${{ needs.tier.result }}" = success

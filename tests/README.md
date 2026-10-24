@@ -12,7 +12,7 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 run_all_tests.bat                                   # same, for Windows
 ./run_all_tests.sh -n 0                             # same tier, serially -- ~29 min
 .venv/bin/python3 -m pytest                         # same tier, invoked directly: serial, see below
-bash tools/ci_parity.sh [tag]                       # same tier plus the test map items, as CI sees them (corpus, install, examples/ hidden); run before every tag
+bash tools/ci_parity.sh [tag]                       # same tier plus the test map items, as CI's Linux leg sees them (corpus, install, examples/ hidden); run before every tag
 
 ./run_corpus_quick.sh                                # default tier plus the test map and slow items, in parallel; no examples/ needed
 .venv/bin/python3 -m pytest -m "not corpus"          # same thing, invoked directly: serial
