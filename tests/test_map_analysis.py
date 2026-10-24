@@ -212,6 +212,13 @@ def test_player_owned_tree_is_reported() -> None:
     assert _unit_keys(map_analysis.check_gaia_only_ownership, loaded) == [(2, 300)]
 
 
+def test_player_owned_macaw_is_reported() -> None:
+    """GH #32: AoE2's wild animals are GAIA-only too."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _place(loaded, 300, 816, 20.5, 30.5)
+    assert _unit_keys(map_analysis.check_gaia_only_ownership, loaded) == [(2, 300)]
+
+
 def test_gaia_owned_forage_bush_is_clean() -> None:
     loaded = load_map_and_units(UNITS_FIXTURE)
     _place(loaded, 100, _FORAGE_BUSH, 5.5, 5.5)

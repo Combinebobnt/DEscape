@@ -351,8 +351,9 @@ by default); with both, the dialog starts on the region and its **Area** row
 switches to the units. It filters the area to eligible tiles (any tile, water
 only, or one terrain type), optionally skips tiles already under a unit, and
 places a count or a density of randomized copies as one undo step. The live "N
-eligible tiles" line is exactly what will be placed. Resources, trees and the
-Gunpowder Keg always go to GAIA, whatever the owner. With no area at all the
+eligible tiles" line is exactly what will be placed. GAIA-only objects
+(resources, trees, wild animals and the Others the game's editor lists only for
+GAIA) always go to GAIA, whatever the owner. With no area at all the
 menu item is greyed, and its tooltip says how to get one.
 
 Its other mode, **Move the selected units**, takes the units selected in Units

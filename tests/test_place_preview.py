@@ -54,10 +54,11 @@ def _window(style: str = "Flat", const: int | None = _UNIT_CONST):
     window.mode_combo.setCurrentText("Units")
     window.show()
     QApplication.processEvents()
-    if const is not None:
-        window.units_panel.select_object(const)
-        assert window.units_panel.selected_object_const() == const
     window.units_panel.select_owner(1)
+    if const is not None:
+        # pick_object: a GAIA-only pick (the oak) sets Owner to GAIA in hide mode (GH #32).
+        window.units_panel.pick_object(const)
+        assert window.units_panel.selected_object_const() == const
     window.place_unit_action.setChecked(True)
     assert window.map_view._tool == "place_unit"
     return window
@@ -1241,5 +1242,53 @@ def test_a_tool_mode_or_index_switch_restarts_the_eyedropper_at_the_top_of_a_sta
             view.set_unit_index(view._unit_index)
         assert view._eyedrop_cycle is None
         assert click() == (top.unit.unit_const, top.player_id), "the next click starts at the top again"
+    finally:
+        _close(window)
+
+
+# --- GH #32: the eyedropper on a bad file's player-owned GAIA-only object -------
+
+_DEER = 65
+
+
+@pytest.mark.parametrize("mode", ["hide", "keep"])
+def test_an_eyedropped_player_owned_deer_is_picked_for_gaia(mode) -> None:
+    from types import SimpleNamespace
+
+    from descape import settings
+
+    settings.set_gaia_only_catalog_mode(mode)
+    window = _eyedrop_window()
+    try:
+        deer = SimpleNamespace(player_id=1, unit=SimpleNamespace(unit_const=_DEER, rotation=0.0))
+
+        window.pick_unit_value(deer, (3, 4), Qt.NoModifier)
+
+        assert window.units_panel.selected_object_const() == _DEER
+        assert window.units_panel.owner_id() == 0
+        assert ", GAIA" in _last_status(window) and "Player 1" not in _last_status(window)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("mode", ["hide", "keep"])
+def test_a_shift_eyedropped_deer_says_when_it_set_owner_to_gaia(mode) -> None:
+    """Shift copies the type alone, so an owner switch hide mode needs is named in the status."""
+    from types import SimpleNamespace
+
+    from descape import settings
+
+    settings.set_gaia_only_catalog_mode(mode)
+    window = _eyedrop_window()
+    try:
+        window.units_panel.select_owner(3)
+        deer = SimpleNamespace(player_id=0, unit=SimpleNamespace(unit_const=_DEER, rotation=0.0))
+
+        window.pick_unit_value(deer, (3, 4), Qt.ShiftModifier)
+
+        assert window.units_panel.selected_object_const() == _DEER
+        switched = mode == "hide"
+        assert window.units_panel.owner_id() == (0 if switched else 3)
+        assert ("set Owner to GAIA" in _last_status(window)) == switched
     finally:
         _close(window)

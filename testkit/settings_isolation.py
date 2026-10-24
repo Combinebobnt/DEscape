@@ -58,6 +58,7 @@ MEMOIZED_GLOBALS = (
     "_split_sizes",
     "_units_catalog_mode",
     "_game_data",
+    "_gaia_only_catalog_mode",
     "_log_height",
     "_recent_files",
     "_new_map",

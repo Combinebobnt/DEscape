@@ -2390,3 +2390,158 @@ def test_a_populate_reports_no_step() -> None:
     finally:
         panel._populating = False
     assert calls == []
+
+
+# --- GH #32: GAIA-only objects and the Owner combo ------------------------------
+
+_MACAW = 816
+_GOLD_MINE = 66
+
+
+def _listed(panel) -> set[int]:
+    view = panel.catalog_view
+    return {view.list.item(i).data(Qt.UserRole) for i in range(view.list.count()) if not view.list.item(i).isHidden()}
+
+
+def test_hide_mode_lists_gaia_only_objects_only_for_gaia() -> None:
+    panel = _panel()
+    assert panel.owner_id() == 1
+    assert _MACAW not in _listed(panel) and _ARCHER_CONST in _listed(panel)
+    panel.select_owner(GAIA_PLAYER_ID)
+    assert {_MACAW, _ARCHER_CONST} <= _listed(panel)
+    panel.catalog_view.category_buttons["Others"].click()
+    assert _GOLD_MINE in _listed(panel)
+    panel.select_owner(2)
+    assert _GOLD_MINE not in _listed(panel)
+
+
+def test_keep_mode_lists_them_for_every_owner() -> None:
+    from descape import settings
+
+    settings.set_gaia_only_catalog_mode("keep")
+    panel = _panel()
+    assert _MACAW in _listed(panel)
+    panel.select_object(_MACAW)
+    panel.select_owner(3)
+    assert panel.selected_object_const() == _MACAW, "keep mode never drops the pick"
+
+
+def test_the_setting_takes_effect_on_refresh_owner_filter() -> None:
+    from descape import settings
+
+    panel = _panel()
+    assert _MACAW not in _listed(panel)
+    settings.set_gaia_only_catalog_mode("keep")
+    panel.refresh_owner_filter()
+    assert _MACAW in _listed(panel)
+    settings.set_gaia_only_catalog_mode("hide")
+    panel.refresh_owner_filter()
+    assert _MACAW not in _listed(panel)
+
+
+def test_a_gaia_only_pick_is_dropped_when_owner_turns_to_a_player() -> None:
+    pending = []
+    panel = _panel(on_pending_changed=lambda: pending.append(panel.selected_object_const()))
+    panel.select_owner(GAIA_PLAYER_ID)
+    panel.select_object(_MACAW)
+    assert panel.selected_object_const() == _MACAW
+    panel.select_owner(1)
+    assert panel.selected_object_const() is None, "no ghost for an object Player 1 cannot own"
+    assert pending[-1] is None
+    assert "(none)" in panel.placing_label.text()
+
+
+def test_a_dropped_gaia_only_row_picks_again_on_one_click_after_owner_returns_to_gaia() -> None:
+    panel = _panel()
+    panel.select_owner(GAIA_PLAYER_ID)
+    panel.select_object(_MACAW)
+    panel.select_owner(1)
+    panel.select_owner(GAIA_PLAYER_ID)
+    assert panel.selected_object_const() is None
+    assert panel.catalog_view.current_value() is None, "the dropped row does not come back looking picked"
+    panel.catalog_view.select(_MACAW)
+    assert panel.selected_object_const() == _MACAW
+
+
+def test_a_player_pick_survives_an_owner_change() -> None:
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    panel.select_owner(GAIA_PLAYER_ID)
+    panel.select_owner(4)
+    assert panel.selected_object_const() == _ARCHER_CONST
+
+
+def test_pick_object_of_a_gaia_only_const_sets_owner_to_gaia_in_hide_mode() -> None:
+    panel = _panel()
+    assert panel.pick_object(_MACAW)
+    assert panel.owner_id() == GAIA_PLAYER_ID
+    assert panel.selected_object_const() == _MACAW
+    # A player unit keeps the owner.
+    panel.select_owner(5)
+    assert panel.pick_object(_ARCHER_CONST)
+    assert panel.owner_id() == 5
+
+
+def test_pick_object_leaves_the_owner_alone_in_keep_mode() -> None:
+    from descape import settings
+
+    settings.set_gaia_only_catalog_mode("keep")
+    panel = _panel()
+    assert panel.pick_object(_MACAW)
+    assert panel.owner_id() == 1
+
+
+def test_a_switch_to_return_of_rome_hides_its_own_gaia_only_set() -> None:
+    from descape import game_dataset
+
+    lion, gazelle = 1029, 22
+    panel = _panel()
+    game_dataset.set_active(game_dataset.ROR)
+    panel.reload_catalog()
+    assert not {lion, gazelle} & _listed(panel)
+    panel.select_owner(GAIA_PLAYER_ID)
+    assert {lion, gazelle} <= _listed(panel)
+
+
+def _player_rows_offered(combo) -> dict[int, bool]:
+    """player_id -> shown in the popup and selectable."""
+    model, view = combo.model(), combo.view()
+    return {
+        combo.itemData(row): model.item(row).isEnabled() and not view.isRowHidden(row)
+        for row in range(combo.count())
+        if combo.itemData(row) is not None
+    }
+
+
+def test_the_owner_field_offers_only_gaia_for_a_gaia_only_selection() -> None:
+    panel = _panel()
+    combo = panel.unit_field_editors["player"]
+    panel.show_unit(_entry(player_id=GAIA_PLAYER_ID, unit_const=_MACAW))
+    rows = _player_rows_offered(combo)
+    assert rows[GAIA_PLAYER_ID] and not any(rows[p] for p in range(1, 9))
+    panel.show_unit(_entry(player_id=1, unit_const=_ARCHER_CONST))
+    assert all(_player_rows_offered(combo).values())
+    # A group hides them only when every member is GAIA-only.
+    panel.show_group([_entry(player_id=0, unit_const=_MACAW), _entry(player_id=1, unit_const=_ARCHER_CONST)])
+    assert all(_player_rows_offered(combo).values())
+    panel.show_group([_entry(player_id=0, unit_const=_MACAW), _entry(player_id=2, unit_const=_GOLD_MINE)])
+    assert not _player_rows_offered(combo)[3]
+
+
+def test_a_bad_files_player_owned_deer_still_shows_its_owner() -> None:
+    panel = _panel()
+    combo = panel.unit_field_editors["player"]
+    panel.show_unit(_entry(player_id=2, unit_const=65))
+    assert combo.currentData() == 2
+    assert _player_rows_offered(combo)[GAIA_PLAYER_ID] and not _player_rows_offered(combo)[2]
+
+
+def test_the_garrison_owner_combo_offers_only_gaia_for_gaia_only_rows() -> None:
+    panel = _panel()
+    rows = [("Deer", "Player 1", 501), ("Villager", "Player 1", 502)]
+    panel.show_garrison(rows, 10, gaia_only=[501])
+    tree = panel.garrison_tree
+    tree.topLevelItem(0).setSelected(True)
+    assert not _player_rows_offered(panel.garrison_owner_combo)[2]
+    tree.topLevelItem(1).setSelected(True)
+    assert _player_rows_offered(panel.garrison_owner_combo)[2], "a mixed selection keeps them"

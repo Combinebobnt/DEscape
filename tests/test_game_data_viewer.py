@@ -338,3 +338,48 @@ def test_a_kept_hidden_pick_ticks_the_show_hidden_box_and_a_reused_id_is_dropped
     window.set_game_data(game_dataset.ROR)
     assert panel.selected_object_const() is None, "93 is Spearman in AoE2 and Hoplite in RoR"
     window.set_game_data(settings.GAME_DATA_DEFAULT)
+
+
+# --- GH #32: Settings > Advanced > GAIA-only objects ----------------------------
+
+
+def test_the_gaia_only_mode_defaults_to_hide_round_trips_and_refuses_junk(monkeypatch):
+    assert settings.get_gaia_only_catalog_mode() == "hide"
+    settings.set_gaia_only_catalog_mode("keep")
+    monkeypatch.setattr(settings, "_gaia_only_catalog_mode", None)
+    assert settings.get_gaia_only_catalog_mode() == "keep", "persisted to config.yaml"
+    with pytest.raises(ValueError):
+        settings.set_gaia_only_catalog_mode("show")
+    config = settings._load_config()
+    config["gaia_only_catalog_mode"] = "show"
+    settings._save_config(config)
+    monkeypatch.setattr(settings, "_gaia_only_catalog_mode", None)
+    assert settings.get_gaia_only_catalog_mode() == "hide", "an off-list value falls back to the default"
+
+
+def _listed(view) -> set[int]:
+    from PyQt5.QtCore import Qt
+
+    return {view.list.item(i).data(Qt.UserRole) for i in range(view.list.count()) if not view.list.item(i).isHidden()}
+
+
+def test_the_advanced_tab_radios_save_the_mode_and_refresh_the_catalog():
+    macaw = 816
+    dialog, window = conftest.dialog_and_window()
+    try:
+        window.load_scenario(scenario_io.BLANK_TEMPLATE_PATH)
+        view = window.units_panel.catalog_view
+        assert dialog.gaia_only_hide_radio.isChecked()
+        assert window.units_panel.owner_id() == 1 and macaw not in _listed(view)
+
+        dialog.gaia_only_keep_radio.setChecked(True)
+
+        assert settings.get_gaia_only_catalog_mode() == "keep"
+        assert macaw in _listed(view)
+        assert window.status_log.toPlainText().splitlines()[-1] == "GAIA-only objects: listed for every owner"
+        dialog.gaia_only_hide_radio.setChecked(True)
+        assert settings.get_gaia_only_catalog_mode() == "hide"
+        assert macaw not in _listed(view)
+    finally:
+        dialog.close()
+        conftest.close_window(window)

@@ -97,6 +97,16 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **GAIA-only objects stay with GAIA** (GH #32): wild animals, resources,
+  trees and the Others the game's editor lists only for GAIA (rocks, plants,
+  ruins, relics and more) are hidden from the Units catalog while Owner is a
+  player, in both Age of Empires II and Return of Rome. Settings > Advanced >
+  *GAIA-only objects* can keep them listed instead. No owner change (the
+  Inspector, Find, a garrison row, Convert, Find and Replace) gives one to a
+  player any more; giving one to GAIA always works. Invisible Spawner A-J are
+  listed under Other, CUMAN DISABLED moves behind "Show editor-hidden
+  objects", and the Granary shows its building portrait.
+  (contributed by @teslatankx, #260)
 - **Trigger status icons have their own column** (GH #166 follow-up): the
   tick and cross sit in a narrow column between ID and Trigger, shown in the
   two icon marker modes, so trigger names line up. A section row now shows a

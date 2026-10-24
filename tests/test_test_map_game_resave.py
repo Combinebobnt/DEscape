@@ -123,6 +123,12 @@ STALE_UNIT_REFS = {5027}
 STALE_EFFECT_FIELDS = {int(EffectId.CREATE_DECISION): {"message_option2"}}
 # TASK-059 makes allow_in_fog editable, so the generator writes 1 where the resave holds -1 (TASK-434).
 STALE_CONDITION_FIELDS = {int(ConditionId.OBJECT_VISIBLE_MULTIPLAYER): {"allow_in_fog"}}
+# GH #32 lists Invisible Spawner A-J and hides CUMAN DISABLED, so every later reference_id moved.
+_SHIFTED_REFS = pytest.mark.xfail(
+    strict=True,
+    reason="STALE RESAVE: GH #32 changed the object regions after the 2026-10-17 in-game save, so the "
+    "two maps' reference_ids no longer pair up. Refresh the resave in AoE2:DE (TASK-434).",
+)
 
 
 def _effect_fields(effect) -> tuple:
@@ -135,6 +141,7 @@ def _condition_fields(condition) -> tuple:
     return tuple(item for item in _object_fields(condition) if item[0] not in stale)
 
 
+@_SHIFTED_REFS
 def test_units_differ_only_by_the_measured_rewrites() -> None:
     generated, resaved = _units(MAP_PATH), _units(RESAVE_PATH)
     dropped: dict[int, set[int]] = {}
@@ -179,6 +186,7 @@ def test_each_recomputed_field_really_changes(field: str) -> None:
     assert any(getattr(generated[ref][1], field) != getattr(resaved[ref][1], field) for ref in generated.keys() & resaved.keys())
 
 
+@_SHIFTED_REFS
 def test_triggers_and_variables_survive_unchanged() -> None:
     generated = parse_triggers(_loaded(MAP_PATH))
     resaved = parse_triggers(_loaded(RESAVE_PATH))
@@ -190,6 +198,7 @@ def test_triggers_and_variables_survive_unchanged() -> None:
         assert [_effect_fields(e) for e in a.effects] == [_effect_fields(e) for e in b.effects], a.name
 
 
+@_SHIFTED_REFS
 def test_each_stale_exclusion_still_differs() -> None:
     """Fails once TASK-434 refreshes the resave: then delete every STALE_* table above."""
     generated, resaved = _units(MAP_PATH), _units(RESAVE_PATH)

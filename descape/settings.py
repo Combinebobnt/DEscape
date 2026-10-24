@@ -584,6 +584,33 @@ def set_game_data(choice: str) -> None:
     _save_config(config)
 
 
+# GH #32: whether the Units catalog lists GAIA-only objects while the owner is a player,
+# Settings > Advanced. Either way placement gives them to GAIA and no owner change gives them away.
+GAIA_ONLY_CATALOG_MODES = ("hide", "keep")
+GAIA_ONLY_CATALOG_MODE_DEFAULT = "hide"
+_gaia_only_catalog_mode: str | None = None
+
+
+def get_gaia_only_catalog_mode() -> str:
+    """One of GAIA_ONLY_CATALOG_MODES; an off-list value falls back to the default."""
+    global _gaia_only_catalog_mode
+    if _gaia_only_catalog_mode is None:
+        value = _load_config().get("gaia_only_catalog_mode", GAIA_ONLY_CATALOG_MODE_DEFAULT)
+        _gaia_only_catalog_mode = value if value in GAIA_ONLY_CATALOG_MODES else GAIA_ONLY_CATALOG_MODE_DEFAULT
+    return _gaia_only_catalog_mode
+
+
+def set_gaia_only_catalog_mode(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in GAIA_ONLY_CATALOG_MODES."""
+    global _gaia_only_catalog_mode
+    if mode not in GAIA_ONLY_CATALOG_MODES:
+        raise ValueError(f"unknown GAIA-only catalog mode {mode!r}")
+    _gaia_only_catalog_mode = mode
+    config = _load_config()
+    config["gaia_only_catalog_mode"] = mode
+    _save_config(config)
+
+
 # GH #161: the terrain grid's swatch size, Settings > Appearance. 64 is the
 # ceiling: swatches decode at 64 px, so anything larger would upscale.
 TERRAIN_GRID_SWATCH_SIZES: tuple[int, ...] = (32, 48, 64)
