@@ -68,6 +68,11 @@ byte-identical. That is the fact the viewer's Flat Elevate skip rests on.
 This bench times the render pipeline, not the viewer's gate, so its flat
 numbers don't drop with that skip; bench_gui_drag.py measures the viewer.
 
+--beach-mode land (with --beach-width) floods the whole map with deep water
+before the cache is built and paints GRASS_1 into it, the land ring's worst
+case: every ring tile is water and converts. The default, water, paints deep
+water into whatever the file holds.
+
 ms/step is felt latency, the number to optimize. ms/dirty-tile divides by
 the count that matters for the cost model: stroke_new_dirty dedupes the
 stroke's own footprint, so a one-tile cursor advance at brush 9 adds only
@@ -115,6 +120,8 @@ BRUSH_SIZES = (1, 9)
 TERRAIN_IDS = [0, 5, 10, 2]
 # WATER_DEEP -- what --beach-width paints, so the ring has something to ring.
 BEACH_WATER_ID = 22
+# GRASS_1 -- what --beach-mode land paints into a map flooded with BEACH_WATER_ID.
+BEACH_LAND_ID = 0
 
 
 def _ms(seconds: float) -> float:
@@ -291,7 +298,7 @@ def _changed_px(before, after) -> int:
 
 def _run_stroke(
     path: Path, style: str, brush_size: int, sprites: bool, edit: str = "paint", beach_width: int = 0,
-    blend: bool = True, check_fresh: bool = False,
+    blend: bool = True, check_fresh: bool = False, beach_mode: str = "water",
 ) -> tuple[str, int, int | None]:
     """One stroke's report line, how many blend-keyed tiles its steps saw
     (always 0 with blend off), and with check_fresh on a flat stroke, how
@@ -300,6 +307,12 @@ def _run_stroke(
     mm = scenario.map_manager
     if edit == "elevation" and mm.map_width != mm.map_height:
         return f"  {path.name:32s} style={style:8s} skipped (elevation mode needs a square map)", -1, None
+    land_ring = bool(beach_width) and beach_mode == "land" and edit == "paint"
+    if land_ring:
+        # Before the cache exists, so the primed canvas already shows the water.
+        for tile in mm.terrain:
+            tile.terrain_id = BEACH_WATER_ID
+            tile.layer = -1
     cache, elevations, proj, tile_px = _make_cache(style, scenario, sprites, blend)
     # Flat + Isometric View patches exactly like Stepped, just on a zeroed array.
     patch_style = "stepped" if style == "flat-iso" else style
@@ -337,11 +350,14 @@ def _run_stroke(
                 mm, [(tx, ty, min(iso_geometry.MAX_ELEVATION, mm.get_tile(tx, ty).elevation + 1)) for tx, ty in footprint]
             )
         else:
-            # beach_width > 0 paints a single WATER terrain rather than
-            # cycling TERRAIN_IDS: the shoreline only exists around water,
-            # and a cycling paint would lay a ring one step and none the
+            # beach_width > 0 paints a single terrain (water, or land in
+            # --beach-mode land) rather than cycling TERRAIN_IDS: a cycling
+            # paint would lay a ring one step and none the
             # next, averaging two different features together.
-            paint_id = BEACH_WATER_ID if beach_width else TERRAIN_IDS[step % len(TERRAIN_IDS)]
+            if land_ring:
+                paint_id = BEACH_LAND_ID
+            else:
+                paint_id = BEACH_WATER_ID if beach_width else TERRAIN_IDS[step % len(TERRAIN_IDS)]
             for tx, ty in footprint:
                 tile = mm.get_tile(tx, ty)
                 tile.terrain_id = paint_id
@@ -463,6 +479,12 @@ def main() -> None:
         default=0,
         help="Auto-beach ring width (0 = plain Draw, the baseline to compare against)",
     )
+    parser.add_argument(
+        "--beach-mode",
+        choices=("water", "land"),
+        default="water",
+        help="With --beach-width: paint water into the file (water) or GRASS_1 into a flooded map (land)",
+    )
     parser.add_argument("--files", help="Comma-separated file names, overriding the built-in list")
     parser.add_argument(
         "--blend", choices=("on", "off"), default="on",
@@ -492,7 +514,8 @@ def main() -> None:
             for sprites in (False, True):
                 for style in styles:
                     line, keyed, stale = _run_stroke(
-                        path, style, brush_size, sprites, args.edit, args.beach_width, blend, args.check_fresh
+                        path, style, brush_size, sprites, args.edit, args.beach_width, blend, args.check_fresh,
+                        args.beach_mode,
                     )
                     print(line, flush=True)
                     row = f"{name} {style} brush={brush_size} sprites={sprites}"

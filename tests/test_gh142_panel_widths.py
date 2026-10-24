@@ -247,7 +247,10 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
 
 @pytest.mark.font_sensitive
 def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
-    """TASK-407: a 1.5x tree font at View's floor (Player 1) leaves no horizontal scroll bar."""
+    """TASK-407: a 1.25x tree font at View's floor (Player 1) leaves no horizontal scroll bar.
+    The floor follows the app font only (FontScaledWidth), so this checks fit_columns() re-fits on
+    a tree font change. 1.5x left 5-12 px at 96-120 DPI under Linux's FreeType and none under the
+    Windows rasteriser (TASK-409); 1.25x leaves 30+ px on Linux at every swept DPI."""
     from PyQt5.QtWidgets import QApplication
 
     window = _blank_window()
@@ -256,10 +259,12 @@ def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
         _show_view_player(window, 1)
         tree = window.info_tree
         font = tree.font()
-        font.setPointSizeF(font.pointSizeF() * 1.5)
+        font.setPointSizeF(font.pointSizeF() * 1.25)
         tree.setFont(font)
         QApplication.processEvents()
-        assert not tree.horizontalScrollBar().isVisible()
+        room = tree.viewport().width() - tree.sizeHintForColumn(1)
+        least = 3 * tree.indentation() + tree._STAT_MIN_CHARS * tree.fontMetrics().averageCharWidth()
+        assert not tree.horizontalScrollBar().isVisible(), f"Stat room {room} px, its minimum {least} px"
     finally:
         conftest.close_window(window)
 

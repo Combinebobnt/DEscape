@@ -177,7 +177,8 @@ def _painted(app, preset_id: str) -> dict:
             "tab_page": _pixel(tabs, 6, tabs.height() - 6),
             "selected_tab": _pixel(bar, selected.left() + 4, selected.center().y()),
             "unselected_tab": _pixel(bar, unselected.left() + 4, unselected.center().y()),
-            "combo": _pixel(combo, 5, combo.height() // 2),
+            # Left of Fusion's label clip (x 4): x 5 is the first glyph's antialiased edge, which macOS inks heavier.
+            "combo": _pixel(combo, 3, combo.height() // 2),
             "header": _pixel(header, 4, header.height() // 2),
             "tool_button": _pixel(tool, 3, tool.height() // 2),
             "push_grabbed": [_pixel(push, 3, y) for y in _BUTTON_ROWS],

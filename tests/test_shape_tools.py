@@ -12,6 +12,7 @@ import pytest
 
 from descape.shape_tools import (
     SNAP_DIRECTIONS,
+    ellipse_perimeter_tiles,
     line_tiles,
     rect_bounds,
     rect_perimeter_tiles,
@@ -322,3 +323,96 @@ def test_a_snapped_wall_drag_keeps_its_length():
     for dx, dy in [(10, 6), (6, -10), (-9, 9), (12, 1)]:
         sx, sy = snap_wall_delta(dx, dy)
         assert max(abs(sx), abs(sy)) == max(abs(dx), abs(dy))
+
+
+# --- Wall Circle's ellipse (GH #125) -------------------------------------
+
+_BIG = 1000
+# Box sizes (width, height) in tiles: every pair from 3 to 24, plus a few long and large ones.
+_ELLIPSE_SIZES = [(w, h) for w in range(3, 25) for h in range(3, 25)] + [
+    (60, 7), (7, 60), (101, 99), (99, 101), (240, 240), (241, 120), (480, 3),
+]
+
+
+def _ellipse_at(w: int, h: int, x0: int = 100, y0: int = 200) -> list[tuple[int, int]]:
+    return ellipse_perimeter_tiles(x0, y0, x0 + w - 1, y0 + h - 1, _BIG, _BIG)
+
+
+def _ring_neighbours(tile, ring: set) -> list[tuple[int, int]]:
+    x, y = tile
+    return [(x + dx, y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy) and (x + dx, y + dy) in ring]
+
+
+def test_an_eleven_by_seven_ellipse_is_this_ring():
+    picture = [
+        "...#####...",
+        ".##.....##.",
+        "#.........#",
+        "#.........#",
+        "#.........#",
+        ".##.....##.",
+        "...#####...",
+    ]
+    expected = [(5 + x, 3 + y) for y, row in enumerate(picture) for x, c in enumerate(row) if c == "#"]
+    assert ellipse_perimeter_tiles(5, 3, 15, 9, _W, _H) == expected
+
+
+def _is_thin_loop(ring: list[tuple[int, int]]) -> bool:
+    ring_set = set(ring)
+    if any(len(_ring_neighbours(tile, ring_set)) != 2 for tile in ring):
+        return False
+    seen, todo = {ring[0]}, [ring[0]]
+    while todo:
+        for nxt in _ring_neighbours(todo.pop(), ring_set):
+            if nxt not in seen:
+                seen.add(nxt)
+                todo.append(nxt)
+    return seen == ring_set
+
+
+def test_every_ellipse_ring_tile_has_exactly_two_ring_neighbours_and_the_ring_is_one_loop():
+    """Closed and thin, at every size listed: no spur (1 neighbour), no
+    corner a wall would read as a junction (3), and one loop, not two."""
+    assert [size for size in _ELLIPSE_SIZES if not _is_thin_loop(_ellipse_at(*size))] == []
+
+
+def test_an_ellipse_is_symmetric_under_both_flips_and_touches_all_four_sides():
+    x0, y0 = 100, 200
+    bad = []
+    for w, h in _ELLIPSE_SIZES:
+        ring = set(_ellipse_at(w, h, x0, y0))
+        x1, y1 = x0 + w - 1, y0 + h - 1
+        if {(x0 + x1 - x, y) for x, y in ring} != ring or {(x, y0 + y1 - y) for x, y in ring} != ring:
+            bad.append(("flip", w, h))
+        if (min(x for x, _ in ring), max(x for x, _ in ring), min(y for _, y in ring), max(y for _, y in ring)) != (
+            x0, x1, y0, y1
+        ):
+            bad.append(("sides", w, h))
+        # A circle is its own transpose.
+        if w == h and {(x0 + y - y0, y0 + x - x0) for x, y in ring} != ring:
+            bad.append(("transpose", w, h))
+    assert bad == []
+
+
+@pytest.mark.parametrize("size", [(5, 5), (11, 7), (16, 9), (240, 240)], ids=lambda s: f"{s[0]}x{s[1]}")
+def test_an_ellipse_has_no_duplicates_is_row_major_and_ignores_drag_direction(size):
+    w, h = size
+    ring = _ellipse_at(w, h)
+    assert len(ring) == len(set(ring))
+    assert ring == sorted(ring, key=lambda t: (t[1], t[0]))
+    x0, y0, x1, y1 = 100, 200, 100 + w - 1, 200 + h - 1
+    for a, b in (((x1, y1), (x0, y0)), ((x1, y0), (x0, y1)), ((x0, y1), (x1, y0))):
+        assert ellipse_perimeter_tiles(*a, *b, _BIG, _BIG) == ring
+
+
+@pytest.mark.parametrize("box", [(4, 4, 4, 4), (4, 4, 4, 12), (4, 4, 12, 4), (4, 4, 5, 5), (4, 4, 5, 12), (4, 4, 12, 5)])
+def test_an_ellipse_under_three_tiles_on_an_axis_is_the_rectangle_ring(box):
+    assert ellipse_perimeter_tiles(*box, _W, _H) == rect_perimeter_tiles(*box, _W, _H)
+
+
+def test_an_ellipse_straddling_the_map_edge_is_clipped_not_moved():
+    whole = ellipse_perimeter_tiles(-5, -3, 9, 7, _BIG, _BIG)
+    clipped = ellipse_perimeter_tiles(-5, -3, 9, 7, 8, 6)
+    assert clipped == [(x, y) for x, y in whole if 0 <= x < 8 and 0 <= y < 6]
+    assert clipped and len(clipped) < len(whole)
+    assert ellipse_perimeter_tiles(30, 30, 40, 40, _W, _H) == []

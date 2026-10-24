@@ -20,7 +20,9 @@ Configure the install path via, in priority order:
 
 from __future__ import annotations
 
+import codecs
 import json
+import locale
 import os
 import re
 import shutil
@@ -142,7 +144,7 @@ def get_install_path() -> Path | None:
 
     if CONFIG_PATH.is_file():
         try:
-            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
             return None
         raw = config.get("aoe2de_install")
@@ -250,7 +252,7 @@ def get_language() -> str:
     result down rather than once per row."""
     if CONFIG_PATH.is_file():
         try:
-            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
             return DEFAULT_LANGUAGE
         raw = config.get("language")
@@ -493,6 +495,21 @@ def get_stat_icon(name: str):
     return _read_rgba(path if path.is_file() else _find_file(folder, lambda n: n == wanted))
 
 
+def read_config_text(path: Path) -> str:
+    """A config file's text as UTF-8, a leading BOM dropped, whatever the
+    locale: Windows' cp1252 would mangle a hand-edited non-ASCII path. A file
+    that is not UTF-8 (an older Notepad's ANSI save) reads as the locale's,
+    or as cp1252 under a UTF-8 locale, so a later save keeps its characters."""
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False)
+        if codecs.lookup(encoding).name == "utf-8":
+            encoding = "cp1252"
+        return data.decode(encoding, errors="replace")
+
+
 def write_config_file(path: Path, config: dict) -> None:
     """Creates `path`'s parent directory if needed, then writes `config` to
     it. Takes the path explicitly -- rather than reading this module's own
@@ -500,7 +517,7 @@ def write_config_file(path: Path, config: dict) -> None:
     in tests) global through; a version that read asset_source.CONFIG_PATH
     internally would silently make settings.CONFIG_PATH decorative."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
+    path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False), encoding="utf-8")
 
 
 def migrate_legacy_config() -> Path | None:
@@ -529,7 +546,7 @@ def save_install_path_to_config(path: Path) -> None:
     config = {}
     if CONFIG_PATH.is_file():
         try:
-            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
             config = {}
     config["aoe2de_install"] = str(path)
@@ -542,7 +559,7 @@ def save_profile_path_to_config(path: Path | None) -> None:
     config = {}
     if CONFIG_PATH.is_file():
         try:
-            config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
             config = {}
     if path is None:

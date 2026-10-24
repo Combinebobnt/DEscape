@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, constant_picker, disables_fields, object_catalog, player_labels
+from descape import asset_source, constant_picker, disables_fields, item_activation, object_catalog, player_labels
 from descape.value_picker import PickerItem, ValuePickerView
 from descape.viewer_common import _add_player_item
 
@@ -172,14 +172,14 @@ class _CategoryTab(QWidget):
         self.disabled_list.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
-        """Return on a list row moves it and stops there. The view emits
-        itemActivated, then ignores the key, so QDialog would also press OK."""
+        """Return on a list row moves it and stops there. Activating leaves the
+        key ignored (Qt's way, item_activation's too), so QDialog would also press OK."""
         if (
             event.type() == QEvent.KeyPress
             and event.key() in (Qt.Key_Return, Qt.Key_Enter)
             and watched in (self.full_list.tree, self.disabled_list)
         ):
-            watched.keyPressEvent(event)
+            item_activation.activate_current(watched)
             event.accept()
             return True
         return super().eventFilter(watched, event)

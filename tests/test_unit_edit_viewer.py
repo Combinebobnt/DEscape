@@ -793,6 +793,33 @@ def test_an_object_the_host_cannot_hold_is_refused() -> None:
         _close(window)
 
 
+def test_a_monastery_shows_a_garrison_block_and_takes_a_relic_but_not_a_monk() -> None:
+    """TASK-467: mask 0 like a Market, but the game puts relics inside."""
+    window = _window()
+    try:
+        model = window._ensure_unit_edits()
+        tile = _empty_tile(window)
+        with window._unit_edit(model, "Place monastery", [1]):
+            monastery = model.add(1, 104, tile[0] + 1.5, tile[1] + 1.5)
+        window._rebuild_unit_index()
+        window._selection = [(1, monastery.reference_id)]
+        window._refresh_selection_view()
+        panel = window.units_panel
+        assert panel.garrison_tree.isVisibleTo(panel)
+        assert panel.garrison_add_button.isEnabled()
+        entry = window.map_view._unit_index.entry_for_key((1, monastery.reference_id))
+
+        window._garrison_add_const(entry, 125)  # Monk
+        assert "cannot go inside" in window.status_log.toPlainText()
+        window._garrison_add_const(entry, 285)  # Relic
+
+        inside = [u for u in window.scenario.unit_manager.units[1] if u.garrisoned_in_id == monastery.reference_id]
+        assert [u.unit_const for u in inside] == [285]
+        assert panel.garrison_tree.topLevelItemCount() == 1
+    finally:
+        _close(window)
+
+
 def test_a_full_host_refuses_a_further_occupant() -> None:
     window = _window()
     try:

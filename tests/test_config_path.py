@@ -149,3 +149,91 @@ def test_migration_degrades_to_none_on_oserror(tmp_path, monkeypatch):
     result = asset_source.migrate_legacy_config()
 
     assert result is None
+
+
+# Every config.yaml reader in a child whose locale encoding is not UTF-8: LC_ALL=C
+# (ASCII) on Linux and macOS, the ANSI code page (cp1252 on CI) on Windows.
+_LOCALE_PROBE = """
+import json, locale, sys
+from pathlib import Path
+config = Path(sys.argv[1])
+import descape.asset_source as asset_source
+asset_source.CONFIG_PATH = config
+import descape.settings as settings
+settings.CONFIG_PATH = config
+from descape import autosave, content_roots
+result = {
+    "encoding": locale.getpreferredencoding(False),
+    "settings": settings._load_config(),
+    "install": str(asset_source.get_install_path()),
+    "language": asset_source.get_language(),
+    "autosave_index": autosave._load_index(),
+}
+asset_source.save_install_path_to_config(Path(sys.argv[2]))
+result["profile_after_save"] = content_roots._config_value(content_roots.PROFILE_CONFIG_KEY)
+print(json.dumps(result))
+"""
+
+
+def test_a_utf8_config_with_a_bom_reads_under_a_non_utf8_locale(tmp_path) -> None:
+    """README says to copy the UTF-8 example; Windows reads text as cp1252 by
+    default, which mangled a non-ASCII path and kept a BOM in the first key."""
+    import codecs
+    import json
+    import locale
+    import subprocess
+
+    from test_collection_env import ROOT, sanitized_env
+
+    from descape import autosave
+
+    if sys.platform == "win32" and codecs.lookup(locale.getpreferredencoding(False)).name == "utf-8":
+        pytest.skip("this Windows uses UTF-8 as its ANSI code page (LC_ALL has no effect there)")
+    install = tmp_path / "install"
+    install.mkdir()
+    other_install = tmp_path / "other_install"
+    other_install.mkdir()
+    profile = "C:\\Users\\José\\Games\\Age of Empires 2 DE"
+    config = tmp_path / "config.yaml"
+    text = (
+        f"aoe2de_install: {install}\n"
+        "# Copied from config.example.yaml…\n"
+        "language: fr\n"
+        f"aoe2de_profile: {profile}\n"
+        "theme: dark\n"
+    )
+    config.write_bytes(("\ufeff" + text).encode("utf-8"))
+    # The autosave index sits beside config.yaml and goes through the same reader.
+    (tmp_path / autosave.AUTOSAVE_DIRNAME).mkdir()
+    (tmp_path / autosave.AUTOSAVE_DIRNAME / autosave.INDEX_NAME).write_bytes("\ufeffk: {a: é}\n".encode("utf-8"))
+    env = sanitized_env(tmp_path)
+    env.update(LC_ALL="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+    result = subprocess.run(
+        [sys.executable, "-c", _LOCALE_PROBE, str(config), str(other_install)],
+        cwd=ROOT,
+        env=env,
+        check=False,  # the asserts below are the check, and want the output
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    seen = json.loads(result.stdout.splitlines()[-1])
+    assert seen["encoding"].replace("-", "").lower() != "utf8", f"fixture: the child's locale is {seen['encoding']}"
+    assert seen["settings"] == {"aoe2de_install": str(install), "language": "fr", "aoe2de_profile": profile, "theme": "dark"}
+    assert seen["install"] == str(install)
+    assert seen["language"] == "fr"
+    assert seen["autosave_index"] == {"k": {"a": "é"}}
+    assert seen["profile_after_save"] == profile, "a read-modify-write keeps the other keys"
+    assert yaml.safe_load(config.read_bytes().decode("utf-8"))["aoe2de_install"] == str(other_install)
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "UTF-8"])
+def test_a_config_saved_in_the_ansi_encoding_still_reads(tmp_path, monkeypatch, locale_encoding: str) -> None:
+    """An older Windows Notepad saved ANSI, not UTF-8: such a file keeps its
+    characters, also under a UTF-8 locale, where they would otherwise turn
+    into replacement characters and the next save would keep those."""
+    config = tmp_path / "config.yaml"
+    config.write_bytes("aoe2de_profile: C:\\Users\\José\\Games\n".encode("cp1252"))
+    monkeypatch.setattr(asset_source.locale, "getpreferredencoding", lambda _do_setlocale=True: locale_encoding)
+    assert yaml.safe_load(asset_source.read_config_text(config)) == {"aoe2de_profile": "C:\\Users\\José\\Games"}

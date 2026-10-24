@@ -186,7 +186,8 @@ def test_the_units_bar_reads_in_order() -> None:
         tool_actions = {getattr(window, f"{t.tool_id}_action"): t.label for t in settings.TOOLS}
         shown = [tool_actions[a] for a in window.main_toolbar.actions() if a in tool_actions and a.isVisible()]
         assert shown == [
-            "Pan", "Select", "Move", "Eyedropper", "Ruler", "Place Unit", "Wall Rectangle", "Convert", "Eraser",
+            "Pan", "Select", "Move", "Eyedropper", "Ruler", "Place Unit", "Wall Rectangle", "Wall Circle",
+            "Convert", "Eraser",
         ]
         # Overflow hides a suffix of TOOLS, so the bar must be built in that order.
         all_tools = [a for a in window.main_toolbar.actions() if a in tool_actions]
@@ -299,7 +300,7 @@ def test_pan_draws_no_unit_hover_outline() -> None:
         _close(window)
 
 
-@pytest.mark.parametrize("tool", ["pan", "select", "move", "eyedropper", "ruler", "wall_rect"])
+@pytest.mark.parametrize("tool", ["pan", "select", "move", "eyedropper", "ruler", "wall_rect", "wall_circle"])
 @pytest.mark.parametrize("seed", ["drag_key", "marquee"])
 def test_a_stale_gesture_from_a_swallowed_release_dies_at_the_next_press(monkeypatch, tool, seed) -> None:
     window = _window(tool=tool)

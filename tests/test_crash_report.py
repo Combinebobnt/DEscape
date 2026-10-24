@@ -195,12 +195,13 @@ def test_rotate_faulthandler_log_scrubs_the_rotated_copy_and_keeps_its_mode(tmp_
     log_path = tmp_path / "faulthandler.log"
     log_path.write_text('Fatal Python error: Aborted\n  File "/home/al/src/a.py"\n  File "/media/al/b.py"\n')
     os.chmod(log_path, 0o644)
+    mode = stat.S_IMODE(log_path.stat().st_mode)  # 0o644; trivially 0o666 on Windows (no POSIX mode bits)
 
     dest = rotate_faulthandler_log(tmp_path)
 
     assert dest is not None
     assert dest.read_text() == 'Fatal Python error: Aborted\n  File "~/src/a.py"\n  File "/media/<user>/b.py"\n'
-    assert stat.S_IMODE(dest.stat().st_mode) == 0o644
+    assert stat.S_IMODE(dest.stat().st_mode) == mode
     assert sorted(p.name for p in tmp_path.iterdir()) == [dest.name], "a temp file was left behind"
 
 

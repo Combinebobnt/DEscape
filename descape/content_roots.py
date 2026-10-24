@@ -110,7 +110,7 @@ def _config_value(key: str) -> str | None:
     if not config_path.is_file():
         return None
     try:
-        config = yaml.safe_load(config_path.read_text()) or {}
+        config = yaml.safe_load(asset_source.read_config_text(config_path)) or {}
     except (yaml.YAMLError, OSError) as exc:
         debug_log.log(f"content roots: config unreadable ({exc!r})")
         return None

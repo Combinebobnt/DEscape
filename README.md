@@ -282,11 +282,15 @@ shows green when every field its type needs is set and every unit and trigger
 it names exists, and red when something is missing. Hover a red row to see
 what. Green means complete, not that the trigger does what you meant in game:
 nothing here runs it. A trigger with no effects is red unless it is shown as
-an objective, an objective header or on screen, section dividers are never coloured, and
-a condition or effect of a type DEscape does not know is left unmarked.
+an objective, an objective header or on screen, and a condition or effect of
+a type DEscape does not know is left unmarked. A section row is judged by its
+own conditions and effects, not the triggers in its section, and is not
+coloured unless you ask.
 Settings > Appearance > Trigger status switches the colours to tick and cross
 icons (or both, or off), stops marking rows that pass so only problems stand
-out, and changes the two colours.
+out, colours section rows, and changes the two colours. The icons sit in their
+own column between ID and Trigger, so the names line up; a section with no
+conditions or effects shows a dash there.
 
 **Button slots.** Change Train Location, Add Train Location and Change
 Research Location show the building's command buttons under the button slot

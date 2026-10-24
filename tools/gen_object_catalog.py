@@ -28,6 +28,10 @@ An object's `obstruction` key (GH #149) is the raw .dat
 `unit.obstruction_type`, present only when non-zero: 0 is the passable value
 (grass, plants, rubble), anything else blocks movement.
 unit_kind.obstacle_consts() is derived from it.
+An object's `combat_level` key (GH #49) is the raw .dat `unit.combat_level`,
+present only when non-zero: it equals a trigger effect's `object_type` filter
+value on every sampled unit (archer 4, villager 3, boar 1), and
+trigger_range.object_type_of() reads it.
 Three more per-object keys back Place Unit's and Move's placement rules
 (GH #176), each omitted when empty: `restriction` is the raw
 `unit.terrain_restriction` when above 0, `clearance` is `unit.clearance_size`
@@ -127,6 +131,9 @@ def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
         # Omitted when 0 (passable), so the committed diff is only the consts that block.
         if unit.obstruction_type:
             entries[str(unit_const)]["obstruction"] = unit.obstruction_type
+        # Omitted when 0: the trigger "object type" filter's value (GH #49, trigger_range.object_type_of()).
+        if unit.combat_level:
+            entries[str(unit_const)]["combat_level"] = unit.combat_level
         # GH #176's placement-rule keys, each omitted when empty (0 passes every terrain).
         if unit.terrain_restriction > 0:
             entries[str(unit_const)]["restriction"] = unit.terrain_restriction

@@ -30,6 +30,7 @@ pytestmark = [
     pytest.mark.xdist_group("font_dpi_sweep"),
 ]
 
+# macOS runs 3/4 of each (testkit.qt_window._qt_font_dpi); only 110 rounds (82), leaving Fusion 0.6% small there.
 _SWEPT = (72, 96, 100, 110, 120, 144, 168)
 _TIMEOUT_S = 600
 

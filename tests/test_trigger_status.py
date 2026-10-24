@@ -324,10 +324,35 @@ def _trigger(
                            display_on_screen=display_on_screen)
 
 
-def test_a_divider_is_none_whatever_its_entries_say() -> None:
-    trigger = _trigger("--- Setup ---", effects=[SimpleNamespace(effect_type=0)])
-    assert trigger_status.evaluate_trigger(trigger, _context()).trigger.status is Status.NONE
-    assert trigger_status.evaluate_trigger(_trigger("-----"), _context()).trigger.status is Status.NONE
+def test_an_empty_divider_is_empty() -> None:
+    """TASK-317: a section with no conditions and no effects gets its own mark."""
+    for name in ("--- Setup ---", "-----"):
+        result = trigger_status.evaluate_trigger(_trigger(name), _context())
+        assert result.trigger == trigger_status.EntryStatus(Status.EMPTY), name
+        assert result.divider is True, name
+
+
+def test_a_divider_with_complete_entries_is_ok() -> None:
+    trigger = _trigger("--- Setup ---", conditions=[_condition(_OWN_OBJECTS)], effects=[_effect(_SEND_CHAT)])
+    assert trigger_status.evaluate_trigger(trigger, _context()).trigger == trigger_status.OK
+
+
+def test_a_divider_with_a_broken_entry_is_a_problem_with_prefixed_reasons() -> None:
+    """Its own entries only: the triggers in its section are not rolled up."""
+    trigger = _trigger("--- Setup ---", effects=[_effect(_SEND_CHAT), SimpleNamespace(effect_type=0)])
+    assert trigger_status.evaluate_trigger(trigger, _context()).trigger == trigger_status.EntryStatus(
+        Status.PROBLEM, ("effect 2 (none): no effect type chosen",))
+
+
+def test_a_divider_with_a_condition_and_no_effects_is_not_missing_effects() -> None:
+    trigger = _trigger("--- Setup ---", conditions=[_condition(_OWN_OBJECTS)])
+    assert trigger_status.evaluate_trigger(trigger, _context()).trigger == trigger_status.OK
+
+
+def test_only_a_divider_is_flagged_divider() -> None:
+    assert trigger_status.evaluate_trigger(_trigger(effects=[_effect(_SEND_CHAT)]), _context()).divider is False
+    assert trigger_status.evaluate_trigger(_trigger(), _context(vocabulary=None)).divider is False
+    assert trigger_status.evaluate_trigger(_trigger("== Intro =="), _context(vocabulary=None)).divider is True
 
 
 def test_a_divider_entry_rows_are_still_evaluated() -> None:
@@ -425,12 +450,15 @@ def test_unchecked_children_make_an_unchecked_rollup_without_problems() -> None:
         trigger_status.EntryStatus(Status.PROBLEM, ("effect 2 (y): bad",)))
 
 
-def test_no_vocabulary_leaves_everything_unchecked_but_dividers() -> None:
+def test_no_vocabulary_leaves_everything_unchecked_but_empty_dividers() -> None:
     context = _context(vocabulary=None)
     plain = trigger_status.evaluate_trigger(_trigger(conditions=[object()]), context)
     assert plain == trigger_status.TriggerStatuses(trigger_status.UNCHECKED, (trigger_status.UNCHECKED,), ())
     divider = trigger_status.evaluate_trigger(_trigger("== Intro =="), context)
-    assert divider.trigger.status is Status.NONE
+    assert divider.trigger.status is Status.EMPTY
+    with_entries = trigger_status.evaluate_trigger(_trigger("== Intro ==", effects=[object()]), context)
+    assert with_entries.trigger == trigger_status.UNCHECKED
+    assert with_entries.effects == (trigger_status.UNCHECKED,)
 
 
 def test_group_status_of_nothing_is_ok() -> None:

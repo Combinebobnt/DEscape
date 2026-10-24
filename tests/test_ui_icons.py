@@ -79,13 +79,16 @@ def test_every_tool_action_has_an_icon_and_a_named_tooltip():
 
 
 def test_a_rebound_tool_key_shows_in_its_tooltip_once():
+    from PyQt5.QtGui import QKeySequence
+
     window = conftest.blank_window(load=False)
     try:
         before = window.draw_action.toolTip()
         settings.set_keybind("tool_draw", "Ctrl+J")
         window.apply_keybind("tool_draw")
         after = window.draw_action.toolTip()
-        assert after.startswith("Draw (Ctrl+J): ")
+        native = QKeySequence("Ctrl+J").toString(QKeySequence.NativeText)  # "⌘J" on macOS
+        assert after.startswith(f"Draw ({native}): ")
         assert after.split(": ", 1)[1] == before.split(": ", 1)[1]
     finally:
         conftest.close_window(window)

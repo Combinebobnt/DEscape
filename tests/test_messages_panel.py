@@ -224,11 +224,12 @@ def test_a_stored_height_is_applied_per_field_and_a_drag_reports_once() -> None:
 
 
 @pytest.mark.parametrize("pane", [900, 2400], ids=["pane short", "pane with room"])
-@pytest.mark.parametrize("lines", [-3, 5], ids=["shorter", "taller"])
+@pytest.mark.parametrize("lines", [-3, -4, 5], ids=["shorter", "to MIN_LINES", "taller"])
 def test_a_messages_box_follows_its_grip_both_ways(lines: int, pane: int) -> None:
     """A Messages box only takes a minimum height, so its layout has to
     follow the band down as well as up, or a drag shorter does nothing. With
-    room to spare a box would otherwise sit at QPlainTextEdit's own size hint."""
+    room to spare a box would otherwise sit at QPlainTextEdit's own size hint,
+    or at its minimumSizeHint, which a layout expands the size hint to."""
     from PyQt5.QtWidgets import QApplication
     from test_text_edits import _drag
 

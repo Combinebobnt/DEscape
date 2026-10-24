@@ -266,7 +266,8 @@ def test_ror_portraits_follow_its_icon_table(ror_install):
     _ror()
     assert asset_source.unit_icon_path(16) == ror_ui / "textures/ingame/units/016_50730.dds"
     assert asset_source.unit_icon_path(1) == aoe2_ui / "textures/ingame/units/294_50730.dds", "the table beats RoR's own 001"
-    assert asset_source.unit_icon_path(146) == aoe2_ui / "textures/ingame/units/589_50730.DDS", "file name case varies"
+    # samefile: on case-insensitive APFS the lowercase name as written already exists.
+    assert asset_source.unit_icon_path(146).samefile(aoe2_ui / "textures/ingame/units/589_50730.DDS"), "file name case varies"
     assert asset_source.unit_icon_path(80, building=True) == aoe2_ui / "textures/ingame/buildings/052_aqueduct.dds"
     assert asset_source.unit_icon_path(99) is None, "an unknown RefName falls back to the index lookup"
 

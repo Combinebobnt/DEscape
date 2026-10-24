@@ -13,6 +13,7 @@ without ever touching the developer's real config.yaml.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -1012,10 +1013,12 @@ def test_the_wall_opacity_setter_clamps_rather_than_writing_an_illegal_value() -
 
 
 # The refused saved value behind get_autosave_dir()'s "", so a restart can still say why.
+# Absolute on this OS: a Windows path needs a drive to be one.
+_ABS_SUBSCRIBED = "C:/x/mods/subscribed/y" if os.name == "nt" else "/x/mods/subscribed/y"
 
 
 @pytest.mark.parametrize("raw, expected", [
-    ("/x/mods/subscribed/y", ("/x/mods/subscribed/y", "(mods/subscribed/) folder")),
+    (_ABS_SUBSCRIBED, (_ABS_SUBSCRIBED, "(mods/subscribed/) folder")),
     ("relative/dir", ("relative/dir", "not an absolute path")),
     ("42", ("42", "not a folder path")),
     ("[/tmp]", ("['/tmp']", "not a folder path")),
@@ -1197,6 +1200,27 @@ def test_the_ok_rows_toggle_round_trips(tmp_path: Path, monkeypatch) -> None:
     settings.set_trigger_status_color_ok_rows(False)
     monkeypatch.setattr(settings, "_trigger_status_color_ok_rows", None)
     assert settings.get_trigger_status_color_ok_rows() is False
+
+
+def test_section_rows_are_uncoloured_by_default(tmp_path: Path) -> None:
+    """TASK-317: the 2026-10-07 "dividers are never coloured" stays the default."""
+    assert settings.get_trigger_status_color_sections() is False
+
+
+@pytest.mark.parametrize("raw", ["1", "'true'", "[]", "null"])
+def test_a_non_bool_color_sections_value_reads_as_false(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"trigger_status_color_sections: {raw}\n")
+    assert settings.get_trigger_status_color_sections() is False
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_the_color_sections_toggle_round_trips(tmp_path: Path, monkeypatch, value: bool) -> None:
+    import yaml
+
+    settings.set_trigger_status_color_sections(value)
+    monkeypatch.setattr(settings, "_trigger_status_color_sections", None)
+    assert settings.get_trigger_status_color_sections() is value
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["trigger_status_color_sections"] is value
 
 
 def test_a_trigger_status_colour_round_trips_normalized(tmp_path: Path, monkeypatch) -> None:

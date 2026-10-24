@@ -18,5 +18,5 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_config_example_matches_generator() -> None:
     gen = conftest.load_verify_module("gen_config_example")
-    on_disk = (ROOT / "config.example.yaml").read_text()
+    on_disk = (ROOT / "config.example.yaml").read_text(encoding="utf-8")
     assert on_disk == gen.render(), "config.example.yaml is stale -- run tools/gen_config_example.py"

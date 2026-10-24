@@ -9,6 +9,7 @@ blocked save leaves the document dirty.
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 from pathlib import Path
 
@@ -273,19 +274,25 @@ def test_a_looped_save_path_is_refused_when_resolve_does_not_raise(tmp_path, mon
         assert not orig_path(p).exists() and not orig_path(p).is_symlink()
 
 
+@pytest.mark.parametrize("shape", ["bare", "missing-tail", "dotdot"])
 @pytest.mark.parametrize("py313_resolve", [False, True])
 @conftest.requires_symlinks
-def test_resolve_detecting_loops_raises_on_every_loop_shape(tmp_path, monkeypatch, py313_resolve) -> None:
+def test_resolve_detecting_loops_raises_on_every_loop_shape(tmp_path, monkeypatch, py313_resolve, shape) -> None:
     """Bare, with a missing tail (the Save As case), and with a ".." after the
     loop, which 3.13+ resolve() applies as text to land on a plain missing path."""
     a = conftest.symlink_loop(tmp_path)
     if py313_resolve:
         conftest.resolve_like_py313(monkeypatch)
-    for path in (a, a / "new.aoe2scenario", a / ".." / "new.aoe2scenario"):
-        with pytest.raises((OSError, RuntimeError)) as info:  # 3.11's real resolve() raises RuntimeError first
-            resolve_detecting_loops(path)
-        if py313_resolve:
-            assert info.value.errno == errno.ELOOP
+    path = {"bare": a, "missing-tail": a / "new.aoe2scenario", "dotdot": a / ".." / "new.aoe2scenario"}[shape]
+    if shape == "dotdot" and os.name == "nt":
+        # Win32 applies ".." as text before the filesystem sees the path: a plain missing file, no loop.
+        assert resolve_detecting_loops(path) == (tmp_path / "new.aoe2scenario").resolve()
+        return
+    with pytest.raises((OSError, RuntimeError)) as info:  # 3.11's real resolve() raises RuntimeError first
+        resolve_detecting_loops(path)
+    if py313_resolve:
+        # Windows reports a loop as EINVAL with ERROR_CANT_RESOLVE_FILENAME.
+        assert info.value.errno == errno.ELOOP or getattr(info.value, "winerror", None) == 1921
 
 
 @conftest.requires_symlinks

@@ -2027,12 +2027,21 @@ def test_the_trigger_column_fits_its_names_instead_of_the_whole_pane() -> None:
     with >=, not ==, since ResizeToContents sizes a section to the header's
     own hint too, and both headers are wider than a one-digit fixture value --
     sizeHintForColumn() looks at row content only. Trigger keeps strict
-    equality, unchanged from before the numeric columns existed."""
+    equality, unchanged from before the numeric columns existed. The status
+    column (TASK-317) joins the >= group only while shown: hidden, it is 0
+    wide with a positive size hint, and the default marker hides it."""
+    from descape import settings
+
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         tree = panel.tree
         numeric = (panel._COL_POS, panel._COL_ID)
+        assert tree.isColumnHidden(panel._COL_STATUS) and tree.columnWidth(panel._COL_STATUS) == 0
+        settings.set_trigger_status_marker("both")
+        panel.apply_status_style()
+        assert not tree.isColumnHidden(panel._COL_STATUS)
+        numeric = (*numeric, panel._COL_STATUS)
         for column in numeric:
             assert tree.columnWidth(column) >= tree.sizeHintForColumn(column)
         assert tree.columnWidth(panel._COL_NAME) == tree.sizeHintForColumn(panel._COL_NAME)
@@ -8645,6 +8654,22 @@ def test_the_panels_own_status_style_defaults_are_the_settings_defaults() -> Non
     assert style.ok == settings.get_default_trigger_status_color("ok")
     assert style.problem == settings.get_default_trigger_status_color("problem")
     assert style.color_ok_rows is True
+    assert style.color_sections is settings.get_trigger_status_color_sections() is False
+
+
+def test_the_trigger_list_has_a_blank_status_column_between_id_and_trigger() -> None:
+    """TASK-317 (GH #166 follow-up): four columns, the status one unlabelled
+    but explained by its header tooltip."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        header = panel.tree.headerItem()
+        assert panel.tree.columnCount() == 4
+        assert (panel._COL_POS, panel._COL_ID, panel._COL_STATUS, panel._COL_NAME) == (0, 1, 2, 3)
+        assert [header.text(c) for c in range(4)] == [_header(panel), "ID", "", "Trigger"]
+        assert "dash" in header.toolTip(panel._COL_STATUS)
+    finally:
+        window.close()
 
 
 def test_a_problem_row_has_the_problem_brush_and_a_tooltip_naming_its_reasons() -> None:
@@ -8709,15 +8734,20 @@ def test_each_marker_mode_sets_exactly_its_brush_and_icon(marker: str, brushed: 
     window = _triggers_window()
     try:
         panel = window.trigger_panel
-        col = panel._COL_NAME
+        col, icon_col = panel._COL_NAME, panel._COL_STATUS
+        # TASK-317: the icons have their own column, shown only while there are icons.
+        assert panel.tree.isColumnHidden(icon_col) is not iconed, marker
         for index, status, hex_str in ((0, Status.OK, _OK_HEX), (_BROKEN_TRIGGER, Status.PROBLEM, _PROBLEM_HEX)):
             row = panel._item_for_index[index]
             assert _brush_hex(row, col) == (hex_str if brushed else None), (marker, index)
-            assert row.icon(col).isNull() is not iconed, (marker, index)
+            assert _brush_hex(row, icon_col) is None, (marker, index)
+            assert row.icon(col).isNull(), (marker, index, "an icon on the name column")
+            assert row.icon(icon_col).isNull() is not iconed, (marker, index)
             if iconed:
-                assert _icon_image(row, col) == _expected_icon(status, hex_str), (marker, index)
+                assert _icon_image(row, icon_col) == _expected_icon(status, hex_str), (marker, index)
         # The tooltip is not a marker: every mode, "off" included, explains a problem row.
-        assert panel._item_for_index[_BROKEN_TRIGGER].toolTip(col)
+        broken = panel._item_for_index[_BROKEN_TRIGGER]
+        assert broken.toolTip(col) and broken.toolTip(icon_col) == broken.toolTip(col)
     finally:
         window.close()
 
@@ -8734,18 +8764,24 @@ def test_with_marking_passes_off_an_ok_row_has_no_marker_in_any_mode(marker: str
     window = _triggers_window()
     try:
         panel = window.trigger_panel
-        col = panel._COL_NAME
+        col, icon_col = panel._COL_NAME, panel._COL_STATUS
         panel.select_trigger(_BROKEN_TRIGGER)
         style = panel._status_style
-        for ok_row, ok_col in ((panel._item_for_index[0], col), (panel._entry_item_for("effect", 0), 0)):
+        for ok_row, ok_col, ok_icon_col in (
+            (panel._item_for_index[0], col, icon_col),
+            (panel._entry_item_for("effect", 0), 0, 0),
+        ):
             assert _brush_hex(ok_row, ok_col) is None, marker
-            assert ok_row.icon(ok_col).isNull(), marker
-        for problem_row, problem_col in ((panel._item_for_index[_BROKEN_TRIGGER], col),
-                                         (panel._entry_item_for("effect", 6), 0)):
+            assert ok_row.icon(ok_icon_col).isNull(), marker
+        for problem_row, problem_col, problem_icon_col in (
+            (panel._item_for_index[_BROKEN_TRIGGER], col, icon_col),
+            (panel._entry_item_for("effect", 6), 0, 0),
+        ):
             assert _brush_hex(problem_row, problem_col) == (_PROBLEM_HEX if style.colours else None), marker
-            assert problem_row.icon(problem_col).isNull() is not style.icons, marker
+            assert problem_row.icon(problem_icon_col).isNull() is not style.icons, marker
             if style.icons:
-                assert _icon_image(problem_row, problem_col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+                assert _icon_image(problem_row, problem_icon_col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+        assert panel._item_for_index[_BROKEN_TRIGGER].icon(col).isNull(), "an icon on the name column"
     finally:
         window.close()
 
@@ -8923,55 +8959,135 @@ def test_a_settings_change_restyles_the_rows_live() -> None:
     dialog = SettingsDialog(window)
     try:
         panel = window.trigger_panel
-        col = panel._COL_NAME
+        col, icon_col = panel._COL_NAME, panel._COL_STATUS
         broken, ok = panel._item_for_index[_BROKEN_TRIGGER], panel._item_for_index[0]
         panel.select_trigger(_BROKEN_TRIGGER)
+        assert panel.tree.isColumnHidden(icon_col), "the default marker, Colour, shows no status column"
 
         combo = dialog.trigger_status_marker_combo
         combo.setCurrentIndex(combo.findData("icon"))
         assert settings.get_trigger_status_marker() == "icon"
-        assert _brush_hex(broken, col) is None and not broken.icon(col).isNull()
+        assert not panel.tree.isColumnHidden(icon_col)
+        assert _brush_hex(broken, col) is None and not broken.icon(icon_col).isNull()
+        assert broken.icon(col).isNull()
         assert not panel._entry_item_for("effect", 6).icon(0).isNull()
 
         combo.setCurrentIndex(combo.findData("both"))
         assert dialog.trigger_status_ok_rows_check.text() == "Mark triggers that pass"
         dialog.trigger_status_ok_rows_check.setChecked(False)
-        assert _brush_hex(ok, col) is None and ok.icon(col).isNull()
-        assert _icon_image(broken, col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+        assert _brush_hex(ok, col) is None and ok.icon(icon_col).isNull()
+        assert _icon_image(broken, icon_col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
         dialog.trigger_status_ok_rows_check.setChecked(True)
-        assert _icon_image(ok, col) == _expected_icon(Status.OK, _OK_HEX)
+        assert _icon_image(ok, icon_col) == _expected_icon(Status.OK, _OK_HEX)
 
         dialog._apply_trigger_status_color("problem", "#123456")
         assert settings.get_trigger_status_color("problem") == "#123456"
         assert _brush_hex(broken, col) == "#123456"
-        assert _icon_image(broken, col) == _expected_icon(Status.PROBLEM, "#123456")
+        assert _icon_image(broken, icon_col) == _expected_icon(Status.PROBLEM, "#123456")
         assert _brush_hex(panel._entry_item_for("effect", 6), 0) == "#123456"
+
+        combo.setCurrentIndex(combo.findData("off"))
+        assert panel.tree.isColumnHidden(icon_col) and broken.icon(icon_col).isNull()
     finally:
         dialog.close()
         window.close()
 
 
-def test_a_divider_row_stays_unstyled_while_its_entries_are_styled() -> None:
+_EMPTY_HEX = "#8a8a8a"
+
+
+def test_an_empty_section_shows_a_dash_and_a_complete_one_a_tick_with_no_brush() -> None:
+    """TASK-317 (GH #166 follow-up): a section row is marked by its own
+    entries, a dash when it has none, and stays uncoloured by default."""
+    from PyQt5.QtCore import Qt
+
     from descape import settings
+    from descape.trigger_status import Status
+
+    settings.set_trigger_status_marker("both")
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        col, icon_col = panel._COL_NAME, panel._COL_STATUS
+        empty, complete = panel._item_for_index[4], panel._item_for_index[2]
+        assert panel.status_of(4).trigger.status is Status.EMPTY and panel.status_of(4).divider
+        dash = _expected_icon(Status.EMPTY, _EMPTY_HEX)
+        assert _icon_image(empty, icon_col) == dash
+        assert dash != _expected_icon(Status.OK, _EMPTY_HEX) and dash != _expected_icon(Status.PROBLEM, _EMPTY_HEX)
+        assert _brush_hex(empty, col) is None and empty.icon(col).isNull()
+        assert empty.toolTip(icon_col) == empty.toolTip(col) == "Section with no conditions or effects"
+        assert _icon_image(complete, icon_col) == _expected_icon(Status.OK, _OK_HEX)
+        assert _brush_hex(complete, col) is None and complete.toolTip(col) == ""
+        assert _brush_hex(panel._item_for_index[3], col) == _PROBLEM_HEX, "a member row keeps its own colour"
+
+        synthetic = panel.tree.topLevelItem(0)
+        assert synthetic.data(panel._ROLE_COL, Qt.UserRole) is None, "fixture assumption"
+        assert all(synthetic.icon(c).isNull() and synthetic.toolTip(c) == "" for c in range(4))
+        assert _brush_hex(synthetic, col) is None
+
+        panel.select_trigger(4)
+        root = panel.entry_tree.topLevelItem(0)
+        assert _icon_image(root, 0) == dash and _brush_hex(root, 0) is None
+
+        # Colour section rows never colours a dash.
+        settings.set_trigger_status_color_sections(True)
+        panel.apply_status_style()
+        assert _brush_hex(empty, col) is None and _brush_hex(complete, col) == _OK_HEX
+
+        # Passes off: "only problems stand out", so the dash goes with the tick.
+        settings.set_trigger_status_color_ok_rows(False)
+        panel.apply_status_style()
+        assert empty.icon(icon_col).isNull() and complete.icon(icon_col).isNull()
+        assert panel.entry_tree.topLevelItem(0).icon(0).isNull()
+        assert not panel._item_for_index[3].icon(icon_col).isNull()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_section_with_a_broken_condition_has_the_cross_and_a_brush_only_on_request() -> None:
+    from descape import settings
+    from descape.trigger_status import Status
+    from descape.viewer import SettingsDialog
 
     settings.set_trigger_status_marker("both")
     window = _triggers_window()
+    dialog = None
     try:
         panel = window.trigger_panel
-        col = panel._COL_NAME
-        panel.select_trigger(1)
+        col, icon_col = panel._COL_NAME, panel._COL_STATUS
+        panel.select_trigger(_BROKEN_TRIGGER)
         name = _row_widget(panel, "name")
         name.setText("--- Section ---")
         name.editingFinished.emit()  # crosses is_divider: a full repopulate
 
-        divider = panel._item_for_index[1]
+        divider = panel._item_for_index[_BROKEN_TRIGGER]
+        assert panel.status_of(_BROKEN_TRIGGER).divider
+        assert _icon_image(divider, icon_col) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+        tip = divider.toolTip(col).splitlines()
+        assert "condition 4 (destroy object): unit 999 (unit object) is not placed on the map" in tip
+        assert divider.toolTip(icon_col) == divider.toolTip(col)
         assert _brush_hex(divider, col) is None
-        assert divider.icon(col).isNull()
-        assert divider.toolTip(col) == ""
-        panel.select_trigger(1)
+        panel.select_trigger(_BROKEN_TRIGGER)
         assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) is None
-        assert _brush_hex(panel._entry_item_for("effect", 0), 0) == _OK_HEX
+        assert _icon_image(panel.entry_tree.topLevelItem(0), 0) == _expected_icon(Status.PROBLEM, _PROBLEM_HEX)
+        assert _brush_hex(_group(panel, "condition"), 0) == _PROBLEM_HEX, "the group rows keep their colour"
+        assert _brush_hex(panel._entry_item_for("effect", 6), 0) == _PROBLEM_HEX
+
+        dialog = SettingsDialog(window)
+        check = dialog.trigger_status_sections_check
+        assert check.text() == "Colour section rows" and not check.isChecked()
+        check.setChecked(True)
+        assert settings.get_trigger_status_color_sections() is True
+        assert _brush_hex(divider, col) == _PROBLEM_HEX
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) == _PROBLEM_HEX
+        assert _brush_hex(panel._item_for_index[0], col) == _OK_HEX, "an ordinary row is unaffected"
+        check.setChecked(False)
+        assert _brush_hex(divider, col) is None
+        assert _brush_hex(panel.entry_tree.topLevelItem(0), 0) is None
     finally:
+        if dialog is not None:
+            dialog.close()
         window.edit_history.mark_saved()
         window.close()
 
@@ -8989,10 +9105,12 @@ def test_the_filter_still_matches_on_the_name_not_the_status() -> None:
         window.close()
 
 
-def test_a_live_marker_change_sizes_the_name_columns_like_a_fresh_populate() -> None:
-    """An icon widens the name column. A live restyle batches its setData calls
+def test_a_live_marker_change_sizes_the_status_and_name_columns_like_a_fresh_populate() -> None:
+    """An icon shows the trigger list's status column (TASK-317) and widens
+    the detail tree's Item column. A live restyle batches its setData calls
     by switching the trigger tree's columns off ResizeToContents, so they must
-    come back, and both trees must end up as wide as a repopulate makes them."""
+    come back, and both trees must end up as wide as a repopulate makes them.
+    The trigger names keep their width: the icon is not in their column."""
     from PyQt5.QtWidgets import QApplication, QHeaderView
 
     from descape import settings
@@ -9002,20 +9120,31 @@ def test_a_live_marker_change_sizes_the_name_columns_like_a_fresh_populate() -> 
         panel = window.trigger_panel
         panel.select_trigger(_BROKEN_TRIGGER)
         QApplication.processEvents()
-        before = (panel.tree.header().sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+        header = panel.tree.header()
+
+        def widths():
+            return (
+                header.sectionSize(panel._COL_STATUS),
+                header.sectionSize(panel._COL_NAME),
+                panel.entry_tree.columnWidth(0),
+            )
+
+        before = widths()
+        assert before[0] == 0, "the default marker hides the status column"
 
         settings.set_trigger_status_marker("icon")
         panel.apply_status_style()
         QApplication.processEvents()
-        header = panel.tree.header()
         assert all(header.sectionResizeMode(c) == QHeaderView.ResizeToContents for c in range(header.count()))
-        live = (header.sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+        live = widths()
 
         window._show_triggers()
         QApplication.processEvents()
-        fresh = (header.sectionSize(panel._COL_NAME), panel.entry_tree.columnWidth(0))
+        fresh = widths()
         assert live == fresh
-        assert live[0] > before[0] and live[1] > before[1], "the icon did not widen the name columns"
+        assert live[0] >= 16, "the status column did not open to fit its icon"
+        assert live[1] == before[1], "the icon moved into the name column"
+        assert live[2] > before[2], "the icon did not widen the detail tree's Item column"
     finally:
         window.close()
 
@@ -9061,7 +9190,8 @@ def test_a_repopulate_reevaluates_only_the_edited_trigger_and_undo_restores_its_
         name = _row_widget(panel, "name")
         name.setText("--- Section ---")
         name.editingFinished.emit()
-        assert panel.status_of(_BROKEN_TRIGGER).trigger.status is Status.NONE
+        assert panel.status_of(_BROKEN_TRIGGER).divider
+        assert panel.status_of(_BROKEN_TRIGGER).trigger == before.trigger, "a section rolls up its own entries"
         assert _evaluated_indices(panel, calls) == {_BROKEN_TRIGGER}
         assert len(calls) == sum(1 for c in calls if c is panel._manager().triggers[_BROKEN_TRIGGER])
 
@@ -9074,7 +9204,7 @@ def test_a_repopulate_reevaluates_only_the_edited_trigger_and_undo_restores_its_
 
         calls.clear()
         window.redo()
-        assert panel.status_of(_BROKEN_TRIGGER).trigger.status is Status.NONE
+        assert panel.status_of(_BROKEN_TRIGGER).divider
         assert _evaluated_indices(panel, calls) == {_BROKEN_TRIGGER}
     finally:
         window.edit_history.mark_saved()

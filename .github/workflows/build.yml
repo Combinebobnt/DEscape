@@ -16,7 +16,7 @@ jobs:
           - {runner: macos-15,     label: macos-arm64}
           - {runner: windows-2025, label: windows-x86_64}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -51,8 +51,9 @@ jobs:
       # Every OS, not only Linux: besides the tier itself, this is the one
       # place the MSVC and arm64 clang builds are compared byte for byte
       # against numpy (the native kernel oracle tests run inside the tier).
+      # macOS arm64's tier took 88 min on its first run.
       - uses: ./.github/actions/default-tier
-        timeout-minutes: 90
+        timeout-minutes: 130
 
       - name: Build frozen bundle
         if: runner.os != 'Linux'

@@ -35,7 +35,7 @@ def _load_config() -> dict:
     if not CONFIG_PATH.is_file():
         return {}
     try:
-        return yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        return yaml.safe_load(asset_source.read_config_text(CONFIG_PATH)) or {}
     except (yaml.YAMLError, OSError):
         return {}
 
@@ -655,6 +655,9 @@ _range_rings_revealers: bool | None = None
 _range_rings_buildings: bool | None = None
 # Rings on selected map revealers, beside Selected Buildings (_range_rings). Off by default.
 _range_rings_selected_revealers: bool | None = None
+# GH #49 slice 2: a dashed ring per trigger that changes a selected building's
+# range. ON by default: it draws only once Selected Buildings is on anyway.
+_range_rings_triggers: bool | None = None
 # View > Player Cameras (GH #22): a camera glyph on each player's stored
 # starting view tile. Off by default for the same opt-in reason as the rings
 # above -- it draws over the map rather than beside it.
@@ -852,6 +855,21 @@ def set_range_rings_selected_revealers(enabled: bool) -> None:
     _range_rings_selected_revealers = enabled
     config = _load_config()
     config["range_rings_selected_revealers"] = enabled
+    _save_config(config)
+
+
+def get_range_rings_triggers() -> bool:
+    global _range_rings_triggers
+    if _range_rings_triggers is None:
+        _range_rings_triggers = bool(_load_config().get("range_rings_triggers", True))
+    return _range_rings_triggers
+
+
+def set_range_rings_triggers(enabled: bool) -> None:
+    global _range_rings_triggers
+    _range_rings_triggers = enabled
+    config = _load_config()
+    config["range_rings_triggers"] = enabled
     _save_config(config)
 
 
@@ -1195,6 +1213,7 @@ TRIGGER_STATUS_MARKER_DEFAULT = "color"
 _TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in TRIGGER_STATUS_MARKERS)
 _trigger_status_marker: str | None = None
 _trigger_status_color_ok_rows: bool | None = None
+_trigger_status_color_sections: bool | None = None
 # GH #230: the button grid's "Show all triggers' changes" checkbox.
 _button_grid_all_triggers: bool | None = None
 
@@ -1301,6 +1320,23 @@ def set_trigger_status_color_ok_rows(enabled: bool) -> None:
     _trigger_status_color_ok_rows = bool(enabled)
     config = _load_config()
     config["trigger_status_color_ok_rows"] = bool(enabled)
+    _save_config(config)
+
+
+def get_trigger_status_color_sections() -> bool:
+    """Whether section divider rows take the status colour too; their icon shows either way (TASK-317)."""
+    global _trigger_status_color_sections
+    if _trigger_status_color_sections is None:
+        raw = _load_config().get("trigger_status_color_sections", False)
+        _trigger_status_color_sections = raw if isinstance(raw, bool) else False
+    return _trigger_status_color_sections
+
+
+def set_trigger_status_color_sections(enabled: bool) -> None:
+    global _trigger_status_color_sections
+    _trigger_status_color_sections = bool(enabled)
+    config = _load_config()
+    config["trigger_status_color_sections"] = bool(enabled)
     _save_config(config)
 
 
@@ -1832,7 +1868,7 @@ class ToolDef:
     # semantics stay exactly as they are. Paint Can is click_only and never
     # sets this: one flood fill per click has no brush to speak of.
     supports_brush: bool = False
-    # "" | "line" | "rect" | "wall_rect" -- press-drag-preview-commit-once tools, the third
+    # "" | "line" | "rect" | "wall_rect" | "wall_circle" -- press-drag-preview-commit-once tools, the third
     # routing shape after the plain drag stroke and click_only. A stroke
     # cannot un-paint, so a rubber band that shrinks back toward its anchor
     # needs the whole edit deferred to release; see viewer_common.SHAPE_TOOLS
@@ -1972,6 +2008,12 @@ TOOLS: list[ToolDef] = [
         "wall_rect", "Wall Rectangle", stroke_label="Place wall rectangle", default_key="",
         drag_shape="wall_rect", modes=("units",), supports_skip_occupied=True,
     ),
+    # GH #125: Wall Rectangle's twin for the ellipse inscribed in the drag
+    # box (shape_tools.ellipse_perimeter_tiles), on the same terms.
+    ToolDef(
+        "wall_circle", "Wall Circle", stroke_label="Place wall circle", default_key="",
+        drag_shape="wall_circle", modes=("units",), supports_skip_occupied=True,
+    ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
     # has -- one undo record per drag, mirroring Draw/Elevate. Units-mode
@@ -2101,6 +2143,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_range_rings", "Range Rings: Selected Buildings", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_range_rings_by_owner", "Range Rings: Colour by Owner", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_range_rings_triggers", "Range Rings: Trigger Changes", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_range_rings_buildings", "Range Rings: All Buildings", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.

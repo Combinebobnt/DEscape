@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import pytest
 
-from descape.beach_edges import PROTECTED_TERRAIN_IDS, apply_beach_ring, ring_tiles
+from descape.beach_edges import (
+    KEPT_FEATURE_WATER_IDS,
+    PROTECTED_TERRAIN_IDS,
+    apply_beach_ring,
+    ring_mode,
+    ring_tiles,
+)
 
 _GRASS_1 = 0
 _BEACH = 2
@@ -27,6 +33,11 @@ _WATER_DEEP = 22
 _ICE_NAVIGABLE = 26
 _ICE = 35
 _DIRT_3 = 3
+_SNOW = 32
+_FOREST_OAK = 10
+_WATER_2D_BRIDGE = 28
+_OBSOLETE = 33
+_UNKNOWN = 999
 
 
 class FakeTile:
@@ -298,3 +309,149 @@ def test_a_terrain_that_is_neither_water_nor_beach_still_gets_converted():
     _paint(mm, [(4, 4)])
     apply_beach_ring(mm, [(4, 4)], _WATER_DEEP, _BEACH, 1)
     assert _at(mm, 3, 4).terrain_id == _BEACH
+
+
+# -- which picks lay a ring at all (GH #259) ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "terrain_id,mode",
+    [
+        (_WATER_DEEP, "water"),
+        (_SHALLOWS, "water"),
+        (_ICE_NAVIGABLE, "water"),
+        (_GRASS_1, "land"),
+        (_FOREST_OAK, "land"),
+        (_ICE, "land"),
+        (_BEACH, None),
+        (_BEACH_ICE, None),
+        (_WATER_2D_BRIDGE, None),
+        *[(terrain_id, None) for terrain_id in sorted(PROTECTED_TERRAIN_IDS)],
+        (_OBSOLETE, None),
+        (_UNKNOWN, None),
+    ],
+)
+def test_ring_mode(terrain_id: int, mode: str | None):
+    assert ring_mode(terrain_id) == mode
+
+
+@pytest.mark.parametrize("terrain_id", [_BEACH, _WATER_2D_BRIDGE, 79])
+def test_a_pick_with_no_ring_mode_lays_nothing(terrain_id: int):
+    mm = _map(9, 9, _WATER_DEEP)
+    _paint(mm, [(4, 4)], terrain_id)
+    before = _ids(mm)
+    assert apply_beach_ring(mm, [(4, 4)], terrain_id, _BEACH, 1) == []
+    assert _ids(mm) == before
+
+
+# -- land mode: the beach goes on the water side (GH #259) --------------------
+
+
+def _island(width: int = 9, height: int = 9, core=((4, 4),), land_id: int = _GRASS_1, water_id: int = _WATER_DEEP):
+    mm = _map(width, height, water_id)
+    _paint(mm, core, land_id)
+    return mm
+
+
+@pytest.mark.parametrize("width", [1, 2, 3])
+def test_a_land_core_in_water_rings_its_width(width: int):
+    mm = _island(11, 11, [(5, 5)])
+    changed = apply_beach_ring(mm, [(5, 5)], _GRASS_1, _BEACH, width)
+    ring = set(ring_tiles([(5, 5)], width, 11, 11))
+    assert len(changed) == len(ring) == (2 * width + 1) ** 2 - 1
+    assert {(x, y) for y in range(11) for x in range(11) if _at(mm, x, y).terrain_id == _BEACH} == ring
+    assert _at(mm, 5, 5).terrain_id == _GRASS_1
+
+
+def test_land_and_beach_beside_a_land_core_stay_as_they_are():
+    mm = _island()
+    _at(mm, 3, 4).terrain_id = _DIRT_3
+    _at(mm, 5, 4).terrain_id = _BEACH_WET
+    apply_beach_ring(mm, [(4, 4)], _GRASS_1, _BEACH, 1)
+    assert _at(mm, 3, 4).terrain_id == _DIRT_3
+    assert _at(mm, 5, 4).terrain_id == _BEACH_WET
+    assert _at(mm, 4, 5).terrain_id == _BEACH
+
+
+@pytest.mark.parametrize("terrain_id", sorted(KEPT_FEATURE_WATER_IDS))
+def test_a_land_ring_keeps_paddies_mangroves_and_reeds(terrain_id: int):
+    mm = _island()
+    _at(mm, 3, 4).terrain_id = terrain_id
+    apply_beach_ring(mm, [(4, 4)], _GRASS_1, _BEACH, 1)
+    assert _at(mm, 3, 4).terrain_id == terrain_id
+    assert _at(mm, 5, 4).terrain_id == _BEACH
+
+
+def test_a_land_ring_converts_plain_shallows():
+    mm = _island(water_id=_SHALLOWS)
+    apply_beach_ring(mm, [(4, 4)], _GRASS_1, None, 1)
+    assert _at(mm, 3, 4).terrain_id == _BEACH
+
+
+def test_auto_gives_ice_land_an_ice_beach():
+    mm = _island(land_id=_ICE)
+    apply_beach_ring(mm, [(4, 4)], _ICE, None, 1)
+    assert _at(mm, 3, 4).terrain_id == _BEACH_ICE
+
+
+def test_auto_gives_snow_against_navigable_ice_an_ice_beach():
+    mm = _island(land_id=_SNOW, water_id=_ICE_NAVIGABLE)
+    apply_beach_ring(mm, [(4, 4)], _SNOW, None, 1)
+    assert _at(mm, 3, 4).terrain_id == _BEACH_ICE
+
+
+def test_auto_gives_grass_in_deep_water_a_sand_beach():
+    mm = _island()
+    apply_beach_ring(mm, [(4, 4)], _GRASS_1, None, 1)
+    assert _at(mm, 3, 4).terrain_id == _BEACH
+
+
+def test_an_explicit_beach_wins_in_land_mode():
+    mm = _island(land_id=_ICE)
+    apply_beach_ring(mm, [(4, 4)], _ICE, _BEACH_WET, 1)
+    assert _at(mm, 3, 4).terrain_id == _BEACH_WET
+
+
+def test_layer_is_cleared_on_land_ring_tiles():
+    mm = _island()
+    for tile in mm.terrain:
+        tile.layer = 7
+    apply_beach_ring(mm, [(4, 4)], _GRASS_1, _BEACH, 1)
+    for x, y in ring_tiles([(4, 4)], 1, 9, 9):
+        assert _at(mm, x, y).layer == -1
+    assert _at(mm, 4, 2).layer == 7
+
+
+def test_a_second_identical_land_call_changes_nothing():
+    mm = _island()
+    assert apply_beach_ring(mm, [(4, 4)], _GRASS_1, _BEACH, 1)
+    assert apply_beach_ring(mm, [(4, 4)], _GRASS_1, _BEACH, 1) == []
+
+
+def test_a_land_ring_clips_at_the_edge_without_wrapping():
+    mm = _island(7, 7, [(0, 3)])
+    apply_beach_ring(mm, [(0, 3)], _GRASS_1, _BEACH, 1)
+    beach = {(x, y) for y in range(7) for x in range(7) if _at(mm, x, y).terrain_id == _BEACH}
+    assert beach == {(0, 2), (1, 2), (1, 3), (0, 4), (1, 4)}
+
+
+def test_a_land_ring_on_a_non_square_map_is_fine():
+    mm = _island(7, 3, [(3, 1)])
+    assert apply_beach_ring(mm, [(3, 1)], _GRASS_1, _BEACH, 1)
+    assert _at(mm, 3, 0).terrain_id == _BEACH
+    assert _at(mm, 3, 2).terrain_id == _BEACH
+
+
+def test_a_straight_land_drag_leaves_no_beach_inside_the_land():
+    """Hazard 1's mirror: the ring tile ahead becomes beach at one touch and
+    land at the next, since ring tiles never join the painted core."""
+    mm = _map(12, 12, _WATER_DEEP)
+    cores = [(3, 5), (4, 5), (5, 5), (6, 5)]
+    for tile in cores:
+        _paint(mm, [tile], _GRASS_1)
+        apply_beach_ring(mm, [tile], _GRASS_1, _BEACH, 1)
+    for tile in cores:
+        assert _at(mm, *tile).terrain_id == _GRASS_1, tile
+    for x, _y in cores:
+        assert _at(mm, x, 4).terrain_id == _BEACH
+        assert _at(mm, x, 6).terrain_id == _BEACH

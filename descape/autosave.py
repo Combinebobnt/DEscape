@@ -183,7 +183,7 @@ def _load_index() -> dict:
     if not path.is_file():
         return {}
     try:
-        return yaml.safe_load(path.read_text()) or {}
+        return yaml.safe_load(asset_source.read_config_text(path)) or {}
     except (yaml.YAMLError, OSError):
         return {}
 

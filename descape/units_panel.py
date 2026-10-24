@@ -486,6 +486,13 @@ class UnitsPanel(QWidget):
         self.unit_field_labels["unit_const"] = self.selection_card.const_label
         self.unit_field_captions["unit_const"] = self.selection_card.const_caption
         self.inspector_layout.addWidget(self.selection_card)
+        # GH #49 slice 2: what the triggers set a selected building's range to,
+        # filled by the viewer (show_trigger_ranges), hidden otherwise.
+        self.trigger_range_label = QLabel("")
+        self.trigger_range_label.setWordWrap(True)
+        self.trigger_range_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.trigger_range_label.setVisible(False)
+        self.inspector_layout.addWidget(self.trigger_range_label)
 
         self.unit_inspector_grid = QWidget()
         grid = QGridLayout(self.unit_inspector_grid)
@@ -720,6 +727,8 @@ class UnitsPanel(QWidget):
             self._leave_group_mode()
         finally:
             self._populating = False
+        # The viewer follows with show_trigger_ranges() for a building it has a line for.
+        self.trigger_range_label.setVisible(False)
         if entry is None:
             self._show_inspector_fields(False)
             for label in self.unit_field_labels.values():
@@ -772,6 +781,8 @@ class UnitsPanel(QWidget):
         # A garrison is per-host, so the block has nothing to say about a
         # 2+ selection (GH #42), like Reference ID and Garrisoned in.
         self.hide_garrison()
+        # The trigger range line is per unit too (GH #49 slice 2).
+        self.trigger_range_label.setVisible(False)
         units = [entry.unit for entry in entries]
         consts = {unit.unit_const for unit in units}
         common_const = next(iter(consts)) if len(consts) == 1 else None
@@ -1094,6 +1105,14 @@ class UnitsPanel(QWidget):
         one unit goes to show_unit(), 2+ to show_group()."""
         self.show_unit(None)
         self.unit_inspector_empty.setText(f"{count} units selected" if count else "No unit selected")
+
+    def show_trigger_ranges(self, text: str, tooltip: str = "") -> None:
+        """GH #49 slice 2's Inspector line (trigger_range.describe()), shown
+        under the unit header; an empty `text` hides it."""
+        self.trigger_range_label.setText(text)
+        self.trigger_range_label.setToolTip(tooltip)
+        self.trigger_range_label.setVisible(bool(text))
+        self._fit_inspector_height()
 
     def _fit_inspector_height(self) -> None:
         """Tell the scroll area how tall the wrapped content actually is --

@@ -292,7 +292,7 @@ def test_capitalised_resources_folder_is_found(tmp_path):
     _touch(mod / "Resources" / "_Common" / "AI" / "Caps.ai")
     roots = roots_of(install, profile)
     caps = next(r for r in roots if r.mod_id == "90_Caps")
-    assert caps.common == mod / "Resources" / "_Common"
+    assert caps.common.samefile(mod / "Resources" / "_Common")  # APFS matches the lowercase name as written
     assert [(r.mod_id, p.name) for r, p in find_resources("ai", [".ai"], roots)][-1] == ("90_Caps", "Caps.ai")
 
 

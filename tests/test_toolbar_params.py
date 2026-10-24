@@ -200,7 +200,7 @@ def test_the_placement_boxes_show_for_place_unit_and_move() -> None:
             assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
             assert window.tool_param_separator_action.isVisible()
 
-        for other in ("wall_rect", "convert", "eraser", "ruler", "select", "pan"):
+        for other in ("wall_rect", "wall_circle", "convert", "eraser", "ruler", "select", "pan"):
             getattr(window, f"{other}_action").setChecked(True)
             assert window._current_tool == other
             assert _placement_boxes(window) == (False, False), other
@@ -395,6 +395,9 @@ def test_rectangle_brush_params_follow_the_fill_toggle() -> None:
 
 _WATER_DEEP = 22
 _GRASS_1 = 0
+_BEACH = 2
+_WATER_2D_BRIDGE = 28
+_BEACH_NON_NAVIGABLE = 79
 
 
 def _select_terrain(window, terrain_id: int) -> None:
@@ -417,15 +420,30 @@ def test_auto_beach_shows_only_for_draw_and_the_shape_tools() -> None:
         window.close()
 
 
-def test_auto_beach_is_live_only_for_a_water_terrain() -> None:
+@pytest.mark.parametrize("terrain_id", [_WATER_DEEP, _GRASS_1])
+def test_auto_beach_is_live_for_water_and_land(terrain_id: int) -> None:
+    """GH #259: a land pick lays its ring on the water side."""
     window = conftest.terrain_edit_window()
     try:
         window._on_tool_selected("draw")
-        _select_terrain(window, _WATER_DEEP)
+        _select_terrain(window, terrain_id)
         assert window.auto_beach_check.isEnabled()
-        _select_terrain(window, _GRASS_1)
+        assert window.auto_beach_param_action.isVisible()
+        assert "shoreline between water" in window.auto_beach_check.toolTip()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("terrain_id", [_BEACH, _WATER_2D_BRIDGE, _BEACH_NON_NAVIGABLE])
+def test_auto_beach_is_dead_for_a_beach_bridge_or_shore(terrain_id: int) -> None:
+    window = conftest.terrain_edit_window()
+    try:
+        window._on_tool_selected("draw")
+        _select_terrain(window, terrain_id)
+        assert window.auto_beach_param_action.isVisible()
         assert not window.auto_beach_check.isEnabled()
-        assert "water terrain" in window.auto_beach_check.toolTip()
+        assert "lays no shoreline" in window.auto_beach_check.toolTip()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -438,10 +456,12 @@ def test_switching_the_terrain_regates_the_checkbox() -> None:
     window = conftest.terrain_edit_window()
     try:
         window._on_tool_selected("draw")
-        _select_terrain(window, _GRASS_1)
+        _select_terrain(window, _BEACH)
         assert not window.auto_beach_check.isEnabled()
-        _select_terrain(window, _WATER_DEEP)
+        _select_terrain(window, _GRASS_1)
         assert window.auto_beach_check.isEnabled()
+        _select_terrain(window, _BEACH)
+        assert not window.auto_beach_check.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -459,9 +479,9 @@ def test_the_beach_combo_and_width_follow_the_checkbox() -> None:
         assert window.beach_width_param_action.isVisible()
         assert window.beach_combo.isEnabled()
         assert window.beach_width_spin.isEnabled()
-        # Ticked but then switched to land: the whole group goes away again,
+        # Ticked but then switched to a beach: the whole group goes away again,
         # so a hidden setting can never sit live.
-        _select_terrain(window, _GRASS_1)
+        _select_terrain(window, _BEACH)
         assert not window.beach_param_action.isVisible()
         assert not window.beach_combo.isEnabled()
     finally:

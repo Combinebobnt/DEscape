@@ -91,7 +91,9 @@ def _read(obj: Any, attribute: str) -> Any:
         return None
 
 
-def _coordinate(entry: Any, attribute: str) -> int:
+def coordinate(entry: Any, attribute: str) -> int:
+    """One coordinate as an int, UNSET for None, a raising read or a non-number.
+    Public so trigger_range reads an area exactly as the overlay does."""
     value = _read(entry, attribute)
     if value is None:
         return UNSET
@@ -135,7 +137,7 @@ def shapes_for_entry(
     yield nothing."""
     shapes = []
     for fields in coordinate_fields(definition):
-        coords = tuple(_coordinate(entry, f) for f in fields)
+        coords = tuple(coordinate(entry, f) for f in fields)
         if any(c < 0 for c in coords):
             continue
         shapes.append(

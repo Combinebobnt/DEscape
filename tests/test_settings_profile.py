@@ -5,6 +5,7 @@ drops AOE2DE_PROFILE_PATH; each test builds a fake profile under tmp_path."""
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,9 @@ def test_the_env_var_disables_the_row(tmp_path, monkeypatch, valid: bool) -> Non
         conftest.close_window(window)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows auto-detects %USERPROFILE%\\Games, never from the install's Steam library"
+)
 def test_an_install_load_refreshes_the_auto_detected_profile(tmp_path, monkeypatch) -> None:
     """Auto-detect derives the profile from the install's Steam library."""
     from descape import asset_source, content_roots

@@ -91,8 +91,9 @@ def _beaches_in_climate(climate: str) -> tuple[int, ...]:
 
 
 def auto_beach_for(water_id: int, land_id: int | None = None) -> int:
-    """The beach terrain to lay between `water_id` and the land tile being
-    converted.
+    """The beach terrain to lay between `water_id` and `land_id`, the two
+    sides of one ring tile: the land it converts (water mode) or the painted
+    land beside the water it converts (land mode).
 
     Keyed on the LAND tile first, not the water, and per tile rather than per
     stroke -- which costs nothing and is strictly better: one stroke crossing

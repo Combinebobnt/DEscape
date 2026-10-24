@@ -830,13 +830,19 @@ def test_paint_can_with_trees_still_takes_the_wholesale_path(monkeypatch) -> Non
         window.close()
 
 
-def test_draw_stroke_record_is_covered_by_its_live_repaints(monkeypatch) -> None:
+@pytest.mark.parametrize("painted", [22, 0])
+def test_draw_stroke_record_is_covered_by_its_live_repaints(monkeypatch, painted: int) -> None:
     """What lets the stroke end skip the whole-stroke _apply_dirty(): every
     tile the record changes was already handed to _apply_dirty() by a live
-    step, auto-beach ring included."""
+    step, auto-beach ring included. GRASS_1 (0) paints into a map flooded
+    with WATER_DEEP (22), so a ring tile can go water, beach, then land
+    (GH #259)."""
     window = _styled_window("Stepped")
     try:
-        window.terrain_panel.set_terrain(22)  # WATER_DEEP, so the ring has something to ring
+        window.terrain_panel.set_terrain(painted)
+        if painted != 22:
+            for tile in window.scenario.map_manager.terrain:
+                tile.terrain_id = 22
         window.auto_beach_check.setChecked(True)
         window.beach_width_spin.setValue(2)
         live: set[int] = set()
@@ -865,7 +871,7 @@ def test_draw_stroke_record_is_covered_by_its_live_repaints(monkeypatch) -> None
 
         (record,) = captured
         changed = {i for i, _old, _new in record.changes}
-        assert any(new[0] != 22 for _i, _old, new in record.changes), "auto-beach laid no ring"
+        assert any(new[0] not in (painted, 22) for _i, _old, new in record.changes), "auto-beach laid no ring"
         assert changed <= live_at_end
     finally:
         window.edit_history.mark_saved()

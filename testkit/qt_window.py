@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 PYQT5_AVAILABLE = importlib.util.find_spec("PyQt5") is not None
@@ -76,7 +77,7 @@ def ensure_qapp() -> None:
         return
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     # Hard-set, not setdefault: a developer's HiDPI shell must not leak in.
-    os.environ["QT_FONT_DPI"] = os.environ.get(FONT_DPI_OVERRIDE_ENV, str(DEFAULT_FONT_DPI))
+    os.environ["QT_FONT_DPI"] = str(_qt_font_dpi(_test_dpi()))
     from PyQt5.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(["descape"])
@@ -90,6 +91,17 @@ DEFAULT_FONT_DPI = 96
 BUNDLED_FONT = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
 # The local offscreen default before the pin, so existing layout numbers hold.
 PINNED_POINT_SIZE = 12
+
+
+def _test_dpi() -> int:
+    return int(os.environ.get(FONT_DPI_OVERRIDE_ENV, DEFAULT_FONT_DPI))
+
+
+def _qt_font_dpi(dpi: int) -> int:
+    """QT_FONT_DPI for a test DPI. Qt's styles scale their metrics by the font
+    DPI over 72 on macOS and over 96 elsewhere (qstylehelper.cpp), so macOS
+    gets 3/4 of it: at 96 that is a real Mac's 72, where Fusion matches Linux."""
+    return dpi * 3 // 4 if sys.platform == "darwin" else dpi
 
 
 class FontPinError(RuntimeError):
@@ -108,7 +120,10 @@ def _pin_bundled_font(app) -> None:
     if font_id < 0:
         raise FontPinError(f"could not load the bundled test font {BUNDLED_FONT}")
     family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    app.setFont(QFont(family, PINNED_POINT_SIZE))
+    font = QFont(family)
+    # The pixel size PINNED_POINT_SIZE has at the test DPI, whatever QT_FONT_DPI macOS was given.
+    font.setPointSizeF(PINNED_POINT_SIZE * _test_dpi() / _qt_font_dpi(_test_dpi()))
+    app.setFont(font)
     resolved = QFontInfo(app.font()).family()
     if resolved != family:
         raise FontPinError(f"app font resolved to {resolved!r}, not the bundled {family!r}")

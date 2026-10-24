@@ -340,6 +340,16 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("line", Role.INK, (3, 12, 7, 12, 1.1)),
         ("line", Role.INK, (17, 12, 21, 12, 1.1)),
     ),
+    # A round ring of stone walls, mortar in ink.
+    "tool-wall_circle": (
+        ("ring", GREY, (4, 4, 16, 16, 4)),
+        ("line", Role.INK, (17.2, 15, 20.7, 17, 1.1)),
+        ("line", Role.INK, (12, 18, 12, 22, 1.1)),
+        ("line", Role.INK, (6.8, 15, 3.3, 17, 1.1)),
+        ("line", Role.INK, (6.8, 9, 3.3, 7, 1.1)),
+        ("line", Role.INK, (12, 6, 12, 2, 1.1)),
+        ("line", Role.INK, (17.2, 9, 20.7, 7, 1.1)),
+    ),
     # A blue figure, an arrow, a red figure: the owner changes.
     "tool-convert": (
         *_figure(BLUE, 1.5, 1, 0.7),

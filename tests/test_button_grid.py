@@ -514,7 +514,9 @@ def test_a_unit_the_civ_lacks_gets_no_button_and_a_red_frame(civs) -> None:
         cell = _cell(_grid(window), 2, 3)
         assert cell.isChecked() and cell.unavailable and cell.frame == "problem"
         assert cell.items == () and cell.ghost == (_MULE_CART, "unit"), "drawn dimmed so the slot shows what is missing"
-        assert cell.text().startswith("Mu"), "no install: its elided name"
+        # The rasteriser picks the cut: "Mu…" under Linux's FreeType, "M…" on Windows (TASK-409).
+        text = cell.text()
+        assert len(text) > 1 and "Mule Cart".startswith(text.removesuffix("…")), "no install: its elided name"
         assert "Spanish can't train Mule Cart" in cell.toolTip()
     finally:
         _close(window)

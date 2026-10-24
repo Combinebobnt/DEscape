@@ -35,6 +35,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from descape import item_activation
+
 # Past Qt.UserRole (which already holds the row's value on column 0).
 _HIDDEN_ROLE = Qt.UserRole + 1
 _SEARCH_ROLE = Qt.UserRole + 2
@@ -152,6 +154,7 @@ class ValuePickerView(QWidget):
         # itemActivated, not itemDoubleClicked: it fires on Enter too, and a
         # sidebar host has no Ok button to fall back on.
         self.tree.itemActivated.connect(self._on_activated)
+        item_activation.install(self.tree)
         self.tree.currentItemChanged.connect(lambda *_: self._on_current_changed())
 
         # Omitted (no box, no layout slot) rather than an empty QLabel: an

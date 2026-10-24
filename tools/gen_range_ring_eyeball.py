@@ -14,7 +14,11 @@ terrain:
 - an elevated `examples/` scenario with a Castle injected on the highest
   ground in view, captured in Stepped and Sloped. This is the placement
   question: the ring sits at the BUILDING's own height, while its radius
-  stays measured on the ground plane.
+  stays measured on the ground plane;
+- the flat-ground Castle again with a stand-in trigger effect setting its
+  range to 12 (GH #49 slice 2), in the same four views: a dashed ring at 14
+  tiles beside the solid one at 10, so the dashed one's ink box is 1.4 times
+  the solid one's on each axis around the same centre.
 
 The ring deliberately draws over the sprites, unlike the game's own, which
 composites its circle into the terrain -- see map_view._draw_unit_range_rings.
@@ -118,7 +122,7 @@ def _select(window, unit_const: int):
     return entry
 
 
-def _frame(window, centre: tuple[int, int]) -> None:
+def _frame(window, centre: tuple[int, int], radius: int = _FRAME_RADIUS) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
@@ -126,10 +130,10 @@ def _frame(window, centre: tuple[int, int]) -> None:
     cx, cy = centre
     rect = None
     for tx, ty in (
-        (cx - _FRAME_RADIUS, cy - _FRAME_RADIUS),
-        (cx + _FRAME_RADIUS, cy - _FRAME_RADIUS),
-        (cx - _FRAME_RADIUS, cy + _FRAME_RADIUS),
-        (cx + _FRAME_RADIUS, cy + _FRAME_RADIUS),
+        (cx - radius, cy - radius),
+        (cx + radius, cy - radius),
+        (cx - radius, cy + radius),
+        (cx + radius, cy + radius),
     ):
         polygon = map_view._tile_polygon(tx, ty)
         bounds = polygon.boundingRect()
@@ -171,6 +175,63 @@ def _flat_ground_captures(out_dir: Path) -> list[Path]:
             _select(window, HOUSE_CONST)
             _frame(window, house_tile)
             path = out_dir / f"house_{style.lower()}_{view}.png"
+            _grab(window, path)
+            written.append(path)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    return written
+
+
+TRIGGER_RANGE = 12.0
+# The trigger ring is 14 tiles, so the frame needs more room than _FRAME_RADIUS.
+TRIGGER_FRAME_RADIUS = 18
+
+
+def trigger_set_effect(value: float = TRIGGER_RANGE, unit_const: int = CASTLE_CONST):
+    """A Change Object Range SET `value` for every P1 `unit_const`, as
+    trigger_range.collect_range_effects() would report it."""
+    from descape import trigger_range
+    from descape.trigger_fields import UNSET
+
+    return trigger_range.RangeEffect(
+        sequence=0, trigger_index=0, trigger_name="Eyeball", effect_index=0,
+        effect_type=trigger_range.CHANGE_OBJECT_RANGE, effect_name="change_object_range",
+        operation=trigger_range.SET, quantity=value, source_player=1, unit_const=unit_const,
+        group=UNSET, object_type=UNSET, selected_ids=frozenset(), area=None,
+        has_conditions=False, looping=False, enabled=True,
+    )
+
+
+VIEWS = (("Stepped", True), ("Sloped", True), ("Flat", True), ("Flat", False))
+
+
+def set_view(window, style: str, isometric: bool) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window.terrain_style_combo.setCurrentText(style)
+    if style == "Flat":
+        window.iso_action.setChecked(isometric)
+    QApplication.processEvents()
+
+
+def _trigger_captures(out_dir: Path) -> list[Path]:
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    written: list[Path] = []
+    window = _open_window(BLANK_TEMPLATE_PATH)
+    castle_tile = (40, 40)
+    _place(window, CASTLE_CONST, castle_tile, 201)
+    effects = (trigger_set_effect(),)
+    # Stands in for a parsed file: every selection refresh re-reads it, so a direct push would be overwritten.
+    window._trigger_range_effects = lambda: effects
+    try:
+        for style, isometric in VIEWS:
+            set_view(window, style, isometric)
+            _select(window, CASTLE_CONST)
+            _frame(window, castle_tile, TRIGGER_FRAME_RADIUS)
+            view = "iso" if isometric else "top"
+            path = out_dir / f"castle_trigger_{style.lower()}_{view}.png"
             _grab(window, path)
             written.append(path)
     finally:
@@ -222,7 +283,7 @@ def _elevated_captures(out_dir: Path) -> list[Path]:
 
 def generate(out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    return _flat_ground_captures(out_dir) + _elevated_captures(out_dir)
+    return _flat_ground_captures(out_dir) + _elevated_captures(out_dir) + _trigger_captures(out_dir)
 
 
 def main() -> None:

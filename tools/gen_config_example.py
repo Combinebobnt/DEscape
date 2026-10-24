@@ -274,6 +274,12 @@ grid_follow_elevation: true
 # range. Default: false.
 range_rings: false
 
+# A dashed ring for each trigger that changes a selected building's range,
+# one per trigger, as if that trigger fired once, View > Range Rings > Trigger
+# Changes. Draws only with Selected Buildings on, and only once the triggers
+# have been read (Triggers mode). Default: true.
+range_rings_triggers: true
+
 # Each ring in its owner's player colour, View > Range Rings > Colour by
 # Owner. Applies to every ring layer. GAIA keeps the overlay_colors
 # range_ring colour. Default: false.
@@ -444,6 +450,11 @@ trigger_status_marker: {settings.TRIGGER_STATUS_MARKER_DEFAULT}
 # Default: true.
 trigger_status_color_ok_rows: true
 
+# Whether section divider rows take the status colour too. Their tick, cross
+# or dash (a section with no conditions or effects) shows either way, in the
+# marker modes that show icons. Default: false.
+trigger_status_color_sections: false
+
 # The trigger editor's button grid (under the button slot of Change Train
 # Location, Add Train Location and Change Research Location): whether its
 # "Show all triggers' changes" box is ticked, so the grid also applies every
@@ -499,14 +510,14 @@ def main() -> int:
 
     current = render()
     if args.check:
-        on_disk = OUT_PATH.read_text() if OUT_PATH.is_file() else None
+        on_disk = OUT_PATH.read_text(encoding="utf-8") if OUT_PATH.is_file() else None
         if on_disk != current:
             print(f"{OUT_PATH} is stale -- run tools/gen_config_example.py to regenerate", file=sys.stderr)
             return 1
         print(f"{OUT_PATH} is up to date")
         return 0
 
-    OUT_PATH.write_text(current)
+    OUT_PATH.write_text(current, encoding="utf-8", newline="\n")
     print(f"Wrote {OUT_PATH}")
     return 0
 

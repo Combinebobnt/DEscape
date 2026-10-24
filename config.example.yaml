@@ -175,6 +175,12 @@ grid_follow_elevation: true
 # range. Default: false.
 range_rings: false
 
+# A dashed ring for each trigger that changes a selected building's range,
+# one per trigger, as if that trigger fired once, View > Range Rings > Trigger
+# Changes. Draws only with Selected Buildings on, and only once the triggers
+# have been read (Triggers mode). Default: true.
+range_rings_triggers: true
+
 # Each ring in its owner's player colour, View > Range Rings > Colour by
 # Owner. Applies to every ring layer. GAIA keeps the overlay_colors
 # range_ring colour. Default: false.
@@ -332,6 +338,7 @@ keybinds:
   view_selection_owner_colour: ''
   view_range_rings: ''
   view_range_rings_by_owner: ''
+  view_range_rings_triggers: ''
   view_range_rings_buildings: ''
   view_range_rings_revealers: ''
   view_range_rings_selected_revealers: ''
@@ -418,6 +425,7 @@ keybinds:
   tool_ruler: R
   tool_place_unit: ''
   tool_wall_rect: ''
+  tool_wall_circle: ''
   tool_convert: ''
   tool_eraser: X
   tool_create_objects: ''
@@ -494,6 +502,11 @@ trigger_status_marker: color
 # a row that passes gets no colour and no tick, in every marker mode.
 # Default: true.
 trigger_status_color_ok_rows: true
+
+# Whether section divider rows take the status colour too. Their tick, cross
+# or dash (a section with no conditions or effects) shows either way, in the
+# marker modes that show icons. Default: false.
+trigger_status_color_sections: false
 
 # The trigger editor's button grid (under the button slot of Change Train
 # Location, Add Train Location and Change Research Location): whether its

@@ -5,9 +5,13 @@ session can drive.
 
 Deliberately asymmetric: an L-shaped water blob pushed against the map's own
 west edge, so one run checks the clipping and the outside-corner behaviour at
-once, where a centred square blob would check neither. Both files go through
+once, where a centred square blob would check neither. All four files go through
 the real write path (the terrain writes + beach_edges + scenario_write, the
 same code the GUI uses), never a byte patch.
+
+A second pair checks a land stroke's ring (GH #259): the same L, GRASS_1
+painted into a map flooded with deep water, so the beach lands on the water
+side, written as land_before/land_after.
 
 Writes into build/beach_pair/, which is gitignored.
 """
@@ -30,6 +34,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "real_blank_240x240.aoe2scenario"
 OUT_DIR = ROOT / "build" / "beach_pair"
 
 WATER_DEEP = 22
+GRASS_1 = 0
 BEACH_WIDTH = 1
 
 # An L against the west edge: a vertical arm at x 0..3 and a horizontal arm
@@ -38,6 +43,49 @@ BEACH_WIDTH = 1
 ARM_V = [(x, y) for y in range(20, 40) for x in range(4)]
 ARM_H = [(x, y) for y in range(36, 40) for x in range(4, 24)]
 CORE = ARM_V + ARM_H
+
+
+def _report_ring(mm, changed: list[int], painted_id: int) -> None:
+    beaches: dict[int, int] = {}
+    for index in changed:
+        tid = mm.terrain[index].terrain_id
+        beaches[tid] = beaches.get(tid, 0) + 1
+    print(f"core: {len(CORE)} tiles set to {name_for_terrain_id(painted_id)}")
+    print(f"ring: {len(changed)} tiles, width {BEACH_WIDTH}")
+    for tid, count in sorted(beaches.items()):
+        print(f"  {count} x {name_for_terrain_id(tid)} ({tid})")
+
+
+def _flooded():
+    scenario = load_map_and_units(FIXTURE)
+    for tile in scenario.map_manager.terrain:
+        set_terrain(tile, WATER_DEEP)
+    return scenario
+
+
+def _land_pair() -> None:
+    before_path = OUT_DIR / "land_before.aoe2scenario"
+    write_scenario(_flooded(), before_path, backup=False)
+    print(f"wrote {before_path}")
+
+    scenario = _flooded()
+    mm = scenario.map_manager
+    for x, y in CORE:
+        set_terrain(mm.terrain[y * mm.map_width + x], GRASS_1)
+    changed = apply_beach_ring(mm, CORE, GRASS_1, None, BEACH_WIDTH)
+    after_path = OUT_DIR / "land_after.aoe2scenario"
+    write_scenario(scenario, after_path, backup=False)
+    print(f"wrote {after_path}")
+    print()
+    _report_ring(mm, changed, GRASS_1)
+    print()
+    print("What to check in the AoE2:DE editor, opening land_after:")
+    print("  1. The whole map is deep water except an L of grass in the")
+    print("     north-west, its long arm down the west edge, its foot running east.")
+    print("  2. A one-tile beach all the way around the L, ON THE WATER SIDE:")
+    print("     the grass L itself is the full L, not shrunk by a tile.")
+    print("  3. NO beach wrapping onto the previous row's east edge.")
+    print("  4. The map loads and saves; land_before is the same water with no L.")
 
 
 def main() -> int:
@@ -61,15 +109,8 @@ def main() -> int:
     write_scenario(scenario, after_path, backup=False)
     print(f"wrote {after_path}")
 
-    beaches: dict[int, int] = {}
-    for index in changed:
-        tid = mm.terrain[index].terrain_id
-        beaches[tid] = beaches.get(tid, 0) + 1
     print()
-    print(f"core: {len(CORE)} tiles set to {name_for_terrain_id(WATER_DEEP)}")
-    print(f"ring: {len(changed)} tiles, width {BEACH_WIDTH}")
-    for tid, count in sorted(beaches.items()):
-        print(f"  {count} x {name_for_terrain_id(tid)} ({tid})")
+    _report_ring(mm, changed, WATER_DEEP)
     print()
     print("What to check in the AoE2:DE editor, opening the 'after' file:")
     print("  1. An L of deep water in the map's north-west, its long arm")
@@ -79,6 +120,8 @@ def main() -> int:
     print("  3. NO beach west of x=0 wrapping onto the previous row's east")
     print("     edge -- that is the clipping check.")
     print("  4. The 'before' file is the same map with none of it.")
+    print()
+    _land_pair()
     return 0
 
 

@@ -33,8 +33,11 @@ raises on a broken armour pair. None reads as unset for every kind.
 
 The caller builds the StatusContext, so this module needs no Qt and no
 document. With no vocabulary every entry is UNCHECKED, and so is every
-non-divider trigger (evaluate_trigger() never applies the zero-effects rule
-then).
+trigger but an empty section divider (evaluate_trigger() never applies the
+zero-effects rule then).
+
+A section divider rolls up its own conditions and effects like any trigger,
+never the triggers in its section, and is EMPTY when it has none (TASK-317).
 """
 
 from __future__ import annotations
@@ -86,7 +89,8 @@ class Status(Enum):
     OK = "ok"
     PROBLEM = "problem"
     UNCHECKED = "unchecked"  # no vocabulary for this scenario version, or a type id it does not list
-    NONE = "none"  # a section divider row, never styled
+    EMPTY = "empty"  # a section divider with no conditions and no effects
+    NONE = "none"  # no status at all, never styled
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,7 @@ class EntryStatus:
 
 UNCHECKED = EntryStatus(Status.UNCHECKED)
 OK = EntryStatus(Status.OK)
+EMPTY = EntryStatus(Status.EMPTY)
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,7 @@ class TriggerStatuses:
     trigger: EntryStatus
     conditions: tuple[EntryStatus, ...]
     effects: tuple[EntryStatus, ...]
+    divider: bool = False  # a section divider, whose row is uncoloured unless asked (TASK-317)
 
 
 # -- the table -----------------------------------------------------------------
@@ -438,6 +444,10 @@ def _is_divider(trigger: Any) -> bool:
     return trigger_organize.is_divider(str(read_value(trigger, "name") or ""))
 
 
+def _has_entries(trigger: Any) -> bool:
+    return bool(list(read_value(trigger, "conditions") or [])) or bool(list(read_value(trigger, "effects") or []))
+
+
 _OBJECTIVE_FLAGS = ("display_as_objective", "header", "display_on_screen")
 
 
@@ -453,11 +463,12 @@ def needs_effects(trigger: Any) -> bool:
 
 def trigger_status(trigger: Any, entry_statuses: Sequence[tuple[str, EntryStatus]]) -> EntryStatus:
     """A trigger's rollup over its labelled condition and effect statuses.
-    A divider is NONE; zero effects is a PROBLEM unless the trigger is shown
-    as an objective, an objective header or on screen (needs_effects()). `enabled` is
-    ignored: status is about completeness, not whether the trigger fires."""
-    if _is_divider(trigger):
-        return EntryStatus(Status.NONE)
+    A divider with no entries is EMPTY; zero effects is a PROBLEM unless the
+    trigger is a divider or is shown as an objective, an objective header or on
+    screen (needs_effects()). `enabled` is ignored: status is about
+    completeness, not whether the trigger fires."""
+    if _is_divider(trigger) and not _has_entries(trigger):
+        return EMPTY
     rolled = group_status(entry_statuses)
     if not list(read_value(trigger, "effects") or []) and needs_effects(trigger):
         return EntryStatus(Status.PROBLEM, ("has no effects", *rolled.reasons))
@@ -466,7 +477,7 @@ def trigger_status(trigger: Any, entry_statuses: Sequence[tuple[str, EntryStatus
 
 def evaluate_trigger(trigger: Any, context: StatusContext) -> TriggerStatuses:
     """Every entry's status plus the trigger rollup. With no vocabulary every
-    entry and every non-divider trigger is UNCHECKED, zero effects included."""
+    entry and every trigger but an empty divider is UNCHECKED, zero effects included."""
     return evaluate_with_references(trigger, context)[0]
 
 
@@ -478,9 +489,11 @@ def evaluate_with_references(trigger: Any, context: StatusContext) -> tuple[Trig
     change). With no vocabulary the pair is (False, ())."""
     conditions = list(read_value(trigger, "conditions") or [])
     effects = list(read_value(trigger, "effects") or [])
+    divider = _is_divider(trigger)
     if context.vocabulary is None:
-        rollup = trigger_status(trigger, []) if _is_divider(trigger) else UNCHECKED
-        return TriggerStatuses(rollup, (UNCHECKED,) * len(conditions), (UNCHECKED,) * len(effects)), False, ()
+        rollup = EMPTY if divider and not conditions and not effects else UNCHECKED
+        statuses = TriggerStatuses(rollup, (UNCHECKED,) * len(conditions), (UNCHECKED,) * len(effects), divider)
+        return statuses, False, ()
     unit_refs = False
     targets: list = []
     all_ok = True
@@ -523,5 +536,5 @@ def evaluate_with_references(trigger: Any, context: StatusContext) -> tuple[Trig
             )
             for slot, index in enumerate(entry_display_order(trigger, kind) if entries else ())
         ]
-    statuses = TriggerStatuses(trigger_status(trigger, labelled), condition_statuses, effect_statuses)
+    statuses = TriggerStatuses(trigger_status(trigger, labelled), condition_statuses, effect_statuses, divider)
     return statuses, unit_refs, tuple(targets)

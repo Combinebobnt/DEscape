@@ -26,6 +26,18 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Wall Circle tool** in Units mode (GH #125): drag a box to place an
+  outline ellipse of walls inside it, one undo step per drag; Shift makes it
+  a circle. It uses the wall picked in the catalog or with the Wall button,
+  joins and reshapes walls it touches, gives diagonal stretches diagonal
+  wall pieces, and follows "Walls skip occupied tiles".
+- **Range rings for trigger-changed range** (GH #49): with View > Range
+  Rings > Selected Buildings on, a selected building also gets a dashed ring
+  for each trigger that changes its range, one per trigger as if it fired
+  once, and the Inspector lists the values. Conditions, firing order and
+  loops are not simulated, and Triggers mode must be opened once before the
+  rings appear. Toggle with View > Range Rings > Trigger Changes (on by
+  default).
 - **New Map dialog** (GH #243): File > New Map… (Ctrl+N) opens one panel
   for the size (the game's sizes, or a square Custom 61-480), the game (Age
   of Empires II or Return of Rome), the starting terrain and the elevation,
@@ -78,9 +90,19 @@ content, link the doc instead of summarizing it.
   its owner's architecture style and at the game's own position, whether or
   not Show Garrisoned is on. Rams, siege towers and transport ships show
   theirs too.
+- **Auto beach works for land too** (GH #259): painting land into water
+  with Draw, Draw Line or Draw Rectangle lays the beach on the water side.
+  Beaches, bridges and non-navigable shores still lay none, and rice
+  paddies, mangroves and reeds beside the stroke are kept.
 
 ### Changed
 
+- **Trigger status icons have their own column** (GH #166 follow-up): the
+  tick and cross sit in a narrow column between ID and Trigger, shown in the
+  two icon marker modes, so trigger names line up. A section row now shows a
+  tick or cross from its own conditions and effects, or a dash when it has
+  none; Settings > Appearance > Trigger status gains *Colour section rows*,
+  off by default.
 - **Settings has a Mods tab** holding the profile folder and the Mod art
   list (GH #244).
 - **Smoother zooming with Show sprites off** in Stepped and Sloped: the
@@ -133,6 +155,18 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Return and Enter pick a list row on a Mac**: in the unit catalog, the
+  terrain swatches, a value picker and the Disables lists they now add or
+  pick the row, as on Windows and Linux, instead of doing nothing.
+- **A hand-edited `config.yaml` with a non-ASCII folder name reads right on
+  Windows**: it is read as UTF-8 (the example's encoding), a byte-order mark
+  included, where Windows' default encoding garbled the path. A file saved
+  in the older ANSI encoding still reads.
+- **A Messages box's grip drags it down to its two-line minimum** in a pane
+  with room, where it used to stop about a line short.
+- **Monasteries and Fortified Churches hold relics**: a Monastery now shows
+  a Garrison block that takes relics (and nothing else), and a Fortified
+  Church takes relics along with its villagers and monks.
 - **The Units inspector clears when opening or closing a map**, instead of
   keeping the previous file's selected unit or group fields.
 - **Keeping a large unit selection in Terrain no longer slows every elevation

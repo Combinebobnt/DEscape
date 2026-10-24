@@ -65,18 +65,25 @@ def test_a_larger_font_widens_and_a_smaller_one_does_not_narrow(app_font) -> Non
     from descape.map_options_panel import MapOptionsPanel
     from descape.trigger_panel import TriggerPanel
 
-    family = app_font.font().family()
+    pinned = app_font.font()
+
+    def scaled(factor: float) -> QFont:
+        # Relative to the pin, whose point size differs on macOS (testkit.qt_window._qt_font_dpi).
+        font = QFont(pinned)
+        font.setPointSizeF(pinned.pointSizeF() * factor)
+        return font
+
     with gc_hold.paused():
-        app_font.setFont(QFont(family, 18))
+        app_font.setFont(scaled(1.5))
     assert MapOptionsPanel.MIN_USEFUL_WIDTH >= 440
     assert TriggerPanel.MIN_USEFUL_WIDTH >= 500
     assert MapOptionsPanel.MIN_USEFUL_WIDTH < TriggerPanel.MIN_USEFUL_WIDTH
     for owner, attribute, base_px in _gh142_panels():
-        # 18pt over the pinned 12pt is about 1.5x; 1.45x leaves room for hinting.
+        # 1.45x leaves room for hinting.
         assert getattr(owner, attribute) >= base_px * 1.45, owner.__name__
 
     with gc_hold.paused():
-        app_font.setFont(QFont(family, 8))
+        app_font.setFont(scaled(8 / 12))
     assert MapOptionsPanel.MIN_USEFUL_WIDTH == 300
     assert TriggerPanel.MIN_USEFUL_WIDTH == 340
     for owner, attribute, base_px in _gh142_panels():

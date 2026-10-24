@@ -41,6 +41,7 @@ _SNOW_SOFT = next(
 )
 _BLACK = next(e.id for e in terrain_catalog.terrains() if e.name == "BLACK")
 _WATER_DEEP = 22
+_BEACH = 2
 
 
 def _view(current_id: int | None = _GRASS_1):
@@ -363,9 +364,9 @@ def test_a_group_heading_click_keeps_the_previous_terrain() -> None:
 def test_a_user_pick_regates_auto_beach() -> None:
     window = _terrain_window()
     try:
-        _user_pick(window, _GRASS_1)
+        _user_pick(window, _BEACH)
         assert not window.auto_beach_check.isEnabled()
-        _user_pick(window, _WATER_DEEP)
+        _user_pick(window, _GRASS_1)
         assert window.auto_beach_check.isEnabled()
     finally:
         _close(window)

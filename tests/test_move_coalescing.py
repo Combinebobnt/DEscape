@@ -359,6 +359,9 @@ def test_paste_region_anchors_on_the_pending_move_not_the_last_handled_one() -> 
         window._on_tool_selected("select")
         window.on_region_selected((0, 0, 1, 1))
         window.copy_region()
+        # Select's options row re-lays out on the next turn, which can scroll the map: settle it
+        # before _tile_pos, or the stashed move maps through the new scroll (a tile off on macOS CI).
+        _pump(view)
         _send(view, QEvent.MouseMove, _tile_pos(view, (10, 12)))
         _pump(view)
         assert window._hover_tile == (10, 12)

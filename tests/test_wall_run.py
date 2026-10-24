@@ -371,6 +371,57 @@ def test_a_ring_clipped_at_the_map_edge_is_an_open_three_sided_run():
     assert (0, 12) not in by_tile
 
 
+# --- Wall Circle's ellipse (GH #125) -------------------------------------
+
+
+def _ellipse(x0, y0, x1, y1, size=60):
+    from descape import shape_tools
+
+    return shape_tools.ellipse_perimeter_tiles(x0, y0, x1, y1, size, size)
+
+
+def _expected_shape(tile, ring: set) -> int:
+    """The shape a ring tile's two ring neighbours call for, read off their
+    directions: an axis stretch is a run (0 along x, 1 along y), a diagonal
+    stretch a diagonal run (4 for NE-SW, 3 for NW-SE, north being -y), and a
+    tile between an axis and a diagonal step a tower (2)."""
+    x, y = tile
+    steps = {(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy) and (x + dx, y + dy) in ring}
+    assert len(steps) == 2, (tile, steps)
+    shapes = {
+        frozenset({(-1, 0), (1, 0)}): 0,
+        frozenset({(0, -1), (0, 1)}): 1,
+        frozenset({(1, -1), (-1, 1)}): 4,
+        frozenset({(-1, -1), (1, 1)}): 3,
+    }
+    return shapes.get(frozenset(steps), 2)
+
+
+@pytest.mark.parametrize("box", [(5, 10, 19, 20), (5, 10, 20, 21), (10, 5, 20, 29), (3, 3, 33, 33)])
+def test_an_ellipse_ring_gives_runs_diagonals_and_towers_where_its_steps_say(box):
+    ring = _ellipse(*box)
+    plan = _plan(ring)
+    by_tile = {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+    assert set(by_tile) == set(ring)
+    assert by_tile == {tile: _expected_shape(tile, set(ring)) for tile in ring}
+    assert set(by_tile.values()) == {0, 1, 2, 3, 4}, "every shape should be exercised"
+
+
+def test_an_ellipse_sharing_a_tile_with_an_existing_run_skips_it_and_rewrites_the_junction():
+    """An existing x run (3..7, 15) crosses the ellipse's left apex (5, 15):
+    that tile is skipped, and its piece, now a crossing, is rewritten 0 -> 2
+    in the same plan. The run's other pieces keep their shapes."""
+    ring = _ellipse(5, 10, 19, 20)
+    assert {(5, 14), (5, 15), (5, 16)} <= set(ring) and (4, 15) not in ring and (6, 15) not in ring
+    existing = [_wall_at(x, 15, 2.0 if x in (3, 7) else 0.0) for x in range(3, 8)]
+    plan = _plan(ring, existing)
+    assert plan.skipped == 1
+    assert len(plan.nodes) == len(ring) - 1
+    assert [(unit, variant) for _p, unit, variant in plan.rewrites] == [(existing[2], 2)]
+    by_tile = {(int(n.x), int(n.y)): n.variant for n in plan.nodes}
+    assert by_tile[(5, 14)] == by_tile[(5, 16)] == 2
+
+
 def test_a_path_wholly_on_existing_walls_plans_nothing_new():
     existing = [_wall_at(x, 10) for x in range(5, 11)]
     plan = _plan([(x, 10) for x in range(5, 11)], existing)

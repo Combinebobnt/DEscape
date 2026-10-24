@@ -14,7 +14,8 @@ import math
 import numpy as np
 import pytest
 
-from descape import iso_geometry, range_overlay, terrain_palette
+from descape import iso_geometry, range_overlay, terrain_palette, trigger_range
+from descape.trigger_fields import UNSET
 
 _CASTLE_CONST = 82  # 4x4, range 8.0
 _HOUSE_CONST = 70  # 2x2, range 0.0
@@ -98,6 +99,53 @@ def test_all_buildings_leaves_out_mobile_siege() -> None:
     it), but not a Show Buildings member, so All Buildings skips it."""
     assert range_overlay.ring_radius_for_const(_TREBUCHET_CONST) is not None
     assert range_overlay.persistent_ring_radius(_TREBUCHET_CONST, revealers=True, buildings=True) is None
+
+
+# --- trigger rings (GH #49 slice 2) ---------------------------------------------
+
+
+def _set_effect(trigger_index: int, value: float, *, operation: int = trigger_range.SET) -> trigger_range.RangeEffect:
+    """A no-filter Change Object Range for player 1: every object of theirs."""
+    return trigger_range.RangeEffect(
+        sequence=trigger_index, trigger_index=trigger_index, trigger_name=f"T{trigger_index}", effect_index=0,
+        effect_type=trigger_range.CHANGE_OBJECT_RANGE, effect_name="change_object_range", operation=operation,
+        quantity=value, source_player=1, unit_const=UNSET, group=UNSET, object_type=UNSET,
+        selected_ids=frozenset(), area=None, has_conditions=False, looping=False, enabled=True,
+    )
+
+
+def _trigger_radii(unit_const: int, *values: float) -> tuple[float, ...]:
+    index = trigger_range.index_effects([_set_effect(i, v) for i, v in enumerate(values)])
+    return range_overlay.trigger_ring_radii(
+        index, player_id=1, unit_const=unit_const, reference_id=1, own_tile=(10, 10)
+    )
+
+
+def test_a_trigger_ring_uses_the_footprint_edge_rule() -> None:
+    assert _trigger_radii(_CASTLE_CONST, 12.0) == (14.0,)
+
+
+def test_a_non_building_gets_no_trigger_ring() -> None:
+    assert _trigger_radii(_ARCHER_CONST, 12.0) == ()
+
+
+def test_a_value_equal_to_the_base_or_not_above_zero_draws_nothing() -> None:
+    assert _trigger_radii(_CASTLE_CONST, 8.0, 0.0, -3.0, 11.0) == (13.0,)
+
+
+def test_trigger_values_are_deduplicated_in_trigger_order() -> None:
+    assert _trigger_radii(_CASTLE_CONST, 12.0, 11.0, 12.0) == (14.0, 13.0)
+
+
+def test_trigger_rings_are_capped() -> None:
+    values = [float(v) for v in range(10, 10 + range_overlay.MAX_TRIGGER_RINGS + 3)]
+    radii = _trigger_radii(_CASTLE_CONST, *values)
+    assert radii == tuple(v + 2.0 for v in values[: range_overlay.MAX_TRIGGER_RINGS])
+
+
+def test_a_building_with_base_range_zero_still_gets_its_trigger_ring() -> None:
+    assert range_overlay.ring_radius_for_const(_HOUSE_CONST) is None
+    assert _trigger_radii(_HOUSE_CONST, 6.0) == (7.0,)
 
 
 # --- sampling ----------------------------------------------------------------

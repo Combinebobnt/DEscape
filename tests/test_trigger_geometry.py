@@ -254,7 +254,7 @@ def _measure_geometry(path: Path) -> tuple[int, int] | None:
             definitions = vocabulary.conditions if kind == "condition" else vocabulary.effects
             for entry in getattr(trigger, list_name):
                 for fields in trigger_geometry.coordinate_fields(definitions.get(getattr(entry, type_attribute))):
-                    set_count = sum(trigger_geometry._coordinate(entry, f) >= 0 for f in fields)
+                    set_count = sum(trigger_geometry.coordinate(entry, f) >= 0 for f in fields)
                     partial += 0 < set_count < len(fields)
     return areas, partial
 

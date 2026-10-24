@@ -33,6 +33,18 @@ over-accepts for a ram (infantry only in game); the refusal this module backs
 exists to stop an impossible file, and an over-refusal would block a legal
 edit, so the bias is deliberate.
 
+**Relics are the one rule the masks do not carry** (TASK-467). A Monastery
+(104, and its hidden age variants 30-32) has `garrison_capacity` 10 and mask
+0, like a Market, and a Relic's class (42) answers to no bit, yet the game
+puts relics in a monastery. That is a separate engine rule, so it is
+written out here: a class 42 const goes into a _RELIC_HOSTS const, and
+nothing else is opened. A monastery still refuses a monk; a Fortified Church
+(1806, mask 9) keeps its villagers and monks and adds relics. Return of Rome
+has no relic hosts: its 104 and 30-32 are Temples. A relic counts against
+the same base capacity as any occupant. No scanned scenario (the examples,
+the maintainer set, a game profile: about 450 files, 2026-10-23) garrisons a
+relic, so the 10 is the .dat's figure, not a measured one.
+
 Capacity is the .dat's base value. Civ bonuses and techs raise it at runtime
 and are not in this table, so `capacity()` is strict by design -- the UI names
 the base number when it refuses.
@@ -96,6 +108,14 @@ _CLASS_BIT = {
     61: MOUNTED_BIT,  # Controlled animal (a riderless horse or camel)
 }
 
+RELIC_CLASS = 42
+
+# Per dataset: the hosts the relic rule (module docstring) admits relics into.
+_RELIC_HOSTS = {
+    game_dataset.AOE2: frozenset({104, 30, 31, 32, 1806}),  # Monastery x4, Fortified Church
+    game_dataset.ROR: frozenset(),
+}
+
 
 @game_dataset.cache(maxsize=1)
 def _table() -> tuple[dict[int, dict[str, int]], dict[int, int]]:
@@ -132,14 +152,26 @@ def can_hold(host_const: int) -> bool:
     and a Stable all carry `garrison_capacity` 10 with mask 0, which is the
     .dat's way of saying "no". Capacity alone would put an Inspector block
     with a permanently disabled Add button on a third of the buildings in the
-    game.
+    game. A relic host (module docstring) is the exception: mask 0, yet it
+    holds relics.
     """
-    return capacity(host_const) > 0 and garrison_mask(host_const) != 0
+    return capacity(host_const) > 0 and (garrison_mask(host_const) != 0 or holds_relics(host_const))
+
+
+def holds_relics(host_const: int) -> bool:
+    """Whether the relic rule (module docstring) lets relics inside `host_const`."""
+    return host_const in _RELIC_HOSTS[game_dataset.active()]
+
+
+def is_relic(unit_const: int) -> bool:
+    _, classes = _table()
+    return classes.get(unit_const) == RELIC_CLASS
 
 
 def unit_bit(unit_const: int) -> int:
     """The garrison bit `unit_const`'s class answers to, or 0 for a const
-    that can never be garrisoned."""
+    that can never be garrisoned. A relic is 0 here: it goes in by the relic
+    rule, not a bit."""
     _, classes = _table()
     return _CLASS_BIT.get(classes.get(unit_const, -1), 0)
 
@@ -147,7 +179,9 @@ def unit_bit(unit_const: int) -> int:
 def accepts(host_const: int, occupant_const: int) -> bool:
     """Whether the game would let `occupant_const` garrison inside
     `host_const`. Capacity is a separate question -- see capacity()."""
-    return bool(garrison_mask(host_const) & unit_bit(occupant_const))
+    if garrison_mask(host_const) & unit_bit(occupant_const):
+        return True
+    return holds_relics(host_const) and is_relic(occupant_const)
 
 
 @game_dataset.cache(maxsize=32)
@@ -156,10 +190,15 @@ def eligible_consts(host_const: int) -> frozenset[int]:
     rebuilds its item list every time it opens, and this is a walk of all
     2,642 table rows."""
     mask = garrison_mask(host_const)
-    if not mask:
+    relics = holds_relics(host_const)
+    if not mask and not relics:
         return frozenset()
     _, classes = _table()
-    return frozenset(const for const, class_ in classes.items() if mask & _CLASS_BIT.get(class_, 0))
+    return frozenset(
+        const
+        for const, class_ in classes.items()
+        if mask & _CLASS_BIT.get(class_, 0) or (relics and class_ == RELIC_CLASS)
+    )
 
 
 def refusal(

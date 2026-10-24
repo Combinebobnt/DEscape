@@ -135,7 +135,9 @@ The default tier is meant to give the same result on any machine.
 `testkit/qt_window.ensure_qapp()` pins the app font to the bundled
 `testkit/fonts/DejaVuSans.ttf` at 12pt and hard-sets `QT_FONT_DPI` to 96, so
 a shell's own `QT_FONT_DPI` has no effect; only `DESCAPE_TEST_FONT_DPI`
-(which the sweep sets) overrides it. The session header prints the resolved
+(which the sweep sets) overrides it. On macOS it sets 3/4 of that DPI (72)
+and a matching larger point size, so the font has the same pixel size and
+Qt's styles, which scale by DPI over 72 there, keep Linux's metrics. The session header prints the resolved
 font, DPI and one reference string's advance. Two guard tests back this up:
 `test_collection_env.py` collects the whole suite with `HOME`,
 `XDG_CONFIG_HOME` and `AOE2DE_INSTALL_PATH` hidden and an empty

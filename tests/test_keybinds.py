@@ -217,6 +217,7 @@ _TOGGLE_ACTION_IDS = (
     "view_selection_owner_colour",
     "view_range_rings",
     "view_range_rings_by_owner",
+    "view_range_rings_triggers",
     "view_range_rings_buildings",
     "view_range_rings_revealers",
     "view_range_rings_selected_revealers",

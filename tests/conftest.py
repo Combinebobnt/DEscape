@@ -669,6 +669,8 @@ def _isolated_settings(tmp_path, monkeypatch):
     # setenv first so teardown restores "unset" even after testkit.isolate_settings() sets it (TASK-378).
     monkeypatch.setenv("AOE2DE_PROFILE_PATH", "")
     monkeypatch.delenv("AOE2DE_PROFILE_PATH", raising=False)
+    # Windows auto-detects the profile from %USERPROFILE%\Games, not from the hidden install (TASK-409).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
     # Mod art (TASK-378) is module state the viewer switches on; every test starts with it off.
     from descape import mod_graphics
 

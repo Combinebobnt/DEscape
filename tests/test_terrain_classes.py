@@ -15,6 +15,7 @@ import pytest
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
 from descape import batch_api, terrain_classes
+from descape.beach_edges import ring_mode
 from descape.terrain_classes import (
     DEFAULT_BEACH_ID,
     auto_beach_for,
@@ -178,12 +179,13 @@ def test_the_divergence_from_batch_api_is_pinned():
     # 26 ICE_NAVIGABLE: batch_api excludes ice on purpose (walkable ground
     # for land units), the .dat calls it shallows.
     # 28 WATER_2D_BRIDGE: batch_api's name match says water, the .dat says
-    # land -- correctly, it is a bridge deck you walk on. The one case where
-    # the .dat is the safer answer for THIS feature: painting a bridge tile
-    # must not offer an auto-beach.
+    # land -- correctly, it is a bridge deck you walk on. Painting a bridge
+    # tile must still not offer an auto-beach, now that land picks do (GH
+    # #259): beach_edges.ring_mode(28) is None, a curated carve-out.
     # 55 FOREST_MANGROVE and 63-67 RICE_FARM*: no water word in the name,
     # but the game counts them as shallows.
     assert not is_water_family(28)
+    assert ring_mode(28) is None
     assert batch_api.is_water(28)
     # FOREST_REEDS_SHALLOWS is NOT in the set: its name carries "SHALLOW",
     # so the keyword classifier happens to agree with the table here.

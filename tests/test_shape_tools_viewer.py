@@ -562,17 +562,24 @@ def test_a_mid_drag_undo_is_safe() -> None:
 
 _WATER_DEEP = 22
 _BEACH = 2
+_GRASS_1 = 0
 
 
 def _terrain_tiles(window, terrain_id: int) -> set[tuple[int, int]]:
     return {(t.x, t.y) for t in window.scenario.map_manager.terrain if t.terrain_id == terrain_id}
 
 
-def _beach_shape_window(tool: str, ticked: bool):
+def _beach_shape_window(tool: str, ticked: bool, painted: int = _WATER_DEEP):
+    """A land pick (GH #259) paints over a map flooded with deep water, so its
+    ring lands on the water side."""
     window = _shape_window(tool)
     window.terrain_panel.set_terrain(_WATER_DEEP)
     window.auto_beach_check.setChecked(ticked)
     window.beach_combo.setCurrentIndex(window.beach_combo.findData(_BEACH))
+    if painted != _WATER_DEEP:
+        window.terrain_panel.set_terrain(painted)
+        for tile in window.scenario.map_manager.terrain:
+            tile.terrain_id = _WATER_DEEP
     return window
 
 
@@ -592,16 +599,18 @@ def _press_ctrl_z(window) -> None:
     QApplication.processEvents()
 
 
+@pytest.mark.parametrize("painted", [_WATER_DEEP, _GRASS_1])
 @pytest.mark.parametrize("tool,width", [("draw_line", 1), ("draw_rect", 1), ("draw_rect", 3)])
-def test_auto_beach_rings_a_water_shape_in_one_undo_step(tool: str, width: int) -> None:
+def test_auto_beach_rings_a_shape_in_one_undo_step(tool: str, width: int, painted: int) -> None:
     """Width 3 on a filled rectangle checks that ringing only the shape's edge
-    tiles (viewer._shape_shore) lays the same ring as the whole shape."""
+    tiles (viewer._shape_shore) lays the same ring as the whole shape. A land
+    shape in water rings outward onto the water (GH #259)."""
     from descape import beach_edges, terrain_classes
     from descape.beach_edges import ring_tiles
 
-    # _shape_shore is exact only while the ring skips every water family.
+    # _shape_shore is exact only while water mode skips every water family (land mode skips all land).
     assert terrain_classes.WATER_FAMILIES == beach_edges._PROTECTED_FAMILIES
-    window = _beach_shape_window(tool, ticked=True)
+    window = _beach_shape_window(tool, ticked=True, painted=painted)
     window.beach_width_spin.setValue(width)
     try:
         assert window.auto_beach_param_action.isVisible()
@@ -609,12 +618,12 @@ def test_auto_beach_rings_a_water_shape_in_one_undo_step(tool: str, width: int) 
         mm = window.scenario.map_manager
         before = len(window.edit_history.records)
         _drag(window.map_view, (4, 10), (20, 14))
-        water = _terrain_tiles(window, _WATER_DEEP)
-        assert water
-        assert _terrain_tiles(window, _BEACH) == set(ring_tiles(water, width, mm.map_width, mm.map_height))
+        shape = _terrain_tiles(window, painted)
+        assert shape
+        assert _terrain_tiles(window, _BEACH) == set(ring_tiles(shape, width, mm.map_width, mm.map_height))
         assert len(window.edit_history.records) == before + 1
         _press_ctrl_z(window)
-        assert _terrain_tiles(window, _WATER_DEEP) == set()
+        assert _terrain_tiles(window, painted) == set()
         assert _terrain_tiles(window, _BEACH) == set()
     finally:
         _close(window)
@@ -657,5 +666,26 @@ def test_auto_beach_rings_an_outlined_water_rectangle_inside_and_out_and_ctrl_z_
         _press_ctrl_z(window)
         assert _terrain_tiles(window, _WATER_DEEP) == set()
         assert _terrain_tiles(window, _BEACH) == set()
+    finally:
+        _close(window)
+
+
+def test_auto_beach_rings_an_outlined_land_rectangle_inside_and_out() -> None:
+    """GH #259's mirror of the outline case: the water inside a hollow land
+    outline is pre-existing terrain, so it gets beached as well as the outside."""
+    from descape.beach_edges import ring_tiles
+
+    window = _beach_shape_window("draw_rect", ticked=True, painted=_GRASS_1)
+    try:
+        window.rect_fill_combo.setCurrentText("Outline")
+        window.beach_width_spin.setValue(1)
+        mm = window.scenario.map_manager
+        _drag(window.map_view, (4, 10), (20, 18))
+        border = {(x, y) for y in range(10, 19) for x in range(4, 21) if x in (4, 20) or y in (10, 18)}
+        assert _terrain_tiles(window, _GRASS_1) == border
+        beach = _terrain_tiles(window, _BEACH)
+        assert beach == set(ring_tiles(border, 1, mm.map_width, mm.map_height))
+        assert (10, 14) not in beach and (5, 11) in beach and (3, 9) in beach
+        assert (10, 14) in _terrain_tiles(window, _WATER_DEEP)
     finally:
         _close(window)

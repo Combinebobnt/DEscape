@@ -1183,3 +1183,72 @@ def test_the_ring_follows_the_brush_footprint() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- auto beach for a land pick (GH #259) -------------------------------------
+
+_GRASS_1 = 0
+
+
+def _land_window(brush: int, beach: bool = True):
+    """Draw on GRASS_1 over a map flooded with deep water, so the ring lays
+    its beach on the water side."""
+    window = _beach_window(enabled=beach)
+    window.terrain_panel.set_terrain(_GRASS_1)
+    window.brush_size_spin.setValue(brush)
+    for tile in window.scenario.map_manager.terrain:
+        tile.terrain_id = _WATER_DEEP
+    return window
+
+
+def _drag(window, xs, y: int) -> None:
+    window.on_edit_stroke_start()
+    for x in xs:
+        window.on_edit_stroke_tile(x, y, 0)
+    window.on_edit_stroke_end()
+
+
+@pytest.mark.parametrize("brush", [1, 3])
+def test_a_land_drag_leaves_no_beach_inside_the_land(brush: int) -> None:
+    """Hazard 1's mirror: the ring tile ahead of the brush becomes beach and
+    must turn into land when the brush reaches it, so the cores' union is all
+    land and the beach sits only on the water beside it."""
+    plain = _land_window(brush, beach=False)
+    beached = _land_window(brush)
+    try:
+        for window in (plain, beached):
+            _drag(window, range(18, 24), 20)
+        cores = _tiles_with(plain, _GRASS_1)
+        assert _tiles_with(beached, _GRASS_1) == cores
+        beach = _tiles_with(beached, _BEACH)
+        assert beach and not (beach & cores)
+        half = brush // 2
+        for x in range(18, 24):
+            assert (x, 20 - half - 1) in beach
+            assert (x, 20 + half + 1) in beach
+        # Every beach tile touches the land, and every water tile that does is beach.
+        ring = {
+            (x + dx, y + dy)
+            for x, y in cores
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+        } - cores
+        assert beach == ring
+    finally:
+        for window in (plain, beached):
+            window.edit_history.mark_saved()
+            window.close()
+
+
+def test_one_land_auto_beach_drag_is_one_undo_record() -> None:
+    window = _land_window(1)
+    try:
+        before = len(window.edit_history.records)
+        _drag(window, range(18, 22), 20)
+        assert len(window.edit_history.records) == before + 1
+        assert _tiles_with(window, _BEACH)
+        window.undo()
+        assert _tiles_with(window, _WATER_DEEP) == set(_grid(window))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

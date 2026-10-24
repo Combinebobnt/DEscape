@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from descape import garrison
+from descape import game_dataset, garrison
 from descape.scenario_io import load_map_and_units
 
 # host const -> base capacity, read from empires2_x2_p1.dat directly.
@@ -45,7 +45,21 @@ ACCEPTS_GROUND_TRUTH = (
     (545, 539, False),  # Galley onto a Transport Ship
     (84, 83, False),  # Market: garrison_capacity 10, but its mask holds nothing
     (70, 83, False),  # House: no capacity at all
+    (104, 285, True),  # Relic into a Monastery (TASK-467): mask 0, yet the game takes it
+    (32, 285, True),  # Relic into the hidden Imperial Age Monastery
+    (1806, 285, True),  # Relic into a Fortified Church
+    (1806, 125, True),  # Monk into a Fortified Church: its own mask still applies
+    (104, 125, False),  # Monk into a Monastery: the relic rule opens nothing else
+    (104, 83, False),  # Villager into a Monastery
+    (84, 285, False),  # Relic into a Market: same mask 0, but no relic rule
+    (82, 285, False),  # Relic into a Castle
+    (545, 285, False),  # Relic onto a Transport Ship: carried by a monk, never itself
 )
+
+MONASTERY = 104
+FORTIFIED_CHURCH = 1806
+RELIC = 285
+MONK = 125
 
 
 def test_capacity_matches_the_game_table() -> None:
@@ -87,6 +101,50 @@ def test_can_hold_separates_a_real_host_from_a_capacity_only_row() -> None:
     assert garrison.can_hold(545)
     assert not garrison.can_hold(84)  # capacity 10, mask 0
     assert not garrison.can_hold(70)
+
+
+def test_every_monastery_variant_and_the_fortified_church_hold_relics() -> None:
+    for host in (MONASTERY, 30, 31, 32, FORTIFIED_CHURCH):
+        assert garrison.can_hold(host), host
+        assert garrison.capacity(host) == 10, host
+
+
+def test_a_relic_host_admits_every_relic_const_and_no_other_occupant() -> None:
+    """Relic (285), its ten hidden variants and the Piece of the True Cross
+    (688) are the class 42 consts; a Monastery admits exactly those."""
+    relics = {285, 287, 288, 289, 290, 292, 294, 295, 296, 297, 298, 688}
+    assert garrison.eligible_consts(MONASTERY) == frozenset(relics)
+    church = garrison.eligible_consts(FORTIFIED_CHURCH)
+    assert relics <= church
+    assert MONK in church and 83 in church
+    assert RELIC not in garrison.eligible_consts(79)
+
+
+def test_a_relic_host_counts_relics_against_its_capacity() -> None:
+    assert garrison.refusal(MONASTERY, "Monastery", 0, [RELIC] * 10) is None
+    assert garrison.refusal(MONASTERY, "Monastery", 9, [RELIC, RELIC]) == (
+        "Garrison: Monastery has room for 1 more (10 places)"
+    )
+
+
+def test_a_monastery_refuses_a_monk_by_name() -> None:
+    assert garrison.refusal(MONASTERY, "Monastery", 0, [RELIC, MONK], name_of={RELIC: "Relic", MONK: "Monk"}.get) == (
+        "Garrison: Monk cannot go inside Monastery"
+    )
+
+
+def test_return_of_rome_temples_hold_no_relics() -> None:
+    """RoR's 104 and 30-32 are Temples: the relic rule is AoE2's alone."""
+    game_dataset.set_active(game_dataset.ROR)
+    try:
+        for host in (104, 30, 31, 32):
+            assert not garrison.holds_relics(host)
+            assert not garrison.can_hold(host)
+            assert not garrison.accepts(host, RELIC)
+            assert garrison.eligible_consts(host) == frozenset()
+    finally:
+        game_dataset.set_active(game_dataset.AOE2)
+    assert garrison.accepts(MONASTERY, RELIC)
 
 
 # Stays corpus: a census of game-authored garrisons; the test map's come from its generator.

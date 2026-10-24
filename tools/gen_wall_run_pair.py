@@ -29,6 +29,10 @@ Three edits, all deliberately asymmetric so "did anything change" becomes
      "before" already holds the gate, placed as in 6. The "after" has the four
      walls under its new footprint removed and the four tiles it left filled
      with the run's own wall.
+  8. A Wall Circle ring (GH #125: a 15x11 ellipse, deliberately not a
+     circle), in both an integer and a radian file, placed as 5's ring is:
+     its side apex sits on the anchor wall, so it shows a junction too. Its
+     diagonal stretches are the shapes 3 and 4 in a closed ring.
 
 Writes into build/wall_run_pairs/, which is gitignored.
 """
@@ -68,6 +72,9 @@ CASES = [
     # The 2026-09-21 wall enclosure plan: the Wall Rectangle tool's ring.
     ("ring_integer", "2_Joan_coop_1_v0_13.aoe2scenario", "ring", PLAYER),
     ("ring_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario", "ring", PLAYER),
+    # GH #125: the Wall Circle tool's ring.
+    ("circle_integer", "2_Joan_coop_1_v0_13.aoe2scenario", "circle", PLAYER),
+    ("circle_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario", "circle", PLAYER),
 ]
 
 STONE_GATE = 64  # spans 4 tiles along x; a click on tile t covers t-1..t+2
@@ -106,6 +113,16 @@ def _path(kind: str, wx: int, wy: int, w: int, h: int, along_x: bool):
             return shape_tools.rect_perimeter_tiles(wx, wy - 2, wx + sx * 8, wy + 2, w, h)
         sy = -1 if wy > h // 2 else 1
         return shape_tools.rect_perimeter_tiles(wx - 2, wy, wx + 2, wy + sy * 8, w, h)
+    if kind == "circle":
+        # GH #125's Wall Circle: a 15x11 ellipse (not a circle, so a
+        # transposed write would show; an 11x7 one has no diagonal pieces),
+        # placed as "ring" is: its side apex on the anchor, the long axis
+        # along the anchor run, away from the nearer map edge.
+        if along_x:
+            sx = -1 if wx > w // 2 else 1
+            return shape_tools.ellipse_perimeter_tiles(wx, wy - 5, wx + sx * 14, wy + 5, w, h)
+        sy = -1 if wy > h // 2 else 1
+        return shape_tools.ellipse_perimeter_tiles(wx - 5, wy, wx + 5, wy + sy * 14, w, h)
     if kind.startswith("shallow"):
         # Away from whichever edge the anchor wall happens to sit near -- a
         # clipped path would hide the very bend this case exists to show.

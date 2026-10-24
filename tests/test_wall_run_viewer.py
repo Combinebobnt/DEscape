@@ -815,6 +815,197 @@ def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
         _close(window)
 
 
+# --- Wall Circle (GH #125 Part B) ---------------------------------------
+
+# A 15x11 drag box: big enough that its ellipse has diagonal stretches (3 and 4), not just towers and runs.
+_CIRCLE_A, _CIRCLE_B = (20, 40), (34, 50)
+
+
+def _circle_window(const: int = WALL):
+    window = _window(const)
+    window.wall_circle_action.setChecked(True)
+    assert window._current_tool == "wall_circle"
+    return window
+
+
+def _ellipse(x0, y0, x1, y1):
+    from descape import shape_tools
+
+    return shape_tools.ellipse_perimeter_tiles(x0, y0, x1, y1, 120, 120)
+
+
+def test_the_wall_circle_button_only_shows_in_units_mode():
+    window = _circle_window()
+    try:
+        assert window.wall_circle_action.isVisible()
+        assert window.wall_circle_action.isEnabled()
+        window.mode_combo.setCurrentText("Terrain")
+        assert not window.wall_circle_action.isVisible()
+        window.mode_combo.setCurrentText("View")
+        assert not window.wall_circle_action.isVisible()
+    finally:
+        _close(window)
+
+
+def test_the_wall_circle_tool_is_registered_like_wall_rectangle():
+    """Unbound, Units-only, its own drag shape, the skip-occupied toggle,
+    and a tooltip that names its terms."""
+    tool = next(t for t in settings.TOOLS if t.tool_id == "wall_circle")
+    assert (tool.label, tool.drag_shape, tool.modes, tool.default_key) == (
+        "Wall Circle", "wall_circle", ("units",), ""
+    )
+    assert tool.supports_skip_occupied and not tool.supports_brush and not tool.supports_off_grid
+    window = _circle_window()
+    try:
+        tip = window.wall_circle_action.toolTip()
+        for words in ("outline", "one undo step per drag", "Shift makes it a circle", "Wall button"):
+            assert words in tip, words
+    finally:
+        _close(window)
+
+
+def test_a_circle_drag_is_one_ring_and_one_undo_record_even_with_draw_rectangle_filled():
+    """Pins the fallthrough trap for Wall Circle: Draw Rectangle's Filled
+    state must not reach wall_circle's preview or commit."""
+    from descape import unit_sprites
+
+    window = _circle_window()
+    try:
+        map_view = window.map_view
+        map_view.set_rect_filled(True)
+        ring = _ellipse(*_CIRCLE_A, *_CIRCLE_B)
+        assert len(ring) == 32
+        before = _unit_count(window)
+        _press(map_view, _CIRCLE_A)
+        _move(map_view, _CIRCLE_B)
+        assert map_view._shape_tiles(preview=True) == ring
+        assert map_view._shape_tiles(preview=False) == ring
+        _release(map_view, _CIRCLE_B)
+        assert _unit_count(window) == before + len(ring)
+        assert [r.kind for r in window.edit_history.records] == ["unit"]
+        placed = window.scenario.unit_manager.units[PLAYER][-len(ring):]
+        by_tile = {(int(u.x), int(u.y)): u.rotation for u in placed}
+        assert set(by_tile) == set(ring)
+        ring_set = set(ring)
+        for (tx, ty), rotation in by_tile.items():
+            mask = unit_sprites.neighbour_mask(tx, ty, ring_set, diagonals=True)
+            assert rotation == float(unit_sprites.wall_variant_from_neighbours8(mask)), (tx, ty)
+        assert set(by_tile.values()) == {0.0, 1.0, 2.0, 3.0, 4.0}
+        window.undo()
+        assert _unit_count(window) == before
+    finally:
+        _close(window)
+
+
+def test_shift_makes_the_circle_a_circle():
+    from PyQt5.QtCore import Qt
+
+    window = _circle_window()
+    try:
+        map_view = window.map_view
+        _press(map_view, _CIRCLE_A, Qt.ShiftModifier)
+        _move(map_view, _CIRCLE_B, Qt.ShiftModifier)
+        tiles = map_view._shape_tiles(preview=False)
+        xs = {x for x, _y in tiles}
+        ys = {y for _x, y in tiles}
+        assert max(xs) - min(xs) == max(ys) - min(ys) == 14
+        assert tiles == _ellipse(min(xs), min(ys), max(xs), max(ys))
+        # A circle: the ring is its own transpose about the box's diagonal.
+        assert {(y - min(ys), x - min(xs)) for x, y in tiles} == {(x - min(xs), y - min(ys)) for x, y in tiles}
+        _release(map_view, _CIRCLE_B)
+    finally:
+        _close(window)
+
+
+def test_a_non_wall_const_is_refused_with_a_wall_circle_status_line():
+    window = _circle_window(VILLAGER)
+    try:
+        before = _unit_count(window)
+        _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
+        assert _unit_count(window) == before
+        assert not window.edit_history.can_undo
+        assert "Wall Circle: pick a wall in the catalog" in window.status_log.toPlainText()
+    finally:
+        _close(window)
+
+
+def test_a_gaia_circle_is_placed_like_any_other():
+    window = _circle_window()
+    try:
+        assert window.units_panel.select_owner(GAIA_PLAYER_ID)
+        before = _unit_count(window)
+        _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
+        assert _unit_count(window) == before + 32
+        assert "for GAIA" in window.status_log.toPlainText().splitlines()[-1]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("owner", [PLAYER, GAIA_PLAYER_ID])
+def test_a_committed_circle_agrees_with_the_render_sides_derivation(owner):
+    """The fixture's radian wall at (7, 5) classifies the file as radian, so
+    render resolves every circle node with an orthogonal neighbour through
+    the override path; none may disagree with what was stored. The circle
+    stays clear of that wall: a junction would rewrite it to a literal
+    integer, the file would read as integer-only, and render would resolve
+    nothing at all (the junction itself is test_wall_run.py's)."""
+    from descape import render, unit_sprites
+
+    window = _circle_window()
+    try:
+        assert window.units_panel.select_owner(owner)
+        ring = _ellipse(*_CIRCLE_A, *_CIRCLE_B)
+        window.on_shape_commit(ring)
+        assert not unit_sprites.is_literal_variant_index(_gaia_wall(window).rotation, 5)
+        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        units = window.scenario.unit_manager.units
+        on_ring = [
+            key for key in overrides
+            if (int(units[key[0]][key[1]].x), int(units[key[0]][key[1]].y)) in set(ring)
+        ]
+        # Not vacuous: every ring node with an orthogonal neighbour (all but the 3/4 pieces) is resolved.
+        assert len(on_ring) >= len(ring) - 12
+        for (player_id, index), derived in overrides.items():
+            unit = units[player_id][index]
+            stored = unit_sprites.variant_index(unit.rotation, 5)
+            assert derived == stored, (player_id, unit.x, unit.y, derived, unit.rotation)
+    finally:
+        _close(window)
+
+
+def test_the_wall_button_shows_for_wall_circle_and_a_menu_pick_keeps_it():
+    """TASK-299 shows the wall button only beside _WALL_TOOLS; Wall Circle is one of them."""
+    window = _circle_window()
+    try:
+        assert window.wall_pick_param_action.isVisible()
+        assert window.wall_pick_button.isEnabled()
+        _menu_action(window, PALISADE).trigger()
+        assert window._current_tool == "wall_circle"
+        assert window.wall_circle_action.isChecked()
+        assert window.units_panel.selected_object_const() == PALISADE
+        before = _unit_count(window)
+        _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
+        assert _unit_count(window) == before + 32
+        assert window.wall_pick_button.text() == "Wall: Palisade Wall"
+    finally:
+        _close(window)
+
+
+def test_toggle_on_wall_circle_leaves_the_gap():
+    window = _circle_window()
+    try:
+        _plant(window, (20, 45))  # the ellipse's left apex
+        window.skip_occupied_check.setChecked(True)
+        before = _unit_count(window)
+        _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
+        assert _unit_count(window) == before + 31
+        walls = _walls_by_tile(window)
+        assert (20, 45) not in walls
+        assert walls[(20, 44)] == walls[(20, 46)] == 2.0
+    finally:
+        _close(window)
+
+
 # --- Walls skip occupied tiles (GH #124) --------------------------------
 
 TREE = 349  # Tree (Oak): occupied, so it blocks with the toggle on
@@ -836,11 +1027,11 @@ def _walls_by_tile(window, owner: int = PLAYER) -> dict[tuple[int, int], float]:
     }
 
 
-def test_the_skip_occupied_checkbox_shows_for_place_unit_and_wall_rectangle_only():
+def test_the_skip_occupied_checkbox_shows_for_the_wall_tools_only():
     window = _window()
     try:
         assert not window.skip_occupied_check.isChecked()
-        for tool in ("place_unit", "wall_rect"):
+        for tool in ("place_unit", "wall_rect", "wall_circle"):
             window._on_tool_selected(tool)
             assert window.skip_occupied_param_action.isVisible(), tool
             assert window.skip_occupied_check.isEnabled(), tool
@@ -1002,10 +1193,10 @@ def test_a_gapped_run_agrees_with_the_render_sides_derivation():
         _close(window)
 
 
-def test_the_skip_occupied_checkbox_shows_under_no_tool_but_place_unit_and_wall_rectangle():
+def test_the_skip_occupied_checkbox_shows_under_no_tool_but_the_wall_tools():
     """GH #124 step 1, every tool in every mode it runs in. Pass conditions:
     - with a wall picked, the box starts unticked;
-    - Place Unit and Wall Rectangle show it and enable it;
+    - Place Unit, Wall Rectangle and Wall Circle (GH #125) show it and enable it;
     - every other tool, Pan and the Ruler included, hides and disables it;
     - the walk really reached every registered tool (no vacuous pass)."""
     window = _window()
@@ -1027,7 +1218,7 @@ def test_the_skip_occupied_checkbox_shows_under_no_tool_but_place_unit_and_wall_
                 if visible:
                     shown.add(tool.tool_id)
         assert reached == {tool.tool_id for tool in settings.TOOLS}
-        assert shown == {"place_unit", "wall_rect"}
+        assert shown == {"place_unit", "wall_rect", "wall_circle"}
         assert not window.skip_occupied_check.isChecked()
     finally:
         _close(window)

@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from descape import item_activation
 from descape.value_picker import PickerItem
 
 _HEADING_ROLE = Qt.UserRole + 1
@@ -143,6 +144,7 @@ class SwatchGridView(QListWidget):
         self.currentItemChanged.connect(self._on_current_item_changed)
         self.itemClicked.connect(self._on_item_clicked)
         self.itemActivated.connect(self._on_item_activated)
+        item_activation.install(self)
         self.set_items(items)
 
     # -- geometry (shared by the delegate, the size hints and the tests) ----

@@ -1615,6 +1615,384 @@ def test_a_style_switch_under_a_live_selection_rebuilds_the_ring() -> None:
         _close(window)
 
 
+# --- trigger range rings (GH #49 slice 2) -------------------------------
+
+
+def _range_effect(value: float, unit_const: int = _CASTLE_CONST, *, player: int = 1, trigger_index: int = 0):
+    """A Change Object Range SET `value` on `unit_const` for `player`."""
+    from descape import trigger_range
+    from descape.trigger_fields import UNSET
+
+    return trigger_range.RangeEffect(
+        sequence=trigger_index, trigger_index=trigger_index, trigger_name=f"T{trigger_index}", effect_index=0,
+        effect_type=trigger_range.CHANGE_OBJECT_RANGE, effect_name="change_object_range",
+        operation=trigger_range.SET, quantity=float(value), source_player=player, unit_const=unit_const,
+        group=UNSET, object_type=UNSET, selected_ids=frozenset(), area=None,
+        has_conditions=False, looping=False, enabled=True,
+    )
+
+
+def _trigger_ring_window(monkeypatch, effects, **kwargs):
+    """_ring_window() with _trigger_range_effects() answering `effects` (a tuple or a sentinel)."""
+    window = _ring_window(**kwargs)
+    monkeypatch.setattr(window, "_trigger_range_effects", lambda: effects)
+    return window
+
+
+def _select_through_viewer(window, *entries) -> None:
+    """The viewer's own selection path, which pushes the trigger effects first;
+    mv.set_unit_selection() alone skips that push."""
+    from descape import unit_pick
+
+    window._selection = [unit_pick.unit_key(e.player_id, e.unit) for e in entries]
+    window._refresh_selection_view()
+
+
+def _trigger_paths(mv) -> list:
+    return [item.path() for item in mv._trigger_ring_items.values()]
+
+
+def _line(window) -> tuple[bool, str]:
+    label = window.units_panel.trigger_range_label
+    return (not label.isHidden(), label.text())
+
+
+def test_a_trigger_set_draws_a_dashed_ring_beside_the_solid_one(monkeypatch) -> None:
+    """SET 12 on the P1 Castle: radius 14 against the base ring's 10."""
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        assert list(mv._trigger_ring_items) == [None]
+        dashed = mv._trigger_ring_items[None]
+        (solid,) = _ring_paths(mv)
+        ratio = dashed.path().boundingRect().width() / solid.boundingRect().width()
+        assert ratio == pytest.approx(14 / 10, abs=0.01)
+        assert dashed.path().boundingRect().center() == solid.boundingRect().center()
+        assert dashed.pen().widthF() == 0
+        assert dashed.pen().dashPattern() == [6.0, 4.0]
+        assert dashed.zValue() == mv.RANGE_RING_Z
+        assert _line(window) == (True, "Range with triggers: 12")
+        assert "change object range, set 12" in window.units_panel.trigger_range_label.toolTip()
+    finally:
+        _close(window)
+
+
+def test_a_house_with_base_range_zero_keeps_its_dashed_ring(monkeypatch) -> None:
+    """The House has no solid ring; its dashed one must survive the empty base path set."""
+    window = _trigger_ring_window(monkeypatch, (_range_effect(6, _HOUSE_CONST),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _HOUSE_CONST))
+        assert mv._range_ring_items == {}
+        assert _subpath_count(mv._trigger_ring_items[None].path()) == 1
+    finally:
+        _close(window)
+
+
+def test_trigger_changes_off_removes_only_the_dashed_ring(monkeypatch) -> None:
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        line = _line(window)
+        window.range_rings_triggers_action.setChecked(False)
+        assert mv._trigger_ring_items == {}
+        assert len(_ring_paths(mv)) == 1
+        assert _line(window) == line, "the Inspector line ignores the View toggles"
+        window.range_rings_triggers_action.setChecked(True)
+        assert len(_trigger_paths(mv)) == 1
+    finally:
+        _close(window)
+
+
+def test_selected_buildings_off_removes_both_rings_and_keeps_the_line(monkeypatch) -> None:
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        line = _line(window)
+        window.range_rings_action.setChecked(False)
+        assert mv._range_ring_items == {} and mv._trigger_ring_items == {}
+        assert _line(window) == line
+        window.range_rings_action.setChecked(True)
+        assert len(_ring_paths(mv)) == 1 and len(_trigger_paths(mv)) == 1
+    finally:
+        _close(window)
+
+
+def test_unread_triggers_draw_no_dashed_ring_and_show_the_hint(monkeypatch) -> None:
+    from descape import trigger_range
+
+    window = _trigger_ring_window(monkeypatch, trigger_range.UNREAD)
+    try:
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        assert window.map_view._trigger_ring_items == {}
+        assert _line(window) == (True, "Trigger range changes not read yet: open Triggers mode once")
+    finally:
+        _close(window)
+
+
+def test_an_unreadable_file_shows_the_unreadable_line() -> None:
+    import dataclasses
+
+    window = _ring_window()
+    try:
+        window.scenario = dataclasses.replace(window.scenario, trigger_read_supported=False, _trigger_manager=None)
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        assert _line(window) == (
+            True, "This file's triggers can't be read, so trigger range changes are not shown"
+        )
+    finally:
+        _close(window)
+
+
+def test_a_non_building_shows_no_line_even_unread(monkeypatch) -> None:
+    from descape import trigger_range
+
+    window = _trigger_ring_window(monkeypatch, trigger_range.UNREAD)
+    try:
+        _select_through_viewer(window, _entry_for_const(window, _ARCHER_CONST))
+        assert _line(window)[0] is False
+    finally:
+        _close(window)
+
+
+def test_a_group_selection_hides_the_line(monkeypatch) -> None:
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),), second_castle=True)
+    try:
+        mv = window.map_view
+        castles = [e for e in mv._unit_index.entries if e.unit.unit_const == _CASTLE_CONST]
+        _select_through_viewer(window, castles[0])
+        assert _line(window)[0] is True
+        _select_through_viewer(window, *castles)
+        assert _line(window)[0] is False
+        assert [_subpath_count(path) for path in _trigger_paths(mv)] == [2]
+    finally:
+        _close(window)
+
+
+def test_colour_by_owner_keys_the_dashed_ring_on_the_owners_colour(monkeypatch) -> None:
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        window.range_rings_by_owner_action.setChecked(True)
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        p1 = _tint(window, 1)
+        assert list(mv._trigger_ring_items) == [p1]
+        pen = mv._trigger_ring_items[p1].pen()
+        assert _rgb(pen.color()) == p1
+        assert pen.dashPattern() == [6.0, 4.0] and pen.widthF() == 0
+    finally:
+        _close(window)
+
+
+def test_a_colour_change_reinks_the_dashed_ring_and_keeps_the_dash(monkeypatch) -> None:
+    from descape import settings
+
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        settings.set_overlay_color("range_ring", "#ff00ff")
+        mv.apply_overlay_colors()
+        pen = mv._trigger_ring_items[None].pen()
+        assert pen.color().name() == "#ff00ff"
+        assert pen.dashPattern() == [6.0, 4.0]
+    finally:
+        _close(window)
+
+
+def test_closing_the_scenario_drops_the_dashed_ring_refs_and_the_effects(monkeypatch) -> None:
+    window = _trigger_ring_window(monkeypatch, (_range_effect(12),))
+    try:
+        mv = window.map_view
+        _select_through_viewer(window, _entry_for_const(window, _CASTLE_CONST))
+        assert mv._trigger_ring_items
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert mv._trigger_ring_items == {}
+        assert mv._trigger_range_index is None
+    finally:
+        _close(window)
+
+
+def test_trigger_changes_defaults_on_and_round_trips_through_the_file(monkeypatch) -> None:
+    from descape import settings
+
+    assert settings.get_range_rings_triggers() is True
+    settings.set_range_rings_triggers(False)
+    monkeypatch.setattr(settings, "_range_rings_triggers", None)
+    assert settings.get_range_rings_triggers() is False
+    settings.set_range_rings_triggers(True)
+    monkeypatch.setattr(settings, "_range_rings_triggers", None)
+    assert settings.get_range_rings_triggers() is True
+    assert ("view_range_rings_triggers", "Range Rings: Trigger Changes", "") in settings.REBINDABLE_ACTIONS
+
+
+def test_the_trigger_changes_toggle_persists() -> None:
+    from descape import settings
+
+    window = _ring_window()
+    try:
+        assert window.range_rings_triggers_action.isChecked() is True
+        assert window.range_rings_triggers_action.text() == "&Trigger Changes"
+        window.range_rings_triggers_action.setChecked(False)
+        assert settings.get_range_rings_triggers() is False
+        assert window.map_view._trigger_rings_enabled is False
+    finally:
+        _close(window)
+
+
+_FIXTURE_HOUSE_REF = 502  # _TRIGGERS_FIXTURE's P1 House (const 70) at (41, 63)
+
+
+def _trigger_fixture_window():
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    window = ViewerWindow()
+    window.load_scenario(_TRIGGERS_FIXTURE)
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText("Flat")
+    window.range_rings_action.setChecked(True)
+    return window
+
+
+def _add_house_range_effect(window, value: int) -> None:
+    """A modify_attribute MAXIMUM_RANGE SET for const 70 P1, in memory through the library."""
+    from descape.scenario_io import parse_triggers
+
+    manager = parse_triggers(window.scenario)
+    manager.triggers[0].new_effect.modify_attribute(
+        quantity=value, object_list_unit_id=_HOUSE_CONST, source_player=1, operation=1, object_attributes=12
+    )
+
+
+def _select_house(window) -> None:
+    window.mode_combo.setCurrentText("Units")
+    index = window.map_view._unit_index
+    entry = index.entry_for_key((1, _FIXTURE_HOUSE_REF))
+    assert entry is not None
+    _select_through_viewer(window, entry)
+
+
+def test_end_to_end_selection_never_forces_the_parse_then_a_real_effect_draws() -> None:
+    window = _trigger_fixture_window()
+    try:
+        _select_house(window)
+        assert window.scenario._trigger_manager is None, "selecting a building parsed the triggers"
+        assert _line(window) == (True, "Trigger range changes not read yet: open Triggers mode once")
+
+        window.mode_combo.setCurrentText("Triggers")
+        _add_house_range_effect(window, 6)
+        window._find_triggers_bumped()
+        window._sync_trigger_ranges()
+        _select_house(window)
+        mv = window.map_view
+        assert mv._range_ring_items == {}, "a House has base range 0: no solid ring"
+        assert [_subpath_count(path) for path in _trigger_paths(mv)] == [1]
+        assert _line(window) == (True, "Range with triggers: 6")
+    finally:
+        _close(window)
+
+
+def test_a_trigger_field_commit_with_nothing_selected_walks_no_trigger(monkeypatch) -> None:
+    from descape import trigger_range
+
+    window = _trigger_fixture_window()
+    try:
+        window.mode_combo.setCurrentText("Triggers")
+        calls = []
+        real = trigger_range.collect_range_effects
+        monkeypatch.setattr(trigger_range, "collect_range_effects", lambda *a: calls.append(1) or real(*a))
+        assert not window._selection and not window.map_view._unit_select_keys
+        window._after_trigger_edit("Edit field", None)
+        assert calls == []
+
+        _select_house(window)
+        window.mode_combo.setCurrentText("Triggers")
+        calls.clear()
+        window._after_trigger_edit("Edit field", None)
+        assert calls == [], "a kept selection is not drawn in Triggers mode: no walk"
+        window.mode_combo.setCurrentText("Units")
+        assert calls == [1], "the switch back to Units walks once"
+
+        calls.clear()
+        window._after_trigger_edit("Edit field", None)
+        assert calls == [1], "with a drawn building selection the edit re-walks once"
+    finally:
+        _close(window)
+
+
+def test_undo_and_redo_of_a_trigger_edit_follow_a_live_selection() -> None:
+    window = _trigger_fixture_window()
+    try:
+        window.mode_combo.setCurrentText("Triggers")
+        model = window._ensure_trigger_edits()
+        with window._trigger_edit(model, "Add range effect", [0], refresh="entries"):
+            model.manager().triggers[0].new_effect.modify_attribute(
+                quantity=6, object_list_unit_id=_HOUSE_CONST, source_player=1, operation=1, object_attributes=12
+            )
+        _select_house(window)
+        assert _line(window) == (True, "Range with triggers: 6")
+        assert len(_trigger_paths(window.map_view)) == 1
+
+        window.undo()
+        assert window.map_view._trigger_ring_items == {}
+        assert _line(window) == (False, "")
+        window.redo()
+        assert _line(window) == (True, "Range with triggers: 6")
+        assert len(_trigger_paths(window.map_view)) == 1
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("parser", ["find", "find_refs", "find_valid", "analysis"])
+def test_a_parse_by_find_or_map_analysis_updates_a_live_selection(parser) -> None:
+    """Each can parse while a Units selection is live; the hint must not outlive the parse."""
+    window = _trigger_fixture_window()
+    try:
+        _select_house(window)
+        assert _line(window)[1].startswith("Trigger range changes not read yet")
+        if parser == "find":
+            window._find_trigger_status()
+        elif parser == "find_refs":
+            window._find_trigger_refs_for([(1, _FIXTURE_HOUSE_REF)])
+        elif parser == "find_valid":
+            window._find_valid_trigger_indices({})
+        else:
+            window._show_analysis()
+        assert window.scenario._trigger_manager is not None
+        assert _line(window) == (False, "")
+    finally:
+        if window._analysis_dialog is not None:
+            window._analysis_dialog.close()
+        _close(window)
+
+
+def test_loading_another_file_drops_the_cached_effects() -> None:
+    """_trigger_gen is not per document: without the reset, the next file's
+    first read at the same generation is served this file's effects."""
+    from descape.scenario_io import parse_triggers
+
+    window = _trigger_fixture_window()
+    try:
+        window.mode_combo.setCurrentText("Triggers")
+        _add_house_range_effect(window, 6)
+        effects = window._trigger_range_effects()
+        assert len(effects) == 1
+        gen = window._trigger_gen
+        window.edit_history.mark_saved()
+        window.load_scenario(_TRIGGERS_FIXTURE)
+        window._trigger_gen = gen
+        parse_triggers(window.scenario)
+        assert window._trigger_range_effects() == ()
+        assert window.map_view._trigger_range_effects is None
+    finally:
+        _close(window)
+
+
 # --- range rings coloured by owner (GH #156) ---------------------------
 
 
@@ -1659,14 +2037,15 @@ def test_range_rings_is_a_submenu_of_three_layers_and_colour_by_owner() -> None:
         view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
         range_menu = next(a.menu() for a in view_menu.actions() if a.text() == "&Range Rings")
         actions = range_menu.actions()
-        assert actions[:4] == [
+        assert actions[:5] == [
             window.range_rings_action,
+            window.range_rings_triggers_action,
             window.range_rings_buildings_action,
             window.range_rings_selected_revealers_action,
             window.range_rings_revealers_action,
         ]
-        assert actions[4].isSeparator()
-        assert actions[5:] == [window.range_rings_by_owner_action]
+        assert actions[5].isSeparator()
+        assert actions[6:] == [window.range_rings_by_owner_action]
         assert window.range_rings_revealers_action.text() == "All Map &Revealers"
         view_actions = view_menu.actions()
         position = {a: i for i, a in enumerate(view_actions)}

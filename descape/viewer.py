@@ -133,6 +133,7 @@ from descape import (
     player_stats,
     qt_messages,
     qt_platform,
+    range_overlay,
     region_clipboard,
     region_transform,
     render_cache,
@@ -148,6 +149,7 @@ from descape import (
     trigger_fields,
     trigger_geometry,
     trigger_organize,
+    trigger_range,
     trigger_status,
     ui_icons,
     unit_fields,
@@ -163,7 +165,7 @@ from descape import (
 )
 from descape.analysis_dialog import AnalysisDialog
 from descape.autosave_dialog import RecoverAutosaveDialog
-from descape.beach_edges import apply_beach_ring
+from descape.beach_edges import apply_beach_ring, ring_mode
 from descape.clipboard_dialog import ClipboardHistoryDialog
 from descape.constant_picker import CatalogBrowseDialog, preview_pixmap
 from descape.diplomacy_panel import DiplomacyPanel
@@ -335,7 +337,7 @@ GROUP_GHOST_CAP = 200
 # Stroke tools that write only tile.elevation, which Flat never draws: their live repaint is skipped there.
 _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
 
-# GH #88: the tools whose water lays an auto-beach ring (Draw's stroke, the two shape commits).
+# GH #88: the tools that lay an auto-beach ring (Draw's stroke, the two shape commits).
 _AUTO_BEACH_TOOLS = ("draw", "draw_line", "draw_rect")
 
 
@@ -347,7 +349,8 @@ def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
 
 def _shape_shore(tiles) -> list[tuple[int, int]]:
     """The shape's tiles with an 8-neighbour outside it. Ringing these equals ringing
-    the whole shape: the extra interior tiles it reaches are water, which the ring skips."""
+    the whole shape: the extra interior tiles it reaches are the shape's own terrain,
+    which neither ring mode converts (water mode skips water, land mode converts water only)."""
     core = set(tiles)
     return [
         (x, y)
@@ -611,8 +614,9 @@ def _wall_consts() -> frozenset[int]:
 _DEFAULT_WALL_CONST = 117  # Stone Wall in AoE2, Medium Wall in Return of Rome
 # The Cliff hover keeps one ghost's parts per tile crossed; past this many it starts over.
 _CLIFF_HOVER_PARTS_MAX = 64
-# The tools the wall button keeps active when it re-picks the wall.
-_WALL_TOOLS = ("place_unit", "wall_rect")
+# The wall-placing tools: the wall button shows beside them and keeps them active, and
+# on_shape_commit() routes their drags to _commit_wall_run().
+_WALL_TOOLS = ("place_unit", "wall_rect", "wall_circle")
 # TASK-288: Place Unit and Scatter coerced a GAIA-only object to GAIA.
 _GAIA_ONLY_PLACED_SUFFIX = " (GAIA-only, so placed for GAIA)"
 # GH #196: Edit > Scatter Units in Region's tooltip, and why it is greyed with a map open.
@@ -742,6 +746,7 @@ def _trigger_status_style() -> StatusStyle:
         ok=settings.get_trigger_status_color("ok"),
         problem=settings.get_trigger_status_color("problem"),
         color_ok_rows=settings.get_trigger_status_color_ok_rows(),
+        color_sections=settings.get_trigger_status_color_sections(),
     )
 
 # The hover label's idle text, shown whenever the cursor isn't over a tile.
@@ -1926,7 +1931,8 @@ class SettingsDialog(QDialog):
         "every required field is set and every unit or trigger it names exists, otherwise "
         "missing something (hover a marked row for what). A completeness check, not a "
         "promise the trigger works in game. The icons are a tick and a cross, so they "
-        "read without colour."
+        "read without colour, in their own column beside the trigger names; a section "
+        "with no conditions or effects shows a dash."
     )
 
     def _build_trigger_status_group(self) -> QWidget:
@@ -1958,6 +1964,13 @@ class SettingsDialog(QDialog):
         self.trigger_status_ok_rows_check.setChecked(settings.get_trigger_status_color_ok_rows())
         self.trigger_status_ok_rows_check.toggled.connect(self._on_trigger_status_ok_rows_toggled)
         marker_row.addWidget(self.trigger_status_ok_rows_check)
+        self.trigger_status_sections_check = QCheckBox("Colour section rows")
+        self.trigger_status_sections_check.setToolTip(
+            "Colour a section's own row by its conditions and effects; its icon shows either way"
+        )
+        self.trigger_status_sections_check.setChecked(settings.get_trigger_status_color_sections())
+        self.trigger_status_sections_check.toggled.connect(self._on_trigger_status_sections_toggled)
+        marker_row.addWidget(self.trigger_status_sections_check)
         marker_row.addStretch(1)
         grid.addLayout(marker_row, 0, 0, 1, 8)
 
@@ -1990,6 +2003,11 @@ class SettingsDialog(QDialog):
         settings.set_trigger_status_color_ok_rows(checked)
         self._window.trigger_panel.apply_status_style()
         self._window._log_status(f"Mark triggers that pass: {'on' if checked else 'off'}")
+
+    def _on_trigger_status_sections_toggled(self, checked: bool) -> None:
+        settings.set_trigger_status_color_sections(checked)
+        self._window.trigger_panel.apply_status_style()
+        self._window._log_status(f"Colour section rows: {'on' if checked else 'off'}")
 
     def _pick_trigger_status_color(self, status_id: str) -> None:
         chosen = QColorDialog.getColor(QColor(settings.get_trigger_status_color(status_id)), self)
@@ -3378,6 +3396,8 @@ class ViewerWindow(QMainWindow):
         # cached reference counts (find_triggers.trigger_ref_counts()).
         self._trigger_gen = 0
         self._trigger_ref_cache: tuple[int, dict | None] | None = None
+        # (_trigger_gen, trigger_range effects) behind _trigger_range_effects(); never a sentinel.
+        self._trigger_range_cache: tuple[int, tuple] | None = None
         # The in-flight first-paint report a load is accumulating canvas
         # paint time into, or None when nothing is pending. See
         # _on_canvas_paint_timed().
@@ -4275,10 +4295,19 @@ class ViewerWindow(QMainWindow):
         )
         self.range_rings_action.setToolTip(
             "In Units mode, a circle around each selected building showing its attack range. "
-            "Buildings only, and only ones that have a range. No technology or trigger "
-            "effects are applied."
+            "Buildings only, and only ones that have a range. No technology effects are applied."
         )
         range_menu.addAction(self.range_rings_action)
+        # GH #49 slice 2: dashed rings beside Selected Buildings' solid ones. On by default.
+        self.range_rings_triggers_action = QAction(
+            "&Trigger Changes", self, checkable=True, checked=settings.get_range_rings_triggers()
+        )
+        self.range_rings_triggers_action.setToolTip(
+            "A dashed ring for each trigger that changes a selected building's range, one per trigger, "
+            "as if that trigger fired once. Conditions, order and loops are not simulated. Needs the "
+            "triggers read once: open Triggers mode."
+        )
+        range_menu.addAction(self.range_rings_triggers_action)
         # GH #155 / #153: always-on layers that follow the unit index, not the selection.
         self.range_rings_buildings_action = QAction(
             "All &Buildings", self, checkable=True, checked=settings.get_range_rings_buildings()
@@ -4354,6 +4383,7 @@ class ViewerWindow(QMainWindow):
         self.selection_owner_colour_action.toggled.connect(self._on_selection_owner_colour_toggled)
         self.range_rings_action.toggled.connect(self._on_range_rings_toggled)
         self.range_rings_by_owner_action.toggled.connect(self._on_range_rings_by_owner_toggled)
+        self.range_rings_triggers_action.toggled.connect(self._on_range_rings_triggers_toggled)
         self.range_rings_buildings_action.toggled.connect(self._on_range_rings_buildings_toggled)
         self.range_rings_revealers_action.toggled.connect(self._on_range_rings_revealers_toggled)
         self.range_rings_selected_revealers_action.toggled.connect(self._on_range_rings_selected_revealers_toggled)
@@ -4843,6 +4873,8 @@ class ViewerWindow(QMainWindow):
         picker, the tool gates and the inspector. One entry shows its
         fields (D5), 2+ show the group fields (GH #71), and zero shows
         unit_inspector_empty's text."""
+        # Before the highlight push, so the trigger rings draw with it (GH #49 slice 2).
+        trigger_effects = self._push_trigger_range_effects()
         entries = self._reconcile_selection()
         # Garrison pick belongs to the one selected host (GH #115).
         if self._garrison_picker is not None and self._selection != [self._garrison_picker]:
@@ -4857,6 +4889,7 @@ class ViewerWindow(QMainWindow):
         if len(entries) == 1:
             self.units_panel.show_unit(entries[0])
             self._apply_garrison_block(entries[0])
+            self._show_trigger_range_line(trigger_effects)
             return
         if entries:
             self.units_panel.show_group(entries)
@@ -6614,7 +6647,8 @@ class ViewerWindow(QMainWindow):
         self._log_status(status)
 
     # -- Place Unit's wall branch (GH #98; was the Wall Run tool) and the
-    # -- Wall Rectangle tool (2026-09-21 wall enclosure plan) ---------------
+    # -- Wall Rectangle tool (2026-09-21 wall enclosure plan) and Wall Circle
+    # -- (GH #125) ----------------------------------------------------------
     #
     # A drag_shape path, not a stroke: MapView owns the rubber band and calls
     # on_shape_commit() once at release with the exact tile path, so there is
@@ -6650,8 +6684,8 @@ class ViewerWindow(QMainWindow):
         GAIA is allowed: render.stored_rotation() keeps a GAIA wall's index
         (all 9 wall-family consts are rotation_is_variant), so it draws shaped.
         """
-        tool_name = "Wall Rectangle" if self._current_tool == "wall_rect" else "Place Unit"
-        # Wall Rectangle takes any catalog pick, and for Place Unit the pick
+        tool_name = _TOOL_LABELS.get(self._current_tool, "Place Unit")
+        # Wall Rectangle and Wall Circle take any catalog pick, and for Place Unit the pick
         # can change mid-drag after the press latched "wall".
         if unit_const not in _wall_consts():
             self._log_status(f"{tool_name}: pick a wall in the catalog")
@@ -8610,6 +8644,19 @@ class ViewerWindow(QMainWindow):
         tool_group.addAction(self.wall_rect_action)
         toolbar.addAction(self.wall_rect_action)
 
+        # GH #125: Wall Rectangle's twin, the ring of the ellipse inscribed in the drag box.
+        self.wall_circle_action = QAction("Wall Circle", self)
+        self.wall_circle_action.setCheckable(True)
+        self.wall_circle_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.wall_circle_action.setToolTip(
+            "Drag to place an outline ellipse of walls inside the dragged box for the chosen owner, "
+            "using the wall picked in the Units catalog or with the Wall button (Units mode) -- "
+            "one undo step per drag. Shift makes it a circle."
+        )
+        self.wall_circle_action.toggled.connect(lambda on: on and self._on_tool_selected("wall_circle"))
+        tool_group.addAction(self.wall_circle_action)
+        toolbar.addAction(self.wall_circle_action)
+
         # Phase 3.5b's b2.5, gated on Units mode the same way Place Unit is.
         self.convert_action = QAction("Convert", self)
         self.convert_action.setCheckable(True)
@@ -8711,7 +8758,7 @@ class ViewerWindow(QMainWindow):
         # _update_tool_enabled() per the active tool's param_widget.
         self.tool_param_separator_action = param_toolbar.addSeparator()
         # The terrain itself is chosen in the Terrain-mode sidebar page (GH #56), not on this row.
-        # Wired here, once this row exists: auto beach below re-gates on a water-family pick.
+        # Wired here, once this row exists: auto beach below re-gates on the pick.
         self.terrain_panel.terrain_changed.connect(self._on_terrain_changed)
 
         # Which of a tile's two terrains the terrain tools write: its base, or
@@ -8736,8 +8783,8 @@ class ViewerWindow(QMainWindow):
         self.auto_beach_param_action = param_toolbar.addWidget(self.auto_beach_check)
 
         self.beach_combo = QComboBox()
-        # data None is "Auto": derive the beach per ring tile from its own
-        # land terrain's climate -- see terrain_classes.auto_beach_for.
+        # data None is "Auto": derive the beach per ring tile from the land
+        # on its shore side's climate -- see terrain_classes.auto_beach_for.
         self.beach_combo.addItem("Auto", None)
         for beach_id in terrain_classes.beach_terrains():
             self.beach_combo.addItem(name_for_terrain_id(beach_id), beach_id)
@@ -9281,6 +9328,7 @@ class ViewerWindow(QMainWindow):
             "view_selection_owner_colour": self.selection_owner_colour_action,
             "view_range_rings": self.range_rings_action,
             "view_range_rings_by_owner": self.range_rings_by_owner_action,
+            "view_range_rings_triggers": self.range_rings_triggers_action,
             "view_range_rings_buildings": self.range_rings_buildings_action,
             "view_range_rings_revealers": self.range_rings_revealers_action,
             "view_range_rings_selected_revealers": self.range_rings_selected_revealers_action,
@@ -9448,6 +9496,10 @@ class ViewerWindow(QMainWindow):
     def _on_range_rings_by_owner_toggled(self, checked: bool) -> None:
         settings.set_range_rings_by_owner(checked)
         self.map_view.set_range_rings_by_owner(checked)
+
+    def _on_range_rings_triggers_toggled(self, checked: bool) -> None:
+        settings.set_range_rings_triggers(checked)
+        self.map_view.set_range_rings_triggers(checked)
 
     def _on_range_rings_selected_revealers_toggled(self, checked: bool) -> None:
         settings.set_range_rings_selected_revealers(checked)
@@ -9800,6 +9852,7 @@ class ViewerWindow(QMainWindow):
             entry = None if ref is None else index.entry_for_key((ref.player_id, ref.reference_id))
             if entry is not None:
                 entries.append(entry)
+        self._push_trigger_range_effects()
         self.map_view.set_unit_selection(entries)
 
     def _on_unit_picked(self, key: tuple[int, int]) -> None:
@@ -11454,6 +11507,7 @@ class ViewerWindow(QMainWindow):
         self.move_action.setEnabled(unit_editable)
         self.place_unit_action.setEnabled(unit_editable)
         self.wall_rect_action.setEnabled(unit_editable)
+        self.wall_circle_action.setEnabled(unit_editable)
         # GH #125's wall keybind: Place Unit's own gate. Its button is gated with the params below.
         self.wall_pick_action.setEnabled(unit_editable)
         self.convert_action.setEnabled(unit_editable)
@@ -11652,14 +11706,14 @@ class ViewerWindow(QMainWindow):
         auto_beach_ok = (
             base_param_ok
             and self._current_tool in _AUTO_BEACH_TOOLS
-            and terrain_classes.is_water_family(self.terrain_panel.terrain_id())
+            and ring_mode(self.terrain_panel.terrain_id()) is not None
         )
         self.auto_beach_param_action.setVisible(base_param_ok and self._current_tool in _AUTO_BEACH_TOOLS)
         self.auto_beach_check.setEnabled(auto_beach_ok)
         self.auto_beach_check.setToolTip(
-            "Paint a beach shoreline around the water this stroke, line or rectangle lays down"
+            "Paint a beach shoreline between water and the terrain this stroke, line or rectangle lays down"
             if auto_beach_ok
-            else "Pick a water terrain to enable the automatic shoreline"
+            else "A beach, bridge, non-navigable shore or obsolete terrain lays no shoreline"
         )
         # The combo and width follow the checkbox, so a hidden setting can
         # never sit live behind the scenes.
@@ -11920,8 +11974,8 @@ class ViewerWindow(QMainWindow):
 
     def _on_terrain_changed(self, terrain_id: int) -> None:
         """The sidebar picker's hookup, for a user pick and the Eyedropper's
-        set_terrain() alike: re-gates the param row (auto beach needs a
-        water-family terrain) and logs the new terrain."""
+        set_terrain() alike: re-gates the param row (auto beach needs a pick
+        beach_edges.ring_mode() accepts) and logs the new terrain."""
         self._update_tool_enabled()
         self._log_status(f"Terrain type: {name_for_terrain_id(terrain_id)}")
 
@@ -12233,11 +12287,11 @@ class ViewerWindow(QMainWindow):
                 terrain_target.write_tile(mm.get_tile(tx, ty), target, terrain_id)
             touched = {ty * width + tx for tx, ty in footprint}
             # The shoreline, laid AFTER the core so a tile this touch just
-            # made water can never be beached. Its ring indices must be in
+            # painted can never be beached. Its ring indices must be in
             # `touched`, or they stay unpainted until a later event.
             # `footprint` is already the dedupe-filtered core, which is
-            # correct: a tile skipped because an earlier touch painted it is
-            # already water, and its ring was laid then.
+            # correct: a tile skipped because an earlier touch painted it
+            # already holds the stroke's terrain, and its ring was laid then.
             beach_on, beach_id, beach_width = self._stroke_auto_beach
             if beach_on:
                 touched.update(apply_beach_ring(mm, footprint, terrain_id, beach_id, beach_width))
@@ -12365,11 +12419,11 @@ class ViewerWindow(QMainWindow):
         long enough that the window would otherwise look hung."""
         if self.scenario is None or self._busy or not tiles:
             return
-        # Place Unit's wall branch (GH #98) and Wall Rectangle are the
-        # non-terrain shape commits, so this method's whole body below is the
-        # terrain branch. Dispatched before the tree/eye-candy size prompt,
+        # Place Unit's wall branch (GH #98), Wall Rectangle and Wall Circle are
+        # the non-terrain shape commits, so this method's whole body below is
+        # the terrain branch. Dispatched before the tree/eye-candy size prompt,
         # which has nothing to say about units.
-        if self._current_tool in ("place_unit", "wall_rect"):
+        if self._current_tool in _WALL_TOOLS:
             self._commit_wall_run(tiles, self.units_panel.selected_object_const())
             return
         mm = self.scenario.map_manager
@@ -14597,6 +14651,7 @@ class ViewerWindow(QMainWindow):
         self._rederive_trigger_overlay()
         # GH #144: counts and Find results follow every trigger edit, panel-side ones included.
         self._find_triggers_bumped()
+        self._invalidate_trigger_ranges()
         # A player field edit changes page 0's trigger counts; a memoized re-read, 0-3ms.
         self._update_player_stats()
         self._update_title()
@@ -17141,6 +17196,7 @@ class ViewerWindow(QMainWindow):
             self._rederive_trigger_overlay()
             # Mode-free too, so a trigger undo from any mode reaches Find (GH #144).
             self._find_triggers_bumped()
+            self._invalidate_trigger_ranges()
         if kinds & {"options", "trigger"}:
             # Both kinds, not just "options": the exec-order row is shown in
             # the Map Options panel but recorded as a trigger edit, so undoing
@@ -17654,6 +17710,7 @@ class ViewerWindow(QMainWindow):
             return
         self._busy = True
         self.setEnabled(False)
+        triggers_known = self.scenario.trigger_read_supported
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
@@ -17667,6 +17724,8 @@ class ViewerWindow(QMainWindow):
         self._log_status(f"Map Analysis: {report.headline} ({elapsed:.2f}s)")
         # The analysis just parsed the triggers; the next mode switch can't notice the flip.
         self._update_info()
+        if self.scenario.trigger_read_supported != triggers_known:
+            self._sync_trigger_ranges()
         if self._analysis_dialog is None:
             self._analysis_dialog = AnalysisDialog(
                 self,
@@ -17760,16 +17819,100 @@ class ViewerWindow(QMainWindow):
         if self._find_dialog is not None:
             self._find_dialog.mark_stale("triggers")
 
+    # -- trigger range rings (GH #49 slice 2) ------------------------------
+
+    def _trigger_range_effects(self):
+        """The file's range-changing effects (a tuple), or trigger_range.UNREAD
+        / UNREADABLE. Never forces the parse: until Triggers mode, Find or Map
+        Analysis has parsed, this is UNREAD (find_triggers.trigger_ref_counts()'
+        rule). Cached behind _trigger_gen; a sentinel never is, so a parse
+        since the last ask is picked up."""
+        scenario = self.scenario
+        if scenario is None:
+            return trigger_range.UNREAD
+        version = scenario.scenario_version
+        if scenario.trigger_read_supported is False or not (
+            version and library_compat.vocabulary_is_available(version)
+        ):
+            return trigger_range.UNREADABLE
+        if scenario._trigger_manager is None:
+            return trigger_range.UNREAD
+        cache = self._trigger_range_cache
+        if cache is not None and cache[0] == self._trigger_gen:
+            return cache[1]
+        manager = parse_triggers(scenario)
+        if manager is None:
+            return trigger_range.UNREADABLE
+        effects = trigger_range.collect_range_effects(manager, library_compat.load_vocabulary(version))
+        self._trigger_range_cache = (self._trigger_gen, effects)
+        return effects
+
+    def _push_trigger_range_effects(self):
+        """MapView's half: the effects (or None for a sentinel). Returns what it read."""
+        effects = self._trigger_range_effects()
+        self.map_view.set_trigger_range_effects(effects if isinstance(effects, tuple) else None)
+        return effects
+
+    def _show_trigger_range_line(self, effects) -> None:
+        """The Inspector's half, for exactly one selected unit; any other
+        count hides the line. Ignores both View toggles: it never parses."""
+        index = self.map_view._unit_index
+        entries = [] if index is None else [e for e in map(index.entry_for_key, self._selection) if e is not None]
+        if len(entries) != 1:
+            self.units_panel.show_trigger_ranges("")
+            return
+        entry = entries[0]
+        unit_const = entry.unit.unit_const
+        ringable = range_overlay.is_ring_building(unit_const)
+        ranges: tuple = ()
+        unresolved = 0
+        state = effects
+        range_index = self.map_view._trigger_range_index
+        if isinstance(effects, tuple):
+            state = None
+            if ringable and range_index is not None:
+                unit = {
+                    "player_id": entry.player_id,
+                    "unit_const": unit_const,
+                    "reference_id": entry.unit.reference_id,
+                    "own_tile": (entry.own_x, entry.own_y),
+                }
+                ranges = range_overlay.building_trigger_ranges(range_index, **unit)
+                unresolved = trigger_range.unresolved_count(range_index, **unit)
+        self.units_panel.show_trigger_ranges(
+            *trigger_range.describe(ranges, unresolved, state=state, ringable=ringable)
+        )
+
+    def _sync_trigger_ranges(self) -> None:
+        """Push the effects to MapView, then the Inspector line for the viewer's own selection."""
+        self._show_trigger_range_line(self._push_trigger_range_effects())
+
+    def _invalidate_trigger_ranges(self) -> None:
+        """After a trigger edit or undo, behind _find_triggers_bumped() (the
+        cache keys on its counter). Re-walks only where a drawn selection shows
+        the result: a kept selection in Triggers mode is not drawn, and the
+        switch back to Units pushes again (Roll The Dice holds 18,135 triggers).
+        Safe because both selection producers push first."""
+        self.map_view.set_trigger_range_effects(None)
+        if (self._selection_live() and self._selection) or (
+            self._unit_picker is not None and self.map_view._unit_select_keys
+        ):
+            self._sync_trigger_ranges()
+
     def _find_trigger_status(self) -> tuple[str | None, bool]:
         """(why triggers can't be read, or None; whether they can be written).
         Parses on first call, which Find does on the Triggers tab's first show."""
         if self.scenario is None:
             return TriggerPanel._NO_DOCUMENT, False
+        triggers_known = self.scenario.trigger_read_supported
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             manager = parse_triggers(self.scenario)
         finally:
             QApplication.restoreOverrideCursor()
+        if self.scenario.trigger_read_supported != triggers_known:
+            # A first parse can light up a live selection's trigger rings (GH #49 slice 2).
+            self._sync_trigger_ranges()
         if manager is None:
             key = TriggerPanel._unsupported_key(self.scenario)
             sentence = unsupported_version_sentence(self.scenario.scenario_version)
@@ -17845,10 +17988,18 @@ class ViewerWindow(QMainWindow):
         notes.update({h.location: "changed since Find; re-run Find" for h in stale})
         return notes
 
+    def _parse_triggers_syncing(self):
+        """parse_triggers(), plus the trigger-ring sync a first parse owes a live selection (GH #49)."""
+        triggers_known = self.scenario.trigger_read_supported
+        manager = parse_triggers(self.scenario)
+        if self.scenario.trigger_read_supported != triggers_known:
+            self._sync_trigger_ranges()
+        return manager
+
     def _find_valid_trigger_indices(self, parents) -> list[int]:
         """`parents` is {trigger_index: (name, child hits)}. A trigger still
         holds its name and at least one valid child (or matched on its own)."""
-        manager = parse_triggers(self.scenario)
+        manager = self._parse_triggers_syncing()
         valid_children, _stale = find_triggers.revalidate(
             self.scenario, [h for _name, children in parents.values() for h in children]
         )
@@ -17926,7 +18077,7 @@ class ViewerWindow(QMainWindow):
 
     def _find_trigger_refs_for(self, keys) -> int | None:
         """How many trigger fields reference these objects (parsing if needed), or None if unreadable."""
-        if self.scenario is None or parse_triggers(self.scenario) is None:
+        if self.scenario is None or self._parse_triggers_syncing() is None:
             return None
         counts = self._find_trigger_ref_counts() or {}
         return sum(counts.get(ref, 0) for _player, ref in keys)
@@ -19002,6 +19153,9 @@ class ViewerWindow(QMainWindow):
             # trigger bytes into this one, patch the previous file's option
             # offsets into it, or splice the previous file's unit bytes in.
             self.trigger_edits = None
+            # _trigger_gen is not per document, so a kept cache would serve the previous file's effects.
+            self._trigger_range_cache = None
+            self.map_view.set_trigger_range_effects(None)
             self.option_edits = None
             self.unit_edits = None
             self.message_edits = None
@@ -19155,6 +19309,8 @@ class ViewerWindow(QMainWindow):
         self._stroke_seen_since_retry = False
         self._autosave_retry_timer.stop()
         self.trigger_edits = None
+        self._trigger_range_cache = None
+        self.map_view.set_trigger_range_effects(None)
         self.option_edits = None
         self.unit_edits = None
         self.message_edits = None

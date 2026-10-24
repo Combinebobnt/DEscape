@@ -123,8 +123,8 @@ def measure(path: Path, with_status: bool) -> dict:
             continue
         result = trigger_status.evaluate_trigger(trigger, context)
         rollup = result.trigger.status
-        # A divider row is never styled, but its entry rows are, so they are still audited.
-        divider = rollup is trigger_status.Status.NONE
+        # A divider rolls up its own entries (TASK-317); they are audited like any other.
+        divider = result.divider
         triggers["dividers"] += divider
         if rollup is trigger_status.Status.PROBLEM:
             triggers["problem"] += 1

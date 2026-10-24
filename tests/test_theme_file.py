@@ -336,13 +336,19 @@ def test_a_compatdata_path_is_written(tmp_path) -> None:
     assert [p.name for p in proton.iterdir()] == ["t.yaml"]
 
 
-def test_the_written_file_is_not_mode_600_and_leaves_no_temp(tmp_path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX mode bits (st_mode is only 0o666 or 0o444)")
+def test_the_written_file_is_not_mode_600(tmp_path) -> None:
     out = tmp_path / "t.yaml"
     theme_file.write_theme_file(out, theme_file.build_document())
     umask = os.umask(0)
     os.umask(umask)
     assert stat.S_IMODE(out.stat().st_mode) == 0o644 & ~umask
     assert stat.S_IMODE(out.stat().st_mode) != 0o600
+
+
+def test_writing_leaves_no_temp(tmp_path) -> None:
+    out = tmp_path / "t.yaml"
+    theme_file.write_theme_file(out, theme_file.build_document())
     assert [p.name for p in tmp_path.iterdir()] == ["t.yaml"]
 
 

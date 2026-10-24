@@ -23,14 +23,25 @@ mobile siege drops out. Map Revealers rings each class-30 revealer at its
 plain line of sight from its stored point, no span term: revealers are 0.1
 collision point objects. Invisible Objects carry LOS 0 in the .dat, so they
 draw none.
+
+Trigger Changes (GH #49 slice 2) adds a dashed ring per selected building for
+each trigger that changes its maximum range, from trigger_range's per-trigger
+results: same footprint-edge rule, values at or below 0 and values equal to
+the base range dropped (they would sit on the solid ring), deduplicated and
+capped at MAX_TRIGGER_RINGS in trigger order. A building whose base range is
+0 still gets a dashed ring when a trigger gives it one. Buildings only, the
+selection ring's BUILDING_TILE_SPANS gate; the always-on layers get none.
 """
 
 from __future__ import annotations
 
 import math
 
-from descape import iso_geometry, terrain_palette, unit_kind
+from descape import iso_geometry, terrain_palette, trigger_range, unit_kind
 from descape.unit_stats_table import line_of_sight, unit_stats
+
+# At most this many dashed trigger rings per building; the Inspector lists every value.
+MAX_TRIGGER_RINGS = 6
 
 # Samples per ring, rounded UP to a multiple of eight. Eight, not four:
 # sampling from theta 0 in 90-degree steps hits the tile-space axis extremes,
@@ -68,13 +79,71 @@ def ring_radius_for_const(unit_const: int) -> float | None:
     row shows. The two differ on 2 of 491 buildings in the Sept 2026 .dat:
     Poenari Castle (445) displays 0 but shoots Castle arrows to 8 (GH #111),
     and hidden const 2276 displays 6 against a reach of 7."""
-    span = terrain_palette.BUILDING_TILE_SPANS.get(unit_const)
-    if span is None:
+    if not is_ring_building(unit_const):
         return None
-    range_tiles = float(unit_stats(unit_const).get("max_range", 0.0))
+    range_tiles = base_max_range(unit_const)
     if range_tiles <= 0.0:
         return None
-    return ring_radius_tiles(range_tiles, span)
+    return ring_radius_tiles(range_tiles, terrain_palette.BUILDING_TILE_SPANS[unit_const])
+
+
+def is_ring_building(unit_const: int) -> bool:
+    """The selection ring's building gate (BUILDING_TILE_SPANS), read live."""
+    return unit_const in terrain_palette.BUILDING_TILE_SPANS
+
+
+def base_max_range(unit_const: int) -> float:
+    """The .dat reach a trigger change starts from, 0.0 when absent."""
+    return float(unit_stats(unit_const).get("max_range", 0.0))
+
+
+def building_trigger_ranges(
+    index: trigger_range.RangeEffectIndex,
+    *,
+    player_id: int,
+    unit_const: int,
+    reference_id: int,
+    own_tile: tuple[int, int],
+) -> tuple[trigger_range.TriggerRange, ...]:
+    """trigger_range.trigger_ranges() for a placed building, () for anything
+    outside the BUILDING_TILE_SPANS gate. The rings and the Inspector line share it."""
+    if not is_ring_building(unit_const):
+        return ()
+    return trigger_range.trigger_ranges(
+        index,
+        base_max_range(unit_const),
+        player_id=player_id,
+        unit_const=unit_const,
+        reference_id=reference_id,
+        own_tile=own_tile,
+    )
+
+
+def trigger_ring_radii(
+    index: trigger_range.RangeEffectIndex,
+    *,
+    player_id: int,
+    unit_const: int,
+    reference_id: int,
+    own_tile: tuple[int, int],
+) -> tuple[float, ...]:
+    """The dashed rings' radii in tiles for one placed building, in trigger
+    order, or () for a non-building or no drawable trigger result."""
+    ranges = building_trigger_ranges(
+        index, player_id=player_id, unit_const=unit_const, reference_id=reference_id, own_tile=own_tile
+    )
+    if not ranges:
+        return ()
+    span = terrain_palette.BUILDING_TILE_SPANS[unit_const]
+    base = base_max_range(unit_const)
+    values: list[float] = []
+    for result in ranges:
+        if result.value <= 0.0 or result.value == base or result.value in values:
+            continue
+        values.append(result.value)
+        if len(values) == MAX_TRIGGER_RINGS:
+            break
+    return tuple(ring_radius_tiles(value, span) for value in values)
 
 
 def revealer_radius_for_const(unit_const: int) -> float | None:

@@ -44,7 +44,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, catalog_thumbs, object_catalog, place_random, settings
+from descape import asset_source, catalog_thumbs, item_activation, object_catalog, place_random, settings
 from descape.constant_picker import HIDDEN_LABEL
 from descape.terrain_palette import PLAYER_COLORS
 
@@ -217,6 +217,7 @@ class CatalogBrowserView(QWidget):
         self.list.setTextElideMode(Qt.ElideNone)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.list.itemActivated.connect(self._on_activated)
+        item_activation.install(self.list)
         self.list.currentItemChanged.connect(lambda *_: self.current_changed.emit(self.current_value()))
         self.list.verticalScrollBar().valueChanged.connect(lambda _value: self._request_viewport())
         self.list.horizontalScrollBar().valueChanged.connect(lambda _value: self._request_viewport())

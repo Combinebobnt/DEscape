@@ -50,6 +50,7 @@ from descape import (
     settings,
     shape_tools,
     trigger_geometry,
+    trigger_range,
     unit_pick,
 )
 from descape.render import SMALL_MAP_TILE_PIXELS
@@ -286,6 +287,8 @@ class MapView(QGraphicsView):
     # ring is ambient context about an already-selected building. Colour is
     # settings.OVERLAY_COLORS' "range_ring", rebuilt by _rebuild_overlay_ink().
     RANGE_RING_Z = 9.0
+    # GH #49 slice 2's trigger rings: the ring pen dashed, in device pixels since cosmetic.
+    RANGE_RING_TRIGGER_DASH: ClassVar[list[float]] = [6.0, 4.0]
 
     UNIT_HOVER_Z = 10.0
     # The selection is one fill/under-stroke/outline trio per owner colour.
@@ -649,7 +652,7 @@ class MapView(QGraphicsView):
         # already long injected list (a known merge-collision point).
         self._place_shape_query: Callable[[], str] = lambda: ""
         # GH #124: tiles a wall drag must leave empty, from set_place_blocked_query().
-        # Latched at press for "wall"/"wall_rect" drags; empty otherwise.
+        # Latched at press for "wall"/"wall_rect"/"wall_circle" drags; empty otherwise.
         self._place_blocked_query: Callable[[], frozenset] = frozenset
         self._drag_blocked: frozenset = frozenset()
         # GH #128: Place Unit's hover ghost, set by set_place_preview(). _place_hover is
@@ -785,6 +788,12 @@ class MapView(QGraphicsView):
         self._range_rings_enabled = settings.get_range_rings()
         self._range_rings_by_owner = settings.get_range_rings_by_owner()
         self._range_rings_selected_revealers = settings.get_range_rings_selected_revealers()
+        # GH #49 slice 2: the dashed trigger rings, keyed like _range_ring_items. The
+        # viewer pushes the effects (set_trigger_range_effects); the index is built once per push.
+        self._trigger_ring_items: dict = {}
+        self._trigger_rings_enabled = settings.get_range_rings_triggers()
+        self._trigger_range_effects = None
+        self._trigger_range_index = None
         # GH #153 / #155: the always-on ring layer, one item per colour group like the
         # selection's rings above, but walking the unit index rather than the selection.
         self._ring_layer_items: dict = {}
@@ -1012,6 +1021,7 @@ class MapView(QGraphicsView):
         # Cosmetic width 0 like the footprint outline: Flat's squash
         # transform would thin a real-width line unevenly around the ellipse.
         self._range_ring_pen = _pen("range_ring", 0)
+        self._range_ring_trigger_pen = _pen("range_ring", 0, dash=self.RANGE_RING_TRIGGER_DASH)
         # Keyed on "full strength": True for the emphasised entry, False for its siblings.
         self._trigger_outline_pens = {}
         self._trigger_run_pens = {}
@@ -1093,6 +1103,8 @@ class MapView(QGraphicsView):
         if None in self._range_ring_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._range_ring_items[None].setPen(self._range_ring_pen)
+        if None in self._trigger_ring_items:
+            self._trigger_ring_items[None].setPen(self._range_ring_trigger_pen)
         if None in self._ring_layer_items:
             # The layer may hold only owner groups, hence the membership test.
             self._ring_layer_items[None].setPen(self._range_ring_pen)
@@ -1971,40 +1983,87 @@ class MapView(QGraphicsView):
         The ring draws OVER the sprites, unlike the game's own, which
         composites its circle into the terrain so a palisade occludes it.
         That is an accepted deviation: drawing under the sprites means
-        painting into cached chunk pixels, a different feature."""
+        painting into cached chunk pixels, a different feature.
+
+        Trigger Changes (GH #49 slice 2) adds the dashed rings in their own
+        items, evaluated per draw from the live entry against the pushed index,
+        so a move out of an effect's area needs no extra push. Both path sets
+        are built first and reconciled separately: a building with base range
+        0 (a House) has a dashed ring and no solid one."""
         if not (self._range_rings_enabled or self._range_rings_selected_revealers):
             self._clear_unit_range_rings()
             return
+        index = self._trigger_range_index if self._range_rings_enabled and self._trigger_rings_enabled else None
         paths: dict = {}
+        trigger_paths: dict = {}
         for entry in entries:
             radius = range_overlay.selection_ring_radius(
                 entry.unit.unit_const,
                 buildings=self._range_rings_enabled,
                 revealers=self._range_rings_selected_revealers,
             )
+            key = self._owner_group_key(entry.player_id, self._range_rings_by_owner)
             points = self._range_ring_points(entry, radius)
             if points:
-                key = self._owner_group_key(entry.player_id, self._range_rings_by_owner)
                 _add_closed_polygons(paths.setdefault(key, QPainterPath()), [points])
-        if not paths:
-            self._clear_unit_range_rings()
-            return
-        for key in [k for k in self._range_ring_items if k not in paths]:
-            self.scene().removeItem(self._range_ring_items.pop(key))
+            if index is None:
+                continue
+            radii = range_overlay.trigger_ring_radii(
+                index,
+                player_id=entry.player_id,
+                unit_const=entry.unit.unit_const,
+                reference_id=entry.unit.reference_id,
+                own_tile=(entry.own_x, entry.own_y),
+            )
+            anchor = self._range_ring_anchor(entry) if radii else None
+            if anchor is not None:
+                rings = [self._range_ring_points_at(r, *anchor) for r in radii]
+                _add_closed_polygons(trigger_paths.setdefault(key, QPainterPath()), rings)
+        self._reconcile_ring_items(self._range_ring_items, paths, self._range_ring_pen, None)
+        self._reconcile_ring_items(
+            self._trigger_ring_items, trigger_paths, self._range_ring_trigger_pen, self.RANGE_RING_TRIGGER_DASH
+        )
+
+    def _reconcile_ring_items(self, items: dict, paths: dict, configured_pen: QPen, dash) -> None:
+        """Brings one ring item dict (colour group -> item) in line with
+        `paths`: drops groups no longer drawn, adds or re-paths the rest."""
+        for key in [k for k in items if k not in paths]:
+            self.scene().removeItem(items.pop(key))
         for key, path in paths.items():
-            item = self._range_ring_items.get(key)
+            item = items.get(key)
             if item is None:
                 # Cosmetic width 0 for an owner group too: see _range_ring_pen.
-                pen = self._range_ring_pen if key is None else QPen(QColor(*key), 0)
-                item = self._range_ring_items[key] = self.scene().addPath(path, pen)
+                pen = configured_pen
+                if key is not None:
+                    pen = QPen(QColor(*key), 0)
+                    if dash is not None:
+                        pen.setDashPattern(dash)
+                item = items[key] = self.scene().addPath(path, pen)
                 item.setZValue(self.RANGE_RING_Z)
             else:
                 item.setPath(path)
 
     def _clear_unit_range_rings(self) -> None:
-        for item in self._range_ring_items.values():
+        for item in (*self._range_ring_items.values(), *self._trigger_ring_items.values()):
             self.scene().removeItem(item)
         self._range_ring_items = {}
+        self._trigger_ring_items = {}
+
+    def set_range_rings_triggers(self, enabled: bool) -> None:
+        """View > Range Rings > Trigger Changes (GH #49 slice 2): the dashed
+        trigger rings beside Selected Buildings' solid ones. Scene items only."""
+        self._trigger_rings_enabled = enabled
+        self.refresh_unit_highlight()
+
+    def set_trigger_range_effects(self, effects) -> None:
+        """The viewer's push of trigger_range.collect_range_effects() output,
+        or None/UNREAD/UNREADABLE for none. The index is built once per new
+        tuple, never per draw; the same object again is a no-op."""
+        if effects is self._trigger_range_effects:
+            return
+        self._trigger_range_effects = effects
+        self._trigger_range_index = trigger_range.index_effects(effects) if isinstance(effects, tuple) else None
+        self.refresh_unit_highlight()
 
     def set_range_rings(self, enabled: bool) -> None:
         """Shows or hides View > Range Rings. Like set_footprint_outlines,
@@ -2741,7 +2800,7 @@ class MapView(QGraphicsView):
                     # Gated on the shape: the query walks every unit, and Draw Line needs none of it.
                     self._drag_blocked = (
                         frozenset(self._place_blocked_query())
-                        if self._drag_shape in ("wall", "wall_rect")
+                        if self._drag_shape in ("wall", "wall_rect", "wall_circle")
                         else frozenset()
                     )
                     self._shape_anchor = tile
@@ -3601,6 +3660,9 @@ class MapView(QGraphicsView):
             # would pick up Draw Rectangle's Filled state and the brush union.
             # Perimeter-bounded, and blocked tiles drop from the preview as above.
             return self._drop_blocked(shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, width, height), preview)
+        if shape == "wall_circle":
+            # GH #125: wall_rect's twin, above the same fallthrough for the same reason.
+            return self._drop_blocked(shape_tools.ellipse_perimeter_tiles(x0, y0, x1, y1, width, height), preview)
         if shape == "line":
             core = shape_tools.line_tiles(x0, y0, x1, y1, width, height)
             if preview and len(core) * self._brush_size**2 > self.SHAPE_PREVIEW_TILE_LIMIT:
@@ -4453,6 +4515,7 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._trigger_ring_items = {}
         self._ring_layer_items = {}
         self._ring_layer_polygons = {}
         self._ring_layer_projection = None
@@ -4786,6 +4849,7 @@ class MapView(QGraphicsView):
         self._unit_hover_item = None
         self._unit_select_groups = {}
         self._range_ring_items = {}
+        self._trigger_ring_items = {}
         self._ring_layer_items = {}
         # Mandatory, not tidiness: scene().clear() destroyed the C++ objects,
         # so a later removeItem() on one would raise. The pushed list itself

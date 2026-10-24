@@ -57,7 +57,8 @@ PORTRAIT_PX = 64
 # GH #148: tooltip-only, on the stats grid; it no longer costs a visible line.
 _STATS_NOTE_FULL = (
     "Base values from the game's own unit table: no civ bonuses, tech "
-    "upgrades or trigger effects applied."
+    "upgrades or trigger effects applied. A trigger that changes a building's "
+    "range is listed below."
 )
 
 _MIXED_TEXT = "(mixed)"

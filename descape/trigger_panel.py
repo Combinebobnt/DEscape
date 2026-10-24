@@ -130,7 +130,9 @@ class StatusStyle:
     marker: str = "color"  # "color", "icon", "both" or "off"
     ok: str = "#4caf50"
     problem: str = "#e05252"
-    color_ok_rows: bool = True  # off: an OK row gets neither brush nor icon
+    color_ok_rows: bool = True  # off: an OK row gets neither brush nor icon, and an empty section no dash
+    color_sections: bool = False  # TASK-317: a section row's brush; its icon shows either way
+    empty: str = "#8a8a8a"  # an empty section's dash, fixed
 
     @property
     def colours(self) -> bool:
@@ -146,8 +148,9 @@ _STATUS_TOOLTIP_LINES = 12
 
 
 def status_icon(status: Status, hex_str: str) -> QIcon:
-    """A tick (OK) or a cross (PROBLEM) in `hex_str`. The shape carries the
-    meaning, so the icon works with no colour vision at all."""
+    """A tick (OK), a cross (PROBLEM) or a dash (EMPTY, a section with no
+    entries) in `hex_str`. The shape carries the meaning, so the icon works
+    with no colour vision at all."""
     icon = QIcon()
     for size in (16, 32):
         pixmap = QPixmap(size, size)
@@ -158,6 +161,8 @@ def status_icon(status: Status, hex_str: str) -> QIcon:
         if status is Status.OK:
             points = ((0.16, 0.55), (0.40, 0.78), (0.84, 0.24))
             painter.drawPolyline(QPolygonF([QPointF(x * size, y * size) for x, y in points]))
+        elif status is Status.EMPTY:
+            painter.drawLine(QPointF(0.24 * size, 0.5 * size), QPointF(0.76 * size, 0.5 * size))
         else:
             low, high = 0.24 * size, 0.76 * size
             painter.drawLine(QPointF(low, low), QPointF(high, high))
@@ -489,12 +494,20 @@ class TriggerPanel(QWidget):
     # GH #166: a row's trigger_status.EntryStatus, on the column it styles, so
     # apply_status_style() can restyle without a recompute.
     _STATUS_ROLE = Qt.UserRole + 3
+    # TASK-317: beside _STATUS_ROLE, whether the row is a section divider's, for the same restyle.
+    _DIVIDER_ROLE = Qt.UserRole + 4
+    _STATUS_HEADER_TIP = (
+        "Trigger status: a tick when complete, a cross when something is missing, "
+        "a dash for a section with no conditions or effects"
+    )
+    _EMPTY_SECTION_TIP = "Section with no conditions or effects"
 
     # The trigger tree's columns. Detail, picker and variables trees keep
     # their own indices.
     _COL_POS = 0
     _COL_ID = 1
-    _COL_NAME = 2
+    _COL_STATUS = 2  # TASK-317: the status icon, hidden while the marker shows no icons
+    _COL_NAME = 3
     # Qt.UserRole and _TAG_ROLE are row data pinned to column 0, whichever
     # column that is; they do not follow the ID column.
     _ROLE_COL = 0
@@ -826,8 +839,9 @@ class TriggerPanel(QWidget):
         pane_layout.addLayout(tag_row)
 
         self.tree = _TriggerTree(self.select_all)
-        self.tree.setColumnCount(3)
+        self.tree.setColumnCount(4)
         self._set_position_header(EXEC_MODE_UNKNOWN)
+        self.tree.setColumnHidden(self._COL_STATUS, not self._status_style.icons)
         self.tree.setUniformRowHeights(True)
         self.tree.setRootIsDecorated(False)
         self._configure_scrolling(self.tree)
@@ -836,7 +850,7 @@ class TriggerPanel(QWidget):
         # same ResizeToContents treatment still leaves it effectively the whole
         # pane. No _fit_entry_columns()-style cap and no resizeEvent hook --
         # the sizing here has nothing viewport-dependent to react to.
-        for column in (self._COL_POS, self._COL_ID, self._COL_NAME):
+        for column in (self._COL_POS, self._COL_ID, self._COL_STATUS, self._COL_NAME):
             self.tree.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         # Multi-select (GH #27). Qt's own Ctrl/Shift gestures; clicking a
         # section header selects that one divider trigger only.
@@ -1468,25 +1482,25 @@ class TriggerPanel(QWidget):
 
     def _set_position_header(self, mode: str) -> None:
         text, tooltip = self._POSITION_HEADERS[mode]
-        labels = ["", "ID", "Trigger"]
+        labels = ["", "ID", "", "Trigger"]
         labels[self._COL_POS] = text
         self.tree.setHeaderLabels(labels)
         self.tree.headerItem().setToolTip(self._COL_POS, tooltip)
+        self.tree.headerItem().setToolTip(self._COL_STATUS, self._STATUS_HEADER_TIP)
 
     def _position_text(self, index: int) -> str:
         position = self._display_position.get(index)
         return "" if position is None else str(position)
 
     def _make_trigger_item(self, index: int, trigger) -> QTreeWidgetItem:
-        columns = ["", "", ""]
+        columns = ["", "", "", ""]
         columns[self._COL_POS] = self._position_text(index)
         columns[self._COL_ID] = str(index)
         columns[self._COL_NAME] = self._trigger_label(trigger)
         item = QTreeWidgetItem(columns)
         item.setData(self._ROLE_COL, Qt.UserRole, index)
         self._stash_tags(item, self._read(trigger, "name") or "")
-        statuses = self._status.get(index)
-        self._apply_status(item, statuses.trigger if statuses is not None else None, self._COL_NAME)
+        self._style_trigger_item(item, index)
         return item
 
     def _populate_flat(self, triggers, order: list[int]) -> None:
@@ -1503,7 +1517,7 @@ class TriggerPanel(QWidget):
         the one synthetic row in the whole tree."""
         for position, section in enumerate(parts):
             if section.header_index is None:
-                columns = ["", "", ""]
+                columns = ["", "", "", ""]
                 columns[self._COL_NAME] = self._BEFORE_FIRST_SECTION
                 top = QTreeWidgetItem(columns)
                 top.setData(self._ROLE_COL, Qt.UserRole, None)
@@ -2223,7 +2237,9 @@ class TriggerPanel(QWidget):
             self._status_icons = {
                 Status.OK: status_icon(Status.OK, style.ok),
                 Status.PROBLEM: status_icon(Status.PROBLEM, style.problem),
+                Status.EMPTY: status_icon(Status.EMPTY, style.empty),
             }
+        self.tree.setColumnHidden(self._COL_STATUS, not style.icons)
 
     @contextlib.contextmanager
     def _batched_trigger_restyle(self):
@@ -2240,34 +2256,66 @@ class TriggerPanel(QWidget):
             for c, mode in enumerate(modes):
                 header.setSectionResizeMode(c, mode)
 
-    def _apply_status(self, item, status: EntryStatus | None, col: int, force: bool = False) -> None:
-        """Style one row's name column: the brush, the icon and, on a PROBLEM
-        row, a tooltip listing the reasons. UNCHECKED and NONE stay unstyled,
-        and so does an OK row with color_ok_rows off, in every marker mode.
-        A row already showing `status` is skipped (see _batched_trigger_restyle()
-        for the cost); `force` is for a style or theme change, which every row
+    def _apply_status(
+        self,
+        item,
+        status: EntryStatus | None,
+        col: int,
+        force: bool = False,
+        *,
+        icon_col: int | None = None,
+        divider: bool = False,
+    ) -> None:
+        """Style one row: the brush on `col`, the icon on `icon_col` (default
+        `col`) and a tooltip on both, listing a PROBLEM row's reasons.
+        UNCHECKED and NONE stay unstyled, and so does an OK row with
+        color_ok_rows off, in every marker mode. An EMPTY section gets a dash
+        while OK rows are marked, and never a brush; any other `divider` row
+        gets its brush only with color_sections (TASK-317). A row already
+        showing `status` is skipped (see _batched_trigger_restyle() for the
+        cost); `force` is for a style or theme change, which every row
         follows. The brush is the colour shaded to the floor on its tree's Base."""
-        if not force and item.data(col, self._STATUS_ROLE) == status:
+        if (
+            not force
+            and item.data(col, self._STATUS_ROLE) == status
+            and bool(item.data(col, self._DIVIDER_ROLE)) == divider
+        ):
             return
         item.setData(col, self._STATUS_ROLE, status)
+        item.setData(col, self._DIVIDER_ROLE, divider)
         style = self._status_style
         kind = status.status if status is not None else Status.NONE
-        marked = kind is Status.PROBLEM or (kind is Status.OK and style.color_ok_rows)
+        marked = kind is Status.PROBLEM or (kind in (Status.OK, Status.EMPTY) and style.color_ok_rows)
         brush = None
-        if marked and style.colours:
+        if marked and style.colours and kind is not Status.EMPTY and (not divider or style.color_sections):
             # A trigger row is styled before it is added to self.tree.
             base = (item.treeWidget() or self.tree).palette().color(QPalette.Active, QPalette.Base).name()
             brush = QBrush(QColor(legible_status_color(style.problem if kind is Status.PROBLEM else style.ok, base)))
         item.setData(col, Qt.ForegroundRole, brush)
         icon = self._status_icons.get(kind) if marked and style.icons else None
-        item.setIcon(col, icon if icon is not None else QIcon())
-        item.setToolTip(col, status_tooltip(status) if kind is Status.PROBLEM else "")
+        item.setIcon(col if icon_col is None else icon_col, icon if icon is not None else QIcon())
+        if kind is Status.PROBLEM:
+            tip = status_tooltip(status)
+        else:
+            tip = self._EMPTY_SECTION_TIP if kind is Status.EMPTY else ""
+        for tip_col in {col, col if icon_col is None else icon_col}:
+            item.setToolTip(tip_col, tip)
+
+    def _style_trigger_item(self, item, index: int) -> None:
+        """A trigger-list row from the cache: icon in the status column, brush on the name."""
+        statuses = self._status.get(index)
+        self._apply_status(
+            item,
+            statuses.trigger if statuses is not None else None,
+            self._COL_NAME,
+            icon_col=self._COL_STATUS,
+            divider=statuses is not None and statuses.divider,
+        )
 
     def _style_trigger_row(self, index: int) -> None:
         item = self._item_for_index.get(index)
         if item is not None:
-            statuses = self._status.get(index)
-            self._apply_status(item, statuses.trigger if statuses is not None else None, self._COL_NAME)
+            self._style_trigger_item(item, index)
 
     def _style_entry_tree(self, manager, index: int | None) -> None:
         """The detail tree's Trigger, Conditions, Effects and entry rows, for
@@ -2285,7 +2333,7 @@ class TriggerPanel(QWidget):
             if not data:
                 continue
             if data[0] == "trigger":
-                self._apply_status(top, statuses.trigger, 0)
+                self._apply_status(top, statuses.trigger, 0, divider=statuses.divider)
                 continue
             kind = data[1]
             self._apply_status(top, groups.get(kind), 0)
@@ -2301,11 +2349,19 @@ class TriggerPanel(QWidget):
         self._refresh_status_style()
         with self._batched_trigger_restyle():
             for item in self._item_for_index.values():
-                self._apply_status(item, item.data(self._COL_NAME, self._STATUS_ROLE), self._COL_NAME, force=True)
+                self._apply_status(
+                    item,
+                    item.data(self._COL_NAME, self._STATUS_ROLE),
+                    self._COL_NAME,
+                    force=True,
+                    icon_col=self._COL_STATUS,
+                    divider=bool(item.data(self._COL_NAME, self._DIVIDER_ROLE)),
+                )
         for row in range(self.entry_tree.topLevelItemCount()):
             top = self.entry_tree.topLevelItem(row)
             for item in (top, *(top.child(c) for c in range(top.childCount()))):
-                self._apply_status(item, item.data(0, self._STATUS_ROLE), 0, force=True)
+                divider = bool(item.data(0, self._DIVIDER_ROLE))
+                self._apply_status(item, item.data(0, self._STATUS_ROLE), 0, force=True, divider=divider)
         # An icon widens the Item column, which is sized once per populate.
         self._fit_entry_columns()
 

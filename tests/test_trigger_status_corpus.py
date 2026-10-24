@@ -44,8 +44,8 @@ CONFIRMED_BROKEN = {
     ("old-allies-final-v2.aoe2scenario", 57, "effects", 2): "patrol with no location; its 5 sibling patrols have one",
 }
 
-# Incomplete on purpose: a divider's condition that can never fire. Only the
-# divider row itself is unstyled; its entry rows are styled like any other.
+# Incomplete on purpose: a divider's condition that can never fire. Its entry
+# rows are styled like any other, and the section row shows their cross (TASK-317).
 INCOMPLETE_BY_DESIGN = {
     (_8TP, 13, "conditions", 0): "trigger_active with no trigger, in the begin-scenario divider",
     ("old-allies-final-v2.aoe2scenario", 2, "conditions", 0): "destroy_object with no unit, in a divider",

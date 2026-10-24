@@ -172,6 +172,10 @@ class _MultiLineEdit(QPlainTextEdit):
         # The band, so a growable box's layout follows the grip both ways.
         return QSize(super().sizeHint().width(), self._band_height(self._lines))
 
+    def minimumSizeHint(self) -> QSize:
+        # A layout expands sizeHint() to this, and QAbstractScrollArea's is two scroll bars long (70 px under Fusion).
+        return QSize(super().minimumSizeHint().width(), self._band_height(MIN_LINES))
+
     def grip(self) -> QWidget:
         return self._grip
 
