@@ -162,13 +162,35 @@ def _rgb32_blit_ok(device: QTransform, scale: float) -> bool:
     separate downscale branch there); above 1 (magnification) they match.
     Mirroring is allowed: measured identical, and the abs() covers it. y is
     held to the same bound too, though a y-only minification measured
-    identical."""
+    identical.
+
+    Level 0's point overload drawImage(x, y, qimg) uses this gate too
+    (measured identical on the same rule, TASK-031.68), except under a
+    non-scaling device transform, which paint() never asks about."""
     if device.type() > QTransform.TxScale:
         return False
     return min(abs(device.m11()), abs(device.m22())) * scale >= RGB32_BLIT_MIN_RESIDUAL
 
 
-def level_rect_for(cache, mip: int, scene_rect: QRectF) -> tuple[int, int, int, int] | None:
+# Most box_reduce2() halvings paint() applies past the coarsest level (8x: a fit residual down to ~0.13).
+MAX_REDUCTIONS = 3
+
+# Uncached chunks a placeholder level may have under the paint's rect and still rank first (TASK-031.25 D4).
+PLACEHOLDER_MAX_MISSING = 2
+
+
+def reduction_for(coarsest: int, max_axis_scale: float) -> int:
+    """How many times paint() box-reduces the coarsest level (TASK-031.70):
+    mip_for_scale()'s ceil(log2(scale)) rule continued below the clamp, so
+    the reduced residual lands back in (0.5, 1] where the RGB32 gate already
+    holds. 0 wherever the coarsest level's own residual is already in that
+    band, and at a scale <= 0 (the same guard mip_for_scale() has)."""
+    if max_axis_scale <= 0:
+        return 0
+    return max(0, min(MAX_REDUCTIONS, coarsest - math.ceil(math.log2(max_axis_scale))))
+
+
+def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int, int, int, int] | None:
     """The LEVEL-`mip`-pixel chunk-cache rect a scene-space rect covers --
     MapCanvasItem.paint()'s own arithmetic (floor the low edge, ceil the
     high edge, clamp to canvas_dims(mip)), extracted so
@@ -186,11 +208,13 @@ def level_rect_for(cache, mip: int, scene_rect: QRectF) -> tuple[int, int, int, 
     than the small amount of shared arithmetic is worth.
 
     None for a degenerate or empty rect once clamped to canvas bounds --
-    both callers already treat that as "nothing to do" and return early."""
-    scale = cache.mip_scale(mip)
+    both callers already treat that as "nothing to do" and return early.
+
+    k > 0: the same in level `mip` box-reduced k times (reduced_dims())."""
+    scale = cache.mip_scale(mip) * (1 << k)
     x0, y0 = math.floor(scene_rect.left() / scale), math.floor(scene_rect.top() / scale)
     x1, y1 = math.ceil(scene_rect.right() / scale), math.ceil(scene_rect.bottom() / scale)
-    canvas_w, canvas_h = cache.canvas_dims(mip)
+    canvas_w, canvas_h = cache.reduced_dims(mip, k) if k else cache.canvas_dims(mip)
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(x1, canvas_w), min(y1, canvas_h)
     if x1 <= x0 or y1 <= y0:
@@ -257,6 +281,14 @@ class MapCanvasItem(QGraphicsItem):
     # reach argument (not the old [1,2) one) was always the real reason 2px
     # is enough, and no value here needs to change.
     #
+    # TASK-031.70: past the coarsest level paint() now blits that level
+    # box-reduced (reduction_for()), so the residual is back in (0.5, 1] there
+    # too, and the minifying band above is reached only past MAX_REDUCTIONS or
+    # with level 0 as the coarsest level. Both sizes then count reduced pixels.
+    # The "byte-identical" above held on the blank pytest fixture only: on
+    # textured content the overlapping padded draws differ along a block edge
+    # (test_coarse_reduce.py's tiling case, at k = 0 as well).
+    #
     # PAINT_BLOCK_PX: at fit-to-view (the whole map exposed at once, e.g.
     # right after opening a file), a single render_rect() call over the
     # entire exposedRect would allocate one full-canvas-sized stitched
@@ -270,7 +302,13 @@ class MapCanvasItem(QGraphicsItem):
     PAINT_PAD_PX = 2
     PAINT_BLOCK_PX = 2048
 
-    def __init__(self, cache: IsoChunkCache | FlatChunkCache | SlopedChunkCache):
+    def __init__(
+        self,
+        cache: IsoChunkCache | FlatChunkCache | SlopedChunkCache,
+        *,
+        placeholders: bool = False,
+        on_placeholder: Callable[[int], None] | None = None,
+    ):
         super().__init__()
         self._cache = cache
         # Scene space is pinned to the REFERENCE level permanently (plan
@@ -287,6 +325,8 @@ class MapCanvasItem(QGraphicsItem):
         # do, via a single scene.render() -- worth keeping in mind before
         # reusing it after a repaint that Qt may have split).
         self._last_mip = 0
+        # Write-only like _last_mip: the box reductions the last paint applied (reduction_for()).
+        self._last_reduction = 0
         # Write-only like _last_mip: the QImage format of the last block drawn.
         self._last_blit_format: QImage.Format | None = None
         # Cleared once, on this item's first paint only -- one new
@@ -297,6 +337,17 @@ class MapCanvasItem(QGraphicsItem):
         # Optional (elapsed_seconds, mip) callback, called on EVERY paint
         # while installed. Plain attribute: a QGraphicsItem is not a QObject.
         self._on_paint_timed: Callable[[float, int], None] | None = None
+        # Placeholder paints (TASK-031.25, see paint()): live paints across a level change only.
+        self._placeholders = placeholders
+        # The last level a live paint drew for real outside a wait, and the level waited on.
+        self._settled_mip: int | None = None
+        self._pending_mip: int | None = None
+        # The source level the paint that set the pending level drew from (_kept_source()).
+        self._pending_source: int | None = None
+        # Write-only like _last_mip: the level the last paint actually drew (a placeholder's F).
+        self._last_drawn_mip: int | None = None
+        # Called with the level once per new pending level, from inside paint().
+        self.on_placeholder = on_placeholder
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
     def _select_mip(self, painter: QPainter) -> int:
@@ -347,69 +398,13 @@ class MapCanvasItem(QGraphicsItem):
                 rect = option.exposedRect.intersected(self._bounding_rect)
                 if rect.isEmpty():
                     return
-                # Everything below tiles and pads in LEVEL pixels, deriving each
-                # destination rect in scene units by multiplying back by `scale`.
-                # Doing it the other way (tiling in scene units) would round block
-                # edges independently per block, so adjacent blocks' destination
-                # rects could fail to abut -- `scale` is an exact power of two, so
-                # this way they always do.
                 mip = self._select_mip(painter)
                 self._last_mip = mip
                 perf_trace.view_mip(mip)
-                scale = self._cache.mip_scale(mip)
-                level_rect = level_rect_for(self._cache, mip, rect)
-                if level_rect is None:
-                    return
-                x0, y0, x1, y1 = level_rect
-                canvas_w, canvas_h = self._cache.canvas_dims(mip)
-                # The scale-1.0 point overload below never converts, whatever the gate says.
-                to_rgb32 = scale != 1.0 and _rgb32_blit_ok(painter.deviceTransform(), scale)
-
-                # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
-                # anchored at the canvas origin, not at x0/y0, so repeated partial
-                # exposures of the same region always request the same block
-                # boundaries -- irrelevant to correctness, since each block is
-                # independently correct, but keeps cache chunk-fetch patterns
-                # stable across paint calls). Overlapping padded draws between
-                # adjacent blocks are harmless: each is an opaque, independently
-                # correct overwrite of its own destination rect.
-                block_x0 = (x0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
-                block_y0 = (y0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
-                for by in range(block_y0, y1, self.PAINT_BLOCK_PX):
-                    for bx in range(block_x0, x1, self.PAINT_BLOCK_PX):
-                        cx0, cy0 = max(bx, x0), max(by, y0)
-                        cx1 = min(bx + self.PAINT_BLOCK_PX, x1)
-                        cy1 = min(by + self.PAINT_BLOCK_PX, y1)
-                        if cx1 <= cx0 or cy1 <= cy0:
-                            continue
-                        px0 = max(0, cx0 - self.PAINT_PAD_PX)
-                        py0 = max(0, cy0 - self.PAINT_PAD_PX)
-                        px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
-                        py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
-                        block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
-                        if block.size == 0:
-                            continue
-                        with perf_trace.repaint_phase("blit"):
-                            h, w = block.shape[:2]
-                            contiguous = np.ascontiguousarray(block)
-                            qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
-                            if scale == 1.0:
-                                # The point overload is a different QPainter code path
-                                # from the scaled one and is not guaranteed
-                                # bit-identical to it at unit scale. Keeping it for the
-                                # reference level is what makes this phase structurally
-                                # incapable of regressing any existing byte-identity
-                                # bar, rather than merely empirically not doing so.
-                                painter.drawImage(px0, py0, qimg)
-                            else:
-                                if to_rgb32:
-                                    qimg = qimg.convertToFormat(QImage.Format_RGB32)
-                                painter.drawImage(
-                                    QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
-                                    qimg,
-                                    QRectF(0, 0, w, h),
-                                )
-                            self._last_blit_format = qimg.format()
+                # widget is None for QGraphicsScene.render() (captures): those never take a placeholder.
+                drawn = self._level_to_draw(mip, rect, widget is not None, _max_axis_scale(painter.deviceTransform()))
+                self._last_drawn_mip = drawn
+                self._draw_level(painter, drawn, rect)
         finally:
             # Every paint, not just the first, and including the two early
             # returns above: whoever installed the callback is summing them.
@@ -417,6 +412,225 @@ class MapCanvasItem(QGraphicsItem):
                 on_paint_timed(time.perf_counter() - paint_t0, self._last_mip)
             if first_paint:
                 perf_trace.first_paint_done()
+
+    def _draw_level(self, painter: QPainter, mip: int, rect: QRectF) -> None:
+        """Blits level `mip` over the scene rect `rect` (already clipped to
+        boundingRect()), whatever level the paint selected: the selected one,
+        or a placeholder's source level (TASK-031.25). Its own reduction k,
+        scale and RGB32 gate are `mip`'s, so a placeholder from level 0 keeps
+        the point overload and one from the coarsest level its k."""
+        # Everything below tiles and pads in LEVEL pixels, deriving each
+        # destination rect in scene units by multiplying back by `scale`.
+        # Doing it the other way (tiling in scene units) would round block
+        # edges independently per block, so adjacent blocks' destination
+        # rects could fail to abut -- `scale` is an exact power of two, so
+        # this way they always do.
+        device = painter.deviceTransform()
+        # Past the coarsest non-zero level, blit its box-reduced copy k times smaller (TASK-031.70);
+        # "level pixels" below then means reduced-k pixels.
+        k = self.reduction_at(mip, _max_axis_scale(device))
+        self._last_reduction = k
+        scale = self._cache.mip_scale(mip) * (1 << k)
+        level_rect = level_rect_for(self._cache, mip, rect, k)
+        if level_rect is None:
+            return
+        x0, y0, x1, y1 = level_rect
+        canvas_w, canvas_h = self._cache.reduced_dims(mip, k) if k else self._cache.canvas_dims(mip)
+        # A non-scaling device transform keeps level 0's point overload on RGB888 (no gate).
+        to_rgb32 = (scale != 1.0 or device.type() > QTransform.TxTranslate) and _rgb32_blit_ok(device, scale)
+
+        # Tile [x0,x1)x[y0,y1) into PAINT_BLOCK_PX-aligned sub-blocks (grid
+        # anchored at the canvas origin, not at x0/y0, so repeated partial
+        # exposures of the same region always request the same block
+        # boundaries -- irrelevant to correctness, since each block is
+        # independently correct, but keeps cache chunk-fetch patterns
+        # stable across paint calls). Overlapping padded draws between
+        # adjacent blocks are harmless: each is an opaque, independently
+        # correct overwrite of its own destination rect.
+        block_x0 = (x0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
+        block_y0 = (y0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
+        for by in range(block_y0, y1, self.PAINT_BLOCK_PX):
+            for bx in range(block_x0, x1, self.PAINT_BLOCK_PX):
+                cx0, cy0 = max(bx, x0), max(by, y0)
+                cx1 = min(bx + self.PAINT_BLOCK_PX, x1)
+                cy1 = min(by + self.PAINT_BLOCK_PX, y1)
+                if cx1 <= cx0 or cy1 <= cy0:
+                    continue
+                px0 = max(0, cx0 - self.PAINT_PAD_PX)
+                py0 = max(0, cy0 - self.PAINT_PAD_PX)
+                px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
+                py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
+                if k:
+                    block = self._cache.render_reduced_rect(px0, py0, px1, py1, mip, k)
+                else:
+                    block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
+                if block.size == 0:
+                    continue
+                with perf_trace.repaint_phase("blit"):
+                    h, w = block.shape[:2]
+                    contiguous = np.ascontiguousarray(block)
+                    qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
+                    if to_rgb32:
+                        qimg = qimg.convertToFormat(QImage.Format_RGB32)
+                    if scale == 1.0:
+                        # Level 0 always keeps the point overload (not bit-identical to the scaled
+                        # path); at a non-scaling transform its RGB888 source too, for the 1:1 bars.
+                        painter.drawImage(px0, py0, qimg)
+                    elif k:
+                        # The reduced canvas overhangs boundingRect by under a reduced pixel: trim the
+                        # source fractionally, so the mapping (and the pixels inside) stay unchanged.
+                        sw = min(float(w), self._bounding_rect.width() / scale - px0)
+                        sh = min(float(h), self._bounding_rect.height() / scale - py0)
+                        painter.drawImage(
+                            QRectF(px0 * scale, py0 * scale, sw * scale, sh * scale), qimg, QRectF(0, 0, sw, sh)
+                        )
+                    else:
+                        painter.drawImage(
+                            QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                            qimg,
+                            QRectF(0, 0, w, h),
+                        )
+                    self._last_blit_format = qimg.format()
+
+    def reduction_at(self, mip: int, max_axis_scale: float) -> int:
+        """The box reductions paint() applies to level `mip` at a device
+        scale: reduction_for() at the coarsest non-zero level, else 0."""
+        return reduction_for(mip, max_axis_scale) if mip == self._cache.mip_levels()[0] != 0 else 0
+
+    def _level_to_draw(self, mip: int, rect: QRectF, live: bool, device_scale: float) -> int:
+        """The level a paint that selected `mip` draws, moving the settled and
+        pending state (TASK-031.25 D1, D2, D4, D5). Branch numbers are the
+        plan's Step 2."""
+        if not live or not self._placeholders:
+            return mip  # 1: captures and placeholders off, state untouched
+        if mip == self._settled_mip:
+            self._pending_mip = self._pending_source = None  # 2: a zoom back to the settled level ends the wait
+            return mip
+        if self.view_ready(mip, rect, device_scale):
+            if mip != self._pending_mip:
+                self._settle(mip)  # 3: a pending level settles only through refine() (D2)
+            return mip
+        cache = self._cache
+        if cache.is_level_resident(mip) or cache.level_warmable(mip):
+            source = self._kept_source(mip, rect, device_scale)
+            if source is None:
+                source = self._placeholder_source(mip, rect, device_scale)
+            if source is not None:  # 4
+                if mip != self._pending_mip:
+                    self._pending_mip = mip
+                    self._pending_source = source
+                    if self.on_placeholder is not None:
+                        self.on_placeholder(mip)
+                perf_trace.level_event(f"placeholder<{source}", mip, 0.0)
+                return source
+        if mip != self._pending_mip:
+            self._settle(mip)  # 5: builds here, as without placeholders
+        return mip
+
+    def _kept_source(self, mip: int, rect: QRectF, device_scale: float) -> int | None:
+        """The source level the paint that made `mip` pending chose (its full
+        repaint), while it stays resident and within PLACEHOLDER_MAX_MISSING
+        for `rect`: a hover-sized partial paint then draws the level the rest
+        of the frame shows, not a nearer one D4 would rank first for its rect."""
+        source = self._pending_source
+        if mip != self._pending_mip or source is None or not self._cache.is_level_resident(source):
+            return None
+        return source if self._view_missing(source, rect, device_scale) <= PLACEHOLDER_MAX_MISSING else None
+
+    def _settle(self, mip: int) -> None:
+        self._settled_mip = mip
+        self._pending_mip = None
+        self._pending_source = None
+
+    def set_placeholders(self, on: bool) -> None:
+        """Turns placeholder paints on or off. Off settles a pending level;
+        on takes the level last selected as settled, since paints made while
+        off never moved the state."""
+        if not on:
+            self.force_settle()
+        elif not self._placeholders:
+            self._settled_mip = self._last_mip
+        self._placeholders = on
+
+    def pending_mip(self) -> int | None:
+        return self._pending_mip
+
+    def refine(self, mip: int) -> None:
+        """Settles `mip` if it is the pending level and repaints: the viewer
+        calls this once the view's chunks at it are cached (D2)."""
+        if mip != self._pending_mip:
+            return
+        self._settle(mip)
+        self.update()
+
+    def force_settle(self) -> None:
+        """Settles the pending level, if any, and repaints; the next paint
+        draws it for real and builds it if it must (the watchdog's way out)."""
+        if self._pending_mip is None:
+            return
+        self._settle(self._pending_mip)
+        self.update()
+
+    def view_chunks(self, mip: int, scene_rect: QRectF, device_scale: float = 0.0) -> tuple[int, int, int, int] | None:
+        """(cx0, cy0, cx1, cy1), the inclusive LEVEL-`mip` chunk range a paint
+        of `scene_rect` reads at `mip`: level_rect_for() padded by
+        PAINT_PAD_PX as each block pads, and at a reduced coarsest level
+        (device_scale, reduction_at()) every real chunk under the reduced
+        chunks it touches. None for an empty rect. The paint's readiness
+        test, the viewer's refine check and the pending warm's range (D3)."""
+        cache = self._cache
+        k = self.reduction_at(mip, device_scale)
+        level_rect = level_rect_for(cache, mip, scene_rect, k)
+        if level_rect is None:
+            return None
+        x0, y0, x1, y1 = level_rect
+        pad = self.PAINT_PAD_PX
+        canvas_w, canvas_h = cache.reduced_dims(mip, k) if k else cache.canvas_dims(mip)
+        x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+        x1, y1 = min(canvas_w, x1 + pad), min(canvas_h, y1 + pad)
+        cx0, cy0, cx1, cy1 = cache.chunk_index_range(mip, x0, y0, x1, y1)
+        if k:
+            level_w, level_h = cache.canvas_dims(mip)
+            max_cx, max_cy = (level_w - 1) // cache.chunk_px, (level_h - 1) // cache.chunk_px
+            cx0, cy0 = cx0 << k, cy0 << k
+            cx1, cy1 = min(((cx1 + 1) << k) - 1, max_cx), min(((cy1 + 1) << k) - 1, max_cy)
+        return cx0, cy0, cx1, cy1
+
+    def _view_missing(self, mip: int, scene_rect: QRectF, device_scale: float) -> int:
+        """Uncached chunks in view_chunks(mip, scene_rect)."""
+        chunks = self.view_chunks(mip, scene_rect, device_scale)
+        if chunks is None:
+            return 0
+        cx0, cy0, cx1, cy1 = chunks
+        size = self._cache.chunk_px
+        return self._cache.missing_chunks(mip, cx0 * size, cy0 * size, (cx1 + 1) * size, (cy1 + 1) * size)
+
+    def view_ready(self, mip: int, scene_rect: QRectF, device_scale: float = 0.0) -> bool:
+        """Whether a paint of `scene_rect` at `mip` builds nothing: the level
+        is resident and every chunk in view_chunks() is cached."""
+        return self._cache.is_level_resident(mip) and self._view_missing(mip, scene_rect, device_scale) == 0
+
+    def _placeholder_source(self, mip: int, scene_rect: QRectF, device_scale: float) -> int | None:
+        """D4's fallback level for a paint of `scene_rect` at `mip`, or None.
+        Candidates are the other resident levels, coarser ones at any
+        distance and finer ones at distance 1 only; nearest first, coarser on
+        a tie. The first with at most PLACEHOLDER_MAX_MISSING uncached chunks
+        wins, else the coarser candidate with the fewest."""
+        cache = self._cache
+        candidates = []
+        for level in cache.mip_levels():
+            if level == mip or (level > mip + 1) or not cache.is_level_resident(level):
+                continue
+            candidates.append((abs(level - mip), level > mip, level))
+        candidates.sort()
+        fewest: tuple[int, int] | None = None
+        for _distance, finer, level in candidates:
+            missing = self._view_missing(level, scene_rect, device_scale)
+            if missing <= PLACEHOLDER_MAX_MISSING:
+                return level
+            if not finer and (fewest is None or missing < fewest[0]):
+                fewest = (missing, level)
+        return None if fewest is None else fewest[1]
 
     def invalidate_region(self, bbox: tuple[int, int, int, int]) -> None:
         """Schedules a Qt repaint for exactly the given canvas-pixel bbox --

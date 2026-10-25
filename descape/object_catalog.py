@@ -306,6 +306,10 @@ class CatalogEntry:
     search_text: str
 
 
+# GH #58: what a picker row for a unit only the active data mod's .dat defines ends in.
+DATA_MOD_TAG = "(data mod)"
+
+
 def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None) -> CatalogEntry:
     return CatalogEntry(
         id=id_,
@@ -329,10 +333,15 @@ def objects() -> tuple[CatalogEntry, ...]:
     Editor-hidden dat-only ids stay out (user decision 2026-09-27), except
     _EDITOR_LISTED_DAT_ONLY (_ROR_EDITOR_LISTED_DAT_ONLY under Return of
     Rome), listed as not hidden under the official editor's category (GH #208).
-    Under Return of Rome, also _ror_shared_hidden(), as hidden."""
+    Under Return of Rome, also _ror_shared_hidden(), as hidden. A dat-only id
+    the active data mod adds (GH #58) keeps its derived_category(), the tab the
+    game's editor lists it under, and its row name ends in DATA_MOD_TAG."""
+    from descape import data_mods
+
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
+    mod_only = data_mods.mod_only_ids()
     # Under Return of Rome the AoE2 enums and the AoE2 Gunpowder Keg id do not apply (GH #67).
     ror = game_dataset.is_ror()
     editor_listed = _ROR_EDITOR_LISTED_DAT_ONLY if ror else _EDITOR_LISTED_DAT_ONLY
@@ -355,6 +364,8 @@ def objects() -> tuple[CatalogEntry, ...]:
         if not ror and id_ in _EDITOR_UNLISTED:
             dat_entry = {**dat_entry, "hidden": True}
         name = resolve_name(id_, "", dat_entry, lang)
+        if id_ in mod_only:
+            name = f"{name} {DATA_MOD_TAG}"
         entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
         seen.add(id_)
     if ror:

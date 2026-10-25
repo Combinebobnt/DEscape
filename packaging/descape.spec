@@ -2,6 +2,7 @@
 #   .venv/bin/python3 -m PyInstaller packaging/descape.spec --noconfirm
 # onedir (not onefile) so the bundle's data files stay individually
 # inspectable and startup avoids onefile's self-extraction cost.
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -31,6 +32,12 @@ datas = [
 ]
 datas.append((str(ROOT / "descape" / "templates"), "descape/templates"))
 datas.append((str(ROOT / "descape" / "app_icon.png"), "descape"))
+# GH #58: the data-mod derive subprocess runs tools/gen_*.py, and every cache key
+# hashes them and dat_derive.py's own source, so all of them ship as data too.
+sys.path.insert(0, str(ROOT))
+from descape.dat_derive import source_files  # noqa: E402 -- needs ROOT on sys.path first
+
+datas += [(str(path), "descape" if path.name == "dat_derive.py" else "tools") for path in source_files(ROOT / "tools")]
 
 # Picks up versions/DE/ (the 5.5MB third-party vocabulary tree) plus
 # datasets/sources/*.json. xs-check binaries are excluded: 5.2MB, unused --
@@ -42,7 +49,8 @@ a = Analysis(
     pathex=[str(ROOT)],
     datas=datas,
     # composite_backend imports the kernel inside a try, which analysis can miss.
-    hiddenimports=["descape._composite_native"],
+    # GH #58: the generators above are data, never analysed; argparse is the one import they add.
+    hiddenimports=["descape._composite_native", "argparse", "genieutils.datfile"],
     excludes=["tkinter", "pytest", "pytest-qt", "cython"],
 )
 # Host-supplied by design: a bundled libstdc++ shadows the host's and breaks a

@@ -72,7 +72,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source
+from descape import asset_source, dat_derive
 from descape.content_roots import AOE2DE_STEAM_APP_ID
 
 TOOLS_DIR = ROOT / "tools"
@@ -83,19 +83,8 @@ ROR_DAT_SUBPATH = Path("modes") / "Pompeii" / DAT_SUBPATH
 ROR_STAMP_KEY = "ror"
 ROR_TABLES_SUBDIR = "ror"
 
-# The one registry: every tools/gen_*.py that parses the .dat, and the tables it writes.
-GENERATORS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("gen_garrison_table.py", ("garrison_table.json",)),
-    ("gen_object_catalog.py", ("object_catalog.json",)),
-    ("gen_terrain_blend_map.py", ("terrain_blend_map.json",)),
-    ("gen_terrain_classes.py", ("terrain_classes.json",)),
-    ("gen_terrain_texture_map.py", ("terrain_texture_map.json",)),
-    ("gen_terrain_unit_map.py", ("terrain_unit_map.json",)),
-    ("gen_tree_unit_ids.py", ("tree_unit_ids.json",)),
-    ("gen_unit_graphic_map.py", ("unit_graphic_map.json", "building_art_map.json")),
-    ("gen_unit_render_data.py", ("unit_render_data.json",)),
-    ("gen_unit_stats.py", ("unit_stats.json",)),
-)
+# The one registry, shared with the runtime derivation of a data mod's tables (GH #58).
+GENERATORS = dat_derive.GENERATORS
 
 DATASET_LABELS = {"aoe2": "Age of Empires II", "ror": "Return of Rome"}
 

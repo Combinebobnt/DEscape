@@ -27,6 +27,12 @@ def add_dataset_argument(parser: argparse.ArgumentParser) -> None:
         default=AOE2,
         help="Which game's .dat to read: aoe2 (default) or ror (Return of Rome, under modes/Pompeii/)",
     )
+    parser.add_argument(
+        "--dat",
+        type=Path,
+        default=None,
+        help="Read this .dat instead of the dataset's own, e.g. a data mod's (GH #58); other files still come from the install",
+    )
 
 
 def game_root(install: Path, dataset: str) -> Path:
@@ -34,8 +40,9 @@ def game_root(install: Path, dataset: str) -> Path:
     return install / ROR_SUBPATH if dataset == ROR else install
 
 
-def dat_path(install: Path, dataset: str) -> Path:
-    return game_root(install, dataset) / DAT_SUBPATH
+def dat_path(install: Path, dataset: str, dat: Path | None = None) -> Path:
+    """`dat` when given, else the dataset's own .dat under the install."""
+    return dat if dat is not None else game_root(install, dataset) / DAT_SUBPATH
 
 
 def resource(install: Path, dataset: str, subpath: str | Path) -> Path:

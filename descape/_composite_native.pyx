@@ -19,7 +19,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 9
+KERNEL_ABI = 10
 
 
 cdef inline bint _gather_scatter(
@@ -1651,3 +1651,25 @@ def box_shrink_rgba(const uint8_t[:, :, ::1] rgba, const int64_t[:, ::1] ys, con
     finally:
         free(row)
         free(prem)
+
+
+def box_reduce2(const uint8_t[:, :, ::1] src, uint8_t[:, :, ::1] out):
+    """render_cache._box_reduce2_numpy into out (ceil(H/2), ceil(W/2), C):
+    (a + b + c + d + 2) >> 2 per channel over each 2x2 block, an odd last
+    row or column paired with itself."""
+    cdef Py_ssize_t H = src.shape[0], W = src.shape[1], C = src.shape[2]
+    cdef Py_ssize_t h = (H + 1) // 2, w = (W + 1) // 2, i, j, c, y0, y1, x0, x1
+    if out.shape[0] != h or out.shape[1] != w or out.shape[2] != C:
+        raise ValueError("out must be (ceil(H/2), ceil(W/2), C) of src")
+    if H == 0 or W == 0:
+        return
+    with nogil:
+        for i in range(h):
+            y0 = 2 * i
+            y1 = y0 + 1 if y0 + 1 < H else y0
+            for j in range(w):
+                x0 = 2 * j
+                x1 = x0 + 1 if x0 + 1 < W else x0
+                for c in range(C):
+                    out[i, j, c] = <uint8_t>((<unsigned int>src[y0, x0, c] + src[y0, x1, c]
+                                              + src[y1, x0, c] + src[y1, x1, c] + 2) >> 2)

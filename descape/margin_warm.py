@@ -134,6 +134,7 @@ def bounded_chunk_range(
     cy1: int,
     span_w: int,
     span_h: int,
+    anchor: tuple[float, float] | None = None,
 ) -> tuple[int, int, int, int]:
     """Centers a `span_w` x `span_h` window inside [cx0, cx1] x [cy0, cy1]
     -- the bound the load-time margin warm applies to viewport_chunk_
@@ -153,7 +154,10 @@ def bounded_chunk_range(
     `span_h` (MapView.viewport_chunk_span()) are sized from the viewport's
     own on-screen dimensions, independent of whatever scale happens to be
     selected right now, which is what keeps this patch viewport-sized
-    regardless of whether the caller is at a real zoom or fit-to-view.
+    regardless of whether the caller is at a real zoom or fit-to-view. The
+    caller widens the span for the view a crossing lands on (TASK-031.25 D3b:
+    twice it plus one for a finer neighbour, anchored where the zoom anchors,
+    plus one for a coarser one), never to the whole projection.
 
     Never wider/taller than the input range itself, and never outside it
     either -- clamped to [cx0, cx1]/[cy0, cy1] directly rather than to the
@@ -163,9 +167,19 @@ def bounded_chunk_range(
     midpoint-based centre can otherwise round outside an EVEN-width input
     range (e.g. [5, 6]'s midpoint floors to 5, and a span of 2 centred
     there would reach down to 4, one chunk below cy0) if it weren't
-    clamped back against the input range's own edges afterward."""
+    clamped back against the input range's own edges afterward.
+
+    `anchor` (fx, fy), each in [0, 1], places the window instead at the
+    fraction of the range where a zoom anchors (TASK-031.25 review): zooming
+    in about a point keeps it at the same fraction of the view, so a view a
+    zoom-in shrinks onto starts at cx0 + fx * (range - window)."""
     span_w = min(span_w, cx1 - cx0 + 1)
     span_h = min(span_h, cy1 - cy0 + 1)
+    if anchor is not None:
+        fx, fy = (min(1.0, max(0.0, f)) for f in anchor)
+        nx0 = cx0 + round(fx * (cx1 - cx0 + 1 - span_w))
+        ny0 = cy0 + round(fy * (cy1 - cy0 + 1 - span_h))
+        return nx0, ny0, nx0 + span_w - 1, ny0 + span_h - 1
     mid_x, mid_y = (cx0 + cx1) // 2, (cy0 + cy1) // 2
 
     nx0 = max(cx0, min(mid_x - span_w // 2, cx1 - span_w + 1))
@@ -264,14 +278,27 @@ def load_warm_chunks(
     ring_chunks), then the ring -- both cheap wins over "no queue at
     all," ordered by their claim to be the more useful of the two rather
     than by any measured cost difference."""
+    centre, ring = load_warm_parts(cache, mip, cx0, cy0, cx1, cy1)
+    return centre + ring
+
+
+def load_warm_parts(
+    cache,
+    mip: int,
+    cx0: int,
+    cy0: int,
+    cx1: int,
+    cy1: int,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """load_warm_chunks()'s two halves apart, (centre, ring): the viewer's
+    pending-level warm queues them as two entries (TASK-031.25 D6)."""
     centre = [
         (cx, cy)
         for cx in range(cx0, cx1 + 1)
         for cy in range(cy0, cy1 + 1)
         if not cache.has_chunk(mip, cx, cy)
     ]
-    ring = ring_chunks(cache, mip, cx0, cy0, cx1, cy1, lead=(0, 0))
-    return centre + ring
+    return centre, ring_chunks(cache, mip, cx0, cy0, cx1, cy1, lead=(0, 0))
 
 
 class MarginWarmer(_IdleTimerDriver):
@@ -313,6 +340,11 @@ class MarginWarmer(_IdleTimerDriver):
     @property
     def is_active(self) -> bool:
         return bool(self._queue or self._in_flight)
+
+    @property
+    def mip(self) -> int | None:
+        """The level the queued warm is for, or None after a cancel."""
+        return self._mip
 
     def run_to_completion(self) -> None:
         """Test-only drain, every chunk synchronous: nothing pumps the event

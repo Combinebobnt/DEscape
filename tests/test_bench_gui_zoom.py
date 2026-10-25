@@ -200,14 +200,15 @@ def test_an_assembly_only_build_has_no_task():
 @pytest.mark.parametrize(
     ("bracket", "mip", "view_ms", "frame_ms", "want"),
     [
-        ({"blit": 10.8, "other": 1.7}, 0, 12.6, 15.1, "TASK-031.68"),
+        ({"blit": 10.8, "other": 1.7}, 0, 12.6, 15.1, "blit at mip 0 (no task)"),
         ({"blit": 15.6, "other": 2.7}, -2, 18.5, 22.2, "blit at mip -2 (no task)"),
         ({"blit": 1.2, "other": 0.2}, 1, 1.5, 3.5, "Qt backing-store flush"),
         ({"prepare": 4.9, "join": 7.0, "blit": 3.9, "other": 2.7}, 1, 18.6, 20.9, "TASK-031.10/031.11"),
         ({"blit": 1.0, "other": 6.0}, 1, 7.2, 8.0, "untraced code in the canvas paint"),
         ({"blit": 1.0, "other": 0.5}, 1, 6.0, 7.0, "untraced: other scene items"),
+        ({"blit": 1.9, "other": 2.8, "reduce": 9.0}, -2, 14.0, 16.0, "the coarsest level's box reduce"),
     ],
-    ids=["level0-blit", "coarse-blit", "flush", "chunk", "canvas-other", "other-items"],
+    ids=["level0-blit", "coarse-blit", "flush", "chunk", "canvas-other", "other-items", "reduce"],
 )
 def test_a_slow_frame_routes_by_its_bracket(bracket, mip, view_ms, frame_ms, want):
     frame = bz.Frame(0.0, frame_ms / 1000, bracket, mip, view_ms)
@@ -241,6 +242,109 @@ def test_a_frame_dominated_by_gc_gen2_is_031_18():
     assert bz.latency_signature(click, st, frames, [gc2])[0] == "TASK-031.18 gc gen2"
 
 
+def test_a_row_prints_the_worst_canvas_paint_s_reductions_beside_the_real_level_residual():
+    click = _click("revisit", mip=(-2, -2))
+    frames = [bz.Frame(0.003, 0.010, {"blit": 1.0}, -2, 1.2, 0), bz.Frame(0.020, 0.040, {"blit": 2.0, "reduce": 9.0}, -2, 11.5, 1)]
+    row = bz.format_row(click, bz.click_stats(click, frames, []))
+    assert " resid 0.70 k 1 pct " in row
+    assert "| canvas 11.0 mip -2 [blit 2.0 reduce 9.0]" in row
+    bare = _click("revisit")
+    assert " k - pct " in bz.format_row(bare, bz.click_stats(bare, [], []))
+
+
 def test_a_gate_line_reads_dev_and_x4():
     assert bz.gate_line(3, "worst 21.7 ms", 21.7, True) == "gate G3: worst 21.7 ms dev (x4 86.8 ms) met"
     assert bz.gate_line(1, "no revisit pass", None, None) == "gate G1: no revisit pass dev (x4 -) n/a"
+
+
+# --- placeholder paints (TASK-031.25) ---------------------------------------
+
+# Stepped, sprites on, cold roll, placeholders on (the lane's smoke run, 2026-10-24).
+VIEW_PLACEHOLDER = (
+    "[22:49:56] perf view: repaint: 43 calls, 206ms total (max 24.2) [blit 124.5 x106; prepare 6.4 x7; join 9.2 x2;"
+    " composite 5.1 x1; reduce 4.0 x2; other 57.0], warm: 75 ticks, 169 chunks, 184ms total (max tick 21.0, max chunk"
+    " 21.0), worker 133 chunks, 646ms total (max 14.6), level 102 ticks, max tick 26.0 [walk 1 25.9; other 0.1; gc 0.1;"
+    " max step 18.2 (walk 1 p0 #886 const 2423)], installs 4 (max 0.0), levels: 0 placeholder<-1 0.0ms x6 (repaint),"
+    " 1 placeholder<-1 0.0ms x9 (repaint), 1 install 0.0ms x2 (level-warm), 1 pack 9.0ms (level-warm), 1 refine 0.0ms"
+    " (other), 0 install 0.0ms x2 (level-warm), 0 pack 11.4ms (level-warm), 0 refine 0.0ms (other), mip -2->-1 -1->0"
+    " 0->1 1->0 0->-1 -1->-2, gc gen2 176.2ms, composite native, platform xcb"
+)
+# The same line's shape at a negative level from a negative one (the old kind pattern dropped both).
+VIEW_PLACEHOLDER_NEGATIVE = VIEW_PLACEHOLDER.replace("0 placeholder<-1 0.0ms x6", "-1 placeholder<-2 0.0ms x6")
+FORCE_SETTLED = "[22:51:02] placeholder: force-settled level 1"
+
+
+def test_placeholder_and_refine_entries_parse_and_never_count_as_builds():
+    events = bz.parse_levels(bz.strip_ts(VIEW_PLACEHOLDER))
+    assert [(e.mip, e.kind, e.count, e.where) for e in events[:2]] == [
+        (0, "placeholder<-1", 6, "repaint"), (1, "placeholder<-1", 9, "repaint"),
+    ]
+    assert [(e.mip, e.kind) for e in events if e.kind == "refine"] == [(1, "refine"), (0, "refine")]
+    assert len(events) == 8
+    negative = bz.parse_levels(VIEW_PLACEHOLDER_NEGATIVE)[0]
+    assert (negative.mip, negative.kind, negative.count) == (-1, "placeholder<-2", 6)
+    assert bz.logged_counts([VIEW_PLACEHOLDER]) == (0, 0)
+    assert bz.logged_placeholders([VIEW_PLACEHOLDER, VIEW_COLD_ROLL]) == 15
+    assert bz.logged_placeholders([VIEW_PLACEHOLDER_NEGATIVE]) == 15
+
+
+def test_force_settles_count_the_watchdog_lines():
+    assert bz.force_settles([VIEW_PLACEHOLDER, FORCE_SETTLED, bz.strip_ts(FORCE_SETTLED)]) == 2
+    assert bz.force_settles([VIEW_PLACEHOLDER, STALL]) == 0
+
+
+def _ph_frame(t: float, mip: int, drawn: int, *, full: bool = True, canvas: float = 3.0) -> bz.Frame:
+    return bz.Frame(t, t + 0.01, {"blit": canvas}, mip, canvas, 0, drawn, drawn != mip, full and drawn == mip)
+
+
+def test_time_to_sharp_runs_to_the_first_real_full_view_frame():
+    frames = [
+        _ph_frame(0.0, 0, -1), _ph_frame(0.1, 0, -1),
+        _ph_frame(0.2, 0, 0, full=False),  # a partial real paint: still waiting
+        _ph_frame(0.4, 0, 0),
+        _ph_frame(1.0, 1, 0),  # a wait the next level supersedes
+        _ph_frame(1.1, 2, 1),
+        bz.Frame(1.2, 1.21, {}, None),  # no canvas paint in it
+    ]
+    done, superseded, still_open = bz.sharp_waits(frames)
+    assert [(lv, start.start, end.end) for lv, start, end in done] == [(0, 0.0, pytest.approx(0.41))]
+    assert (superseded, still_open) == (1, 1)
+
+
+def test_placeholder_lines_read_p1_p2_p4_p5():
+    cold = _click("notch", 0.0, mip=(-1, 0), end=0.5, idx=1)
+    warm = _click("notch", 0.5, mip=(0, 1), end=1.0, idx=2)
+    warm.warm_before = True
+    frames = [
+        _ph_frame(0.003, 0, 0),  # cold crossing: sharp at once
+        _ph_frame(0.503, 1, 0, canvas=30.0),  # beat its warm: a placeholder over the G3 budget
+        _ph_frame(0.8, 1, 1),
+    ]
+    p = bz.placeholder_stats("notch", [cold, warm], frames, [], [VIEW_PLACEHOLDER, FORCE_SETTLED], 2)
+    p.pending_at_end = "none"
+    lines = bz.placeholder_lines(p)
+    assert lines[0] == ("placeholders notch: 1 frames, worst canvas 30.0 ms dev (x4 120.0) at mip 1 from 0;"
+                        " 1 clicks' first frame")
+    assert "worst 307.0 ms dev (x4 1228.0) over 1 waits (0 superseded by another level, 0 still open);" in lines[1]
+    assert "force-settles 1; stalls 0; pending at pass end none" in lines[1]
+    assert lines[2] == "  cross-check placeholders notch: 2 paints seen, 15 logged  MISMATCH"
+    assert lines[3] == ("  D3b: 1 crossing notches clicked with no warm active, 0 with a placeholder frame, 0 with"
+                        " chunk work in a paint; 1 crossing notches beat their warm, 1 with a placeholder frame")
+    assert lines[4] == "  over G3: placeholder frame canvas 30.0 ms dev at mip 1 from 0"
+    roll = bz.placeholder_stats("roll", [], [], [], [], 0)
+    assert roll.crossing_cold is None and len(bz.placeholder_lines(roll)) == 3
+
+
+def test_placeholder_markers_leave_g1_s_population_alone_and_print_apart():
+    """A 0 ms `placeholder<F` or `refine` event is not a build: a revisit notch with one stays in G1."""
+    click = _click("revisit", 0.0)
+    frames = [bz.Frame(0.003, 0.006, {"blit": 2.0}, 0, 2.2, 0, -1, True)]
+    marker = bz.Activity(0.004, 0.004, "level", "0 placeholder<-1 (repaint)", {}, "repaint")
+    refine = bz.Activity(0.2, 0.2, "level", "0 refine (other)", {}, "other")
+    g1 = bz.gates([click], frames, [marker, refine])[0]
+    assert g1.met is True and "over 1 built-and-warm notches" in g1.line
+    st = bz.click_stats(click, frames, [marker, refine])
+    assert st.levels == [] and len(st.markers) == 2
+    row = bz.format_row(click, st)
+    assert " PLACEHOLDER from -1 " in row
+    assert row.endswith("markers 0 placeholder<-1 x1, 0 refine x1")

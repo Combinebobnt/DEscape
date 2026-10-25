@@ -28,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-from descape import asset_source
+from descape import asset_source, settings
 from descape.scenario_io import TEMPLATE_DIR, is_in_game_profile, is_workshop_subscribed, resolve_detecting_loops
 
 AUTOSAVE_SUFFIX = ".autosave"
@@ -49,6 +49,8 @@ class AutosaveEntry:
     untitled: bool
     saved_at: float
     size: int
+    # GH #58: the data mod chosen when the slot was written (a data_mods.identity() dict), None for the install's.
+    data_mod: dict | None = None
 
 
 def autosave_dir() -> Path:
@@ -192,21 +194,33 @@ def _save_index(index: dict) -> None:
     asset_source.write_config_file(index_path(), index)
 
 
-def record(key: str, slot: Path, display_path: str, untitled: bool, timestamp: float | None = None) -> None:
+def record(
+    key: str,
+    slot: Path,
+    display_path: str,
+    untitled: bool,
+    timestamp: float | None = None,
+    data_mod: dict | None = None,
+) -> None:
     """Add one written slot to the index. The index is a convenience for the
     dialog, not the source of truth -- entries() drops rows whose file has
-    vanished, and the .autosave files themselves are what actually matter."""
+    vanished, and the .autosave files themselves are what actually matter.
+    `data_mod` rides the slot's row, since a recovered slot opens untitled
+    and so has no per-scenario choice to read (GH #58)."""
     index = _load_index()
     doc = index.setdefault(key, {})
     doc["display_path"] = display_path
     doc["untitled"] = untitled
     saved_at = time.time() if timestamp is None else timestamp
     entries = [e for e in doc.get("entries", []) if e.get("file") != str(slot)]
-    entries.append({
+    row = {
         "file": str(slot),
         "saved_at": saved_at,
         "bytes": slot.stat().st_size if slot.is_file() else 0,
-    })
+    }
+    if data_mod is not None:
+        row["data_mod"] = dict(data_mod)
+    entries.append(row)
     doc["entries"] = entries
     _save_index(index)
 
@@ -247,6 +261,7 @@ def entries() -> list[AutosaveEntry]:
             path = Path(entry.get("file", ""))
             if not path.is_file():
                 continue
+            data_mod = settings.clean_data_mod_identity(entry.get("data_mod"))
             out.append(AutosaveEntry(
                 key=key,
                 path=path,
@@ -254,6 +269,7 @@ def entries() -> list[AutosaveEntry]:
                 untitled=bool(doc.get("untitled", False)),
                 saved_at=float(entry.get("saved_at", 0.0)),
                 size=int(entry.get("bytes", 0)),
+                data_mod=data_mod,
             ))
     out.sort(key=lambda e: e.saved_at, reverse=True)
     return out

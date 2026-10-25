@@ -5185,7 +5185,7 @@ def _sprite_memo_invariants(
 ) -> tuple:
     return (
         proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow, wall_alpha,
-        mod_graphics.generation(), unit_sprites.hi_res_generation(),
+        mod_graphics.generation(), unit_sprites.hi_res_generation(), game_dataset.generation(),
     )
 
 

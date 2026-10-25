@@ -169,7 +169,7 @@ class NewMapDialog(QDialog):
     def build_key() -> tuple:
         """What a built panel depends on: the active game data and the install
         (the swatch art) and the UI font (the title's size, set at build)."""
-        return game_dataset.active(), asset_source.get_install_path(), QApplication.font().toString()
+        return game_dataset.cache_key(), asset_source.get_install_path(), QApplication.font().toString()
 
     def set_initial(self, initial: NewMapChoice) -> None:
         """Shows `initial` in the widgets, each field falling back to the

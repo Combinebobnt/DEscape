@@ -1685,7 +1685,11 @@ def _building_art(
                 )
         if art:
             civ_art[str(civ_index)] = art
-    if violations or held_out != set(_ART_INVARIANT_HOLDOUTS):
+    # A data mod's .dat may lack the civ a holdout was listed for (155's Greek civs).
+    unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS)
+    if _DATA_MOD_DAT:
+        unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS)
+    if violations or unexplained:
         raise SystemExit(
             "per-civ/per-age building art breaks the placed const's own logic -- "
             "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
@@ -1760,6 +1764,43 @@ def _select_dataset(dataset: str) -> None:
         _ART_INVARIANT_HOLDOUTS = _ROR_ART_INVARIANT_HOLDOUTS
 
 
+# Set by _narrow_to_dat(): a data mod's .dat, not the dataset's own.
+_DATA_MOD_DAT = False
+
+
+def _defines(units: list, unit_const: int) -> bool:
+    """Whether the .dat has this const: older ones (VER 7.7) end sooner and hold
+    nameless, graphic-less placeholders where later consts went."""
+    if not 0 <= unit_const < len(units) or units[unit_const] is None:
+        return False
+    unit = units[unit_const]
+    return bool(unit.name) or (bool(unit.standing_graphic) and unit.standing_graphic[0] >= 0)
+
+
+def _narrow_to_dat(units: list, graphics: list) -> None:
+    """GH #58: drops each hand-measured const the data mod's .dat lacks, so the
+    guards still raise on a const it has but changed, never on one it lacks."""
+    global _EXTRA_ANGLE_CONSTS, _COMPOSITE_SCOPE, _PIECE_SLOTS, _TOWN_CENTRE_SCOPE
+    global _ANNEX_TREE_SCOPE, _BODY_GRAPHIC_OVERRIDES, _UNDERWATER_BODY_CONSTS
+    global _BODY_FRAME_OFFSETS, _PARTICLE_CONSTS, _ART_INVARIANT_HOLDOUTS, _DATA_MOD_DAT
+    _DATA_MOD_DAT = True
+
+    def keep(consts):
+        return frozenset(c for c in consts if _defines(units, c))
+
+    _EXTRA_ANGLE_CONSTS = keep(_EXTRA_ANGLE_CONSTS)
+    _COMPOSITE_SCOPE = keep(_COMPOSITE_SCOPE)
+    _TOWN_CENTRE_SCOPE = keep(_TOWN_CENTRE_SCOPE)
+    _ANNEX_TREE_SCOPE = keep(_ANNEX_TREE_SCOPE)
+    _UNDERWATER_BODY_CONSTS = keep(_UNDERWATER_BODY_CONSTS)
+    _PARTICLE_CONSTS = keep(_PARTICLE_CONSTS)
+    _PIECE_SLOTS = {c: v for c, v in _PIECE_SLOTS.items() if _defines(units, c)}
+    _BODY_GRAPHIC_OVERRIDES = {c: v for c, v in _BODY_GRAPHIC_OVERRIDES.items() if _defines(units, c)}
+    _ART_INVARIANT_HOLDOUTS = {c: v for c, v in _ART_INVARIANT_HOLDOUTS.items() if _defines(units, c)}
+    names = {g.file_name for g in graphics if g is not None}
+    _BODY_FRAME_OFFSETS = {name: v for name, v in _BODY_FRAME_OFFSETS.items() if name in names}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1784,7 +1825,7 @@ def main() -> None:
 
     from genieutils.datfile import DatFile
 
-    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
@@ -1793,6 +1834,8 @@ def main() -> None:
     data = DatFile.parse(str(dat_path))
     graphics = data.graphics
     units = data.civs[0].units
+    if args.dat is not None:
+        _narrow_to_dat(units, graphics)
     body_positions = _body_delta_positions(units, graphics)
     building_consts = {
         c for c, u in enumerate(units) if u is not None and u.type == _BUILDING_TYPE

@@ -1796,6 +1796,73 @@ def clear_recent_files() -> None:
     _save_config(config)
 
 
+# GH #58: File > Data Mod's choice per saved scenario, keyed by its resolved path.
+# A value is a data_mods.identity() dict; no key means the install's own data.
+DATA_MOD_IDENTITY_FIELDS = ("status_path", "title", "workshop_id")
+_data_mod_by_scenario: dict[str, dict] | None = None
+
+
+def _scenario_key(path: Path) -> str:
+    # Imported here: scenario_io loads the scenario parser, which settings otherwise never needs.
+    from descape.scenario_io import resolve_detecting_loops
+
+    try:
+        return str(resolve_detecting_loops(path))
+    except (OSError, RuntimeError):  # a symlink loop: key on the path as given, as autosave.doc_key() does
+        return str(Path(path).absolute())
+
+
+def clean_data_mod_identity(raw) -> dict | None:
+    """A stored data mod identity with only its known string fields, or None
+    when it has no status_path (a hand-edited or malformed config or autosave row)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("status_path"), str) or not raw["status_path"]:
+        return None
+    return {field: raw[field] if isinstance(raw.get(field), str) else None for field in DATA_MOD_IDENTITY_FIELDS}
+
+
+def _load_data_mod_by_scenario() -> dict[str, dict]:
+    global _data_mod_by_scenario
+    if _data_mod_by_scenario is None:
+        raw = _load_config().get("data_mod_by_scenario", {})
+        _data_mod_by_scenario = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                identity = clean_data_mod_identity(value)
+                if isinstance(key, str) and identity is not None:
+                    _data_mod_by_scenario[key] = identity
+    return _data_mod_by_scenario
+
+
+def get_data_mod_for(path: Path) -> dict | None:
+    """The data mod remembered for the scenario at `path` (a copy), or None for the install's data."""
+    identity = _load_data_mod_by_scenario().get(_scenario_key(path))
+    return None if identity is None else dict(identity)
+
+
+def set_data_mod_for(path: Path, identity: dict | None) -> None:
+    """Remembers `identity` for the scenario at `path`; None forgets it. Raises
+    ValueError, writing nothing, on an identity without a status_path."""
+    stored = _load_data_mod_by_scenario()
+    key = _scenario_key(path)
+    if identity is None:
+        if key not in stored:
+            return
+        del stored[key]
+    else:
+        clean = clean_data_mod_identity(identity)
+        if clean is None:
+            raise ValueError(f"a data mod identity needs a status_path, got {identity!r}")
+        if stored.get(key) == clean:
+            return
+        stored[key] = clean
+    config = _load_config()
+    if stored:
+        config["data_mod_by_scenario"] = {key: dict(value) for key, value in stored.items()}
+    else:
+        config.pop("data_mod_by_scenario", None)
+    _save_config(config)
+
+
 # File > New Map…'s last choices (GH #243), written by its dialog on OK, not
 # by Settings. Game data is a game_dataset id (GH #67).
 NEW_MAP_GAME_DATA = game_dataset.DATASETS

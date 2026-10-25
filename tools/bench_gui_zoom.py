@@ -27,7 +27,8 @@ elevations); Flat-topdown unticks Isometric View for the top-down FlatChunkCache
 
 Per click it prints one row: accepted or refused (the zoom readout changed or
 not), mip and zoom % before and after, whether the level was built and warm
-before the click, the residual scale, click-to-first-frame and click-to-quiet
+before the click, the residual scale (at the real level) and the worst canvas paint's
+box reductions past the coarsest level (k, TASK-031.70), click-to-first-frame and click-to-quiet
 latency split into queue / handler / wait / frame, the worst canvas paint in
 the click's window with its repaint bracket, then that frame's other items and
 flush as context, level events, stalls, gc gen2 and warm ticks in the window,
@@ -49,6 +50,18 @@ Gates (dev ms; x4 must fit the budget):
 Each missed gate prints its offending clicks' signatures. A `cross-check` line
 compares the builds inside paints the wrappers saw with the `(repaint)` level
 builds Perf Trace logged, per notch and per roll, and flags a disagreement.
+
+The window allows placeholder paints as the app does (TASK-031.25: a crossing onto a
+level not ready yet draws a resident one scaled until refine); --no-placeholders
+keeps them off, for an A/B on one commit. Each frame records the level its canvas
+paint selected and the one it drew. Per pass a `placeholders` block prints the
+placeholder frames and their worst canvas paint, the clicks whose first frame was
+one, the worst time-to-sharp (first placeholder frame at a level to the end of the
+first real full-view frame at it), force-settles (the watchdog's debug-log line),
+stalls and any level still pending once the pass-end wait gave up
+(PLACEHOLDER_STUCK_MS), plus a cross-check of the placeholder paints the wrapper saw
+against the `placeholder<F` level events logged. The notch pass adds the D3b split:
+crossing notches clicked with no warm active against those that beat their warm.
 
 --profile-paint N wraps MapCanvasItem.paint in cProfile and prints the N
 slowest paints' top 25 by cumtime (cProfile inflates every figure; read it for
@@ -127,8 +140,9 @@ class LevelEvent:
     where: str = "other"
 
 
+# A kind may carry `<` and a signed level: the placeholder paint's `placeholder<-1` (TASK-031.25).
 _LEVEL_ENTRY = re.compile(
-    r"(-?\d+) ([a-z][\w-]*) ([\d.]+)ms(?: x(\d+))?(?: \d+ tiles)?(?: \[([^\]]*)\])? \(([^)]+)\)"
+    r"(-?\d+) ([a-z][\w-]*(?:<-?\d+)?) ([\d.]+)ms(?: x(\d+))?(?: \d+ tiles)?(?: \[([^\]]*)\])? \(([^)]+)\)"
 )
 _LEVELS_END = re.compile(r", (?:mip |gc gen|composite |sprites |textures )")
 
@@ -188,6 +202,25 @@ def logged_counts(lines: list[str]) -> tuple[int, int]:
     return builds, stalls
 
 
+PLACEHOLDER_KIND = "placeholder<"
+FORCE_SETTLED = "placeholder: force-settled level"
+
+
+def logged_placeholders(lines: list[str]) -> int:
+    """Placeholder paints by Perf Trace's count: the `placeholder<F` level events, summed."""
+    n = 0
+    for raw in lines:
+        line = strip_ts(raw)
+        if not line.startswith("perf load:"):
+            n += sum(e.count for e in parse_levels(line) if e.kind.startswith(PLACEHOLDER_KIND))
+    return n
+
+
+def force_settles(lines: list[str]) -> int:
+    """The watchdog's `placeholder: force-settled level N` lines."""
+    return sum(FORCE_SETTLED in line for line in lines)
+
+
 def cross_check(label: str, seen: tuple[int, int], lines: list[str]) -> str | None:
     """The `cross-check` line for one notch or roll: the wrappers' builds in paint and stalls
     against Perf Trace's own log. None when both sides saw nothing."""
@@ -207,6 +240,10 @@ class Frame:
     bracket: dict[str, float] = field(default_factory=dict)
     mip: int | None = None
     view_ms: float = 0.0  # the viewport's own Paint event: every scene item, not the flush
+    k: int | None = None  # the canvas paint's box reductions (MapCanvasItem._last_reduction, TASK-031.70)
+    drawn: int | None = None  # the level the last canvas paint drew (_last_drawn_mip): F on a placeholder
+    placeholder: bool = False  # a canvas paint in this frame drew another level than it selected (TASK-031.25)
+    full_real: bool = False  # a canvas paint drew its selected level over the whole viewport
 
     @property
     def ms(self) -> float:
@@ -258,6 +295,7 @@ class Click:
     t_exit: float
     window_end: float = 0.0
     lines: list[str] = field(default_factory=list)
+    warm_before: bool = False  # a level, load or margin warm was active when the handler ran
 
 
 @dataclass
@@ -275,10 +313,17 @@ class ClickStats:
     stalls: list[Activity]
     gc2_ms: float
     warm: list[Activity]
+    markers: list[Activity] = field(default_factory=list)  # the 0 ms placeholder< and refine level events
 
     @property
     def builds_in_paint(self) -> list[Activity]:
         return [a for a in self.levels if is_build_in_paint(a)]
+
+
+def is_marker(act: Activity) -> bool:
+    """A 0 ms placeholder<F or refine level event (TASK-031.25): not a build, never G1-excluding."""
+    words = act.detail.split()
+    return act.kind == "level" and len(words) > 1 and (words[1].startswith(PLACEHOLDER_KIND) or words[1] == "refine")
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -321,10 +366,11 @@ def click_stats(click: Click, frames: list[Frame], activities: list[Activity]) -
         first=first,
         slowest=max(inside, key=lambda f: f.ms, default=None),
         worst_canvas=max(inside, key=lambda f: f.canvas_ms, default=None),
-        levels=[a for a in acts if a.kind == "level"],
+        levels=[a for a in acts if a.kind == "level" and not is_marker(a)],
         stalls=[a for a in acts if a.kind == "stall"],
         gc2_ms=sum(a.ms for a in acts if a.kind == "gc" and a.detail == "gen2"),
         warm=[a for a in acts if a.kind in ("level-warm", "margin-warm")],
+        markers=[a for a in acts if is_marker(a)],
     )
 
 
@@ -333,7 +379,7 @@ def bracket_signature(frame: Frame, mip: int | None, canvas_only: bool = False) 
     the other items and flush out (G1 gates the canvas paint alone)."""
     b = frame.bracket
     chunk = sum(b.get(k, 0.0) for k in CHUNK_PHASES)
-    parts = {"chunk": chunk, "blit": b.get("blit", 0.0), "levels": b.get("levels", 0.0)}
+    parts = {"chunk": chunk, "blit": b.get("blit", 0.0), "levels": b.get("levels", 0.0), "reduce": b.get("reduce", 0.0)}
     parts["other"] = b.get("other", 0.0)
     if not canvas_only:
         parts["other items"], parts["flush"] = frame.outside()
@@ -342,11 +388,11 @@ def bracket_signature(frame: Frame, mip: int | None, canvas_only: bool = False) 
         top = max(CHUNK_PHASES, key=lambda k: b.get(k, 0.0))
         return ("TASK-031.10/031.11 margin warm not covering the new viewport", top, ms)
     if name == "blit":
-        if mip == 0:
-            return ("TASK-031.68 level 0 RGB888 point overload", "blit", ms)
         return (f"blit at mip {mip} (no task)", "blit", ms)
     if name == "levels":
         return ("level event inside the paint", "levels", ms)
+    if name == "reduce":
+        return ("the coarsest level's box reduce inside the paint (TASK-031.70)", "reduce", ms)
     if name == "other":
         return ("untraced code in the canvas paint: instrument (Step 2)", "other", ms)
     if name == "other items":
@@ -550,17 +596,125 @@ def cross_checks(clicks: list[Click], frames: list[Frame], activities: list[Acti
     return out
 
 
+def sharp_waits(frames: list[Frame]) -> tuple[list[tuple[int, Frame, Frame]], int, int]:
+    """Placeholder waits (TASK-031.25): (level, first placeholder frame at it, first real
+    full-view frame at it) per closed wait, plus how many a frame at another level
+    superseded and how many are still open."""
+    opened: dict[int, Frame] = {}
+    done, superseded = [], 0
+    for f in frames:
+        if f.mip is None:
+            continue
+        for level in [lv for lv in opened if lv != f.mip]:
+            superseded += 1
+            del opened[level]
+        if f.placeholder:
+            opened.setdefault(f.mip, f)
+        elif f.mip in opened and f.full_real:
+            done.append((f.mip, opened.pop(f.mip), f))
+    return done, superseded, len(opened)
+
+
+def _window_frames(click: Click, frames: list[Frame]) -> list[Frame]:
+    return [f for f in frames if click.t_entry <= f.start < click.window_end]
+
+
+def _has_chunk_work(frame: Frame) -> bool:
+    return any(frame.bracket.get(k, 0.0) > 0.0 for k in CHUNK_PHASES)
+
+
+@dataclass
+class PlaceholderStats:
+    name: str
+    frames: int
+    worst_canvas_ms: float
+    worst: Frame | None
+    first_frame_clicks: int
+    waits: list[tuple[int, float]]
+    superseded: int
+    open: int
+    force_settles: int
+    logged: int
+    seen_paints: int
+    stalls: int
+    over_g3: list[Frame]
+    crossing_cold: tuple[int, int, int] | None = None  # (notches, with a placeholder frame, with chunk work)
+    crossing_warm: tuple[int, int] | None = None  # (notches that beat their warm, with a placeholder frame)
+    pending_at_end: str = "-"  # "none", or the level still pending once the pass-end wait gave up
+
+    @property
+    def worst_sharp_ms(self) -> float | None:
+        return max((ms for _lv, ms in self.waits), default=None)
+
+
+def placeholder_stats(name: str, clicks: list[Click], frames: list[Frame], activities: list[Activity],
+                      lines: list[str], seen_paints: int) -> PlaceholderStats:
+    """One pass's placeholder figures: P1, P2's D3b split, P4 and P5 of the TASK-031.25 plan."""
+    ph = [f for f in frames if f.placeholder]
+    worst = max(ph, key=lambda f: f.canvas_ms, default=None)
+    stats = {id(c): click_stats(c, frames, activities) for c in clicks}
+    first = sum(1 for c in clicks if stats[id(c)].first is not None and stats[id(c)].first.placeholder)
+    done, superseded, still_open = sharp_waits(frames)
+    stalls = len(_unique((c, a) for c in clicks for a in stats[id(c)].stalls))
+    out = PlaceholderStats(
+        name, len(ph), worst.canvas_ms if worst else 0.0, worst, first,
+        [(lv, (end.end - start.start) * 1000) for lv, start, end in done], superseded, still_open,
+        force_settles(lines), logged_placeholders(lines), seen_paints, stalls,
+        sorted((f for f in ph if f.canvas_ms > G3_DEV_MS), key=lambda f: -f.canvas_ms),
+    )
+    if name == "notch":
+        crossing = [c for c in clicks if c.accepted and c.mip_before != c.mip_after]
+        cold = [c for c in crossing if not c.warm_before]
+        warm = [c for c in crossing if c.warm_before]
+        out.crossing_cold = (
+            len(cold),
+            sum(any(f.placeholder for f in _window_frames(c, frames)) for c in cold),
+            sum(any(_has_chunk_work(f) for f in _window_frames(c, frames)) for c in cold),
+        )
+        out.crossing_warm = (len(warm), sum(any(f.placeholder for f in _window_frames(c, frames)) for c in warm))
+    return out
+
+
+def placeholder_lines(p: PlaceholderStats) -> list[str]:
+    """The `placeholders` summary lines of one pass, pre-registered as P1, P2, P4, P5."""
+    sharp = p.worst_sharp_ms
+    worst = "-"
+    if p.worst is not None:
+        worst = f"{p.worst_canvas_ms:.1f} ms dev (x4 {p.worst_canvas_ms * X4:.1f}) at mip {p.worst.mip} from {p.worst.drawn}"
+    sharp_x4 = _f(None if sharp is None else sharp * X4)
+    out = [
+        f"placeholders {p.name}: {p.frames} frames, worst canvas {worst}; {p.first_frame_clicks} clicks' first frame",
+        (f"  time-to-sharp: worst {_f(sharp)} ms dev (x4 {sharp_x4}) over {len(p.waits)} waits ({p.superseded}"
+         f" superseded by another level, {p.open} still open); force-settles {p.force_settles}; stalls {p.stalls};"
+         f" pending at pass end {p.pending_at_end}"),
+    ]
+    flag = "" if p.seen_paints == p.logged else "  MISMATCH"
+    out.append(f"  cross-check placeholders {p.name}: {p.seen_paints} paints seen, {p.logged} logged{flag}")
+    if p.crossing_cold is not None:
+        n, phf, chunk = p.crossing_cold
+        m, phw = p.crossing_warm
+        out.append(f"  D3b: {n} crossing notches clicked with no warm active, {phf} with a placeholder frame, {chunk} with"
+                   f" chunk work in a paint; {m} crossing notches beat their warm, {phw} with a placeholder frame")
+    out += [f"  over G3: placeholder frame canvas {f.canvas_ms:.1f} ms dev at mip {f.mip} from {f.drawn}"
+            for f in p.over_g3[:5]]
+    return out
+
+
 def _f(v: float | None, fmt: str = ".1f") -> str:
     return "-" if v is None else format(v, fmt)
 
 
 def format_row(click: Click, st: ClickStats) -> str:
     acc = "acc" if click.accepted else "REF"
+    k = st.worst_canvas.k if st.worst_canvas is not None else None
     head = (
         f"  {click.sweep} #{click.index:02d} {'+' if click.direction > 0 else '-'} {acc}"
         f" mip {click.mip_before}->{click.mip_after} res {'Y' if click.resident_before else 'n'}"
-        f" resid {_f(click.residual, '.2f')} pct {_f(click.pct_before, '.0f')}->{_f(click.pct_after, '.0f')}"
+        f" resid {_f(click.residual, '.2f')} k {'-' if k is None else k}"
+        f" pct {_f(click.pct_before, '.0f')}->{_f(click.pct_after, '.0f')}"
     )
+    if st.first is not None and st.first.placeholder:
+        head += f" PLACEHOLDER from {st.first.drawn}"
     lat = (
         f"click->frame {_f(st.to_frame_ms)} (q {st.queue_ms:.1f} h {st.handler_ms:.1f} w {_f(st.wait_ms)}"
         f" f {_f(st.frame_ms)}) quiet {_f(st.to_quiet_ms)}"
@@ -582,6 +736,12 @@ def format_row(click: Click, st: ClickStats) -> str:
     if st.warm:
         w = max(st.warm, key=lambda a: a.ms)
         extras.append(f"warm {len(st.warm)} ticks max {w.ms:.1f} ({w.kind})")
+    if st.markers:
+        kinds: dict[str, int] = {}
+        for a in st.markers:
+            key = a.detail.split(" (")[0]
+            kinds[key] = kinds.get(key, 0) + 1
+        extras.append("markers " + ", ".join(f"{k} x{n}" for k, n in kinds.items()))
     return " | ".join([head, lat, slow, *extras])
 
 
@@ -609,7 +769,13 @@ class _Recorder:
         self.offsets: list[float] = []  # handler entry minus X timestamp, ms
         self._canvas_acc: dict[str, float] = {}
         self._frame_mip: int | None = None
+        self._frame_k: int | None = None
+        self._frame_drawn: int | None = None
+        self._frame_placeholder = False
+        self._frame_full_real = False
         self._view_ms = 0.0
+        # Clock time of every live placeholder canvas paint (TASK-031.25's cross-check).
+        self.placeholder_paints: list[float] = []
         self._saved: list[tuple[object, str, object]] = []
         self._gc_t0: dict[int, float] = {}
         self.profile_paint = profile_paint
@@ -692,6 +858,11 @@ class _Recorder:
                 resident = set()
                 if cache is not None:
                     resident = {m for m in cache.resident_levels() if cache.is_level_resident(m)}
+                win = view.window()
+                warming = any(
+                    getattr(win, name).is_active for name in ("_level_warmer", "_load_warmer", "_margin_warmer")
+                    if hasattr(win, name)
+                )
                 try:
                     return original(view, event)
                 finally:
@@ -700,6 +871,7 @@ class _Recorder:
                         "ts": event.timestamp(), "entry": t_entry, "exit": t_exit, "delta": event.angleDelta().y(),
                         "pct0": pct0, "pct1": view.zoom_percent_of_fit(), "mip0": mip0,
                         "mip1": view._mip_for_zoom_factor(1.0), "resident": resident, "residual": rec.residual(view),
+                        "warm": warming,
                     })
             return wrapper
 
@@ -709,6 +881,10 @@ class _Recorder:
                     return original(win, event)
                 rec._canvas_acc = {}
                 rec._frame_mip = None
+                rec._frame_k = None
+                rec._frame_drawn = None
+                rec._frame_placeholder = False
+                rec._frame_full_real = False
                 rec._view_ms = 0.0
                 prof = cProfile.Profile() if rec.profile_frame else None
                 t0 = now()
@@ -719,7 +895,8 @@ class _Recorder:
                 finally:
                     if prof is not None:
                         prof.disable()
-                    frame = Frame(t0, now(), dict(rec._canvas_acc), rec._frame_mip, rec._view_ms)
+                    frame = Frame(t0, now(), dict(rec._canvas_acc), rec._frame_mip, rec._view_ms, rec._frame_k,
+                                  rec._frame_drawn, rec._frame_placeholder, rec._frame_full_real)
                     rec.frames.append(frame)
                     if prof is not None:
                         rec.keep_profile(frame.ms, prof, rec.profile_frame)
@@ -736,10 +913,23 @@ class _Recorder:
                     rec._view_ms += (now() - t0) * 1000
             return wrapper
 
+        def covers_view(item, option) -> bool:
+            # Read before the paint: Qt reuses the option object. One device pixel of slack.
+            from PyQt5.QtCore import QRectF
+
+            views = item.scene().views() if item.scene() is not None else []
+            if not views or option is None:
+                return False
+            view = views[0]
+            seen = view.mapToScene(view.viewport().rect().adjusted(1, 1, -1, -1)).boundingRect()
+            return QRectF(option.exposedRect).contains(seen.intersected(item.boundingRect()))
+
         def canvas_paint(original):
             def wrapper(item, *a, **k):
                 phases0 = {n: v[1] for n, v in perf_trace._repaint_phases.items()}
                 level0 = perf_trace._repaint_level_ms
+                widget = a[2] if len(a) > 2 else k.get("widget")
+                full = widget is not None and covers_view(item, a[1] if len(a) > 1 else None)
                 prof = cProfile.Profile() if rec.profile_paint else None
                 t0 = now()
                 try:
@@ -762,6 +952,14 @@ class _Recorder:
                         acc["levels"] = acc.get("levels", 0.0) + lv
                     acc["other"] = acc.get("other", 0.0) + max(0.0, ms - timed - max(lv, 0.0))
                     rec._frame_mip = getattr(item, "_last_mip", None)
+                    rec._frame_k = getattr(item, "_last_reduction", None)
+                    drawn = getattr(item, "_last_drawn_mip", None)
+                    rec._frame_drawn = drawn
+                    if widget is not None and drawn is not None and drawn != rec._frame_mip:
+                        rec._frame_placeholder = True
+                        rec.placeholder_paints.append(t0)
+                    elif full and drawn == rec._frame_mip:
+                        rec._frame_full_real = True
                     if prof is not None:
                         rec.keep_profile(ms, prof, rec.profile_paint)
             return wrapper
@@ -871,6 +1069,21 @@ class _Bench:
             elif time.perf_counter() - last > quiet_s:
                 return
 
+    def wait_settled(self) -> str:
+        """A pass's final wait (TASK-031.25 P4): pumps until no placeholder is pending,
+        at most PLACEHOLDER_STUCK_MS. "none", or the level still pending."""
+        from descape import viewer
+
+        deadline = time.perf_counter() + viewer.PLACEHOLDER_STUCK_MS / 1000
+        while True:
+            item = self.view._canvas_item
+            pending = None if item is None else item.pending_mip()
+            if pending is None:
+                return "none"
+            if time.perf_counter() >= deadline:
+                return str(pending)
+            _pump(0.01)
+
     def centre(self) -> tuple[int, int]:
         from PyQt5.QtCore import QPoint
 
@@ -911,6 +1124,7 @@ class _Bench:
             out.append(Click(
                 sweep, 0, 1 if ev["delta"] > 0 else -1, accepted, ev["pct0"], ev["pct1"], ev["mip0"], ev["mip1"],
                 ev["mip1"] in ev["resident"], ev["residual"], self.rec.x_to_clock(ev["ts"]), ev["entry"], ev["exit"],
+                warm_before=ev.get("warm", False),
             ))
         for i, c in enumerate(out):
             c.window_end = out[i + 1].t_entry if i + 1 < len(out) else until
@@ -985,6 +1199,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     rec = _Recorder(args.profile_paint, args.profile_frame)
     rec.install()
     window = viewer.ViewerWindow()
+    # The app's opt-in (TASK-031.25 D8); --no-placeholders is the A arm.
+    window.set_placeholders_allowed(not args.no_placeholders)
     output: list[str] = []
     try:
         if style != "Stepped":
@@ -1017,7 +1233,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f"{style}, sprites {'on' if sprites else 'off'} (cache {type(cache).__name__},"
             f" sprites {getattr(cache, 'sprites_enabled', None)}),"
             f" trees {window.paint_trees_check.isChecked()}, eye candy {window.paint_eye_candy_check.isChecked()},"
-            f" mode {window.mode}, passes {','.join(passes)}"
+            f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1029,15 +1245,21 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
         output.append(composite_backend.describe())
         output.append("--- load log (context)")
         output += [f"  {ln}" for ln in load_lines]
+        bounds: dict[str, tuple[float, float, str]] = {}
         for name in passes:
             t0 = len(bench.clicks)
+            start = time.perf_counter()
             if name == "roll":
                 bench.roll()
             else:
                 bench.notch_sweep(name)
                 output.append(f"--- {name}: {len(bench.clicks) - t0} clicks")
             bench.quiet(quiet_s=1.0)
-            bench.flush()
+            pending = bench.wait_settled()
+            tail = bench.flush()
+            if len(bench.clicks) > t0:
+                bench.clicks[-1].lines += tail
+            bounds[name] = (start, time.perf_counter(), pending)
         frames, acts = rec.frames, rec.activities
         current = None
         for c in bench.clicks:
@@ -1064,6 +1286,21 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
         for g in results:
             output.append(g.line)
             output += [f"    signature: {s}" for s in g.signatures]
+        ph_json = {}
+        for name, (start, end, pending) in bounds.items():
+            cl = per_pass.get(name, [])
+            in_pass = [f for f in frames if start <= f.start < end]
+            seen = sum(1 for t in rec.placeholder_paints if start <= t < end)
+            lines = [strip_ts(ln) for c in cl for ln in c.lines]
+            p = placeholder_stats(name, cl, in_pass, acts, lines, seen)
+            p.pending_at_end = pending
+            output += placeholder_lines(p)
+            ph_json[name] = {
+                "frames": p.frames, "worst_canvas_ms": p.worst_canvas_ms, "worst_sharp_ms": p.worst_sharp_ms,
+                "waits": len(p.waits), "superseded": p.superseded, "open": p.open, "force_settles": p.force_settles,
+                "stalls": p.stalls, "pending_at_end": pending, "crossing_cold": p.crossing_cold,
+                "crossing_warm": p.crossing_warm, "seen": p.seen_paints, "logged": p.logged,
+            }
         if rec.profiles:
             what = "frames" if args.profile_frame else "canvas paints"
             output.append(f"=== profile: {len(rec.profiles)} slowest {what} (cProfile-inflated)")
@@ -1071,8 +1308,9 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
                 output.append(f"--- {what[:-1]} {ms:.1f} ms")
                 output.append(text)
         output.append("GATES " + json.dumps({
-            "style": style, "sprites": sprites, "passes": passes,
+            "style": style, "sprites": sprites, "passes": passes, "placeholders": not args.no_placeholders,
             "gates": {g.n: {"met": g.met, "dev_ms": g.dev_ms, "line": g.line, "signatures": g.signatures} for g in results},
+            "placeholder_passes": ph_json,
         }))
     finally:
         if window.scenario is not None:
@@ -1116,6 +1354,8 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, help="also write each process's output to <dir>/<style>_<sprites>_<passes>.txt")
     parser.add_argument("--root", type=Path, help="DEscape checkout to import descape and testkit from")
     parser.add_argument("--allow-numpy", action="store_true", help="run on the numpy fallback (figures not comparable)")
+    parser.add_argument("--no-placeholders", action="store_true",
+                        help="the window keeps placeholder paints off (TASK-031.25's A arm; the app's default is on)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
     for p in args.passes:
@@ -1142,7 +1382,9 @@ def main() -> None:
             cmd += ["--root", str(args.root)]
         if args.allow_numpy:
             cmd.append("--allow-numpy")
-        env = {**os.environ, "DESCAPE_REQUIRE_NATIVE": "1"}
+        if args.no_placeholders:
+            cmd.append("--no-placeholders")
+        env ={**os.environ, "DESCAPE_REQUIRE_NATIVE": "1"}
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
         text = proc.stdout + (f"\n--- stderr (exit {proc.returncode})\n{proc.stderr}" if proc.returncode else "")
         print(text, flush=True)
@@ -1162,6 +1404,9 @@ def main() -> None:
             if g["met"] is None:
                 continue
             cells.append(f"G{n} {g['dev_ms']:.1f} (x4 {g['dev_ms'] * X4:.1f}) {'met' if g['met'] else 'MISSED'}")
+        for name, p in gate.get("placeholder_passes", {}).items():
+            sharp = "-" if p["worst_sharp_ms"] is None else f"{p['worst_sharp_ms']:.0f}"
+            cells.append(f"PH {name} {p['frames']} frames, sharp {sharp} ms, fs {p['force_settles']}")
         print(f"{style:8} sprites {sprites:3} {','.join(passes):20} " + "; ".join(cells))
 
 

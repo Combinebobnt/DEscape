@@ -645,6 +645,7 @@ def test_a_unit_scale_scene_render_paints_the_reference() -> None:
     octave of margin -- see test_a_unit_scale_transform_selects_the_
     reference_level's own docstring for why that's safe."""
     from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QImage
 
     window = _stepped_window()
     try:
@@ -654,9 +655,12 @@ def test_a_unit_scale_scene_render_paints_the_reference() -> None:
             pytest.skip("fixture enumerates no level coarser than the reference")
 
         # Same 1:1 shape both of those checks use, on an interior rect.
+        item._last_blit_format = None
         _render_scene_rect(window.map_view.scene(), QRectF(300, 300, 96, 96), 1.0)
         assert item._last_mip == 0
         assert item._cache.mip_scale(item._last_mip) == 1.0
+        # And the source stays RGB888 there (TASK-031.68's D2).
+        assert item._last_blit_format == QImage.Format_RGB888
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -732,6 +736,11 @@ def test_block_tiling_matches_a_single_draw_at_a_minifying_residual(monkeypatch,
     needed. `assert selected == levels[0]` below holds either way; only
     which mechanism produces it differs per residual.
 
+    TASK-031.70: 0.3 and 0.5 (the clamped two) now blit the coarsest level
+    box-reduced once (k = 1, residual 0.6 and 1.0), so the tiles are reduced
+    blocks there; 0.8 and 0.95 stay unreduced. Tiled still equals a single
+    draw either way. test_coarse_reduce.py repeats this on textured content.
+
     PROBE_SCENE_SIDE is measured, not arbitrary -- see its own comment: an
     oversized probe picks up an isolated-pixel noise floor that has nothing
     to do with block seams and would make this test read as a failure of
@@ -766,6 +775,7 @@ def test_block_tiling_matches_a_single_draw_at_a_minifying_residual(monkeypatch,
 
         assert selected == levels[0], f"residual {residual} selected level {selected}, not the coarsest"
         assert item._last_mip == selected
+        assert item._last_reduction == (1 if residual <= 0.5 else 0)
         assert tiled.shape == single.shape
         diff = int(np.abs(tiled.astype(int) - single.astype(int)).max())
         assert diff <= MAX_SEAM_DIFF, (

@@ -67,7 +67,10 @@ def neighbour_mips_of(cache, mip: int) -> list[int]:
     removes is the FIRST-ZOOM stutter, which is the neighbours. (Putting the
     anchor level back in the set would still be safe -- the install
     predicates in render_cache's level_warm_job() drop a result the paint
-    already built -- just wasteful.)
+    already built -- just wasteful.) The one exception is a level a
+    placeholder paint waits on (TASK-031.25): there the paint draws a
+    resident neighbour instead of building, so the viewer warms that anchor
+    level first and alone (ViewerWindow._start_level_warm()).
 
     Empty for a single-level ladder: any small map whose tile_px has no
     exact power-of-two neighbour. Sloped shares Stepped's ladder (TASK-031.60

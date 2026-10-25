@@ -102,6 +102,21 @@ def _self_check() -> int:
     except Exception as exc:  # noqa: BLE001 -- report, don't stop the rest of the checks
         failures.append(f"asset_source._terrain_texture_map(): {exc!r}")
 
+    # GH #58: a data mod's cache key hashes the bundled generators and dat_derive.py itself.
+    from descape import dat_derive
+
+    try:
+        print(f"OK  dat_derive.source_digest() ({dat_derive.source_digest()[:12]})")
+    except OSError as exc:
+        failures.append(f"dat_derive.source_digest(): {exc!r} (a derivation source is not bundled)")
+    # The derive subprocess runs the bundled generators, which import these two and nothing else bundled.
+    for name in ("genieutils.datfile", "argparse"):
+        try:
+            importlib.import_module(name)
+            print(f"OK  import {name} (data mod derive)")
+        except ImportError as exc:
+            failures.append(f"import {name}: {exc!r} (File > Data Mod cannot parse a mod)")
+
     # The structures this repo ships itself (library_compat.REPO_VERSIONS_DIR).
     from descape import scenario_io
 
@@ -183,6 +198,11 @@ def _smoke() -> int:
 
 
 def main() -> None:
+    # GH #58: the data-mod derive subprocess (descape/data_mods.py), before any Qt import.
+    if len(sys.argv) > 1 and sys.argv[1] == "--derive-dat":
+        from descape import dat_derive
+
+        sys.exit(dat_derive.main(sys.argv[2:]))
     if "--self-check" in sys.argv:
         sys.exit(_self_check())
     elif "--smoke" in sys.argv:

@@ -25,7 +25,16 @@ from test_farm_terrain import FAKE_FARM_CONST, fake_farm  # noqa: F401 -- fake_f
 from test_sprite_chunks import CHUNK, MAP_H, MAP_W
 from test_sprite_edit_bbox import CONST, EDIT_X, EDIT_Y, Unit, _fixture_scenario, sprite_install  # noqa: F401
 
-from descape import asset_source, composite_backend, grid_overlay, iso_geometry, native_composite, render, settings
+from descape import (
+    asset_source,
+    composite_backend,
+    grid_overlay,
+    iso_geometry,
+    native_composite,
+    render,
+    render_cache,
+    settings,
+)
 from descape.grid_overlay import grid_bake
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
 from descape.scenario_io import load_map_and_units
@@ -1469,6 +1478,20 @@ def test_corpus_scenario_backends_agree(native_kernel, scenario_path):
     s_cache = SlopedChunkCache(scenario, s_elevations, corner_rise, s_proj, tile_px, sprites=True)
     anchors = _anchor_origins(s_proj, s_elevations, centre + _corner_tiles(mm))
     _assert_backends_agree(lambda *r: s_cache._composite_rect(0, *r), _rects(s_cache, 0, anchors))
+
+
+@pytest.mark.parametrize("shape", [(64, 48), (65, 48), (64, 49), (1, 1), (1, 7), (513, 257)])
+def test_box_reduce2_backends_agree(native_kernel, shape):
+    rng = np.random.default_rng(31070)
+    src = rng.integers(0, 256, (*shape, 3), dtype=np.uint8)
+    src[0, 0] = 255  # the extremes, so the + 2 rounding and the uint16 sum are both reached
+    src[-1, -1] = 0
+    with composite_backend.use_backend("numpy"):
+        want = render_cache.box_reduce2(src)
+    with composite_backend.use_backend("native"):
+        got = render_cache.box_reduce2(src)
+    assert got.shape == want.shape == ((shape[0] + 1) // 2, (shape[1] + 1) // 2, 3)
+    np.testing.assert_array_equal(got, want)
 
 
 # --- the backend switch itself (no native build needed) ---------------------

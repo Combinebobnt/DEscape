@@ -170,6 +170,7 @@ def stepped_window(
     graphics_quality: int | None = None,
     show: bool = True,
     size: int | None = None,
+    placeholders: bool = False,
 ):
     """A real, shown ViewerWindow with `path` loaded in Stepped mode,
     offscreen -- the setup every gui-tier seam test needs, factored out
@@ -188,6 +189,7 @@ def stepped_window(
             graphics_quality=graphics_quality,
             show=show,
             size=size,
+            placeholders=placeholders,
         )
     except qt_window.ScenarioLoadError as exc:
         pytest.skip(str(exc))
@@ -561,12 +563,14 @@ def _no_perf_trace_hooks_left():
 
 @pytest.fixture(autouse=True)
 def _aoe2_dataset():
-    """GH #67: every test starts and ends with the AoE2 game data active."""
+    """GH #67: every test starts and ends with the AoE2 game data active, and no data mod (GH #58)."""
     from descape import game_dataset
 
     game_dataset.set_active(game_dataset.AOE2)
+    game_dataset.set_data_mod(None)
     yield
     game_dataset.set_active(game_dataset.AOE2)
+    game_dataset.set_data_mod(None)
 
 
 @pytest.fixture(autouse=True)
@@ -671,6 +675,10 @@ def _isolated_settings(tmp_path, monkeypatch):
     monkeypatch.delenv("AOE2DE_PROFILE_PATH", raising=False)
     # Windows auto-detects the profile from %USERPROFILE%\Games, not from the hidden install (TASK-409).
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
+    # GH #58: a data mod's derived tables never reach the developer's real cache folder.
+    from descape import dat_cache
+
+    monkeypatch.setattr(dat_cache, "CACHE_ROOT", tmp_path / "dat_tables_cache")
     # Mod art (TASK-378) is module state the viewer switches on; every test starts with it off.
     from descape import mod_graphics
 

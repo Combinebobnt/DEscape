@@ -394,6 +394,18 @@ units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 # recent_files:
 #   - /path/to/recent_scenario.aoe2scenario
 
+# File > Data Mod's choice per saved scenario, keyed by the scenario's full
+# path. Written when you pick a data mod with a saved scenario open, or Save
+# As -- not something you normally set by hand. A scenario with no entry
+# opens with the game's own data. status_path is the mod's mod-status.json
+# Path; workshop_id is the fallback when the mod moves folder. Omitted
+# entirely until first saved. The value below is only an example.
+# data_mod_by_scenario:
+#   /path/to/scenario.aoe2scenario:
+#     status_path: subscribed//12345_Example Mod
+#     title: Example Mod
+#     workshop_id: '12345'
+
 # File > New Map…'s last choices, saved automatically when you press Create in
 # that dialog -- not something you normally set by hand. Omitted entirely
 # until first saved; until then the dialog opens at the values below.

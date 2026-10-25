@@ -36,7 +36,7 @@ pytest-xdist
 
 # ruff backs tests/test_lint.py, part of the default (fast) pytest tier --
 # that test fails outright (not skips) if ruff isn't installed, so this is
-# not optional the way genieutils-py/cython below are. See ruff.toml for the
+# not optional the way cython below is. See ruff.toml for the
 # ruleset and tests/README.md for how the gate is wired in.
 #
 # Pinned, not just listed -- ruff.toml's ruleset was triaged against this
@@ -45,12 +45,8 @@ pytest-xdist
 # selected families.
 ruff==0.16.3
 
-# genieutils-py backs the tools/gen_*.py generators that regenerate the
-# committed descape/*.json tables if the game updates its .dat (e.g.
-# gen_terrain_texture_map.py, gen_unit_render_data.py, gen_unit_stats.py), all
-# run together by tools/regen_game_data.py. Not a runtime dependency of
-# anything a normal user runs.
-genieutils-py
+# genieutils-py, which the tools/gen_*.py generators need, is a runtime
+# dependency since GH #58 (File > Data Mod), so it is in requirements.txt.
 
 # Cython (pinned, with setuptools, in packaging/requirements-native.txt via the
 # -r below) builds the native composite kernel, descape/_composite_native.pyx,

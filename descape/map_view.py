@@ -954,6 +954,8 @@ class MapView(QGraphicsView):
         # set_isometric() once a map is loaded and a fit-to-view scale exists.
         self._min_linear_scale: float | None = None
         self._max_linear_scale: float | None = None
+        # The viewport QPoint the last wheel zoom anchored at, or None (zoom_anchor_scene()).
+        self._last_zoom_anchor = None
         # Wheel-gesture state, all reset together by _end_wheel_gesture():
         # leftover sub-notch angleDelta, the direction the gesture is
         # running in, the mip its budget is anchored on (None while idle),
@@ -1190,6 +1192,16 @@ class MapView(QGraphicsView):
         # wheelEvent anchors by hand; Qt's AnchorUnderMouse reads a stale point after a pan (GH #146).
         self._zoom_on_cursor = centered_on_cursor
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
+
+    def zoom_anchor_scene(self) -> QPointF:
+        """The scene point the next wheel zoom is expected to anchor at: the
+        last wheel zoom's viewport point while zoom-on-cursor is on (a roll
+        keeps the cursor still), else the viewport centre. TASK-031.25's
+        finer-neighbour warm places its patch by it."""
+        anchor = self._last_zoom_anchor
+        if not self._zoom_on_cursor or anchor is None:
+            anchor = self.viewport().rect().center()
+        return self.mapToScene(anchor)
 
     def set_wheel_bindings(self, slots: dict[str, str]) -> None:
         """Settings > Keybinds' wheel rows: slot -> action, as
@@ -4579,6 +4591,21 @@ class MapView(QGraphicsView):
             return
         self._canvas_item._on_paint_timed = callback
 
+    def set_canvas_placeholders(self, on: bool) -> None:
+        """set_paint_timed_callback()'s shape for the canvas item's placeholder
+        paints (TASK-031.25): off also settles a pending level."""
+        if self._canvas_item is None:
+            return
+        self._canvas_item.set_placeholders(on)
+
+    def view_device_scale(self) -> float:
+        """The max-axis device scale a paint of the canvas item reads now
+        (viewport_chunk_target()'s reading), or 0.0 with no item."""
+        item = self._canvas_item
+        if item is None:
+            return 0.0
+        return _max_axis_scale(item.deviceTransform(self.viewportTransform())) * self.devicePixelRatioF()
+
     def refresh_canvas_dims(self) -> None:
         """Re-syncs the canvas item's boundingRect AND this view's own scene
         rect/overscroll margin to the cache's CURRENT canvas_dims() -- Track
@@ -4763,6 +4790,8 @@ class MapView(QGraphicsView):
         unit_index=None,
         reset_view: bool = True,
         on_paint_timed: Callable[[float, int], None] | None = None,
+        placeholders: bool = False,
+        on_placeholder: Callable[[int], None] | None = None,
     ) -> None:
         """Phase B-C rename/generalization of the old set_image(); Phase B-E
         drops that method's img parameter entirely -- both styles now paint
@@ -4794,6 +4823,10 @@ class MapView(QGraphicsView):
         every paint until it is cleared again via
         set_paint_timed_callback(None). ViewerWindow uses it to report the
         deferred first-paint composite a load's own timings can't see.
+
+        placeholders/on_placeholder go to the new MapCanvasItem's constructor
+        the same way, since its first paint can fire inside this method
+        (TASK-031.25); set_canvas_placeholders() changes the first later.
 
         Kept as one method (dispatching on terrain_style), not two, matching
         this class's existing internal-dispatch convention (_pick_tile,
@@ -4908,7 +4941,7 @@ class MapView(QGraphicsView):
         self._region_scene_rect = None
         self._region_ant_timer.stop()
 
-        self._canvas_item = MapCanvasItem(cache)
+        self._canvas_item = MapCanvasItem(cache, placeholders=placeholders, on_placeholder=on_placeholder)
         self._canvas_item._on_paint_timed = on_paint_timed
         self.scene().addItem(self._canvas_item)
         w, h = cache.canvas_dims()
@@ -5882,8 +5915,10 @@ class MapView(QGraphicsView):
         Its budget is one mip level from an anchor: notches past the next
         boundary are dropped rather than banked, so a hard flick lands one
         level away instead of two. Two would land outside
-        level_warm.neighbour_mips()'s +/-1 warm set and pay a synchronous
-        level build inside paint(). Pausing (or reversing) starts a fresh
+        level_warm.neighbour_mips()'s +/-1 warm set: a placeholder frame from
+        a resident level while that level warms (TASK-031.25), or, where no
+        placeholder applies, a synchronous level build inside paint().
+        Pausing (or reversing) starts a fresh
         gesture. A roll that keeps going re-anchors the budget once
         WHEEL_GESTURE_GAP_S has passed since the last crossing: a rate limit
         of one level per gap, never a stop (it used to refuse until the wheel
@@ -5936,6 +5971,7 @@ class MapView(QGraphicsView):
             return
         mip_before = self._mip_for_zoom_factor(1.0)
         anchor = event.position().toPoint() if self._zoom_on_cursor else self.viewport().rect().center()
+        self._last_zoom_anchor = anchor
         # The repaint this schedules lands on the next `perf view` line, with its mip change.
         with perf_trace.op("zoom"):
             before = self.mapToScene(anchor)

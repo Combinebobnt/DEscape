@@ -41,7 +41,7 @@ import os
 import re
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -75,6 +75,9 @@ class ContentRoot:
     mod_id: str | None = None  # the mod's folder name, None unless a mod
     priority: int | None = None  # mod-status.json's Priority (1 is the in-game list's top), None if unlisted
     status_path: str | None = None  # mod-status.json's Path form, "subscribed//<folder>", for any mod
+    title: str | None = None  # mod-status.json's Title, else the folder name, for any mod
+    workshop_id: str | None = None  # mod-status.json's WorkshopID, None if unlisted or local (GH #58)
+    enabled: bool = True  # False only for a mod mod-status.json disables (include_disabled=True)
 
     @property
     def common(self) -> Path:
@@ -201,19 +204,29 @@ def _status_parts(raw) -> tuple[str, str] | None:
     return (parts[0], parts[-1]) if len(parts) >= 2 else None
 
 
-def _mod_status(mods_dir: Path) -> tuple[frozenset[tuple[str, str]], dict[tuple[str, str], int]]:
-    """One parse of mod-status.json: the (kind folder, mod folder) pairs it
-    marks disabled, and each listed mod's integer Priority. A non-integer
-    Priority leaves that mod unlisted for ordering; an unreadable file gives
-    nothing of either."""
+@dataclass(frozen=True)
+class _ModStatus:
+    disabled: frozenset[tuple[str, str]] = frozenset()
+    priorities: dict[tuple[str, str], int] = field(default_factory=dict)
+    titles: dict[tuple[str, str], str] = field(default_factory=dict)
+    workshop_ids: dict[tuple[str, str], str] = field(default_factory=dict)
+
+
+def _mod_status(mods_dir: Path) -> _ModStatus:
+    """One parse of mod-status.json, keyed by (kind folder, mod folder): the
+    pairs it marks disabled, each listed mod's integer Priority, its Title and
+    its WorkshopID. A non-integer Priority leaves that mod unlisted for
+    ordering; an unreadable file gives nothing of any."""
     status_path = mods_dir / MOD_STATUS_FILE
     if not status_path.is_file():
-        return frozenset(), {}
+        return _ModStatus()
     try:
         data = json.loads(status_path.read_text(encoding="utf-8"))
         mods = data["Mods"]
         disabled = set()
         priorities: dict[tuple[str, str], int] = {}
+        titles: dict[tuple[str, str], str] = {}
+        workshop_ids: dict[tuple[str, str], str] = {}
         for mod in mods:
             pair = None if mod.get("Path") is None else _status_parts(mod["Path"])
             if pair is None:
@@ -223,18 +236,23 @@ def _mod_status(mods_dir: Path) -> tuple[frozenset[tuple[str, str]], dict[tuple[
             priority = mod.get("Priority")
             if isinstance(priority, int) and not isinstance(priority, bool):
                 priorities[pair] = priority
+            if isinstance(mod.get("Title"), str) and mod["Title"].strip():
+                titles[pair] = mod["Title"].strip()
+            workshop = mod.get("WorkshopID")
+            if isinstance(workshop, (int, str)) and not isinstance(workshop, bool) and str(workshop) not in ("", "0"):
+                workshop_ids[pair] = str(workshop)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         debug_log.log(f"content roots: {status_path} unreadable, keeping every mod ({exc!r})")
-        return frozenset(), {}
-    return frozenset(disabled), priorities
+        return _ModStatus()
+    return _ModStatus(frozenset(disabled), priorities, titles, workshop_ids)
 
 
 def _disabled_mods(mods_dir: Path) -> frozenset[tuple[str, str]]:
     """(kind folder, mod folder) pairs mod-status.json marks disabled."""
-    return _mod_status(mods_dir)[0]
+    return _mod_status(mods_dir).disabled
 
 
-def _profile_roots(profile: Path) -> list[ContentRoot]:
+def _profile_roots(profile: Path, include_disabled: bool = False) -> list[ContentRoot]:
     roots: list[ContentRoot] = []
     for id_dir in _sorted_dirs(profile):
         if not id_dir.name.isdigit():
@@ -244,19 +262,24 @@ def _profile_roots(profile: Path) -> list[ContentRoot]:
         mods_dir = id_dir / "mods"
         if not mods_dir.is_dir():
             continue
-        disabled, priorities = _mod_status(mods_dir)
+        status = _mod_status(mods_dir)
         for kind, folder in _MOD_KINDS:
             kind_dir = mods_dir / folder
             if not kind_dir.is_dir():
                 continue
             for mod_dir in _sorted_dirs(kind_dir):
-                if (folder, mod_dir.name) in disabled:
+                pair = (folder, mod_dir.name)
+                enabled = pair not in status.disabled
+                if not enabled and not include_disabled:
                     continue
                 roots.append(ContentRoot(
                     kind, f"Mod ({folder}): {mod_dir.name}", mod_dir,
                     profile_id=profile_id, mod_id=mod_dir.name,
-                    priority=priorities.get((folder, mod_dir.name)),
+                    priority=status.priorities.get(pair),
                     status_path=f"{folder}//{mod_dir.name}",
+                    title=status.titles.get(pair, mod_dir.name),
+                    workshop_id=status.workshop_ids.get(pair),
+                    enabled=enabled,
                 ))
     return roots
 
@@ -298,11 +321,13 @@ def has_profile_ids(folder: Path) -> bool:
 _UNSET = object()
 
 
-def content_roots(install=_UNSET, profile=_UNSET) -> list[ContentRoot]:
+def content_roots(install=_UNSET, profile=_UNSET, *, include_disabled: bool = False) -> list[ContentRoot]:
     """Every content root, in order: the install, then per numeric profile id
     (by name) the profile itself, its enabled subscribed mods, then its
     enabled local mods. `install`/`profile` default to the live lookups;
-    pass None to leave that kind out."""
+    pass None to leave that kind out. include_disabled keeps the mods
+    mod-status.json disables too (enabled=False): the game selects a data
+    mod in the lobby, so one is listed disabled (GH #58)."""
     if install is _UNSET:
         install = asset_source.get_install_path()
     if profile is _UNSET:
@@ -311,7 +336,7 @@ def content_roots(install=_UNSET, profile=_UNSET) -> list[ContentRoot]:
     if install is not None:
         roots.append(ContentRoot(KIND_INSTALL, "Install", Path(install)))
     if profile is not None:
-        roots.extend(_profile_roots(Path(profile)))
+        roots.extend(_profile_roots(Path(profile), include_disabled))
     return roots
 
 

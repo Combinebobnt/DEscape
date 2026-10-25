@@ -154,8 +154,13 @@ def stepped_window(
     graphics_quality: int | None = None,
     show: bool = True,
     size: int | None = None,
+    placeholders: bool = False,
 ):
     """A real ViewerWindow with `path` loaded in Stepped mode, offscreen.
+
+    `placeholders=True` opts the window in to placeholder paints across a
+    level change before the load (TASK-031.25); every other window measures
+    the real level, as the app did before it.
 
     elev_step_pct/graphics_quality, if given, are pinned via the settings
     module globals before ViewerWindow() is constructed (__init__ reads
@@ -199,6 +204,8 @@ def stepped_window(
     settings_module._view_layers = dict(settings_module._DEFAULT_VIEW_LAYERS)
 
     window = ViewerWindow()
+    if placeholders:
+        window.set_placeholders_allowed(True)
     window.load_scenario(path)
     if window.scenario is None:
         window.close()

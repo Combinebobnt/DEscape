@@ -423,6 +423,24 @@ def test_a_mod_art_generation_change_invalidates_the_memo(monkeypatch):
     assert counter.calls == misses
 
 
+def test_a_game_data_generation_change_invalidates_the_memo(monkeypatch):
+    """A data mod (GH #58) or a dataset switch changes the tables a sprite
+    resolves from; game_dataset.generation() is an invariant, so every unit re-resolves."""
+    from descape import game_dataset
+
+    scenario = _scenario()
+    style = _Style(False, scenario)
+    _layer, memo = _walk(style, render.SpriteMemo())
+    counter = _ResolveCounter(monkeypatch)
+    _walk(style, render.SpriteMemo())
+    misses, counter.calls = counter.calls, 0
+    _walk(style, memo)
+    assert counter.calls == 0 < misses
+    monkeypatch.setattr(game_dataset, "_generation", game_dataset.generation() + 1)
+    _walk(style, memo)
+    assert counter.calls == misses
+
+
 def test_a_smooth_shrink_change_invalidates_the_memo(monkeypatch):
     """Graphics Quality across Potato and Default switches box-filtered
     shrinking (GH #254); set_smooth_shrink() bumps hi_res_generation(), an

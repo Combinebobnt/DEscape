@@ -48,7 +48,7 @@ def main() -> None:
 
     from genieutils.datfile import DatFile
 
-    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     tex_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/terrain/textures/2x")
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")

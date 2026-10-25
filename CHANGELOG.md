@@ -26,6 +26,9 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **File > Data Mod** (GH #58): show a scenario with a data mod's own units,
+  stats and names, remembered per scenario; a mod's `.dat` is read once in
+  the background and cached. See the README's profile folder section.
 - **Wall Circle tool** in Units mode (GH #125): drag a box to place an
   outline ellipse of walls inside it, one undo step per drag; Shift makes it
   a circle. It uses the wall picked in the catalog or with the Wall button,
@@ -118,11 +121,20 @@ content, link the doc instead of summarizing it.
 - **Smoother zooming with Show sprites off** in Stepped and Sloped: the
   neighbouring zoom levels are prepared in the background, so the first
   visit to a level no longer pauses (GH #181, in part).
+- **Smoother, faster zooming out**: at fit and zoomed out past it, the map
+  is drawn from an area-averaged copy of its coarsest detail level instead
+  of a bilinear sample that skips pixels, so fine textures and thin lines
+  shimmer less, and each zoom step there repaints about four times faster
+  (GH #181, in part).
+- **Zooming fast through levels not yet built no longer pauses**: the map
+  shows briefly blurred and sharpens once the level is ready. This needs
+  "Preload neighbouring zoom levels" on (GH #181, in part).
 - **Faster large stroke ends and undos with Trees on** in Stepped and
   Sloped views: a batch of over 1000 trees updates the visible zoom level in
   place instead of rebuilding it.
 - **Faster redraws when zoomed in**: between detail levels the map draws
-  about a third faster, with identical pixels.
+  about a third faster, and two to three times faster when zoomed in close
+  on the most detailed level, with identical pixels.
 - **Faster zoom, pan into new map and large-undo repaints** on multi-core
   machines: the parts of the map a repaint is missing now draw on worker
   threads, with identical pixels. Perf Trace reports a pooled chunk as

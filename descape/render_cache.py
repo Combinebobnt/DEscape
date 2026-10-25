@@ -62,6 +62,56 @@ DEFAULT_CHUNK_PX = 512
 # 0.9-1.5us per occupied tile (Dos Pilas the densest), so a slice is ~1-1.5ms dev.
 PACK_WARM_TILES = 1024
 
+# Byte bound of the reduced store (render_reduced_rect()), apart from max_bytes: a k=1 chunk is 768 KiB.
+REDUCED_MAX_BYTES = 64 << 20
+# _chunk_stamp entries for uncached keys are dropped once per this many stamps.
+STAMP_PRUNE_EVERY = 1024
+# A reduced entry's stamp for a parent chunk that was not cached when it was built: never valid.
+_NEVER_STAMP = -1
+
+
+def _box_reduce2_numpy(src: np.ndarray) -> np.ndarray:
+    """box_reduce2()'s numpy path, and the native kernel's byte-identity oracle."""
+    h, w = src.shape[:2]
+    if h == 0 or w == 0:
+        return np.zeros(((h + 1) // 2, (w + 1) // 2, *src.shape[2:]), dtype=np.uint8)
+    if h % 2:
+        src = np.concatenate([src, src[-1:]], axis=0)
+    if w % 2:
+        src = np.concatenate([src, src[:, -1:]], axis=1)
+    acc = src[0::2, 0::2].astype(np.uint16)
+    acc += src[1::2, 0::2]
+    acc += src[0::2, 1::2]
+    acc += src[1::2, 1::2]
+    acc += 2
+    return (acc >> 2).astype(np.uint8)
+
+
+def box_reduce2(src: np.ndarray) -> np.ndarray:
+    """A 2x2 box reduce of an (h, w, c) uint8 array to (ceil(h/2), ceil(w/2), c):
+    (a + b + c + d + 2) >> 2 per channel, an odd last row or column replicated.
+    Output pixel i covers input pixels 2i and 2i+1 (TASK-031.70). The native
+    kernel when active (read at call time), else numpy, byte-identical."""
+    kernel = composite_backend.native
+    if kernel is None:
+        return _box_reduce2_numpy(src)
+    h, w = src.shape[:2]
+    out = np.empty(((h + 1) // 2, (w + 1) // 2, *src.shape[2:]), dtype=np.uint8)
+    if h and w:
+        kernel.box_reduce2(np.ascontiguousarray(src), out)
+    return out
+
+
+@dataclass
+class _Reduced:
+    """One reduced chunk (render_reduced_rect()): its pixels, the stamp of every
+    REAL coarsest-level chunk under it when it was built, and that level's
+    canvas_dims() then."""
+
+    pixels: np.ndarray
+    parents: tuple[tuple[tuple[int, int, int], int], ...]
+    dims: tuple[int, int]
+
 
 @dataclass(frozen=True)
 class UnitSplice:
@@ -1336,6 +1386,11 @@ class _ChunkCacheBase:
         self.chunk_px = chunk_px
         self._cache: OrderedDict[tuple[int, int, int], np.ndarray] = OrderedDict()
         self._cache_bytes = 0
+        # The reduced store (render_reduced_rect()): per-instance, never class defaults.
+        self._chunk_stamp: dict[tuple[int, int, int], int] = {}
+        self._stamp_counter = 0
+        self._reduced: OrderedDict[tuple[int, int, int, int], _Reduced] = OrderedDict()
+        self._reduced_bytes = 0
         if max_chunks is None:
             canvas_w, canvas_h = self.canvas_dims()
             self.max_chunks: int | None = None
@@ -1547,6 +1602,28 @@ class _ChunkCacheBase:
         predicate, _LeveledChunkCache (Stepped and Sloped) and FlatChunkCache."""
         return True
 
+    def level_warmable(self, mip: int) -> bool:
+        """Whether level_warm_job(mip) would return a job, without building
+        one: the placeholder paint's "a warm will resolve this level" test
+        (TASK-031.25). Mirrors level_warm_job(); each concrete class
+        overrides both, and tests/test_placeholder_paint.py pins the pair."""
+        return False
+
+    def missing_chunks(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> int:
+        """How many chunk keys under LEVEL-`mip` rect [x0, x1) x [y0, y1),
+        clipped to canvas_dims(mip) as render_rect() clips, are not cached.
+        Membership reads only (no LRU touch); 0 for an empty clipped rect."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(canvas_w, x1), min(canvas_h, y1)
+        if x1 <= x0 or y1 <= y0:
+            return 0
+        cx0, cy0, cx1, cy1 = self.chunk_index_range(mip, x0, y0, x1, y1)
+        cache = self._cache
+        return sum(
+            (mip, cx, cy) not in cache for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)
+        )
+
     def _unit_pack_of(self, mip: int, create: bool):
         """Level `mip`'s native unit pack: with create, the one a composite
         would use (built if missing or stale); without, the installed one only
@@ -1671,7 +1748,18 @@ class _ChunkCacheBase:
         self._cache[key] = chunk
         self._cache_bytes += chunk.nbytes
         self._cache.move_to_end(key)
+        self._stamp(key)
         self._evict()
+
+    def _stamp(self, key: tuple[int, int, int]) -> None:
+        """Marks chunk `key`'s pixels as newly set. _insert() and _write_slice()
+        are the only writers of a cached chunk's pixels, and both call this, so
+        a reduced entry built over the old pixels fails _reduced_valid()."""
+        self._stamp_counter += 1
+        self._chunk_stamp[key] = self._stamp_counter
+        if self._stamp_counter % STAMP_PRUNE_EVERY == 0:
+            cache = self._cache
+            self._chunk_stamp = {k: v for k, v in self._chunk_stamp.items() if k in cache}
 
     def _prepare_rect(
         self, mip: int, x0: int, y0: int, x1: int, y1: int, heights: np.ndarray | None = None
@@ -1735,14 +1823,15 @@ class _ChunkCacheBase:
         and never touches the LRU order: a patch is not a use."""
         if not painted or job.epoch != self._mutation_epoch or self._cache.get(job.key) is not job.chunk:
             return False
-        self._write_slice(job.chunk, job.key[1], job.key[2], *job.slice, job.scratch)
+        self._write_slice(job.chunk, *job.key, *job.slice, job.scratch)
         return True
 
     def _write_slice(
-        self, chunk: np.ndarray, cx: int, cy: int, ix0: int, iy0: int, ix1: int, iy1: int, pixels: np.ndarray
+        self, chunk: np.ndarray, mip: int, cx: int, cy: int, ix0: int, iy0: int, ix1: int, iy1: int, pixels: np.ndarray
     ) -> None:
         x0, y0 = cx * self.chunk_px, cy * self.chunk_px
         chunk[iy0 - y0 : iy1 - y0, ix0 - x0 : ix1 - x0] = pixels
+        self._stamp((mip, cx, cy))
 
     def set_chunk_executor(self, executor, workers: int) -> None:
         """The pool render_rect() composites missing chunks on (TASK-031.64),
@@ -1878,6 +1967,112 @@ class _ChunkCacheBase:
                 oy0 - chunk_y0 : oy1 - chunk_y0, ox0 - chunk_x0 : ox1 - chunk_x0
             ]
         return out
+
+    def reduced_dims(self, mip: int, k: int) -> tuple[int, int]:
+        """canvas_dims(mip) after k box_reduce2() halvings: ceil(dim / 2**k) per axis."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
+        f = 1 << k
+        return -(-canvas_w // f), -(-canvas_h // f)
+
+    def render_reduced_rect(self, x0: int, y0: int, x1: int, y1: int, mip: int, k: int) -> np.ndarray:
+        """render_rect()'s shape for level `mip` box-reduced k >= 1 times
+        (TASK-031.70): [x0, x1) x [y0, y1) in reduced-k pixels, clipped to
+        reduced_dims(mip, k). Byte-identical to box_reduce2() applied k times
+        to a full render of the level, whatever was cached. Paint uses it at
+        the coarsest level only, and it never enters mip_levels().
+
+        Each reduced chunk (chunk_px square in reduced-k pixels) is cached in
+        its own LRU (`_reduced`, REDUCED_MAX_BYTES), apart from max_bytes, and
+        built from k-1 (render_rect() at k = 1) over the 2x rect. Validity is
+        by stamps, not hooks at every delete: an entry records the stamp of
+        every REAL level-`mip` chunk under it, geometrically (an uncached one
+        as never valid), and serves only while each of those is still cached
+        with the same stamp (_reduced_valid()). Never the k-1 entries' stamps:
+        one is rebuilt only when read, so after an edit it could still be
+        present and old while the real chunks under it changed."""
+        assert k >= 1, f"render_reduced_rect() needs k >= 1, got {k}; k = 0 is render_rect()"
+        rw, rh = self.reduced_dims(mip, k)
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(rw, x1), min(rh, y1)
+        if x1 <= x0 or y1 <= y0:
+            return np.zeros((0, 0, 3), dtype=np.uint8)
+        out = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+        size = self.chunk_px
+        for cy in range(y0 // size, (y1 - 1) // size + 1):
+            for cx in range(x0 // size, (x1 - 1) // size + 1):
+                chunk = self._reduced_chunk(mip, k, cx, cy)
+                chunk_x0, chunk_y0 = cx * size, cy * size
+                ox0, oy0 = max(x0, chunk_x0), max(y0, chunk_y0)
+                ox1, oy1 = min(x1, chunk_x0 + chunk.shape[1]), min(y1, chunk_y0 + chunk.shape[0])
+                out[oy0 - y0 : oy1 - y0, ox0 - x0 : ox1 - x0] = chunk[
+                    oy0 - chunk_y0 : oy1 - chunk_y0, ox0 - chunk_x0 : ox1 - chunk_x0
+                ]
+        return out
+
+    def _reduced_parents(self, mip: int, k: int, cx: int, cy: int) -> list[tuple[int, int, int]]:
+        """The real level-`mip` chunk keys under reduced chunk (mip, k, cx, cy),
+        clipped to canvas_dims(mip): the 2**k x 2**k block, fewer at the edge."""
+        canvas_w, canvas_h = self.canvas_dims(mip)
+        span = self.chunk_px << k
+        x0, y0 = cx * span, cy * span
+        x1, y1 = min(x0 + span, canvas_w), min(y0 + span, canvas_h)
+        if x1 <= x0 or y1 <= y0:
+            return []
+        cx0, cy0, cx1, cy1 = self.chunk_index_range(mip, x0, y0, x1, y1)
+        return [(mip, pcx, pcy) for pcy in range(cy0, cy1 + 1) for pcx in range(cx0, cx1 + 1)]
+
+    def _reduced_valid(self, entry: _Reduced, key: tuple[int, int, int, int]) -> bool:
+        """Whether every real parent the entry at `key` recorded is still cached
+        with the stamp it had at build time. Presence matters on its own: patch()
+        skips an uncached chunk, so an evicted parent may have missed an edit."""
+        if entry.dims != self.canvas_dims(key[0]):
+            return False
+        cache, stamps = self._cache, self._chunk_stamp
+        return all(
+            stamp != _NEVER_STAMP and parent in cache and stamps.get(parent) == stamp for parent, stamp in entry.parents
+        )
+
+    def _reduced_chunk(self, mip: int, k: int, cx: int, cy: int) -> np.ndarray:
+        """Reduced chunk (mip, k, cx, cy): a valid entry, else built and stored.
+        A hit is a use of its parents, which keeps them as resident as a paint
+        at the level itself would: it move_to_end()s its real parents and the
+        k-1 entries under it still in the reduced LRU."""
+        key = (mip, k, cx, cy)
+        entry = self._reduced.get(key)
+        if entry is not None and self._reduced_valid(entry, key):
+            self._reduced.move_to_end(key)
+            cache = self._cache
+            for parent, _stamp in entry.parents:
+                if parent in cache:
+                    cache.move_to_end(parent)
+            if k > 1:
+                for sub in ((mip, k - 1, 2 * cx + dx, 2 * cy + dy) for dy in (0, 1) for dx in (0, 1)):
+                    if sub in self._reduced:
+                        self._reduced.move_to_end(sub)
+            return entry.pixels
+        rw, rh = self.reduced_dims(mip, k)
+        size = self.chunk_px
+        x0, y0 = cx * size, cy * size
+        x1, y1 = min(x0 + size, rw), min(y0 + size, rh)
+        if k == 1:
+            src = self.render_rect(2 * x0, 2 * y0, 2 * x1, 2 * y1, mip=mip)
+        else:
+            src = self.render_reduced_rect(2 * x0, 2 * y0, 2 * x1, 2 * y1, mip, k - 1)
+        with perf_trace.repaint_phase("reduce"):
+            pixels = box_reduce2(src)
+        parents = tuple(
+            (parent, self._chunk_stamp.get(parent, _NEVER_STAMP) if parent in self._cache else _NEVER_STAMP)
+            for parent in self._reduced_parents(mip, k, cx, cy)
+        )
+        old = self._reduced.pop(key, None)
+        if old is not None:
+            self._reduced_bytes -= old.pixels.nbytes
+        self._reduced[key] = _Reduced(pixels, parents, self.canvas_dims(mip))
+        self._reduced_bytes += pixels.nbytes
+        while self._reduced_bytes > REDUCED_MAX_BYTES and len(self._reduced) > 1:
+            _victim_key, victim = self._reduced.popitem(last=False)
+            self._reduced_bytes -= victim.pixels.nbytes
+        return pixels
 
     def patch(
         self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None, rebuild_levels=None
@@ -2021,7 +2216,7 @@ class _ChunkCacheBase:
                 pass
             return
         for mip, cx, cy, chunk, ix0, iy0, ix1, iy1 in targets:
-            self._write_slice(chunk, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
+            self._write_slice(chunk, mip, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
 
     def _pools_patch(self, targets: list) -> bool:
         """Whether a patch takes _pooled_patch(): render_rect()'s _pools()
@@ -2117,7 +2312,7 @@ class _ChunkCacheBase:
                 job, jobs[i] = jobs[i], None
                 if job is not None and self.install_slice(job, painted[i]):
                     continue
-                self._write_slice(chunk, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
+                self._write_slice(chunk, mip, cx, cy, ix0, iy0, ix1, iy1, self._composite_rect(mip, ix0, iy0, ix1, iy1))
         return total
 
     def patch_area(self, bbox: tuple[int, int, int, int], levels=None) -> int:
@@ -3085,6 +3280,13 @@ class _LeveledChunkCache(_ChunkCacheBase):
 
         return LevelWarmJob(gen=self._flush_warm_walk(mip), install=install, kind="flush")
 
+    def level_warmable(self, mip: int) -> bool:
+        """level_warm_job(mip) is not None, without building the job."""
+        lvl = self._levels[mip]
+        if lvl.gen == self._source_gen and lvl.pending_elev:
+            return True
+        return self.with_units and lvl.gen != self._source_gen
+
     def _flush_warm_walk(self, mip: int):
         """_flush_pending() as one step, then, if an over-cap union marked the
         level stale, level_warm_job()'s sliced rebuild. Re-checks on its first
@@ -3961,6 +4163,10 @@ class FlatChunkCache(_ChunkCacheBase):
             return True
 
         return LevelWarmJob(gen=gen, install=install, kind="icons")
+
+    def level_warmable(self, mip: int) -> bool:
+        """level_warm_job(mip) is not None, without building the job."""
+        return self.with_units and self.sprites_enabled and mip not in self._level_icon_layers
 
     def is_level_resident(self, mip: int) -> bool:
         """Flat's own predicate -- "absent from _level_icon_layers" IS a

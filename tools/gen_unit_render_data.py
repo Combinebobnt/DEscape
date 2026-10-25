@@ -369,7 +369,7 @@ def main() -> None:
 
     from genieutils.datfile import DatFile
 
-    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset)
+    dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     pal_path = _game_root.resource(args.aoe2de_root, args.dataset, "resources/_common/palettes/original.pal")
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")

@@ -10,6 +10,10 @@
 # a 1.43 or 1.57 file (README.md).
 AoE2ScenarioParser==0.9.3
 
+# File > Data Mod (GH #58) parses a data mod's .dat in a subprocess, and the
+# tools/gen_*.py generators parse the install's. Pinned: the derived tables'
+# cache key records this version, and a bump re-parses every cached mod.
+genieutils-py==0.1.2
 numpy
 Pillow
 platformdirs  # per-OS user config directory -- deliberately preferred over hand-rolled sys.platform branches

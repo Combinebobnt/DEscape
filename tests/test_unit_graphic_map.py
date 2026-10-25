@@ -838,6 +838,32 @@ def test_the_generator_refuses_a_garrison_shell_outside_the_measured_shape(monke
         gen._garrison_flags(unit, graphics, 109)
 
 
+def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(monkeypatch):
+    """GH #58: a VER 7.7 mod's .dat ends at 1902 units and holds nameless
+    placeholders at 1893/1897, so the Pasture, Whale and later town-centre
+    entries must drop out of scope rather than fail their guards."""
+    import importlib.util
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    path = GRAPHIC_MAP_PATH.parent.parent / "tools" / "gen_unit_graphic_map.py"
+    spec =importlib.util.spec_from_file_location("gen_unit_graphic_map_narrow", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)  # a private copy: the narrowing rewrites module globals
+    units = [NS(name="unit", standing_graphic=(0, -1)) for _ in range(1902)]
+    units[1893] = units[1897] = NS(name="", standing_graphic=(-1, -1))
+    units[61] = None
+    gen._narrow_to_dat(units, [NS(file_name="b_dark_house_age1_x1"), None])
+    assert gen._DATA_MOD_DAT
+    assert not gen._ANNEX_TREE_SCOPE
+    assert not {1893, 1897} & set(gen._PIECE_SLOTS)
+    assert sorted(gen._TOWN_CENTRE_SCOPE) == [71, 109, 141, 142]
+    assert 2625 not in gen._UNDERWATER_BODY_CONSTS and 61 not in gen._UNDERWATER_BODY_CONSTS
+    assert 53 in gen._UNDERWATER_BODY_CONSTS
+    assert not gen._BODY_FRAME_OFFSETS
+    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [155, 446]
+
+
 def test_the_generator_gives_a_unit_without_a_garrison_graphic_no_flags(monkeypatch):
     from types import SimpleNamespace as NS
 

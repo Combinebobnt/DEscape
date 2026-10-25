@@ -127,7 +127,7 @@ def _generated_tables() -> set[str]:
 def test_every_generated_table_read_goes_through_table_path():
     """A `.read_text()` on a path naming a generated table, in any descape/
     module, must be wrapped in game_dataset.table_path(): a bare read would
-    serve the AoE2 table under Return of Rome. The path constants themselves
+    serve the AoE2 table under Return of Rome or a data mod (GH #58). The path constants themselves
     stay AoE2's, since tests monkeypatch them."""
     tables = _generated_tables()
     offenders = []

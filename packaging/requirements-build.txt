@@ -1,8 +1,9 @@
 # Build-only dependencies: PyInstaller for packaging/descape.spec, plus the
 # native kernel's toolchain (requirements-native.txt, cython and setuptools),
 # since every shipped bundle carries the compiled kernel. None of these is
-# needed to run the viewer from source, and genieutils-py stays out, so CI
-# can install just this without pulling in the rest of requirements-dev.txt.
+# needed to run the viewer from source, so CI can install just this (beside
+# requirements.txt, which bundles genieutils-py for GH #58's data mods)
+# without pulling in the rest of requirements-dev.txt.
 #
 # Pinned to the version packaging/descape.spec was verified against locally
 # (Stage 1, 2026-09-03) -- a PyInstaller minor bump changes bundle layout and

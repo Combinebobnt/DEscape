@@ -1,8 +1,9 @@
 """MapCanvasItem.paint()'s RGB32 blit gate (descape.viewer_canvas._rgb32_blit_ok).
 
-paint() hands Qt an RGB32 copy of each block for the smooth scaled
-drawImage() only where that is byte-identical to the RGB888 draw: an
-axis-aligned device transform at a residual of 0.5 or more. The paint cases
+paint() hands Qt an RGB32 copy of each block for the smooth drawImage(),
+scaled or level 0's point overload, only where that is byte-identical to the
+RGB888 draw: an axis-aligned device transform at a residual of 0.5 or more.
+The paint cases
 render through the real paint() with the gate as shipped, forced off
 ("never") and forced on ("always"), and compare pixels:
 
@@ -11,7 +12,11 @@ render through the real paint() with the gate as shipped, forced off
 - gate not taken (a residual just under 0.5, Flat's rotated transform): the
   shipped render equals never, and always differs, so each case is one where
   converting would really change pixels rather than a vacuous one.
-- the scale-1.0 point overload: never converts, even with the gate forced on.
+- level 0's point overload: the same gate wherever the device transform
+  scales (as the finest level magnifying, or the coarsest under 0.5,
+  included); a non-scaling device transform never consults the gate and
+  stays RGB888 even with it forced on, keeping the 1:1 byte-identity bars
+  on the unchanged code path.
 
 Those run over a noise cache, not a scenario: the blank fixture renders too
 smooth (no game textures under pytest) for the under-0.5 and rotated draws
@@ -27,7 +32,7 @@ import math
 import numpy as np
 import pytest
 
-from descape.render_cache import _ChunkCacheBase
+from descape.render_cache import _ChunkCacheBase, box_reduce2
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
 
@@ -42,17 +47,21 @@ MAGNIFY_PROBE = (300.0, 300.0, 240.0, 240.0)
 
 class _NoiseCache:
     """The cache members paint() touches, over a hashed-noise canvas with
-    levels -2..1, so every level has full-range texel-to-texel contrast."""
+    `levels` (default -2..1), so every level has full-range texel-to-texel
+    contrast. `side` is level 0's; keep it a multiple of 4 so the levels stay
+    exact. The reduced store is box_reduce2() over its own noise."""
 
     mip_levels = _ChunkCacheBase.mip_levels
     mip_scale = _ChunkCacheBase.mip_scale
     mip_for_scale = _ChunkCacheBase.mip_for_scale
+    reduced_dims = _ChunkCacheBase.reduced_dims
 
-    def __init__(self) -> None:
-        self._mip_tile_px = {level: int(64 * 2.0**level) for level in (-2, -1, 0, 1)}
+    def __init__(self, levels=(-2, -1, 0, 1), side: int = NOISE_CANVAS_PX) -> None:
+        self._mip_tile_px = {level: int(64 * 2.0**level) for level in levels}
+        self._side = side
 
     def canvas_dims(self, mip: int = 0) -> tuple[int, int]:
-        side = math.ceil(NOISE_CANVAS_PX / self.mip_scale(mip))
+        side = math.ceil(self._side / self.mip_scale(mip))
         return side, side
 
     def render_rect(self, x0, y0, x1, y1, mip=0) -> np.ndarray:
@@ -63,16 +72,24 @@ class _NoiseCache:
         h ^= h >> np.uint32(13)
         return np.stack([h & 255, (h >> 8) & 255, (h >> 16) & 255], axis=-1).astype(np.uint8)
 
+    def render_reduced_rect(self, x0, y0, x1, y1, mip, k) -> np.ndarray:
+        pw, ph = self.reduced_dims(mip, k - 1) if k > 1 else self.canvas_dims(mip)
+        sx0, sy0, sx1, sy1 = 2 * x0, 2 * y0, min(2 * x1, pw), min(2 * y1, ph)
+        if k == 1:
+            return box_reduce2(self.render_rect(sx0, sy0, sx1, sy1, mip))
+        return box_reduce2(self.render_reduced_rect(sx0, sy0, sx1, sy1, mip, k - 1))
+
 
 @pytest.fixture
-def noise_scene():
+def noise_scene(request):
+    """A scene over a _NoiseCache; indirect parametrization passes its levels."""
     from PyQt5.QtWidgets import QGraphicsScene
 
     from descape.viewer_canvas import MapCanvasItem
 
     conftest.ensure_qapp()
     scene = QGraphicsScene()
-    item = MapCanvasItem(_NoiseCache())
+    item = MapCanvasItem(_NoiseCache(getattr(request, "param", (-2, -1, 0, 1))))
     scene.addItem(item)
     yield scene, item
     scene.removeItem(item)
@@ -132,6 +149,14 @@ def _renders(monkeypatch, item, scene, modes, **kw):
             pixels = _render(scene, **kw)
         out[mode] = (pixels, calls, item._last_mip, _format_name(item._last_blit_format))
     return out
+
+
+def _no_reduction(monkeypatch) -> None:
+    """Pins paint()'s box reductions (TASK-031.70) at 0, so a residual under
+    0.5 reaches the gate unreduced: the gate's own bound is what is tested."""
+    from descape import viewer_canvas
+
+    monkeypatch.setattr(viewer_canvas, "reduction_for", lambda coarsest, scale: 0)
 
 
 def _max_diff(a: np.ndarray, b: np.ndarray) -> int:
@@ -201,6 +226,8 @@ def test_converted_blit_is_byte_identical_at_residual_half_and_up(monkeypatch, n
     scene, item = noise_scene
     # Several padded, overlapping blocks per draw, each converted on its own.
     monkeypatch.setattr(MapCanvasItem, "PAINT_BLOCK_PX", 64)
+    # At exactly 0.5 paint() would reduce once (residual 1.0): pinned, so 0.5 proves the inclusive bound.
+    _no_reduction(monkeypatch)
     out = _renders(monkeypatch, item, scene, ("real", "never"), zoom=residual / 4.0)
 
     pixels, calls, mip, fmt = out["real"]
@@ -228,7 +255,10 @@ def test_converted_blit_is_byte_identical_when_magnifying_past_the_finest_level(
 @pytest.mark.gui
 @pytest.mark.parametrize("residual", [0.45, 0.49])
 def test_blit_stays_rgb888_just_under_residual_half(monkeypatch, noise_scene, residual) -> None:
+    """The gate's own refusal under 0.5, reductions pinned at 0: paint() still
+    reaches it past MAX_REDUCTIONS and where level 0 is the coarsest level."""
     scene, item = noise_scene
+    _no_reduction(monkeypatch)
     out = _renders(monkeypatch, item, scene, ("real", "never", "always"), zoom=residual / 4.0)
 
     pixels, calls, mip, fmt = out["real"]
@@ -239,6 +269,21 @@ def test_blit_stays_rgb888_just_under_residual_half(monkeypatch, noise_scene, re
     # Converting here would change pixels, so this case is not vacuous.
     assert out["always"][3] == "RGB32"
     assert _max_diff(out["always"][0], out["never"][0]) > 0
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize(("residual", "k"), [(0.5, 1), (0.45, 1), (0.3, 1), (0.2, 2), (0.1, 3)])
+def test_a_reduced_blit_converts_in_band_and_stays_identical(monkeypatch, noise_scene, residual, k) -> None:
+    """Under 0.5 at the coarsest level paint() blits it box-reduced k times
+    (TASK-031.70), so the gate sees a residual back in (0.5, 1] and converts."""
+    scene, item = noise_scene
+    out = _renders(monkeypatch, item, scene, ("real", "never"), zoom=residual / 4.0)
+
+    pixels, calls, mip, fmt = out["real"]
+    assert (mip, item._last_reduction) == (-2, k)
+    assert calls and all(c[2] and c[1] == pytest.approx(residual * 2**k, rel=1e-2) for c in calls), calls
+    assert fmt == "RGB32"
+    assert _max_diff(pixels, out["never"][0]) == 0
 
 
 @pytest.mark.gui
@@ -286,19 +331,72 @@ def test_dpr_2_converts_on_device_residual_and_stays_identical(monkeypatch, nois
 
 
 @pytest.mark.gui
-@pytest.mark.parametrize("zoom", [1.0, 0.7])
-def test_scale_one_point_overload_never_converts(monkeypatch, noise_scene, zoom) -> None:
-    """Level 0 draws with the point overload, at unit device scale or under a
-    residual scale alike; forcing the gate on must change neither."""
+@pytest.mark.parametrize(
+    ("zoom", "dpr"),
+    [(0.51, 1.0), (0.7, 1.0), (0.9, 1.0), (0.45, 2.0)],
+    ids=["0.51", "0.7", "0.9", "dpr2-0.45"],
+)
+def test_level_0_point_overload_converts_and_stays_identical(monkeypatch, noise_scene, zoom, dpr) -> None:
+    """Level 0's point overload under a scaling transform in the (0.5, 1.0]
+    device band takes the gate like any other level; DPR 2 at logical 0.45 is
+    device 0.9."""
     scene, item = noise_scene
-    out = _renders(monkeypatch, item, scene, ("real", "always"), zoom=zoom, probe=MAGNIFY_PROBE)
+    out = _renders(monkeypatch, item, scene, ("real", "never"), zoom=zoom, probe=MAGNIFY_PROBE, dpr=dpr)
+
+    pixels, calls, mip, fmt = out["real"]
+    assert mip == 0
+    assert calls and all(c[2] and c[1] == pytest.approx(zoom * dpr, rel=1e-2) for c in calls), calls
+    assert fmt == "RGB32"
+    assert out["never"][3] == "RGB888"
+    assert _max_diff(pixels, out["never"][0]) == 0
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("translated", [False, True], ids=["plain", "translate-0.5-0.25"])
+def test_level_0_unit_transform_never_consults_the_gate(monkeypatch, noise_scene, translated) -> None:
+    """A non-scaling device transform keeps the point overload on RGB888 even
+    with the gate forced on, so the 1:1 byte-identity bars run the old path."""
+    from PyQt5.QtGui import QTransform
+
+    scene, item = noise_scene
+    pre = QTransform.fromTranslate(0.5, 0.25) if translated else None
+    out = _renders(monkeypatch, item, scene, ("real", "always"), zoom=1.0, probe=MAGNIFY_PROBE, pre=pre)
 
     for mode in ("real", "always"):
         _, calls, mip, fmt = out[mode]
         assert mip == 0
-        assert calls == [], f"{mode}: the point overload consulted the gate"
+        assert calls == [], f"{mode}: a non-scaling transform consulted the gate"
         assert fmt == "RGB888"
     assert _max_diff(out["real"][0], out["always"][0]) == 0
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("noise_scene", [(-2, -1, 0)], indirect=True)
+def test_level_0_magnifying_as_the_finest_level_converts(monkeypatch, noise_scene) -> None:
+    scene, item = noise_scene
+    out = _renders(monkeypatch, item, scene, ("real", "never"), zoom=2.5, probe=MAGNIFY_PROBE)
+
+    pixels, calls, mip, fmt = out["real"]
+    assert mip == 0
+    assert calls and all(c[2] and c[1] > 1.0 for c in calls), calls
+    assert fmt == "RGB32"
+    assert _max_diff(pixels, out["never"][0]) == 0
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("noise_scene", [(0,)], indirect=True)
+def test_level_0_as_the_coarsest_level_stays_rgb888_under_half(monkeypatch, noise_scene) -> None:
+    scene, item = noise_scene
+    out = _renders(monkeypatch, item, scene, ("real", "never", "always"), zoom=0.45, probe=MAGNIFY_PROBE)
+
+    pixels, calls, mip, fmt = out["real"]
+    assert mip == 0
+    assert calls and all(not c[2] and c[1] < 0.5 for c in calls), calls
+    assert fmt == "RGB888"
+    assert _max_diff(pixels, out["never"][0]) == 0
+    # Converting here would change pixels, so this case is not vacuous.
+    assert out["always"][3] == "RGB32"
+    assert _max_diff(out["always"][0], out["never"][0]) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -308,9 +406,11 @@ def test_scale_one_point_overload_never_converts(monkeypatch, noise_scene, zoom)
 
 @pytest.mark.gui
 def test_a_real_viewport_paint_converts_only_where_gated() -> None:
-    """Fit-to-view (residual under 0.5 at the coarsest level) stays RGB888, a
-    zoom into the 0.5-1.0 band converts, and level 0 stays on the point
-    overload."""
+    """Fit-to-view (residual under 0.5 at the coarsest level) blits the level
+    box-reduced back into the 0.5-1.0 band, converted (TASK-031.70); a zoom
+    into the band converts at every level, and level 0 stays RGB888 only
+    where the viewport transform does not scale."""
+    from PyQt5.QtGui import QTransform
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.stepped_window(FIXTURE_PATH, size=300)
@@ -326,20 +426,23 @@ def test_a_real_viewport_paint_converts_only_where_gated() -> None:
             QApplication.processEvents()
             device = view.viewportTransform()
             resid = device.m11() * item._cache.mip_scale(item._last_mip)
-            return item._last_mip, resid, _format_name(item._last_blit_format)
+            scales = device.type() > QTransform.TxTranslate
+            return item._last_mip, resid, _format_name(item._last_blit_format), scales
 
-        mip, resid, fmt = paint_once()
+        mip, resid, fmt, _ = paint_once()
         assert resid < 0.5, f"fit-to-view residual {resid} is not the under-0.5 case"
-        assert (mip, fmt) == (item._cache.mip_levels()[0], "RGB888")
+        assert (mip, fmt) == (item._cache.mip_levels()[0], "RGB32")
+        assert item._last_reduction >= 1
+        assert 0.5 < resid * 2**item._last_reduction <= 1.0
 
         # Each step doubles the device scale, so some step lands in [0.5, 1)
         # at a non-reference level.
         seen = []
         for _ in range(6):
             view.scale(2.0, 2.0)
-            mip, resid, fmt = paint_once()
+            mip, resid, fmt, scales = paint_once()
             seen.append((mip, round(resid, 3), fmt))
-            if mip == 0:
+            if mip == 0 and not scales:
                 assert fmt == "RGB888", seen
             elif resid >= 0.5:
                 assert fmt == "RGB32", seen

@@ -168,6 +168,7 @@ from descape.autosave_dialog import RecoverAutosaveDialog
 from descape.beach_edges import apply_beach_ring, ring_mode
 from descape.clipboard_dialog import ClipboardHistoryDialog
 from descape.constant_picker import CatalogBrowseDialog, preview_pixmap
+from descape.data_mod_menu import FROM_PATH, DataModMenu
 from descape.diplomacy_panel import DiplomacyPanel
 from descape.disables_dialog import DisablesDialog
 from descape.edit_history import (
@@ -492,6 +493,12 @@ _MODE_ID_FOR_LABEL = {"Map Options": "map_options"}
 # TASK-359: every mode keeps the unit selection; these draw it and let Scatter read it.
 # Elsewhere it is dormant: kept, not drawn (Triggers' Pick from map borrows the layer).
 _UNIT_SELECTION_LIVE_MODES = frozenset({"units", "terrain"})
+
+# Placeholder paints across a level change (TASK-031.25 D8): a new window's default.
+# Only main() turns it on, so tests and tools that build a ViewerWindow measure the real level.
+LIVE_PLACEHOLDERS = False
+# How long a placeholder may wait with no warm active before the watchdog settles it.
+PLACEHOLDER_STUCK_MS = 1500
 
 # The one Map Options row whose write path is TriggerEditModel rather than
 # OptionsEditModel. Named here rather than matched inline, because the split is
@@ -1233,7 +1240,9 @@ class SettingsDialog(QDialog):
             "territory doesn't stutter either. The window stays interactive "
             "throughout; the cost is a few seconds of background work per "
             "open, plus ongoing idle-time work while panning, and holding "
-            "extra chunks/levels in memory. Applies immediately."
+            "extra chunks/levels in memory. A fast zoom onto a level not "
+            "ready yet shows the map briefly blurred until it sharpens. "
+            "Applies immediately."
         )
         preload_checkbox.toggled.connect(self._on_preload_zoom_levels_toggled)
         layout.addWidget(preload_checkbox)
@@ -2112,10 +2121,14 @@ class SettingsDialog(QDialog):
         it ON does not start either retroactively: the level warm's
         neighbours are derived from the fit baseline at open time (and the
         current view may be nowhere near it), and the margin warm only ever
-        starts from the next viewport-changed poll fire."""
+        starts from the next viewport-changed poll fire.
+
+        Placeholder paints follow it (TASK-031.25 D7): off also settles a
+        pending level, since nothing would warm it any more."""
         settings.set_preload_zoom_levels(enabled)
         if not enabled:
             self._window._cancel_warms()
+        self._window.sync_canvas_placeholders()
         self._window._log_status(f"Preload zoom levels: {'on' if enabled else 'off'}")
 
     def _update_x2_art_label(self) -> None:
@@ -2753,6 +2766,7 @@ class SettingsDialog(QDialog):
         self._window.units_panel.refresh_thumbnails()
         self._window.invalidate_ai_choices()  # GH #126: Personality lists this install's AIs
         self._refresh_profile_section()  # auto-detect derives the profile from the install
+        self._window.data_mod_menu.install_changed()  # GH #58: its tables were read against the old install
 
     def _set_install_status(self, message: str, ok: bool) -> None:
         self._install_status_ok = ok
@@ -3471,6 +3485,21 @@ class ViewerWindow(QMainWindow):
         # was still draining -- see _pump_load_warm().
         self._load_warmer = margin_warm.MarginWarmer()
         self._load_warm_queue: list[tuple[int, list[tuple[int, int]]]] = []
+        # The neighbour levels of the last level warm's anchor, pending level or not (TASK-031.25).
+        self._warm_set: list[int] = []
+        # Placeholder paints (TASK-031.25): allowed per process (D8), and live only with preload on.
+        self._placeholders_allowed = LIVE_PLACEHOLDERS
+        # The canvas item that last reported a new pending level; both timers no-op for any other.
+        self._placeholder_item = None
+        # Re-anchors the warm out of paint, on the next event-loop turn.
+        self._placeholder_pending_timer = QTimer(self)
+        self._placeholder_pending_timer.setSingleShot(True)
+        self._placeholder_pending_timer.setInterval(0)
+        self._placeholder_pending_timer.timeout.connect(self._on_placeholder_pending)
+        # Settles a placeholder some path left with no warm (PLACEHOLDER_STUCK_MS, read at arm time).
+        self._placeholder_watchdog = QTimer(self)
+        self._placeholder_watchdog.setSingleShot(True)
+        self._placeholder_watchdog.timeout.connect(self._on_placeholder_watchdog)
         # The load's idle UnitEditModel build (_schedule_unit_model_prebuild).
         self._unit_model_prebuild = level_warm.IdleCall()
         # The last viewport_chunk_target() _on_viewport_changed() saw, kept
@@ -3897,6 +3926,8 @@ class ViewerWindow(QMainWindow):
 
         self.setCentralWidget(content)
 
+        # GH #58: File > Data Mod and its parse; before the menu and status bar it adds to.
+        self.data_mod_menu = DataModMenu(self)
         self._build_menu_bar()
         self._build_toolbar()
         self._build_status_bar()
@@ -4018,6 +4049,8 @@ class ViewerWindow(QMainWindow):
         self.recover_autosave_action.setToolTip("List the automatic backup copies of your edits and open one")
         self.recover_autosave_action.triggered.connect(self.show_recover_autosave)
         file_menu.addAction(self.recover_autosave_action)
+        file_menu.addSeparator()
+        self.data_mod_menu.build(file_menu)
         file_menu.addSeparator()
         self.exit_action = QAction("E&xit", self)
         self.exit_action.setToolTip("Quit DEscape, asking first if there are unsaved changes")
@@ -8109,6 +8142,7 @@ class ViewerWindow(QMainWindow):
         canvas_w, canvas_h = self._cache.canvas_dims(0)
         self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
         self._refresh_selection_after_filter()
+        self._rearm_pending_warm()
         self._log_status(f"Unit filter: {self._filter_summary()}")
 
     def _on_sprites_toggled(self, checked: bool) -> None:
@@ -8151,14 +8185,15 @@ class ViewerWindow(QMainWindow):
         self._cancel_warms()
         if self.scenario is None or self._cache is None:
             return
-        self.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        QApplication.processEvents()
-        # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
-        self._cancel_warms()
+        # Before the processEvents() below: the placeholder watchdog re-arms on _busy in that turn.
         was_busy = self._busy
         self._busy = True
+        self.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            QApplication.processEvents()
+            # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
+            self._cancel_warms()
             t0 = time.perf_counter()
             self._cache.set_sprites_enabled(checked)
             # refresh_canvas_dims() FIRST (Track P3-g6): SlopedChunkCache's
@@ -8176,6 +8211,7 @@ class ViewerWindow(QMainWindow):
             self._busy = was_busy
             QApplication.restoreOverrideCursor()
             self.setEnabled(True)
+        self._rearm_pending_warm()
         self._log_status(f"Show sprites: {'on' if checked else 'off'} (applied in {elapsed:.2f}s)")
 
     def _on_layer_toggled(self, layer_id: str, on: bool) -> None:
@@ -8226,14 +8262,15 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None or self._cache is None:
             self._update_tool_enabled()
             return
-        self.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        QApplication.processEvents()
-        # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
-        self._cancel_warms()
+        # Before the processEvents() below: the placeholder watchdog re-arms on _busy in that turn.
         was_busy = self._busy
         self._busy = True
+        self.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            QApplication.processEvents()
+            # Again: a poll fired in that turn re-arms on the pre-toggle cache and uses up the first fire.
+            self._cancel_warms()
             t0 = time.perf_counter()
             self._cache.set_layers(self._layers)
             self.map_view.invalidate_region((0, 0, *self._cache.canvas_dims(0)))
@@ -8245,6 +8282,7 @@ class ViewerWindow(QMainWindow):
             self._busy = was_busy
             QApplication.restoreOverrideCursor()
             self.setEnabled(True)
+        self._rearm_pending_warm()
         self._log_status(f"{status} (applied in {elapsed:.2f}s)")
 
     def _apply_mod_art_change(self, status: str, *, rescan: bool = False) -> None:
@@ -9187,6 +9225,8 @@ class ViewerWindow(QMainWindow):
         self.game_data_banner = QLabel()
         self.game_data_banner.setVisible(False)
         self.statusBar().addPermanentWidget(self.game_data_banner)
+        # GH #58: "Parsing <mod>…" while a data mod's .dat is read.
+        self.statusBar().addPermanentWidget(self.data_mod_menu.parsing_label)
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
         self._update_mode_status()
@@ -17325,7 +17365,7 @@ class ViewerWindow(QMainWindow):
             self.setWindowTitle("DEscape")
             return
         marker = "*" if self.edit_history.is_dirty else ""
-        game = " [Return of Rome]" if game_dataset.is_ror() else ""
+        game = " [Return of Rome]" if game_dataset.is_ror() else self.data_mod_menu.title_suffix()
         self.setWindowTitle(f"{marker}{self.scenario.path.name}{game} — DEscape")
 
     # -- game data (GH #67) ------------------------------------------------
@@ -17493,7 +17533,7 @@ class ViewerWindow(QMainWindow):
             return
         if self._recover_dialog is not None:
             self._recover_dialog.close()
-        self.load_scenario(entry.path, untitled=True)
+        self.load_scenario(entry.path, untitled=True, data_mod=entry.data_mod)
         if self.scenario is not None:
             self._log_status(f"Recovered {entry.path.name} as a new untitled document")
 
@@ -17610,7 +17650,9 @@ class ViewerWindow(QMainWindow):
             # user's real file is untouched either way.
             self._log_status(f"Autosave failed: {type(e).__name__}: {e}")
             return
-        autosave.record(key, slot, str(self.scenario.path), untitled=self._untitled)
+        autosave.record(
+            key, slot, str(self.scenario.path), untitled=self._untitled, data_mod=self.data_mod_menu.identity()
+        )
         autosave.rotate(key, settings.get_autosave_retention())
         self._autosaved_content = self.edit_history.content_key
         self._log_status(f"Autosaved to {slot.name}")
@@ -17688,6 +17730,8 @@ class ViewerWindow(QMainWindow):
         # window is now editing that file, not the one it was opened from.
         self.scenario.path = Path(path)
         self._untitled = False
+        # GH #58: the new path opens with the data mod it was saved under.
+        self.data_mod_menu.remember_current()
         # GH #215: a new map or a renamed copy is otherwise missing from Open Recent until reopened.
         settings.add_recent_file(self.scenario.path)
         self._rebuild_recent_files_menu()
@@ -17746,6 +17790,7 @@ class ViewerWindow(QMainWindow):
         # visible rather than merely wasteful.
         # The poll first: a fire after the cancel re-arms the warms (_on_viewport_changed).
         self.map_view.stop_viewport_poll()
+        self._stop_placeholder_timers()
         self._cancel_warms()
         self._unit_model_prebuild.cancel()
         # Same lifetime reasoning: the document frozen at load must be collectable again.
@@ -17774,6 +17819,7 @@ class ViewerWindow(QMainWindow):
         # dispatched from inside a load's own processEvents() would then null
         # it out from under load_scenario's remaining writes to it.
         self._paint_report_timer.stop()
+        self.data_mod_menu.shutdown()
         settings.set_window_size(self.width(), self.height())
         sizes = self.content_splitter.sizes()
         if len(sizes) == 2:
@@ -18426,9 +18472,108 @@ class ViewerWindow(QMainWindow):
             self._erase is not None and bool(self._erase.pending_splices)
         )
 
-    def _start_level_warm(self) -> None:
+    # --- placeholder paints (TASK-031.25) ---------------------------------
+
+    def _placeholders_on(self) -> bool:
+        """Placeholders need a warm to resolve them, so they follow Preload
+        zoom levels (D7), and only a process that allows them gets any (D8)."""
+        return self._placeholders_allowed and settings.get_preload_zoom_levels()
+
+    def set_placeholders_allowed(self, allowed: bool) -> None:
+        """Opts this window in or out of placeholder paints (D8: main() opts
+        in; tests and tools stay out unless they ask)."""
+        self._placeholders_allowed = allowed
+        self.sync_canvas_placeholders()
+
+    def sync_canvas_placeholders(self) -> None:
+        """Pushes _placeholders_on() to the canvas; off settles a pending level."""
+        self.map_view.set_canvas_placeholders(self._placeholders_on())
+        if not self._placeholders_on():
+            self._stop_placeholder_timers()
+
+    def _pending_level(self) -> int | None:
+        item = self.map_view._canvas_item
+        return None if item is None else item.pending_mip()
+
+    def _on_canvas_placeholder(self, mip: int) -> None:
+        """MapCanvasItem's on_placeholder, called inside paint() once per new
+        pending level: everything else waits for the next event-loop turn."""
+        self._placeholder_item = self.map_view._canvas_item
+        self._placeholder_pending_timer.start()
+
+    def _on_placeholder_pending(self) -> None:
+        """Re-anchors the warm on the pending level now rather than at the
+        next viewport poll fire, and arms the watchdog."""
+        item = self.map_view._canvas_item
+        if item is None or item is not self._placeholder_item:
+            return
+        mip = item.pending_mip()
+        if mip is None:
+            return
+        last = self._last_viewport_chunk_target
+        if last is None or last[0] != mip:
+            self._on_viewport_changed()
+        else:
+            self._start_level_warm()
+        self._placeholder_watchdog.start(PLACEHOLDER_STUCK_MS)
+
+    def _on_placeholder_watchdog(self) -> None:
+        """Settles a placeholder that no warm will resolve: some path dropped
+        its warm. Re-arms instead while a warm is active, a handler sits
+        between its _cancel_warms() and its processEvents() (_busy), or an
+        Eraser or Convert flush is owed (_start_level_warm() arms nothing then)."""
+        item = self.map_view._canvas_item
+        if item is None or item is not self._placeholder_item:
+            return
+        self._maybe_refine()
+        mip = item.pending_mip()
+        if mip is None:
+            return
+        warming = any(w.is_active for w in (self._level_warmer, self._load_warmer, self._margin_warmer))
+        if warming or self._busy or self._unit_flush_owed():
+            self._placeholder_watchdog.start(PLACEHOLDER_STUCK_MS)
+            return
+        item.force_settle()
+        debug_log.log(f"placeholder: force-settled level {mip}")
+
+    def _stop_placeholder_timers(self) -> None:
+        self._placeholder_pending_timer.stop()
+        self._placeholder_watchdog.stop()
+
+    def _rearm_pending_warm(self) -> None:
+        """Re-arms the warm a _cancel_warms() caller dropped, once its change
+        is applied, if a placeholder waits on a level; else a no-op. For the
+        callers that do not reach _start_level_warm() themselves."""
+        if self._pending_level() is not None:
+            self._start_level_warm()
+
+    def _maybe_refine(self) -> None:
+        """Settles the pending level once it is the view's level and every
+        chunk its paint reads is cached (D2), then starts the neighbour warm
+        it held back (D6). Called when a load or margin warm drains, when the
+        pending view entry has nothing to warm, and by the watchdog."""
+        item = self.map_view._canvas_item
+        mip = None if item is None else item.pending_mip()
+        if mip is None:
+            return
+        target = self.map_view.viewport_chunk_target()
+        rect = self.map_view._current_scene_rect()
+        if target is None or target[0] != mip or rect is None:
+            return
+        if not item.view_ready(mip, rect, self.map_view.view_device_scale()):
+            return
+        item.refine(mip)
+        perf_trace.level_event("refine", mip, 0.0)
+        self._placeholder_watchdog.stop()
+        # The settled level's ring entry outlives the re-anchor, ahead of the neighbours' entries.
+        self._start_level_warm(keep=[entry for entry in self._load_warm_queue if entry[0] == mip])
+        self._pump_load_warm()
+
+    def _start_level_warm(self, keep=()) -> None:
         """Queues the neighbouring mip levels' sprite layers for an idle-time
-        warm -- the 2026-09-04 plan's hook point.
+        warm -- the 2026-09-04 plan's hook point. `keep`: load-warm entries
+        that survive the re-anchor at the queue's head (_maybe_refine()'s
+        settled ring); an early return leaves the queue as it was.
 
         Called from load_scenario AFTER _render_current(), not from inside
         it: _render_current is also the re-render path for every terrain-
@@ -18460,7 +18605,15 @@ class ViewerWindow(QMainWindow):
         buckets pre-edit, so a warm armed there, by a viewport fire after the
         mutation's cancel say, would walk lists the cache has not heard of.
         Every such window closes through _after_unit_mutation(), whose call
-        here re-arms once the cache has caught up."""
+        here re-arms once the cache has caught up.
+
+        While the canvas waits on a placeholder's level and that level is the
+        anchor (TASK-031.25 D6), the warm is that level's job alone, so no
+        neighbour walk ticks before it; a resident one has no job, and the
+        loop at the end queues its load warm at once. The neighbours are
+        warmed through _maybe_refine(), which calls this again once the
+        level has settled. The anchor itself is otherwise never warmed (see
+        level_warm.neighbour_mips_of())."""
         if self._cache is None or not settings.get_preload_zoom_levels():
             return
         if self._unit_flush_owed():
@@ -18479,18 +18632,23 @@ class ViewerWindow(QMainWindow):
         else:
             anchor = self._cache.mip_for_scale(fit * self.map_view.devicePixelRatioF())
         mips = level_warm.neighbour_mips_of(self._cache, anchor)
-        # The current mip's pack derive too: a wholesale rebuild drops its
-        # pack, and a single-level ladder has no neighbours at all.
-        pack_only = (target[0],) if target is not None else ()
-        # A gen-bump edit rebuilds only the visible level (patch's rebuild_levels); warm the
-        # other stale resident levels too, or the next zoom to one rebuilds it inside paint.
-        visible = target[0] if target is not None else None
-        mips += [
-            mip for mip in self._cache.resident_levels()
-            if mip != visible and mip not in mips and not self._cache.is_level_resident(mip)
-        ]
+        self._warm_set = list(mips)
+        if self._pending_level() == anchor:
+            # D6: the level a placeholder waits on warms first and alone; refine re-arms the rest.
+            mips, pack_only = [anchor], ()
+        else:
+            # The current mip's pack derive too: a wholesale rebuild drops its
+            # pack, and a single-level ladder has no neighbours at all.
+            pack_only = (target[0],) if target is not None else ()
+            # A gen-bump edit rebuilds only the visible level (patch's rebuild_levels); warm the
+            # other stale resident levels too, or the next zoom to one rebuilds it inside paint.
+            visible = target[0] if target is not None else None
+            mips += [
+                mip for mip in self._cache.resident_levels()
+                if mip != visible and mip not in mips and not self._cache.is_level_resident(mip)
+            ]
         # A re-anchor's old (mip, chunks) are stale. Safe before start(): its cancel never fires on_job_done.
-        self._load_warm_queue = []
+        self._load_warm_queue = list(keep)
         notifying = self._level_warmer.start(
             self._cache, mips, pack_only=pack_only, on_job_done=self._queue_load_warm,
         )
@@ -18526,20 +18684,122 @@ class ViewerWindow(QMainWindow):
         load_warm_chunks() -- load_scenario() always calls
         _start_level_warm() right after a fit-to-view render, so the raw
         range is the WHOLE neighbour-mip grid, not the ~20-chunk patch this
-        feature is sized for. See bounded_chunk_range's own docstring."""
+        feature is sized for. See bounded_chunk_range's own docstring.
+
+        The bound is the view a crossing lands on, not a residual-1.0
+        viewport (TASK-031.25 D3b, _neighbour_warm_range()). A notch onto a
+        warmed neighbour then lands sharp with nothing composited in its paint.
+
+        The level a placeholder waits on is not bounded at all: its warm is
+        the view's own chunk range at it (_queue_pending_load_warm(), D3)."""
         if self._cache is None or not settings.get_preload_zoom_levels():
             return
         if not self._cache.is_level_resident(mip):
             return
+        if mip == self._pending_level():
+            self._queue_pending_load_warm(mip)
+            return
         target = self.map_view.viewport_chunk_target_at(mip)
         if target is None:
             return
-        span_w, span_h = self.map_view.viewport_chunk_span(self._cache, mip)
-        cx0, cy0, cx1, cy1 = margin_warm.bounded_chunk_range(*target, span_w, span_h)
+        view = self.map_view.viewport_chunk_target()
+        cx0, cy0, cx1, cy1 = self._neighbour_warm_range(mip, target, view)
         chunks = margin_warm.load_warm_chunks(self._cache, mip, cx0, cy0, cx1, cy1)
         if not chunks:
             return
         self._load_warm_queue.append((mip, chunks))
+        self._pump_load_warm()
+
+    def _neighbour_warm_range(self, mip: int, target, view) -> tuple[int, int, int, int]:
+        """The chunk range a neighbour's load warm takes inside its raw
+        projection `target` (TASK-031.25 D3b, review fold), `view` being
+        viewport_chunk_target() or None.
+
+        Finer than the view: twice the viewport span plus one per axis. Just
+        past a zoom-in crossing the residual is 0.5-0.625, so the view covers
+        1.6-2 spans, and a view edge late in a chunk touches one more index.
+        Placed at the fraction of the range where the next zoom anchors
+        (MapView.zoom_anchor_scene(), the cursor while zoom-on-cursor is on):
+        zooming in about a point keeps it at the same fraction of the view.
+        Only when it fits the chunk LRU beside the settled view and the
+        coarser neighbour's patch (_fits_chunk_budget()); else the plain span,
+        so the warm never evicts the view's own chunks.
+
+        Coarser than the view: the span plus one (chunk alignment on a
+        zoom-out), centred. Anything else: the span, centred."""
+        cache = self._cache
+        span_w, span_h = self.map_view.viewport_chunk_span(cache, mip)
+        if view is None or mip == view[0]:
+            return margin_warm.bounded_chunk_range(*target, span_w, span_h)
+        if mip < view[0]:
+            return margin_warm.bounded_chunk_range(*target, span_w + 1, span_h + 1)
+        anchor = self.map_view.zoom_anchor_scene()
+        size = cache.chunk_px * cache.mip_scale(mip)
+        cx0, cy0, cx1, cy1 = target
+        frac = ((anchor.x() / size - cx0) / (cx1 - cx0 + 1), (anchor.y() / size - cy0) / (cy1 - cy0 + 1))
+        wide = margin_warm.bounded_chunk_range(*target, 2 * span_w + 1, 2 * span_h + 1, anchor=frac)
+        if self._fits_chunk_budget(view, mip, wide):
+            return wide
+        return margin_warm.bounded_chunk_range(*target, span_w, span_h, anchor=frac)
+
+    def _patch_footprint(self, mip: int, cx0: int, cy0: int, cx1: int, cy1: int) -> int:
+        """Chunks a load warm of [cx0, cx1] x [cy0, cy1] can cache at `mip`:
+        the range plus its depth-1 ring, clipped to the level's grid."""
+        cache = self._cache
+        canvas_w, canvas_h = cache.canvas_dims(mip)
+        max_cx, max_cy = (canvas_w - 1) // cache.chunk_px, (canvas_h - 1) // cache.chunk_px
+        w = min(cx1 + 1, max_cx) - max(cx0 - 1, 0) + 1
+        h = min(cy1 + 1, max_cy) - max(cy0 - 1, 0) + 1
+        return max(0, w) * max(0, h)
+
+    def _fits_chunk_budget(self, view, mip: int, rng) -> bool:
+        """Whether a finer neighbour's warm of `rng` fits the chunk LRU beside
+        the settled view (and its ring) and the coarser neighbour's patch,
+        both warmed or painted no earlier, so it cannot evict the view's chunks."""
+        cache = self._cache
+        if cache.max_chunks is not None:
+            budget = cache.max_chunks
+        elif cache.max_bytes is not None:
+            budget = cache.max_bytes // (cache.chunk_px * cache.chunk_px * 3)
+        else:
+            return True
+        used = self._patch_footprint(view[0], *view[1:]) + self._patch_footprint(mip, *rng)
+        coarser = view[0] - 1
+        if coarser >= cache.mip_levels()[0]:
+            raw = self.map_view.viewport_chunk_target_at(coarser)
+            if raw is not None:
+                span_w, span_h = self.map_view.viewport_chunk_span(cache, coarser)
+                used += self._patch_footprint(
+                    coarser, *margin_warm.bounded_chunk_range(*raw, span_w + 1, span_h + 1)
+                )
+        return used <= budget
+
+    def _queue_pending_load_warm(self, mip: int) -> None:
+        """The load warm of the level a placeholder waits on (TASK-031.25 D3,
+        D6): the view's chunks at it (MapCanvasItem.view_chunks(), the range
+        its paint and view_ready() read), then their depth-1 ring, at the head
+        of _load_warm_queue in place of any entry already queued for it. A
+        load warm in flight is cancelled; if it was another level of the
+        current warm set it is queued again behind (load_warm_chunks()
+        recomputes what is still uncached). With nothing in view to warm it
+        refines at once."""
+        item = self.map_view._canvas_item
+        rect = self.map_view._current_scene_rect()
+        if item is None or rect is None:
+            return
+        view = item.view_chunks(mip, rect, self.map_view.view_device_scale())
+        if view is None:
+            return
+        centre, ring = margin_warm.load_warm_parts(self._cache, mip, *view)
+        self._load_warm_queue = [entry for entry in self._load_warm_queue if entry[0] != mip]
+        self._load_warm_queue[:0] = [(mip, chunks) for chunks in (centre, ring) if chunks]
+        busy = self._load_warmer.mip if self._load_warmer.is_active else None
+        if busy is not None:
+            self._load_warmer.cancel()
+            if busy != mip and busy in self._warm_set:
+                self._queue_load_warm(busy)
+        if not centre:
+            self._maybe_refine()
         self._pump_load_warm()
 
     def _pump_load_warm(self) -> None:
@@ -18550,7 +18810,9 @@ class ViewerWindow(QMainWindow):
         replaces whatever is in flight rather than queuing alongside it.
         Chained off _load_warmer's own on_drained callback, so the second
         mip's chunks start the moment the first mip's queue empties, with
-        no polling."""
+        no polling. A placeholder's level refines here once its view entry
+        has drained (_maybe_refine(), TASK-031.25)."""
+        self._maybe_refine()
         if self._load_warmer.is_active or not self._load_warm_queue:
             return
         mip, chunks = self._load_warm_queue.pop(0)
@@ -18600,6 +18862,9 @@ class ViewerWindow(QMainWindow):
         self._last_viewport_chunk_target = target
         if prev is None or prev[0] != mip:
             self._start_level_warm()
+        elif mip == self._pending_level():
+            # A pan while a placeholder waits: its view entry follows the view (replacing the old one).
+            self._queue_load_warm(mip)
         lead = (0, 0)
         if prev is not None and prev[0] == mip:
             prev_cx0, prev_cy0 = prev[1], prev[2]
@@ -18608,7 +18873,7 @@ class ViewerWindow(QMainWindow):
                 (cy0 > prev_cy0) - (cy0 < prev_cy0),
             )
         ring = margin_warm.ring_chunks(self._cache, mip, cx0, cy0, cx1, cy1, lead=lead)
-        self._margin_warmer.start(self._cache, mip, ring)
+        self._margin_warmer.start(self._cache, mip, ring, on_drained=self._maybe_refine)
 
     def _on_canvas_paint_timed(self, elapsed: float, mip: int) -> None:
         """MapCanvasItem's per-paint stopwatch callback (installed by
@@ -18730,6 +18995,7 @@ class ViewerWindow(QMainWindow):
         # sliders, the Isometric View toggle and a re-entrant load in one
         # place, rather than one call per caller.
         self._cancel_warms()
+        self._stop_placeholder_timers()
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
@@ -18781,6 +19047,7 @@ class ViewerWindow(QMainWindow):
                 self.map_view.set_source(
                     tile_px, terrain_style="stepped", cache=self._cache, elevations=elevations, proj=proj,
                     reset_view=reset_view, on_paint_timed=self._on_canvas_paint_timed,
+                    placeholders=self._placeholders_on(), on_placeholder=self._on_canvas_placeholder,
                 )
             elif self._render_style == "sloped":
                 # Same snapshot contract as Stepped above, and it must be the
@@ -18802,6 +19069,7 @@ class ViewerWindow(QMainWindow):
                 self.map_view.set_source(
                     tile_px, terrain_style="sloped", cache=self._cache, elevations=elevations, proj=proj,
                     reset_view=reset_view, on_paint_timed=self._on_canvas_paint_timed,
+                    placeholders=self._placeholders_on(), on_placeholder=self._on_canvas_placeholder,
                 )
             else:
                 self._iso_elevations, self._iso_proj = None, None
@@ -18817,6 +19085,7 @@ class ViewerWindow(QMainWindow):
                 self.map_view.set_source(
                     tile_px, terrain_style="flat", cache=self._cache, reset_view=reset_view,
                     on_paint_timed=self._on_canvas_paint_timed,
+                    placeholders=self._placeholders_on(), on_placeholder=self._on_canvas_placeholder,
                 )
             # set_source() drops the pick index along with every other scene
             # item, so a style switch made while in Units mode has to rebuild
@@ -19153,11 +19422,13 @@ class ViewerWindow(QMainWindow):
         data: bytes | None = None,
         generate_elapsed: float | None = None,
         loaded: LoadedScenario | None = None,
+        data_mod=FROM_PATH,
     ) -> None:
         # generate_elapsed: File > New Map's blank_scenario_bytes() time, spent
         # before this call; reported as `generate` and counted in the totals.
         # loaded: `data` already parsed (a map resize, which remaps units and
         # triggers on it before it is shown), adopted instead of parsed again.
+        # data_mod: a recovered autosave's data mod (GH #58), else FROM_PATH.
         # Loading + rendering a large map is a multi-second blocking call
         # (see _render_current()'s own docstring) -- the log line and status
         # bar message below are queued but not actually painted until
@@ -19225,7 +19496,11 @@ class ViewerWindow(QMainWindow):
             # untouched, if the try block above returned early).
             self._untitled = untitled
             # GH #67: before the first paint, the game data Settings > Advanced picks for this file.
-            if game_dataset.set_active(self._shown_game_dataset()):
+            switched = game_dataset.set_active(self._shown_game_dataset())
+            # GH #58: and the data mod remembered for it; untitled keeps the session's.
+            if self.data_mod_menu.for_document(path, untitled=untitled, remembered=data_mod):
+                switched = True
+            if switched:
                 self._refresh_game_lists()
             if untitled:
                 self.scenario.path = UNTITLED_PATH
@@ -19388,6 +19663,7 @@ class ViewerWindow(QMainWindow):
         # Dropped alongside the cache it was warming -- otherwise a closed
         # document keeps ticking, holding the whole scenario alive.
         self._cancel_warms()
+        self._stop_placeholder_timers()
         self._unit_model_prebuild.cancel()
         self._cache = None
         self._iso_elevations, self._iso_proj = None, None
@@ -19783,6 +20059,13 @@ def _sweep_pending_crash_reports() -> None:
         crash_report.mark_reported(path)
 
 
+def _app_window() -> ViewerWindow:
+    """The app's window: the one ViewerWindow that allows placeholder paints (TASK-031.25 D8)."""
+    window = ViewerWindow()
+    window.set_placeholders_allowed(True)
+    return window
+
+
 def main() -> None:
     # First statement, not merely "before QApplication": migrate_legacy_
     # config() below does file I/O and can raise on its own, and the dump's
@@ -19813,7 +20096,7 @@ def main() -> None:
     # Before ViewerWindow(), so every widget is built at the final font and
     # nothing has to be re-measured after the fact.
     apply_ui_font(app, settings.get_ui_font_family(), settings.get_ui_font_size())
-    window = ViewerWindow()
+    window = _app_window()
     window.show()
     ready_file = os.environ.get("DESCAPE_READY_FILE")
     if ready_file:

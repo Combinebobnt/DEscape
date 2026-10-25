@@ -26,8 +26,11 @@ commands, and architecture.
   are edited with Return of Rome game data (`descape/game_dataset.py`). The
   viewer refuses every edit and save of a document shown with the other
   game's data (`ViewerWindow.game_data_lock_reason()`). That lock is the
-  viewer's; the model guards below still raise in a batch script. Every
-  const set the rules below name is the active dataset's, so each
+  viewer's; the model guards below still raise in a batch script. A data
+  mod (GH #58, File > Data Mod) swaps the AoE2 dataset's tables for ones
+  derived from its own `.dat` (`game_dataset.set_data_mod()`): the
+  classifiers below then read the mod's tables, and no write rule changes.
+  Every const set the rules below name is the active dataset's, so each
   exception's scope follows the file being edited only while its game is
   active: the viewer activates it on open, a script through
   `batch_api.load()` (a bare `scenario_io.load_map_and_units()` does not).

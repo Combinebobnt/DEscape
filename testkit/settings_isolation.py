@@ -61,6 +61,7 @@ MEMOIZED_GLOBALS = (
     "_gaia_only_catalog_mode",
     "_log_height",
     "_recent_files",
+    "_data_mod_by_scenario",
     "_new_map",
     "_keybinds",
     "_wheel_bindings",

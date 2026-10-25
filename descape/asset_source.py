@@ -100,6 +100,8 @@ STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-strings
 # GH #67: Return of Rome's own strings, a separate file under the RoR root, layered over the base file.
 ROR_STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-pompeii-strings-utf8.txt"
 DEFAULT_LANGUAGE = "en"
+# GH #58: a data mod's own strings, in this order over the install's (one mod ships both).
+MOD_STRINGS_FILES = ("key-value-strings-utf8.txt", "key-value-modded-strings-utf8.txt")
 
 # GH #140: a unit's in-game portrait, by object_catalog.icon_for() index. Uncompressed RGBA or DXT5, 256 px.
 UNIT_ICON_DIR = "widgetui/textures/ingame/units"
@@ -268,13 +270,21 @@ def _unescape_string_value(text: str) -> str:
 @game_dataset.cache(maxsize=4)
 def _string_table(lang: str) -> dict[int, str]:
     """The install's strings for lang; under Return of Rome its own strings
-    file read over them, a RoR string winning on a shared key (GH #67)."""
+    file read over them, a RoR string winning on a shared key (GH #67), and
+    under a data mod the mod's strings files likewise, key by key (GH #58)."""
     install = get_install_path()
     if install is None:
         return {}
     paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
     if game_dataset.is_ror():
         paths.append(game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
+    mod = game_dataset.data_mod()
+    if mod is not None:
+        from descape import content_roots
+
+        folder = content_roots.child_dir(mod.root, "resources", lang, "strings", "key-value")
+        if folder is not None:
+            paths.extend(folder / name for name in MOD_STRINGS_FILES)
     table: dict[int, str] = {}
     for path in paths:
         if not path.is_file():

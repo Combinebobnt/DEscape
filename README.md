@@ -458,6 +458,20 @@ same file. **View > Layers > Mod Art** turns it off, and the Mod art list in
 Settings > Mods leaves single mods out. Mods are read once per launch; after
 enabling one in the game, restart DEscape or reload the profile folder.
 
+Data mods (a mod that ships its own `resources/_common/dat/empires2_x2_p1.dat`,
+the kind the game's lobby selects rather than enables) are picked in
+**File > Data Mod**. Its units, stats, footprints, names and every other
+table read from the game's data then come from the mod's `.dat`, the
+window title names it, and a unit only the mod defines lists under its usual
+tab with "(data mod)" after its name. The scenario itself records no data
+mod, so DEscape remembers the pick for each saved scenario and applies it
+when that file opens. The first pick of a mod reads its `.dat` in the
+background (about 10-25 s, "Parsing …" in the status bar) and caches the
+result in DEscape's own cache folder, so later picks are instant. An older
+mod whose `.dat` genieutils-py cannot read logs why when picked, and stays
+greyed out with the reason until DEscape restarts. Data mods apply to Age
+of Empires II data only, not Return of Rome.
+
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`
 - **Linux:** `~/.local/share/Steam/steamapps/common/AoE2DE` (or wherever your
@@ -476,9 +490,11 @@ runtime; nothing from that install gets copied into the repo or committed. The
 things that *are* committed are small factual correspondence tables (not
 asset content): the `descape/*.json` files that the `tools/gen_*.py`
 generators extract from the game's own `empires2_x2_p1.dat`, parsed with
-[genieutils-py](https://github.com/SiegeEngineers/genieutils-py) (`pip install
--r requirements-dev.txt`). Neither genieutils-py nor an install is a runtime
-dependency. The tables only need regenerating when the game updates its data.
+[genieutils-py](https://github.com/SiegeEngineers/genieutils-py) (in
+`requirements.txt`). The viewer reads no `.dat` for these tables, so an
+install is not needed for them; genieutils-py runs at runtime only for
+**File > Data Mod**, which derives a data mod's tables with these same
+generators. The tables only need regenerating when the game updates its data.
 
 They regenerate together with `tools/regen_game_data.py`. It runs every
 generator against your install, replaces the tables only if all of them
