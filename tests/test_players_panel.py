@@ -472,6 +472,44 @@ def test_every_widget_fits_min_useful_width() -> None:
         _close(window)
 
 
+@pytest.mark.font_sensitive
+def test_a_rebuilt_form_scrolls_instead_of_squeezing_its_groups() -> None:
+    """TASK-122: at MIN_USEFUL_WIDTH in a 900 px window, a freshly rebuilt
+    form was laid out into the viewport before Qt's queued show of its new
+    group boxes ran, squeezing every row. Measured one event pass after the
+    rebuild, which is when that frame could paint."""
+    from PyQt5.QtWidgets import QApplication, QGroupBox
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        width = panel.MIN_USEFUL_WIDTH
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([width, total - width])
+        for _ in range(3):
+            QApplication.processEvents()
+        assert panel.select_player(2)
+        QApplication.processEvents()
+
+        boxes = [box for box in panel.host.findChildren(QGroupBox) if box.isVisible()]
+        assert len(boxes) >= 3, "too few groups to squeeze -- this would pass vacuously"
+        # Not "taller than the viewport": at 72 DPI the whole form fits and needs no scroll.
+        needed = panel.host_layout.minimumSize().height()
+        assert panel.host.height() >= needed, f"the form was squeezed: {panel.host.height()} px, needs {needed}"
+        for box in boxes:
+            assert box.height() >= box.minimumSizeHint().height(), (
+                f"{box.title()} is {box.height()} px, needs {box.minimumSizeHint().height()}"
+            )
+        for field_id, widget in panel._widgets.items():
+            if widget.isVisible():
+                assert widget.height() >= widget.minimumSizeHint().height(), (
+                    f"{field_id} is {widget.height()} px, needs "
+                    f"{widget.minimumSizeHint().height()}"
+                )
+    finally:
+        _close(window)
+
+
 # --- read-only containment -----------------------------------------------
 
 
@@ -552,6 +590,28 @@ def test_an_editable_panel_reports_a_real_change_once() -> None:
         assert reported == [("base_priority", 1, before + 1)]
         widget.setValue(before + 1)  # same value again -- a no-op
         assert reported == [("base_priority", 1, before + 1)]
+    finally:
+        panel.deleteLater()
+
+
+def test_no_players_pop_limit_spinbox_goes_below_the_specs_floor() -> None:
+    """TASK-293: P1..P8's f32 range once widened Pop Limit to -16,777,216,
+    and a negative value raised struct.error from OptionsEditModel.set_value(),
+    which the window does not catch. GAIA's row already kept the spec's 0."""
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    panel, reported = _editable_panel(loaded)
+    try:
+        spec = next(s for s in panel._specs if s.field_id == "pop_limit")
+        for player_id in range(1, 9):
+            assert panel.select_player(player_id)
+            widget = panel.widget_for("pop_limit")
+            assert widget.isEnabled(), f"P{player_id}'s Pop Limit should be editable here"
+            assert widget.minimum() >= spec.minimum, f"P{player_id} allows {widget.minimum()}"
+            widget.setValue(-5)
+        assert reported, "no edit reported -- this would pass vacuously"
+        assert all(value >= spec.minimum for _, _, value in reported), reported
     finally:
         panel.deleteLater()
 

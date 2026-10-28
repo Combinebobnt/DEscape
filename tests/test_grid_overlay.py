@@ -85,6 +85,54 @@ def test_majors_land_every_fourth_line_from_zero() -> None:
     assert [i for i, major in enumerate(x_axis.majors) if major] == [0, 4, 8, 12]
 
 
+@pytest.mark.parametrize("every", grid_overlay.MAJOR_EVERY_STOPS)
+@pytest.mark.parametrize("style", ["iso", "flat"])
+def test_majors_land_on_multiples_of_each_spacing_and_only_there(every: int, style: str) -> None:
+    w, h = 40, 33
+    kwargs = {"proj": _proj(w, h)} if style == "iso" else {"tile_px": 8}
+    x_axis, y_axis = grid_overlay.grid_axes(w, h, major_every=every, **kwargs)
+    assert [i for i, major in enumerate(x_axis.majors) if major] == list(range(0, w + 1, every))
+    assert [j for j, major in enumerate(y_axis.majors) if major] == list(range(0, h + 1, every))
+    assert [i for i in range(w + 1) if grid_overlay.is_major(i, every)] == list(range(0, w + 1, every))
+    # Geometry does not depend on the spacing, only the major flags do.
+    default_x, _ = grid_overlay.grid_axes(w, h, **kwargs)
+    assert x_axis.lines == default_x.lines
+
+
+@pytest.mark.parametrize("every", grid_overlay.MAJOR_EVERY_STOPS)
+def test_owned_edges_flag_majors_at_the_spacing(every: int) -> None:
+    w = h = 33
+    for tx in range(w):
+        edges = dict(grid_overlay.owned_edges(tx, tx, w, h, major_every=every))
+        assert edges["x_low"] is (tx % every == 0)
+        assert edges["y_low"] is (tx % every == 0)
+        if tx + 1 == w:
+            assert edges["x_high"] is ((tx + 1) % every == 0)
+
+
+def test_the_default_spacing_is_four_and_a_stop() -> None:
+    assert grid_overlay.MAJOR_EVERY_DEFAULT == 4
+    assert grid_overlay.MAJOR_EVERY_STOPS == (2, 4, 8, 16)
+    assert [i for i in range(17) if grid_overlay.is_major(i)] == [0, 4, 8, 12, 16]
+    assert grid_overlay.owned_edges(4, 5, 16, 16) == grid_overlay.owned_edges(4, 5, 16, 16, major_every=4)
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [(2, True), (4, True), (8, True), (16, True), (3, False), (32, False), (0, False), (True, False),
+     ("4", False), (4.0, False), (None, False)],
+)
+def test_only_an_int_stop_is_a_valid_spacing(value, valid: bool) -> None:
+    assert grid_overlay.valid_major_every(value) is valid
+
+
+def test_the_spacing_is_part_of_the_bake_spec() -> None:
+    assert grid_overlay.grid_bake(True, -100, 1) == grid_overlay.grid_bake(True, -100, 1, 4)
+    assert grid_overlay.grid_bake(True, -100, 1, major_every=8) != grid_overlay.grid_bake(True, -100, 1)
+    assert grid_overlay.grid_bake(True, -100, 1, major_every=8).major_every == 8
+    assert grid_overlay.DEFAULT_GRID.major_every == grid_overlay.MAJOR_EVERY_DEFAULT
+
+
 # --- LOD ---------------------------------------------------------------------
 
 
@@ -104,6 +152,40 @@ def test_the_ladder_is_monotonic_across_a_sweep() -> None:
         assert lod.draw_grid <= previous.draw_grid
         assert lod.draw_minors <= previous.draw_minors
         assert lod.draw_minors <= lod.draw_grid
+        previous = lod
+
+
+def test_the_default_spacing_keeps_todays_lod_verdicts() -> None:
+    """Today's rule written out literally: majors 4 minors apart at least
+    6 px, minors at least 5 px."""
+    for tenth in range(1001):
+        s = tenth / 10.0
+        expected = grid_overlay.GridLod(s * 4 >= 6.0, s * 4 >= 6.0 and s >= 5.0)
+        assert grid_overlay.grid_lod(s) == expected, s
+        assert grid_overlay.grid_lod(s, 4) == expected, s
+        assert grid_overlay.bake_lod(s, 4) == expected, s
+
+
+def test_a_coarse_grid_survives_further_out_and_a_fine_one_drops_sooner() -> None:
+    # 1.0 px per tile: today's majors are 4 px apart (dropped); every 16 they are 16 px apart.
+    assert not grid_overlay.grid_lod(1.0).draw_grid
+    assert grid_overlay.grid_lod(1.0, 16).draw_grid
+    assert grid_overlay.grid_lod(1.0, 8).draw_grid
+    # 2.0 px per tile: today's majors are 8 px apart (kept); every 2 they are 4 px apart.
+    assert grid_overlay.grid_lod(2.0).draw_grid
+    assert not grid_overlay.grid_lod(2.0, 2).draw_grid
+
+
+@pytest.mark.parametrize("every", grid_overlay.MAJOR_EVERY_STOPS)
+def test_minors_drop_before_the_grid_at_every_spacing(every: int) -> None:
+    previous = grid_overlay.grid_lod(100.0, every)
+    assert previous == grid_overlay.GridLod(True, True)
+    for tenth in range(1000, -1, -1):
+        lod = grid_overlay.grid_lod(tenth / 10.0, every)
+        assert lod.draw_grid <= previous.draw_grid
+        assert lod.draw_minors <= previous.draw_minors
+        assert lod.draw_minors <= lod.draw_grid
+        assert lod.draw_grid == (tenth / 10.0 * every >= grid_overlay.MIN_GRID_SPACING_PX)
         previous = lod
 
 

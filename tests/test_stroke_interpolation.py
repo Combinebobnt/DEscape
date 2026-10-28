@@ -237,7 +237,8 @@ def test_mapview_delivers_the_gap_filled_path_per_event() -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "tool"), [("Terrain", "cliff"), ("Units", "convert"), ("Units", "eraser"), ("Terrain", "eraser")]
+    ("mode", "tool"),
+    [("Terrain", "cliff"), ("Units", "convert"), ("Units", "eraser"), ("Terrain", "eraser"), ("Units", "unit_brush")],
 )
 def test_cliff_and_convert_get_the_gap_filled_path(mode: str, tool: str) -> None:
     window = _edit_window("draw")

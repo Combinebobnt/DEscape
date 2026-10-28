@@ -62,6 +62,7 @@ from descape.unit_card import _MIXED_TEXT, UnitCard
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_model import capture_flag_of
 from descape.viewer_common import (
+    FocusWheelComboBox,
     FontScaledWidth,
     _add_player_item,
     _fit_combo_width,
@@ -560,7 +561,8 @@ class UnitsPanel(QWidget):
             if not spec.editable:
                 continue
             if spec.kind == unit_fields.PLAYER:
-                combo = QComboBox()
+                # TASK-344: a stray wheel over the inspector scrolls it, not the owner.
+                combo = FocusWheelComboBox()
                 for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
                     _add_player_item(combo, player_id, self._player_labels, self._player_colors, player_id)
                 combo.currentIndexChanged.connect(
@@ -597,7 +599,7 @@ class UnitsPanel(QWidget):
             elif spec.kind == unit_fields.CHOICE:
                 # GH #186. Never in _mixed_sentinels: a -1 sentinel would swallow
                 # Capture Flag's "Default". Its "(mixed)" is an item with data None.
-                combo = QComboBox()
+                combo = FocusWheelComboBox()
                 for raw, label in spec.choices:
                     combo.addItem(label, raw)
                 # The longest label would otherwise set the pane's minimum width.

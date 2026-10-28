@@ -1182,10 +1182,7 @@ class TriggerPanel(QWidget):
             self.status.setText(self._NO_DOCUMENT)
             # Closed, not just emptied: its contents belong to a document that
             # is no longer open, and leaving it up invites an edit against one.
-            if self._variables_dialog is not None:
-                self._variables_dialog.close()
-                self._variables_dialog.deleteLater()
-                self._variables_dialog = None
+            self.close_variables_dialog()
         finally:
             self._populating = False
         self._update_buttons()
@@ -2726,7 +2723,7 @@ class TriggerPanel(QWidget):
             return self._DIFFERS
         if value is None or value == trigger_fields.UNSET:
             return "(unset)"
-        if spec.kind == trigger_fields.INT_LIST or spec.presentation == unit_references.LIST_PRESENTATION:
+        if spec.kind == trigger_fields.INT_LIST:
             return trigger_fields.format_int_list(value) or "(unset)"
         if spec.multiline == trigger_fields.XS:
             return trigger_fields.xs_to_display(value)
@@ -2822,8 +2819,7 @@ class TriggerPanel(QWidget):
             )
             return widget
 
-        # Unit[] by presentation, not kind: 9 effects (task_object among them) default it to None, not [].
-        if spec.kind == trigger_fields.INT_LIST or spec.presentation == unit_references.LIST_PRESENTATION:
+        if spec.kind == trigger_fields.INT_LIST:
             widget = QLineEdit("" if indeterminate else trigger_fields.format_int_list(value))
             widget.setReadOnly(not editable)
             widget.setPlaceholderText(self._DIFFERS if indeterminate else "comma separated")
@@ -3984,6 +3980,12 @@ class TriggerPanel(QWidget):
         self._variables_dialog.raise_()
         self._variables_dialog.activateWindow()
 
+    def close_variables_dialog(self) -> None:
+        if self._variables_dialog is not None:
+            self._variables_dialog.close()
+            self._variables_dialog.deleteLater()
+            self._variables_dialog = None
+
     def refresh_variables(self) -> None:
         """Repopulate the variables dialog if one is open. No-op otherwise, so
         the window's edit funnel can call it unconditionally."""
@@ -4376,8 +4378,15 @@ class TriggerPanel(QWidget):
         up, down = self._trigger_move_reasons()
         # Only when a step is refused: each edge check builds a whole display order.
         edge_up, edge_down = self._edge_move_reasons() if (up or down) else ("", "")
-        self.trigger_move_up_button.setEnabled(base_ok and not (up and edge_up))
-        self.trigger_move_down_button.setEnabled(base_ok and not (down and edge_down))
+        up_on = base_ok and not (up and edge_up)
+        down_on = base_ok and not (down and edge_down)
+        self.trigger_move_up_button.setEnabled(up_on)
+        self.trigger_move_down_button.setEnabled(down_on)
+        # TASK-365: on only for the gather, so the note says what a click there still does.
+        if up and up_on:
+            up = up[:-1] + ": Ctrl+click gathers the selection here)"
+        if down and down_on:
+            down = down[:-1] + ": Ctrl+click gathers the selection here)"
         self.trigger_move_up_button.setToolTip(self._MOVE_UP_TIP + up)
         self.trigger_move_down_button.setToolTip(self._MOVE_DOWN_TIP + down)
 

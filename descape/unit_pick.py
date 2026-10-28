@@ -185,7 +185,7 @@ def patch_index_for_add(
 
 
 def patch_index_for_move(
-    scenario, index: UnitIndex, player_id: int, unit, old_bounds: tuple[int, int, int, int]
+    scenario, index: UnitIndex, player_id: int, unit, old_bounds: tuple[int, int, int, int] | None
 ) -> None:
     """Move-only UnitIndex update (Batch D's D4): a move never adds, removes
     or reorders entries, so `order` -- and every OTHER entry's `by_tile`
@@ -208,23 +208,28 @@ def patch_index_for_move(
     render_cache._splice_eligible()'s wall/connector guard -- a caller
     should route that case through a full build_index() instead.
 
+    `old_bounds` None is an entry this function itself left off-map (the
+    new-bounds branch below keeps it without by_tile membership), so there is
+    nothing to remove (TASK-468).
+
     A no-op if `unit` has no entry (filtered out, or never in the index to
     begin with) -- the caller's job to fall back to a full rebuild for those
     cases, mirroring UnitEntry's own by_key contract."""
     entry = index.by_key.get(unit_key(player_id, unit))
     if entry is None:
         return
-    old_x0, old_x1, old_y0, old_y1 = old_bounds
-    for ty in range(old_y0, old_y1):
-        for tx in range(old_x0, old_x1):
-            orders = index.by_tile.get((tx, ty))
-            if not orders:
-                continue
-            remaining = [o for o in orders if o != entry.order]
-            if remaining:
-                index.by_tile[(tx, ty)] = remaining
-            else:
-                del index.by_tile[(tx, ty)]
+    if old_bounds is not None:
+        old_x0, old_x1, old_y0, old_y1 = old_bounds
+        for ty in range(old_y0, old_y1):
+            for tx in range(old_x0, old_x1):
+                orders = index.by_tile.get((tx, ty))
+                if not orders:
+                    continue
+                remaining = [o for o in orders if o != entry.order]
+                if remaining:
+                    index.by_tile[(tx, ty)] = remaining
+                else:
+                    del index.by_tile[(tx, ty)]
 
     new_entry = replace(entry, own_x=int(unit.x), own_y=int(unit.y))
     index.entries[entry.order] = new_entry

@@ -516,6 +516,84 @@ def test_a_lone_occupant_drag_is_not_blocked_by_its_host() -> None:
         _close(window)
 
 
+# --- a bridge over water (TASK-349) -------------------------------------------------
+
+BRIDGE_MIDDLE = 606  # 2x3, lays foundation terrain 28, which the land rows pass
+WATER_SHALLOW = 1
+_DECK = [(x, y) for x in (79, 80) for y in (79, 80, 81)]  # the bridge's tiles at (80, 80.5)
+
+
+def _bridge_over_water(window) -> None:
+    _set_terrain(window, [(x, y) for x in range(74, 87) for y in range(74, 87)], WATER_SHALLOW)
+    _add_units(window, [(BRIDGE_MIDDLE, 80, 80.5)])
+
+
+def _count_laid_builds(monkeypatch) -> list:
+    calls = []
+    real = placement_rules.laid_terrain
+    monkeypatch.setattr(placement_rules, "laid_terrain", lambda scenario: calls.append(1) or real(scenario))
+    return calls
+
+
+def test_place_unit_puts_a_land_unit_on_a_bridge_deck_and_not_on_the_water_beside_it(monkeypatch) -> None:
+    window = _window()
+    try:
+        _bridge_over_water(window)
+        builds = _count_laid_builds(monkeypatch)
+        _arm(window, VILLAGER)
+        before = _unit_count(window)
+
+        _click(window, (82, 80))
+        _click(window, (83, 80))
+        assert _unit_count(window) == before
+        assert _last(window) == f"Place Unit: Villager Male can't stand on Water Shallow. {_PLACE_HINT}"
+        assert len(builds) == 1, "two clicks with no unit edit between them build the laid map once"
+
+        _click(window, _DECK[0])
+        assert _unit_count(window) == before + 1, _last(window)
+    finally:
+        _close(window)
+
+
+def test_a_single_move_onto_a_bridge_deck_goes_through_and_onto_the_water_does_not() -> None:
+    window = _window()
+    try:
+        _bridge_over_water(window)
+        (key,) = _add_units(window, [(VILLAGER, 70.5, 70.5)])
+
+        window.on_unit_move(key, _point(window, 83.5, 80.5), Qt.NoModifier)
+        assert _position(window, key) == (70.5, 70.5)
+        assert _last(window) == f"Move: Villager Male can't stand on Water Shallow. {_MOVE_HINT}"
+
+        window.on_unit_move(key, _point(window, 79.5, 80.5), Qt.NoModifier)
+        assert _position(window, key) == (79.5, 80.5), _last(window)
+    finally:
+        _close(window)
+
+
+def test_a_group_move_onto_a_bridge_deck_builds_the_laid_map_once(monkeypatch) -> None:
+    window = _window()
+    try:
+        _bridge_over_water(window)
+        keys = _add_units(window, [(VILLAGER, 66.5, 70.5), (VILLAGER, 67.5, 70.5), (VILLAGER, 66.5, 71.5)])
+        _select(window, keys)
+        builds = _count_laid_builds(monkeypatch)
+
+        # +13, +9: all three land on the deck.
+        window.on_unit_move(keys[0], _point(window, 79.5, 79.5), Qt.NoModifier)
+        assert [_position(window, key) for key in keys] == [(79.5, 79.5), (80.5, 79.5), (79.5, 80.5)], _last(window)
+        assert len(builds) == 1, "one laid map for the whole group, not one per member"
+
+        # +1 on x: the second member steps off the deck onto the water.
+        window.on_unit_move(keys[0], _point(window, 80.5, 79.5), Qt.NoModifier)
+        assert _position(window, keys[0]) == (79.5, 79.5)
+        assert _last(window) == (
+            f"Move: 1 of 3 units can't go there (first: Villager Male can't stand on Water Shallow). {_GROUP_HINT}"
+        )
+    finally:
+        _close(window)
+
+
 def test_an_arrow_nudge_never_asks_the_rules() -> None:
     """Out of scope by decision: a nudge moves onto water and into another unit."""
     window = _window()
@@ -529,5 +607,32 @@ def test_an_arrow_nudge_never_asks_the_rules() -> None:
         assert window.on_unit_nudge(1, 0, Qt.ShiftModifier) is True
 
         assert _position(window, key) == (71.5, 70.5)
+    finally:
+        _close(window)
+
+
+def test_a_group_dropped_onto_bad_terrain_builds_one_message(monkeypatch) -> None:
+    """TASK-327: the members are counted with move_refused(); only the first
+    one's message is built, since a terrain name costs a language-file parse."""
+    window = _window()
+    try:
+        keys = _add_units(window, [(VILLAGER, 62.5 + i, 62.5) for i in range(4)])
+        # +8 puts all four on water.
+        _set_terrain(window, [(x, 62) for x in range(70, 74)], WATER_DEEP)
+        _select(window, keys)
+        names = []
+        real = placement_rules._terrain_name
+        monkeypatch.setattr(placement_rules, "_terrain_name", lambda terrain_id: (names.append(terrain_id), real(terrain_id))[1])
+        # One member's own message, which for a mobile unit reads the name per terrain pass.
+        assert placement_rules.move_refusal(window.scenario, _live(window, keys[0]), 70.5, 62.5) is not None
+        one_message = len(names)
+        names.clear()
+
+        window.on_unit_move(keys[0], _point(window, 70.5, 62.5), Qt.NoModifier)
+
+        assert _last(window) == (
+            f"Move: 4 of 4 units can't go there (first: Villager Male can't stand on Water Deep). {_GROUP_HINT}"
+        )
+        assert one_message >= 1 and len(names) == one_message
     finally:
         _close(window)

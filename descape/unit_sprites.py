@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import math
+import weakref
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -364,6 +365,18 @@ class SpriteDraw:
 
 
 @dataclass(frozen=True)
+class MovedSlice(SpriteDraw):
+    """A column slice of a multi-tile sprite piece that paints at a footprint
+    tile earlier in depth order than its piece's own key (TASK-221, see
+    render._sprite_columns()). `key` is that piece's own key, the tile it
+    painted at before slicing: render._accumulate_contribution() orders moved
+    slices at one tile by it, which keeps the order they had when each sat at
+    its own key."""
+
+    key: tuple[int, int] = (0, 0)
+
+
+@dataclass(frozen=True)
 class SpritePiece:
     """One piece of a composite building's sprite (a town centre's back/main/
     center/front, a pasture's corner posts), ready to paste at an offset from
@@ -478,6 +491,43 @@ _x2_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
 _x2_bytes_cache = _ByteLRU(SLD_X2_BYTES_CACHE_BYTES)
 # x1 stems whose x2 file's frame count differs from the install's x1, logged once each.
 _x2_mismatch_logged: set[str] = set()
+# slice_draw()'s groups: id(parent draw) -> {(c0, c1): [view, {key or None: slice}]}.
+_slice_groups: dict[int, dict[tuple[int, int], list]] = {}
+
+
+def slice_draw(parent: SpriteDraw, c0: int, c1: int, key: tuple[int, int] | None) -> SpriteDraw:
+    """Columns [c0, c1) of `parent` as a draw painting at the same pixels:
+    a view of its rgba with the hotspot shifted by c0, a MovedSlice carrying
+    `key` when given (TASK-221).
+
+    Cached per parent DRAW, not per rgba (some draws share an rgba under a
+    different hotspot), so re-resolving a placement returns the same objects:
+    the splice and mip tests compare draws by identity, and UnitPack._slot()
+    makes one contiguous copy per distinct id(rgba), which is why every key
+    over one column range shares a single view. A parent's group lives
+    exactly as long as the parent (weakref.finalize), so _scaled_cache's byte
+    cap still frees the memory."""
+    group = _slice_groups.get(id(parent))
+    if group is None:
+        group = _slice_groups[id(parent)] = {}
+        weakref.finalize(parent, _slice_groups.pop, id(parent), None)
+    cols = group.get((c0, c1))
+    if cols is None:
+        cols = group[(c0, c1)] = [parent.rgba[:, c0:c1], {}]
+    view, draws = cols
+    draw = draws.get(key)
+    if draw is None:
+        hotspot_x = parent.hotspot_x - c0
+        draw = draws[key] = (
+            SpriteDraw(view, hotspot_x, parent.hotspot_y) if key is None
+            else MovedSlice(view, hotspot_x, parent.hotspot_y, key)
+        )
+    return draw
+
+
+def clear_slice_cache() -> None:
+    """Drops every slice_draw() group; the parents' finalizers then find nothing to drop."""
+    _slice_groups.clear()
 # Draw x2 where x1 would be enlarged (Graphics Quality Enhanced); set by the viewer.
 _hi_res = False
 _hi_res_generation = 0
@@ -598,6 +648,7 @@ def clear_caches() -> None:
     _mod_blank_stems.clear()
     _sld_bytes_cache.clear()
     _scaled_cache.clear()
+    clear_slice_cache()
     _icon_cache.clear()
     _native_x2_cache.clear()
     _x2_index_cache.clear()
@@ -2566,9 +2617,13 @@ def sprite_anchor_tile(tiles: list[tuple[int, int]]) -> tuple[int, int]:
     fixes a diagonal gate's sprite anchoring on a tile its footprint doesn't
     actually cover (Part 2's reported wrong-depth-position defect).
 
-    A sprite is ONE image over the whole footprint, so it must paint once --
-    unlike the diamond path, where _units_by_tile buckets a building into every
-    footprint tile and each diamond lands at its own tile's depth position.
+    A sprite is ONE image over the whole footprint, so each of its pixels must
+    paint once -- unlike the diamond path, where _units_by_tile buckets a
+    building into every footprint tile and each diamond lands at its own
+    tile's depth position. This tile is the slot-less pieces' key, K: since
+    TASK-221 a multi-tile piece is cut into screen columns, each painting at
+    the earlier of its column's front footprint tile and K
+    (render._sprite_columns()), and only overhanging columns stay at K.
 
     The tile chosen is the one that comes LAST in depth_order: maximal
     d = y - x, tie-broken on ascending x, the same key composite_rect_iso's own

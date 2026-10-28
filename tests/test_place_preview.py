@@ -1292,3 +1292,124 @@ def test_a_shift_eyedropped_deer_says_when_it_set_owner_to_gaia(mode) -> None:
         assert ("set Owner to GAIA" in _last_status(window)) == switched
     finally:
         _close(window)
+
+
+# --- TASK-327: the ghost shows a placement the click would refuse --------------------
+
+_WATER_DEEP = 22
+_STONE_WALL = 117
+_FIXTURE_ARCHER_TILE = (20, 20)  # Player 2's archer, at (20.5, 20.5)
+
+
+def _set_terrain(window, tiles, terrain_id: int) -> None:
+    mm = window.scenario.map_manager
+    for x, y in tiles:
+        mm.terrain[y * mm.map_width + x].terrain_id = terrain_id
+
+
+def _refused(window) -> bool:
+    item = window.map_view._unit_ghost_item
+    assert item is not None
+    return item.refused
+
+
+def test_the_ghost_is_refused_on_bad_terrain_and_over_a_unit_and_not_on_open_grass() -> None:
+    window = _window()
+    try:
+        _set_terrain(window, [(70, 70)], _WATER_DEEP)
+        _hover_tile(window, 70, 70)
+        assert _refused(window)
+        # The mark keeps the owner's colour in _marks; the refused look is drawn beside it.
+        assert _mark_colors(window.map_view._unit_ghost_item) == {tuple(window.scenario.player_colors[1])}
+        _hover_tile(window, *_FIXTURE_ARCHER_TILE)
+        assert _refused(window)
+        _hover_tile(window, 40, 40)
+        assert not _refused(window)
+    finally:
+        _close(window)
+
+
+def test_the_free_placement_box_flips_the_ghost_without_a_move() -> None:
+    window = _window()
+    try:
+        _set_terrain(window, [(70, 70)], _WATER_DEEP)
+        _hover_tile(window, 70, 70)
+        assert _refused(window)
+        window.unrestricted_check.setChecked(True)
+        assert not _refused(window)
+        window.unrestricted_check.setChecked(False)
+        assert _refused(window)
+    finally:
+        _close(window)
+
+
+def test_a_place_click_turns_the_still_ghost_refused_and_undo_turns_it_back() -> None:
+    """As in the game: the unit just placed blocks the next one at the same point."""
+    window = _window()
+    try:
+        scene = _hover_tile(window, 40, 40)
+        assert not _refused(window)
+        _place_at(window, scene)
+        assert _refused(window)
+        window.undo()
+        assert not _refused(window)
+    finally:
+        _close(window)
+
+
+def test_a_gate_over_walls_is_not_refused_but_a_unit_in_the_run_refuses_it() -> None:
+    """on_unit_place's own exclusion: the walls under the gate's footprint never block it."""
+    window = _window(const=_STONE_WALL)
+    try:
+        window.on_shape_commit([(x, 50) for x in range(44, 56)])
+        window.units_panel.pick_object(_STONE_GATE)
+        assert window.units_panel.selected_object_const() == _STONE_GATE
+        _hover_scene(window, _scene_pos(window, 50.2, 50.5))
+        assert not _refused(window)
+
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [2]):
+            model.add(2, _UNIT_CONST, 50.5, 50.5)
+        assert _refused(window), "a unit mutation re-asks the rule with no mouse move"
+    finally:
+        _close(window)
+
+
+def test_the_gate_wall_scene_is_re_read_after_a_game_data_switch(monkeypatch) -> None:
+    """A data mod or game-data switch changes the wall consts without bumping unit_gen,
+    so the memoized scene the gate click and hover read must not survive it."""
+    from descape import game_dataset, wall_run
+
+    window = _window(const=_STONE_GATE)
+    try:
+        calls = []
+        real = wall_run.wall_scene
+        monkeypatch.setattr(wall_run, "wall_scene", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+        window._gate_wall_scene()
+        window._gate_wall_scene()
+        assert len(calls) == 1, "read once per unit edit"
+        monkeypatch.setattr(game_dataset, "data_mod", object)  # a new "mod" on every call
+        window._gate_wall_scene()
+        assert len(calls) == 2, "a data mod switch re-reads the scene"
+    finally:
+        _close(window)
+
+
+def test_a_move_inside_one_tile_asks_the_rule_once_and_a_unit_mutation_asks_again(monkeypatch) -> None:
+    from descape import placement_rules
+
+    window = _window()
+    try:
+        calls = []
+        real = placement_rules.refused
+        monkeypatch.setattr(placement_rules, "refused", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+        _hover_scene(window, _scene_pos(window, 40.2, 40.3))
+        _hover_scene(window, _scene_pos(window, 40.7, 40.6))
+        assert len(calls) == 1
+
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [2]):
+            model.add(2, _UNIT_CONST, 70.5, 70.5)
+        assert len(calls) == 2
+    finally:
+        _close(window)

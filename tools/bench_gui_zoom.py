@@ -63,6 +63,13 @@ stalls and any level still pending once the pass-end wait gave up
 against the `placeholder<F` level events logged. The notch pass adds the D3b split:
 crossing notches clicked with no warm active against those that beat their warm.
 
+The window renders pre-rendered zoom-notch frames as the app does (TASK-031.71: the
+canvas one notch in and out, in idle after a zoom settles, blitted 1:1 when that notch
+lands); --no-preframes keeps them off. Each row's `fmt` is the canvas blit's format
+(RGB32 or RGB888) and `pf` the worst canvas paint's frame outcome: `hit`, or `miss`
+and its reason (`none` rendered, `key` mismatch, `stale` chunks). A `preframes` line
+per pass counts the G1 population's first-frame hits and names each over-gate miss.
+
 --profile-paint N wraps MapCanvasItem.paint in cProfile and prints the N
 slowest paints' top 25 by cumtime (cProfile inflates every figure; read it for
 shares, never for gates). --profile-frame N does the same for whole frames and
@@ -244,6 +251,8 @@ class Frame:
     drawn: int | None = None  # the level the last canvas paint drew (_last_drawn_mip): F on a placeholder
     placeholder: bool = False  # a canvas paint in this frame drew another level than it selected (TASK-031.25)
     full_real: bool = False  # a canvas paint drew its selected level over the whole viewport
+    preframe: str | None = None  # the last live canvas paint's pre-rendered frame outcome (TASK-031.71)
+    fmt: str | None = None  # the last live canvas paint's blit format (_last_blit_format)
 
     @property
     def ms(self) -> float:
@@ -489,7 +498,7 @@ class GateResult:
 
 def _sig_text(click: Click, sig: tuple[str, str, float]) -> str:
     cand, phase, ms = sig
-    resid = "-" if click.residual is None else f"{click.residual:.2f}"
+    resid = _f(click.residual, ".3f")
     return (f"{click.sweep} #{click.index} mip {click.mip_before}->{click.mip_after} resid {resid}: {cand}"
             f" [{phase} {ms:.1f} ms dev, x4 {ms * X4:.1f}]")
 
@@ -505,12 +514,48 @@ def _unique(pairs) -> list[tuple[Click, Activity]]:
     return out
 
 
+def g1_population(clicks: list[Click], stats: dict[int, ClickStats]) -> list[Click]:
+    """G1's notches: revisit, accepted, onto a level built and warm before the click, no level event in the window."""
+    return [c for c in clicks if c.sweep == "revisit" and c.accepted and c.resident_before and not stats[id(c)].levels]
+
+
+def preframe_summary(clicks: list[Click], frames: list[Frame], activities: list[Activity]) -> tuple[list[str], dict]:
+    """The `preframes` lines and JSON (TASK-031.71's M check): over G1's population,
+    the notches whose first frame hit, the worst canvas among those first frames,
+    and each over-gate notch with its worst canvas paint's outcome."""
+    stats = {id(c): click_stats(c, frames, activities) for c in clicks}
+    g1 = g1_population(clicks, stats)
+    if not g1:
+        return [], {}
+    hits = [c for c in g1 if stats[id(c)].first is not None and stats[id(c)].first.preframe == "hit"]
+    worst_hit = max((stats[id(c)].first.canvas_ms for c in hits), default=None)
+    misses: dict[str, int] = {}
+    for c in g1:
+        if c not in hits:
+            first = stats[id(c)].first
+            reason = (first.preframe or "-") if first is not None else "no frame"
+            misses[reason] = misses.get(reason, 0) + 1
+    over = [c for c in g1 if stats[id(c)].worst_canvas is not None and stats[id(c)].worst_canvas.canvas_ms > G1_DEV_MS]
+    missed = ", ".join(f"{k} {n}" for k, n in sorted(misses.items())) or "none"
+    lines = [
+        (f"preframes revisit: {len(hits)}/{len(g1)} built-and-warm notches' first frame hit"
+         f" ({100 * len(hits) / len(g1):.0f}%), worst hit canvas {_f(worst_hit, '.2f')} ms dev;"
+         f" first-frame misses {missed}")
+    ]
+    for c in sorted(over, key=lambda c: -stats[id(c)].worst_canvas.canvas_ms):
+        wc = stats[id(c)].worst_canvas
+        lines.append(f"  over G1: #{c.index} mip {c.mip_before}->{c.mip_after} resid {_f(c.residual, '.3f')}"
+                     f" canvas {wc.canvas_ms:.1f} fmt {_f(wc.fmt, 's')} pf {wc.preframe or '-'}")
+    data = {"hits": len(hits), "notches": len(g1), "worst_hit_ms": worst_hit, "misses": misses, "over": len(over),
+            "over_hits": sum(1 for c in over if stats[id(c)].worst_canvas.preframe == "hit")}
+    return lines, data
+
+
 def gates(clicks: list[Click], frames: list[Frame], activities: list[Activity]) -> list[GateResult]:
     stats = {id(c): click_stats(c, frames, activities) for c in clicks}
     out = []
 
-    g1 = [c for c in clicks if c.sweep == "revisit" and c.accepted and c.resident_before
-          and not stats[id(c)].levels]
+    g1 = g1_population(clicks, stats)
     if g1:
         def canvas(c: Click) -> float:
             f = stats[id(c)].worst_canvas
@@ -704,13 +749,26 @@ def _f(v: float | None, fmt: str = ".1f") -> str:
     return "-" if v is None else format(v, fmt)
 
 
+def _format_name(fmt) -> str | None:
+    """A QImage.Format as the bench prints it: RGB32, RGB888, or its number."""
+    if fmt is None:
+        return None
+    from PyQt5.QtGui import QImage
+
+    names = {QImage.Format_RGB32: "RGB32", QImage.Format_RGB888: "RGB888"}
+    return names.get(fmt, str(int(fmt)))
+
+
 def format_row(click: Click, st: ClickStats) -> str:
     acc = "acc" if click.accepted else "REF"
-    k = st.worst_canvas.k if st.worst_canvas is not None else None
+    wc = st.worst_canvas
+    k = wc.k if wc is not None else None
+    # Three places: a notch at 0.4975 printed `0.50` and was bucketed in-band while it blit RGB888.
     head = (
         f"  {click.sweep} #{click.index:02d} {'+' if click.direction > 0 else '-'} {acc}"
         f" mip {click.mip_before}->{click.mip_after} res {'Y' if click.resident_before else 'n'}"
-        f" resid {_f(click.residual, '.2f')} k {'-' if k is None else k}"
+        f" resid {_f(click.residual, '.3f')} k {'-' if k is None else k}"
+        f" fmt {_f(wc.fmt if wc else None, 's')} pf {(wc.preframe or '-').replace(' ', '-') if wc else '-'}"
         f" pct {_f(click.pct_before, '.0f')}->{_f(click.pct_after, '.0f')}"
     )
     if st.first is not None and st.first.placeholder:
@@ -720,7 +778,6 @@ def format_row(click: Click, st: ClickStats) -> str:
         f" f {_f(st.frame_ms)}) quiet {_f(st.to_quiet_ms)}"
     )
     slow = "canvas -"
-    wc = st.worst_canvas
     if wc is not None:
         br = " ".join(f"{k} {v:.1f}" for k, v in wc.bracket.items() if v >= 0.05)
         items, flush = wc.outside()
@@ -773,6 +830,8 @@ class _Recorder:
         self._frame_drawn: int | None = None
         self._frame_placeholder = False
         self._frame_full_real = False
+        self._frame_preframe: str | None = None
+        self._frame_fmt: str | None = None
         self._view_ms = 0.0
         # Clock time of every live placeholder canvas paint (TASK-031.25's cross-check).
         self.placeholder_paints: list[float] = []
@@ -885,6 +944,8 @@ class _Recorder:
                 rec._frame_drawn = None
                 rec._frame_placeholder = False
                 rec._frame_full_real = False
+                rec._frame_preframe = None
+                rec._frame_fmt = None
                 rec._view_ms = 0.0
                 prof = cProfile.Profile() if rec.profile_frame else None
                 t0 = now()
@@ -896,7 +957,8 @@ class _Recorder:
                     if prof is not None:
                         prof.disable()
                     frame = Frame(t0, now(), dict(rec._canvas_acc), rec._frame_mip, rec._view_ms, rec._frame_k,
-                                  rec._frame_drawn, rec._frame_placeholder, rec._frame_full_real)
+                                  rec._frame_drawn, rec._frame_placeholder, rec._frame_full_real,
+                                  rec._frame_preframe, rec._frame_fmt)
                     rec.frames.append(frame)
                     if prof is not None:
                         rec.keep_profile(frame.ms, prof, rec.profile_frame)
@@ -930,6 +992,9 @@ class _Recorder:
                 level0 = perf_trace._repaint_level_ms
                 widget = a[2] if len(a) > 2 else k.get("widget")
                 full = widget is not None and covers_view(item, a[1] if len(a) > 1 else None)
+                # Write-only on the item: cleared so a paint that returns early reads `-`, not the last paint's.
+                item._last_preframe = None
+                item._last_blit_format = None
                 prof = cProfile.Profile() if rec.profile_paint else None
                 t0 = now()
                 try:
@@ -955,6 +1020,9 @@ class _Recorder:
                     rec._frame_k = getattr(item, "_last_reduction", None)
                     drawn = getattr(item, "_last_drawn_mip", None)
                     rec._frame_drawn = drawn
+                    if widget is not None:
+                        rec._frame_preframe = getattr(item, "_last_preframe", None)
+                        rec._frame_fmt = _format_name(getattr(item, "_last_blit_format", None))
                     if widget is not None and drawn is not None and drawn != rec._frame_mip:
                         rec._frame_placeholder = True
                         rec.placeholder_paints.append(t0)
@@ -1201,6 +1269,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     window = viewer.ViewerWindow()
     # The app's opt-in (TASK-031.25 D8); --no-placeholders is the A arm.
     window.set_placeholders_allowed(not args.no_placeholders)
+    # And to pre-rendered zoom frames (TASK-031.71); --no-preframes is the A arm.
+    window.map_view.set_preframes_allowed(not args.no_preframes)
     output: list[str] = []
     try:
         if style != "Stepped":
@@ -1233,7 +1303,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f"{style}, sprites {'on' if sprites else 'off'} (cache {type(cache).__name__},"
             f" sprites {getattr(cache, 'sprites_enabled', None)}),"
             f" trees {window.paint_trees_check.isChecked()}, eye candy {window.paint_eye_candy_check.isChecked()},"
-            f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'}"
+            f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'},"
+            f" preframes {'off' if args.no_preframes else 'on'}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1286,6 +1357,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
         for g in results:
             output.append(g.line)
             output += [f"    signature: {s}" for s in g.signatures]
+        pf_lines, pf_json = preframe_summary(bench.clicks, frames, acts)
+        output += pf_lines
         ph_json = {}
         for name, (start, end, pending) in bounds.items():
             cl = per_pass.get(name, [])
@@ -1310,7 +1383,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
         output.append("GATES " + json.dumps({
             "style": style, "sprites": sprites, "passes": passes, "placeholders": not args.no_placeholders,
             "gates": {g.n: {"met": g.met, "dev_ms": g.dev_ms, "line": g.line, "signatures": g.signatures} for g in results},
-            "placeholder_passes": ph_json,
+            "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
         }))
     finally:
         if window.scenario is not None:
@@ -1356,6 +1429,8 @@ def main() -> None:
     parser.add_argument("--allow-numpy", action="store_true", help="run on the numpy fallback (figures not comparable)")
     parser.add_argument("--no-placeholders", action="store_true",
                         help="the window keeps placeholder paints off (TASK-031.25's A arm; the app's default is on)")
+    parser.add_argument("--no-preframes", action="store_true",
+                        help="the window keeps pre-rendered zoom frames off (TASK-031.71's A arm; the app's default is on)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
     for p in args.passes:
@@ -1384,6 +1459,8 @@ def main() -> None:
             cmd.append("--allow-numpy")
         if args.no_placeholders:
             cmd.append("--no-placeholders")
+        if args.no_preframes:
+            cmd.append("--no-preframes")
         env ={**os.environ, "DESCAPE_REQUIRE_NATIVE": "1"}
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
         text = proc.stdout + (f"\n--- stderr (exit {proc.returncode})\n{proc.stderr}" if proc.returncode else "")
@@ -1407,6 +1484,9 @@ def main() -> None:
         for name, p in gate.get("placeholder_passes", {}).items():
             sharp = "-" if p["worst_sharp_ms"] is None else f"{p['worst_sharp_ms']:.0f}"
             cells.append(f"PH {name} {p['frames']} frames, sharp {sharp} ms, fs {p['force_settles']}")
+        pf = gate.get("preframe_g1") or {}
+        if pf:
+            cells.append(f"PF {pf['hits']}/{pf['notches']} hit, {pf['over_hits']} of {pf['over']} over-G1 hits")
         print(f"{style:8} sprites {sprites:3} {','.join(passes):20} " + "; ".join(cells))
 
 

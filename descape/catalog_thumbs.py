@@ -26,6 +26,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap
 
@@ -150,7 +151,8 @@ def _gui_relay() -> _Relay:
 def _deliver(payload) -> None:
     token, key, arr, cancelled = payload
     loader = _loaders.get(token)
-    if loader is not None:
+    # A closed window can delete the loader's QObject while Python still holds its wrapper.
+    if loader is not None and not sip.isdeleted(loader):
         loader._on_decoded(key, arr, cancelled)
 
 

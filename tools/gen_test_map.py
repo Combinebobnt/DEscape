@@ -49,9 +49,8 @@ What the app's models cannot author, and what was done instead:
 - Every condition and effect field is set to a non-default value except the
   inert quantity-cluster slots (trigger_fields.apply_quantity_cluster_rule),
   which the property form keeps read-only for that entry's live slot.
-- Long strings stop at 32000 bytes: a message of 32768 bytes or more passes
-  MessagesEditModel (its limit is 65535) but writes a file that no longer
-  loads (TASK-397).
+- Long strings stop at 32000 bytes, under MessagesEditModel's 32767-byte
+  limit: the library reads a str16 length prefix signed (TASK-397).
 - Facings and variants cover the non-hidden consts; hidden ones appear once,
   at their first facing or variant, in objects_hidden.
 - Player names: tribe_name is a read-only row in the Players panel.

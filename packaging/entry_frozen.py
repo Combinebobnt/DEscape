@@ -90,6 +90,15 @@ def _self_check() -> int:
         else:
             print(f"OK  {label}: {path}")
 
+    # GUIDE_DIR's own existence is checked above; a partial bundle would miss a topic file.
+    from descape import help_guide
+
+    missing_topics = [t.filename for t in help_guide.TOPICS if not help_guide.topic_path(t).is_file()]
+    if missing_topics:
+        failures.append(f"missing guide topics in {help_guide.GUIDE_DIR}: {missing_topics}")
+    else:
+        print(f"OK  help_guide.TOPICS ({len(help_guide.TOPICS)} files)")
+
     # No exported path constant for this one (asset_source._terrain_texture_map()
     # builds it inline) -- call the real function so the check exercises the
     # actual lookup rather than reconstructing the path by hand.

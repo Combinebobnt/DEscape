@@ -358,7 +358,8 @@ def resolve_reference(presentation: str, value: Any) -> str:
 
 def _kind_for(attribute: str, default: Any, presentation: str) -> tuple[str, str]:
     """(kind, presentation) for one attribute of one vocabulary entry."""
-    if isinstance(default, list):
+    # TASK-370: a Unit[] field is a list even where its type defaults it to None (task_object and 8 more).
+    if isinstance(default, list) or presentation == "Unit[]":
         return (INT_LIST, presentation)
     scalar = _SCALAR_PRESENTATIONS.get(presentation)
     if scalar is not None:

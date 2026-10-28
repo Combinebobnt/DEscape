@@ -90,18 +90,8 @@ def _merge(contributions):
     skip_ids: set = set()
     farm_by_tile: dict = {}
     for contribution in contributions:
-        if contribution is None:
-            continue
-        if contribution.farm_tiles:
-            farm_by_tile.update(contribution.farm_tiles)
-        for key, piece_draws in contribution.by_anchor.items():
-            by_anchor.setdefault(key, []).extend(piece_draws)
-            own = contribution.bboxes[key]
-            bbox = bboxes.get(key)
-            bboxes[key] = own if bbox is None else (
-                min(bbox[0], own[0]), min(bbox[1], own[1]), max(bbox[2], own[2]), max(bbox[3], own[3]),
-            )
-        skip_ids.add(contribution.skip_id)
+        if contribution is not None:
+            render._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
     return render.SpriteLayer(by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile)
 
 

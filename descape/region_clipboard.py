@@ -66,7 +66,8 @@ class RegionUnit:
     dx: float  # relative to the source region's tx0
     dy: float  # relative to the source region's ty0
     z: float
-    # Verbatim at copy and paste; only region_transform.transform_block() derives a new one (AGENTS.md).
+    # Verbatim at copy and paste; only region_transform.transform_block() derives a new one
+    # (AGENTS.md), by the rules plan_in_place() uses for a placed unit turned in place.
     rotation: float
     status: int
     initial_animation_frame: int
@@ -411,3 +412,39 @@ class PasteMove:
     source: RegionBlock | None = None
     element: str = "id"
     pivot2: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class Lift:
+    """A unit selection or Select region being flipped or turned in place
+    (TASK-256): what the next flip or turn of the same target replays.
+
+    Every step undoes `record` and re-plans from the first state with the
+    element composed since, so the run stays one undo record and cannot
+    drift. It is live while `record` is the next thing undo takes and the
+    target is the one it lifted. `base` is what was there before the first
+    step (`record` is `base` while `element` is "id").
+
+    `members` is the (player_id, Unit) pairs it edits, held by identity:
+    undo writes back into the same Unit objects. `first_units` is their
+    first state as region_transform.FirstUnits, indexed like `members`.
+    `rect` is the first rectangle, whose doubled centre is the pivot:
+    the units' footprint box, or for a region the region itself, whose
+    tiles-only first block is `tiles` and whose current rectangle is
+    `region` (a quarter turn of a non-square one moves it)."""
+
+    kind: str  # "units" or "region"
+    keys: tuple  # the unit selection's keys when lifted
+    members: tuple
+    first_units: tuple
+    rect: tuple[int, int, int, int]
+    file_radian: bool
+    base: object
+    record: object
+    element: str = "id"
+    tiles: RegionBlock | None = None
+    region: tuple[int, int, int, int] | None = None
+
+    @property
+    def pivot2(self) -> tuple[int, int]:
+        return self.rect[0] + self.rect[2], self.rect[1] + self.rect[3]

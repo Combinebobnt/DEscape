@@ -31,6 +31,8 @@ leaves `z` and `rotation` verbatim. A unit whose new tile is off the map is
 deleted, as is one whose on-map footprint the cut leaves partly off it (a
 4x4 building straddling the new edge), and so is everything garrisoned in
 it (the garrison closure), which is the count the confirm dialog shows.
+A trigger field naming a deleted unit keeps its id, as Delete does (dangling
+references are legal on disk); the plan only counts them, for that dialog.
 Trigger areas, locations and wall runs translate and clamp through
 descape/trigger_geometry.py's own field groups, written back through
 TriggerShape.fields, only when the file's Triggers section is writable;
@@ -45,7 +47,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
-from descape import library_compat, player_fields, render, trigger_geometry
+from descape import library_compat, player_fields, render, trigger_geometry, unit_references
 from descape.messages_model import MessagesEditModel
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import (
@@ -171,6 +173,8 @@ class ResizePlan:
     triggers: str  # TRIGGERS_REMAPPED, TRIGGERS_STALE or TRIGGERS_NONE
     trigger_note: str
     refusal: str | None
+    # TASK-219: trigger unit ids that resolve now and name only deleted objects afterwards; kept as written.
+    dangling_references: int = 0
 
     @property
     def destructive(self) -> bool:
@@ -187,6 +191,10 @@ class ResizePlan:
         if self.units_deleted:
             noun = "object" if self.units_deleted == 1 else "objects"
             parts.append(f"{self.units_deleted:,} {noun} will be deleted.")
+        if self.dangling_references == 1:
+            parts.append("1 trigger reference will point at a deleted object.")
+        elif self.dangling_references:
+            parts.append(f"{self.dangling_references:,} trigger references will point at deleted objects.")
         parts.append(self.trigger_note)
         parts.append("This cannot be undone.")
         return " ".join(p for p in parts if p)
@@ -213,6 +221,41 @@ def _trigger_state(scenario: LoadedScenario) -> tuple[str, str]:
     if not manager.triggers:
         return TRIGGERS_NONE, ""
     return TRIGGERS_REMAPPED, "Trigger areas and locations will be shifted with the map."
+
+
+def _read(obj, attribute: str):
+    try:
+        return getattr(obj, attribute, None)
+    except Exception:  # noqa: BLE001 -- the library's version-gated properties raise
+        return None
+
+
+def dangling_reference_count(scenario: LoadedScenario, removed: Iterable) -> int:
+    """How many unit ids in condition/effect fields (an id inside a Unit[] list
+    counts once each) name only units in `removed`: the references a resize
+    or delete leaves pointing at nothing. 0 when triggers can't be read."""
+    removed = list(removed)
+    gone = {u.reference_id for u in removed} - {-1}
+    if not gone:
+        return 0
+    removed_ids = {id(u) for u in removed}
+    gone -= {u.reference_id for units in scenario.unit_manager.units for u in units if id(u) not in removed_ids}
+    manager = parse_triggers(scenario) if gone else None
+    if manager is None or not library_compat.vocabulary_is_available(scenario.scenario_version):
+        return 0
+    vocabulary = library_compat.load_vocabulary(scenario.scenario_version)
+    kinds = (
+        ("conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
+        ("effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
+    )
+    count = 0
+    for trigger in manager.triggers:
+        for list_name, type_attribute, definitions, presentation in kinds:
+            for entry in getattr(trigger, list_name):
+                definition = definitions.get(_read(entry, type_attribute))
+                for ids in unit_references.references_in(entry, definition, presentation).values():
+                    count += sum(1 for ref in ids if ref in gone)
+    return count
 
 
 def _refusal(scenario: LoadedScenario, new_w: int, new_h: int, dx: int, dy: int, deleted: int) -> str | None:
@@ -251,7 +294,8 @@ def resize_plan(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor
     dx, dy = origin_offset(old_w, old_h, new_w, new_h, anchor)
     in_range = min(new_w, new_h) >= MIN_MAP_TILES and max(new_w, new_h) <= MAX_MAP_TILES
     units = scenario.unit_manager.units
-    deleted = len(removal_closure(units, dx, dy, new_w, new_h, old_w=old_w, old_h=old_h)) if in_range else 0
+    removed = removal_closure(units, dx, dy, new_w, new_h, old_w=old_w, old_h=old_h) if in_range else []
+    deleted = len(removed)
     overlap = _overlap(old_w, new_w, dx) * _overlap(old_h, new_h, dy)
     triggers, note = _trigger_state(scenario)
     return ResizePlan(
@@ -269,6 +313,7 @@ def resize_plan(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor
         triggers=triggers,
         trigger_note=note,
         refusal=_refusal(scenario, new_w, new_h, dx, dy, deleted),
+        dangling_references=dangling_reference_count(scenario, removed),
     )
 
 
@@ -449,6 +494,7 @@ __all__ = [
     "ResizePlan",
     "ResizeRefusedError",
     "ResizeResult",
+    "dangling_reference_count",
     "origin_offset",
     "remap_terrain",
     "remap_triggers",

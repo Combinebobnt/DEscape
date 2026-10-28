@@ -62,6 +62,32 @@ def test_patch_index_for_move_matches_a_fresh_build():
     _assert_indexes_equivalent(index, fresh)
 
 
+def test_patch_index_for_move_takes_back_an_entry_it_left_off_map():
+    """TASK-468: the entry of a unit patched off-map has no old bounds, and
+    the next move of it raised on unpacking None."""
+    mover = SyntheticUnit(18.5, 5.5, PLAIN_CONST, reference_id=1)
+    bystander = SyntheticUnit(2.0, 2.0, PLAIN_CONST, reference_id=2)
+    scenario = _scenario([[], [mover, bystander]])
+    index = build_index(scenario)
+    mm = scenario.map_manager
+
+    old_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    mover.x = float(MAP_W) + 0.5
+    patch_index_for_move(scenario, index, 1, mover, old_bounds)
+    off_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    assert off_bounds is None
+    by_tile_off = _by_tile_as_sets(index)
+
+    mover.x = float(MAP_W) + 1.5
+    patch_index_for_move(scenario, index, 1, mover, off_bounds)
+    assert _by_tile_as_sets(index) == by_tile_off
+    assert index.by_key[unit_key(1, mover)].own_x == MAP_W + 1
+
+    mover.x = 18.5
+    patch_index_for_move(scenario, index, 1, mover, None)
+    _assert_indexes_equivalent(index, build_index(scenario))
+
+
 def test_patch_index_for_move_leaves_an_unrelated_neighbour_untouched():
     """A regression this file exists to catch: patch_index_for_move must
     not disturb another unit's by_tile membership or `order`, even one

@@ -37,6 +37,7 @@ from descape import (
     settings,
     terrain_style,
     themes,
+    tool_options,
     unit_pick,
     view_layers,
 )
@@ -72,6 +73,26 @@ _THEME_ROLES = textwrap.fill(", ".join(themes.ROLE_IDS), width=76, subsequent_in
 _WHEEL_SLOTS = ", ".join(settings.WHEEL_SLOTS)
 _WHEEL_ACTIONS = ", ".join(settings.WHEEL_ACTIONS)
 _WHEEL_DEFAULTS = ", ".join(f"{slot} {settings.DEFAULT_WHEEL_BINDINGS[slot]}" for slot in settings.WHEEL_SLOTS)
+
+
+def _tool_option_line(spec: tool_options.ToolOption) -> str:
+    shown = yaml.safe_dump(spec.default, default_flow_style=True).splitlines()[0]
+    if spec.kind == tool_options.BOOL:
+        legal = "true or false"
+    elif spec.kind == tool_options.INT:
+        legal = f"{spec.minimum}-{spec.maximum}" if spec.maximum is not None else f"{spec.minimum} or more"
+    elif spec.kind == tool_options.CHOICE:
+        legal = ", ".join(spec.choices)
+    elif spec.kind == tool_options.SET:
+        legal = "a list of " + ", ".join(str(member) for member in spec.members)
+    else:
+        legal = spec.note
+    return textwrap.fill(
+        f"{spec.name} (default {shown}): {legal}", width=76, initial_indent="#   ", subsequent_indent="#     "
+    )
+
+
+_TOOL_OPTION_LINES = "\n".join(_tool_option_line(spec) for spec in tool_options.OPTIONS)
 
 
 def render() -> str:
@@ -215,6 +236,14 @@ terrain_style: {settings.TERRAIN_STYLE_DEFAULT}
 view_layers:
 {view_layers_block}
 
+# What each control on the Tool Options row starts at, set from Settings >
+# Tools. Holds only the values that differ from the default: a later version
+# that changes a default still reaches you. A change on the toolbar lasts
+# until DEscape closes and is never written here. An unknown name or an
+# illegal value is ignored. Each option, its default and its legal values:
+{_TOOL_OPTION_LINES}
+tool_options: {{}}
+
 # Mods whose art View > Layers > Mod Art skips, Settings > Mods > Mod art,
 # as the game's mods/mod-status.json Path strings. A listed mod that is no
 # longer installed stays listed, so it stays off if resubscribed.
@@ -318,14 +347,6 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
-# Triggers mode's Edit Area toggle: with Pan, drag the selected trigger area's
-# middle to move it, or its edges and corners to resize it. Default: false.
-trigger_area_edit: false
-
-# Edit Area's Tile borders option: the outer ring of tiles resizes instead of
-# a thin border. Default: false.
-trigger_area_tile_borders: false
-
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -354,6 +375,11 @@ grid_blend: {grid_overlay.BLEND_DEFAULT}
 # with Follow Terrain Elevation off in Stepped or Sloped). Snaps to the
 # nearest of {list(grid_overlay.THICKNESS_STOPS)}. Default: {grid_overlay.THICKNESS_DEFAULT}.
 grid_thickness: {grid_overlay.THICKNESS_DEFAULT}
+
+# How many tiles apart the stronger grid lines are, View > Grid. One of
+# {list(grid_overlay.MAJOR_EVERY_STOPS)}; anything else reads as the default.
+# Default: {grid_overlay.MAJOR_EVERY_DEFAULT}.
+grid_major_every: {grid_overlay.MAJOR_EVERY_DEFAULT}
 
 # Main window size in pixels, [width, height]. Persisted automatically on
 # resize -- not something you normally set by hand.

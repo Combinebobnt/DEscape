@@ -19,6 +19,7 @@ pytestmark = [
 ]
 
 _NARROW_PX = 150
+# The View tests start from a narrow Terrain pane: Units has its page's own drag floor (TASK-362).
 
 
 def _panel_class(mode: str):
@@ -144,7 +145,7 @@ def test_the_view_stats_value_column_shows_in_full_at_the_floor() -> None:
 
     window = _blank_window()
     try:
-        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Units") == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain") == window.INFO_PAGE_MIN_USEFUL_WIDTH
         combo = window.stats_player_combo
         combo.setCurrentIndex(combo.findData(1))
         QApplication.processEvents()
@@ -193,7 +194,7 @@ def test_the_view_table_fits_the_floor_with_note_hidden_and_full_labels_in_toolt
     """
     window = _blank_window()
     try:
-        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Units") == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain") == window.INFO_PAGE_MIN_USEFUL_WIDTH
         _show_view_player(window, player_id)
         tree = window.info_tree
         assert not tree.horizontalScrollBar().isVisible()
@@ -232,7 +233,7 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
     with no horizontal scroll bar at any of the three."""
     window = _blank_window()
     try:
-        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
         _show_view_player(window, 1)
         tree = window.info_tree
         seen = []
@@ -255,7 +256,7 @@ def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
 
     window = _blank_window()
     try:
-        _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
         _show_view_player(window, 1)
         tree = window.info_tree
         font = tree.font()
@@ -291,7 +292,7 @@ def test_a_long_player_label_elides_inside_the_view_floor() -> None:
             (base.text[0], long, *base.text[2:]), (base.full[0], long, *base.full[2:])
         )
         window._relabel_stats_players()
-        _enter(window, "View", from_px=_NARROW_PX, from_mode="Units")
+        _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
         _show_view_player(window, 1)
         QApplication.processEvents()
         tree = window.info_tree

@@ -28,6 +28,7 @@ failure first is what stops a future session debugging working code.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -190,15 +191,32 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     """The real canvas rect sprite_draws_by_anchor would paint, with the whole
     map pinned at `elevation`. Ground truth, pulled from the production
     function rather than re-derived -- re-deriving it here would let the same
-    mistake pass on both sides."""
+    mistake pass on both sides. A multi-tile sprite arrives as column slices
+    (TASK-221) at several keys: their union, which must tile one rect."""
     mm = scenario.map_manager
     elevations = np.full((mm.map_height, mm.map_width), elevation, dtype=np.int64)
     layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
-    assert len(layer.by_anchor) == 1, f"expected exactly one sprite, got {layer.by_anchor.keys()}"
-    draw, ax, ay, _rise = next(iter(layer.by_anchor.values()))[0]
+    entries = [entry for v in layer.by_anchor.values() for entry in v]
+    assert entries and len({(ax, ay) for _, ax, ay, _ in entries}) == 1, f"expected one sprite, got {entries}"
+    rects = []
+    for draw, ax, ay, _rise in entries:
+        h, w = draw.rgba.shape[:2]
+        x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
+        rects.append((x0, y0, x0 + w, y0 + h))
+    rects.sort()
+    union = rects[0][0], rects[0][1], rects[-1][2], rects[0][3]
+    assert {(r[1], r[3]) for r in rects} == {(union[1], union[3])}, rects
+    assert all(a[2] == b[0] for a, b in itertools.pairwise(rects)), f"slices overlap or leave a gap: {rects}"
+    saved = render.SPRITE_COLUMN_SLICING
+    render.SPRITE_COLUMN_SLICING = False
+    try:
+        whole = render.sprite_draws_by_anchor(scenario, proj, elevations)
+    finally:
+        render.SPRITE_COLUMN_SLICING = saved
+    [(draw, ax, ay, _rise)] = [entry for v in whole.by_anchor.values() for entry in v]
     h, w = draw.rgba.shape[:2]
-    x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
-    return x0, y0, x0 + w, y0 + h
+    assert union == (ax - draw.hotspot_x, ay - draw.hotspot_y, ax - draw.hotspot_x + w, ay - draw.hotspot_y + h)
+    return union
 
 
 def _clamped(rect, proj) -> tuple[int, int, int, int]:

@@ -1,13 +1,16 @@
-"""tools/bench_gui_zoom.py's Qt-free bookkeeping: log-line parsing, the
-per-click latency split, the G1-G3 gates and the signature routing. The log
-lines are real ones from the first old-allies capture (TASK-031.26); the zoom
-pass itself needs a real X server and runs only by hand."""
+"""tools/bench_gui_zoom.py's bookkeeping: log-line parsing, the per-click
+latency split, the G1-G3 gates and the signature routing, all Qt-free, plus
+the canvas paint wrapper's per-paint reset. The log lines are real ones from
+the first old-allies capture (TASK-031.26); the zoom pass itself needs a real
+X server and runs only by hand."""
 
 from __future__ import annotations
 
 import pytest
 
 from tools import bench_gui_zoom as bz
+
+import conftest
 
 # Stepped, sprites on, cold roll: two walk-dominant builds inside paints.
 VIEW_COLD_ROLL = (
@@ -147,7 +150,7 @@ def test_g1_is_each_resident_revisit_notch_s_worst_canvas_repaint_not_its_slowes
     frames[2] = bz.Frame(1.020, 1.0244, {"blit": 3.3, "other": 1.0}, 1, 4.4)
     g1 = bz.gates(clicks, frames, [])[0]
     assert g1.met is False
-    assert g1.signatures[0].startswith("revisit #2 mip 0->0 resid 0.70: blit at mip 1 (no task) [blit 3.3")
+    assert g1.signatures[0].startswith("revisit #2 mip 0->0 resid 0.700: blit at mip 1 (no task) [blit 3.3")
 
 
 def test_g2_counts_one_build_once_however_many_windows_overlap_it():
@@ -245,11 +248,29 @@ def test_a_frame_dominated_by_gc_gen2_is_031_18():
 def test_a_row_prints_the_worst_canvas_paint_s_reductions_beside_the_real_level_residual():
     click = _click("revisit", mip=(-2, -2))
     frames = [bz.Frame(0.003, 0.010, {"blit": 1.0}, -2, 1.2, 0), bz.Frame(0.020, 0.040, {"blit": 2.0, "reduce": 9.0}, -2, 11.5, 1)]
+    frames[1].fmt, frames[1].preframe = "RGB888", "miss key"
     row = bz.format_row(click, bz.click_stats(click, frames, []))
-    assert " resid 0.70 k 1 pct " in row
+    assert " resid 0.700 k 1 fmt RGB888 pf miss-key pct " in row
     assert "| canvas 11.0 mip -2 [blit 2.0 reduce 9.0]" in row
     bare = _click("revisit")
-    assert " k - pct " in bz.format_row(bare, bz.click_stats(bare, [], []))
+    assert " k - fmt - pf - pct " in bz.format_row(bare, bz.click_stats(bare, [], []))
+
+
+def test_the_preframe_summary_counts_first_frame_hits_and_names_over_gate_misses():
+    """TASK-031.71's M check: a notch hits when its FIRST frame did; an over-G1 notch is named with
+    its worst canvas paint's outcome, and a notch outside G1's population is not counted."""
+    clicks = [_click("revisit", float(i), idx=i + 1) for i in range(3)] + [_click("revisit", 3.0, resident=False, idx=4)]
+    frames = [
+        bz.Frame(0.003, 0.004, {"blit": 0.2}, 1, preframe="hit", fmt="RGB32"),
+        bz.Frame(1.003, 1.010, {"blit": 6.0}, 1, preframe="miss stale", fmt="RGB32"),
+        bz.Frame(2.003, 2.004, {"blit": 0.3}, 1, preframe="hit", fmt="RGB32"),
+        bz.Frame(3.003, 3.010, {"blit": 9.0}, 1, preframe="miss none", fmt="RGB32"),
+    ]
+    lines, data = bz.preframe_summary(clicks, frames, [])
+    assert data == {"hits": 2, "notches": 3, "worst_hit_ms": pytest.approx(0.3), "misses": {"miss stale": 1},
+                    "over": 1, "over_hits": 0}
+    assert lines[0].startswith("preframes revisit: 2/3 built-and-warm notches' first frame hit (67%)")
+    assert lines[1] == "  over G1: #2 mip 0->0 resid 0.700 canvas 6.0 fmt RGB32 pf miss stale"
 
 
 def test_a_gate_line_reads_dev_and_x4():
@@ -348,3 +369,32 @@ def test_placeholder_markers_leave_g1_s_population_alone_and_print_apart():
     row = bz.format_row(click, st)
     assert " PLACEHOLDER from -1 " in row
     assert row.endswith("markers 0 placeholder<-1 x1, 0 refine x1")
+
+
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_canvas_paint_that_returns_early_reads_no_format_or_preframe_from_the_paint_before(monkeypatch):
+    """The recorder's canvas paint wrapper clears _last_blit_format and
+    _last_preframe before each paint: one that returns before blitting
+    (an empty exposed rect) reads `-`, not the last paint's values."""
+    from types import SimpleNamespace
+
+    from PyQt5.QtGui import QImage
+
+    from descape import viewer_canvas
+
+    def paint(item, painter, option, widget=None):
+        if item.blits:
+            item._last_blit_format, item._last_preframe = QImage.Format_RGB32, "hit"
+
+    monkeypatch.setattr(viewer_canvas.MapCanvasItem, "paint", paint)
+    rec = bz._Recorder()
+    rec.install()
+    try:
+        item = SimpleNamespace(scene=lambda: None, blits=True)
+        viewer_canvas.MapCanvasItem.paint(item, None, None, object())
+        assert (rec._frame_fmt, rec._frame_preframe) == ("RGB32", "hit")
+        item.blits = False
+        viewer_canvas.MapCanvasItem.paint(item, None, None, object())
+        assert (rec._frame_fmt, rec._frame_preframe) == (None, None)
+    finally:
+        rec.restore()

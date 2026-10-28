@@ -229,7 +229,7 @@ def test_no_identifier_keeps_the_old_free_place_name() -> None:
     assert not [name for name in dir(settings.ToolDef) if "free_place" in name]
     place_unit = next(t for t in settings.TOOLS if t.tool_id == "place_unit")
     assert place_unit.supports_off_grid and place_unit.supports_unrestricted
-    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit", "move"}
+    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit", "move", "unit_brush"}
 
 
 def test_level_spin_dead_while_draw_selected() -> None:

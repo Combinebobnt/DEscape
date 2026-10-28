@@ -337,7 +337,10 @@ class _Sites:
     """Where the edit oracles edit: the sprite unit's tile, a tile no unit
     reaches (its raise moves only the headroom), mill A of the three-mill
     chain (B and C follow at x + 1 and x + 2; A's own tile is the one raised),
-    the far mill, the unit added later, and a bump far from all of them."""
+    the far mill, the unit added later, a bump far from all of them, and a
+    building with no sprite. Only that one's bbox moves with the headroom
+    alone: a sprited building's column slices (TASK-221) put a sprite bbox,
+    far taller than the widening, on every footprint key."""
 
     unit: tuple[int, int]
     quiet: tuple[int, int]
@@ -345,15 +348,23 @@ class _Sites:
     far: tuple[float, float]
     added: tuple[float, float]
     bump: tuple[int, int]
+    plain: tuple[float, float]
 
     @property
     def mill(self) -> tuple[int, int]:
         return int(self.chain[0]), int(self.chain[1])
 
 
-TEMPLATE = _Sites(unit=(40, 40), quiet=(20, 20), chain=(60.0, 60.0), far=(30.0, 30.0), added=(45.5, 44.5), bump=(110, 110))
+TEMPLATE = _Sites(
+    unit=(40, 40), quiet=(20, 20), chain=(60.0, 60.0), far=(30.0, 30.0), added=(45.5, 44.5), bump=(110, 110),
+    plain=(80.0, 30.0),
+)
 # The same layout on _scenario()'s 20x20 field, where a whole +1 level is 2560 px wide, not 15360.
-FIELD = _Sites(unit=(8, 8), quiet=(16, 4), chain=(14.0, 15.0), far=(4.0, 16.0), added=(12.5, 11.5), bump=(1, 18))
+FIELD = _Sites(
+    unit=(8, 8), quiet=(16, 4), chain=(14.0, 15.0), far=(4.0, 16.0), added=(12.5, 11.5), bump=(1, 18),
+    plain=(4.0, 4.0),
+)
+PLAIN_CONST = 70  # a 2x2 House; shared_art_install draws no sprite for it
 
 
 class _FieldTile(SyntheticTile):
@@ -400,10 +411,11 @@ def _mill_chain(scn, sites: _Sites) -> None:
 
 
 def _edit_scenario(sites: _Sites = TEMPLATE):
-    """Flat at 5, with the three-mill chain, one far mill and one sprite unit."""
+    """Flat at 5, with the three-mill chain, one far mill, one sprite unit and the sprite-less building."""
     scn = _base(sites)
     _mill_chain(scn, sites)
     _place(scn, 1, CONST, sites.unit[0] + 0.5, sites.unit[1] + 0.5)
+    _place(scn, 2, PLAIN_CONST, *sites.plain)
     return scn
 
 

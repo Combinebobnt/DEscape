@@ -117,6 +117,8 @@ from descape import (
     gate_orientation,
     gc_hold,
     grid_overlay,
+    help_guide,
+    help_window,
     iso_geometry,
     level_warm,
     library_compat,
@@ -145,6 +147,8 @@ from descape import (
     terrain_units,
     theme_file,
     themes,
+    tool_option_bindings,
+    tool_options,
     trigger_clipboard,
     trigger_fields,
     trigger_geometry,
@@ -152,6 +156,7 @@ from descape import (
     trigger_range,
     trigger_status,
     ui_icons,
+    unit_brush,
     unit_fields,
     unit_kind,
     unit_pick,
@@ -220,6 +225,7 @@ from descape.options_model import (
 from descape.players_panel import STORED_PERSONALITY, PersonalityOptions, PlayersPanel, personality_choice_label
 from descape.render import (
     NON_BUILDING_SPAN,
+    _unit_gen_cached,
     dirty_screen_bbox_iso,
     dirty_screen_bbox_sloped,
     dirty_screen_bboxes_iso_grouped,
@@ -276,6 +282,7 @@ from descape.terrain_palette import name_for_terrain_id, tile_span
 from descape.terrain_panel import TerrainPanel
 from descape.terrain_style import STYLE_LABELS, label_for, style_for_label
 from descape.text_edits import _MultiLineEdit
+from descape.tool_defaults_page import ToolDefaultsPage
 from descape.toolbar_overflow import partition
 from descape.trigger_model import (
     EXEC_MODE_LEGACY,
@@ -334,6 +341,9 @@ _UNIT_NUDGE_STEP_SHIFT = 1.0
 
 # GH #75: a group drag ghosts every member up to this many, then the grabbed one only.
 GROUP_GHOST_CAP = 200
+
+# TASK-327: wall_run.wall_scene() per scenario and unit_gen, which a gate's hover ghost asks per move.
+_GATE_SCENE_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 # Stroke tools that write only tile.elevation, which Flat never draws: their live repaint is skipped there.
 _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
@@ -440,6 +450,9 @@ def _units_text(count: int, carried: int) -> str:
     text = "1 unit" if count == 1 else f"{count} units"
     return f"{text} ({carried} garrisoned)" if carried else text
 
+
+# The D4 reflections: a lift whose composed element is one of these is a flip, else a turn (TASK-256).
+_REFLECTIONS = frozenset({"mx", "my", "d", "a"})
 
 # Paste's status line when the file's units cannot be edited (Paste Region and Paste Units).
 _PASTE_UNITS_SKIPPED = "Units were skipped -- units are read-only for this file"
@@ -618,7 +631,7 @@ def _wall_consts() -> frozenset[int]:
     return frozenset(unit_sprites.wall_family_consts())
 
 
-_DEFAULT_WALL_CONST = 117  # Stone Wall in AoE2, Medium Wall in Return of Rome
+_DEFAULT_WALL_CONST = tool_options.default("last_wall")  # Stone Wall in AoE2, Medium Wall in Return of Rome
 # The Cliff hover keeps one ghost's parts per tile crossed; past this many it starts over.
 _CLIFF_HOVER_PARTS_MAX = 64
 # The wall-placing tools: the wall button shows beside them and keeps them active, and
@@ -1034,13 +1047,18 @@ def _sync_hi_res() -> str:
     return " (Enhanced Graphics DLC not installed: regular unit art)"
 
 
+# Extra space above and below each Settings > Appearance section rule (TASK-254).
+_SECTION_GAP = 6
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
     step, not a recurring one), Mods (the profile folder and Mod art
-    list), Appearance (theme, render quality), Saving, Keybinds and
-    Advanced. Split into tabs so more settings in any category have an
-    obvious place to land without reshaping this dialog."""
+    list), Appearance (theme, render quality), Tools (what each Tool
+    Options control starts at), Saving, Keybinds and Advanced. Split into
+    tabs so more settings in any category have an obvious place to land
+    without reshaping this dialog."""
 
     def __init__(self, parent: ViewerWindow):
         super().__init__(parent)
@@ -1056,6 +1074,9 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._scrolled_tab(self._build_mods_tab(), see_through=True), "Mods")
         # TASK-210: Appearance alone outgrows a 768 px screen, so it scrolls.
         tabs.addTab(self._scrolled_tab(self._build_appearance_tab()), "Appearance")
+        # TASK-272: what each Tool Options control starts at.
+        self.tool_defaults_page = ToolDefaultsPage(parent)
+        tabs.addTab(self._scrolled_tab(self.tool_defaults_page), "Tools")
         tabs.addTab(self._build_saving_tab(), "Saving")
         tabs.addTab(self._build_keybinds_tab(), "Keybinds")
         tabs.addTab(self._build_advanced_tab(), "Advanced")
@@ -1181,6 +1202,7 @@ class SettingsDialog(QDialog):
         theme_row.addWidget(self.theme_import_button)
         layout.addLayout(theme_row)
         layout.addWidget(self._build_theme_colors_group())
+        self._add_section_divider(layout)
 
         ui_font_row = QHBoxLayout()
         ui_font_row.addWidget(QLabel("UI font:"))
@@ -1230,6 +1252,7 @@ class SettingsDialog(QDialog):
         toolbar_style_row.addWidget(self.toolbar_style_combo)
         toolbar_style_row.addStretch(1)
         layout.addLayout(toolbar_style_row)
+        self._add_section_divider(layout)
 
         preload_checkbox = QCheckBox("Preload neighbouring zoom levels")
         preload_checkbox.setChecked(settings.get_preload_zoom_levels())
@@ -1375,9 +1398,12 @@ class SettingsDialog(QDialog):
         wall_row.addWidget(self.wall_opacity_slider, stretch=1)
         wall_row.addWidget(self.wall_opacity_value_label)
         layout.addLayout(wall_row)
+        self._add_section_divider(layout)
 
         layout.addWidget(self._build_overlay_colors_group())
+        self._add_section_divider(layout)
         layout.addWidget(self._build_trigger_status_group())
+        self._add_section_divider(layout)
 
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel("Ruler label size:"))
@@ -1467,6 +1493,17 @@ class SettingsDialog(QDialog):
         return tab
 
     @staticmethod
+    def _add_section_divider(layout: QVBoxLayout) -> None:
+        """TASK-254: a sunken rule with breathing room between Appearance's sections."""
+        layout.addSpacing(_SECTION_GAP)
+        divider = QFrame()
+        divider.setObjectName("appearance_section_divider")
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(divider)
+        layout.addSpacing(_SECTION_GAP)
+
+    @staticmethod
     def _stop_slider(stop_count: int, index: int) -> QSlider:
         slider = QSlider(Qt.Horizontal)
         slider.setRange(1, stop_count)
@@ -1524,16 +1561,35 @@ class SettingsDialog(QDialog):
             self._window._apply_grid_change(self._window.map_view.end_grid_preview)
 
     def done(self, result: int) -> None:
+        self._flush_pending_applies()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        # close() on a never-shown dialog skips done(); its timers must not outlive it either.
+        self._flush_pending_applies()
+        super().closeEvent(event)
+
+    def _flush_pending_applies(self) -> None:
         # A keyboard change's timer dies with the dialog, which would leave
         # the grid stuck in its unbaked preview.
         self._end_grid_preview()
         # Same for a pending opacity: its override would stay live but never persist.
         if self._overlay_opacity_timer.isActive():
             self._persist_overlay_opacity()
-        super().done(result)
+        # Applied now, not on a timer that can fire after the window (or a test's settings isolation) is gone.
+        for timer, apply in (
+            (self._ui_font_apply_timer, self._apply_ui_font),
+            (self._graphics_quality_apply_timer, self._apply_graphics_quality),
+            (self._elev_step_apply_timer, self._apply_elev_step_pct),
+            (self._pan_speed_apply_timer, self._apply_pan_speed),
+            (self._wall_opacity_apply_timer, self._apply_wall_opacity),
+        ):
+            if timer.isActive():
+                timer.stop()
+                apply()
 
     # OVERLAY_COLORS id prefix (before the first "_") -> section header text,
-    # mirroring _KEYBIND_SECTION_TITLES below.
+    # mirroring settings.KEYBIND_SECTION_TITLES.
     _OVERLAY_SECTION_TITLES: ClassVar[dict[str, str]] = {
         "highlight": "Terrain brush",
         "pan": "Pan",
@@ -2222,27 +2278,6 @@ class SettingsDialog(QDialog):
         if had_focus:
             self.wall_opacity_slider.setFocus()
 
-    # action_id prefix (before the first "_") -> section header text. Covers
-    # today's sections (REBINDABLE_ACTIONS's "file_*"/"edit_*"/"view_*"/
-    # "help_*"/"mode_*"/"tool_*"/"adjust_*" entries); an unlisted future
-    # prefix still gets a section of its own, just titled from the raw
-    # prefix instead of a curated name.
-    _KEYBIND_SECTION_TITLES: ClassVar[dict[str, str]] = {
-        "file": "File",
-        "edit": "Edit",  # renamed from "Copy/Paste" -- now covers the whole Edit menu
-        "map": "Map",
-        "analysis": "Analysis",
-        "view": "View",
-        "help": "Help",
-        "mode": "Modes",
-        "filter": "Filters",
-        "player": "Player Selection",
-        "unit": "Units",
-        "trigger": "Triggers",
-        "tool": "Tools",
-        "adjust": "Tool Value",
-    }
-
     def _build_advanced_tab(self) -> QWidget:
         """Game data (GH #67): which game draws every opened scenario. A setting
         rather than a View toggle, since anything but Auto shows the other
@@ -2501,7 +2536,7 @@ class SettingsDialog(QDialog):
                     divider.setFrameShadow(QFrame.Sunken)
                     grid.addWidget(divider, row, 0, 1, 4)
                     row += 1
-                section_label = QLabel(f"<b>{self._KEYBIND_SECTION_TITLES.get(section, section.title())}</b>")
+                section_label = QLabel(f"<b>{settings.KEYBIND_SECTION_TITLES.get(section, section.title())}</b>")
                 grid.addWidget(section_label, row, 0, 1, 4)
                 row += 1
                 current_section = section
@@ -2604,7 +2639,7 @@ class SettingsDialog(QDialog):
             "Two rows may share an action. Any other modifier combination zooms. "
             "Holding Shift or Alt for a tool's own modifier (a straight wall run, off-grid placement) "
             "uses that row. Some desktops take Alt + Wheel for themselves. "
-            "Brush size and Rotate preview zoom in a tool they don't apply to."
+            "Brush size and Rotate preview do nothing in a tool they don't apply to."
         )
         self._wheel_note.setWordWrap(True)
         grid.addWidget(self._wheel_note, row, 0, 1, 4)
@@ -3404,8 +3439,11 @@ class ViewerWindow(QMainWindow):
         self._iso_elevations: np.ndarray | None = None
         self._iso_proj: iso_geometry.IsoProjection | None = None
         self.mode = "view"
+        # GH #160's guide window, created on first use by _show_help().
+        self._help_window: help_window.HelpWindow | None = None
         self._current_tool = "pan"
-        # GH #125's wall button: session-only like every tool option, Stone Wall until a run commits.
+        # GH #125's wall button: the session value, like every Tool Options control (Settings > Tools
+        # holds the default); a committed run makes its wall the last-used one.
         self._last_wall_const = _DEFAULT_WALL_CONST
         # The Cliff tool's in-flight chain (Track B Stage 2), None between
         # strokes. Initialised here rather than only in _begin_cliff_stroke()
@@ -3599,6 +3637,9 @@ class ViewerWindow(QMainWindow):
         # somewhere else. Always assigned through _set_paste_move(), never
         # directly, so MapView's own flag cannot drift from it.
         self._paste_move: region_clipboard.PasteMove | None = None
+        # TASK-256: a unit selection or Select region being flipped or turned
+        # in place, so the run stays one undo record. Assigned only through _set_lift().
+        self._lift: region_clipboard.Lift | None = None
         # The Select tool's committed region, half-open tile-space (tx0, ty0,
         # tx1, ty1) -- None means no selection. Mirrored on MapView (its own
         # copy backs the overlay); this is the copy Copy Region/undo-kind
@@ -3635,6 +3676,13 @@ class ViewerWindow(QMainWindow):
         self._ghost_cap_logged: tuple[int, int] | None = None
         # GH #115: ((drag key, host key, unit_gen), refusal) for the drag preview's host outline.
         self._drop_preview_cache: tuple | None = None
+        # TASK-327, reset per press, load and close (_reset_drag_rule_memos()): a single drag's rule
+        # answer, ((key, point, unit_gen), refused); a group's refused member ids, (selection, dx, dy,
+        # unit_gen, gate-walls box, ids); and its BlockerGrid, (selection, unit_gen, grid). `selection` is
+        # compared with `is`.
+        self._drag_rule_memo: tuple | None = None
+        self._group_flags_memo: tuple | None = None
+        self._group_grid_memo: tuple | None = None
         # Convert brush: the model whose edit is open for the current drag
         # (None outside a stroke), and the timer coalescing its live repaint.
         self._convert_model: UnitEditModel | None = None
@@ -3659,12 +3707,20 @@ class ViewerWindow(QMainWindow):
         # and the occupants of such a refused host, which stay with it.
         self._convert_refused: set[tuple[int, int]] = set()
         self._convert_held: set[tuple[int, int]] = set()
+        # reference_id -> (player_id, unit) at first need in a stroke, for an occupant's host (TASK-474).
+        self._convert_hosts: dict | None = None
         self._convert_touched_tiles: set[tuple[int, int]] = set()
-        # One UnitSplice per reassign not yet handed to the cache, in mutation order.
-        self._convert_pending_splices: list[UnitSplice] = []
-        self._convert_refresh_timer = QTimer(self)
-        self._convert_refresh_timer.setSingleShot(True)
-        self._convert_refresh_timer.timeout.connect(self._flush_convert_refresh)
+        # One UnitSplice per Convert reassign or Unit Brush add not yet handed to
+        # the cache, in mutation order, and its repaint throttle. Shared by the two.
+        self._unit_stroke_pending_splices: list[UnitSplice] = []
+        self._unit_stroke_refresh_timer = QTimer(self)
+        self._unit_stroke_refresh_timer.setSingleShot(True)
+        self._unit_stroke_refresh_timer.timeout.connect(self._flush_unit_stroke_refresh)
+        # GH #170's Unit Brush: the open drag's plan state (None outside one) and its model.
+        self._unit_brush: unit_brush.BrushStroke | None = None
+        self._unit_brush_model: UnitEditModel | None = None
+        # Units in the stroke's owner lists at its press, so its end sees every add, recorded or not.
+        self._unit_brush_base = 0
         # The open Draw stroke's Target, snapshotted at its start (_init_stroke_state).
         self._stroke_target = terrain_target.TERRAIN
         # GH #184's Eraser: the open drag's state (None outside one) and its repaint throttle.
@@ -3832,7 +3888,7 @@ class ViewerWindow(QMainWindow):
             self.on_unit_nudge,
             self.on_unit_delete,
             self.on_marquee_select,
-            self.on_region_selected,
+            self._on_region_gesture,
             self.on_region_move,
             self.on_unit_drag_preview,
             self.on_ruler_measured,
@@ -3861,7 +3917,7 @@ class ViewerWindow(QMainWindow):
         )
         # GH #245: the rotate binding also turns a just-pasted region, through the Rotate keys' own path.
         self.map_view.set_wheel_paste_hooks(
-            # Mid-stroke or mid-drag on_region_transform() refuses, so the wheel zooms there instead.
+            # Mid-stroke or mid-drag on_region_transform() refuses, so the wheel does nothing there instead.
             lambda: self._region_turn_target() and not (self._stroke_in_progress() or self.map_view.region_drag_live()),
             lambda direction: self.on_region_transform(
                 region_transform.ROTATE_CW
@@ -3874,6 +3930,8 @@ class ViewerWindow(QMainWindow):
         self.map_view.set_unit_drag_hooks(self.on_move_press, self._is_group_key)
         # TASK-325: under Units Select, Escape clears the unit selection before the region.
         self.map_view.set_unit_escape_hook(self._units_escape)
+        # TASK-256: Enter keeps a live flip or turn, Escape reverts it, ahead of the two clears.
+        self.map_view.set_lift_hooks(self._apply_lift_key, self.on_lift_revert)
 
         # Always-visible short status history, distinct from both the
         # transient single-line QMainWindow.statusBar() message and the
@@ -3961,6 +4019,9 @@ class ViewerWindow(QMainWindow):
         self._tool_base_tips: dict[str, str] = {}
         self._build_keybind_actions()
         self._update_tool_enabled()
+        # Settings > Tools' defaults onto the Tool Options row, once every action and handler exists.
+        self.tool_option_bindings = tool_option_bindings.build(self)
+        self._restore_tool_options()
         # After _build_keybind_actions(), which fills the table apply_icons() reads.
         ui_icons.apply_icons(self)
         self._apply_toolbar_style()
@@ -4138,7 +4199,8 @@ class ViewerWindow(QMainWindow):
         edit_menu.addSeparator()
         rotate_menu = edit_menu.addMenu("R&otate Selection")  # Redo owns R
         rotate_menu.menuAction().setToolTip(
-            "Turn the selected units one step or a quarter turn (Units mode), or a just-pasted region as a block"
+            "Turn the selected units one step or a quarter turn each (Units mode), or a pasted or selected "
+            "region as a block; Rotate Group turns the selected units as one group"
         )
         self._rotate_actions: list[QAction] = []
         for attr, label, handler in (
@@ -4161,12 +4223,33 @@ class ViewerWindow(QMainWindow):
             )
             action.setToolTip(
                 self._rotate_units_tip + ". With no unit selected and a region just pasted, "
-                "turns that whole region a quarter turn, as one undo step with the paste"
+                "turns that whole region a quarter turn, as one undo step with the paste; with a "
+                "region selected instead, turns it a quarter turn in place, the units on it included"
             )
             action.triggered.connect(handler)
             rotate_menu.addAction(action)
             setattr(self, attr, action)
             self._rotate_actions.append(action)
+        # TASK-256: the selection as one group about its shared centre, in place.
+        rotate_menu.addSeparator()
+        rotate_menu.setToolTipsVisible(True)
+        self._rotate_group_actions: list[QAction] = []
+        for attr, label, step in (
+            ("rotate_group_ccw_action", "Rotate Group ↺ (Quarter Turn)", region_transform.ROTATE_CCW),
+            ("rotate_group_cw_action", "Rotate Group ↻ (Quarter Turn)", region_transform.ROTATE_CW),
+        ):
+            action = QAction(label, self)
+            action.setEnabled(False)  # re-gated by _update_rotate_enabled()
+            action.setToolTip(
+                "Turn the selected units (Units mode) a quarter turn as one group about their shared "
+                "centre. Each unit keeps its identity, so triggers that name it still work. A region "
+                "you just pasted turns first; with no units selected, the selected region turns in "
+                "place. Turn again to keep going: Enter applies, Esc undoes"
+            )
+            action.triggered.connect(lambda _=False, s=step: self.on_selection_transform(s))
+            rotate_menu.addAction(action)
+            setattr(self, attr, action)
+            self._rotate_group_actions.append(action)
 
         # Cycle Variant: trees, doodads and scenery store a graphic-variant
         # index in `rotation`. Same selection-acting shape as Rotate above.
@@ -4190,10 +4273,12 @@ class ViewerWindow(QMainWindow):
             setattr(self, attr, action)
             self._variant_actions.append(action)
 
-        # GH #197: mirror a just-pasted region as a block. Region-only, so
-        # whatever the unit selection it never touches the selected units.
+        # GH #197 mirrors a just-pasted region as a block; TASK-256 a unit
+        # selection or a committed region in place, on_selection_transform()'s order.
         flip_menu = edit_menu.addMenu("F&lip Selection")  # Find and Replace owns F
-        flip_menu.menuAction().setToolTip("Mirror a just-pasted region as a block, left/right or top/bottom on screen")
+        flip_menu.menuAction().setToolTip(
+            "Mirror a just-pasted region, the selected units or the selected region, left/right or top/bottom on screen"
+        )
         flip_menu.setToolTipsVisible(True)
         self._flip_actions: list[QAction] = []
         for attr, label, step, way in (
@@ -4203,10 +4288,12 @@ class ViewerWindow(QMainWindow):
             action = QAction(label, self)
             action.setEnabled(False)  # re-gated by _update_rotate_enabled()
             action.setToolTip(
-                f"Mirror the region you just pasted {way} on screen, as one undo step with the "
-                "paste. Acts on the pasted region whatever units are selected"
+                f"Mirror {way} on screen: a region you just pasted, else the selected units (Units "
+                "mode) as one group about their shared centre, else the selected region in place. "
+                "Units keep their identity, so triggers that name them still work. Flip again to "
+                "keep going: Enter applies, Esc undoes"
             )
-            action.triggered.connect(lambda _=False, s=step: self.on_region_transform(s))
+            action.triggered.connect(lambda _=False, s=step: self.on_selection_transform(s))
             flip_menu.addAction(action)
             setattr(self, attr, action)
             self._flip_actions.append(action)
@@ -4224,7 +4311,7 @@ class ViewerWindow(QMainWindow):
 
         edit_menu.addSeparator()
         self.settings_action = QAction("S&ettings…", self)  # Select Whole Stack owns S
-        self.settings_action.setToolTip("General, appearance, saving and keybind preferences")
+        self.settings_action.setToolTip("General, appearance, tool default, saving and keybind preferences")
         self.settings_action.triggered.connect(self._show_settings)
         edit_menu.addAction(self.settings_action)
 
@@ -4481,8 +4568,8 @@ class ViewerWindow(QMainWindow):
         grid_menu.menuAction().setToolTip("Tile grid lines over the map")
         self.grid_action = QAction("&Show", self, checkable=True, checked=settings.get_grid_overlay())
         self.grid_action.setToolTip(
-            "A line on every tile boundary, every fourth one stronger. Lightness and "
-            "thickness are in Settings > Appearance."
+            "A line on every tile boundary, with a stronger line at the spacing below. "
+            "Lightness and thickness are in Settings > Appearance."
         )
         grid_menu.addAction(self.grid_action)
         grid_menu.addSeparator()
@@ -4495,6 +4582,19 @@ class ViewerWindow(QMainWindow):
             "ground plane. No effect in Flat."
         )
         grid_menu.addAction(self.grid_follow_action)
+        grid_menu.addSeparator()
+        major_every_group = QActionGroup(self)
+        major_every_group.setExclusive(True)
+        current_major_every = settings.get_grid_major_every()
+        self.grid_major_every_actions: dict[int, QAction] = {}
+        for tiles in grid_overlay.MAJOR_EVERY_STOPS:
+            action = QAction(
+                f"Stronger line every &{tiles} tiles", self, checkable=True, checked=tiles == current_major_every,
+            )
+            action.setToolTip(f"A stronger grid line every {tiles} tiles; the others stay one per tile")
+            major_every_group.addAction(action)
+            grid_menu.addAction(action)
+            self.grid_major_every_actions[tiles] = action
 
         # Same two persisted halves as Distance Ticks, so the same submenu
         # shape. Not gated by mode or style either: MapView already holds
@@ -4561,6 +4661,9 @@ class ViewerWindow(QMainWindow):
 
         self.grid_action.toggled.connect(self._on_grid_overlay_toggled)
         self.grid_follow_action.toggled.connect(self._on_grid_follow_toggled)
+        for tiles, action in self.grid_major_every_actions.items():
+            # `on` leads and the guard is required, as for the tick intervals.
+            action.toggled.connect(lambda on, tiles=tiles: on and self._on_grid_major_every(tiles))
         self.footprint_action.toggled.connect(self._on_footprint_outlines_toggled)
         for scope, action in self.footprint_scope_actions.items():
             # `on` leads, and the guard is required, for the same two reasons
@@ -4608,10 +4711,45 @@ class ViewerWindow(QMainWindow):
         tools_menu.addAction(self.analysis_action)
 
         help_menu = menu_bar.addMenu("&Help")
-        self.about_action = QAction("&About", self)
-        self.about_action.setToolTip("Version, license and credits")
-        self.about_action.triggered.connect(self._show_about)
-        help_menu.addAction(self.about_action)
+        # GH #160: the guide, web links, the debug tools, then About last (the platform convention).
+        self.help_guide_action = QAction("DEscape &Guide", self)
+        self.help_guide_action.setToolTip("The built-in guide, open at the page for the current mode")
+        # The lambda drops triggered's `checked`, which would otherwise arrive as topic_id.
+        self.help_guide_action.triggered.connect(lambda _checked=False: self._show_help())
+        help_menu.addAction(self.help_guide_action)
+        self.help_keys_action = QAction("&Keyboard and Mouse", self)
+        self.help_keys_action.setToolTip("Your current keys and mouse wheel settings, and the fixed gestures")
+        self.help_keys_action.triggered.connect(lambda: self._show_help(help_guide.KEYS_TOPIC_ID))
+        help_menu.addAction(self.help_keys_action)
+        help_menu.addSeparator()
+        self.web_guide_action = QAction("A&oE2 Scenario Editor Guide (ugc.aoe2.rocks)", self)
+        self.web_guide_action.setToolTip(
+            "Opens the AoE2 community guide to the in-game Scenario Editor in your web browser"
+        )
+        self.web_guide_action.triggered.connect(lambda: self._open_help_url(help_guide.UGC_SCENARIOS_URL))
+        help_menu.addAction(self.web_guide_action)
+        help_menu.addSeparator()
+        self.release_notes_action = QAction(f"&Release Notes for {__version__}", self)
+        self.release_notes_action.setToolTip(
+            f"Opens the GitHub release page for DEscape {__version__} in your web browser"
+        )
+        self.release_notes_action.triggered.connect(
+            lambda: self._open_help_url(help_guide.release_notes_url(__version__))
+        )
+        help_menu.addAction(self.release_notes_action)
+        self.report_bug_action = QAction("Report a &Bug…", self)
+        self.report_bug_action.setToolTip(
+            "Opens a new GitHub issue in your web browser with your DEscape version and OS "
+            "filled in. Nothing is sent until you submit it there"
+        )
+        self.report_bug_action.triggered.connect(
+            lambda: self._open_help_url(help_guide.report_bug_url(__version__, *help_guide.environment_summary()))
+        )
+        help_menu.addAction(self.report_bug_action)
+        self.github_action = QAction("DEscape on Git&Hub", self)
+        self.github_action.setToolTip("Opens DEscape's GitHub page in your web browser")
+        self.github_action.triggered.connect(lambda: self._open_help_url(help_guide.REPO_URL))
+        help_menu.addAction(self.github_action)
         help_menu.addSeparator()
         self.debug_log_action = QAction("&Debug Log", self)
         self.debug_log_action.setToolTip("What the app has logged this session, for bug reports")
@@ -4636,6 +4774,11 @@ class ViewerWindow(QMainWindow):
             viewer_canvas.set_stall_watchdog(True)
             perf_trace.set_gc_hook(True)
         help_menu.addAction(self.perf_trace_action)
+        help_menu.addSeparator()
+        self.about_action = QAction("&About", self)
+        self.about_action.setToolTip("Version, license and credits")
+        self.about_action.triggered.connect(self._show_about)
+        help_menu.addAction(self.about_action)
 
         # GH #55: QMenu hides action tooltips unless asked; submenus are menu-bar descendants too.
         for menu in menu_bar.findChildren(QMenu):
@@ -5218,9 +5361,9 @@ class ViewerWindow(QMainWindow):
                 if index is None:
                     continue
                 # Show Garrisoned on: already indexed, so a move, never a second entry.
-                if indexed and old_bounds is not None:
+                if indexed:
                     unit_pick.patch_index_for_move(self.scenario, index, player_id, unit, old_bounds)
-                elif not indexed:
+                else:
                     rebuild = True
             # An append would rank the unit after every later player's; Unload is rare, so rebuild.
             if rebuild:
@@ -5720,6 +5863,7 @@ class ViewerWindow(QMainWindow):
         """
         found = self._press_pick(pos)
         self._marquee_press_key = None
+        self.on_lift_finalize()  # TASK-256: any click ends a flip or turn
         if found is None:
             self._stack_cycle = None
             if not (modifiers & (Qt.ControlModifier | Qt.ShiftModifier)):
@@ -5758,9 +5902,18 @@ class ViewerWindow(QMainWindow):
         """The one unit pick a Select or Move press makes, as (entry, cover
         tile) or None, resetting the per-press drag bookkeeping with it."""
         self._ghost_cap_logged = None
+        self._reset_drag_rule_memos()
         found = self.map_view.pick_unit_cover_at(pos)
         self._drag_grab_tile = None if found is None else found[1]
         return found
+
+    def _reset_drag_rule_memos(self, grid: bool = True) -> None:
+        """Drops the drag previews' rule memos (TASK-327). The grid holds only
+        units, so a terrain edit keeps it (`grid=False`)."""
+        self._drag_rule_memo = None
+        self._group_flags_memo = None
+        if grid:
+            self._group_grid_memo = None
 
     def on_move_press(self, pos, modifiers) -> tuple[int, int] | None:
         """The Move tool's press in Units mode (TASK-012, GH #47): the key the
@@ -5775,6 +5928,7 @@ class ViewerWindow(QMainWindow):
         _drag_entries() rely on. Empty ground leaves the selection alone.
         """
         found = self._press_pick(pos)
+        self.on_lift_finalize()  # TASK-256: any click ends a flip or turn
         if found is None:
             return None
         entry, cover_tile = found
@@ -5852,6 +6006,7 @@ class ViewerWindow(QMainWindow):
             keys = [k for k in keys if k != press_key]
         if not keys:
             return
+        self.on_lift_finalize()
         if modifiers & Qt.ControlModifier:
             existing = set(self._selection)
             toggled = existing.symmetric_difference(keys)
@@ -5903,6 +6058,7 @@ class ViewerWindow(QMainWindow):
         if not stacked:
             self._log_status("Select Whole Stack: no selected unit is stacked")
             return
+        self.on_lift_finalize()
         self._stack_cycle = None
         self._selection = widened
         self._refresh_selection_view()
@@ -6061,23 +6217,53 @@ class ViewerWindow(QMainWindow):
 
         `walls` is taken before the plan drops the ones remove_many() would
         refuse, and is what the placement rules exclude (GH #176): the gate
-        replaces the walls it can and still sits over a referenced one."""
+        replaces the walls it can and still sits over a referenced one. It is
+        _gate_walls(), which the hover ghost asks too (TASK-327)."""
         if not gate_orientation.is_gate(object_id):
             return None, []
         mm = self.scenario.map_manager
         gate_tiles = occupied_tiles_for(object_id, x, y, mm.map_width, mm.map_height)
         if gate_tiles is None:
             return None, []
-        existing_tiles, existing_walls = wall_run.wall_scene(self.scenario, mm.map_width, mm.map_height)
+        existing_tiles, existing_walls = self._gate_wall_scene()
         plan = wall_run.plan_gate_over_walls(
             gate_tiles, existing_tiles=existing_tiles, existing_walls=existing_walls
         )
-        walls = [u for _p, u in plan.removals]
+        walls = self._gate_walls(object_id, x, y)
         # Keep a wall remove_many() would refuse (a referenced or -1 reference_id), as Delete does.
         removals = [(p, u) for p, u in plan.removals if not model.referencing(u)]
         if len(removals) != len(plan.removals):
             plan = dataclasses.replace(plan, removals=removals)
         return plan, walls
+
+    def _gate_wall_scene(self):
+        """wall_run.wall_scene() of the live map, read once per unit edit and
+        game dataset (TASK-327): a data mod or game-data switch changes the wall
+        consts without bumping unit_gen."""
+        scenario = self.scenario
+        mm = scenario.map_manager
+        active, mod = game_dataset.active(), game_dataset.data_mod()
+        seen = getattr(self, "_gate_scene_dataset", None)
+        if seen is None or seen[0] != active or seen[1] is not mod:
+            _GATE_SCENE_MEMO.clear()
+            self._gate_scene_dataset = (active, mod)
+        return _unit_gen_cached(
+            _GATE_SCENE_MEMO, scenario, lambda: wall_run.wall_scene(scenario, mm.map_width, mm.map_height)
+        )
+
+    def _gate_walls(self, object_id: int, x: float, y: float) -> list:
+        """Every wall under a gate's footprint at (x, y), which the placement
+        rules do not count (GH #159): the model-free half of _gate_plan(), so
+        Place Unit's hover asks it without building the unit model. [] for a
+        non-gate const or an off-map footprint."""
+        if not gate_orientation.is_gate(object_id):
+            return []
+        mm = self.scenario.map_manager
+        gate_tiles = occupied_tiles_for(object_id, x, y, mm.map_width, mm.map_height)
+        if gate_tiles is None:
+            return []
+        _tiles, existing_walls = self._gate_wall_scene()
+        return [unit for _player_id, unit in wall_run.walls_under(gate_tiles, existing_walls)]
 
     def _gate_move_plan(self, model, moves) -> wall_run.GateMovePlan | None:
         """What moving `moves`, [(entry, new_x, new_y), ...], changes in the
@@ -6132,7 +6318,10 @@ class ViewerWindow(QMainWindow):
         constructor add() uses, so point and look cannot drift from the click.
         Never builds the lazy unit model: hovering must not pay for it. A
         filtered-out object still ghosts; the click's status line says why it
-        then vanishes. Walls never get here (Place Unit drags them)."""
+        then vanishes. Walls never get here (Place Unit drags them).
+
+        Drawn refused where the click would refuse it (TASK-327), through
+        placement_rules.refused(), which builds no message."""
         view = self.map_view
         const = None if self.scenario is None else self.units_panel.selected_object_const()
         point = None
@@ -6145,6 +6334,7 @@ class ViewerWindow(QMainWindow):
         owner = unit_kind.placement_owner(const, self.units_panel.owner_id())
         # GH #172: through new_unit(), not rotation_override, so stored_rotation's GAIA rule applies as on the click.
         rotation = place_rotation.rotation_for(self._place_rotation, const, owner)
+        lifted = self._restrictions_lifted()
         key = (
             point,
             const,
@@ -6157,24 +6347,31 @@ class ViewerWindow(QMainWindow):
             self._layers.hero_glow,
             self._layers.wall_alpha,
             id(view._iso_elevations),
+            # The rule's inputs; a terrain edit drops the memo in _apply_dirty().
+            self.scenario.unit_gen,
+            lifted,
         )
         # Snapped, the point only changes on a tile crossing (half-tile on an even span).
         # The item check drops the memo whenever MapView cleared or replaced the ghost.
         memo = self._place_ghost_memo
         if memo is not None and memo[0] == key and memo[1] is view._unit_ghost_item:
             return
+        # on_unit_place's own rule: the walls a gate replaces never block it.
+        refused = not lifted and placement_rules.refused(
+            self.scenario, const, *point, exclude=self._gate_walls(const, *point)
+        )
         ghost = new_unit(self.scenario._scenario.uuid, owner, const, *point, reference_id=-1, rotation=rotation)
         draws = self._ghost_sprite_draws(owner, ghost)
         if draws:
-            view.set_unit_ghost(draws=draws)
+            view.set_unit_ghost(draws=draws, refused=refused)
         else:
             polygons, color = self._ghost_mark(owner, ghost)
-            view.set_unit_ghost(polygons=polygons, color=color)
+            view.set_unit_ghost(polygons=polygons, color=color, refused=refused)
         item = view._unit_ghost_item
         self._place_ghost_memo = None if item is None else (key, item)
 
     def _refresh_place_ghost(self, *_args) -> None:
-        """A catalog pick, owner or Off-grid change with no mouse move."""
+        """A catalog pick, owner, Off-grid or Free placement change with no mouse move."""
         # GH #172: a half notch turned for the old pick must not fire on the new one.
         self.map_view.reset_place_wheel()
         self._update_rotate_enabled()
@@ -6439,7 +6636,8 @@ class ViewerWindow(QMainWindow):
             action.setData(const)
             action.triggered.connect(lambda _=False, c=const: self._arm_wall(c))
         if self._last_wall_const not in consts:
-            self._last_wall_const = _DEFAULT_WALL_CONST
+            preferred = settings.get_tool_option_default("last_wall")
+            self._last_wall_const = preferred if preferred in consts else _DEFAULT_WALL_CONST
         self._refresh_wall_pick_button()
 
     def _refresh_unit_tool_menus(self) -> None:
@@ -7058,18 +7256,25 @@ class ViewerWindow(QMainWindow):
         status line, or None (GH #176). All or nothing, so a formation never
         tears. The members never block each other: they keep their spacing.
         `replaced` is the walls a moved gate's plan removes (GH #194), which
-        do not block either."""
-        grid = placement_rules.BlockerGrid(self.scenario, exclude=[*(e.unit for e in entries), *replaced])
-        reasons = []
-        for entry in entries:
-            unit = entry.unit
-            reason = placement_rules.move_refusal(self.scenario, unit, unit.x + dx, unit.y + dy, grid=grid)
-            if reason is not None:
-                reasons.append(reason)
-        if not reasons:
+        do not block either.
+
+        Counted with move_refused() through the preview's own grid; only the
+        first refused member's message is built (TASK-327), since a terrain
+        message costs a language-file parse."""
+        grid = self._group_grid(entries)
+        refused = [
+            entry.unit
+            for entry in entries
+            if placement_rules.move_refused(
+                self.scenario, entry.unit, entry.unit.x + dx, entry.unit.y + dy, exclude=replaced, grid=grid
+            )
+        ]
+        if not refused:
             return None
+        first = refused[0]
+        reason = placement_rules.move_refusal(self.scenario, first, first.x + dx, first.y + dy, exclude=replaced, grid=grid)
         return (
-            f"Move: {len(reasons)} of {len(entries)} units can't go there (first: {reasons[0]}). "
+            f"Move: {len(refused)} of {len(entries)} units can't go there (first: {reason}). "
             "Tick Free placement to move them anyway."
         )
 
@@ -7197,7 +7402,11 @@ class ViewerWindow(QMainWindow):
         tiles behind the cursor is a worse lie than no preview.
 
         The host a release here would garrison into is outlined (GH #115),
-        set or cleared once up front so no ghost exit path leaves it stale."""
+        set or cleared once up front so no ghost exit path leaves it stale.
+
+        A ghost the release would refuse is drawn refused (TASK-327), asked
+        in the release's own branch order (_single_drag_refused(),
+        _group_refused_ids()), so the two cannot disagree."""
         if self.scenario is None:
             self.map_view.set_unit_drop_target(None)
             self.map_view.set_unit_ghost()
@@ -7213,7 +7422,7 @@ class ViewerWindow(QMainWindow):
         drop = self._garrison_drop(self._drag_entries(key, entry), drop_pos, modifiers, preview_key=key)
         self.map_view.set_unit_drop_target(drop[0] if drop is not None and drop[1] is None else None)
         if self._is_group_key(key):
-            self._preview_group(key, entry, pos, modifiers)
+            self._preview_group(key, entry, pos, modifiers, drop)
             return
         # The same resolver on_unit_move commits through, so the preview
         # cannot lie about where the unit lands -- including under the
@@ -7224,12 +7433,39 @@ class ViewerWindow(QMainWindow):
             self.map_view.set_unit_ghost()
             return
         ghost = unit_at(entry.unit, *point)
+        refused = self._single_drag_refused(key, entry, point, drop)
         draws = self._drag_ghost_sprite_draws(entry, ghost)
         if draws:
-            self.map_view.set_unit_ghost(draws=draws)
+            self.map_view.set_unit_ghost(draws=draws, refused=refused)
             return
         polygons, color = self._ghost_mark(entry.player_id, ghost)
-        self.map_view.set_unit_ghost(polygons=polygons, color=color)
+        self.map_view.set_unit_ghost(polygons=polygons, color=color, refused=refused)
+
+    def _single_drag_refused(self, key, entry, point: tuple[float, float], drop) -> bool:
+        """Whether on_unit_move would refuse dropping `entry` at `point`, in
+        its order: a host that takes it never refuses and one that does not
+        always does, Free placement or not; a drop back on its own point is a
+        no-op; Free placement lifts the rule. The rule's answer alone is
+        memoized, per tile crossing on a snapped drag."""
+        if drop is not None:
+            return drop[1] is not None
+        unit = entry.unit
+        if point == (unit.x, unit.y) or self._restrictions_lifted() or self._moves_gate_walls([entry]):
+            return False
+        memo_key = (key, point, self.scenario.unit_gen)
+        memo = self._drag_rule_memo
+        if memo is not None and memo[0] == memo_key:
+            return memo[1]
+        refused = placement_rules.move_refused(self.scenario, unit, *point, exclude=[unit])
+        self._drag_rule_memo = (memo_key, refused)
+        return refused
+
+    def _moves_gate_walls(self, entries) -> bool:
+        """Whether a drop of `entries` may replace walls under a moved gate
+        (GH #194). The release then excludes those walls through the unit
+        model's gate plan, which a preview does not build, so it is drawn
+        untinted rather than refused over walls the drop would replace."""
+        return self.gate_walls_check.isChecked() and any(gate_orientation.is_gate(e.unit.unit_const) for e in entries)
 
     def _ghost_mark(self, player_id: int, ghost):
         """(polygons, color) of the coloured-mark ghost for `player_id`'s `ghost`."""
@@ -7239,35 +7475,92 @@ class ViewerWindow(QMainWindow):
             unit_mark_color(ghost, self.scenario.player_colors[player_id]),
         )
 
-    def _preview_group(self, key, anchor, pos, modifiers) -> None:
+    def _preview_group(self, key, anchor, pos, modifiers, drop=None) -> None:
         """One ghost per group member at the same clamped delta the commit
-        uses. Past GROUP_GHOST_CAP members only the anchor is ghosted."""
+        uses. Past GROUP_GHOST_CAP members only the anchor is ghosted.
+
+        Only the members the release would refuse are drawn refused (TASK-327),
+        though a refused group moves nothing. Past the cap the anchor's ghost
+        stands for the members checked (_group_refused_ids())."""
         resolved = self._group_delta(anchor, pos, modifiers, commit=False)
         if resolved is None:
             self.map_view.set_unit_ghost()
             return
         entries, dx, dy, _clamped = resolved
         members = entries
-        if len(entries) > GROUP_GHOST_CAP:
+        capped = len(entries) > GROUP_GHOST_CAP
+        if capped:
             members = [anchor]
             # Once per drag: this runs on every mouse-move.
             if self._ghost_cap_logged != key:
                 self._ghost_cap_logged = key
-                self._log_status(f"Moving {len(entries)} units (preview shows the grabbed one only)")
+                self._log_status(
+                    f"Moving {len(entries)} units "
+                    "(preview shows the grabbed one only; placement is checked in full on release)"
+                )
+        refused_ids = self._group_refused_ids(entries, anchor, dx, dy, drop)
         mm = self.scenario.map_manager
         draws: list = []
         marks: list = []
+        refused_draws: list = []
+        refused_marks: list = []
         for entry in members:
             ghost = unit_at(entry.unit, entry.unit.x + dx, entry.unit.y + dy)
             # A member nudged off-map stays off-map, and has nothing to draw.
             if unit_tile_bounds(ghost, mm.map_width, mm.map_height) is None:
                 continue
+            refused = bool(refused_ids) if capped else id(entry.unit) in refused_ids
             sprite = self._drag_ghost_sprite_draws(entry, ghost)
             if sprite:
-                draws.extend(sprite)
+                (refused_draws if refused else draws).extend(sprite)
             else:
-                marks.append(self._ghost_mark(entry.player_id, ghost))
-        self.map_view.set_unit_ghosts(draws=draws, marks=marks)
+                (refused_marks if refused else marks).append(self._ghost_mark(entry.player_id, ghost))
+        self.map_view.set_unit_ghosts(draws=draws, marks=marks, refused_draws=refused_draws, refused_marks=refused_marks)
+
+    def _group_refused_ids(self, entries, anchor, dx: float, dy: float, drop) -> set[int]:
+        """id(unit) of every member _move_group() would refuse at (dx, dy), in
+        on_unit_move's branch order: a host's answer first (every member when
+        it refuses, Free placement or not; none when it takes them), then a
+        zero delta (a no-op) and Free placement (none). Up to GROUP_GHOST_CAP
+        members are checked, the grabbed one first; the release checks all.
+        Empty for a drag that may replace walls (_moves_gate_walls()).
+
+        The answer is memoized per delta through one BlockerGrid per drag
+        (_group_grid()), so a snapped drag asks once per tile crossing."""
+        if drop is not None:
+            return {id(e.unit) for e in entries} if drop[1] is not None else set()
+        if (dx, dy) == (0, 0) or self._restrictions_lifted():
+            return set()
+        gen, box = self.scenario.unit_gen, self.gate_walls_check.isChecked()
+        memo = self._group_flags_memo
+        if memo is not None and memo[0] is self._selection and memo[1:5] == (dx, dy, gen, box):
+            return memo[5]
+        ids: set[int] = set()
+        # Inside the memo: the scan for a gate runs once per delta, not per mouse move.
+        if not self._moves_gate_walls(entries):
+            checked = entries
+            if len(entries) > GROUP_GHOST_CAP:
+                checked = [anchor, *(e for e in entries if e.unit is not anchor.unit)][:GROUP_GHOST_CAP]
+            grid = self._group_grid(entries)
+            ids = {
+                id(e.unit)
+                for e in checked
+                if placement_rules.move_refused(self.scenario, e.unit, e.unit.x + dx, e.unit.y + dy, grid=grid)
+            }
+        self._group_flags_memo = (self._selection, dx, dy, gen, box, ids)
+        return ids
+
+    def _group_grid(self, entries) -> placement_rules.BlockerGrid:
+        """The group drag's BlockerGrid, built once per selection and unit
+        edit with every selected unit excluded, so members never block each
+        other (GH #176). The preview and the drop share it (TASK-327)."""
+        gen = self.scenario.unit_gen
+        memo = self._group_grid_memo
+        if memo is not None and memo[0] is self._selection and memo[1] == gen:
+            return memo[2]
+        grid = placement_rules.BlockerGrid(self.scenario, exclude=[e.unit for e in entries])
+        self._group_grid_memo = (self._selection, gen, grid)
+        return grid
 
     def _ghost_sprite_draws(self, player_id: int, ghost, rotation_override: float | None = None) -> list:
         """`ghost`'s real sprite pieces for owner `player_id`, or [] to fall
@@ -7350,6 +7643,9 @@ class ViewerWindow(QMainWindow):
         falls through to a view_pan_* pan on the same press (see its
         keyPressEvent). Every early return below is a case where panning is
         the right answer, "nothing is selected" most of all.
+        The step stops at the map edge as a group drag does (GH #75,
+        TASK-468): if any member would leave, nothing moves, and that refusal
+        still returns True, so a held arrow never turns into a pan at the edge.
         One record per press, matching every other discrete-keypress edit in
         this app (e.g. the ]/[ tool-value step) -- not merged across
         repeats, unlike a typed-digit spinbox edit. That holds for a group
@@ -7368,7 +7664,19 @@ class ViewerWindow(QMainWindow):
         model = self._ensure_unit_edits()
         if model is None:
             return False
-        step = _UNIT_NUDGE_STEP_SHIFT if modifiers & Qt.ShiftModifier else _UNIT_NUDGE_STEP
+        whole_tiles = bool(modifiers & Qt.ShiftModifier)
+        step = _UNIT_NUDGE_STEP_SHIFT if whole_tiles else _UNIT_NUDGE_STEP
+        mm = self.scenario.map_manager
+        _cx, _cy, clamped = clamp_group_delta(
+            [e.unit for e in entries], dx * step, dy * step, mm.map_width, mm.map_height, whole_tiles=whole_tiles
+        )
+        if clamped:
+            # Whole steps only: a step that only partly fits moves nothing.
+            if len(entries) == 1:
+                self._log_status(f"{_unit_name(entries[0].unit.unit_const)} already at the map edge; nothing moved")
+            else:
+                self._log_status(f"{len(entries)} units already at the map edge; nothing moved")
+            return True
         label = "Nudge unit" if len(entries) == 1 else f"Nudge {len(entries)} units"
         clauses = self._gate_move_clauses(self._move_units(model, entries, dx * step, dy * step, label))
         if len(entries) == 1:
@@ -7390,10 +7698,10 @@ class ViewerWindow(QMainWindow):
         player's list up front. Positive steps rotate clockwise on screen (see
         unit_rotation.rotate_step and gate_orientation.cycle_const).
 
-        **Each unit rotates about its own centre.** Orbiting a selection about
-        a shared pivot is deliberately out of scope -- that is a group
-        transform, not a per-unit field edit, and nothing else in the unit
-        edit path moves a unit the caller did not name.
+        **Each unit rotates about its own centre.** Turning the selection as
+        one group about a shared pivot is Rotate Group's
+        (on_selection_transform(), TASK-256), a group transform rather than a
+        per-unit field edit.
 
         `gate_steps` defaults to `steps` and exists because a gate step is 45
         degrees while a rotation step is one stored frame: the coarse path
@@ -7427,14 +7735,21 @@ class ViewerWindow(QMainWindow):
         GH #197: with a just-pasted region armed and no Units-mode selection
         or Place target, Rotate turns that whole region a quarter turn
         instead (on_region_transform), in any mode but Triggers. That re-pastes
-        new units rather than editing these, so the statement above about
-        orbiting a selection still holds.
+        new units rather than editing these.
+
+        TASK-256: with no paste armed, the same holds for a committed Select
+        region, which turns a quarter turn in place (_transform_region()),
+        editing the units on it and keeping their identity.
         """
         if self._place_ghost_active():
             self.rotate_place_ghost(steps=steps)
             return
         if self._region_turn_target():
             self.on_region_transform(region_transform.ROTATE_CW if steps > 0 else region_transform.ROTATE_CCW)
+            return
+        if self._region_rotate_target():
+            if not (self._stroke_in_progress() or self.map_view.region_drag_live()):
+                self._transform_region(region_transform.ROTATE_CW if steps > 0 else region_transform.ROTATE_CCW, "Rotate")
             return
         if self.scenario is None or self.mode != "units":
             return
@@ -7645,6 +7960,9 @@ class ViewerWindow(QMainWindow):
         # GH #197: a region has one step size, so the coarse pair turns it a quarter turn too.
         if self._region_turn_target():
             self.on_region_transform(region_transform.ROTATE_CW if direction > 0 else region_transform.ROTATE_CCW)
+            return
+        if self._region_rotate_target():
+            self.on_unit_rotate(direction)  # TASK-256: the committed region's quarter turn
             return
         entry = self._first_rotatable_entry()
         if entry is None:
@@ -7858,7 +8176,8 @@ class ViewerWindow(QMainWindow):
         the Inspector keeps its per-unit behaviour.
 
         GH #32: an entry whose own move or carried garrison would give a
-        GAIA-only object to a player is left out first. Returns (changed,
+        GAIA-only object to a player is left out first, and so is an entry
+        garrisoned inside one, uncounted (TASK-474). Returns (changed,
         carried, refused, gaia_only_refused)."""
         model = self._ensure_unit_edits()
         if model is None:
@@ -7866,6 +8185,8 @@ class ViewerWindow(QMainWindow):
         refused = 0
         kept = [e for e in entries if not self._owner_change_refused(model, e, new_player)]
         gaia_only_refused = len(entries) - len(kept)
+        kept_ids = {id(e.unit) for e in kept}
+        refused_hosts = [e for e in entries if id(e.unit) not in kept_ids]
         entries = kept
         if skip_orphan_occupants:
             batch_refs = {e.unit.reference_id for e in entries}
@@ -7877,6 +8198,10 @@ class ViewerWindow(QMainWindow):
                     continue
                 kept.append(e)
             entries = kept
+        if refused_hosts:
+            # TASK-474: an occupant selected with its refused host stays with it, no mixed-owner garrison.
+            held = {id(o.unit) for o in self._garrison_occupant_entries(model, refused_hosts)}
+            entries = [e for e in entries if id(e.unit) not in held]
         batch_ids = {id(e.unit) for e in entries}
         changing = [e for e in entries if e.player_id != new_player]
         # A host's garrison goes with it (GH #115), whatever each occupant's own owner.
@@ -8747,6 +9072,20 @@ class ViewerWindow(QMainWindow):
         tool_group.addAction(self.place_unit_action)
         toolbar.addAction(self.place_unit_action)
 
+        # GH #170, gated on Units mode like Convert. See the Unit Brush section.
+        self.unit_brush_action = QAction("Unit Brush", self)
+        self.unit_brush_action.setCheckable(True)
+        self.unit_brush_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.unit_brush_action.setToolTip(
+            "Drag to paint the chosen object for the chosen owner across the brush (Units mode), "
+            "one undo step per drag. Each tile gets one roll per drag at the Density, under the "
+            "game's placement rules (Free placement lifts them), and a drag never stacks on itself. "
+            "Walls, gates and cliffs have their own tools."
+        )
+        self.unit_brush_action.toggled.connect(lambda on: on and self._on_tool_selected("unit_brush"))
+        tool_group.addAction(self.unit_brush_action)
+        toolbar.addAction(self.unit_brush_action)
+
         # The wall enclosure plan (2026-09-21), gated on Units mode like
         # Place Unit. Takes its wall const from the Units catalog, as Place
         # Unit's wall branch does; see _commit_wall_run().
@@ -8857,6 +9196,7 @@ class ViewerWindow(QMainWindow):
         self.addToolBarBreak()
         param_toolbar = self.addToolBar("Tool Options")
         param_toolbar.setMovable(False)
+        self.tool_options_toolbar = param_toolbar  # walked by the tool_options drift test
 
         # A permanent spacer, added once and never hidden: an empty
         # QToolBar collapses to zero height, and this row must hold its
@@ -8880,7 +9220,8 @@ class ViewerWindow(QMainWindow):
         self.terrain_panel.terrain_changed.connect(self._on_terrain_changed)
 
         # Which of a tile's two terrains the terrain tools write: its base, or
-        # the layered terrain drawn over it. Session-only, starts on Terrain.
+        # the layered terrain drawn over it. Session-only with no Settings > Tools
+        # default (tool_options leaves it out): every launch starts on Terrain.
         self.terrain_target_label_action = param_toolbar.addWidget(QLabel(" Target: "))
         self.terrain_target_combo = QComboBox()
         self.terrain_target_combo.addItem("Terrain", terrain_target.TERRAIN)
@@ -8892,10 +9233,11 @@ class ViewerWindow(QMainWindow):
 
         # Auto beach (2026-08-31 plan). A checkbox on Draw rather than a
         # separate Water tool -- the user's call, and it costs no ToolDef,
-        # no QAction and no keybind audit. Session-only, never persisted,
-        # matching the brush pair below.
+        # no QAction and no keybind audit. Like every control on this row from
+        # here on, it holds the session value and starts at its Settings > Tools
+        # default (tool_options.OPTIONS; _restore_tool_options()).
         self.auto_beach_check = QCheckBox("Auto beach")
-        self.auto_beach_check.setChecked(False)
+        self.auto_beach_check.setChecked(tool_options.default("auto_beach"))
         self.auto_beach_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.auto_beach_check.toggled.connect(self._on_auto_beach_toggled)
         self.auto_beach_param_action = param_toolbar.addWidget(self.auto_beach_check)
@@ -8914,8 +9256,8 @@ class ViewerWindow(QMainWindow):
         self.beach_param_action = param_toolbar.addWidget(self.beach_combo)
 
         self.beach_width_spin = QSpinBox()
-        self.beach_width_spin.setRange(1, 3)
-        self.beach_width_spin.setValue(1)
+        self.beach_width_spin.setRange(tool_options.option("beach_width").minimum, tool_options.option("beach_width").maximum)
+        self.beach_width_spin.setValue(tool_options.default("beach_width"))
         self.beach_width_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
         # No stutter warning here: measured with tools/bench_draw_stroke.py
         # --beach-width, brush 9 in Stepped costs 1.16x a plain Draw stroke
@@ -8929,32 +9271,30 @@ class ViewerWindow(QMainWindow):
 
         # descape/terrain_units.py's auto-placed trees/eye-candy, gated by
         # terrain_param_ok in _update_tool_enabled() since both Draw and Paint Can read them.
-        # Persisted (settings.get/set_paint_trees/eye_candy), unlike brush
-        # size/shape below: these change what gets written to the file.
+        # A tick lasts the session, like the rest of the row; Settings > Tools holds the default.
         self.paint_trees_check = QCheckBox("Trees")
-        self.paint_trees_check.setChecked(settings.get_paint_trees())
+        self.paint_trees_check.setChecked(tool_options.default("paint_trees"))
         self.paint_trees_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paint_trees_check.setToolTip(
             "Auto-place the matching GAIA tree on each tile a forest terrain is painted onto "
             "(varied graphic per tile), like the in-game editor's Eye Candy option. Painting a "
             "different terrain over a tile removes its tree."
         )
-        self.paint_trees_check.toggled.connect(self._on_paint_trees_toggled)
         self.paint_trees_param_action = param_toolbar.addWidget(self.paint_trees_check)
 
         self.paint_eye_candy_check = QCheckBox("Eye candy")
-        self.paint_eye_candy_check.setChecked(settings.get_paint_eye_candy())
+        self.paint_eye_candy_check.setChecked(tool_options.default("paint_eye_candy"))
         self.paint_eye_candy_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paint_eye_candy_check.setToolTip(
             "Also auto-place non-tree doodads a terrain carries (grass tufts, jungle underbrush). "
             "Painting a different terrain over a tile removes them too."
         )
-        self.paint_eye_candy_check.toggled.connect(self._on_paint_eye_candy_toggled)
         self.paint_eye_candy_param_action = param_toolbar.addWidget(self.paint_eye_candy_check)
 
         self.level_param_label_action = param_toolbar.addWidget(QLabel(" Level: "))
         self.elevation_level_spin = QSpinBox()
         self.elevation_level_spin.setRange(0, ELEVATION_LEVEL_MAX)
+        self.elevation_level_spin.setValue(tool_options.default("elevation_level"))
         self.elevation_level_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.level_param_spin_action = param_toolbar.addWidget(self.elevation_level_spin)
 
@@ -9010,16 +9350,38 @@ class ViewerWindow(QMainWindow):
         self.convert_sources_button.setEnabled(False)  # re-gated by _update_tool_enabled()
         sources_menu = KeepOpenMenu(self.convert_sources_button)
         self.convert_source_actions: dict[int, QAction] = {}
+        default_sources = tool_options.default("convert_sources")
         for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
-            action = QAction(self._player_labels.text[player_id], self, checkable=True, checked=True)
+            action = QAction(self._player_labels.text[player_id], self, checkable=True, checked=player_id in default_sources)
             sources_menu.addAction(action)
             self.convert_source_actions[player_id] = action
         self.convert_sources_button.setMenu(sources_menu)
         self.convert_sources_param_action = param_toolbar.addWidget(self.convert_sources_button)
 
-        # The Eraser's targets (GH #184), modelled on Sources above and, like
-        # it and every tool option, session-only. A unit is erased if it
-        # matches any ticked target; see descape/eraser.py.
+        # GH #170's Unit Brush. Read once at press.
+        self.unit_brush_density_label_action = param_toolbar.addWidget(QLabel(" Density: "))
+        self.unit_brush_density_spin = QSpinBox()
+        density = tool_options.option("unit_brush_density")
+        self.unit_brush_density_spin.setRange(density.minimum, density.maximum)
+        self.unit_brush_density_spin.setValue(density.default)
+        self.unit_brush_density_spin.setSuffix(" %")
+        self.unit_brush_density_spin.setToolTip(
+            "The chance each tile under the brush gets a unit. Every tile is rolled once per drag, "
+            "so going over it again adds nothing"
+        )
+        self.unit_brush_density_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.unit_brush_density_param_action = param_toolbar.addWidget(self.unit_brush_density_spin)
+        self.unit_brush_random_check = QCheckBox("Random facing/variant")
+        self.unit_brush_random_check.setChecked(tool_options.default("unit_brush_random"))
+        self.unit_brush_random_check.setToolTip(
+            "Give each unit a random facing, or a random variant for trees and other scenery. "
+            "Unticked, every unit gets the facing or variant last set in Place Unit or by the Eyedropper"
+        )
+        self.unit_brush_random_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.unit_brush_random_param_action = param_toolbar.addWidget(self.unit_brush_random_check)
+
+        # The Eraser's targets (GH #184), modelled on Sources above. A unit is
+        # erased if it matches any ticked target; see descape/eraser.py.
         self.eraser_targets_button = QToolButton()
         self.eraser_targets_button.setText("Targets")
         self.eraser_targets_button.setPopupMode(QToolButton.InstantPopup)
@@ -9032,12 +9394,12 @@ class ViewerWindow(QMainWindow):
         everything_action.triggered.connect(self._tick_every_erase_target)
         targets_menu.keep_open(everything_action)
         targets_menu.addSeparator()
-        defaults = eraser.EraseTargets()
+        default_targets = tool_options.default("eraser_targets")
         self.eraser_target_actions: dict[str, QAction] = {}
         for name, label in eraser.TARGET_LABELS:
             if name == "cliffs":
                 targets_menu.addSeparator()
-            action = QAction(label, self, checkable=True, checked=getattr(defaults, name))
+            action = QAction(label, self, checkable=True, checked=name in default_targets)
             targets_menu.addAction(action)
             self.eraser_target_actions[name] = action
         self.eraser_target_actions["overlay"].setToolTip("Clear the layered terrain on every brush tile")
@@ -9065,13 +9427,13 @@ class ViewerWindow(QMainWindow):
         self.wall_pick_action.triggered.connect(lambda: self._arm_wall(self._last_wall_const))
         self.addAction(self.wall_pick_action)
 
-        # Draw Rectangle's Fill/Outline toggle. Session-only like the brush
-        # pair below and unlike the Trees/Eye candy checks above: it changes
-        # which tiles one drag paints, not what gets written to a tile, so
-        # there is nothing here worth carrying between launches.
+        # Draw Rectangle's Fill/Outline toggle, the bool tool_options calls rect_filled.
         self.rect_fill_combo = QComboBox()
         self.rect_fill_combo.addItem("Filled", True)
         self.rect_fill_combo.addItem("Outline", False)
+        self.rect_fill_combo.setCurrentIndex(
+            tool_option_bindings.find_data(self.rect_fill_combo, tool_options.default("rect_filled"))
+        )
         self.rect_fill_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.rect_fill_combo.setToolTip(
             "Filled paints the whole rectangle; Outline paints its border only, "
@@ -9082,13 +9444,11 @@ class ViewerWindow(QMainWindow):
 
         # Brush size/shape/thickness -- shown for any ToolDef.supports_brush tool
         # (Terrain, Elevate, Set Elevation), same visibility/enabled
-        # convention as the two params above. Deliberately session-only, not
-        # read from or written to settings.py's config: every launch starts
-        # at BRUSH_SIZE_MIN/square/BRUSH_THICKNESS_MIN, so nothing here persists.
+        # convention as the two params above. One value each, shared by every brush tool.
         self.brush_param_label_action = param_toolbar.addWidget(QLabel(" Brush: "))
         self.brush_size_spin = QSpinBox()
         self.brush_size_spin.setRange(brush.BRUSH_SIZE_MIN, brush.BRUSH_SIZE_MAX)
-        self.brush_size_spin.setValue(brush.BRUSH_SIZE_MIN)
+        self.brush_size_spin.setValue(tool_options.default("brush_size"))
         self.brush_size_spin.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.brush_size_spin.valueChanged.connect(self._on_brush_changed)
         self.brush_size_spin_action = param_toolbar.addWidget(self.brush_size_spin)
@@ -9097,6 +9457,7 @@ class ViewerWindow(QMainWindow):
         for shape in brush.BRUSH_SHAPES:
             # The two line labels follow the view: _refresh_brush_shape_labels().
             self.brush_shape_combo.addItem(brush.shape_label(shape, isometric=True), shape)
+        self.brush_shape_combo.setCurrentIndex(brush.BRUSH_SHAPES.index(tool_options.default("brush_shape")))
         self.brush_shape_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.brush_shape_combo.currentIndexChanged.connect(self._on_brush_shape_changed)
         self.brush_shape_combo_action = param_toolbar.addWidget(self.brush_shape_combo)
@@ -9105,7 +9466,7 @@ class ViewerWindow(QMainWindow):
         self.brush_thickness_label_action = param_toolbar.addWidget(QLabel(" Thickness: "))
         self.brush_thickness_spin = QSpinBox()
         self.brush_thickness_spin.setRange(brush.BRUSH_THICKNESS_MIN, brush.BRUSH_THICKNESS_MAX)
-        self.brush_thickness_spin.setValue(brush.BRUSH_THICKNESS_MIN)
+        self.brush_thickness_spin.setValue(tool_options.default("brush_thickness"))
         self.brush_thickness_spin.setToolTip(
             "How many tiles wide the outline is, measured inward from the brush edge. "
             "A thickness that reaches the centre paints the filled shape"
@@ -9116,38 +9477,39 @@ class ViewerWindow(QMainWindow):
 
         # Phase 2.8's paste filters -- which categories a Paste Region
         # actually writes. Visible only while Select is active (see
-        # _update_tool_enabled()); all checked by default and session-only,
-        # never persisted, same convention as the brush pair above.
+        # _update_tool_enabled()).
         self.paste_terrain_check = QCheckBox("Terrain")
-        self.paste_terrain_check.setChecked(True)
+        self.paste_terrain_check.setChecked(tool_options.default("paste_terrain"))
         self.paste_terrain_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paste_terrain_param_action = param_toolbar.addWidget(self.paste_terrain_check)
 
         self.paste_elevation_check = QCheckBox("Elevation")
-        self.paste_elevation_check.setChecked(True)
+        self.paste_elevation_check.setChecked(tool_options.default("paste_elevation"))
         self.paste_elevation_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paste_elevation_param_action = param_toolbar.addWidget(self.paste_elevation_check)
 
         self.paste_units_check = QCheckBox("Units")
-        self.paste_units_check.setChecked(True)
+        self.paste_units_check.setChecked(tool_options.default("paste_units"))
         self.paste_units_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.paste_units_param_action = param_toolbar.addWidget(self.paste_units_check)
 
         # GH #176: lifts placement_rules' terrain and object rules for Place Unit clicks and
-        # Move drags. Read at the click or drop only. Session-only, like Off-grid below.
+        # Move drags. Read at the click or drop, and by the ghosts (TASK-327).
         self.unrestricted_check = QCheckBox("Free placement")
+        self.unrestricted_check.setChecked(tool_options.default("free_placement"))
         self.unrestricted_check.setToolTip(
             "Place or move a unit where the game would refuse it: on terrain it can't stand on, "
             "or on top of another object. It still snaps to the grid; tick Off-grid to lift that too."
         )
         self.unrestricted_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        # The hover ghost turns refused or not with no mouse move; a drag ghost on its next move.
+        self.unrestricted_check.toggled.connect(self._refresh_place_ghost)
         self.unrestricted_param_action = param_toolbar.addWidget(self.unrestricted_check)
 
         # D2's off-grid toggle -- shown for any ToolDef.supports_off_grid
-        # tool (Place Unit). Session-only like the brush and paste-filter
-        # controls above: tool options are deliberately not persisted, so
-        # there is no settings getter/setter pair behind this one either.
+        # tool (Place Unit).
         self.off_grid_check = QCheckBox("Off-grid")
+        self.off_grid_check.setChecked(tool_options.default("off_grid"))
         self.off_grid_check.setToolTip(
             "Place a unit exactly under the cursor instead of snapping it to the grid. "
             "Hold Alt for a one-off. Placement rules still apply."
@@ -9157,9 +9519,9 @@ class ViewerWindow(QMainWindow):
         self.off_grid_check.toggled.connect(self._refresh_place_ghost)
         self.off_grid_param_action = param_toolbar.addWidget(self.off_grid_check)
 
-        # GH #124: off by default and session-only, like Off-grid above.
-        # Read at press (the preview) and at commit; nothing else needs telling.
+        # GH #124. Read at press (the preview) and at commit; nothing else needs telling.
         self.skip_occupied_check = QCheckBox("Walls skip occupied tiles")
+        self.skip_occupied_check.setChecked(tool_options.default("walls_skip_occupied"))
         self.skip_occupied_check.setToolTip(
             "Walls only. Trees, resources, buildings, units, obstacles and invisible blockers "
             "leave a gap in the run; passable eye candy does not. Existing walls and gates "
@@ -9168,9 +9530,9 @@ class ViewerWindow(QMainWindow):
         self.skip_occupied_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.skip_occupied_param_action = param_toolbar.addWidget(self.skip_occupied_check)
 
-        # GH #194: off by default and session-only, like the two above.
-        # Read when a move commits, even while hidden (an arrow nudge works under any Units tool).
+        # GH #194. Read when a move commits, even while hidden (an arrow nudge works under any Units tool).
         self.gate_walls_check = QCheckBox("Moving a gate updates walls")
+        self.gate_walls_check.setChecked(tool_options.default("gate_walls"))
         self.gate_walls_check.setToolTip(
             "When a gate moves, remove the walls under its new position and fill the gap it "
             "leaves with the wall it was set in."
@@ -9178,35 +9540,37 @@ class ViewerWindow(QMainWindow):
         self.gate_walls_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.gate_walls_param_action = param_toolbar.addWidget(self.gate_walls_check)
 
-        # GH #229, under Pan in Triggers mode: Edit Area (saved) lets Pan drag the shown
-        # entry's area; Move and Resize (session-only) pick which parts grab, and Tile
-        # borders (saved) widens the resize border. The last three grey out while it is off.
+        # GH #229, under Pan in Triggers mode: Edit Area lets Pan drag the shown entry's
+        # area; Move and Resize pick which parts grab, and Tile borders widens the resize
+        # border. The last three grey out while it is off.
         self.area_edit_check = QCheckBox("Edit Area")
         self.area_edit_check.setToolTip(
             "Drag the selected trigger area's middle to move it, or its edges and corners to "
             "resize it -- one undo step per drag"
         )
-        self.area_edit_check.setChecked(settings.get_trigger_area_edit())
+        self.area_edit_check.setChecked(tool_options.default("area_edit"))
         self.area_edit_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.area_edit_check.toggled.connect(self._on_area_edit_toggled)
         self._area_option_params = [(param_toolbar.addWidget(self.area_edit_check), self.area_edit_check)]
         self._area_option_params.append((param_toolbar.addSeparator(), None))
         self.area_move_check = QCheckBox("Move")
         self.area_move_check.setToolTip("Drag the middle of the area to move it")
-        self.area_move_check.setChecked(True)
+        self.area_move_check.setChecked(tool_options.default("area_move"))
         self.area_resize_check = QCheckBox("Resize")
         self.area_resize_check.setToolTip("Drag an edge or corner of the area to resize it")
-        self.area_resize_check.setChecked(True)
+        self.area_resize_check.setChecked(tool_options.default("area_resize"))
         self.area_tile_borders_check = QCheckBox("Tile borders")
         self.area_tile_borders_check.setToolTip(
             "Resize from the whole outer ring of tiles instead of a thin border, on sides at least 3 tiles long"
         )
-        self.area_tile_borders_check.setChecked(settings.get_trigger_area_tile_borders())
+        self.area_tile_borders_check.setChecked(tool_options.default("area_tile_borders"))
         for check in (self.area_move_check, self.area_resize_check, self.area_tile_borders_check):
             check.setEnabled(False)  # re-gated by _update_tool_enabled()
             check.toggled.connect(self._on_area_options_toggled)
             self._area_option_params.append((param_toolbar.addWidget(check), check))
-        self.map_view.set_area_edit_options(True, True, self.area_tile_borders_check.isChecked())
+        self.map_view.set_area_edit_options(
+            self.area_move_check.isChecked(), self.area_resize_check.isChecked(), self.area_tile_borders_check.isChecked()
+        )
 
         # GH #108/#109: removes every pinned ruler. Shown with the Ruler only,
         # enabled only while one exists (re-gated by _on_pinned_rulers_changed too).
@@ -9242,6 +9606,16 @@ class ViewerWindow(QMainWindow):
         # tick and couple two unrelated cadences.
         self.zoom_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.zoom_status_label)
+
+    def _apply_left_pane_floor(self) -> None:
+        """The left pane's drag floor: in Units mode the Units page's own
+        minimumSizeHint width, read on each entry so it follows the content
+        (TASK-362, user decision 2026-10-14); MIN_SPLIT_PANE in every other
+        mode. Below the page's hint its placing card and category buttons clip."""
+        floor = settings.MIN_SPLIT_PANE
+        if self.mode == "units":
+            floor = max(floor, self.units_panel.minimumSizeHint().width())
+        self.left_stack.setMinimumWidth(floor)
 
     def _widen_left_column(self, min_width: int) -> None:
         """Grow the left pane to `min_width` on entering a mode whose panel
@@ -9425,6 +9799,8 @@ class ViewerWindow(QMainWindow):
             "edit_paste": self.paste_action,
             "edit_flip_horizontal": self.flip_horizontal_action,
             "edit_flip_vertical": self.flip_vertical_action,
+            "edit_rotate_group_ccw": self.rotate_group_ccw_action,
+            "edit_rotate_group_cw": self.rotate_group_cw_action,
             "edit_select_all": self.select_all_action,
             "edit_deselect": self.deselect_action,
             "edit_clipboard_history": self.clipboard_history_action,
@@ -9459,6 +9835,12 @@ class ViewerWindow(QMainWindow):
             "view_pan_down": self.view_pan_down_action,
             "view_pan_left": self.view_pan_left_action,
             "view_pan_right": self.view_pan_right_action,
+            "help_guide": self.help_guide_action,
+            "help_keys": self.help_keys_action,
+            "help_web_guide": self.web_guide_action,
+            "help_release_notes": self.release_notes_action,
+            "help_report_bug": self.report_bug_action,
+            "help_github": self.github_action,
             "help_about": self.about_action,
             "help_debug_log": self.debug_log_action,
             "help_perf_trace": self.perf_trace_action,
@@ -9572,9 +9954,13 @@ class ViewerWindow(QMainWindow):
         settings.set_grid_follow_elevation(checked)
         self._apply_grid_change(lambda: self.map_view.set_grid_follow_elevation(checked))
 
+    def _on_grid_major_every(self, tiles: int) -> None:
+        settings.set_grid_major_every(tiles)
+        self._apply_grid_change(lambda: self.map_view.set_grid_major_every(tiles))
+
     def _apply_grid_change(self, change: Callable[[], bool]) -> None:
         """Every View > Grid change that can re-bake the grid into the chunk
-        cache: the toggle, Follow Terrain Elevation, and both ends of a
+        cache: the toggle, Follow Terrain Elevation, the stronger-line spacing, and both ends of a
         Settings > Appearance slider drag. _on_layer_toggled's shape:
         _cancel_warms() first, since a warm in flight would install work done
         under the old spec, and _start_level_warm() after. No wait cursor:
@@ -9655,7 +10041,6 @@ class ViewerWindow(QMainWindow):
         self._push_area_edit_target()
 
     def _on_area_edit_toggled(self, checked: bool) -> None:
-        settings.set_trigger_area_edit(checked)
         self._update_tool_enabled()
         if checked and self.mode == "triggers" and self._area_edit_target is None:
             self._log_status("Select one condition or effect with an area to move or resize it")
@@ -9676,12 +10061,9 @@ class ViewerWindow(QMainWindow):
         self.area_tile_borders_check.setEnabled(on and self.area_resize_check.isChecked())
 
     def _on_area_options_toggled(self) -> None:
-        tile_borders = self.area_tile_borders_check.isChecked()
-        if tile_borders != settings.get_trigger_area_tile_borders():
-            settings.set_trigger_area_tile_borders(tile_borders)
         self._regate_area_options()
         self.map_view.set_area_edit_options(
-            self.area_move_check.isChecked(), self.area_resize_check.isChecked(), tile_borders
+            self.area_move_check.isChecked(), self.area_resize_check.isChecked(), self.area_tile_borders_check.isChecked()
         )
 
     def _push_area_edit_target(self) -> None:
@@ -10070,12 +10452,25 @@ class ViewerWindow(QMainWindow):
             f"{PARSER_CREDIT}",
         )
 
+    def _open_help_url(self, url: str) -> None:
+        help_window.open_url(url, self._log_status)
+
+    def _show_help(self, topic_id: str | None = None) -> None:
+        """One shared, non-modal guide window; with no topic, the current mode's."""
+        if self._help_window is None:
+            self._help_window = help_window.HelpWindow(self, self._log_status)
+        self._help_window.select_topic(topic_id or help_guide.topic_for_mode(self.mode).topic_id)
+        self._help_window.show()
+        self._help_window.raise_()
+        self._help_window.activateWindow()
+
     def on_mode_changed(self, mode_text: str) -> None:
         with perf_trace.op("mode-switch"):
             self._switch_mode(mode_text)
 
     def _switch_mode(self, mode_text: str) -> None:
         self.disarm_unit_picker()
+        self.on_lift_finalize()  # TASK-256: a mode switch keeps a flip or turn as it stands
         self.mode = _mode_id(mode_text)
         # Entering a trigger-parsing mode is what makes Files, and so the
         # embedded-XS info line, readable: refresh it once when that changes.
@@ -10093,6 +10488,7 @@ class ViewerWindow(QMainWindow):
             self.map_view.set_unit_selection(None)
         with perf_trace.phase("left_page"):
             self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
+            self._apply_left_pane_floor()
         # The markers themselves are mode-free; their emphasis is not, so
         # entering or leaving Players mode has to re-push them.
         with perf_trace.phase("camera_markers"):
@@ -11476,6 +11872,7 @@ class ViewerWindow(QMainWindow):
         self.mode = _mode_id(mode_text)
         self.map_view.set_mode(self.mode)
         self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
+        self._apply_left_pane_floor()
         self._selection = []
         self.map_view.set_unit_selection(None)
         self.units_panel.clear()
@@ -11494,21 +11891,30 @@ class ViewerWindow(QMainWindow):
         the cursor off the map an armed Rotate logs "nothing to rotate"
         rather than greying, so the buttons don't flicker as the ghost comes
         and goes. Not narrowed to rotatable consts either, for the same reason:
-        a selection's per-unit skips are reported in the status line."""
+        a selection's per-unit skips are reported in the status line.
+
+        Flip and Rotate Group (TASK-256) open for any _transform_target() in
+        a document that can be edited (GH #67), the Place preview included:
+        there they log that nothing changed."""
         actions = getattr(self, "_rotate_toolbar_actions", None)
         if actions is None:
             return  # a catalog signal during construction, before the toolbar exists
         unit_editable = self.scenario is not None and self.mode == "units"
         enabled = unit_editable and (bool(self._selection) or self._place_rotate_armed())
-        # GH #197: the menu's four also turn a just-pasted region; the toolbar pair stays units-only.
-        region = self._region_turn_target()
+        # GH #197 and TASK-256: the menu's four also turn a pasted or a committed region;
+        # the toolbar pair stays units-only.
+        committed = self._region_rotate_target() and self._region_write_refusal("") is None
+        region = self._region_turn_target() or committed
         for action in self._rotate_actions:
             action.setEnabled(enabled or region)
         for action in actions:
             action.setEnabled(enabled)
-        # Flip never acts on units, so a Units-mode selection does not take it.
-        for action in self._flip_actions:
-            action.setEnabled(self._paste_armed() and self.mode != "triggers")
+        unlocked = self.scenario is not None and self.game_data_lock_reason() is None
+        target = self._transform_target() if unlocked else None
+        if target == "region" and self._region_write_refusal("") is not None:
+            target = None
+        for action in (*self._flip_actions, *self._rotate_group_actions):
+            action.setEnabled(target is not None)
 
     def _paste_armed(self) -> bool:
         """A pure read: a paste is armed and still the next thing undo takes."""
@@ -11631,6 +12037,7 @@ class ViewerWindow(QMainWindow):
         # GH #125's wall keybind: Place Unit's own gate. Its button is gated with the params below.
         self.wall_pick_action.setEnabled(unit_editable)
         self.convert_action.setEnabled(unit_editable)
+        self.unit_brush_action.setEnabled(unit_editable)
         # GH #184: has_map only, in both its modes; ToolDef.modes hides it elsewhere.
         self.eraser_action.setEnabled(has_map and unlocked)
         # Deliberately coarse: this runs on mode changes, not entry-tree
@@ -11779,6 +12186,7 @@ class ViewerWindow(QMainWindow):
             )
             level_param_ok = param == "level" and self.set_level_action.isEnabled()
         convert_param_ok = param == "convert" and self.convert_action.isEnabled()
+        unit_brush_param_ok = param == "unit_brush" and self.unit_brush_action.isEnabled()
         eraser_param_ok = param == "eraser" and self.eraser_action.isEnabled()
         cliff_param_ok = param == "cliff" and self.cliff_action.isEnabled()
         # Brush size/shape -- reuses current_action (computed above for the
@@ -11851,6 +12259,11 @@ class ViewerWindow(QMainWindow):
         self.elevation_level_spin.setEnabled(level_param_ok)
         self.convert_sources_param_action.setVisible(convert_param_ok)
         self.convert_sources_button.setEnabled(convert_param_ok)
+        self.unit_brush_density_label_action.setVisible(unit_brush_param_ok)
+        self.unit_brush_density_param_action.setVisible(unit_brush_param_ok)
+        self.unit_brush_density_spin.setEnabled(unit_brush_param_ok)
+        self.unit_brush_random_param_action.setVisible(unit_brush_param_ok)
+        self.unit_brush_random_check.setEnabled(unit_brush_param_ok)
         self.eraser_targets_param_action.setVisible(eraser_param_ok)
         self.eraser_targets_button.setEnabled(eraser_param_ok)
         # A v1.21 file has no `layer` field to clear; the stroke ignores the tick too.
@@ -11969,7 +12382,7 @@ class ViewerWindow(QMainWindow):
         self._on_pinned_rulers_changed(self.map_view.pinned_ruler_count())
 
         self.tool_param_separator_action.setVisible(
-            terrain_param_ok or level_param_ok or convert_param_ok or eraser_param_ok
+            terrain_param_ok or level_param_ok or convert_param_ok or unit_brush_param_ok or eraser_param_ok
             or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
             or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
             or wall_pick_ok or gate_walls_ok or area_param_ok
@@ -12104,11 +12517,52 @@ class ViewerWindow(QMainWindow):
         # is ticked.
         self._update_tool_enabled()
 
-    def _on_paint_trees_toggled(self, checked: bool) -> None:
-        settings.set_paint_trees(checked)
+    # -- Tool Options defaults (Settings > Tools) --------------------------------
+    #
+    # The row holds the session value and Settings > Tools the default
+    # (settings.get_tool_option_defaults()). Nothing on the row writes the store:
+    # no persistence hook is ever connected to a row widget.
 
-    def _on_paint_eye_candy_toggled(self, checked: bool) -> None:
-        settings.set_paint_eye_candy(checked)
+    def _apply_tool_options(self, values: dict, *, changed_only: bool) -> list[str]:
+        """Puts `values` on the row in schema order and returns the names that did
+        not apply. The Cliff trio is a chain: a family that did not apply skips piece
+        and frame, and a piece that did not apply skips frame, so a frame never lands
+        on the wrong piece. `changed_only` skips a value equal to its schema default,
+        which the row already shows at construction."""
+        skipped: list[str] = []
+        chain_broken = False
+        for spec in tool_options.OPTIONS:
+            name = spec.name
+            if name not in values:
+                continue
+            if chain_broken and name in ("cliff_piece", "cliff_frame"):
+                skipped.append(name)
+                continue
+            if changed_only and tool_options.is_default(name, values[name]):
+                continue
+            if not self.tool_option_bindings[name].apply(values[name]):
+                skipped.append(name)
+                chain_broken = chain_broken or name in ("cliff_family", "cliff_piece")
+        return skipped
+
+    def _restore_tool_options(self) -> None:
+        """Once, at construction. A default this session's game data can't show
+        leaves its control at the schema default, and the stored value stays."""
+        skipped = self._apply_tool_options(settings.get_tool_option_defaults(), changed_only=True)
+        if skipped:
+            debug_log.log(f"Tool defaults not shown this session: {', '.join(skipped)}")
+
+    def apply_tool_option_default(self, name: str, value) -> bool:
+        """Settings > Tools' live apply: an edited default reaches its row control at once."""
+        return self.tool_option_bindings[name].apply(value)
+
+    def tool_option_values(self) -> dict[str, object]:
+        """Every row control's session value, canonical, in schema order."""
+        return {name: binding.read() for name, binding in self.tool_option_bindings.items()}
+
+    def reset_tool_options_to(self, values: dict) -> list[str]:
+        """Every value onto the row, defaults included; the names that did not apply."""
+        return self._apply_tool_options(values, changed_only=False)
 
     def _on_tool_selected(self, tool: str) -> None:
         with perf_trace.op("tool-switch"):
@@ -12237,6 +12691,9 @@ class ViewerWindow(QMainWindow):
         if self._current_tool == "convert":
             self._begin_convert_stroke()
             return
+        if self._current_tool == "unit_brush":
+            self._begin_unit_brush_stroke()
+            return
         if self._current_tool == "eraser":
             self._begin_erase_stroke()
             return
@@ -12308,6 +12765,13 @@ class ViewerWindow(QMainWindow):
             with self._close_stroke_on_error(_STROKE_LABELS["eraser"]):
                 self._erase_stroke_tiles(tiles)
             return
+        if self._unit_brush is not None:
+            with self._close_stroke_on_error(_STROKE_LABELS["unit_brush"]):
+                self._unit_brush_stroke_tiles(tiles, modifiers)
+            return
+        if self._current_tool == "unit_brush":
+            # A press that opened nothing (a right press, no object, a wall): the drag paints nothing.
+            return
         if self._current_tool == "convert":
             for x, y in tiles:
                 self._convert_stroke_tile(x, y)
@@ -12348,6 +12812,10 @@ class ViewerWindow(QMainWindow):
                 # The Eraser's own end closes its unit edit and tile stroke as one record.
                 with suppress(Exception):
                     self._end_erase_stroke()
+            if self._unit_brush is not None:
+                # Committed, as the Eraser's: the adds so far are live.
+                with suppress(Exception):
+                    self._end_unit_brush_stroke()
             if self.edit_history.in_stroke:
                 # Full scan: the raise may have cut a mutation off before it reported its writes.
                 touched = self.edit_history.commit_stroke(label, self.scenario.map_manager.terrain)
@@ -12476,6 +12944,11 @@ class ViewerWindow(QMainWindow):
         # can strand its unit edit and tile stroke open.
         if self._erase is not None:
             self._end_erase_stroke()
+            return
+        if self._unit_brush is not None:
+            self._end_unit_brush_stroke()
+            return
+        if self._current_tool == "unit_brush":
             return
         if self._current_tool == "convert":
             self._end_convert_stroke()
@@ -12757,7 +13230,7 @@ class ViewerWindow(QMainWindow):
     # live, and the edit commits once at stroke end: one record per drag,
     # like every other brush tool.
     #
-    # The repaint is coalesced by _convert_refresh_timer. The pick index is
+    # The repaint is coalesced by _unit_stroke_refresh_timer. The pick index is
     # deliberately left stale until stroke end: a full rebuild costs ~60ms on
     # the largest corpus file, and _convert_touched_tiles already guarantees
     # no tile is examined twice, so stale entries can't be reassigned twice.
@@ -12768,20 +13241,18 @@ class ViewerWindow(QMainWindow):
     CONVERT_REFRESH_MS = 100
 
     def _begin_convert_stroke(self) -> None:
-        # A stroke that never reached _end_convert_stroke (none known) must
-        # not leave its edit open, or the next unit edit raises.
+        # An open Unit Brush stroke shares the pending list: its own end commits and repaints it.
+        if self._unit_brush is not None:
+            self._end_unit_brush_stroke()
+        # A stroke that never reached _end_convert_stroke (none known) must not
+        # leave its edit open, or the next unit edit raises. Committed, as the
+        # brush's: its reassigns are live, and its end repaints the unflushed ones.
         if self._convert_model is not None:
-            self._convert_model.abort_unit_edit()
-            self._convert_model = None
-            # Its unflushed reassigns are still live in the model, so repaint them.
-            # Swapped out first, or _start_level_warm()'s window guard swallows the re-arm.
-            pending, self._convert_pending_splices = self._convert_pending_splices, []
-            if pending:
-                self._after_unit_mutation()
-        self._convert_pending_splices = []
+            self._end_convert_stroke()
         self._convert_done = set()
         self._convert_refused = set()
         self._convert_held = set()
+        self._convert_hosts = None
         self._convert_touched_tiles = set()
         # Read once and held for the whole drag rather than re-read per
         # touched tile: the combo can't actually change while the mouse is
@@ -12826,6 +13297,10 @@ class ViewerWindow(QMainWindow):
                             for o in self._garrison_occupant_entries(model, [entry])
                         )
                         continue
+                    # TASK-474: an occupant reached before its refused host stays with it too.
+                    if self._convert_host_refused(model, entry, sources, destination):
+                        self._convert_held.add(key)
+                        continue
                     self._convert_one(model, entry, key, destination, destination_units)
                     # by_tile lacks hidden occupants. They go with their host
                     # whatever their own owner, like the Inspector's Owner (GH #115).
@@ -12836,8 +13311,40 @@ class ViewerWindow(QMainWindow):
                     converted = True
         # Throttle, not debounce: restarting a running timer on every tile
         # would hold the repaint off for as long as the drag keeps moving.
-        if converted and not self._convert_refresh_timer.isActive():
-            self._convert_refresh_timer.start(self.CONVERT_REFRESH_MS)
+        if converted and not self._unit_stroke_refresh_timer.isActive():
+            self._unit_stroke_refresh_timer.start(self.CONVERT_REFRESH_MS)
+
+    def _convert_host_refused(self, model, entry, sources, destination: int) -> bool:
+        """Whether `entry` sits (transitively) inside a host this stroke would
+        refuse (GH #32) once it reached it, so the occupant waits for its host
+        instead of converting first: an occupant's own tile can come earlier
+        in the stroke or in by_tile than its host's (TASK-474)."""
+        host_ref = getattr(entry.unit, "garrisoned_in_id", -1)
+        if host_ref in (-1, entry.unit.reference_id):
+            return False
+        if self._convert_hosts is None:
+            self._convert_hosts = {}
+            for pid, units in enumerate(self.scenario.unit_manager.units):
+                for unit in units:
+                    self._convert_hosts.setdefault(unit.reference_id, (pid, unit))
+        seen = {id(entry.unit)}
+        while host_ref != -1:
+            found = self._convert_hosts.get(host_ref)
+            if found is None or id(found[1]) in seen:
+                return False
+            pid, host = found
+            seen.add(id(host))
+            # A host already converted carried its garrison; its key is the pre-stroke one.
+            if unit_pick.unit_key(pid, host) in self._convert_done:
+                return False
+            if pid in sources and pid != destination:
+                host_entry = unit_pick.UnitEntry(pid, host, int(host.x), int(host.y), -1)
+                if self._owner_change_refused(model, host_entry, destination):
+                    return True
+            host_ref = getattr(host, "garrisoned_in_id", -1)
+            if host_ref == host.reference_id:
+                return False
+        return False
 
     def _convert_one(self, model, entry, key, destination: int, destination_units) -> None:
         """One live reassign inside the open Convert edit, queued as a splice."""
@@ -12846,21 +13353,22 @@ class ViewerWindow(QMainWindow):
         self._cancel_warms()
         model.reassign(entry.unit, destination)
         # reassign() appends, so the index is the tail, not an O(n) _unit_list_index() scan.
-        self._convert_pending_splices.append(UnitSplice(
+        self._unit_stroke_pending_splices.append(UnitSplice(
             destination, len(destination_units) - 1, entry.unit,
             old_own, old_own, old_tiles, old_tiles, old_player_id=entry.player_id,
         ))
         self._convert_done.add(key)
 
-    def _flush_convert_refresh(self) -> None:
-        """The mid-stroke repaint: cache and canvas only, index left stale
-        (see this section's header)."""
-        if self._convert_model is not None and self._convert_pending_splices:
-            pending, self._convert_pending_splices = self._convert_pending_splices, []
+    def _flush_unit_stroke_refresh(self) -> None:
+        """The mid-stroke repaint of Convert and the Unit Brush: cache and
+        canvas only, index left stale (see this section's header)."""
+        open_stroke = self._convert_model is not None or self._unit_brush is not None
+        if open_stroke and self._unit_stroke_pending_splices:
+            pending, self._unit_stroke_pending_splices = self._unit_stroke_pending_splices, []
             self._after_unit_mutation(changed=pending, defer_index=True)
 
     def _end_convert_stroke(self) -> None:
-        self._convert_refresh_timer.stop()
+        self._unit_stroke_refresh_timer.stop()
         model = self._convert_model
         self._convert_model = None
         count = len(self._convert_done)
@@ -12868,8 +13376,9 @@ class ViewerWindow(QMainWindow):
         self._convert_done = set()
         self._convert_refused = set()
         self._convert_held = set()
+        self._convert_hosts = None
         self._convert_touched_tiles = set()
-        pending, self._convert_pending_splices = self._convert_pending_splices, []
+        pending, self._unit_stroke_pending_splices = self._unit_stroke_pending_splices, []
         if model is None:
             return
         owner_text = "GAIA" if self._convert_destination == GAIA_PLAYER_ID else f"Player {self._convert_destination}"
@@ -12885,6 +13394,166 @@ class ViewerWindow(QMainWindow):
         self._update_title()
         self._update_edit_actions()
         self._log_status(f"Converted {count} unit(s) to {owner_text}{refused_note}")
+
+    # -- Unit Brush (GH #170) -----------------------------------------------
+    #
+    # Convert's stroke shape with Place Unit's placement. One UnitEditModel
+    # edit opened at press over the owners the stroke's consts can go to, units
+    # added live, the shared throttled flush above, one record and an index
+    # rebuild at release. What each dab places is descape/unit_brush.py's.
+    #
+    # TASK-318's stale-level mark is not needed here: it guards a removal,
+    # whose before-extent is read from a level's layer. An add's splice has no
+    # old tiles, so sprite_extent_before() reads nothing for it, and a level
+    # rebuilt from the live scenario inside the window only widens the after-extent.
+    # Such a level already draws the add, so the add splice clears its new tiles
+    # before drawing it (render_cache._reanchor_units()), and it is drawn once.
+
+    def _begin_unit_brush_stroke(self) -> None:
+        # A stroke that never reached its end is committed, as the Eraser's is: its adds are live.
+        if self._unit_brush is not None:
+            self._end_unit_brush_stroke()
+        # So is an open Convert stroke, which shares the pending list.
+        if self._convert_model is not None:
+            self._end_convert_stroke()
+        # Left button only: the Eraser is one key away.
+        if self.map_view.stroke_button() != Qt.LeftButton:
+            return
+        consts = self.units_panel.selected_object_choices()
+        if not consts:
+            self._log_status("Unit Brush: choose an object first")
+            return
+        for const in consts:
+            reason = unit_brush.is_refused_const(const)
+            if reason is not None:
+                self._log_status(f"Unit Brush: can't paint {_unit_name(const)}: {reason}")
+                return
+        model = self._ensure_unit_edits()
+        if model is None:
+            return
+        # Every widget read once, so a mid-drag change cannot half-apply across one record.
+        stroke = unit_brush.BrushStroke(
+            consts=tuple(consts),
+            chosen_owner=self.units_panel.owner_id(),
+            density=self.unit_brush_density_spin.value() / 100,
+            rules=not self._restrictions_lifted(),
+            randomize=self.unit_brush_random_check.isChecked(),
+            pending=self._place_rotation,
+            rng=random.Random(),
+            off_grid=self.off_grid_check.isChecked(),
+        )
+        model.begin_unit_edit(stroke.owners())
+        self._unit_brush = stroke
+        self._unit_brush_model = model
+        self._unit_brush_base = self._unit_brush_owned(stroke)
+
+    def _unit_brush_owned(self, stroke: unit_brush.BrushStroke) -> int:
+        units = self.scenario.unit_manager.units
+        return sum(len(units[player]) for player in stroke.owners())
+
+    def _unit_brush_stroke_tiles(self, tiles, modifiers) -> None:
+        """One MapView event's cursor path: every brush tile not yet rolled this drag, as one dab."""
+        stroke, model = self._unit_brush, self._unit_brush_model
+        if stroke is None or model is None or self.scenario is None:
+            return
+        if stroke.jitter is None:
+            # on_edit_stroke_start() gets no modifiers, so a held Alt is read here, once.
+            alt = modifiers is not None and bool(modifiers & Qt.AltModifier)
+            stroke.jitter = scatter.MAX_JITTER if stroke.off_grid or alt else 0.0
+        footprint = []
+        for x, y in tiles:
+            footprint.extend(t for t in self._brush_footprint(x, y) if t not in stroke.rolled)
+        if not footprint:
+            return
+        units = self.scenario.unit_manager.units
+        cancelled = False
+
+        def add(spec: unit_brush.Spec):
+            nonlocal cancelled
+            if not cancelled:
+                # As _convert_one(): a warm in flight walks the lists add() appends to (TASK-326).
+                self._cancel_warms()
+                cancelled = True
+            unit = model.add(spec.player, spec.unit_const, spec.x, spec.y, rotation=spec.rotation)
+            own, occupied = self._unit_footprint(unit)
+            # add() appends, so the index is the tail, not an O(n) _unit_list_index() scan.
+            self._unit_stroke_pending_splices.append(
+                UnitSplice(spec.player, len(units[spec.player]) - 1, unit, None, own, (), occupied)
+            )
+            return unit
+
+        with model.batch_adds():
+            placed = unit_brush.paint_dab(self.scenario, stroke, footprint, add)
+        # Throttle, not debounce, as Convert's.
+        if placed and not self._unit_stroke_refresh_timer.isActive():
+            self._unit_stroke_refresh_timer.start(self.CONVERT_REFRESH_MS)
+
+    def _end_unit_brush_stroke(self) -> None:
+        self._unit_stroke_refresh_timer.stop()
+        stroke, self._unit_brush = self._unit_brush, None
+        model, self._unit_brush_model = self._unit_brush_model, None
+        pending, self._unit_stroke_pending_splices = self._unit_stroke_pending_splices, []
+        if stroke is None or model is None:
+            return
+        if model is not self.unit_edits:
+            # A document swap mid-drag (_drop_unit_brush_stroke() is the usual path): not this history's.
+            model.abort_unit_edit()
+            return
+        # Counted in the model, not the plan: a raise right after an add() leaves a unit the plan never saw.
+        count = self._unit_brush_owned(stroke) - self._unit_brush_base
+        if not count:
+            model.abort_unit_edit()
+            self._log_status(self._unit_brush_status(stroke))
+            return
+        label = "Paint unit" if count == 1 else f"Paint {count} units"
+        model.commit_unit_edit(label, self.edit_history)
+        # rebuild_index is load-bearing: the pick index was left stale all stroke.
+        # An add the plan never saw may have no splice either: None rebuilds the cache whole.
+        self._after_unit_mutation(changed=pending if count == len(stroke.placed) else None, rebuild_index=True)
+        self._update_title()
+        self._update_edit_actions()
+        self._log_status(self._unit_brush_status(stroke, count))
+
+    def _drop_unit_brush_stroke(self) -> None:
+        """A load or close mid-drag: the open stroke's edit is the closed
+        file's, so later moves paint nothing into the next document."""
+        stroke, self._unit_brush = self._unit_brush, None
+        model, self._unit_brush_model = self._unit_brush_model, None
+        if stroke is None:
+            return
+        self._unit_stroke_refresh_timer.stop()
+        self._unit_stroke_pending_splices = []
+        if model is not None:
+            model.abort_unit_edit()
+        self._log_status("Unit Brush: the document changed during the drag, so nothing was recorded")
+
+    def _unit_brush_status(self, stroke: unit_brush.BrushStroke, count: int = 0) -> str:
+        """The release line: what was painted (`count`, the model's), for whom,
+        and the rule refusals alone (density misses, self-stack and the map
+        edge are not counted)."""
+        if len(stroke.consts) == 1:
+            name = _unit_name(stroke.consts[0])
+        else:
+            name = self.units_panel.selected_object_label() or "objects"
+        owner = stroke.chosen_owner
+        owner_text = "GAIA" if owner == GAIA_PLAYER_ID else f"Player {owner}"
+        status = f"Painted {count} {name} for {owner_text}"
+        if not stroke.randomize and len(stroke.consts) == 1:
+            const = stroke.consts[0]
+            if unit_rotation.rotation_is_angle(const) or unit_variant.is_cyclable(const):
+                rotation = place_rotation.rotation_for(stroke.pending, const, unit_kind.placement_owner(const, owner))
+                status += f", {self._placement_rotation_text(const, rotation)}"
+        if stroke.refused:
+            reason = stroke.refusal_reason
+            status += f", {stroke.refused} refused"
+            if reason:
+                status += f" ({reason[0].upper()}{reason[1:]}. Tick Free placement to place them anyway.)"
+        if stroke.gaia_only:
+            status += f" ({stroke.gaia_only} GAIA-only, so placed for GAIA)"
+        hidden = sum(1 for player, unit in stroke.placed if not self._unit_filter.matches(player, unit))
+        if hidden:
+            status += f" ({hidden} hidden by a Filters toggle, so they won't be visible)"
+        return status
 
     # -- Eraser brush (GH #184) ---------------------------------------------
     #
@@ -13037,7 +13706,7 @@ class ViewerWindow(QMainWindow):
 
     def _flush_erase_refresh(self) -> None:
         """The mid-stroke repaint: cache and canvas only, the pick index left
-        for the stroke end, as _flush_convert_refresh(). Terrain Overlay's
+        for the stroke end, as _flush_unit_stroke_refresh(). Terrain Overlay's
         tiles cleared since the last flush follow the unit step, which
         repaints only what its erased units reached. Units first: the tile
         patch can rebuild a stale visible level, and the unit step has to
@@ -13213,9 +13882,17 @@ class ViewerWindow(QMainWindow):
         if self._find_dialog is not None:
             self._find_dialog.region_changed(region)
 
+    def _on_region_gesture(self, region: tuple[int, int, int, int] | None) -> None:
+        """MapView's region callback (a Select drag, or its Escape-clear): a
+        user's new region ends a lift (TASK-256), which a lift's own
+        on_region_selected() call must not."""
+        self.on_lift_finalize()
+        self.on_region_selected(region)
+
     def select_all(self) -> None:
         if self.scenario is None:
             return
+        self.on_lift_finalize()
         mm = self.scenario.map_manager
         region = (0, 0, mm.map_width, mm.map_height)
         self.on_region_selected(region)
@@ -13224,6 +13901,7 @@ class ViewerWindow(QMainWindow):
     def deselect(self) -> None:
         if self.scenario is None:
             return
+        self.on_lift_finalize()
         self.on_region_selected(None)
         self._log_status("Deselected")
 
@@ -13237,6 +13915,7 @@ class ViewerWindow(QMainWindow):
         index = self.map_view._unit_index
         if self.scenario is None or index is None:
             return
+        self.on_lift_finalize()
         mm = self.scenario.map_manager
         width, height = mm.map_width, mm.map_height
         # Same off-map skip as units_in_screen_rect: a moved-off entry isn't drawn.
@@ -13256,6 +13935,7 @@ class ViewerWindow(QMainWindow):
         """Clears the unit selection; False when there was none (TASK-325)."""
         if not self._selection:
             return False
+        self.on_lift_finalize()
         self._selection = []
         self._stack_cycle = None
         self._refresh_selection_view()
@@ -13661,7 +14341,8 @@ class ViewerWindow(QMainWindow):
         flags are replayed, not the checkboxes. The clipboard is untouched.
         The Rotate and Flip actions call this, and so does the wheel's rotate
         binding (GH #245, MapView.set_wheel_paste_hooks), one call per notch.
-        A handle (TASK-255) would call this too."""
+        A handle (TASK-255) would call this too. A flip direction becomes the
+        element that mirrors the current view's screen (_step_element)."""
         verb = "Rotate" if step in (region_transform.ROTATE_CW, region_transform.ROTATE_CCW) else "Flip"
         if self.scenario is None or self._stroke_in_progress() or self.map_view.region_drag_live():
             return
@@ -13671,7 +14352,7 @@ class ViewerWindow(QMainWindow):
             return
         # A local, as in on_region_move(): the undo below lapses self._paste_move.
         state = self._paste_move
-        element = compose(step, state.element)
+        element = compose(self._step_element(step), state.element)
         source = state.source or state.block
         pivot2 = state.pivot2 or region_transform.pivot2_of(state.anchor, state.block)
         units = [unit for player_units in self.scenario.unit_manager.units for unit in player_units]
@@ -13712,6 +14393,402 @@ class ViewerWindow(QMainWindow):
         if result.kept_orientation:
             status += f"; {result.kept_orientation} objects kept their orientation (cliffs, bridges)"
         self._log_status(status)
+
+    def _step_element(self, step: str) -> str:
+        """The D4 element a region_transform direction applies in this view:
+        a flip mirrors the screen, which is mx/my in top-down Flat."""
+        if step in (region_transform.FLIP_HORIZONTAL, region_transform.FLIP_VERTICAL):
+            return region_transform.flip_element(step, self._render_style == "flat")
+        return step
+
+    # -- Flip and Rotate Group in place (TASK-256) ---------------------------
+
+    def on_selection_transform(self, step: str) -> None:
+        """Edit > Flip Selection's pair and Rotate Selection's Rotate Group
+        pair. `step` is a region_transform direction, applied to the first of
+        _transform_target()'s targets: an armed paste (GH #197's re-paste,
+        on_region_transform()), a Units-mode selection as one group about its
+        shared centre, or a committed region in place. The two in-place
+        targets keep every unit's identity, and a run of steps on one of them
+        is one undo record (_lift_step()). While Place Unit's preview is
+        showing they leave everything alone: Rotate turns the preview there."""
+        verb = "Flip" if step in (region_transform.FLIP_HORIZONTAL, region_transform.FLIP_VERTICAL) else "Rotate Group"
+        if self.scenario is None or self._stroke_in_progress() or self.map_view.region_drag_live():
+            return
+        if self._place_ghost_active():
+            self._log_status(f"{verb}: nothing changed while placing (Rotate turns the placement preview)")
+            return
+        target = self._transform_target()
+        if target == "paste":
+            self.on_region_transform(step)
+        elif target == "units":
+            state = self._live_lift("units") or self._units_lift(verb)
+            if state is not None:
+                self._lift_step(state, step, verb)
+        elif target == "region":
+            self._transform_region(step, verb)
+        else:
+            self._log_status(f"{verb}: select units (Units mode) or a region first")
+
+    def _transform_target(self) -> str | None:
+        """What Flip and Rotate Group act on, first match wins: "paste" (an
+        armed paste), "units" (a Units-mode selection), "region" (a committed
+        region), else None, and nothing in Triggers mode. A pure read. Place
+        Unit's preview, which they leave alone, is checked when they run, so
+        enablement does not follow the hover (_update_rotate_enabled())."""
+        if self.scenario is None or self.mode == "triggers":
+            return None
+        if self._paste_armed():
+            return "paste"
+        if self.mode == "units" and self._selection:
+            return "units"
+        return "region" if self._region is not None else None
+
+    def _region_rotate_target(self) -> bool:
+        """Whether the Rotate entries turn the committed region in place
+        (TASK-256): one is selected and no paste is armed (that is
+        _region_turn_target()'s), outside Triggers mode, and Units mode has no
+        selection or Place target, which keep today's Rotate. A pure read; the
+        wheel's rotate binding never asks it, so a notch never turns terrain."""
+        if self.scenario is None or self._region is None or self.mode == "triggers" or self._paste_armed():
+            return False
+        return not (self.mode == "units" and (self._selection or self._place_rotate_armed()))
+
+    def _region_write_refusal(self, verb: str) -> str | None:
+        """Why the committed region cannot be turned in place, or None. Its
+        terrain and elevation are written together, and elevation writes need
+        a square map, so a non-square one refuses the whole turn rather than
+        tear terrain from elevation. Paste has no callable gate of its own."""
+        reason = self.game_data_lock_reason()
+        if reason is not None:
+            return f"{verb}: {reason}"
+        if not self.scenario.terrain_write_supported:
+            return f"{verb}: this file's terrain cannot be edited, so its region cannot turn"
+        if not self.scenario.map_is_square:
+            return f"{verb}: a region turns with its elevation, which needs a square map"
+        return None
+
+    def _transform_region(self, step: str, verb: str) -> None:
+        """The committed region flipped or turned in place: its terrain,
+        elevation and the units Copy Region would capture, which keep their
+        identity. A non-square quarter turn writes the turned rectangle about
+        the same centre and leaves the tiles it no longer covers as they were."""
+        state = self._live_lift("region") or self._region_lift(verb)
+        if state is not None:
+            self._lift_step(state, step, verb)
+
+    def _region_lift(self, verb: str):
+        """A new lift for the committed region, not stored yet, or None
+        (logged). Its members are the units whose anchor tile is in it (Copy
+        Region's rule) plus what they hold; `tiles` is its tiles-only block."""
+        refusal = self._region_write_refusal(verb)
+        if refusal is not None:
+            self._log_status(refusal)
+            return None
+        mm = self.scenario.map_manager
+        tx0, ty0, tx1, ty1 = rect = self._region
+        captured = [
+            unit_pick.UnitEntry(player_id, unit, int(unit.x), int(unit.y), -1)
+            for player_id, units in enumerate(self.scenario.unit_manager.units)
+            for unit in units
+            if tx0 <= int(unit.x) < tx1 and ty0 <= int(unit.y) < ty1
+        ]
+        rows = list(captured)
+        if captured:
+            model = self._ensure_unit_edits()
+            if model is None:
+                return None
+            rows += self._garrison_occupant_entries(model, captured)
+        members = tuple((entry.player_id, entry.unit) for entry in rows)
+        tiles = dataclasses.replace(region_clipboard.copy_region(mm, self.scenario.unit_manager, *rect), units=())
+        base = self.edit_history.peek_undo()
+        return region_clipboard.Lift(
+            "region", (), members, self._first_units(members), rect, self._walls_radian(), base, base,
+            tiles=tiles, region=rect,
+        )
+
+    def _write_lift_region(self, model, state, plan, label: str):
+        """The region half of _lift_step(): the turned tiles at the image
+        rectangle through the paste's own tile writer, and the units through
+        the same setters as a unit group, as one record. Not through
+        _unit_edit(), which pushes its own record (begin/commit with
+        push=False instead, then one CompositeDiffRecord, as paste does), and
+        refreshed in paste's order: unit sources, then the tile patch.
+        Returns the pushed record, or the lift's base when nothing changed."""
+        children: list = []
+        tile_record, _parts = self._write_block_tiles(plan.block, plan.rect[0], plan.rect[1], True, True, label=label)
+        if tile_record is not None:
+            children.append(tile_record)
+        unit_record = None
+        if plan.images:
+            model.begin_unit_edit(sorted({player_id for player_id, _unit in state.members}), fields_only=True)
+            try:
+                self._write_lift_units(model, state, plan)
+            except Exception:
+                model.abort_unit_edit()
+                raise
+            unit_record = model.commit_unit_edit(label, self.edit_history, push=False)
+            children.append(unit_record)
+        if not children:
+            return state.base
+        if len(children) == 1:
+            pushed = children[0]
+            if tile_record is not None:
+                self.edit_history.push_tile_record(pushed)
+            else:
+                self.edit_history.push_unit_record(pushed)
+        else:
+            pushed = CompositeDiffRecord(label, children=children)
+            self.edit_history.push_composite_record(pushed)
+        dirty = pushed.touched_indices()
+        if unit_record is None:
+            self._apply_dirty(dirty)
+        else:
+            # Gate footprints change, so no splices: wholesale sources, then the tile patch.
+            self._cancel_warms()
+            if self._cache is not None:
+                self._cache.invalidate_units()
+            self._apply_dirty(dirty)
+            self._after_unit_mutation(sources_refreshed=True)
+        self._update_edit_actions()
+        self._update_title()
+        return pushed
+
+    def _set_lift(self, state) -> None:
+        """The ONE assignment path for _lift. Rotate and Flip re-gate here, as
+        in _set_paste_move()."""
+        self._lift = state
+        self._update_rotate_enabled()
+
+    def _live_lift(self, kind: str | None = None):
+        """The lift while it still holds, else None: its record is the next
+        thing undo takes (so any other edit, an undo or a load lapses it) and
+        its target is the one it lifted, the same selection keys in Units mode
+        or the same region outside Triggers. A pure read."""
+        state = self._lift
+        if state is None or (kind is not None and state.kind != kind):
+            return None
+        if self.edit_history.peek_undo() is not state.record:
+            return None
+        if state.kind == "units":
+            held = self.mode == "units" and tuple(self._selection) == state.keys
+        else:
+            held = self.mode != "triggers" and self._region == state.region
+        return state if held else None
+
+    def on_lift_finalize(self) -> bool:
+        """Ends the lift, keeping what it wrote: the document already holds it.
+        True when one was live. Called from the gestures that pick a new
+        selection (a click, a marquee, Deselect, a Select drag) and a mode
+        switch, never from the refreshes a lift's own steps run."""
+        live = self._live_lift() is not None
+        if self._lift is not None:
+            self._set_lift(None)
+        return live
+
+    def _apply_lift_key(self) -> bool:
+        """MapView's Enter: finalizes a live lift, with a status line."""
+        state = self._live_lift()
+        if state is None:
+            return False
+        self.on_lift_finalize()
+        if state.element == "id":
+            self._log_status("Applied (no change)")
+        else:
+            self._log_status(f"Applied {'flip' if state.element in _REFLECTIONS else 'turn'}")
+        return True
+
+    def on_lift_revert(self) -> bool:
+        """MapView's Escape while a lift is live: back to before its first
+        step, keeping the selection, and a turned region's rectangle back to
+        its first one, which the history does not track. True when it acted,
+        so the next Escape does what it does without a lift."""
+        state = self._live_lift()
+        if state is None:
+            return False
+        if state.record is not state.base:
+            self._move_history(self.edit_history.peek_undo(), self.edit_history.undo, "Undo", quiet=True)
+        if state.kind == "region" and self._region != state.rect:
+            self.on_region_selected(state.rect)
+        self._set_lift(None)
+        self._log_status("Reverted to before the first flip or turn")
+        return True
+
+    def _units_lift(self, verb: str):
+        """A new lift for the Units-mode selection, not stored yet, or None
+        (logged). Its members are the selected units plus what they hold,
+        which rides along as in a move (_garrison_occupant_entries()); its
+        rect is the footprint box of the members no other member holds, so an
+        occupant stored away from its host cannot shift the pivot."""
+        index = self.map_view._unit_index
+        entries = [] if index is None else [e for e in (index.entry_for_key(k) for k in self._selection) if e is not None]
+        if not entries:
+            self._log_status(f"{verb}: no selected unit is shown")
+            return None
+        model = self._ensure_unit_edits()
+        if model is None:
+            return None
+        rows = entries + self._garrison_occupant_entries(model, entries)
+        members = tuple((entry.player_id, entry.unit) for entry in rows)
+        first_units = self._first_units(members)
+        mm = self.scenario.map_manager
+        top = [unit for (_player_id, unit), first in zip(members, first_units, strict=True) if first.holder == -1]
+        rect = units_region(top, mm.map_width, mm.map_height)
+        if rect is None:
+            self._log_status(f"{verb}: the selected units are off the map")
+            return None
+        base = self.edit_history.peek_undo()
+        return region_clipboard.Lift(
+            "units", tuple(self._selection), members, first_units, rect, self._walls_radian(), base, base
+        )
+
+    @staticmethod
+    def _first_units(members) -> tuple:
+        """region_transform.FirstUnit per (player_id, unit) member, keyed by
+        its index. A holder resolves only to a reference_id exactly one member
+        has, as copy_region() resolves garrison slots."""
+        counts: dict[int, int] = {}
+        for _player_id, unit in members:
+            counts[unit.reference_id] = counts.get(unit.reference_id, 0) + 1
+        slot = {unit.reference_id: i for i, (_player_id, unit) in enumerate(members) if counts[unit.reference_id] == 1}
+        firsts = []
+        for i, (_player_id, unit) in enumerate(members):
+            inside = unit.garrisoned_in_id
+            holder = -1 if inside in (-1, unit.reference_id) else slot.get(inside, -1)
+            firsts.append(
+                region_transform.FirstUnit(i, unit.unit_const, float(unit.x), float(unit.y), float(unit.rotation), holder)
+            )
+        return tuple(firsts)
+
+    def _walls_radian(self) -> bool:
+        return walls_are_radian([unit for units in self.scenario.unit_manager.units for unit in units])
+
+    def _lift_step(self, state, step: str, verb: str) -> None:
+        """One flip or turn of a lift (a live one, or a new one not stored
+        yet). The composed element is planned from the first state and every
+        refusal runs before any history move, so a refused step changes
+        nothing and a refused first step creates no lift. Accepted, the lift's
+        record is undone quietly (the document is then back at its first
+        state), the plan is written as one new record, or none for the
+        identity, and the lift is stored last, after any selection update. A
+        setter raising here is a bug in the plan, so it propagates."""
+        first_step = state is not self._lift
+        element = compose(self._step_element(step), state.element)
+        plan = region_transform.plan_in_place(
+            state.first_units, element, state.rect, state.file_radian, tiles=state.tiles
+        )
+        refusal = self._lift_refusal(state, plan, verb)
+        if refusal is not None:
+            self._log_status(refusal)
+            return
+        model = self._ensure_unit_edits() if state.members else None
+        if state.members and model is None:
+            return
+        if state.record is not state.base:
+            self._move_history(self.edit_history.peek_undo(), self.edit_history.undo, "Undo", quiet=True)
+        label = f"{'Flip' if element in _REFLECTIONS else 'Turn'} {self._lift_noun(state)}"
+        if element == "id":
+            record = state.base
+        elif state.kind == "units":
+            with self._unit_edit(model, label, sorted({player_id for player_id, _unit in state.members}), fields_only=True):
+                self._write_lift_units(model, state, plan)
+            record = self.edit_history.peek_undo()
+        else:
+            record = self._write_lift_region(model, state, plan, label)
+        region = None
+        if state.kind == "region":
+            region = plan.rect
+            self.on_region_selected(region)
+        self._set_lift(dataclasses.replace(state, element=element, record=record, region=region))
+        self._log_status(self._lift_status(state, step, plan, first_step))
+
+    def _lift_noun(self, state) -> str:
+        if state.kind == "region":
+            return "region"
+        selected = sum(1 for first in state.first_units if first.holder == -1)
+        return _units_text(selected, len(state.first_units) - selected)
+
+    def _lift_status(self, state, step: str, plan, first_step: bool) -> str:
+        """"Flipped 12 units horizontally" or "Turned region ↻", with the
+        objects that kept their orientation, and on a lift's first step how to
+        end it."""
+        status = {
+            region_transform.ROTATE_CW: f"Turned {self._lift_noun(state)} ↻",
+            region_transform.ROTATE_CCW: f"Turned {self._lift_noun(state)} ↺",
+            region_transform.FLIP_HORIZONTAL: f"Flipped {self._lift_noun(state)} horizontally",
+            region_transform.FLIP_VERTICAL: f"Flipped {self._lift_noun(state)} vertically",
+        }[step]
+        if plan.kept_orientation:
+            status += f"; {plan.kept_orientation} objects kept their orientation (cliffs, bridges)"
+        if first_step:
+            status += " (Enter to apply, Esc to undo)"
+        return status
+
+    def _lift_refusal(self, state, plan, verb: str) -> str | None:
+        """Why a planned step cannot be written, or None, read before any
+        history move. Any image footprint off the map refuses, Free placement
+        or not. Otherwise placement is all or nothing, as a group move's is
+        (_group_move_refusal()), with the members never blocking each other,
+        but checked per image const, since a turned gate's footprint is its
+        new sibling's: the full rule for a unit group, overlap alone for a
+        region, whose terrain turns with its units. Garrisoned units skip it,
+        as move_refusal() does. A lift's own earlier step only ever moved the
+        members, which the grid leaves out, so reading the document now is
+        reading the first state. A region's turned rectangle must fit whole
+        too: a clipped one would lose tiles."""
+        mm = self.scenario.map_manager
+        x0, y0, x1, y1 = plan.rect
+        fits = state.kind != "region" or (x0 >= 0 and y0 >= 0 and x1 <= mm.map_width and y1 <= mm.map_height)
+        if not fits or not all(
+            region_transform.image_on_map(image.unit_const, image.x, image.y, mm.map_width, mm.map_height)
+            for image in plan.images
+        ):
+            return f"{verb}: part of the selection would land off the map, move it inward first"
+        if not plan.images or self._restrictions_lifted():
+            return None
+        grid = placement_rules.BlockerGrid(self.scenario, exclude=[unit for _player_id, unit in state.members])
+        reasons = []
+        checked = 0
+        for image in plan.images:
+            _player_id, unit = state.members[image.key]
+            if unit.garrisoned_in_id != -1:
+                continue
+            checked += 1
+            if state.kind == "units":
+                reason = placement_rules.refusal(self.scenario, image.unit_const, image.x, image.y, grid=grid)
+            else:
+                found = grid.blocker(image.unit_const, image.x, image.y)
+                reason = None if found is None else (
+                    f"blocked by {_unit_name(found[1].unit_const)} "
+                    f"({'GAIA' if found[0] == GAIA_PLAYER_ID else f'Player {found[0]}'}) "
+                    f"at ({found[1].x:g}, {found[1].y:g})"
+                )
+            if reason is not None:
+                reasons.append(reason)
+        if not reasons:
+            return None
+        return (
+            f"{verb}: {len(reasons)} of {checked} units can't go there (first: {reasons[0]}). "
+            "Tick Free placement (Units mode, Place Unit or Move) to place them anyway."
+        )
+
+    @staticmethod
+    def _write_lift_units(model, state, plan) -> None:
+        """Each image onto its member, through the guarded setters only and in
+        this order: a gate's orientation sibling (set_unit_const()), the
+        position, then a facing (set_rotation()) or a wall's shape index
+        (set_wall_variant()). Everything else about the unit stays."""
+        for image in plan.images:
+            _player_id, unit = state.members[image.key]
+            if image.unit_const != unit.unit_const:
+                model.set_unit_const(unit, image.unit_const)
+            model.set_position(unit, image.x, image.y, unit.z)
+            if image.rotation_write is not None:
+                kind, value = image.rotation_write
+                if kind == region_transform.WRITE_ANGLE:
+                    model.set_rotation(unit, value)
+                else:
+                    model.set_wall_variant(unit, int(value))
 
     def _pasted_region(self, block, tx0: int, ty0: int) -> tuple[int, int, int, int]:
         """Where the selection goes after a block lands at (tx0, ty0), so the
@@ -13768,23 +14845,8 @@ class ViewerWindow(QMainWindow):
         unit_label = "Paste Region" if block.has_tiles else "Paste Units"
 
         if do_terrain or do_elevation:
-            with perf_trace.phase("paste_tiles"):
-                # Scoped snapshot: the block rectangle up front, each skirt tile just before its write.
-                history = self.edit_history
-                rect = region_clipboard.clipped_indices(block, tx0, ty0, mm.map_width, mm.map_height)
-                history.begin_stroke(mm.terrain, indices=rect)
-                with self._close_stroke_on_error("Paste Region"):
-                    if do_terrain:
-                        # A file with no layer field would draw a pasted layer and never save it.
-                        region_clipboard.paste_terrain(
-                            mm, block, tx0, ty0, carry_layer=self.scenario.terrain_has_layer
-                        )
-                        parts.append("terrain")
-                    if do_elevation:
-                        targets = region_clipboard.elevation_targets(block, tx0, ty0, mm.map_width, mm.map_height)
-                        set_tiles_elevation(mm, targets, before_write=lambda i: history.stroke_capture(mm.terrain, i))
-                        parts.append("elevation")
-                tile_record = self.edit_history.build_stroke_record("Paste Region", mm.terrain)
+            tile_record, tile_parts = self._write_block_tiles(block, tx0, ty0, do_terrain, do_elevation)
+            parts.extend(tile_parts)
             if tile_record is not None:
                 children.append(tile_record)
 
@@ -13876,6 +14938,32 @@ class ViewerWindow(QMainWindow):
         self._update_edit_actions()
         self._update_title()
         return pushed, parts, units_skipped, added_units
+
+    def _write_block_tiles(
+        self, block, tx0: int, ty0: int, do_terrain: bool, do_elevation: bool, label: str = "Paste Region"
+    ):
+        """The tile half of a paste, shared with a Select region's in-place
+        flip or turn (TASK-256): `block`'s terrain and layers, then its
+        elevation through set_tiles_elevation() and its skirt, at (tx0, ty0),
+        clipped to the map. Returns (unpushed tile record or None, parts)."""
+        mm = self.scenario.map_manager
+        parts: list[str] = []
+        with perf_trace.phase("paste_tiles"):
+            # Scoped snapshot: the block rectangle up front, each skirt tile just before its write.
+            history = self.edit_history
+            rect = region_clipboard.clipped_indices(block, tx0, ty0, mm.map_width, mm.map_height)
+            history.begin_stroke(mm.terrain, indices=rect)
+            with self._close_stroke_on_error(label):
+                if do_terrain:
+                    # A file with no layer field would draw a pasted layer and never save it.
+                    region_clipboard.paste_terrain(mm, block, tx0, ty0, carry_layer=self.scenario.terrain_has_layer)
+                    parts.append("terrain")
+                if do_elevation:
+                    targets = region_clipboard.elevation_targets(block, tx0, ty0, mm.map_width, mm.map_height)
+                    set_tiles_elevation(mm, targets, before_write=lambda i: history.stroke_capture(mm.terrain, i))
+                    parts.append("elevation")
+            tile_record = self.edit_history.build_stroke_record(label, mm.terrain)
+        return tile_record, parts
 
     def on_fill(self, x: int, y: int, modifiers) -> None:
         with perf_trace.op("fill"):
@@ -14384,6 +15472,8 @@ class ViewerWindow(QMainWindow):
             return False
         # The place-ghost memo keys on id(_iso_elevations), which an in-place edit keeps.
         self._place_ghost_memo = None
+        # The drag previews' rule answers read terrain too (TASK-327).
+        self._reset_drag_rule_memos(grid=False)
         self._cliff_hover_memo = None
         # Its cached ghost draws were placed at the old elevations.
         self._cliff_hover_look = None
@@ -16462,6 +17552,9 @@ class ViewerWindow(QMainWindow):
                 self.map_view.refresh_after_index_patch()
         with perf_trace.phase("selection_view"):
             self._refresh_selection_view()
+        # TASK-327: a just-placed unit turns the still ghost refused at once, as in the game.
+        with perf_trace.phase("place_ghost"):
+            self.map_view.refresh_place_ghost()
 
     def _patch_unit_edit_cache(
         self, changed: list[UnitSplice], batch: bool = False, terrain_bbox: tuple[int, int, int, int] | None = None,
@@ -16946,6 +18039,8 @@ class ViewerWindow(QMainWindow):
 
     def _update_edit_actions(self) -> None:
         self._refresh_paste_move_validity()
+        if self._lift is not None and self._live_lift() is None:
+            self._set_lift(None)
         box = self._focused_text_box()
         if box is not None:
             self.undo_action.setEnabled(box.document().isUndoAvailable())
@@ -17790,6 +18885,8 @@ class ViewerWindow(QMainWindow):
         # visible rather than merely wasteful.
         # The poll first: a fire after the cancel re-arms the warms (_on_viewport_changed).
         self.map_view.stop_viewport_poll()
+        # And out of zoom frames, or _cancel_warms() restarts their settle wait.
+        self.map_view.set_preframes_allowed(False)
         self._stop_placeholder_timers()
         self._cancel_warms()
         self._unit_model_prebuild.cancel()
@@ -17813,6 +18910,8 @@ class ViewerWindow(QMainWindow):
             self._history_dialog.deleteLater()
             self._history_dialog = None
         self._close_find_dialog()
+        # Same again for the trigger panel's Variables dialog.
+        self.trigger_panel.close_variables_dialog()
         # Same lifetime problem as the warm above: close() doesn't destroy the
         # window, so an armed drain timer would still fire on a shared loop.
         # The record itself is deliberately NOT cleared here: a close
@@ -18452,9 +19551,10 @@ class ViewerWindow(QMainWindow):
         that has to be restarted on the next open -- always the right side to
         err on here.
 
-        The Eraser and the Convert brush mutate the model mid-drag and reach
-        the cache only at their flush or release (TASK-326), so they cancel at
-        the mutation itself (_erase_units(), _convert_one()), not in that
+        The Eraser, the Convert brush and the Unit Brush mutate the model
+        mid-drag and reach the cache only at their flush or release (TASK-326),
+        so they cancel at the mutation itself (_erase_units(), _convert_one(),
+        _unit_brush_stroke_tiles()'s add callback), not in that
         later _after_unit_mutation() alone. Only where a unit really changes,
         not per drag event: a stroke that changed nothing has no flush to
         re-arm what a cancel dropped. _start_level_warm() then arms nothing
@@ -18464,11 +19564,13 @@ class ViewerWindow(QMainWindow):
         self._load_warmer.cancel()
         self._load_warm_queue = []
         self._last_viewport_chunk_target = None
+        # A pre-rendered zoom frame's own stamps void it; this re-renders it once the edit settles.
+        self.map_view.retarget_preframes()
 
     def _unit_flush_owed(self) -> bool:
-        """Whether an Eraser or Convert stroke has changed the model since its
-        last flush, so the cache's unit sources are behind it (TASK-326)."""
-        return bool(self._convert_pending_splices) or (
+        """Whether an Eraser, Convert or Unit Brush stroke has changed the model
+        since its last flush, so the cache's unit sources are behind it (TASK-326)."""
+        return bool(self._unit_stroke_pending_splices) or (
             self._erase is not None and bool(self._erase.pending_splices)
         )
 
@@ -18813,7 +19915,11 @@ class ViewerWindow(QMainWindow):
         no polling. A placeholder's level refines here once its view entry
         has drained (_maybe_refine(), TASK-031.25)."""
         self._maybe_refine()
-        if self._load_warmer.is_active or not self._load_warm_queue:
+        if self._load_warmer.is_active:
+            return
+        if not self._load_warm_queue:
+            # Every queued level is warm: a zoom frame refused across a level change may render now.
+            self.map_view.retry_refused_preframes()
             return
         mip, chunks = self._load_warm_queue.pop(0)
         self._load_warmer.start(self._cache, mip, chunks, on_drained=self._pump_load_warm)
@@ -18873,7 +19979,13 @@ class ViewerWindow(QMainWindow):
                 (cy0 > prev_cy0) - (cy0 < prev_cy0),
             )
         ring = margin_warm.ring_chunks(self._cache, mip, cx0, cy0, cx1, cy1, lead=lead)
-        self._margin_warmer.start(self._cache, mip, ring, on_drained=self._maybe_refine)
+        self._margin_warmer.start(self._cache, mip, ring, on_drained=self._on_margin_drained)
+
+    def _on_margin_drained(self) -> None:
+        """The margin warm cached its ring: the pending level may settle, and
+        a zoom frame refused for uncached chunks may render now."""
+        self._maybe_refine()
+        self.map_view.retry_refused_preframes()
 
     def _on_canvas_paint_timed(self, elapsed: float, mip: int) -> None:
         """MapCanvasItem's per-paint stopwatch callback (installed by
@@ -19510,6 +20622,7 @@ class ViewerWindow(QMainWindow):
             display_name = self.scenario.path.name
 
             self._drop_erase_stroke()
+            self._drop_unit_brush_stroke()
             self.edit_history.reset()
             # A new document is a new autosave key and a fresh "never
             # autosaved" state; the untitled key rides _doc_id, so reusing
@@ -19518,6 +20631,8 @@ class ViewerWindow(QMainWindow):
             self._autosaved_content = None
             self._autosave_fallback_logged = None
             self._stroke_seen_since_retry = False
+            # A lift's base is the old history's, which an empty new one could match.
+            self._set_lift(None)
             # Dropped alongside the history it pushes records onto: a model
             # held across a document switch would splice the previous file's
             # trigger bytes into this one, patch the previous file's option
@@ -19546,6 +20661,8 @@ class ViewerWindow(QMainWindow):
             # GH #172: a pending facing or variant is this document's, never the next one's.
             self._place_rotation = place_rotation.PlaceRotation()
             self._place_ghost_memo = None
+            # TASK-327: the group grid holds the old document's units.
+            self._reset_drag_rule_memos()
 
             # Opened before the render: the first paint can fire inside
             # _render_current()'s processEvents(), and counts as this load's.
@@ -19671,6 +20788,7 @@ class ViewerWindow(QMainWindow):
         gc.unfreeze()
         gc_hold.reset()
         self._drop_erase_stroke()
+        self._drop_unit_brush_stroke()
         self.edit_history.reset()
         # The trigger and entry clipboards stay (GH #3's cross-document paste), and with them the
         # live Trigger/ce objects external_targets and a cut block's inbound pin. Accepted (GH #137).
@@ -19679,6 +20797,7 @@ class ViewerWindow(QMainWindow):
         self._autosave_fallback_logged = None
         self._stroke_seen_since_retry = False
         self._autosave_retry_timer.stop()
+        self._set_lift(None)
         self.trigger_edits = None
         self._trigger_range_cache = None
         self.map_view.set_trigger_range_effects(None)
@@ -19686,6 +20805,8 @@ class ViewerWindow(QMainWindow):
         self.unit_edits = None
         self.message_edits = None
         self._trigger_overlay_ref = None
+        # TASK-327: the group grid holds the closed document's units.
+        self._reset_drag_rule_memos()
         # The keys outlive a mode switch, never a document (TASK-359); clear_image() drops MapView's copy.
         self._selection = []
         self.units_panel.show_selection_count(0)
@@ -20060,9 +21181,11 @@ def _sweep_pending_crash_reports() -> None:
 
 
 def _app_window() -> ViewerWindow:
-    """The app's window: the one ViewerWindow that allows placeholder paints (TASK-031.25 D8)."""
+    """The app's window: the one ViewerWindow that allows placeholder paints
+    (TASK-031.25 D8) and pre-rendered zoom frames (TASK-031.71)."""
     window = ViewerWindow()
     window.set_placeholders_allowed(True)
+    window.map_view.set_preframes_allowed(True)
     return window
 
 

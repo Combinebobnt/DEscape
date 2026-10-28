@@ -795,18 +795,27 @@ def test_a_gaia_ring_is_placed_like_any_other():
 def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
     """The main automated check of the enclosure plan: every ring node has
     orthogonal neighbours, so render resolves each one, and none may
-    disagree with what was stored. The ring's top edge crosses the fixture's
-    radian wall at (7, 5), which also forces the override path."""
+    disagree with what was stored. The fixture's radian wall at (7, 5) keeps
+    the file radian, so render resolves them through the override path. The
+    ring stays clear of that wall, as the Wall Circle twin does: a junction
+    there would rewrite it to a literal integer and render would resolve
+    nothing (TASK-469; the junction itself is test_wall_run.py's)."""
     from descape import render, unit_sprites
 
     window = _rect_window()
     try:
         assert window.units_panel.select_owner(owner)
-        window.on_shape_commit(_ring(3, 5, 11, 9))
+        path = _ring(20, 40, 28, 44)
+        ring = set(path)
+        window.on_shape_commit(path)
+        assert not unit_sprites.is_literal_variant_index(_gaia_wall(window).rotation, 5)
         overrides = render.wall_variant_rotation_overrides(window.scenario)
         units = window.scenario.unit_manager.units
-        ring_nodes = [u for u in units[owner] if u.unit_const == WALL and (int(u.x), int(u.y)) in set(_ring(3, 5, 11, 9))]
-        assert len(ring_nodes) >= 23
+        ring_nodes = [u for u in units[owner] if u.unit_const == WALL and (int(u.x), int(u.y)) in ring]
+        assert len(ring_nodes) == len(ring) == 24
+        on_ring = [key for key in overrides if (int(units[key[0]][key[1]].x), int(units[key[0]][key[1]].y)) in ring]
+        # Not vacuous: render resolves the ring's nodes rather than none at all.
+        assert len(on_ring) >= 20, len(on_ring)
         for (player_id, index), derived in overrides.items():
             unit = units[player_id][index]
             stored = unit_sprites.variant_index(unit.rotation, 5)
@@ -1953,5 +1962,29 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
         assert steps[1].endswith(", reshaping 4 adjacent")
         # The gate is two rows away again, so the whole row reads as one plain run.
         assert _row_indices(window) == {x: (2.0 if x in (20, 40) else 0.0) for x in range(20, 41)}
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("box", [True, False], ids=["box_on", "box_off"])
+def test_a_gate_drag_ghost_onto_walls_is_refused_only_where_the_drop_is(box):
+    """TASK-327 beside GH #194: with the box ticked the drop replaces the
+    walls, so the ghost is not refused; with it off the walls block, so it is."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    window, gate = _gate_window(box=box)
+    try:
+        view = window.map_view
+        start, end = _point_pos(window, *_GRAB), _point_pos(window, _GRAB[0] + 5, _GRAB[1])
+        _HELD["value"] = True
+        try:
+            view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+            view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+            assert view._unit_ghost_item is not None
+            assert view._unit_ghost_item.refused is not box
+            view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+        finally:
+            _HELD["value"] = False
+        assert ((gate.x, gate.y) != (27.0, _ROW + 0.5)) is box, _last_status(window)
     finally:
         _close(window)

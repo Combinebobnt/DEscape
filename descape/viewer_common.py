@@ -267,6 +267,22 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
+class FocusWheelComboBox(QComboBox):
+    """A combo the mouse wheel changes only once it has focus (TASK-344).
+    Unfocused, the wheel goes to the scroll area it sits in. StrongFocus,
+    since QComboBox's default WheelFocus would take focus on that same notch."""
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event) -> None:  # Qt override
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 class KeepOpenMenu(QMenu):
     """A menu of toggles that stays open after a pick (GH #205): a click or Space
     on a checkable row, or on one opted in with keep_open(), triggers it in place."""

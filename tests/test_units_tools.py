@@ -186,8 +186,8 @@ def test_the_units_bar_reads_in_order() -> None:
         tool_actions = {getattr(window, f"{t.tool_id}_action"): t.label for t in settings.TOOLS}
         shown = [tool_actions[a] for a in window.main_toolbar.actions() if a in tool_actions and a.isVisible()]
         assert shown == [
-            "Pan", "Select", "Move", "Eyedropper", "Ruler", "Place Unit", "Wall Rectangle", "Wall Circle",
-            "Convert", "Eraser",
+            "Pan", "Select", "Move", "Eyedropper", "Ruler", "Place Unit", "Unit Brush", "Wall Rectangle",
+            "Wall Circle", "Convert", "Eraser",
         ]
         # Overflow hides a suffix of TOOLS, so the bar must be built in that order.
         all_tools = [a for a in window.main_toolbar.actions() if a in tool_actions]

@@ -459,3 +459,19 @@ def test_a_smooth_shrink_change_invalidates_the_memo(monkeypatch):
     unit_sprites.set_smooth_shrink(True)
     _walk(style, memo)
     assert counter.calls == misses
+
+
+def test_a_column_slicing_flip_invalidates_the_memo(monkeypatch):
+    """SPRITE_COLUMN_SLICING (TASK-221) is an invariant, so the revert switch
+    never serves a contribution sliced under the other setting."""
+    scenario = _scenario()
+    style = _Style(False, scenario)
+    _layer, memo = _walk(style, render.SpriteMemo())
+    counter = _ResolveCounter(monkeypatch)
+    _walk(style, render.SpriteMemo())
+    misses, counter.calls = counter.calls, 0
+    _walk(style, memo)
+    assert counter.calls == 0 < misses
+    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", not render.SPRITE_COLUMN_SLICING)
+    _walk(style, memo)
+    assert counter.calls == misses

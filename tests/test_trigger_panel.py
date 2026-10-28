@@ -7400,10 +7400,13 @@ def test_a_two_row_entry_selection_pops_up_no_discarded_form_row() -> None:
         panel = window.trigger_panel
         panel.select_trigger(3)
         _focus_on(panel.entry_tree)
+        # Only windows this gesture shows: an earlier test on the worker may have left one up.
+        shown_before = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
         panel.select_entries([("effect", 1), ("effect", 2)])
         QApplication.processEvents()
         strays = [
-            w for w in QApplication.topLevelWidgets() if w.isVisible() and w is not window and not window.isAncestorOf(w)
+            w for w in QApplication.topLevelWidgets()
+            if w.isVisible() and w not in shown_before and w is not window and not window.isAncestorOf(w)
         ]
         assert strays == []
         assert panel.entry_tree.hasFocus()
@@ -9959,6 +9962,38 @@ def test_task356_a_split_block_against_the_top_still_offers_ctrl_click(tmp_path:
         _modifier_click(down, Qt.ControlModifier)
         assert _order(window) == _with_block_at([last - 2, last], _LONG_COUNT - 2)
         assert not down.isEnabled()
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task365_a_button_on_only_for_the_gather_says_so(tmp_path: Path) -> None:
+    """Enabled for the Ctrl+click gather alone, ▲/▼ names it; once nothing is
+    left to gather the button greys out with the plain refusal note."""
+    from PyQt5.QtCore import Qt
+
+    gather = ": Ctrl+click gathers the selection here)"
+    window = _long_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        up, down = panel.trigger_move_up_button, panel.trigger_move_down_button
+        _ctrl_select(panel, 0, 2)
+        assert up.isEnabled()
+        assert up.toolTip() == panel._MOVE_UP_TIP + " (already first" + gather
+        assert down.toolTip() == panel._MOVE_DOWN_TIP
+
+        _modifier_click(up, Qt.ControlModifier)
+        assert not up.isEnabled()
+        assert up.toolTip() == panel._MOVE_UP_TIP + " (already first)"
+
+        last = _LONG_COUNT - 1
+        _ctrl_select(panel, last - 2, last)
+        assert down.isEnabled()
+        assert down.toolTip() == panel._MOVE_DOWN_TIP + " (already last" + gather
+        _modifier_click(down, Qt.ControlModifier)
+        assert not down.isEnabled()
+        assert down.toolTip() == panel._MOVE_DOWN_TIP + " (already last)"
     finally:
         _release_modifiers(window)
         window.edit_history.mark_saved()

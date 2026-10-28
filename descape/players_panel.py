@@ -74,6 +74,7 @@ from PyQt5.QtWidgets import (
 
 from descape import ai_scripts, player_labels
 from descape.ai_scripts import AiChoice
+from descape.map_options_panel import FitHost
 from descape.player_fields import (
     CHECKBOX,
     COMBO,
@@ -176,7 +177,7 @@ def personality_choice_label(choice: AiChoice) -> str:
 _F32_EXACT_RANGE_FIELDS = frozenset({"food", "wood", "stone", "gold", "pop_limit"})
 _F32_EXACT_RANGE = 16_777_216
 _F32_EXACT_RANGE_TOOLTIP = (
-    f"Limited to ±{_F32_EXACT_RANGE:,}, the largest integer this field's "
+    "Limited to {range}, the largest integer this field's "
     "f32 mirror can represent exactly -- a larger value would desync the two "
     "stored copies."
 )
@@ -349,7 +350,7 @@ class PlayersPanel(QWidget):
         wholesale rather than clearing rows in place, since which groups
         exist depends on which specs the file has (see
         MapOptionsPanel._rebuild_host, same reasoning)."""
-        self.host = QWidget()
+        self.host = FitHost(self.area)
         self.host_layout = QVBoxLayout(self.host)
         self.host_layout.setContentsMargins(6, 6, 6, 6)
         self.area.setWidget(self.host)
@@ -610,6 +611,8 @@ class PlayersPanel(QWidget):
             form.addRow(spec.label, widget)
         self._build_point_of_view_buttons(forms.get(_POV_GROUP))
         self.host_layout.addStretch(1)
+        # TASK-122: scroll instead of squeezing the groups into the viewport.
+        self.host.refit()
 
     def _build_point_of_view_buttons(self, form: QFormLayout | None) -> None:
         """GH #22's Set View / Set to Centre / Go to View / Reset View
@@ -743,7 +746,9 @@ class PlayersPanel(QWidget):
             # range narrower than the value it is about to show would
             # silently redraw it as something else, the exact thing
             # AGENTS.md's pass-it-through-verbatim rules exist to prevent.
-            minimum = min(-_F32_EXACT_RANGE, value)
+            # Never below the spec's own floor: Pop Limit's is 0 (TASK-293).
+            floor = max(-_F32_EXACT_RANGE, spec.minimum)
+            minimum = min(floor, value)
             maximum = max(_F32_EXACT_RANGE, value)
         pov_last_tile = None
         if spec.field_id in (POV_X_FIELD, POV_Y_FIELD):
@@ -756,7 +761,8 @@ class PlayersPanel(QWidget):
         # Range notes only when editable: a read-only row's tooltip is its
         # gate reason, which the note would otherwise displace (_build_groups()).
         if editable and f32_bounded:
-            widget.setToolTip(_F32_EXACT_RANGE_TOOLTIP)
+            span = f"±{_F32_EXACT_RANGE:,}" if floor < 0 else f"{floor:,} to {_F32_EXACT_RANGE:,}"
+            widget.setToolTip(_F32_EXACT_RANGE_TOOLTIP.format(range=span))
         if editable and pov_last_tile is not None:
             widget.setToolTip(f"0 to {pov_last_tile}, or -1 for unset")
         widget.valueChanged.connect(lambda new, s=spec: self._changed(s, new))

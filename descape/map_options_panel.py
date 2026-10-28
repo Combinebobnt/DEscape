@@ -30,22 +30,103 @@ from descape.scenario_io import (
 from descape.viewer_common import FontScaledWidth, _fit_combo_width, _make_spinbox
 
 
-class _FitHost(QWidget):
-    """The scroll area's inner widget, reporting its own final width.
+class FitHost(QWidget):
+    """A scroll area's inner widget of QGroupBoxes whose forms wrap
+    (WrapLongRows), fitting their heights to its own final width.
 
-    MapOptionsPanel.resizeEvent does not fire when only this widget is resized,
+    The panel's resizeEvent does not fire when only this widget is resized,
     and the scroll area resizes it once more after deciding it needs a vertical
     scrollbar. That last narrowing is the one that re-wraps the rows, so it is
-    the only width worth fitting to.
+    the only width worth fitting to. Shared by MapOptionsPanel and
+    PlayersPanel (TASK-122); the caller sets a QVBoxLayout on it and calls
+    refit() after building the groups.
     """
 
-    def __init__(self, on_resize) -> None:
+    # Two settles it in practice (fit, scrollbar appears, refit); the third is
+    # headroom against a width that oscillates around the scrollbar threshold.
+    FIT_PASSES = 3
+
+    def __init__(self, area: QScrollArea) -> None:
         super().__init__()
-        self._on_resize = on_resize
+        self._area = area
+        self._fitting = False
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._on_resize()
+        self.refit()
+
+    def fit_height(self) -> None:
+        """Give each group box the height its wrapped rows actually need.
+
+        Same failure TriggerPanel._fit_property_height() documents, reached here
+        through a different door. WrapLongRows makes a row's height depend on
+        the width it is given, but a QGroupBox reports a sizeHint computed as if
+        nothing wrapped, so the host layout hands the box that unwrapped height
+        and the trailing addStretch(1) absorbs the surplus instead. The last
+        rows then draw outside the box while box width, scrollbar state and
+        field widths all still measure correct. Map Options' Global Victory is
+        the live case: its four custom-victory rows wrap at MIN_USEFUL_WIDTH.
+
+        Raising the host's own minimum is not enough on its own -- that only
+        lengthens the scroll range, and the stretch takes the extra. The
+        per-box minimum is what redirects it. The host minimum is what keeps
+        a freshly rebuilt host from being squeezed into the viewport before
+        Qt's deferred layout pass runs (TASK-122).
+
+        activate() first, or this measures the *previous* form: the rows were
+        added moments ago and Qt has not laid them out yet.
+        """
+        host_layout = self.layout()
+        if host_layout is None:
+            return
+        if self.isVisible():
+            # Qt shows a box added to a visible host only on a queued call, and
+            # the layout counts a hidden box as empty. Run that show now.
+            for child in self.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
+                if child.isHidden() and not child.testAttribute(Qt.WA_WState_ExplicitShowHide):
+                    child.show()
+        host_layout.activate()
+        width = self._area.viewport().width()
+        margins = host_layout.contentsMargins()
+        # The width the boxes are about to get: a freshly built box still has
+        # Qt's 100 px default width until the deferred layout pass runs.
+        box_width = width - margins.left() - margins.right()
+        for box in self.findChildren(QGroupBox):
+            form = box.layout()
+            if form is None or box_width <= 0 or not form.hasHeightForWidth():
+                continue
+            form.activate()
+            # The box's own heightForWidth adds its title and frame margins to the form's.
+            box.setMinimumHeight(
+                max(box.minimumSizeHint().height(), box.heightForWidth(box_width))
+            )
+        host_layout.activate()
+        height = host_layout.minimumSize().height()
+        if width > 0 and host_layout.hasHeightForWidth():
+            height = max(height, host_layout.heightForWidth(width))
+        self.setMinimumHeight(height)
+
+    def refit(self) -> None:
+        """Re-measure until the viewport width settles, at most a few passes.
+
+        Raising the minimums is itself what makes the vertical scrollbar
+        appear, and that takes ~20 px off the viewport and re-wraps the rows at
+        the narrower width. Measuring once leaves the boxes fitted to the
+        pre-scrollbar width, which is how this first shipped: correct at some
+        UI font sizes and ~24 px short at others, purely by where the wrap
+        point happened to land.
+        """
+        if self._fitting:
+            return
+        self._fitting = True
+        try:
+            for _ in range(self.FIT_PASSES):
+                before = self._area.viewport().width()
+                self.fit_height()
+                if self._area.viewport().width() == before:
+                    break
+        finally:
+            self._fitting = False
 
 
 class MapOptionsPanel(QWidget):
@@ -72,10 +153,6 @@ class MapOptionsPanel(QWidget):
     # widest row this panel actually builds -- see
     # tests/test_map_options_panel.py's width check. Scales with the app font.
     MIN_USEFUL_WIDTH = FontScaledWidth(300)
-
-    # Two settles it in practice (fit, scrollbar appears, refit); the third is
-    # headroom against a width that oscillates around the scrollbar threshold.
-    _FIT_PASSES = 3
 
     # Rows that only apply under a Custom victory. Greyed here rather than
     # dropped from editable_fields: "not applicable right now" is not "this
@@ -138,7 +215,6 @@ class MapOptionsPanel(QWidget):
         # The window's status notes, kept so a mode flip can refresh the summary.
         self._notes: tuple[str, ...] = ()
         self._populating = False
-        self._fitting = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -167,7 +243,7 @@ class MapOptionsPanel(QWidget):
         ownership of the widget it is given, so the previous host is deleted
         by setWidget().
         """
-        self.host = _FitHost(self._refit)
+        self.host = FitHost(self.area)
         self.host_layout = QVBoxLayout(self.host)
         self.host_layout.setContentsMargins(6, 6, 6, 6)
         self.area.setWidget(self.host)
@@ -356,64 +432,7 @@ class MapOptionsPanel(QWidget):
         # Absorbs the leftover height so the groups stay stacked at the top
         # instead of spreading out over a tall pane.
         self.host_layout.addStretch(1)
-        self._refit()
-
-    def _fit_host_height(self) -> None:
-        """Give each group box the height its wrapped rows actually need.
-
-        Same failure TriggerPanel._fit_property_height() documents, reached here
-        through a different door. WrapLongRows makes a row's height depend on
-        the width it is given, but a QGroupBox reports a sizeHint computed as if
-        nothing wrapped, so host_layout hands the box that unwrapped height and
-        the addStretch(1) above absorbs the surplus instead. The last rows then
-        draw outside the box while box width, scrollbar state and field widths
-        all still measure correct. Global Victory is the live case: its four
-        custom-victory rows wrap at MIN_USEFUL_WIDTH.
-
-        Raising the host's own minimum is not enough on its own -- that only
-        lengthens the scroll range, and the stretch takes the extra. The
-        per-box minimum is what redirects it.
-
-        activate() first, or this measures the *previous* form: the rows were
-        added moments ago and Qt has not laid them out yet.
-        """
-        self.host_layout.activate()
-        for box in self.host.findChildren(QGroupBox):
-            form = box.layout()
-            if form is None or box.width() <= 0 or not form.hasHeightForWidth():
-                continue
-            form.activate()
-            box.setMinimumHeight(
-                max(box.minimumSizeHint().height(), form.heightForWidth(box.width()))
-            )
-        self.host_layout.activate()
-        height = self.host_layout.minimumSize().height()
-        width = self.area.viewport().width()
-        if width > 0 and self.host_layout.hasHeightForWidth():
-            height = max(height, self.host_layout.heightForWidth(width))
-        self.host.setMinimumHeight(height)
-
-    def _refit(self) -> None:
-        """Re-measure until the viewport width settles, at most a few passes.
-
-        Raising the minimums is itself what makes the vertical scrollbar
-        appear, and that takes ~20 px off the viewport and re-wraps the rows at
-        the narrower width. Measuring once leaves the boxes fitted to the
-        pre-scrollbar width, which is how this first shipped: correct at some
-        UI font sizes and ~24 px short at others, purely by where the wrap
-        point happened to land.
-        """
-        if self._fitting:
-            return
-        self._fitting = True
-        try:
-            for _ in range(self._FIT_PASSES):
-                before = self.area.viewport().width()
-                self._fit_host_height()
-                if self.area.viewport().width() == before:
-                    break
-        finally:
-            self._fitting = False
+        self.host.refit()
 
     def _build_widget(self, spec) -> QWidget:
         if spec.kind == option_fields.TEXT:

@@ -89,7 +89,7 @@ def test_the_checkboxes_show_under_pan_in_triggers_mode_only() -> None:
         assert _options_shown(window) == [True] * 4
         assert _options_enabled(window) == [True, False, False, False], "greyed while Edit Area is off"
         window.area_edit_check.setChecked(True)
-        assert settings.get_trigger_area_edit() is True
+        assert settings.get_tool_option_default("area_edit") is False, "a toolbar tick lasts the session only"
         assert _options_enabled(window) == [True] * 4
         window.ruler_action.setChecked(True)
         assert _options_shown(window) == [False] * 4, "they belong to Pan"
@@ -112,20 +112,24 @@ def test_the_checkboxes_are_not_on_the_main_toolbar() -> None:
         conftest.close_window(window)
 
 
-def test_the_box_and_tile_borders_are_restored_from_settings() -> None:
+def test_the_four_boxes_start_at_their_settings_tools_defaults() -> None:
+    """TASK-272: Settings > Tools' defaults reach the boxes and the map view's
+    options at construction; a toolbar tick changes no default."""
     from descape import settings
 
-    settings.set_trigger_area_edit(True)
-    settings.set_trigger_area_tile_borders(True)
+    settings.set_tool_option_defaults(
+        {"area_edit": True, "area_move": False, "area_resize": True, "area_tile_borders": True}
+    )
     window = _window()
     try:
         assert window.area_edit_check.isChecked()
+        assert not window.area_move_check.isChecked()
         assert window.area_tile_borders_check.isChecked()
-        assert window.map_view._area_tile_borders
+        assert (window.map_view._area_move, window.map_view._area_tile_borders) == (False, True)
         window.trigger_panel.select_entry("effect", PATROL_EFFECT)
         assert window.map_view.area_edit() == _gen().GEOMETRY_PATROL_AREA
         window.area_tile_borders_check.setChecked(False)
-        assert settings.get_trigger_area_tile_borders() is False
+        assert settings.get_tool_option_default("area_tile_borders") is True
     finally:
         conftest.close_window(window)
 

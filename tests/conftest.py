@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,10 @@ from testkit import qt_capture, qt_window, settings_isolation
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT / "tools"
+
+# Every pre-rendered zoom frame hit re-checks itself against a fresh render (TASK-031.71);
+# _no_stale_preframe below fails the test that served a stale one. Set before descape imports.
+os.environ.setdefault("DESCAPE_PREFRAME_CHECK", "1")
 
 # Re-exported so the 85 existing `conftest.ensure_qapp()` call sites across
 # 30 files, and test_lazy_viewport.py's `conftest.PYQT5_AVAILABLE`
@@ -574,6 +579,19 @@ def _aoe2_dataset():
 
 
 @pytest.fixture(autouse=True)
+def _no_stale_preframe():
+    """Fails a test in which a pre-rendered zoom frame hit differed from a
+    render of the live paint (zoom_preframe.check_hit(): an edit changed
+    pixels without re-stamping a chunk, or the key left out a paint input)."""
+    yield
+    module = sys.modules.get("descape.zoom_preframe")
+    if module is None or not module.check_failures:
+        return
+    failures, module.check_failures[:] = list(module.check_failures), []
+    pytest.fail("; ".join(failures))
+
+
+@pytest.fixture(autouse=True)
 def _no_gc_hold_left():
     """A warm started under the shared QApplication engages descape.gc_hold;
     its raised threshold2 would otherwise stop full collections for the rest
@@ -703,6 +721,25 @@ def _isolated_settings(tmp_path, monkeypatch):
     average.cache_clear()
     yield
     average.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def opened_urls(monkeypatch):
+    """No test may launch a real browser (GH #160's Help links). Records every
+    QDesktopServices.openUrl() call instead: .urls holds the URL strings, .result
+    is what the call returns (True by default; set False for "no browser").
+    Autouse, so a test that never asks for it is covered too. Never call
+    monkeypatch.undo() in a test: it would drop this patch."""
+    recorder = SimpleNamespace(urls=[], result=True)
+    if PYQT5_AVAILABLE:
+        from PyQt5.QtGui import QDesktopServices
+
+        def record(url) -> bool:
+            recorder.urls.append(url.toString())
+            return recorder.result
+
+        monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(record))
+    return recorder
 
 
 def run_check(fn, *args) -> None:

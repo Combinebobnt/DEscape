@@ -9,13 +9,16 @@ pumps a shown viewer's own event loop with the shared ThreadPoolExecutor.
 
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
 
 import pytest
 from test_margin_warm import _zoomed_window
+from test_native_composite import (
+    native_backend,  # noqa: F401 -- a fixture
+    native_kernel,  # noqa: F401 -- native_backend requests it
+)
 
 import conftest
 
@@ -25,20 +28,8 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-def native_kernel():
-    """tests/test_native_composite.py's gate: worker jobs exist only on the native backend."""
-    from descape import composite_backend
-
-    if composite_backend.available():
-        return
-    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
-        pytest.fail(f"DESCAPE_REQUIRE_NATIVE=1 but {composite_backend.unavailable_reason}")
-    pytest.skip(composite_backend.unavailable_reason)
-
-
 def test_a_real_windows_margin_warm_runs_on_the_worker_pool_and_reports_worker_chunks(
-    native_kernel, monkeypatch
+    native_backend, monkeypatch  # noqa: F811
 ) -> None:
     """Pass conditions, for the ring a zoomed Stepped viewer queues on a viewport change,
     drained only by pumping the event loop:

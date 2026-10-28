@@ -370,6 +370,33 @@ def test_grid_keys_round_trip_through_the_file(tmp_path: Path, monkeypatch) -> N
     assert settings.get_grid_thickness() == 4
 
 
+def test_grid_major_every_defaults_to_four(tmp_path: Path) -> None:
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_grid_major_every() == grid_overlay.MAJOR_EVERY_DEFAULT == 4
+
+
+@pytest.mark.parametrize("raw", ["true", "'8'", "banana", "3", "32", "0", "-4", "8.0", "[8]"])
+def test_grid_major_every_reads_anything_but_a_stop_as_the_default(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"grid_major_every: {raw}\n")
+    assert settings.get_grid_major_every() == 4
+
+
+@pytest.mark.parametrize("value", grid_overlay.MAJOR_EVERY_STOPS)
+def test_grid_major_every_round_trips_through_the_file(tmp_path: Path, monkeypatch, value: int) -> None:
+    settings.set_grid_major_every(value)
+    assert (tmp_path / "config.yaml").exists()
+    monkeypatch.setattr(settings, "_grid_major_every", None)
+    assert settings.get_grid_major_every() == value
+
+
+@pytest.mark.parametrize("value", [3, 32, True, "8"])
+def test_setting_a_grid_major_every_off_the_stops_raises_and_writes_nothing(tmp_path: Path, value) -> None:
+    with pytest.raises(ValueError):
+        settings.set_grid_major_every(value)
+    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_grid_major_every() == 4
+
+
 def test_grid_keys_tolerate_malformed_yaml(tmp_path: Path) -> None:
     _write_config(tmp_path, "not: valid: yaml: [unterminated\n")
     assert settings.get_grid_overlay() is False
@@ -1320,19 +1347,146 @@ def test_a_malformed_mod_art_exclusion_list_reads_as_nothing_excluded(tmp_path: 
     assert settings.get_mod_art_excluded() == frozenset()
 
 
-# --- GH #229: Edit Area -----------------------------------------------------
+# --- TASK-272: Settings > Tools' tool option defaults ------------------------
+
+
+def _raw_config(tmp_path: Path) -> dict:
+    import yaml
+
+    path = tmp_path / "config.yaml"
+    return (yaml.safe_load(path.read_text()) or {}) if path.is_file() else {}
+
+
+def test_an_empty_config_gives_every_schema_default() -> None:
+    from descape import tool_options
+
+    assert settings.get_tool_option_defaults() == tool_options.defaults()
+
+
+def test_only_the_values_that_differ_from_the_schema_default_are_written(tmp_path: Path) -> None:
+    from descape import tool_options
+
+    # Load From Toolbar's shape: every option at once, one of them changed.
+    settings.set_tool_option_defaults({**tool_options.defaults(), "brush_size": 5})
+    assert _raw_config(tmp_path)["tool_options"] == {"brush_size": 5}
+    assert settings.get_tool_option_default("brush_size") == 5
+
+
+def test_setting_a_value_back_to_its_default_removes_the_entry_and_then_the_key(tmp_path: Path) -> None:
+    settings.set_tool_option_default("brush_size", 5)
+    settings.set_tool_option_default("free_placement", True)
+    settings.set_tool_option_default("brush_size", 1)
+    assert _raw_config(tmp_path)["tool_options"] == {"free_placement": True}
+    settings.set_tool_option_default("free_placement", False)
+    assert "tool_options" not in _raw_config(tmp_path)
+
+
+def test_a_bulk_set_is_one_write(monkeypatch) -> None:
+    writes = []
+    real = settings._save_config
+    monkeypatch.setattr(settings, "_save_config", lambda config: (writes.append(1), real(config)))
+    settings.set_tool_option_defaults({"brush_size": 3, "paint_trees": False, "eraser_targets": ["trees"]})
+    assert len(writes) == 1
+
+
+def test_reset_clears_every_override(tmp_path: Path) -> None:
+    from descape import tool_options
+
+    settings.set_tool_option_defaults({"brush_size": 3, "paint_trees": False})
+    settings.reset_tool_option_defaults()
+    assert "tool_options" not in _raw_config(tmp_path)
+    assert settings.get_tool_option_defaults() == tool_options.defaults()
 
 
 @pytest.mark.parametrize(
-    ("getter", "setter", "key"),
+    "values",
     [
-        ("get_trigger_area_edit", "set_trigger_area_edit", "trigger_area_edit"),
-        ("get_trigger_area_tile_borders", "set_trigger_area_tile_borders", "trigger_area_tile_borders"),
+        {"no_such_option": 1},
+        {"brush_size": 10},
+        {"brush_size": True},
+        {"brush_size": 4, "paint_trees": "false"},
+        {"eraser_targets": ["units", "bogus"]},
     ],
 )
-def test_edit_area_settings_default_off_and_round_trip(tmp_path: Path, monkeypatch, getter, setter, key) -> None:
-    assert getattr(settings, getter)() is False
-    getattr(settings, setter)(True)
-    monkeypatch.setattr(settings, f"_{key}", None)
-    assert getattr(settings, getter)() is True
-    assert f"{key}: true" in (tmp_path / "config.yaml").read_text()
+def test_a_bad_name_or_value_raises_and_writes_nothing(tmp_path: Path, monkeypatch, values: dict) -> None:
+    settings.set_tool_option_default("off_grid", True)
+    before = (tmp_path / "config.yaml").read_bytes()
+    with pytest.raises(ValueError):
+        settings.set_tool_option_defaults(values)
+    assert (tmp_path / "config.yaml").read_bytes() == before
+    assert settings.get_tool_option_default("brush_size") == 1, "the memo must not take the good half either"
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
+    assert settings.get_tool_option_default("off_grid") is True
+
+
+@pytest.mark.parametrize("raw", ["tool_options: [1, 2]\n", "tool_options: 7\n", "tool_options:\n"])
+def test_a_non_mapping_store_reads_as_no_overrides(tmp_path: Path, raw: str) -> None:
+    from descape import tool_options
+
+    _write_config(tmp_path, raw)
+    assert settings.get_tool_option_defaults() == tool_options.defaults()
+
+
+def test_junk_entries_degrade_one_at_a_time(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "tool_options:\n"
+        "  brush_size: 99\n"
+        "  brush_shape: 3\n"
+        "  paint_trees: false\n"
+        "  free_placement: yes_please\n"
+        "  no_such_option: 1\n"
+        "  eraser_targets: [units, bogus, trees, true]\n",
+    )
+    defaults = settings.get_tool_option_defaults()
+    assert (defaults["brush_size"], defaults["brush_shape"], defaults["free_placement"]) == (1, "square", False)
+    assert defaults["paint_trees"] is False
+    assert defaults["eraser_targets"] == ["units", "trees"], "the loader drops a set's bad members, never the set"
+    settings.set_tool_option_default("off_grid", True)
+    assert _raw_config(tmp_path)["tool_options"] == {
+        "paint_trees": False,
+        "off_grid": True,
+        "eraser_targets": ["units", "trees"],
+    }, "an unknown name is dropped on the next write"
+
+
+def test_a_changed_schema_default_reaches_a_user_who_saved_every_value(monkeypatch) -> None:
+    """The point of storing overrides only: a later build's new default still
+    reaches someone who once stored a value equal to the old one."""
+    import dataclasses
+
+    from descape import tool_options
+
+    settings.set_tool_option_defaults(tool_options.defaults())
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
+    newer = dataclasses.replace(tool_options.option("brush_size"), default=3)
+    monkeypatch.setitem(tool_options.BY_NAME, "brush_size", newer)
+    assert settings.get_tool_option_default("brush_size") == 3
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "name"),
+    [
+        ("paint_trees", "paint_trees"),
+        ("paint_eye_candy", "paint_eye_candy"),
+        ("trigger_area_edit", "area_edit"),
+        ("trigger_area_tile_borders", "area_tile_borders"),
+    ],
+)
+def test_a_legacy_write_through_key_is_read_once_as_the_default(tmp_path: Path, legacy_key: str, name: str) -> None:
+    from descape import tool_options
+
+    flipped = not tool_options.default(name)
+    _write_config(tmp_path, f"{legacy_key}: {str(flipped).lower()}\n")
+    assert settings.get_tool_option_default(name) is flipped
+    settings.set_tool_option_default("brush_size", 2)  # any write moves it under tool_options
+    raw = _raw_config(tmp_path)
+    assert legacy_key not in raw
+    assert raw["tool_options"] == {"brush_size": 2, name: flipped}
+
+
+def test_a_tool_options_entry_wins_over_its_legacy_key(tmp_path: Path) -> None:
+    _write_config(tmp_path, "paint_trees: false\ntool_options:\n  paint_trees: true\n")
+    assert settings.get_tool_option_default("paint_trees") is True
+    settings.set_tool_option_default("brush_size", 2)
+    assert _raw_config(tmp_path) == {"tool_options": {"brush_size": 2}}

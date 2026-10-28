@@ -735,11 +735,12 @@ def test_brush_size_change_refreshes_preview_without_a_mouse_move() -> None:
         window.close()
 
 
-def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
-    """Guards the no-persistence requirement: brush state is session-only,
-    with no settings.py config key, so a fresh window always starts at
-    size 1 / square regardless of what a previous window in the same
-    process left the spinbox/combo at."""
+def test_a_brush_edit_on_the_toolbar_lasts_the_session_only(monkeypatch) -> None:
+    """TASK-272: a toolbar brush edit writes no default, so a fresh window starts
+    at the Settings > Tools default (here the schema's 1 / square / 1), not at
+    what a previous window in the same process left the controls at."""
+    from descape import settings
+
     window = _edit_window("draw")
     try:
         window.brush_size_spin.setValue(9)
@@ -748,7 +749,9 @@ def test_brush_resets_to_size_1_square_on_a_fresh_window() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+    assert settings.get_tool_option_defaults()["brush_size"] == 1
 
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
     fresh = _edit_window("draw")
     try:
         assert fresh.brush_size_spin.value() == 1

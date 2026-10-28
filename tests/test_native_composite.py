@@ -58,6 +58,14 @@ def native_kernel():
     pytest.skip(composite_backend.unavailable_reason)
 
 
+@pytest.fixture
+def native_backend(native_kernel):
+    """native_kernel, then the test runs on the native backend even under
+    DESCAPE_COMPOSITE=numpy: pooling and pack warms exist only there."""
+    with composite_backend.use_backend("native"):
+        yield
+
+
 def _texture(terrain_id: int) -> np.ndarray:
     y, x = np.mgrid[0:TEXTURE_SIZE, 0:TEXTURE_SIZE]
     t = terrain_id + 1

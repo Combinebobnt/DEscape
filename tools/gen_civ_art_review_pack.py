@@ -150,6 +150,7 @@ COARSE_INJECT = "arch-from-civ"
 @contextmanager
 def _patched(inject: str | None):
     unit_sprites._scaled_cache.clear()
+    unit_sprites.clear_slice_cache()
     saved = None
     if inject is not None:
         module, name, wrap = INJECTS[inject]
@@ -161,6 +162,7 @@ def _patched(inject: str | None):
         if saved is not None:
             setattr(saved[0], saved[1], saved[2])
         unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
 
 
 # --------------------------------------------------------------- rendering

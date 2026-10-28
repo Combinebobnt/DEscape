@@ -3306,6 +3306,71 @@ def test_a_step_stops_at_the_map_edge() -> None:
         _close(window)
 
 
+def test_an_arrow_nudge_stops_the_whole_selection_at_the_map_edge() -> None:
+    """TASK-468: the nudge never clamped, so an edge unit slid off the map
+    and the next nudge of it crashed the index patch."""
+    window = _window()
+    try:
+        _free_tiles(window, [(118, 50), (119, 50), (30, 50)])
+        keys = _add_units(window, [(_HOUSE_CONST, 119.0, 50.0), (_PLACE_CONST, 30.5, 50.5)])
+        _select_keys(window, keys)
+        before = _positions(window, keys)
+        records, cursor = len(window.edit_history.records), window.edit_history.cursor
+
+        for _ in range(2):
+            assert window.on_unit_nudge(1, 0, Qt.ShiftModifier) is True
+            assert _positions(window, keys) == before
+            assert (len(window.edit_history.records), window.edit_history.cursor) == (records, cursor)
+            assert _last_status_line(window) == "2 units already at the map edge; nothing moved"
+
+        assert window.on_unit_nudge(-1, 0, Qt.ShiftModifier) is True
+        assert _positions(window, keys) == [(x - 1, y) for x, y in before]
+        assert len(window.edit_history.records) == records + 1
+    finally:
+        _close(window)
+
+
+def test_a_fine_nudge_travels_inside_the_edge_tile_but_never_past_it() -> None:
+    from descape.viewer import _unit_name
+
+    window = _window()
+    try:
+        _free_tiles(window, [(119, 52), (119, 54)])
+        inside, edge = _add_units(window, [(_PLACE_CONST, 119.5, 52.5), (_PLACE_CONST, 119.95, 54.5)])
+        _select_keys(window, [inside])
+        window.on_unit_nudge(1, 0, Qt.NoModifier)
+        assert _positions(window, [inside])[0][0] == pytest.approx(119.6, abs=1e-4)
+
+        _select_keys(window, [edge])
+        start = _positions(window, [edge])
+        assert window.on_unit_nudge(1, 0, Qt.NoModifier) is True
+        assert _positions(window, [edge]) == start
+        assert _last_status_line(window) == f"{_unit_name(_PLACE_CONST)} already at the map edge; nothing moved"
+    finally:
+        _close(window)
+
+
+def test_a_nudge_brings_an_off_map_member_back_without_raising() -> None:
+    """The reported crash path: an entry the index patch left off-map moves
+    again before any rebuild, and is pickable once back on the map."""
+    window = _window()
+    try:
+        _free_tiles(window, [(119, 56), (30, 56)])
+        keys = _add_units(window, [(_PLACE_CONST, 119.5, 56.5), (_PLACE_CONST, 30.5, 56.5)])
+        index = window.map_view._unit_index
+        stray = index.entry_for_key(keys[0])
+        window._move_units(window._ensure_unit_edits(), [stray], 1.0, 0.0, "Premise")
+        assert window.map_view._unit_index is index and stray.unit.x == 120.5
+        _select_keys(window, keys)
+
+        assert window.on_unit_nudge(-1, 0, Qt.ShiftModifier) is True
+        assert _positions(window, keys) == [(119.5, 56.5), (29.5, 56.5)]
+        entry = window.map_view._unit_index.entry_for_key(keys[0])
+        assert entry.order in window.map_view._unit_index.by_tile[(119, 56)]
+    finally:
+        _close(window)
+
+
 def test_a_z_step_moves_every_level_and_clamps_at_the_limit() -> None:
     window = _window()
     try:
@@ -4094,6 +4159,63 @@ def test_converting_a_host_holding_a_gaia_only_occupant_to_a_player_is_refused()
         _close(window)
 
 
+def _refused_host_with_occupants(window):
+    """A player-1 host holding a GAIA-only deer plus two player-1 villagers:
+    one on the host's tile, drawn ahead of it in by_tile, and one stored on
+    an empty tile of its own. Returns (host, deer, on_tile, off_tile, far)."""
+    (host_entry,) = _convert_setup(window, count=1)
+    host = host_entry.unit
+    far = _empty_tile(window)
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "test: bad file", [1]):
+        deer = model.add(1, 65, host.x, host.y, garrisoned_in_id=host.reference_id)
+        on_tile = model.add(1, _PLACE_CONST, host.x, host.y, garrisoned_in_id=host.reference_id)
+        off_tile = model.add(1, _PLACE_CONST, far[0] + 0.5, far[1] + 0.5, garrisoned_in_id=host.reference_id)
+    index = window.map_view._unit_index
+    index.by_tile[(int(host.x), int(host.y))].sort(key=lambda o: index.entries[o].unit is not on_tile)
+    return host, deer, on_tile, off_tile, far
+
+
+def test_an_occupant_reached_before_its_refused_host_stays_with_it() -> None:
+    """TASK-474: GH #32 refuses the host, so no occupant converts ahead of it,
+    whether it comes first in the host's own bucket or on an earlier tile."""
+    window = _window()
+    try:
+        host, deer, on_tile, off_tile, far = _refused_host_with_occupants(window)
+        window.convert_source_actions[1].setChecked(True)
+
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(*far)
+        window._convert_stroke_tile(int(host.x), int(host.y))
+        window._end_convert_stroke()
+
+        player_1 = window.scenario.unit_manager.units[1]
+        assert all(u in player_1 for u in (host, deer, on_tile, off_tile))
+    finally:
+        _close(window)
+
+
+def test_an_inspector_owner_change_keeps_an_occupant_selected_with_its_refused_host() -> None:
+    """TASK-474: the occupant first in the selection, its GAIA-only-holding host second."""
+    window = _window()
+    try:
+        host, deer, on_tile, _off_tile, _far = _refused_host_with_occupants(window)
+        window._selection = [unit_pick.unit_key(1, on_tile), unit_pick.unit_key(1, host)]
+        window._update_unit_inspector_from_selection()
+        before_records = len(window.edit_history.records)
+
+        combo = window.units_panel.unit_field_editors["player"]
+        combo.setCurrentIndex(combo.findData(2))
+
+        player_1 = window.scenario.unit_manager.units[1]
+        assert all(u in player_1 for u in (host, deer, on_tile))
+        assert len(window.edit_history.records) == before_records
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status == "Not reassigned to Player 2; 1 object(s) left as they were (GAIA-only or holding one)"
+    finally:
+        _close(window)
+
+
 def test_an_unticked_source_owner_keeps_its_units() -> None:
     window = _window()
     try:
@@ -4123,9 +4245,9 @@ def test_convert_pixels_change_before_the_stroke_ends() -> None:
 
         window._begin_convert_stroke()
         window._convert_stroke_tile(entry.own_x, entry.own_y)
-        assert window._convert_refresh_timer.isActive()
-        window._convert_refresh_timer.stop()
-        window._flush_convert_refresh()
+        assert window._unit_stroke_refresh_timer.isActive()
+        window._unit_stroke_refresh_timer.stop()
+        window._flush_unit_stroke_refresh()
         mid = window._cache.get_chunk(0, cx, cy).copy()
         assert window._convert_model is not None  # still mid-stroke
         window._end_convert_stroke()
@@ -4153,7 +4275,7 @@ def test_convert_coalesces_the_repaint_across_touched_tiles(monkeypatch) -> None
         assert calls == []  # no per-tile refresh; the timer hasn't fired
         window._end_convert_stroke()
         assert calls == [False]
-        assert not window._convert_refresh_timer.isActive()
+        assert not window._unit_stroke_refresh_timer.isActive()
     finally:
         _close(window)
 
@@ -4187,6 +4309,29 @@ def test_a_stroke_left_open_is_aborted_by_the_next_one() -> None:
         _close(window)
 
 
+def test_a_stroke_left_open_with_a_reassign_is_committed_by_the_next_one() -> None:
+    """GH #170 review: its reassign is already live, so the next press records
+    it (one undo step that reverts it) rather than dropping the record."""
+    window = _window()
+    try:
+        (entry,) = _convert_setup(window, count=1)
+        records = len(window.edit_history.records)
+        window._begin_convert_stroke()
+        window._convert_stroke_tile(entry.own_x, entry.own_y)
+        assert entry.unit in window.scenario.unit_manager.units[2]
+        window._begin_convert_stroke()
+        assert len(window.edit_history.records) == records + 1
+        # The pick may carry a garrison along (GH #115), so the count is not pinned.
+        assert window.edit_history.records[-1].label.startswith("Convert ")
+        assert window._unit_stroke_pending_splices == []
+        window._end_convert_stroke()
+        assert window.unit_edits._pending is None
+        window.undo()
+        assert entry.unit in window.scenario.unit_manager.units[1]
+    finally:
+        _close(window)
+
+
 def test_convert_flushes_splices_and_the_stroke_end_rebuilds_the_pick_index(monkeypatch) -> None:
     """Mid-stroke flushes splice the converted units rather than taking the
     wholesale path, and the stroke end still rebuilds the index Convert left
@@ -4209,8 +4354,8 @@ def test_convert_flushes_splices_and_the_stroke_end_rebuilds_the_pick_index(monk
         monkeypatch.setattr(window, "_after_unit_mutation", spy)
         window._begin_convert_stroke()
         window._convert_stroke_tile(entries[0].own_x, entries[0].own_y)
-        window._convert_refresh_timer.stop()
-        window._flush_convert_refresh()
+        window._unit_stroke_refresh_timer.stop()
+        window._flush_unit_stroke_refresh()
         window._convert_stroke_tile(entries[1].own_x, entries[1].own_y)
         window._end_convert_stroke()
 
@@ -4272,20 +4417,28 @@ def test_the_off_grid_checkbox_shows_only_for_place_unit_and_move() -> None:
         _close(window)
 
 
-def test_the_toggle_is_session_only_and_starts_off() -> None:
-    """Tool options are deliberately not persisted, so there is no settings
-    key behind either placement box and a fresh window must start snapped
-    and restricted."""
+def test_the_toggles_start_off_and_a_tick_lasts_the_session_only(monkeypatch) -> None:
+    """TASK-272: a fresh window starts snapped and restricted (the schema
+    default), and ticking either box writes no default for the next window."""
+    from descape import settings
+
     window = _window()
     try:
         assert not window.off_grid_check.isChecked()
         assert not window.unrestricted_check.isChecked()
-        names = dir(__import__("descape.settings", fromlist=["x"]))
-        assert not any("off_grid" in key or "unrestricted" in key for key in names), (
-            "a placement box grew a settings accessor; both are supposed to be session-only"
-        )
+        window.off_grid_check.setChecked(True)
+        window.unrestricted_check.setChecked(True)
     finally:
         _close(window)
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
+    assert settings.get_tool_option_defaults()["off_grid"] is False
+    assert settings.get_tool_option_defaults()["free_placement"] is False
+    fresh = _window()
+    try:
+        assert not fresh.off_grid_check.isChecked()
+        assert not fresh.unrestricted_check.isChecked()
+    finally:
+        _close(fresh)
 
 
 def test_placement_snaps_by_default_and_floats_with_the_toggle() -> None:

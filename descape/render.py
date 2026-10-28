@@ -1025,16 +1025,18 @@ def _grid_stamp_flat(tile_px: int, edges: tuple, grid: GridBake):
 
 
 @lru_cache(maxsize=64)
-def _grid_lod_edges_filter(minor_spacing_px: float) -> tuple[bool, bool]:
-    lod = grid_overlay.bake_lod(minor_spacing_px)
+def _grid_lod_edges_filter(minor_spacing_px: float, major_every: int) -> tuple[bool, bool]:
+    lod = grid_overlay.bake_lod(minor_spacing_px, major_every)
     return lod.draw_grid, lod.draw_minors
 
 
-def _grid_edges(tx: int, ty: int, map_w: int, map_h: int, minor_spacing_px: float, elevations=None) -> tuple:
-    draw_grid, draw_minors = _grid_lod_edges_filter(minor_spacing_px)
+def _grid_edges(
+    tx: int, ty: int, map_w: int, map_h: int, minor_spacing_px: float, major_every: int, elevations=None,
+) -> tuple:
+    draw_grid, draw_minors = _grid_lod_edges_filter(minor_spacing_px, major_every)
     if not draw_grid:
         return ()
-    edges = grid_overlay.owned_edges(tx, ty, map_w, map_h, elevations)
+    edges = grid_overlay.owned_edges(tx, ty, map_w, map_h, elevations, major_every)
     return edges if draw_minors else tuple(e for e in edges if e[1])
 
 
@@ -1044,7 +1046,7 @@ def _paint_grid_iso(
 ) -> None:
     """One tile's baked grid, drawn at the base its own terrain painted at.
     Stepped passes `elevations` (cliff-lip edges), Sloped passes `corners`."""
-    edges = _grid_edges(tx, ty, map_w, map_h, tile_px / 2, elevations)
+    edges = _grid_edges(tx, ty, map_w, map_h, tile_px / 2, grid.major_every, elevations)
     if not edges:
         return
     dst_y, dst_x, target, alpha, extent = _grid_stamp_iso(tile_px, edges, grid, corners)
@@ -1057,7 +1059,7 @@ def _paint_grid_flat(img, tx: int, ty: int, tile_px: int, map_w: int, map_h: int
     """Shared by render_tile() and composite_rect_flat(): only this per-tile
     step is shared, like _tile_block, so the full render stays an independent
     oracle for the chunk path."""
-    edges = _grid_edges(tx, ty, map_w, map_h, tile_px)
+    edges = _grid_edges(tx, ty, map_w, map_h, tile_px, grid.major_every)
     if not edges:
         return
     dst_y, dst_x, target, alpha, extent = _grid_stamp_flat(tile_px, edges, grid)
@@ -3145,7 +3147,7 @@ def _paint_objects_sloped(
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
-            continue  # its sprite paints instead, once, at its anchor tile
+            continue  # its sprite paints instead, at its anchor tiles (_paint_objects_iso)
         if _sloped_mark_conforms(unit):
             # This unit's own tile IS its whole footprint (see
             # unit_tile_bounds' invariant), and units_by_tile only ever
@@ -3169,7 +3171,7 @@ def _paint_objects_sloped(
             img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset, ink=ink, ink_rise=rise_px
         )
 
-    # Sprites after this tile's marks, in the units' own relative order.
+    # Sprites after this tile's marks, in by_anchor's order (_paint_objects_iso's comment).
     if sprites is not None:
         off_x, off_y = offset
         for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):
@@ -4189,9 +4191,10 @@ def unit_sprite_draws_at(
     drop. hero_glow likewise, or a hero would lose its ring mid-drag, and
     wall_alpha, or a wall would drag opaque."""
     overrides = {} if rotation_override is None else {(player_id, 0): rotation_override}
+    # Unsliced: the ghost draws as scaled QImages, where adjacent column slices would seam.
     contribution = _resolve_unit_sprite(
         scenario, proj, elevations, UnitFilter(), corner_rise, overrides, False,
-        player_id, 0, unit, tree_scale, hero_glow, wall_alpha,
+        player_id, 0, unit, tree_scale, hero_glow, wall_alpha, sliced=False,
     )
     if contribution is None:
         return []
@@ -4768,9 +4771,12 @@ class SpriteLayer:
     would dominate a chunk's cost outright.
 
     by_anchor maps a tile to the sprites that paint AT that tile, in the
-    units' own relative order, each as (draw, px, py, rise_px): the anchor
+    units' own relative order with moved column slices last
+    (_accumulate_contribution()), each as (draw, px, py, rise_px): the anchor
     pixel and the unit's base rise, which decides what terrain may cover its
-    ink (_paint_candidates_iso). bboxes is keyed the same way and merges
+    ink (_paint_candidates_iso). A multi-tile piece contributes one entry per
+    column run (_sprite_columns(), TASK-221), each draw a slice of the piece
+    with the same anchor pixel. bboxes is keyed the same way and merges
     straight into building_bboxes, so composite_rect_iso's existing bystander
     machinery pulls a sprite's anchor tile into the candidate set with no
     change to that function's logic at all.
@@ -4992,7 +4998,8 @@ class _SpriteContribution:
     an instance of this class) nothing at all -- see _resolve_unit_sprite().
     The one exception is DRAPED_SPRITE_CONSTS (pastures), which carry both.
 
-    by_anchor/bboxes are keyed per PIECE depth slot, so a composite building
+    by_anchor/bboxes are keyed per PIECE depth slot, and a multi-tile piece
+    per screen-column run (_sprite_columns(), TASK-221), so a building
     contributes to more than one anchor tile (a town centre's `main` paints
     three tiles earlier than the rest of it). Every key is inside the unit's
     own footprint, which is what lets a single-unit splice treat them all as
@@ -5011,6 +5018,65 @@ def _sprite_keeps_own_point(unit_const: int) -> bool:
     return unit_const in DOODAD_TILE_SPANS
 
 
+# TASK-221: multi-tile sprite pieces paint per screen column (_sprite_columns()).
+# False is the single-anchor render, the revert switch for tests, injects and the
+# release diff. A memo invariant, so flipping it never serves the other state.
+SPRITE_COLUMN_SLICING = True
+
+
+def _sprite_columns(
+    occupied: list[tuple[int, int]], key: tuple[int, int], x0: int, w: int, proj: iso_geometry.IsoProjection
+) -> list[tuple[tuple[int, int], int, int, bool]]:
+    """Where a multi-tile sprite piece's columns paint (TASK-221), as
+    (anchor, c0, c1, moved) runs over its rgba's columns [0, w), the rgba's
+    left edge at canvas x `x0`. `key` is the piece's own key (its clamped
+    slot, or sprite_anchor_tile()), the tile the whole piece painted at
+    before; `occupied` is unit_occupied_tiles().
+
+    Screen strip s, [origin_x + s*half_w, origin_x + (s+1)*half_w), is
+    covered by the tiles on lines x + y = s - 1 and s (tile_screen_origin()).
+    Its front is the occupied tile there with the largest depth key
+    (y - x, x), or, with none, the front of the nearest strip to its left.
+    A strip paints at the earlier of its front and `key`, so a unit standing
+    in front of a face sorts after that face's columns: in its own two
+    columns a 1x1 tile outside the footprint never ties the front, and has
+    the larger key exactly when it is nearer. A strip outside the occupied
+    range (art overhanging the footprint, or a footprint clamped at the map
+    edge) keeps `key`, as does a strip with no front at all. Adjacent strips
+    with one anchor merge; moved is anchor != key."""
+    fronts: dict[int, tuple[int, int]] = {}
+    for tx, ty in occupied:
+        for s in (tx + ty, tx + ty + 1):
+            front = fronts.get(s)
+            if front is None or (ty - tx, tx) > (front[1] - front[0], front[0]):
+                fronts[s] = (tx, ty)
+    lo, hi = min(fronts), max(fronts)
+    key_depth = (key[1] - key[0], key[0])
+    half_w, origin_x = proj.half_w, proj.origin_x
+    runs: list[list] = []
+    col = 0
+    strip = (x0 - origin_x) // half_w
+    front = None
+    for s in range(lo, min(strip, hi + 1)):
+        front = fronts.get(s, front)
+    while col < w:
+        end = min(w, origin_x + (strip + 1) * half_w - x0)
+        anchor = key
+        if lo <= strip <= hi:
+            front = fronts.get(strip, front)
+            if front is not None and (front[1] - front[0], front[0]) < key_depth:
+                anchor = front
+        if runs and runs[-1][0] == anchor:
+            runs[-1][2] = end
+        else:
+            runs.append([anchor, col, end])
+        col = end
+        strip += 1
+    if not runs:
+        return [(key, 0, w, False)]
+    return [(anchor, c0, c1, anchor != key) for anchor, c0, c1 in runs]
+
+
 def _resolve_unit_sprite(
     scenario: LoadedScenario,
     proj: iso_geometry.IsoProjection,
@@ -5026,6 +5092,7 @@ def _resolve_unit_sprite(
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
     flag_hosts: frozenset[int] | None = None,
+    sliced: bool = True,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -5051,7 +5118,14 @@ def _resolve_unit_sprite(
     where the "which consts" decision lives; unit_sprites just takes a float.
     `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39), and
     `wall_alpha` to unit_kind.wall_consts(), the set
-    Filters' Show Walls owns, gates included (GH #35)."""
+    Filters' Show Walls owns, gates included (GH #35).
+
+    A multi-tile unit that does not keep its own point paints each piece per
+    screen column (TASK-221, _sprite_columns()) while `sliced` and
+    SPRITE_COLUMN_SLICING hold: a column run anchored off the piece's own key
+    is a unit_sprites.slice_draw() of it, keyed on its column's front tile,
+    with a bbox from its own shape. `sliced=False` keeps whole pieces, for
+    unit_sprite_draws_at()'s ghost."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     half_w = proj.half_w
@@ -5122,7 +5196,9 @@ def _resolve_unit_sprite(
     # moment instead of the unit's single anchor, which is what lets a unit
     # stand between a town centre's back and front pieces. Slotting moves
     # ordering only, never a pixel: px/py below are unchanged either way.
-    anchor = (ux, uy) if own_point else unit_sprites.sprite_anchor_tile(unit_occupied_tiles(unit, tile_w, tile_h))
+    occupied = None if own_point else unit_occupied_tiles(unit, tile_w, tile_h)
+    anchor = (ux, uy) if own_point else unit_sprites.sprite_anchor_tile(occupied)
+    columns = sliced and SPRITE_COLUMN_SLICING and occupied is not None and len(occupied) > 1
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     # The unclamped footprint start, matching how a slot offset was derived;
     # bounds is already map-clamped and is the wrong origin to add to.
@@ -5138,17 +5214,24 @@ def _resolve_unit_sprite(
                 min(max(slot_x0 + piece.slot[0], tile_x0), tile_x1 - 1),
                 min(max(slot_y0 + piece.slot[1], tile_y0), tile_y1 - 1),
             )
-        by_anchor.setdefault(key, []).append((piece.draw, px, py, rise_px))
-        h, w = piece.draw.rgba.shape[:2]
-        x0, y0 = px - piece.draw.hotspot_x, py - piece.draw.hotspot_y
-        piece_bbox = (x0, y0, x0 + w, y0 + h)
-        bbox = bboxes.get(key)
-        bboxes[key] = piece_bbox if bbox is None else (
-            min(bbox[0], piece_bbox[0]),
-            min(bbox[1], piece_bbox[1]),
-            max(bbox[2], piece_bbox[2]),
-            max(bbox[3], piece_bbox[3]),
-        )
+        draw = piece.draw
+        h, w = draw.rgba.shape[:2]
+        x0, y0 = px - draw.hotspot_x, py - draw.hotspot_y
+        runs = _sprite_columns(occupied, key, x0, w, proj) if columns else ((key, 0, w, False),)
+        for run_key, c0, c1, moved in runs:
+            if c0 == 0 and c1 == w and not moved:
+                run_draw = draw
+            else:
+                run_draw = unit_sprites.slice_draw(draw, c0, c1, key if moved else None)
+            by_anchor.setdefault(run_key, []).append((run_draw, px, py, rise_px))
+            run_bbox = (x0 + c0, y0, x0 + c1, y0 + h)
+            bbox = bboxes.get(run_key)
+            bboxes[run_key] = run_bbox if bbox is None else (
+                min(bbox[0], run_bbox[0]),
+                min(bbox[1], run_bbox[1]),
+                max(bbox[2], run_bbox[2]),
+                max(bbox[3], run_bbox[3]),
+            )
     return _SpriteContribution(
         skip_id=id(unit), by_anchor=by_anchor, bboxes=bboxes, farm_tiles=farm_tiles
     )
@@ -5186,6 +5269,7 @@ def _sprite_memo_invariants(
     return (
         proj, mm.map_width, mm.map_height, corner_rise is not None, with_farms, tree_scale, hero_glow, wall_alpha,
         mod_graphics.generation(), unit_sprites.hi_res_generation(), game_dataset.generation(),
+        SPRITE_COLUMN_SLICING,
     )
 
 
@@ -5229,14 +5313,39 @@ def _accumulate_contribution(
     """Merges one unit's contribution into a layer's four collections, in
     place. The wholesale walk and the chunk caches' unit splice both call it,
     so a splice that feeds units in walk order builds the walk's exact layer.
-    Copies out of the contribution, never aliasing its lists."""
+    Copies out of the contribution, never aliasing its lists.
+
+    A by_anchor list is its unmoved entries in walk order, then its moved
+    column slices (unit_sprites.MovedSlice, TASK-221) stable-sorted by their
+    piece's own key in depth order: each moved slice paints after every
+    unmoved entry at its tile, and moved ones keep the order they painted in
+    when each sat at its own key (pasture slots are not in depth order in
+    the piece list)."""
     if contribution.farm_tiles:
         # Later unit wins on overlap -- overlapping farms can't
         # happen in-game, but a scenario file can contain them, and a
         # byte-identity test needs a deterministic answer.
         farm_by_tile.update(contribution.farm_tiles)
+    moved_type = unit_sprites.MovedSlice
     for key, piece_draws in contribution.by_anchor.items():
-        by_anchor.setdefault(key, []).extend(piece_draws)
+        merged = by_anchor.setdefault(key, [])
+        for entry in piece_draws:
+            draw = entry[0]
+            if type(draw) is moved_type:
+                depth = (draw.key[1] - draw.key[0], draw.key[0])
+                at = len(merged)
+                while at and type(prev := merged[at - 1][0]) is moved_type and (
+                    prev.key[1] - prev.key[0], prev.key[0]
+                ) > depth:
+                    at -= 1
+            elif not merged or type(merged[-1][0]) is not moved_type:
+                merged.append(entry)
+                continue
+            else:
+                at = len(merged) - 1
+                while at and type(merged[at - 1][0]) is moved_type:
+                    at -= 1
+            merged.insert(at, entry)
         own = contribution.bboxes[key]
         bbox = bboxes.get(key)
         bboxes[key] = own if bbox is None else (
@@ -5496,15 +5605,16 @@ def _paint_objects_iso(
     skip = sprites.skip_ids if sprites is not None else frozenset()
     for unit, color in units_by_tile.get((tile.x, tile.y), ()):
         if id(unit) in skip:
-            continue  # its sprite paints instead, once, at its anchor tile
+            continue  # its sprite paints instead, at its anchor tiles (below)
         ink_rise = _unit_mark_rise_iso(unit, proj, elevations) if ink is not None else 0
         _draw_unit_iso(
             img, unit, color, tile.x, tile.y, tile_px, proj, elevations, offset=offset, ink=ink, ink_rise=ink_rise
         )
 
-    # Sprites after this tile's marks. A sprite paints ONCE, here at the tile
-    # that comes last in depth_order among its footprint -- see
-    # unit_sprites.sprite_anchor_tile for why that tile and not the unit's own.
+    # Sprites after this tile's marks. Each piece of a sprite paints at its key
+    # (unit_sprites.sprite_anchor_tile, or its slot), a multi-tile piece cut into
+    # screen columns that each paint at their front footprint tile when that is
+    # earlier (_sprite_columns, TASK-221): every pixel paints exactly once.
     if sprites is not None:
         off_x, off_y = offset
         for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):

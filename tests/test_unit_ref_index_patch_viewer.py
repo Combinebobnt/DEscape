@@ -153,8 +153,8 @@ def _convert(window) -> None:
     first, second = _convert_targets(window)
     window._begin_convert_stroke()
     window._convert_stroke_tile(first.own_x, first.own_y)
-    window._convert_refresh_timer.stop()
-    window._flush_convert_refresh()
+    window._unit_stroke_refresh_timer.stop()
+    window._flush_unit_stroke_refresh()
     window._convert_stroke_tile(second.own_x, second.own_y)
     window._end_convert_stroke()
 

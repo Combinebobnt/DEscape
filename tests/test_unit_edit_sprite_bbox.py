@@ -469,7 +469,9 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
 @pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
 def test_place_move_and_delete_a_tall_unit(style, mip, const, art, monkeypatch) -> None:
     """Place has only a post side, Delete only a pre side, Move both. The
-    castle is multi-anchor (its tower piece keys a second footprint tile)."""
+    castle is multi-anchor: its main piece's column slices key every tile on
+    its two front faces (TASK-221), the tower's slot (the back corner on the
+    left face) among them."""
     player = 1 if const == CASTLE else 0
     window = _window(style)
     try:
@@ -483,7 +485,16 @@ def test_place_move_and_delete_a_tall_unit(style, mip, const, art, monkeypatch) 
             window.scenario, cache.proj, cache.elevations, cache.unit_filter, None, {}, True, player,
             window.scenario.unit_manager.units[player].index(unit), unit,
         )
-        assert len(contribution.bboxes) == (2 if const == CASTLE else 1)
+        mm = window.scenario.map_manager
+        tiles = render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+        x0, y1 = min(x for x, _ in tiles), max(y for _, y in tiles)
+        faces = {t for t in tiles if t[0] == x0 or t[1] == y1}
+        assert set(contribution.bboxes) == (faces if const == CASTLE else set(tiles))
+        assert len(contribution.bboxes) == (7 if const == CASTLE else 1)
+        if const == CASTLE:
+            # The tower paints unmoved at its slot; the main piece's slices there are all moved ones.
+            y0 = min(y for _, y in tiles)
+            assert any(type(d) is not unit_sprites.MovedSlice for d, *_ in contribution.by_anchor[(x0, y0)])
         spy.assert_tight(mip)
         placed = _check(window, mip, "place")
         assert not np.array_equal(placed, start)
@@ -748,7 +759,7 @@ def test_a_convert_stroke_its_undo_and_redo_match_a_fresh_numpy_render(style, ar
         window._begin_convert_stroke()
         window._convert_stroke_tile(60, 60)
         assert heroes[0] in window.scenario.unit_manager.units[2]
-        window._flush_convert_refresh()
+        window._flush_unit_stroke_refresh()
         mid = _check_numpy(window, "mid-stroke")
         assert not np.array_equal(mid, start), "the first hero's recolour was not on screen before release"
         for x in range(61, 67):

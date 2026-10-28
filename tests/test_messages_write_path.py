@@ -150,3 +150,19 @@ def test_multi_domain_save_lands_all_four_edits(tmp_path: Path) -> None:
         reloaded._scenario.sections["Messages"].retriever_map["ascii_victory"].data
         == "multi-domain victory text"
     )
+
+
+def test_task397_the_longest_message_a_file_can_reload_is_32767_bytes(tmp_path: Path) -> None:
+    """The library reads a str16 prefix signed, so 32,768 bytes wrote a file
+    that no longer loaded. The model refuses it; 32,767 saves and reloads."""
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    model = MessagesEditModel(loaded)
+    with pytest.raises(ValueError, match="field limit"):
+        model.set_value("history", "x" * 32768)
+    assert not model.has_edits
+
+    model.set_value("history", "x" * 32767)
+    out = tmp_path / "longest.aoe2scenario"
+    write_scenario(loaded, out, messages=model, backup=False)
+    reloaded = load_map_and_units(out)
+    assert reloaded._scenario.sections["Messages"].retriever_map["ascii_history"].data == "x" * 32767

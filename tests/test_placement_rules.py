@@ -139,8 +139,9 @@ def test_a_villager_on_a_bridge_over_shallow_water_passes_only_with_laid_terrain
     assert placement_rules.terrain_refusal(scenario, VILLAGER, 9.5, 10.5, laid) is None
     # Off the deck, the water still refuses.
     assert placement_rules.terrain_refusal(scenario, VILLAGER, 11.5, 10.5, laid) == refused
-    # Place Unit and Move are unchanged: refusal() passes no laid terrain.
-    assert placement_rules.refusal(scenario, VILLAGER, 9.5, 10.5) == refused
+    # TASK-349: Place Unit and Move (refusal()) read the deck too, and only the deck.
+    assert placement_rules.refusal(scenario, VILLAGER, 9.5, 10.5) is None
+    assert placement_rules.refusal(scenario, VILLAGER, 11.5, 10.5) == refused
 
 
 def test_a_garrisoned_bridge_and_a_const_without_a_foundation_lay_nothing() -> None:
@@ -339,14 +340,131 @@ def test_the_grid_answers_exactly_as_the_scan_does() -> None:
     assert 60 < blocked < 540, "the sample stopped exercising both answers"
 
 
+def test_a_unit_the_grid_adds_blocks_a_later_query() -> None:
+    """GH #170's brush grows the grid as it places, so the next candidate sees the last."""
+    scenario = _scenario([[], []])
+    grid = placement_rules.BlockerGrid(scenario)
+    assert grid.blocker(VILLAGER, 10.5, 10.5) is None
+    house = _unit(HOUSE, 10, 10)
+    scenario.unit_manager.units[1].append(house)
+    grid.add(1, house)
+    assert grid.blocker(VILLAGER, 10.5, 10.5) == (1, house)
+    assert grid.blocker(VILLAGER, 12.5, 10.5) is None
+
+
+def test_an_added_gaia_unit_is_reported_before_a_player_one_unit_as_the_scan_does() -> None:
+    """Order is (player, list index), not build order: a GAIA unit added after
+    the build still comes first, exactly as a fresh blocker() scan finds it."""
+    player_house = _unit(HOUSE, 11, 10)
+    scenario = _scenario([[_unit(ARCHER, 3.5, 3.5)], [player_house]])
+    grid = placement_rules.BlockerGrid(scenario)
+    gaia_house = _unit(HOUSE, 10, 10)
+    scenario.unit_manager.units[0].append(gaia_house)
+    grid.add(0, gaia_house)
+    expected = placement_rules.blocker(scenario, VILLAGER, 10.5, 10.5)
+    assert expected == (0, gaia_house)
+    found = grid.blocker(VILLAGER, 10.5, 10.5)
+    assert found is not None and found[0] == 0 and found[1] is gaia_house
+    fresh = placement_rules.BlockerGrid(scenario).blocker(VILLAGER, 10.5, 10.5)
+    assert fresh is not None and fresh[1] is gaia_house
+
+
+def test_a_garrisoned_unit_the_grid_adds_never_blocks() -> None:
+    scenario = _scenario([[], []])
+    grid = placement_rules.BlockerGrid(scenario)
+    occupant = _unit(VILLAGER, 10.5, 10.5, garrisoned_in_id=4)
+    scenario.unit_manager.units[1].append(occupant)
+    grid.add(1, occupant)
+    assert grid.blocker(VILLAGER, 10.5, 10.5) is None
+
+
+# --- refused(): refusal() without the message ---------------------------------------
+
+
+def _refused_cases():
+    """A map with water, a beach strip, a bridge over shallow water and some blockers."""
+    terrain = {(x, y): WATER_DEEP for x in range(6) for y in range(SIZE)}
+    terrain.update({(6, y): BEACH for y in range(SIZE)})
+    terrain.update({(x, y): WATER_SHALLOW for x in range(14, 18) for y in range(8, 14)})
+    house, archer = _unit(HOUSE, 10, 14), _unit(ARCHER, 8.5, 4.5)
+    bridge = _unit(BRIDGE_MIDDLE, 16, 10.5)
+    scenario = _scenario([[archer], [house, bridge]], terrain=terrain)
+    consts = [VILLAGER, ARCHER, FISHING_SHIP, HOUSE, TOWN_CENTER, FARM, SHORE_FISH, STONE_WALL, RUGS, 999999]
+    points = [(x / 2, y / 2) for x in range(0, 2 * SIZE + 2, 3) for y in range(0, 2 * SIZE + 2, 3)]
+    return scenario, consts, points, house
+
+
+def test_refused_answers_exactly_as_refusal_does() -> None:
+    """TASK-327's predicate: over a point grid x consts, with exclude and with a grid."""
+    scenario, consts, points, house = _refused_cases()
+    grid = placement_rules.BlockerGrid(scenario)
+    grid_without = placement_rules.BlockerGrid(scenario, exclude=[house])
+    answers = set()
+    for const in consts:
+        for x, y in points:
+            for exclude, used_grid in (((), None), ((house,), None), ((), grid), ((), grid_without)):
+                expected = placement_rules.refusal(scenario, const, x, y, exclude=exclude, grid=used_grid) is not None
+                assert placement_rules.refused(scenario, const, x, y, exclude=exclude, grid=used_grid) == expected, (
+                    const, x, y, exclude, used_grid,
+                )
+                answers.add(expected)
+    assert answers == {True, False}
+
+
+def test_refused_reads_a_caller_held_laid_map_in_place_of_the_memo() -> None:
+    """The brush holds one laid_terrain() for its stroke: a bridge it knows
+    lifts the water rule, an empty map does not, and the answer with the
+    real map is the memo's."""
+    scenario, _consts, _points, _house = _refused_cases()
+    laid = placement_rules.laid_terrain(scenario)
+    on_bridge = (16.5, 10.5)
+    assert placement_rules.refused(scenario, VILLAGER, *on_bridge) is False
+    assert placement_rules.refused(scenario, VILLAGER, *on_bridge, laid=laid) is False
+    assert placement_rules.refused(scenario, VILLAGER, *on_bridge, laid={}) is True
+
+
+def test_move_refused_skips_a_garrisoned_unit_as_move_refusal_does() -> None:
+    transport = _unit(HOUSE, 12, 14)
+    scenario = _scenario([[], [transport]], terrain={(5, 5): WATER_DEEP})
+    walker, occupant = _unit(VILLAGER, 3.5, 3.5), _unit(VILLAGER, 12, 14, garrisoned_in_id=9)
+    for unit in (walker, occupant):
+        for x, y in ((5.5, 5.5), (12.5, 14.5), (8.5, 8.5)):
+            expected = placement_rules.move_refusal(scenario, unit, x, y) is not None
+            assert placement_rules.move_refused(scenario, unit, x, y) == expected
+    assert placement_rules.move_refused(scenario, walker, 5.5, 5.5)
+    assert not placement_rules.move_refused(scenario, occupant, 5.5, 5.5)
+
+
+def test_refused_builds_no_message(monkeypatch) -> None:
+    """Pins "no message" without a timing: the two name lookups raise."""
+    scenario, consts, points, _house = _refused_cases()
+    expected = {
+        (const, x, y): placement_rules.refusal(scenario, const, x, y) is not None
+        for const in consts
+        for x, y in points[::7]
+    }
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("refused() built a message")
+
+    monkeypatch.setattr(object_catalog, "display_name", boom)
+    monkeypatch.setattr(object_catalog, "resolve_name", boom)
+    for (const, x, y), answer in expected.items():
+        assert placement_rules.refused(scenario, const, x, y) == answer
+    assert any(expected.values()) and not all(expected.values())
+
+
 # --- refusal(): both rules, as a message --------------------------------------------
 
 
 def test_refusal_checks_terrain_first_and_then_names_the_blocker() -> None:
     house = _unit(HOUSE, 12, 14)
-    scenario = _scenario([[], [], [house]], terrain={(12, 14): WATER_DEEP})
-    # (12.5, 14.5) is both on water and inside the House.
-    assert placement_rules.refusal(scenario, VILLAGER, 12.5, 14.5) == "Villager Male can't stand on Water Deep"
+    archer = _unit(ARCHER, 5.5, 5.5)
+    scenario = _scenario([[], [archer], [house]], terrain={(12, 14): WATER_DEEP, (5, 5): WATER_DEEP})
+    # (5.5, 5.5) is both on water and inside the Archer, which lays no foundation.
+    assert placement_rules.refusal(scenario, VILLAGER, 5.5, 5.5) == "Villager Male can't stand on Water Deep"
+    # TASK-349: the House's own foundation covers the water under it, so only the House refuses there.
+    assert placement_rules.refusal(scenario, VILLAGER, 12.5, 14.5) == "blocked by House (Player 2) at (12, 14)"
     assert placement_rules.refusal(scenario, VILLAGER, 11.5, 13.5) == "blocked by House (Player 2) at (12, 14)"
     assert placement_rules.refusal(scenario, VILLAGER, 11.5, 13.5, exclude=[house]) is None
     assert placement_rules.refusal(scenario, VILLAGER, 9.5, 13.5) is None

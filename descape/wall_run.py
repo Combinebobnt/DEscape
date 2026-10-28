@@ -237,6 +237,14 @@ class GatePlan:
         return bool(self.removals or self.rewrites)
 
 
+def walls_under(gate_tiles, existing_walls) -> list[tuple[int, object]]:
+    """(player_id, unit) for every wall-family unit anchored on one of
+    `gate_tiles`: what a gate placed there replaces (GH #159). Pure, and
+    model-free, so Place Unit's hover asks it too (TASK-327)."""
+    footprint = set(gate_tiles)
+    return [(wall.player_id, wall.unit) for wall in existing_walls if (wall.tx, wall.ty) in footprint]
+
+
 def plan_gate_over_walls(gate_tiles, *, existing_tiles: set[tuple[int, int]], existing_walls) -> GatePlan:
     """Everything placing a gate on `gate_tiles` changes in the walls around
     it, in-game's replace rule. Pure, like plan_wall_run().
@@ -249,7 +257,7 @@ def plan_gate_over_walls(gate_tiles, *, existing_tiles: set[tuple[int, int]], ex
     swap, so the post-edit connector set is existing_tiles plus the footprint.
     """
     footprint = set(gate_tiles)
-    removals = [(wall.player_id, wall.unit) for wall in existing_walls if (wall.tx, wall.ty) in footprint]
+    removals = walls_under(footprint, existing_walls)
     neighbourhood = {
         (tx + dx, ty + dy)
         for tx, ty in footprint

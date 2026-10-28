@@ -149,7 +149,13 @@ def test_a_grid_that_paints_nothing_is_byte_identical_to_omitting_it(style, spec
 
 
 @pytest.mark.parametrize("style", ["stepped", "sloped", "flat"])
-@pytest.mark.parametrize("spec", [GRID, THICK_GRID, grid_overlay.grid_bake(True, 60, 4)])
+@pytest.mark.parametrize(
+    "spec",
+    [
+        GRID, THICK_GRID, grid_overlay.grid_bake(True, 60, 4),
+        grid_overlay.grid_bake(True, -100, 1, major_every=8), grid_overlay.grid_bake(True, -100, 1, major_every=2),
+    ],
+)
 def test_stitched_chunks_match_the_full_render_with_the_grid_on(style, spec) -> None:
     scn = _scenario(_bumpy)
     cache = _BUILDERS[style](scn)
@@ -217,6 +223,59 @@ def test_flat_grid_pixels_land_on_block_edges_and_nowhere_else() -> None:
     # Every interior tile boundary is drawn: a full-height column at each x line.
     for i in range(MAP_W):
         assert changed[:, i * tile_px].all()
+
+
+# Minors invisible, so every changed pixel is a major's.
+MAJORS_ONLY_8 = GridBake(enabled=True, minor=(0, 0, 0, 0), major=(0, 0, 0, 170), thickness=1, major_every=8)
+
+
+def _stepped_edge_mask(shape, proj, tile_px: int, wanted) -> np.ndarray:
+    """Pixels of every owned edge for which wanted(edge, index) holds, with
+    index the grid line the edge sits on."""
+    mask = np.zeros(shape, dtype=bool)
+    index_of = {"x_low": lambda x, y: x, "x_high": lambda x, y: x + 1, "y_low": lambda x, y: y, "y_high": lambda x, y: y + 1}
+    for y in range(MAP_H):
+        for x in range(MAP_W):
+            bx, by = iso_geometry.tile_screen_origin(x, y, 0, proj)
+            for edge, _ in grid_overlay.owned_edges(x, y, MAP_W, MAP_H):
+                if wanted(edge, index_of[edge](x, y)):
+                    dy, dx = iso_geometry.tile_edge_indices(tile_px, render._ISO_GRID_SIDES[edge])
+                    mask[by + dy, bx + dx] = True
+    return mask
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_iso_majors_land_on_every_eighth_line_and_not_the_fourth(style) -> None:
+    scn = _scenario()
+    _, proj = render.elevations_and_proj(scn)
+    tile_px = tile_pixels_for_map(MAP_W, MAP_H)
+    changed = _changed(style, scn, MAJORS_ONLY_8)
+    if style == "sloped":
+        # A flat map: Sloped draws Stepped's geometry (see the equality test above).
+        assert changed.shape == _changed("stepped", scn, MAJORS_ONLY_8).shape
+    majors = _stepped_edge_mask(changed.shape, proj, tile_px, lambda edge, i: i % 8 == 0)
+    fourth = _stepped_edge_mask(changed.shape, proj, tile_px, lambda edge, i: i % 8 == 4) & ~majors
+    assert majors[changed].all(), "a pixel off the every-8th lines changed"
+    assert fourth.sum() > 100
+    assert not changed[fourth].any(), "a line at index 4 or 12 drew as a major"
+    assert changed[majors].mean() > 0.95
+
+
+def test_flat_majors_land_on_every_eighth_line_and_not_the_fourth() -> None:
+    scn = _scenario()
+    tile_px = tile_pixels_for_map(MAP_W, MAP_H)
+    changed = _changed("flat", scn, MAJORS_ONLY_8)
+    rows, cols = np.nonzero(changed)
+    last = MAP_W * tile_px - 1
+    on_major = (rows % (8 * tile_px) == 0) | (cols % (8 * tile_px) == 0) | (rows == last) | (cols == last)
+    assert rows.size and on_major.all()
+    for i in (0, 8):
+        assert changed[:, i * tile_px].all() and changed[i * tile_px, :].all()
+    # Off the crossings with the majors running the other way.
+    off_major = np.ones(MAP_W * tile_px, dtype=bool)
+    off_major[[0, 8 * tile_px, last]] = False
+    for i in (4, 12):
+        assert not changed[off_major, i * tile_px].any() and not changed[i * tile_px, off_major].any()
 
 
 @pytest.mark.parametrize("style", ["stepped", "flat"])
@@ -299,6 +358,17 @@ def test_set_grid_evicts_and_an_equal_spec_is_a_no_op() -> None:
     _whole(cache)
     cache.set_grid(grid_overlay.grid_bake(True, -100, 1))
     assert len(cache._cache) == cached
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_changing_only_the_major_spacing_evicts(builder) -> None:
+    cache = builder(_scenario(_bumpy))
+    cache.set_grid(GRID)
+    before = _whole(cache).copy()
+    assert len(cache._cache) > 0
+    cache.set_grid(grid_overlay.grid_bake(True, -100, 1, major_every=8))
+    assert len(cache._cache) == 0
+    assert not np.array_equal(before, _whole(cache)), "the new spacing must reach the pixels"
 
 
 @pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])

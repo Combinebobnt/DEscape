@@ -23,8 +23,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from test_bystander_grid_patch import grid_state
-from test_convert_splice_corpus import _level_state, _pack_state
-from test_elevation_unit_splice import BASE_ELEVATION, UNIT_TILE, _place
+from test_convert_splice_corpus import _draw_key, _level_state, _pack_state
+from test_elevation_unit_splice import BASE_ELEVATION, UNIT_TILE, _make_cache, _place
 from test_invalidate_units_splice import _call_counts, _occupied, _own_tile
 from test_native_composite import native_kernel  # noqa: F401 -- fixture
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- fixture
@@ -32,7 +32,7 @@ from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- fixture
 from descape import composite_backend, level_warm, margin_warm, render_cache
 from descape.elevation_tools import set_tiles_elevation
 from descape.render import dirty_screen_bbox_iso, elevations_and_proj, tile_pixels_for_map
-from descape.render_cache import REACH_FALLBACK, IsoChunkCache, UnitSplice
+from descape.render_cache import REACH_FALLBACK, FlatChunkCache, IsoChunkCache, UnitSplice
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.unit_filter import UnitFilter
 
@@ -185,10 +185,16 @@ def test_a_unit_move_onto_and_off_pending_tiles_matches_a_fresh_cache(sprite_ins
 
 
 def _window_mutation(scenario, tool: str) -> UnitSplice:
-    """An Eraser removal or a Convert reassign of player 2's unit, through the
-    model only, as the viewer does before its flush."""
+    """An Eraser removal or a Convert reassign of player 2's unit, or a Unit
+    Brush add on EMPTY_TILE, through the model only, as the viewer does
+    before its flush. The add's tile holds no other unit: on a shared one
+    the membership component splice re-derives the whole bucket."""
     units = scenario.unit_manager.units
     unit = units[2][-1]
+    if tool == "add":
+        added = _place(scenario, 3, SPRITE_CONST, EMPTY_TILE[0] + 0.5, EMPTY_TILE[1] + 0.5)
+        scenario.unit_gen += 1
+        return UnitSplice(3, len(units[3]) - 1, added, None, _own_tile(added), (), _occupied(scenario, added))
     own, occ = _own_tile(unit), _occupied(scenario, unit)
     units[2].remove(unit)
     if tool == "erase":
@@ -199,14 +205,16 @@ def _window_mutation(scenario, tool: str) -> UnitSplice:
     return UnitSplice(3, len(units[3]) - 1, unit, own, own, occ, occ, old_player_id=2)
 
 
-@pytest.mark.parametrize("tool", ["erase", "convert"])
+@pytest.mark.parametrize("tool", ["erase", "convert", "add"])
 def test_a_pending_flush_inside_a_live_mutation_window_converges(tool, sprite_install, monkeypatch):  # noqa: F811
     """TASK-326's pending half, measured 2026-10-13 and pinned here: a paint
     flushes a pending level between a model-only mutation and its splice.
     Player 2's unit shares TILE_A, a pending tile, with units[0]. Erased, it
     cannot be located, so the flush rebuilds the level wholesale inside that
-    call; converted, it re-derives under its new owner. The flush's
-    invalidate_units() then leaves the cache equal to a fresh one."""
+    call; converted, it re-derives under its new owner. A Unit Brush add on
+    EMPTY_TILE, also pending, is not in units_by_tile yet, so the flush
+    leaves it out. The flush's invalidate_units() then leaves the cache
+    equal to a fresh one."""
     scenario, _units = _scenario()
     mover = scenario.unit_manager.units[2][-1]
     mover.x, mover.y = TILE_A[0] + 0.5, TILE_A[1] + 0.5
@@ -220,6 +228,83 @@ def test_a_pending_flush_inside_a_live_mutation_window_converges(tool, sprite_in
     assert calls == (["_commit_level"] if tool == "erase" else []), "the in-window flush's cost moved"
     cache.invalidate_units([splice])
     _assert_matches_fresh(cache, scenario, rebuilt=(-1,) if tool == "erase" else ())
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_level_rebuilt_inside_a_unit_brush_window_takes_its_add_once(style, sprite_install):  # noqa: F811
+    """GH #170 review: a stale visible level (an over-cap flush, an evict, a
+    zoom onto one) rebuilt between a brush add and its flush walks the live
+    lists, so it already holds the unit; the flush's add splice must not
+    draw it a second time."""
+    scenario, _units = _scenario()
+    cache = _make_cache(style, scenario, sprites=True)
+    for mip in MIPS:
+        cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
+    splice = _window_mutation(scenario, "add")
+    cache._levels[VISIBLE].gen = -1
+    cache._level(VISIBLE)
+    cache.invalidate_units([splice])
+    keys: dict = {}
+    fresh = _make_cache(style, scenario, sprites=True)
+    for mip in MIPS:
+        assert _level_state(cache, mip, False, keys) == _level_state(fresh, mip, False, keys), f"mip {mip}"
+
+
+def _flat_state(cache, mip: int, keys: dict):
+    """A Flat level's draws and icons, rows in order, icons by content."""
+    bboxes, colors = cache._level_unit_draws(mip)
+    icons = cache._level_icons(mip)
+    return (
+        bboxes.tolist(), colors.tolist(),
+        sorted((row, _draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y)) for row, d in icons.items()),
+    )
+
+
+@pytest.mark.parametrize("tool", ["add", "convert"])
+def test_a_flat_level_built_inside_a_unit_mutation_window_converges(tool, sprite_install):  # noqa: F811
+    """GH #170 review: Flat's counterpart. A zoom inside the window onto a
+    level never built walks the live lists, which the row table does not
+    describe yet: an add gives that level an extra row (the row splice then
+    raised on its shape), a reassign moves one. The flush's
+    invalidate_units() drops the level, which rebuilds like a fresh cache."""
+    scenario, _units = _scenario()
+    mm = scenario.map_manager
+    tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    cache = FlatChunkCache(scenario, tile_px, sprites=True)
+    cache._level_icons(0)
+    if tool == "add":
+        splice = _window_mutation(scenario, tool)
+    else:
+        # Player 1's first unit: a reassign that moves its row, which player 2's last one would not.
+        units = scenario.unit_manager.units
+        unit = units[1][0]
+        own, occ = _own_tile(unit), _occupied(scenario, unit)
+        units[1].remove(unit)
+        units[3].append(unit)
+        scenario.unit_gen += 1
+        splice = UnitSplice(3, len(units[3]) - 1, unit, own, own, occ, occ, old_player_id=1)
+    for mip in OFFSCREEN:
+        cache._level_icons(mip)
+    cache.invalidate_units([splice])
+    keys: dict = {}
+    fresh = FlatChunkCache(scenario, tile_px, sprites=True)
+    for mip in MIPS:
+        assert _flat_state(cache, mip, keys) == _flat_state(fresh, mip, keys), f"mip {mip}"
+
+
+def test_a_flat_level_built_outside_a_window_keeps_the_row_splice(sprite_install):  # noqa: F811
+    """The drop is for window-built levels only: one built before the edit is spliced, not rebuilt."""
+    scenario, _units = _scenario()
+    mm = scenario.map_manager
+    cache = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    for mip in MIPS:
+        cache._level_icons(mip)
+    draws = cache._level_draws[-1]
+    splice = _window_mutation(scenario, "add")
+    assert cache.can_splice([splice]), "vacuous: the add would go wholesale"
+    cache.invalidate_units([splice])
+    assert -1 in cache._level_icon_layers and -1 in cache._level_draws, "a level built before the edit was dropped"
+    assert len(cache._level_draws[-1][0]) == len(draws[0]) + 1
 
 
 def test_a_union_past_the_cap_rebuilds_the_level_wholesale(sprite_install, monkeypatch):  # noqa: F811

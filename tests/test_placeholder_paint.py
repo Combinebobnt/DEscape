@@ -1005,7 +1005,8 @@ def test_perf_trace_carries_the_placeholder_and_refine_events(monkeypatch) -> No
 
 
 @pytest.mark.gui
-def test_only_the_apps_window_allows_placeholders() -> None:
+def test_only_the_apps_window_allows_placeholders_and_zoom_frames() -> None:
+    """Placeholders (D8) and pre-rendered zoom frames (TASK-031.71) share the opt-in."""
     from testkit.qt_window import ensure_qapp
 
     ensure_qapp()
@@ -1018,6 +1019,8 @@ def test_only_the_apps_window_allows_placeholders() -> None:
     try:
         assert not plain._placeholders_allowed
         assert app._placeholders_allowed and app._placeholders_on()
+        assert not plain.map_view._preframes_allowed
+        assert app.map_view._preframes_allowed
     finally:
         conftest.close_window(plain)
         conftest.close_window(app)

@@ -1,8 +1,8 @@
 """The rebindable mouse wheel (Settings > Keybinds, GH #172 and GH #210):
 MapView.wheelEvent runs the action bound to the event's modifier slot.
 
-tests/test_wheel_zoom.py is the pin that the shipped defaults keep the old
-behaviour; this file is about the binding layer itself. Events go straight to
+tests/test_wheel_zoom.py pins the shipped defaults; this file is about the
+binding layer itself. Events go straight to
 view.wheelEvent(), as there, and for the same reason: a run of them has to
 stay one gesture. Alt + wheel arrives transposed on X11 and Windows (Qt 5
 delivers it as a sideways delta), so the Alt slot runs with both shapes.
@@ -243,23 +243,25 @@ def test_a_slot_bound_to_zoom_zooms_over_the_ghost_and_in_draw(slot, modifier, d
             conftest.close_window(window)
 
 
-# --- a tool action with nothing to act on zooms -----------------------------------
+# --- a tool action with nothing to act on does nothing (GH #245) -------------------
 
 
-def test_the_tool_action_zooms_on_pan() -> None:
+def test_the_tool_action_does_nothing_on_pan() -> None:
+    """User, 2026-10-25: only a row set to Zoom zooms, so a tool action with
+    no brush, ghost or paste swallows the notch instead of zooming."""
     window = _terrain_window("pan")
     try:
         view = window.map_view
         _bind(window, plain="tool")
-        size, level, scale = window.brush_size_spin.value(), window.elevation_level_spin.value(), _scale(view)
-        _wheel_xy(view, (0, 120))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
-        assert (window.brush_size_spin.value(), window.elevation_level_spin.value()) == (size, level)
+        before = (window.brush_size_spin.value(), window.elevation_level_spin.value(), _scale(view), _gesture(view))
+        event = _wheel_xy(view, (0, 120))
+        assert (window.brush_size_spin.value(), window.elevation_level_spin.value(), _scale(view), _gesture(view)) == before
+        assert event.isAccepted()
     finally:
         conftest.close_window(window)
 
 
-def test_the_brush_size_action_zooms_over_the_ghost() -> None:
+def test_the_brush_size_action_does_nothing_over_the_ghost() -> None:
     window = _place_window()
     try:
         view = window.map_view
@@ -267,29 +269,26 @@ def test_the_brush_size_action_zooms_over_the_ghost() -> None:
         _bind(window, ctrl="brush_size")
         size, scale = window.brush_size_spin.value(), _scale(view)
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
-        assert window.brush_size_spin.value() == size
-        assert _facing(window) == 0
+        assert (_scale(view), window.brush_size_spin.value(), _facing(window)) == (scale, size, 0)
     finally:
         conftest.close_window(window)
 
 
-def test_the_rotate_action_zooms_with_draw_active() -> None:
+def test_the_rotate_action_does_nothing_with_draw_active() -> None:
     window = _terrain_window("draw")
     try:
         view = window.map_view
         _bind(window, ctrl="rotate")
         size, scale = window.brush_size_spin.value(), _scale(view)
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
-        assert window.brush_size_spin.value() == size
+        assert (_scale(view), window.brush_size_spin.value()) == (scale, size)
         assert window._place_rotation.facing == 0.0
     finally:
         conftest.close_window(window)
 
 
 @pytest.mark.parametrize("action", ["tool", "brush_size"])
-def test_a_brush_action_in_the_eyedropper_zooms_and_leaves_the_level_alone(action) -> None:
+def test_a_brush_action_in_the_eyedropper_does_nothing_and_leaves_the_level_alone(action) -> None:
     """Brush size only: "]" falls through to the Level there, the wheel does not."""
     window = _terrain_window("eyedropper")
     try:
@@ -299,9 +298,7 @@ def test_a_brush_action_in_the_eyedropper_zooms_and_leaves_the_level_alone(actio
         _bind(window, ctrl=action)
         size, scale = window.brush_size_spin.value(), _scale(view)
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
-        assert window.elevation_level_spin.value() == 3
-        assert window.brush_size_spin.value() == size
+        assert (_scale(view), window.elevation_level_spin.value(), window.brush_size_spin.value()) == (scale, 3, size)
     finally:
         conftest.close_window(window)
 
@@ -552,7 +549,7 @@ def test_a_binding_saved_before_the_window_is_built_is_live_on_the_first_event()
 @pytest.mark.parametrize("tool", ["draw", "select"])
 @pytest.mark.parametrize("action", ["pan_vertical", "brush_size"])
 def test_a_wheel_event_sent_through_the_application_runs_its_binding(slot, modifier, delta, tool, action) -> None:
-    """Brush size has no brush to step in Select, so it zooms there."""
+    """Brush size has no brush to step in Select, so it does nothing there."""
     from descape.map_view import MapView
 
     window = _terrain_window(tool)
@@ -573,8 +570,8 @@ def test_a_wheel_event_sent_through_the_application_runs_its_binding(slot, modif
             assert _scale(view) == scale
             assert event.isAccepted()
         else:
-            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
-            assert window.brush_size_spin.value() == size
+            assert (_scale(view), window.brush_size_spin.value()) == (scale, size)
+            assert event.isAccepted()
     finally:
         conftest.close_window(window)
 
@@ -663,8 +660,9 @@ def test_the_wheel_turn_goes_through_on_region_transform_once_per_notch(monkeypa
 
 
 @pytest.mark.parametrize("busy", ["_stroke_in_progress", "region_drag_live"])
-def test_rotate_mid_stroke_or_mid_drag_zooms_and_leaves_the_paste(monkeypatch, busy) -> None:
-    """on_region_transform() refuses then, so the wheel must fall back to zoom, not silently do nothing."""
+def test_rotate_mid_stroke_or_mid_drag_does_nothing_and_leaves_the_paste(monkeypatch, busy) -> None:
+    """on_region_transform() refuses then, so the paste has no turn to take
+    and the wheel does nothing, as any tool action with nothing to act on."""
     window = _paste_window()
     try:
         target = window if busy == "_stroke_in_progress" else window.map_view
@@ -673,7 +671,7 @@ def test_rotate_mid_stroke_or_mid_drag_zooms_and_leaves_the_paste(monkeypatch, b
         tiles, scale = _tiles(window), _scale(window.map_view)
         _wheel_xy(window.map_view, (0, 120))
         assert _turn(window) == "id" and _tiles(window) == tiles
-        assert _scale(window.map_view) != scale
+        assert _scale(window.map_view) == scale
     finally:
         _close(window)
 
@@ -729,10 +727,8 @@ def test_brush_size_with_a_paste_armed_never_turns_it(tool) -> None:
         tiles, size, scale = _tiles(window), window.brush_size_spin.value(), _scale(view)
         _wheel_xy(view, (0, 120))
         assert _turn(window) == "id" and _tiles(window) == tiles
-        if tool == "draw":
-            assert window.brush_size_spin.value() == size + 1 and _scale(view) == scale
-        else:
-            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == scale
+        assert window.brush_size_spin.value() == (size + 1 if tool == "draw" else size)
     finally:
         _close(window)
 
@@ -775,7 +771,7 @@ def test_a_tool_switch_drops_a_leftover_paste_half_notch() -> None:
         _close(window)
 
 
-def test_rotate_with_a_units_selection_and_a_paste_armed_zooms_and_edits_no_unit() -> None:
+def test_rotate_with_a_units_selection_and_a_paste_armed_does_nothing_and_edits_no_unit() -> None:
     """_region_turn_target()'s refusal: a Units-mode selection keeps Rotate for itself."""
     window = _select_window()
     try:
@@ -791,9 +787,8 @@ def test_rotate_with_a_units_selection_and_a_paste_armed_zooms_and_edits_no_unit
         everything = _units(window, 0, 0, 120, 120)
         tiles, scale = _tiles(window), _scale(view)
         _wheel_xy(view, (0, 120))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25**2, rel=1e-9)
+        assert _scale(view) == scale
         assert _turn(window) == "id" and _tiles(window) == tiles
         assert _units(window, 0, 0, 120, 120) == everything
         assert [float(u.rotation) for u in _live(window, 4) if (u.x, u.y) == (80.5, 80.5)] == [0.0]
@@ -837,7 +832,7 @@ def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
 
     assert set(settings.WHEEL_ACTION_HINTS) == set(settings.WHEEL_ACTIONS)
     for action in ("tool", "brush_size", "rotate"):
-        assert settings.WHEEL_ACTION_HINTS[action].endswith("Zooms anywhere else."), action
+        assert settings.WHEEL_ACTION_HINTS[action].endswith("Does nothing anywhere else."), action
     assert "Brush size box" in settings.WHEEL_ACTION_HINTS["brush_size"]
     for action in ("tool", "rotate"):
         hint = settings.WHEEL_ACTION_HINTS[action]
@@ -849,7 +844,7 @@ def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
                 tip = combo.itemData(i, Qt.ToolTipRole)
                 assert tip, f"{slot}: {combo.itemText(i)!r} has no tooltip"
                 assert tip == settings.WHEEL_ACTION_HINTS[combo.itemData(i)]
-        assert dialog._wheel_note.text().endswith("Brush size and Rotate preview zoom in a tool they don't apply to.")
+        assert dialog._wheel_note.text().endswith("Brush size and Rotate preview do nothing in a tool they don't apply to.")
     finally:
         dialog.close()
         conftest.close_window(window)

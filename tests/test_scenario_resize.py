@@ -303,6 +303,37 @@ def test_trigger_coordinates_translate_and_clamp_through_their_field_groups(tmp_
         assert new.coords == expected, (old, new)
 
 
+def test_trigger_references_to_deleted_objects_are_counted_and_kept_for_map_analysis(tmp_path) -> None:
+    """TASK-219: shrinking the fixture to 69 from BOTTOM_RIGHT deletes units 500
+    and 502. The plan counts the three ids that will dangle (one per shape:
+    condition unit_object, effect location_object_reference, an id inside
+    selected_object_ids), the write leaves them as they are, and map analysis
+    flags each one afterwards. Unit 999 already dangled, so it is not counted."""
+    from descape import map_analysis
+
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    plan = resize_plan(loaded, 69, 69, Anchor.BOTTOM_RIGHT)
+    assert plan.units_deleted == 2
+    assert plan.dangling_references == 3
+    assert "3 trigger references will point at deleted objects." in plan.summary()
+
+    reloaded = _save_and_reload(resize_scenario(loaded, 69, 69, Anchor.BOTTOM_RIGHT), tmp_path)
+    assert not {500, 502} & set(_all_units(reloaded))
+    messages = [f.message for f in map_analysis.check_unit_references(reloaded).findings]
+    for shape in (
+        "destroy_object condition unit_object refers to unit id 502",
+        "task_object effect location_object_reference refers to unit id 502",
+        "task_object effect selected_object_ids refers to unit id 500",
+    ):
+        assert sum(shape in m for m in messages) == 1, (shape, messages)
+
+
+def test_a_resize_that_deletes_no_referenced_object_counts_none() -> None:
+    plan = resize_plan(load_map_and_units(TRIGGERS_FIXTURE), 100, 100, Anchor.CENTER)
+    assert plan.dangling_references == 0
+    assert "trigger reference" not in plan.summary()
+
+
 def test_a_file_without_triggers_reports_none_to_remap() -> None:
     loaded = load_map_and_units(UNITS_FIXTURE)
     plan = resize_plan(loaded, 100, 100, Anchor.CENTER)

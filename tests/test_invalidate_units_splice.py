@@ -410,16 +410,19 @@ def slotted_composite_install(tmp_path, monkeypatch):
 def test_a_slotted_composite_move_splices_every_one_of_its_anchors(
     style, slotted_composite_install, monkeypatch
 ):
-    """A composite contributes to one by_anchor key per depth slot, all inside
-    its footprint. Clearing only sprite_anchor_tile(old_tiles) would leave the
-    other slot's pieces stranded on the pre-move tile -- visible as a ghost of
-    half the building, and invisible to every sprites=False splice test."""
+    """A composite contributes to one by_anchor key per depth slot, plus its
+    column slices' fronts (TASK-221), all inside its footprint. Clearing only
+    sprite_anchor_tile(old_tiles) would leave the other keys' pieces stranded
+    on the pre-move tile -- visible as a ghost of part of the building, and
+    invisible to every sprites=False splice test. Here the four keys are the
+    whole 2x2 footprint: the two slots, and the front piece's outer columns
+    moved to the side corners."""
     scenario = _scenario()
     unit = _place(scenario, 1, MILL_CONST, *ELSEWHERE_TILE)
     cache = _make_cache(style, scenario, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims(0)
     layer = _sprite_layer(cache)
-    assert len(layer.by_anchor) == 2, "the fixture is not producing two slots"
+    assert set(layer.by_anchor) == set(_occupied(scenario, unit)), "the fixture is not producing slots and columns"
     counts = _call_counts(monkeypatch)
 
     splice = _move_splice(scenario, 1, 0, unit, *MOVED_TILE)
@@ -427,7 +430,9 @@ def test_a_slotted_composite_move_splices_every_one_of_its_anchors(
     _apply(cache, splice)
 
     assert counts == {"building_bboxes": 0, "sprites": 0}
-    assert len(_sprite_layer(cache).by_anchor) == 2, "the moved composite left a stale anchor behind"
+    assert set(_sprite_layer(cache).by_anchor) == set(_occupied(scenario, unit)), (
+        "the moved composite left a stale anchor behind"
+    )
     stitched = cache.render_rect(0, 0, canvas_w, canvas_h, mip=0)
     full = _oracle(style, scenario, sprites=True)
     assert np.array_equal(stitched, full[:canvas_h, :canvas_w])

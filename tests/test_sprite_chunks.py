@@ -12,11 +12,12 @@ true for coloured marks and false for sprites. If merge_sprite_bboxes does not
 lift it, every sprite clips at its owning chunk's edge -- a visible artifact,
 not a latent one, and one that a full-canvas render never shows.
 
-The second property pinned here is that a sprite paints ONCE. The diamond path
-buckets a multi-tile building into every footprint tile and paints one diamond
-per bucket; doing that with a sprite would draw it N times, and because a
-sprite is mostly transparent the repeats would show as a smeared stack rather
-than as a clean overdraw.
+The second property pinned here is that each sprite pixel paints ONCE. The
+diamond path buckets a multi-tile building into every footprint tile and paints
+one diamond per bucket; doing that with a sprite would draw it N times, and
+because a sprite is mostly transparent the repeats would show as a smeared
+stack rather than as a clean overdraw. Since TASK-221 a multi-tile sprite paints
+as column slices at several tiles, which must partition it.
 
 Synthetic bytes and a tmp install throughout -- no game assets, matching the
 suite's standing posture.
@@ -177,21 +178,44 @@ def test_without_the_widening_a_sprite_clips_at_a_chunk_edge(sprite_install):
     assert not np.array_equal(out, full)
 
 
-def test_a_sprite_paints_once_not_once_per_footprint_tile(sprite_install, monkeypatch):
+def test_a_sprite_paints_each_column_once_at_its_front_tile(sprite_install, monkeypatch):
     """A multi-tile building reaches the diamond path once per footprint tile.
-    Its sprite must reach the compositor exactly once."""
+    Its sprite must reach the compositor as column slices that partition it,
+    so each pixel paints once (TASK-221). A slice paints at a footprint tile on
+    its own screen columns' diagonal lines, or at sprite_anchor_tile(), the
+    tile LAST in depth_order, which overhanging columns keep."""
     span = (3, 3)
     monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, span)
     scn = _scenario([[], [Unit(5.5, 5.5, CONST)]])
     _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", False)
+    whole = render.sprite_draws_by_anchor(scn, proj, elevations)
+    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", True)
     sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
 
-    total = sum(len(v) for v in sprites.by_anchor.values())
-    assert total == 1, f"painted {total} times for a {span[0]}x{span[1]} footprint"
-    # And at the footprint tile that comes LAST in depth_order, so every
-    # footprint tile's terrain is already down when the sprite lands.
     tiles = render.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
-    assert next(iter(sprites.by_anchor)) == unit_sprites.sprite_anchor_tile(tiles)
+    key = unit_sprites.sprite_anchor_tile(tiles)
+    [(parent, px, py, _)] = whole.by_anchor[key]
+    x0 = px - parent.hotspot_x
+    covered = np.zeros(parent.rgba.shape[1], dtype=int)
+    entries = [(k, entry) for k, v in sprites.by_anchor.items() for entry in v]
+    for k, (draw, dpx, dpy, _) in entries:
+        assert (dpx, dpy, draw.hotspot_y) == (px, py, parent.hotspot_y)
+        c0 = dpx - draw.hotspot_x - x0
+        c1 = c0 + draw.rgba.shape[1]
+        assert np.array_equal(draw.rgba, parent.rgba[:, c0:c1])
+        covered[c0:c1] += 1
+        assert k in tiles
+        assert (k != key) == (type(draw) is unit_sprites.MovedSlice)
+        if k != key:
+            # The front tile of each of its strips: the tile on lines s - 1 and s latest in depth order.
+            first, last = ((x0 + c - proj.origin_x) // proj.half_w for c in (c0, c1 - 1))
+            for s in range(first, last + 1):
+                on_lines = [t for t in tiles if t[0] + t[1] in (s - 1, s)]
+                assert k == max(on_lines, key=lambda t: (t[1] - t[0], t[0])), (k, s, c0, c1)
+    assert (covered == 1).all(), "a column painted twice or not at all"
+    assert key in sprites.by_anchor
+    assert sum(k != key for k, _ in entries) >= 2, "no column moved off the key, so this proves nothing"
 
 
 def test_a_sprite_bearing_units_mark_is_not_drawn_underneath(sprite_install):
@@ -558,16 +582,27 @@ def slotted_composite_install(tmp_path, monkeypatch):
     unit_sprites.clear_caches()
 
 
-def test_a_slotted_composites_pieces_land_on_their_own_anchor_tiles(slotted_composite_install):
-    """The degenerate case this replaces put both pieces on one anchor -- the
-    pin at test_a_composite_units_stitched_chunks_match_the_full_render still
-    covers that for a piece with no slot."""
+def test_a_slotted_composites_pieces_land_on_their_slots_and_column_fronts(slotted_composite_install):
+    """Each piece paints at its own slot: the back piece wholly at (5, 4), since
+    no column front is earlier than it, and the front piece at (4, 5) except
+    for its columns over the side corners, which move to those corners
+    (TASK-221). The degenerate case slots replaced put both pieces on one
+    anchor -- the pin at test_a_composite_units_stitched_chunks_match_the_full_render
+    still covers that for a piece with no slot."""
     scn = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST)]])
     _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
     sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    back, front = (p.draw for p in unit_sprites.sprite_pieces_for(SLOT_CONST, 0.0, 1, proj.half_w))
 
-    assert {k: len(v) for k, v in sprites.by_anchor.items()} == {(5, 4): 1, (4, 5): 1}
-    assert set(sprites.bboxes) == {(5, 4), (4, 5)}
+    keys: dict[str, set] = {"back": set(), "front": set()}
+    for key, entries in sprites.by_anchor.items():
+        for draw, *_ in entries:
+            assert np.shares_memory(draw.rgba, back.rgba) != np.shares_memory(draw.rgba, front.rgba)
+            piece = "back" if np.shares_memory(draw.rgba, back.rgba) else "front"
+            keys[piece].add((key, type(draw) is unit_sprites.MovedSlice))
+    assert keys["back"] == {((5, 4), False)}
+    assert keys["front"] == {((4, 5), False), ((4, 4), True), ((5, 5), True)}
+    assert set(sprites.bboxes) == {(5, 4), (4, 5), (4, 4), (5, 5)}
 
 
 def _visible(img, colour):

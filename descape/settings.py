@@ -23,6 +23,7 @@ from descape import (
     iso_geometry,
     terrain_style,
     themes,
+    tool_options,
     view_layers,
 )
 from descape.asset_source import CONFIG_PATH
@@ -293,46 +294,86 @@ def set_xwayland_on_wayland(enabled: bool) -> None:
     _save_config(config)
 
 
-# Draw/Paint Can's Trees and Eye candy toolbar checkboxes -- whether painting
-# a forest terrain auto-places its matching GAIA tree/doodad units, mirroring
-# the in-game editor's own Eye Candy option (descape/terrain_units.py).
-# Persisted, unlike brush size/shape: these change what gets written to the
-# file, so they should survive a restart the way the user left them. Trees
-# defaults on (matches the in-game editor's own default); Eye candy defaults
-# off (it also scatters non-tree doodads on non-forest grass, a bigger visual
-# change a first-time user hasn't asked for).
-_paint_trees: bool | None = None
-_paint_eye_candy: bool | None = None
+# Settings > Tools: what each Tool Options control starts at (descape/tool_options.py
+# has the schema). The memo holds the user's overrides only; the config key
+# `tool_options` holds the same, pruned of every value equal to its schema default.
+_tool_option_overrides: dict[str, object] | None = None
+# Top-level keys the row once wrote through on every toolbar tick, read once as the
+# user's default when `tool_options` has no entry for them, and dropped on the next write.
+_LEGACY_TOOL_OPTION_KEYS: tuple[tuple[str, str], ...] = (
+    ("paint_trees", "paint_trees"),
+    ("paint_eye_candy", "paint_eye_candy"),
+    ("trigger_area_edit", "area_edit"),
+    ("trigger_area_tile_borders", "area_tile_borders"),
+)
 
 
-def get_paint_trees() -> bool:
-    global _paint_trees
-    if _paint_trees is None:
-        _paint_trees = bool(_load_config().get("paint_trees", True))
-    return _paint_trees
+def _load_tool_option_overrides() -> dict[str, object]:
+    """A non-mapping reads as empty; each entry is checked alone, so a bad one is skipped and never raises."""
+    global _tool_option_overrides
+    if _tool_option_overrides is None:
+        config = _load_config()
+        raw = config.get("tool_options")
+        if not isinstance(raw, dict):
+            raw = {}
+        overrides: dict[str, object] = {}
+        for name, value in raw.items():
+            if name in tool_options.BY_NAME:
+                with contextlib.suppress(ValueError):
+                    overrides[name] = tool_options.normalize(name, value, lenient=True)
+        for legacy_key, name in _LEGACY_TOOL_OPTION_KEYS:
+            # bool(), as the old getters read it: the potato_mode shape.
+            if name not in raw and legacy_key in config:
+                overrides[name] = bool(config[legacy_key])
+        _tool_option_overrides = overrides
+    return _tool_option_overrides
 
 
-def set_paint_trees(enabled: bool) -> None:
-    global _paint_trees
-    _paint_trees = enabled
+def _write_tool_option_overrides(overrides: dict[str, object]) -> None:
+    global _tool_option_overrides
+    pruned = tool_options.prune_to_overrides(overrides)
+    _tool_option_overrides = dict(pruned)
     config = _load_config()
-    config["paint_trees"] = enabled
+    if pruned:
+        config["tool_options"] = pruned
+    else:
+        config.pop("tool_options", None)
+    for legacy_key, _name in _LEGACY_TOOL_OPTION_KEYS:
+        config.pop(legacy_key, None)  # folded into the memo by now
     _save_config(config)
 
 
-def get_paint_eye_candy() -> bool:
-    global _paint_eye_candy
-    if _paint_eye_candy is None:
-        _paint_eye_candy = bool(_load_config().get("paint_eye_candy", False))
-    return _paint_eye_candy
+def get_tool_option_default(name: str):
+    """The user's default for `name`, else its schema default. ValueError on an unknown name."""
+    tool_options.option(name)
+    overrides = _load_tool_option_overrides()
+    if name in overrides:
+        value = overrides[name]
+        return list(value) if isinstance(value, list) else value
+    return tool_options.default(name)
 
 
-def set_paint_eye_candy(enabled: bool) -> None:
-    global _paint_eye_candy
-    _paint_eye_candy = enabled
-    config = _load_config()
-    config["paint_eye_candy"] = enabled
-    _save_config(config)
+def get_tool_option_defaults() -> dict[str, object]:
+    """Every option's user default, schema defaults overlaid with the overrides, in schema order."""
+    return {spec.name: get_tool_option_default(spec.name) for spec in tool_options.OPTIONS}
+
+
+def set_tool_option_default(name: str, value) -> None:
+    """Raises ValueError, writing nothing, on an unknown name or an illegal value."""
+    set_tool_option_defaults({name: value})
+
+
+def set_tool_option_defaults(values: dict) -> None:
+    """Several defaults in one write; names not in `values` keep theirs. Every
+    value is checked before the file is touched: ValueError writes nothing."""
+    canonical = {name: tool_options.normalize(name, value) for name, value in values.items()}
+    overrides = dict(_load_tool_option_overrides())
+    overrides.update(canonical)
+    _write_tool_option_overrides(overrides)
+
+
+def reset_tool_option_defaults() -> None:
+    _write_tool_option_overrides({})
 
 
 # The toolbar's Elevation View, one of terrain_style.TERRAIN_STYLES. Persisted as a
@@ -693,12 +734,9 @@ _camera_markers: bool | None = None
 # patrol runs on the map. ON by default, unlike the two above: it draws nothing
 # until a trigger is selected in the Triggers panel, so it costs nothing idle.
 _trigger_overlay: bool | None = None
-# GH #229's Edit Area toggle (Pan drags the selected trigger area) and its Tile
-# borders option (a one-tile resize border). Both off by default.
-_trigger_area_edit: bool | None = None
-_trigger_area_tile_borders: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
+_grid_major_every: int | None = None
 
 
 def get_grid_overlay() -> bool:
@@ -930,36 +968,6 @@ def set_trigger_overlay(enabled: bool) -> None:
     _save_config(config)
 
 
-def get_trigger_area_edit() -> bool:
-    global _trigger_area_edit
-    if _trigger_area_edit is None:
-        _trigger_area_edit = bool(_load_config().get("trigger_area_edit", False))
-    return _trigger_area_edit
-
-
-def set_trigger_area_edit(enabled: bool) -> None:
-    global _trigger_area_edit
-    _trigger_area_edit = enabled
-    config = _load_config()
-    config["trigger_area_edit"] = enabled
-    _save_config(config)
-
-
-def get_trigger_area_tile_borders() -> bool:
-    global _trigger_area_tile_borders
-    if _trigger_area_tile_borders is None:
-        _trigger_area_tile_borders = bool(_load_config().get("trigger_area_tile_borders", False))
-    return _trigger_area_tile_borders
-
-
-def set_trigger_area_tile_borders(enabled: bool) -> None:
-    global _trigger_area_tile_borders
-    _trigger_area_tile_borders = enabled
-    config = _load_config()
-    config["trigger_area_tile_borders"] = enabled
-    _save_config(config)
-
-
 def get_grid_blend() -> int:
     """Always within grid_overlay's blend range; an out-of-range integer
     clamps, anything else falls back to the default. A config predating this
@@ -1006,6 +1014,28 @@ def set_grid_thickness(value: int) -> None:
     _grid_thickness = grid_overlay.snap_thickness(value)
     config = _load_config()
     config["grid_thickness"] = _grid_thickness
+    _save_config(config)
+
+
+def get_grid_major_every() -> int:
+    """Always one of grid_overlay.MAJOR_EVERY_STOPS: how many tiles apart the
+    stronger grid lines are. Anything else in the config reads as the
+    default, unsnapped."""
+    global _grid_major_every
+    if _grid_major_every is None:
+        raw = _load_config().get("grid_major_every")
+        valid = grid_overlay.valid_major_every(raw)
+        _grid_major_every = raw if valid else grid_overlay.MAJOR_EVERY_DEFAULT
+    return _grid_major_every
+
+
+def set_grid_major_every(value: int) -> None:
+    global _grid_major_every
+    if not grid_overlay.valid_major_every(value):
+        raise ValueError(f"grid_major_every must be one of {grid_overlay.MAJOR_EVERY_STOPS}, got {value!r}")
+    _grid_major_every = value
+    config = _load_config()
+    config["grid_major_every"] = value
     _save_config(config)
 
 
@@ -1102,6 +1132,7 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_select_fill", "Selection fill", "#50aaff"),
     ("unit_stack", "Stacked-unit badge text", "#ffd24a"),
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
+    ("unit_ghost_refused", "Refused placement", "#ff3c3c"),
     ("footprint_outline", "Footprint outlines", "#c8c8c8"),
     ("range_ring", "Range ring", "#404040"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
@@ -1976,18 +2007,18 @@ class ToolDef:
     # D2's toggle, off-grid placement's Stage 3. Orthogonal to param_widget for
     # exactly the reason supports_brush is: param_widget is single-valued
     # ("" | "terrain" | "level" | ...), and Place Unit already spends it on
-    # nothing while needing this. Session-only in the UI (tool options are
-    # deliberately not persisted), so there is no settings getter/setter pair
-    # behind it -- this field only says which tool grows the checkbox.
+    # nothing while needing this. This field only says which tool grows the
+    # checkbox: the row holds the session value, Settings > Tools the default
+    # (tool_options.OPTIONS), as for every Tool Options control.
     supports_off_grid: bool = False
     # Whether this tool offers "Free placement" (GH #176), which lifts the
-    # terrain and object rules in placement_rules.py. Session-only, as above.
+    # terrain and object rules in placement_rules.py. Default from Settings > Tools, as above.
     supports_unrestricted: bool = False
     # Whether this tool offers "Walls skip occupied tiles" (GH #124), for the
-    # tools that commit wall runs. Session-only, like supports_off_grid.
+    # tools that commit wall runs. Default from Settings > Tools, as above.
     supports_skip_occupied: bool = False
     # Whether this tool offers "Moving a gate updates walls" (GH #194), in
-    # Units mode only: the tool that drags units. Session-only, as above.
+    # Units mode only: the tool that drags units. Default from Settings > Tools, as above.
     supports_gate_walls: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
@@ -2091,6 +2122,14 @@ TOOLS: list[ToolDef] = [
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
         click_only=True, modes=("units",), supports_off_grid=True,
         supports_unrestricted=True, supports_skip_occupied=True,
+    ),
+    # GH #170: Place Unit's object, owner, rules and rotation over a brush, one
+    # undo record per drag on Convert's stroke shape (descape/unit_brush.py).
+    # Unbound: a duplicate QKeySequence silently kills BOTH actions.
+    ToolDef(
+        "unit_brush", "Unit Brush", stroke_label="Paint units", default_key="",
+        param_widget="unit_brush", supports_brush=True, supports_off_grid=True,
+        supports_unrestricted=True, modes=("units",),
     ),
     # The wall enclosure plan (2026-09-21): an outline-only, tile-axis ring
     # of walls, one undo record per drag. Its own drag_shape value, like Draw
@@ -2197,6 +2236,9 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #197's Flip Selection pair, unbound like Scatter and Find, inside the edit_* run.
     ("edit_flip_horizontal", "Flip Horizontal", ""),
     ("edit_flip_vertical", "Flip Vertical", ""),
+    # TASK-256's Rotate Group pair, unbound like the Flip pair and inside the edit_* run.
+    ("edit_rotate_group_ccw", "Rotate Group Anticlockwise (Quarter Turn)", ""),
+    ("edit_rotate_group_cw", "Rotate Group Clockwise (Quarter Turn)", ""),
     ("edit_settings", "Settings…", ""),
     # Map mirroring (Stage 1: terrain + elevation). Unbound like
     # view_distance_ticks below -- no default suggested, just user-bindable.
@@ -2276,6 +2318,15 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # titles a section by prefix and "tool" already means the toolbar tools.
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("analysis_run", "Map Analysis", ""),
+    # GH #160's guide items and web links, in menu order, kept inside the contiguous help_*
+    # run so _build_keybinds_tab emits no second "Help" header. F1 is the guide's alone;
+    # a config that already binds F1 elsewhere keeps it (_reconcile_load_time_collisions).
+    ("help_guide", "DEscape Guide", "F1"),
+    ("help_keys", "Keyboard and Mouse", ""),
+    ("help_web_guide", "AoE2 Scenario Editor Guide", ""),
+    ("help_release_notes", "Release Notes", ""),
+    ("help_report_bug", "Report a Bug", ""),
+    ("help_github", "DEscape on GitHub", ""),
     ("help_about", "About", ""),
     ("help_debug_log", "Debug Log", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -2383,6 +2434,24 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("adjust_increment", "Increase Tool Value", "]"),
     ("adjust_decrement", "Decrease Tool Value", "["),
 ]
+# action_id prefix (before the first "_") -> section header text, for the
+# Keybinds tab and the guide's Keyboard and Mouse page. An unlisted future
+# prefix still gets a section of its own, titled from the raw prefix.
+KEYBIND_SECTION_TITLES: dict[str, str] = {
+    "file": "File",
+    "edit": "Edit",  # renamed from "Copy/Paste" -- now covers the whole Edit menu
+    "map": "Map",
+    "analysis": "Analysis",
+    "view": "View",
+    "help": "Help",
+    "mode": "Modes",
+    "filter": "Filters",
+    "player": "Player Selection",
+    "unit": "Units",
+    "trigger": "Triggers",
+    "tool": "Tools",
+    "adjust": "Tool Value",
+}
 _DEFAULT_KEYBINDS: dict[str, str] = {action_id: default for action_id, _, default in REBINDABLE_ACTIONS}
 _ACTION_LABELS: dict[str, str] = {action_id: label for action_id, label, _ in REBINDABLE_ACTIONS}
 
@@ -2567,7 +2636,7 @@ WHEEL_SLOT_LABELS: dict[str, str] = {
     "alt": "Alt + Wheel",
 }
 # Dropdown order. "tool" is whichever of rotate and brush_size applies; a tool
-# action with nothing to act on zooms (see MapView._wheel_action).
+# action with nothing to act on does nothing (see MapView._wheel_action).
 WHEEL_ACTIONS: tuple[str, ...] = (
     "zoom",
     "tool",
@@ -2591,12 +2660,12 @@ WHEEL_ACTION_HINTS: dict[str, str] = {
     "zoom": "Zooms the map in or out.",
     "tool": (
         "Whichever applies: turns Place Unit's preview, steps the size in tools with a Brush size box, "
-        "or turns a just-pasted region. Zooms anywhere else."
+        "or turns a just-pasted region. Does nothing anywhere else."
     ),
-    "brush_size": "Steps the size in tools with a Brush size box. Zooms anywhere else.",
+    "brush_size": "Steps the size in tools with a Brush size box. Does nothing anywhere else.",
     "rotate": (
         "Turns Place Unit's preview or a just-pasted region, even in a tool with a Brush size box. "
-        "Zooms anywhere else."
+        "Does nothing anywhere else."
     ),
     "pan_vertical": "Scrolls the map up or down.",
     "pan_horizontal": "Scrolls the map left or right.",

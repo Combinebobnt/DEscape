@@ -32,7 +32,8 @@ from descape.messages_fields import (
 from descape.scenario_io import LoadedScenario
 
 _ID_STRUCT = struct.Struct("<I")
-_TEXT_LEN_STRUCT = struct.Struct("<H")
+# Signed, as the library reads it (TASK-397): an over-limit payload fails here, not on reload.
+_TEXT_LEN_STRUCT = struct.Struct("<h")
 _HEADER_LEN_STRUCT = struct.Struct("<I")
 
 _INSTRUCTIONS_FIELD_ID = "instructions"
@@ -183,7 +184,7 @@ class MessagesEditModel:
 
     def serialize(self) -> bytes:
         """The whole 12-retriever Messages section: six <I string-table ids
-        in field order, then six <H-length-prefixed UTF-8 payloads in the
+        in field order, then six <h-length-prefixed UTF-8 payloads in the
         same field order. Never delegates to AoE2ScenarioParser's own
         serializer -- see this module's docstring."""
         out = bytearray()

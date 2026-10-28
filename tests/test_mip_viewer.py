@@ -115,7 +115,8 @@ WINDOW_SIZE = 300
 # padded overlapping draws under a filter are not guaranteed exactly equal,
 # and a stricter-than-necessary bar here would be an environment-dependent
 # tripwire rather than a real regression signal. A genuine seam would be
-# far larger than this.
+# far larger than this. The blank fixture renders flat, so it cannot show the
+# pad-overwrite seam; test_coarse_reduce.py's textured tiling case covers that (TASK-031.75).
 MAX_SEAM_DIFF = 2
 
 # The minifying-band seam probe (Phase B-D-d). 960 scene units is 120 pixels

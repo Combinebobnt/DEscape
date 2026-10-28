@@ -10,7 +10,8 @@ payload, and RegionBlock's own shape must not change to carry one.
 Session-only by design. Nothing here is written to disk: settings.py rewrites
 the whole YAML on every settings change, and a Select All on a 480x480 map is
 ~230k tiles, which has no business in a config file. The paste-filter
-checkboxes are deliberately session-only for the same class of reason.
+checkboxes are not clipboard state: like every Tool Options control, the row
+holds the session value and Settings > Tools the default.
 
 Rules pinned here so they are not re-litigated:
 

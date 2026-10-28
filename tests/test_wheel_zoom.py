@@ -299,7 +299,9 @@ def test_plain_wheel_still_zooms_with_place_unit_armed() -> None:
 
 
 @pytest.mark.parametrize("case", ["wall_pick", "off_map", "other_tool"])
-def test_ctrl_wheel_with_no_ghost_zooms(case) -> None:
+def test_ctrl_wheel_with_no_ghost_does_nothing(case) -> None:
+    """The default Ctrl row is "tool": with no ghost and no brush it has
+    nothing to act on, so it no longer zooms (GH #245, user 2026-10-25)."""
     from PyQt5.QtCore import QEvent
 
     from descape.viewer import _wall_consts
@@ -316,7 +318,7 @@ def test_ctrl_wheel_with_no_ghost_zooms(case) -> None:
         assert view._unit_ghost_item is None
         before = _scale(view)
         _wheel_units(view, 120, _ctrl())
-        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert _scale(view) == before
         assert window._place_rotation.facing == 0.0
     finally:
         conftest.close_window(window)

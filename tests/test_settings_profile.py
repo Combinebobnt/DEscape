@@ -283,7 +283,7 @@ def test_the_mods_tab_holds_the_profile_and_mod_art_sections(opened) -> None:
     dialog, _window, _rescans = opened
     tabs = dialog.findChild(QTabWidget)
     assert [tabs.tabText(i) for i in range(tabs.count())] == [
-        "General", "Mods", "Appearance", "Saving", "Keybinds", "Advanced",
+        "General", "Mods", "Appearance", "Tools", "Saving", "Keybinds", "Advanced",
     ]
     general, mods = _select_tab(dialog, "General"), _select_tab(dialog, "Mods")
     for widget in (dialog.profile_path_edit, dialog.profile_roots_list, dialog.mod_art_list):

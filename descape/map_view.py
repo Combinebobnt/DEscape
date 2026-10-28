@@ -18,6 +18,7 @@ from PyQt5.QtCore import QElapsedTimer, QEvent, QLineF, QPointF, QRectF, Qt, QTi
 from PyQt5.QtGui import (
     QBrush,
     QColor,
+    QCursor,
     QKeySequence,
     QMouseEvent,
     QPainter,
@@ -52,6 +53,7 @@ from descape import (
     trigger_geometry,
     trigger_range,
     unit_pick,
+    zoom_preframe,
 )
 from descape.render import SMALL_MAP_TILE_PIXELS
 from descape.render_cache import (
@@ -93,10 +95,10 @@ from descape.viewer_common import (
 
 # Stroke tools _touch_tile gap-fills. Cliff too: each path tile feeds the chain walk
 # in order, so a fast drag lays the same run as a slow one.
-_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "eraser", "cliff"})
+_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "eraser", "cliff", "unit_brush"})
 
 # Units-mode brushes: a drag mutates, so they skip the selection click and hover cue.
-_UNIT_BRUSH_TOOLS = frozenset({"convert", "eraser"})
+_UNIT_BRUSH_TOOLS = frozenset({"convert", "eraser", "unit_brush"})
 
 
 def _add_closed_polygons(path, polygons) -> None:
@@ -480,6 +482,7 @@ class MapView(QGraphicsView):
         self._grid_enabled = settings.get_grid_overlay()
         self._grid_blend = settings.get_grid_blend()
         self._grid_thickness = settings.get_grid_thickness()
+        self._grid_major_every = settings.get_grid_major_every()
         self._grid_follow_elevation = settings.get_grid_follow_elevation()
         # A Settings > Appearance slider drag in progress: see begin_grid_preview().
         self._grid_previewing = False
@@ -674,6 +677,9 @@ class MapView(QGraphicsView):
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
         # TASK-325: True when Escape cleared a unit selection, set by set_unit_escape_hook().
         self._on_unit_escape: Callable[[], bool] | None = None
+        # TASK-256: Enter applies and Escape reverts a live flip or turn, set by set_lift_hooks().
+        self._on_lift_apply: Callable[[], bool] | None = None
+        self._on_lift_revert: Callable[[], bool] | None = None
         # Draw Rectangle's Fill/Outline state, pushed down from the toolbar
         # combo by ViewerWindow.set_rect_filled() the same way set_brush()
         # pushes brush size/shape.
@@ -956,6 +962,17 @@ class MapView(QGraphicsView):
         self._max_linear_scale: float | None = None
         # The viewport QPoint the last wheel zoom anchored at, or None (zoom_anchor_scene()).
         self._last_zoom_anchor = None
+        # Pre-rendered frames for the next zoom notch (TASK-031.71): opted into per window
+        # (set_preframes_allowed()), rendered SETTLE_MS after the view last moved, nearest the
+        # last zoom's direction first. The twin is built on first use.
+        self._preframes_allowed = False
+        self._preframe_warmer = zoom_preframe.PreframeWarmer()
+        self._preframe_twin: zoom_preframe.ZoomTwin | None = None
+        self._preframe_dir = 1
+        self._preframe_timer = QTimer(self)
+        self._preframe_timer.setSingleShot(True)
+        self._preframe_timer.setInterval(zoom_preframe.SETTLE_MS)
+        self._preframe_timer.timeout.connect(self._on_preframe_settle)
         # Wheel-gesture state, all reset together by _end_wheel_gesture():
         # leftover sub-notch angleDelta, the direction the gesture is
         # running in, the mip its budget is anchored on (None while idle),
@@ -1019,6 +1036,8 @@ class MapView(QGraphicsView):
         self._mirror_overlay_fill_color = QColor(settings.get_overlay_color("mirror_overlay"))
         self._mirror_overlay_fill_color.setAlpha(self.MIRROR_OVERLAY_FILL_ALPHA)
         self._mirror_axis_pen = _pen("mirror_overlay", 0)
+        # TASK-327: pushed into the ghost item when it is created; apply_overlay_colors() drops a live one.
+        self._unit_ghost_refused_color = QColor(settings.get_overlay_color("unit_ghost_refused"))
         self._footprint_pen = _pen("footprint_outline", 0)
         # Cosmetic width 0 like the footprint outline: Flat's squash
         # transform would thin a real-width line unevenly around the ellipse.
@@ -1115,6 +1134,9 @@ class MapView(QGraphicsView):
             self._mirror_overlay_fill_item.setBrush(QBrush(self._mirror_overlay_fill_color))
             for item in self._mirror_axis_items:
                 item.setPen(self._mirror_axis_pen)
+        if self._unit_ghost_item is not None:
+            # The next move or hover rebuilds it through _ensure_unit_ghost_item(), in the new refusal colour.
+            self._clear_unit_ghost()
         # The edit highlight has no in-place update path worth writing (it
         # rebuilds on every hover move anyway) -- clearing it here just forces
         # that rebuild to happen with the new ink instead of leaving a stale
@@ -2239,6 +2261,13 @@ class MapView(QGraphicsView):
         selection and returns True, or returns False to fall through to the region."""
         self._on_unit_escape = on_unit_escape
 
+    def set_lift_hooks(self, on_apply, on_revert) -> None:
+        """A live flip or turn of a selection (TASK-256): on_apply() keeps it
+        (Enter) and on_revert() undoes it (Escape), each returning True when
+        it acted, or False to fall through."""
+        self._on_lift_apply = on_apply
+        self._on_lift_revert = on_revert
+
     def region_drag_live(self) -> bool:
         """Whether a Select-tool region drag or pasted-region move is mid-gesture."""
         return self._select_anchor is not None or self._move_anchor is not None
@@ -2291,19 +2320,31 @@ class MapView(QGraphicsView):
         v = pos.y() - proj.origin_y - proj.half_h
         return (u / proj.half_w - v / proj.half_h) / 2 + 0.5, (u / proj.half_w + v / proj.half_h) / 2 + 0.5
 
-    def set_unit_ghosts(self, draws=(), marks=()) -> None:
-        """A group ghost (GH #75): every member's sprite draws, plus a
-        (polygons, color) mark per member whose sprite did not resolve."""
+    def _ensure_unit_ghost_item(self) -> UnitGhostItem:
+        """The live ghost item, created on first use with the refusal colour."""
         item = self._unit_ghost_item
         if item is None:
             item = UnitGhostItem()
             item.setZValue(self.UNIT_GHOST_Z)
+            item.set_refusal_color(self._unit_ghost_refused_color)
             self.scene().addItem(item)
             self._unit_ghost_item = item
-        if not item.set_content(draws, [(p, c) for p, c in marks if p and c is not None]):
+        return item
+
+    def set_unit_ghosts(self, draws=(), marks=(), refused_draws=(), refused_marks=()) -> None:
+        """A group ghost (GH #75): every member's sprite draws, plus a
+        (polygons, color) mark per member whose sprite did not resolve. The
+        refused_ pair holds the members placement refuses (TASK-327)."""
+        item = self._ensure_unit_ghost_item()
+        if not item.set_content(
+            draws,
+            [(p, c) for p, c in marks if p and c is not None],
+            refused_draws,
+            [(p, c) for p, c in refused_marks if p and c is not None],
+        ):
             self._clear_unit_ghost()
 
-    def set_unit_ghost(self, draws=None, polygons=None, color=None) -> None:
+    def set_unit_ghost(self, draws=None, polygons=None, color=None, refused: bool = False) -> None:
         """The mid-drag move preview's content, resolved by ViewerWindow and
         pushed here -- `set_unit_selection`'s shape, for the same reason (see
         this class's `_on_unit_drag_preview` comment).
@@ -2314,16 +2355,13 @@ class MapView(QGraphicsView):
         the ghost rather than leaving a stale one on screen: an empty
         sprite_pieces_for(), and a None from unit_polygons() on a ghost entry
         at a destination with no elevations/proj/corner_rise, both mean "no
-        ghost this frame" -- never a crash, never a partial draw."""
-        item = self._unit_ghost_item
-        if item is None:
-            item = UnitGhostItem()
-            item.setZValue(self.UNIT_GHOST_Z)
-            self.scene().addItem(item)
-            self._unit_ghost_item = item
-        if draws and item.set_sprites(draws):
+        ghost this frame" -- never a crash, never a partial draw.
+
+        `refused` draws it in the refused look (TASK-327)."""
+        item = self._ensure_unit_ghost_item()
+        if draws and item.set_sprites(draws, refused=refused):
             return
-        if polygons and color is not None and item.set_mark(polygons, color):
+        if polygons and color is not None and item.set_mark(polygons, color, refused=refused):
             return
         self._clear_unit_ghost()
 
@@ -3096,7 +3134,8 @@ class MapView(QGraphicsView):
     def keyPressEvent(self, event) -> None:
         """Escape cancels the nearest live thing, in order: tile picker, unit
         picker, area drag, shape, ruler, unit drag, marquee, region move,
-        region drag, unit selection (Units Select only), committed region. In
+        region drag, a live flip or turn (TASK-256, which Enter keeps), unit
+        selection (Units Select only), committed region. In
         Units mode, arrow keys nudge the selection (b1.5) and Delete removes it
         (b1.6); anything bound to view_pan_* starts a held-key pan.
 
@@ -3171,6 +3210,11 @@ class MapView(QGraphicsView):
             self._select_anchor = None
             self._select_current = None
             self._update_region_overlay()
+            return
+        # TASK-256: a live flip or turn reverts before the selection or region it acted on clears.
+        if event.key() == Qt.Key_Escape and self._on_lift_revert is not None and self._on_lift_revert():
+            return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and self._on_lift_apply is not None and self._on_lift_apply():
             return
         if (
             event.key() == Qt.Key_Escape
@@ -3324,12 +3368,98 @@ class MapView(QGraphicsView):
         if (h.value(), v.value()) == before:
             self._stop_pan()
 
+    # --- pre-rendered zoom frames (TASK-031.71) ---------------------------
+
+    def set_preframes_allowed(self, allowed: bool) -> None:
+        """Opts this view in or out of pre-rendered zoom frames; off drops them."""
+        self._preframes_allowed = allowed
+        if not allowed:
+            self._preframe_timer.stop()
+            self._preframe_warmer.cancel()
+            if self._canvas_item is not None:
+                self._canvas_item.drop_preframes()
+        self.retarget_preframes()
+
+    def retarget_preframes(self) -> None:
+        """Cancels the frame being rendered and restarts the settle wait: the
+        view moved, resized or (zoom on cursor) the cursor moved, or the window
+        is about to change the scene. Finished frames stay, since the paint
+        that follows a zoom is the one that uses them; a stale key or stamp
+        only misses."""
+        if not self._preframes_allowed:
+            return
+        self._preframe_warmer.cancel()
+        if self._canvas_item is not None:
+            self._preframe_timer.start()
+
+    def retry_refused_preframes(self) -> None:
+        """A margin or load warm drained: renders the notches the last settle
+        refused, whose chunks it may have cached since. Not while a settle is
+        pending, which renders both anyway, nor for a hidden view."""
+        if self._preframes_allowed and not self._preframe_timer.isActive() and self.isVisible():
+            self._preframe_warmer.retry_refused()
+
+    @property
+    def preframe_warmer(self) -> zoom_preframe.PreframeWarmer:
+        return self._preframe_warmer
+
+    def _on_preframe_settle(self) -> None:
+        item = self._canvas_item
+        if item is None or not self._preframes_allowed or not self.isVisible():
+            return
+        if QApplication.mouseButtons():
+            self._preframe_timer.start()
+            return
+        item.drop_preframes()
+        self._preframe_warmer.start(item, (self._preframe_dir, -self._preframe_dir), self._preframe_job)
+
+    def _preframe_job(self, direction: int) -> zoom_preframe.FrameJob | None:
+        """The FrameJob for the paint one wheel notch in `direction` (+1 in)
+        would make now, as a fresh gesture, anchored at the cursor (or the
+        viewport centre with zoom on cursor off), or None where that notch
+        is refused, the cursor is off the viewport, the viewport is not on
+        whole device pixels or the paint would not blit its own level from
+        cached chunks alone."""
+        item = self._canvas_item
+        if item is None or item is not self._preframe_warmer._item:
+            return None
+        saved = self._wheel_gesture_mip
+        self._wheel_gesture_mip = self._mip_for_zoom_factor(1.0)
+        try:
+            factor = self._wheel_zoom_factor(direction)
+        finally:
+            self._wheel_gesture_mip = saved
+        if factor is None:
+            return None
+        vp = self.viewport()
+        anchor = vp.mapFromGlobal(QCursor.pos()) if self._zoom_on_cursor else vp.rect().center()
+        if not vp.rect().contains(anchor):
+            return None
+        if self._preframe_twin is None:
+            self._preframe_twin = zoom_preframe.ZoomTwin(self)
+        world, vp_rect = self._preframe_twin.predict(factor, anchor)
+        dpr = vp.devicePixelRatioF()
+        offset = zoom_preframe.viewport_offset(vp)
+        if not zoom_preframe.device_aligned(offset, vp_rect.size(), dpr):
+            return None
+        device = zoom_preframe.device_transform(world, offset, dpr)
+        bounding = item.boundingRect()
+        rect = zoom_preframe.exposed_scene_rect(world, vp_rect, bounding)
+        plan = item.frame_plan(device, rect)
+        if plan is None:
+            return None
+        stamps = item.frame_stamps(plan[0], rect, _max_axis_scale(device))
+        if stamps is None:
+            return None
+        key = zoom_preframe.paint_key(device, rect, vp_rect.size(), offset, self.renderHints(), dpr, bounding)
+        viewport_device = zoom_preframe.viewport_device_rect(vp, vp_rect.size())
+        return zoom_preframe.FrameJob(item, key, device, rect, plan, viewport_device, self.renderHints(), dpr, stamps)
+
     def _scroll_by(self, dx: int, dy: int) -> None:
         """The one place that moves the scrollbars. Shared by middle-drag and
         the held-key pan, so both get setSceneRect()'s overscroll clamping and
         zoom-relative feel identically."""
-        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dx)
-        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dy)
+        zoom_preframe.scroll_view_by(self, dx, dy)
 
     def focusOutEvent(self, event) -> None:
         """Alt+Tab mid-hold never delivers a release, so the timer would
@@ -4755,8 +4885,10 @@ class MapView(QGraphicsView):
         Also the funnel for the region ants' on-screen gate, since that is
         the same set of paths that changes what is visible. That includes
         the resize on show(), which is what starts the ants for a region set
-        while the window had no real viewport yet."""
+        while the window had no real viewport yet. And for the pre-rendered
+        zoom frames' settle wait (retarget_preframes())."""
         self._sync_region_ant_timer()
+        self.retarget_preframes()
         if not self._viewport_poll_timer.isActive():
             self._viewport_poll_timer.start()
 
@@ -4777,8 +4909,11 @@ class MapView(QGraphicsView):
 
     def stop_viewport_poll(self) -> None:
         """Drops a pending poll fire: the owning window is closing, and a fire
-        after that would re-arm its warms on a shared event loop."""
+        after that would re-arm its warms on a shared event loop. The
+        pre-rendered zoom frames' settle wait and warm stop with it."""
         self._viewport_poll_timer.stop()
+        self._preframe_timer.stop()
+        self._preframe_warmer.cancel()
 
     def set_source(
         self,
@@ -5001,6 +5136,7 @@ class MapView(QGraphicsView):
             tile_px=tile_pixels,
             blend=self._grid_blend,
             thickness=self._grid_thickness,
+            major_every=self._grid_major_every,
         )
         self.scene().addItem(self._grid_item)
         self._apply_grid()
@@ -5399,7 +5535,7 @@ class MapView(QGraphicsView):
     def grid_spec(self) -> grid_overlay.GridBake:
         if not self.grid_bake_live() or self._grid_previewing:
             return grid_overlay.DEFAULT_GRID
-        return grid_overlay.grid_bake(True, self._grid_blend, self._grid_thickness)
+        return grid_overlay.grid_bake(True, self._grid_blend, self._grid_thickness, self._grid_major_every)
 
     def grid_change_evicts(self) -> bool:
         """Whether the state just stored would change the cache's baked spec,
@@ -5431,6 +5567,14 @@ class MapView(QGraphicsView):
         """In an iso style this swaps between the bake and the overlay, so
         it is an eviction site like the toggle itself."""
         self._grid_follow_elevation = enabled
+        return self._apply_grid()
+
+    def set_grid_major_every(self, major_every: int) -> bool:
+        """View > Grid's stronger-line spacing, for both halves. Evicts only
+        when the bake is live; returns whether it did."""
+        self._grid_major_every = major_every
+        if self._grid_item is not None:
+            self._grid_item.set_major_every(major_every)
         return self._apply_grid()
 
     def begin_grid_preview(self) -> bool:
@@ -5879,9 +6023,10 @@ class MapView(QGraphicsView):
     def _wheel_action(self, modifiers) -> str:
         """The settings.WHEEL_ACTIONS id a wheel event runs, with "tool"
         resolved, or the internal "paste_turn". The slot is the exact modifier
-        set, so any other combination zooms, and a tool action with nothing to
-        act on zooms too: rotate needs Place Unit's ghost showing or a
-        just-pasted region (GH #245), brush_size a tool with a brush. Under
+        set, so any other combination zooms. A tool action with nothing to act
+        on is "none", so only a slot bound to zoom zooms (GH #245, user
+        2026-10-25): rotate needs Place Unit's ghost showing or a just-pasted
+        region, brush_size a tool with a brush. Under
         "tool" the brush wins over the paste, so a resize right after a paste
         still resizes."""
         action = self._wheel_bindings.get(int(modifiers) & self._WHEEL_MODIFIER_MASK, "zoom")
@@ -5894,7 +6039,7 @@ class MapView(QGraphicsView):
         if action == "tool" and self._wheel_paste_query():
             return "paste_turn"
         if action in ("tool", "rotate", "brush_size"):
-            return "zoom"
+            return "none"
         return action
 
     def wheelEvent(self, event):
@@ -5974,10 +6119,9 @@ class MapView(QGraphicsView):
         self._last_zoom_anchor = anchor
         # The repaint this schedules lands on the next `perf view` line, with its mip change.
         with perf_trace.op("zoom"):
-            before = self.mapToScene(anchor)
-            self.scale(factor, factor)
-            drift = self.mapFromScene(before) - anchor
-            self._scroll_by(drift.x(), drift.y())
+            # Shared with the pre-rendered frames' twin, which predicts this transform (TASK-031.71).
+            zoom_preframe.zoom_about(self, factor, anchor)
+            self._preframe_dir = 1 if factor > 1.0 else -1
             self._note_viewport_changed()
             self._on_zoom_changed()
         # A crossing restarts the gap before the budget may re-anchor past it.
@@ -6078,6 +6222,8 @@ class MapView(QGraphicsView):
             self._move_fallback_timer.stop()
 
     def mouseMoveEvent(self, event):
+        if self._zoom_on_cursor:
+            self.retarget_preframes()  # the next notch's anchor moved
         if self._middle_drag_active:
             delta = event.pos() - self._middle_drag_last_pos
             self._middle_drag_last_pos = event.pos()

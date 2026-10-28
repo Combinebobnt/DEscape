@@ -47,9 +47,10 @@ sys.path.insert(0, str(ROOT))
 
 from descape import shape_tools, unit_sprites, wall_run
 from descape.edit_history import EditHistory
-from descape.render import occupied_tiles_for, span_anchor, unit_occupied_tiles, unit_tile_bounds
+from descape.render import occupied_tiles_for, snapped_anchor, span_anchor, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
+from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
 
 OUT = ROOT / "build" / "wall_run_pairs"
@@ -138,10 +139,15 @@ def _path(kind: str, wx: int, wy: int, w: int, h: int, along_x: bool):
     return leg_a + leg_b
 
 
+def _gate_anchor(tx: int, ty: int, w: int, h: int) -> tuple[float, float]:
+    """Place Unit's snapped anchor for a gate clicked on (tx, ty) with no cursor point (TASK-461)."""
+    return snapped_anchor((tx, ty), None, tile_span(STONE_GATE, (1, 1)), w, h)
+
+
 def _gate_plan_at(scenario, tx: int, ty: int, w: int, h: int):
     """viewer._gate_plan() for a Place Unit click on (tx, ty)."""
     tiles, walls = wall_run.wall_scene(scenario, w, h)
-    footprint = occupied_tiles_for(STONE_GATE, tx + 0.5, ty + 0.5, w, h)
+    footprint = occupied_tiles_for(STONE_GATE, *_gate_anchor(tx, ty, w, h), w, h)
     if footprint is None:
         return None, wall_run.GatePlan(removals=[], rewrites=[])
     return footprint, wall_run.plan_gate_over_walls(footprint, existing_tiles=tiles, existing_walls=walls)
@@ -218,7 +224,7 @@ def _gate_case(label: str, name: str) -> None:
             for _p, u, v in plan.rewrites
         ) or "none"
         model.begin_unit_edit(wall_run.touched_players(PLAYER, plan))
-        wall_run.apply_gate_plan(model, PLAYER, STONE_GATE, tx + 0.5, ty + 0.5, plan)
+        wall_run.apply_gate_plan(model, PLAYER, STONE_GATE, *_gate_anchor(tx, ty, w, h), plan)
         model.commit_unit_edit("Place unit", history)
         lines.append(
             f"         gate clicked on tile ({tx}, {ty}), footprint x {min(footprint)[0]}..{max(footprint)[0]} "

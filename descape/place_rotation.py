@@ -1,4 +1,5 @@
-"""The rotation Place Unit gives the next unit it places (GH #172).
+"""The rotation Place Unit gives the next unit it places (GH #172), and the
+Unit Brush's per-unit one (GH #170, random_rotation()).
 
 Place Unit's hover ghost can be turned before a click, by the wheel's rotate
 binding (Ctrl+wheel by default) or the Rotate actions, or set by the
@@ -30,6 +31,7 @@ above), so the default test tier covers it.
 from __future__ import annotations
 
 import dataclasses
+import random
 from dataclasses import dataclass
 
 from descape import gate_orientation, unit_rotation, unit_variant
@@ -90,6 +92,21 @@ def steps_for_coarse(const: int, direction: int) -> int:
     if gate_orientation.is_gate(const):
         return direction * gate_orientation.QUARTER_TURN_STEPS
     return direction
+
+
+def random_rotation(rng: random.Random, const: int, owner: int) -> float:
+    """A random facing or variant for one Unit Brush placement (GH #170),
+    still through rotation_for(): an ANGLE const rolls a facing on its own
+    grid, a cyclable const a variant index, and every other const (walls,
+    gates, cliffs, INERT) draws nothing from `rng` and gets 0.0."""
+    if unit_rotation.rotation_is_angle(const):
+        count = unit_rotation.angle_count_for(const)
+        state = PlaceRotation(facing=unit_rotation.facing_to_rotation(rng.randrange(count), count))
+    elif unit_variant.is_cyclable(const):
+        state = PlaceRotation(variant=rng.randrange(unit_variant.variant_count_for(const)), variant_const=const)
+    else:
+        state = PlaceRotation()
+    return rotation_for(state, const, owner)
 
 
 def rotation_for(state: PlaceRotation, const: int, owner: int) -> float:

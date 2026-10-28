@@ -321,8 +321,77 @@ def _convert_entries(window, count: int) -> list:
 
 def _convert(window, entry) -> None:
     window._convert_stroke_tile(entry.own_x, entry.own_y)
-    window._convert_refresh_timer.stop()
-    assert window._convert_pending_splices, "the tile converted nothing"
+    window._unit_stroke_refresh_timer.stop()
+    assert window._unit_stroke_pending_splices, "the tile converted nothing"
+
+
+def _begin_unit_brush(window) -> None:
+    """A Unit Brush stroke of trees for GAIA, Free placement on so every tile places."""
+    from PyQt5.QtCore import Qt
+
+    assert window.units_panel.select_owner(0)
+    assert window.units_panel.pick_object(349)
+    window.unit_brush_action.setChecked(True)
+    window.unrestricted_check.setChecked(True)
+    window.map_view._stroke_button = Qt.LeftButton
+    window.on_edit_stroke_start()
+    assert window._unit_brush is not None
+
+
+def _paint_next(window) -> None:
+    """Paints one more tile the stroke has not rolled."""
+    from PyQt5.QtCore import Qt
+
+    stroke = window._unit_brush
+    tile = next((x, 10) for x in range(5, 100) if (x, 10) not in stroke.rolled)
+    placed = len(stroke.placed)
+    window.on_edit_stroke_tiles([tile], Qt.NoModifier)
+    window._unit_stroke_refresh_timer.stop()
+    assert len(stroke.placed) > placed and window._unit_stroke_pending_splices, "the tile painted nothing"
+
+
+def _end_unit_brush(window) -> None:
+    window.on_edit_stroke_end()
+    window.map_view._stroke_button = None
+
+
+@pytest.mark.gui
+def test_a_unit_brush_add_cancels_the_warms_in_flight_before_it_mutates(monkeypatch) -> None:
+    """TASK-326 A, the Unit Brush's add()."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        _begin_unit_brush(window)
+        before = _jobs_in_flight(window)
+        _paint_next(window)
+        assert not _survivors(window, before), "a warm armed before the add still walks the unit lists"
+        window._flush_unit_stroke_refresh()
+        before = _jobs_in_flight(window)
+        _paint_next(window)
+        assert not _survivors(window, before), "a warm the flush re-armed survived the next add"
+        _end_unit_brush(window)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_an_abandoned_unit_brush_stroke_still_re_arms_the_level_warm(monkeypatch) -> None:
+    """A second press with a stroke still open commits it, and its
+    _after_unit_mutation() re-arms; B's guard must not swallow that."""
+    import conftest
+
+    window = _armed_window(monkeypatch)
+    try:
+        _begin_unit_brush(window)
+        _paint_next(window)
+        starts = _spy_level_warm_starts(window, monkeypatch)
+        window.on_edit_stroke_start()
+        assert starts, "the abandoned stroke's commit did not re-arm the level warm"
+        assert window.edit_history.records[-1].label == "Paint unit"
+        _end_unit_brush(window)
+    finally:
+        conftest.close_window(window)
 
 
 @pytest.mark.gui
@@ -358,7 +427,7 @@ def test_a_convert_cancels_the_warms_in_flight_before_it_mutates(monkeypatch) ->
         before = _jobs_in_flight(window)
         _convert(window, first)
         assert not _survivors(window, before), "a warm armed before the reassign still walks the unit lists"
-        window._flush_convert_refresh()
+        window._flush_unit_stroke_refresh()
         before = _jobs_in_flight(window)
         _convert(window, second)
         assert not _survivors(window, before), "a warm the flush re-armed survived the next reassign"
@@ -368,7 +437,7 @@ def test_a_convert_cancels_the_warms_in_flight_before_it_mutates(monkeypatch) ->
 
 
 @pytest.mark.gui
-@pytest.mark.parametrize("tool", ["erase", "convert"])
+@pytest.mark.parametrize("tool", ["erase", "convert", "unit_brush"])
 def test_nothing_arms_a_level_warm_between_a_live_mutation_and_its_flush(tool, monkeypatch) -> None:
     """TASK-326 B: a direct re-arm and a first viewport fire after the
     mutation's cancel both start nothing until the flush, which starts one."""
@@ -380,10 +449,13 @@ def test_nothing_arms_a_level_warm_between_a_live_mutation_and_its_flush(tool, m
         if tool == "erase":
             _begin_erase(window)
             _erase_next(window)
-        else:
+        elif tool == "convert":
             (entry,) = _convert_entries(window, 1)
             window._begin_convert_stroke()
             _convert(window, entry)
+        else:
+            _begin_unit_brush(window)
+            _paint_next(window)
         window._start_level_warm()
         window._last_viewport_chunk_target = None
         window._on_viewport_changed()
@@ -391,12 +463,14 @@ def test_nothing_arms_a_level_warm_between_a_live_mutation_and_its_flush(tool, m
         if tool == "erase":
             window._flush_erase_refresh()
         else:
-            window._flush_convert_refresh()
+            window._flush_unit_stroke_refresh()
         assert len(starts) == 1, f"the flush re-armed {len(starts)} times"
         if tool == "erase":
             window.on_edit_stroke_end()
-        else:
+        elif tool == "convert":
             window._end_convert_stroke()
+        else:
+            _end_unit_brush(window)
     finally:
         conftest.close_window(window)
 

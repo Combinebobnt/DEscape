@@ -23,6 +23,7 @@ from test_native_composite import (
     FARM_Y,
     NEW_TERRAIN_ID,
     PLAIN_UNIT_CONST,
+    native_backend,  # noqa: F401 -- a fixture
     native_kernel,  # noqa: F401 -- a fixture
     synthetic_textures,  # noqa: F401 -- a fixture
 )
@@ -724,7 +725,7 @@ def test_a_pooled_patch_says_so_on_its_perf_line(
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 @pytest.mark.parametrize(("style", "repaint"), [("Stepped", "rects"), ("Sloped", "patch")])
 def test_an_over_cap_batch_its_undo_and_redo_pool_their_patch_and_match_a_fresh_render(
-    style, repaint, blended_trees, traced, monkeypatch  # noqa: F811
+    native_backend, style, repaint, blended_trees, traced, monkeypatch  # noqa: F811
 ) -> None:
     """The viewer's over-cap batch repaint (_repaint_unit_edit_split()), with
     the window's own pool: Stepped's per-chunk rect branch, Sloped's patch

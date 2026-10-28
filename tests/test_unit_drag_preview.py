@@ -569,3 +569,195 @@ def test_a_group_drag_scans_each_members_list_index_once_not_per_frame() -> None
         assert len(scans) == 2
     finally:
         _close(window)
+
+
+# --- TASK-327: a drag ghost shows a drop the release would refuse --------------------
+
+_VILLAGER = 83
+_ARCHER = 4
+_TOWER = 79  # Watch Tower: 5 places, takes foot archers
+_WATER_DEEP = 22
+
+
+def _add(window, const: int, tiles, player: int = 1) -> list:
+    """Units added through the model, which never asks the placement rules."""
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [player]):
+        return [model.add(player, const, tx + 0.5, ty + 0.5) for tx, ty in tiles]
+
+
+def _set_terrain(window, tiles, terrain_id: int) -> None:
+    mm = window.scenario.map_manager
+    for x, y in tiles:
+        mm.terrain[y * mm.map_width + x].terrain_id = terrain_id
+
+
+def _move(window, tile) -> None:
+    window.map_view.mouseMoveEvent(
+        conftest.mouse_event(QEvent.MouseMove, _viewport_pos(window, *tile), Qt.NoButton, Qt.LeftButton)
+    )
+
+
+def _scene_tile(window, tile) -> QPointF:
+    tp = window.map_view._tile_pixels
+    return QPointF((tile[0] + 0.5) * tp, (tile[1] + 0.5) * tp)
+
+
+def _refused(window) -> bool:
+    item = window.map_view._unit_ghost_item
+    assert item is not None
+    return item.refused
+
+
+def test_a_single_drag_ghost_is_refused_onto_a_blocker_or_bad_terrain_and_not_back_on_its_own_point() -> None:
+    window = _window()
+    try:
+        # The unit already stands on water: its own point is a no-op drop, not a refusal.
+        _set_terrain(window, [(62, 62), (68, 62)], _WATER_DEEP)
+        (unit,) = _add(window, _VILLAGER, [(62, 62)])
+        _add(window, _ARCHER, [(74, 62)], player=2)
+        key = (1, unit.reference_id)
+        window._selection = [key]
+        window._refresh_selection_view()
+
+        _drag(window, None, (62, 62), (62, 68), release=False)
+        assert not _refused(window)
+        _move(window, (68, 62))
+        assert _refused(window)
+        _move(window, (74, 62))
+        assert _refused(window)
+        # Back on the press pixel MapView drops the gesture to a click, so the point is asked directly.
+        window.on_unit_drag_preview(key, _scene_tile(window, (62, 62)), Qt.NoModifier)
+        assert not _refused(window)
+        assert (unit.x, unit.y) == (62.5, 62.5), "a preview writes nothing"
+    finally:
+        _close(window)
+
+
+def test_an_accepting_host_is_not_refused_and_a_refusing_one_is_even_with_free_placement() -> None:
+    window = _window()
+    try:
+        (tower,) = _add(window, _TOWER, [(70, 66)])
+        (archer,) = _add(window, _ARCHER, [(66, 66)])
+        key = (1, archer.reference_id)
+        window._selection = [key]
+        window._refresh_selection_view()
+        over_tower = _scene_tile(window, (70, 66))
+
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert window.map_view._unit_hover_key == (1, tower.reference_id)
+        assert not _refused(window), "the drop garrisons; no placement rule applies"
+
+        host = window.map_view._unit_index.entry_for_key((1, tower.reference_id))
+        for _ in range(5):
+            window._garrison_add_const(host, _ARCHER)
+        window.unrestricted_check.setChecked(True)
+        window.on_unit_drag_preview(key, over_tower, Qt.NoModifier)
+        assert window.map_view._unit_hover_key is None
+        assert _refused(window), "the release refuses on the host's message before it reads Free placement"
+        # Shift makes it a plain move, which Free placement lets through.
+        window.on_unit_drag_preview(key, over_tower, Qt.ShiftModifier)
+        assert not _refused(window)
+    finally:
+        _close(window)
+
+
+def test_a_group_ghost_draws_only_the_blocked_member_refused() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        tiles = [(62, 62), (65, 64)]
+        _group(window, tiles)
+        # +6, +4 puts the second member on this archer.
+        _add(window, _ARCHER, [(71, 68)], player=2)
+        _drag(window, None, tiles[0], (68, 66), release=False)
+
+        item = view._unit_ghost_item
+        assert item._refused_marks == [False, True]
+        tp = view._tile_pixels
+        refused = [polygon for (polygon, _b, _p), r in zip(item._marks, item._refused_marks, strict=True) if r]
+        assert [p.boundingRect() for p in refused] == [QRectF(71 * tp, 68 * tp, tp, tp)]
+    finally:
+        _close(window)
+
+
+def test_a_zero_delta_group_ghost_is_never_refused_even_over_a_non_member() -> None:
+    """The release is a no-op at a zero delta, before the rule."""
+    window = _window()
+    try:
+        tiles = [(62, 62), (65, 64)]
+        keys, _units = _group(window, tiles)
+        _add(window, _ARCHER, [(65, 64)], player=2)  # on the second member, which the rule would refuse
+        _drag(window, None, tiles[0], (62, 68), release=False)
+        # Back on the press pixel MapView drops the gesture to a click, so the delta is asked directly.
+        window.on_unit_drag_preview(keys[0], _scene_tile(window, tiles[0]), Qt.NoModifier)
+        assert len(window.map_view._unit_ghost_item._marks) == 2
+        assert not _refused(window)
+    finally:
+        _close(window)
+
+
+def test_one_blocker_grid_serves_every_move_and_the_drop_and_a_rebound_selection_builds_another(monkeypatch) -> None:
+    from descape import placement_rules
+
+    window = _window()
+    try:
+        view = window.map_view
+        first, _units = _group(window, [(62, 62), (65, 64)])
+        second, _units = _group(window, [(62, 80), (65, 82)])
+        # The second member lands on water at +10, +6, so the drop is refused and edits nothing.
+        _set_terrain(window, [(75, 70)], _WATER_DEEP)
+        builds = []
+        real = placement_rules.BlockerGrid
+
+        class _Counting(real):
+            def __init__(self, *args, **kwargs):
+                builds.append(1)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(placement_rules, "BlockerGrid", _Counting)
+        window._selection = list(first)
+        window._refresh_selection_view()
+        gen = window.scenario.unit_gen
+
+        end = _drag(window, None, (62, 62), (66, 64), release=False)
+        for tile in ((68, 66), (72, 68)):
+            _move(window, tile)
+        end = _viewport_pos(window, 72, 68)
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+        assert "can't go there" in window.status_log.toPlainText().splitlines()[-1]
+        assert window.scenario.unit_gen == gen
+        assert len(builds) == 1
+
+        # The same size and no unit edit: the grid is keyed on the selection list itself.
+        window._selection = list(second)
+        window._refresh_selection_view()
+        for _ in range(2):
+            window.on_unit_drag_preview(second[0], _scene_tile(window, (70, 90)), Qt.NoModifier)
+        assert len(builds) == 2
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("blocked, tinted", [(1, True), (2, False)], ids=["inside_cap", "outside_cap"])
+def test_past_the_cap_the_grabbed_ghost_tints_for_a_blocked_member_inside_the_cap(monkeypatch, blocked, tinted) -> None:
+    from descape import viewer
+
+    window = _window()
+    try:
+        monkeypatch.setattr(viewer, "GROUP_GHOST_CAP", 2)
+        logged = []
+        real_log = window._log_status
+        window._log_status = lambda text, *a, **k: (logged.append(text), real_log(text, *a, **k))
+        tiles = [(62, 62), (65, 64), (68, 64)]
+        _group(window, tiles)
+        # +6, +4: the checked members are the grabbed one and the next in the selection.
+        dest = [(tx + 6, ty + 4) for tx, ty in tiles]
+        _add(window, _ARCHER, [dest[blocked]], player=2)
+        _drag(window, None, tiles[0], dest[0], release=False)
+
+        assert len(window.map_view._unit_ghost_item._marks) == 1
+        assert _refused(window) is tinted
+        assert any("placement is checked in full on release" in line for line in logged)
+    finally:
+        _close(window)

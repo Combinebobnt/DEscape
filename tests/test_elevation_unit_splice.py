@@ -280,9 +280,12 @@ def test_a_wall_beside_the_change_keeps_its_neighbour_derived_shape(style, wall_
 @pytest.mark.parametrize("style", STYLES)
 def test_a_slotted_composite_re_anchors_every_slot(style, slotted_composite_install, monkeypatch):  # noqa: F811
     scenario = _scenario()
-    _place(scenario, 1, MILL_CONST, 40.0, 40.0)
+    mill = _place(scenario, 1, MILL_CONST, 40.0, 40.0)
     cache = _make_cache(style, scenario, sprites=True)
-    assert len(_source_state(cache)[1][0]) == 2, "the fixture is not producing two slots"
+    # Two slots plus the front piece's outer columns (TASK-221): the whole 2x2 footprint.
+    mm = scenario.map_manager
+    footprint = set(render.unit_occupied_tiles(mill, mm.map_width, mm.map_height))
+    assert set(_source_state(cache)[1][0]) == footprint, "the fixture is not producing slots and columns"
     before = _source_state(cache)
     counts = _call_counts(monkeypatch)
 

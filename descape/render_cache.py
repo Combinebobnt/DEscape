@@ -135,7 +135,9 @@ class UnitSplice:
     old_tiles/new_tiles are render.unit_occupied_tiles()'s own ORDERED
     result, pre- and post-edit. Order matters: unit_sprites.
     sprite_anchor_tile() picks a specific tile out of this list, and it
-    must see exactly the list a full rebuild would have used.
+    must see exactly the list a full rebuild would have used. Every
+    by_anchor key a unit writes, column slices' included (TASK-221), is one
+    of these tiles, so clearing old_tiles clears all of them.
 
     Empty old_tiles/old_own_tile=None means an add (Place, no pre-edit
     state); empty new_tiles/new_own_tile=None means a removal (single
@@ -870,6 +872,14 @@ def _reanchor_units(
     render._building_bboxes_iso(). _removals_first() is redundant under this
     order but harmless.
 
+    An add (no old tiles) clears its NEW tiles in phase 1, which the guard
+    above already makes safe. A level built from the live lists between a
+    model-only add and its splice (the Unit Brush's window, GH #170: a zoom
+    onto a stale level, or a pending flush seeded from the live own-tile
+    index) already draws the unit, and the append alone would draw it twice.
+    The same clear-then-recompute is what makes a removal or a reassign
+    idempotent there.
+
     overrides is passed to render._resolve_unit_sprite() as-is. {} is fine
     only when no splice is a wall. A reassign, an elevation re-anchor and a
     membership component with a moved connector (its reshaped neighbours
@@ -899,9 +909,9 @@ def _reanchor_units(
         skip_ids = set(sprites.skip_ids)
         farm_by_tile = dict(sprites.farm_by_tile)
 
-    # own-tile and sprite-anchor-tile are independent keys (sprite_anchor_tile()
-    # picks the footprint tile LAST in depth order), so every key either side
-    # could write to is collected and reconciled once at the end.
+    # own-tile and the sprite keys are independent (sprite_anchor_tile() picks the
+    # footprint tile LAST in depth order; slots and column slices pick others), so
+    # every key either side could write to is collected and reconciled once at the end.
     touched_keys: set[tuple[int, int]] = set()
 
     # Phase 1: clear. Every OLD footprint tile, not just sprite_anchor_tile():
@@ -910,11 +920,13 @@ def _reanchor_units(
         touched_keys.update(key for key in (splice.old_own_tile, splice.new_own_tile) if key is not None)
         if sprites is None:
             continue
-        for tile in splice.old_tiles:
+        # An add clears its new tiles: a level rebuilt from the live lists before its splice already draws it.
+        cleared = splice.new_tiles if splice.old_own_tile is None else splice.old_tiles
+        for tile in cleared:
             by_anchor.pop(tile, None)
             bboxes.pop(tile, None)
             farm_by_tile.pop(tile, None)
-        touched_keys.update(splice.old_tiles)
+        touched_keys.update(cleared)
         skip_ids.discard(id(splice.unit))
 
     # Phase 2: re-add in list order, the building part unioned per own tile.
@@ -1602,6 +1614,13 @@ class _ChunkCacheBase:
         predicate, _LeveledChunkCache (Stepped and Sloped) and FlatChunkCache."""
         return True
 
+    def paints_without_build(self, mip: int) -> bool:
+        """Whether a composite at `mip` builds nothing level-wide: what a
+        pre-rendered zoom frame needs (TASK-031.71). is_level_resident(),
+        except on Flat, whose predicate stays False for a level with no icon
+        layer to build."""
+        return self.is_level_resident(mip)
+
     def level_warmable(self, mip: int) -> bool:
         """Whether level_warm_job(mip) would return a job, without building
         one: the placeholder paint's "a warm will resolve this level" test
@@ -1683,6 +1702,25 @@ class _ChunkCacheBase:
         MarginWarmer.is_active stays honest about remaining work instead of
         counting a chunk that needs no warming at all."""
         return (mip, cx, cy) in self._cache
+
+    def chunk_stamps(self, mip: int, cx0: int, cy0: int, cx1: int, cy1: int) -> tuple | None:
+        """The pixel stamp (_stamp()) of every chunk in the inclusive LEVEL-`mip`
+        range, with canvas_dims(mip), or None if any is uncached. A pre-rendered
+        zoom frame records it (TASK-031.71) and serves only while
+        stamps_current() holds: every write to a cached chunk's pixels
+        re-stamps it, and every other change to them removes it."""
+        cache, stamps = self._cache, self._chunk_stamp
+        keys = [(mip, cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)]
+        if any(key not in cache for key in keys):
+            return None
+        return mip, self.canvas_dims(mip), tuple((key, stamps[key]) for key in keys)
+
+    def stamps_current(self, recorded: tuple) -> bool:
+        """Whether every chunk chunk_stamps() recorded is still cached with the
+        same stamp, at the same canvas_dims(): its pixels are unchanged."""
+        mip, dims, entries = recorded
+        cache, stamps = self._cache, self._chunk_stamp
+        return dims == self.canvas_dims(mip) and all(key in cache and stamps.get(key) == stamp for key, stamp in entries)
 
     def chunk_index_range(self, mip: int, x0: int, y0: int, x1: int, y1: int) -> tuple[int, int, int, int]:
         """(cx0, cy0, cx1, cy1) -- the inclusive chunk-grid index range that
@@ -2945,7 +2983,10 @@ class _LeveledChunkCache(_ChunkCacheBase):
         re-derives under its new owner. The flush's invalidate_units() then
         leaves the level equal to a fresh cache's (pinned by
         tests/test_stepped_defer_offscreen.py), so the cost is one in-paint
-        build, and the repaint is the Eraser's stale-level mark's (TASK-318)."""
+        build, and the repaint is the Eraser's stale-level mark's (TASK-318).
+        The Unit Brush (GH #170) has the same window: the live own-tile index
+        seeds an add on a pending tile, so this flush already draws it, and
+        its add splice clears its new tiles before re-adding (_reanchor_units())."""
         lvl = self._levels[mip]
         with perf_trace.level("flush", mip) as ev:
             # Cleared first so nothing reached from the splice below can re-enter.
@@ -3806,6 +3847,10 @@ class FlatChunkCache(_ChunkCacheBase):
         self._unit_gen = 0
         # _refresh_source_caches() also sets self._row_uid/_row_player, one
         # entry per row of every level's draws (identical across levels).
+        # _rows_unit_gen is the scenario.unit_gen they describe; _window_built
+        # names each lazy level layer built while the model was ahead of it.
+        self._rows_unit_gen = self._model_unit_gen()
+        self._window_built: set[tuple[str, int]] = set()
         self._init_terrain_ids()
         self._record_flag_hosts()
         self._refresh_source_caches()
@@ -3870,11 +3915,22 @@ class FlatChunkCache(_ChunkCacheBase):
         live scenario state in the same order. None, an empty list, or an
         ineligible batch takes the wholesale path below, which drops
         everything and rebuilds level 0's draws now and the rest lazily.
-        splice_levels and cap_levels are Stepped/Sloped keywords, ignored here."""
+        splice_levels and cap_levels are Stepped/Sloped keywords, ignored here.
+
+        A level layer built lazily inside a mutate-now, repaint-later window
+        (the Eraser's, Convert's and the Unit Brush's, GH #170: a zoom onto a
+        never-built level mid-drag) walked the live lists, which the row table
+        does not describe yet: an add gives it an extra row, a reassign moves
+        one. It is dropped here (_drop_window_built()) and rebuilds lazily
+        from the lists this call brings the row table up to. A layer built
+        outside such a window is kept, so the row splice stays the fast path."""
         self._mutation_epoch += 1
         self._record_flag_hosts()
+        if self._window_built:
+            self._drop_window_built()
         if self.can_splice(changed):
             self._splice_rows(changed)
+            self._rows_unit_gen = self._model_unit_gen()
             return
         if hasattr(self, "unit_draws"):
             del self.unit_draws
@@ -3888,6 +3944,18 @@ class FlatChunkCache(_ChunkCacheBase):
         # keyed to the row order this call just invalidated.
         self._unit_gen += 1
         self._refresh_source_caches()
+        self._rows_unit_gen = self._model_unit_gen()
+
+    def _note_level_build(self, kind: str, mip: int) -> None:
+        """Records a lazy "draws" or "icons" build made while the model is
+        ahead of the row table, for invalidate_units() to drop."""
+        if self._model_unit_gen() != self._rows_unit_gen:
+            self._window_built.add((kind, mip))
+
+    def _drop_window_built(self) -> None:
+        for kind, mip in self._window_built:
+            (self._level_draws if kind == "draws" else self._level_icon_layers).pop(mip, None)
+        self._window_built.clear()
 
     @staticmethod
     def _is_row_move(splice: UnitSplice) -> bool:
@@ -4084,6 +4152,7 @@ class FlatChunkCache(_ChunkCacheBase):
             with perf_trace.level("flat-draws", mip):
                 draws = render._flat_unit_draws(self.scenario, self._mip_tile_px[mip], self.unit_filter)
             self._level_draws[mip] = draws
+            self._note_level_build("draws", mip)
         return draws
 
     def _level_icons(self, mip: int) -> dict[int, unit_sprites.SpriteDraw] | None:
@@ -4129,6 +4198,7 @@ class FlatChunkCache(_ChunkCacheBase):
             f"produced {0 if draws is None else len(draws[0])} rows -- the two walks have diverged"
         )
         self._level_icon_layers[mip] = icons
+        self._note_level_build("icons", mip)
 
     def level_warm_job(self, mip: int) -> LevelWarmJob | None:
         """Flat's resumable warm for one level -- IsoChunkCache.
@@ -4177,6 +4247,10 @@ class FlatChunkCache(_ChunkCacheBase):
         invalidated anything between the check and the get_chunk() call it
         gates."""
         return mip in self._level_icon_layers
+
+    def paints_without_build(self, mip: int) -> bool:
+        """Built, or with no icon layer to build (units or sprites off)."""
+        return mip in self._level_icon_layers or not (self.with_units and self.sprites_enabled)
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Turns real .sld icons on or off on a LIVE cache (P3-g7).

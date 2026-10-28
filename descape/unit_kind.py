@@ -68,8 +68,8 @@ flags (1150/1151/1307 and the rest) are type 20 and never in the set at all.
 Owner-independent, like show_trees: eye candy is usually GAIA but a real player
 can own it, and an eye-candy object is eye candy either way.
 
-Not to be confused with the Terrain brush's persisted "Eye candy" checkbox
-(settings.get_paint_eye_candy, viewer.py's paint_eye_candy_check), which is a
+Not to be confused with the Terrain brush's "Eye candy" checkbox
+(viewer.py's paint_eye_candy_check, default in Settings > Tools), which is a
 different question over a different set -- which doodads a terrain stroke
 PLACES, versus which consts a filter HIDES.
 

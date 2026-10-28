@@ -217,6 +217,36 @@ def test_a_dropped_loader_is_never_destroyed_on_the_worker(fake_install, monkeyp
     assert finalized == [threading.main_thread()]
 
 
+def test_a_window_closed_mid_load_drops_the_late_portrait(fake_install) -> None:
+    """TASK-464: the window owning a loader is deleted while a portrait decodes, and Python
+    still holds the loader's wrapper. Passes when the late result is dropped: no
+    "wrapped C/C++ object ... has been deleted" from _deliver in the Qt event loop."""
+    from PyQt5 import sip
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QWidget
+
+    conftest.ensure_qapp()
+    executor = _ManualExecutor()
+    window = QWidget()
+    loader = catalog_thumbs.ThumbLoader(window, executor=executor)
+    loader.request([_ARCHER], 32)
+    assert executor.icons() == [17], "fixture assumption: the portrait is in flight"
+    window.close()
+    sip.delete(window)
+    assert sip.isdeleted(loader), "fixture assumption: the window took its child loader with it"
+    assert catalog_thumbs._loaders.get(loader._token) is loader, "fixture assumption: the wrapper is still findable"
+    # Queued after _deliver's own slot, so once it has run, _deliver has too.
+    delivered = []
+    relay, slot = catalog_thumbs._gui_relay(), delivered.append
+    relay.decoded.connect(slot, Qt.QueuedConnection)
+    try:
+        executor.run(0)
+        _pump(lambda: delivered)
+    finally:
+        relay.decoded.disconnect(slot)
+    assert len(delivered) == 1
+
+
 def test_a_cancelled_decode_does_not_leave_its_loader_waiting(fake_install) -> None:
     executor = _ManualExecutor()
     loader, got = _loader(executor)

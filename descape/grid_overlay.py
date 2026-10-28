@@ -12,6 +12,9 @@ grid_axes() is the ground-plane lattice, every line at elevation 0, which is
 the same reference the Distance Ticks ruler and the Ruler tool use. That is
 why its endpoints come from edge_ticks.iso_corner: each ruler tick lands
 exactly on the end of a grid line at any tick interval.
+
+Every line is a minor, one per tile; every `major_every`-th (View > Grid, one
+of MAJOR_EVERY_STOPS) is a major, index 0 included.
 """
 
 from __future__ import annotations
@@ -25,6 +28,15 @@ from descape import edge_ticks, iso_geometry
 Point = tuple[int, int]
 Line = tuple[Point, Point]
 RGBA = tuple[int, int, int, int]
+
+# How often the stronger line repeats, in tiles (View > Grid). Its own
+# constant, not edge_ticks.MAJORS_PER_MINOR: the ruler keeps its interval.
+MAJOR_EVERY_STOPS: tuple[int, ...] = (2, 4, 8, 16)
+MAJOR_EVERY_DEFAULT = 4
+
+
+def valid_major_every(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in MAJOR_EVERY_STOPS
 
 
 @dataclass(frozen=True)
@@ -46,6 +58,7 @@ def grid_axes(
     map_h: int,
     proj: iso_geometry.IsoProjection | None = None,
     tile_px: int | None = None,
+    major_every: int = MAJOR_EVERY_DEFAULT,
 ) -> tuple[GridAxis, GridAxis]:
     """The (x, y) line families of a map_w x map_h grid: map_w + 1 lines of
     constant x and map_h + 1 of constant y. Dispatches on `proj` the way
@@ -66,15 +79,15 @@ def grid_axes(
     else:
         raise ValueError("grid_axes needs either proj (iso) or tile_px (flat)")
     return (
-        GridAxis("x", x_lines, tuple(is_major(i) for i in xs), x_step),
-        GridAxis("y", y_lines, tuple(is_major(j) for j in ys), y_step),
+        GridAxis("x", x_lines, tuple(is_major(i, major_every) for i in xs), x_step),
+        GridAxis("y", y_lines, tuple(is_major(j, major_every) for j in ys), y_step),
     )
 
 
-def is_major(index: int) -> bool:
-    """Every MAJORS_PER_MINOR-th grid line is a major, index 0 included, so
-    the grid's majors line up with a one-tile ruler's."""
-    return edge_ticks.is_major(index, 1)
+def is_major(index: int, major_every: int = MAJOR_EVERY_DEFAULT) -> bool:
+    """Every `major_every`-th grid line is a major, index 0 included. At the
+    default 4 the majors line up with a one-tile ruler's."""
+    return index % major_every == 0
 
 
 # LOD, on the DEVICE-space gap between adjacent lines. Zoom is fit-relative,
@@ -93,9 +106,10 @@ class GridLod:
     draw_minors: bool
 
 
-def grid_lod(minor_spacing_px: float) -> GridLod:
-    """Monotonic by construction: minors drop before the grid does."""
-    draw_grid = minor_spacing_px * edge_ticks.MAJORS_PER_MINOR >= MIN_GRID_SPACING_PX
+def grid_lod(minor_spacing_px: float, major_every: int = MAJOR_EVERY_DEFAULT) -> GridLod:
+    """Monotonic by construction: minors drop before the grid does. The grid
+    itself stays while its majors are MIN_GRID_SPACING_PX apart."""
+    draw_grid = minor_spacing_px * major_every >= MIN_GRID_SPACING_PX
     return GridLod(draw_grid=draw_grid, draw_minors=draw_grid and minor_spacing_px >= MIN_MINOR_SPACING_PX)
 
 
@@ -182,6 +196,7 @@ class GridBake:
     minor: RGBA = (0, 0, 0, 0)
     major: RGBA = (0, 0, 0, 0)
     thickness: int = THICKNESS_DEFAULT
+    major_every: int = MAJOR_EVERY_DEFAULT
 
     @property
     def paints(self) -> bool:
@@ -191,30 +206,34 @@ class GridBake:
 DEFAULT_GRID = GridBake()
 
 
-def grid_bake(enabled: bool, blend: int, thickness: int) -> GridBake:
+def grid_bake(enabled: bool, blend: int, thickness: int, major_every: int = MAJOR_EVERY_DEFAULT) -> GridBake:
     minor, major = grid_colors(blend)
-    return GridBake(enabled=bool(enabled), minor=minor, major=major, thickness=snap_thickness(thickness))
+    return GridBake(
+        enabled=bool(enabled), minor=minor, major=major, thickness=snap_thickness(thickness),
+        major_every=major_every,
+    )
 
 
 def owned_edges(
-    tx: int, ty: int, map_w: int, map_h: int, elevations: np.ndarray | None = None
+    tx: int, ty: int, map_w: int, map_h: int, elevations: np.ndarray | None = None,
+    major_every: int = MAJOR_EVERY_DEFAULT,
 ) -> tuple[tuple[str, bool], ...]:
     """The (edge, is_major) pairs tile (tx, ty) draws. Every tile owns its
     x-low and y-low edges; x-high and y-high only at the map border or, given
     Stepped `elevations`, where that neighbour's height differs (the cliff
     lip). Owning two sides is what composites a shared edge once, not twice."""
-    edges = [("x_low", is_major(tx)), ("y_low", is_major(ty))]
+    edges = [("x_low", is_major(tx, major_every)), ("y_low", is_major(ty, major_every))]
     here = None if elevations is None else elevations[ty, tx]
     if tx + 1 == map_w or (here is not None and elevations[ty, tx + 1] != here):
-        edges.append(("x_high", is_major(tx + 1)))
+        edges.append(("x_high", is_major(tx + 1, major_every)))
     if ty + 1 == map_h or (here is not None and elevations[ty + 1, tx] != here):
-        edges.append(("y_high", is_major(ty + 1)))
+        edges.append(("y_high", is_major(ty + 1, major_every)))
     return tuple(edges)
 
 
-def bake_lod(minor_spacing_canvas_px: float) -> GridLod:
+def bake_lod(minor_spacing_canvas_px: float, major_every: int = MAJOR_EVERY_DEFAULT) -> GridLod:
     """grid_lod() on one mip's own minor spacing at residual magnification
     1.0, so it never drops a line that is genuinely visible. On the shipped
     ladders (MIP_MIN_TILE_PIXELS = 16) it never fires: a guard for a future
     ladder, not a live behaviour."""
-    return grid_lod(minor_spacing_canvas_px)
+    return grid_lod(minor_spacing_canvas_px, major_every)

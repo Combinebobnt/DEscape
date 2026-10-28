@@ -4,6 +4,7 @@ click share, per const class. Qt-free, install-free."""
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 
@@ -14,6 +15,7 @@ from descape.place_rotation import (
     NOTHING,
     TURNED,
     PlaceRotation,
+    random_rotation,
     rotation_for,
     step,
     steps_for_coarse,
@@ -170,3 +172,50 @@ def test_walls_cliffs_and_inert_are_a_no_op_at_zero(const) -> None:
     assert rotation_for(start, const, P1) == 0.0
     assert rotation_for(start, const, GAIA) == 0.0
     assert steps_for_coarse(const, -1) == -1
+
+
+# --- random_rotation(): the Unit Brush's per-unit roll (GH #170) ------------------
+
+
+SEEDS = range(200)
+
+
+@pytest.mark.parametrize("const", [ARCHER, EIGHT_FRAMES, SIX_FRAMES])
+@pytest.mark.parametrize("owner", [P1, GAIA])
+def test_a_random_facing_is_on_the_consts_own_grid_for_gaia_too(const, owner) -> None:
+    count = unit_rotation.angle_count_for(const)
+    seen = set()
+    for seed in SEEDS:
+        value = random_rotation(random.Random(seed), const, owner)
+        facing = unit_rotation.rotation_to_facing(value, count)
+        assert value == pytest.approx(unit_rotation.facing_to_rotation(facing, count), abs=1e-12)
+        assert value == rotation_for(PlaceRotation(facing=value), const, owner)
+        seen.add(facing)
+    assert seen == set(range(count)), "the roll never reached every facing"
+
+
+@pytest.mark.parametrize("owner", [P1, GAIA])
+def test_a_random_variant_is_a_literal_integer_index(owner) -> None:
+    count = unit_variant.variant_count_for(OAK)
+    seen = set()
+    for seed in SEEDS:
+        value = random_rotation(random.Random(seed), OAK, owner)
+        assert isinstance(value, float) and value == int(value) and 0 <= value < count
+        assert value == rotation_for(PlaceRotation(variant=int(value), variant_const=OAK), OAK, owner)
+        seen.add(value)
+    assert len(seen) > count // 2, "the roll stopped varying"
+
+
+HOUSE_2X2 = 70
+
+
+@pytest.mark.parametrize("const", [HOUSE_2X2, HOUSE, STONE_WALL, STONE_GATE, "cliff"])
+def test_no_facing_or_variant_rolls_zero_and_draws_nothing(const) -> None:
+    """facing_to_rotation(_, 1) raises, so these must never reach a facing roll."""
+    const = _cliff() if const == "cliff" else const
+    assert not unit_rotation.rotation_is_angle(const) and not unit_variant.is_cyclable(const)
+    rng = random.Random(5)
+    before = rng.getstate()
+    for owner in (P1, GAIA):
+        assert random_rotation(rng, const, owner) == 0.0
+    assert rng.getstate() == before

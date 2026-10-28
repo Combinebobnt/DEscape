@@ -471,3 +471,17 @@ def test_closing_the_document_closes_the_dialog() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_closing_the_window_closes_the_dialog() -> None:
+    """TASK-432: close() doesn't destroy the window, so an open dialog stayed up as a stray
+    top-level on a shared test QApplication, and a later test counted it as its own."""
+    window = _triggers_window()
+    try:
+        dialog = _dialog(window)
+        assert dialog.isVisible()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+    assert not dialog.isVisible()
+    assert window.trigger_panel._variables_dialog is None

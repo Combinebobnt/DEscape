@@ -1,7 +1,7 @@
 """Brush footprints for the drag-stroke edit tools (Terrain, Elevate, Set
-Elevation). Pure tile-index math, no Qt, no config -- brush size/shape is
-deliberately session-only (see viewer.py's brush widgets), so nothing here
-touches descape.settings.
+Elevation). Pure tile-index math, no Qt, no config: the toolbar row holds the
+session's brush size, shape and thickness and Settings > Tools their defaults
+(descape/tool_options.py), so nothing here touches descape.settings.
 
 Size is a diameter/edge length, not a radius: size 1 is a single tile, size 3
 is a 3x3 square, size 5 is a 5x5 square. Even sizes have no true center tile;

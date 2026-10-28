@@ -32,6 +32,8 @@ datas = [
 ]
 datas.append((str(ROOT / "descape" / "templates"), "descape/templates"))
 datas.append((str(ROOT / "descape" / "app_icon.png"), "descape"))
+# GH #160: the built-in guide's topic files (help_guide.GUIDE_DIR).
+datas.append((str(ROOT / "descape" / "help"), "descape/help"))
 # GH #58: the data-mod derive subprocess runs tools/gen_*.py, and every cache key
 # hashes them and dat_derive.py's own source, so all of them ship as data too.
 sys.path.insert(0, str(ROOT))

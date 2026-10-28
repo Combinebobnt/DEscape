@@ -23,6 +23,10 @@ What it reports, per drag:
     For Convert and Cliff "steps per paint" means less: Convert repaints on a
     throttle, Cliff only at release.
   - the Perf Trace line for the drag (ms/step, per-phase totals, repaint).
+  - --tool unit_brush (GH #170) paints --unit-const for --unit-owner at
+    --unit-density, rules on, and adds a `unit brush:` line: the press with
+    its first dab (the lazy BlockerGrid build lands there), the later
+    per-event dabs' median and p95, and the release.
 
 Settings are isolated (pin_install_path() + isolate_settings()), so nothing
 here writes the real config.yaml.
@@ -300,6 +304,52 @@ class _PatchProfile:
         return out
 
 
+class _StrokeTimer:
+    """--tool unit_brush: the press (with the first dab, where the lazy
+    BlockerGrid build lands), every later per-event dab, and the release, in ms."""
+
+    def __init__(self, view) -> None:
+        self.events: list[float] = []
+        self.press = self.release = None
+        start, tiles, end = view._on_stroke_start, view._on_stroke_tiles, view._on_stroke_end
+
+        def timed_start():
+            t = time.perf_counter()
+            start()
+            self.press = (time.perf_counter() - t) * 1000
+
+        def timed_tiles(path, modifiers):
+            t = time.perf_counter()
+            tiles(path, modifiers)
+            ms = (time.perf_counter() - t) * 1000
+            if self.events or self.press is None:
+                self.events.append(ms)
+            else:
+                self.press += ms
+                self.events.append(float("nan"))
+
+        def timed_end():
+            t = time.perf_counter()
+            end()
+            self.release = (time.perf_counter() - t) * 1000
+
+        view._on_stroke_start, view._on_stroke_tiles, view._on_stroke_end = timed_start, timed_tiles, timed_end
+
+    def take(self) -> list[str]:
+        events = sorted(ms for ms in self.events[1:])
+        line = "  unit brush: no stroke"
+        if self.press is not None:
+            median = events[len(events) // 2] if events else float("nan")
+            p95 = events[min(len(events) - 1, int(len(events) * 0.95))] if events else float("nan")
+            line = (
+                f"  unit brush: press+first dab {self.press:.1f}ms, later events {len(events)} "
+                f"median {median:.1f}ms p95 {p95:.1f}ms max {max(events, default=float('nan')):.1f}ms, "
+                f"release {self.release if self.release is not None else float('nan'):.1f}ms"
+            )
+        self.events, self.press, self.release = [], None, None
+        return [line]
+
+
 def _unit_owners(window) -> dict[int, int]:
     """id(unit) -> owning player, so a drag's converted and placed units can be counted."""
     return {id(u): p for p, units in enumerate(window.scenario.unit_manager.units) for u in units}
@@ -307,7 +357,7 @@ def _unit_owners(window) -> dict[int, int]:
 
 def _drag(
     window, record, paints, *, row: int, px: int, delay_ms: float, button: str, profile=None,
-    start: tuple[int, int] | None = None, length: int = 1000,
+    start: tuple[int, int] | None = None, length: int = 1000, timer: _StrokeTimer | None = None,
 ) -> list[str]:
     """One horizontal drag of `length` px; `start` is its viewport point (default: row `row` of the 1:1 grid)."""
     from PyQt5.QtCore import QPoint
@@ -331,6 +381,8 @@ def _drag(
     debug_log.clear()
     if profile is not None:
         profile.take()
+    if timer is not None:
+        timer.take()
     owners0 = _unit_owners(window)
     proc = subprocess.Popen(cmd)
     t0 = time.perf_counter()
@@ -374,6 +426,7 @@ def _drag(
         f"  delivered-tile continuity hist {_hist(continuity)} (holes: {sum(c > 1 for c in continuity)})",
         "  " + debug_log.get_log_text().strip().replace("\n", "\n  "),
         *(profile.take() if profile is not None else ()),
+        *(timer.take() if timer is not None else ()),
     ]
 
 
@@ -389,10 +442,8 @@ def _run(args) -> list[str]:
     from descape import composite_backend, debug_log, perf_trace, settings, viewer_canvas
     from testkit import qt_window
 
-    # Trees/eye candy/ticks off unless --trees: they are not what the default run measures.
-    # Module globals, per testkit/qt_window.py. A drag never opens the Large-fill modal.
-    settings._paint_trees = args.trees
-    settings._paint_eye_candy = False
+    # Ticks off here, and Trees/eye candy off on the window below unless --trees: they are not what
+    # the default run measures. Module globals, per testkit/qt_window.py. A drag never opens the Large-fill modal.
     settings._distance_ticks = False
     if args.no_preload:
         settings._preload_zoom_levels = False
@@ -414,13 +465,20 @@ def _run(args) -> list[str]:
     window = qt_window.stepped_window(Path(args.scenario), show=False)
     output = []
     try:
-        # Convert needs the unit pick index, which only Units mode builds.
-        window.mode_combo.setCurrentText("Units" if args.tool == "convert" else "Terrain")
+        # Convert needs the unit pick index, which only Units mode builds; the Unit Brush is Units-only.
+        window.mode_combo.setCurrentText("Units" if args.tool in ("convert", "unit_brush") else "Terrain")
         if args.style != "Stepped":
             window.terrain_style_combo.setCurrentText(args.style)
         window._on_tool_selected(args.tool)
         if args.tool == "convert" and not window.units_panel.select_owner(args.convert_to):
             raise SystemExit(f"--convert-to {args.convert_to}: no such owner in the Units panel")
+        if args.tool == "unit_brush":
+            # Owner first: a later owner change clears a GAIA-only pick in the panel.
+            if not window.units_panel.select_owner(args.unit_owner):
+                raise SystemExit(f"--unit-owner {args.unit_owner}: no such owner in the Units panel")
+            if not window.units_panel.pick_object(args.unit_const):
+                raise SystemExit(f"--unit-const {args.unit_const}: not in the Units catalog")
+            window.unit_brush_density_spin.setValue(args.unit_density)
         if args.tool == "cliff":
             _select_cliff_piece(window, args.cliff_piece)
         if args.level is not None:
@@ -445,6 +503,7 @@ def _run(args) -> list[str]:
         fit_rows = _diamond_rows(view, window.scenario.map_manager, 4) if args.fit else None
 
         # MapView captured the bound callback at construction, so wrap its copy.
+        timer = _StrokeTimer(view) if args.tool == "unit_brush" else None
         record: list[tuple[float, list[tuple[int, int]]]] = []
         deliver = view._on_stroke_tiles
 
@@ -475,7 +534,7 @@ def _run(args) -> list[str]:
                     geometry = {"start": (lo, rows[row % 4]), "length": min(1000, hi - lo)}
                 output += _drag(
                     window, record, paints, row=row % 4, px=args.px, delay_ms=delay, button=args.button, profile=profile,
-                    **geometry,
+                    timer=timer, **geometry,
                 )
                 row += 1
     finally:
@@ -566,8 +625,6 @@ def _run_clicks(args) -> list[str]:
     from descape import composite_backend, debug_log, perf_trace, settings
     from testkit import qt_window
 
-    settings._paint_trees = False
-    settings._paint_eye_candy = False
     settings._distance_ticks = False
     # Read by MapView's constructor. Outlines stay off (the user's config), so the scope only
     # changes work where the hidden rebuild still runs (the plan's "before" side).
@@ -782,8 +839,6 @@ def _run_flow_gh180(args) -> list[str]:
     from descape import composite_backend, debug_log, perf_trace, settings, viewer, viewer_canvas
     from testkit.qt_window import ScenarioLoadError
 
-    settings._paint_trees = True
-    settings._paint_eye_candy = False
     settings._distance_ticks = False
     perf_trace.enable(True)  # before the window: its constructor starts the stall watchdog and gc hook
 
@@ -1179,8 +1234,6 @@ def _run_undo(args) -> list[str]:
     from descape import composite_backend, debug_log, perf_trace, render, render_cache, settings, viewer
     from testkit import qt_window
 
-    settings._paint_trees = False
-    settings._paint_eye_candy = False
     settings._distance_ticks = False
     perf_trace.enable(True)
     window = qt_window.stepped_window(Path(args.scenario), show=False)
@@ -1351,8 +1404,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", default=str(DEFAULT_SCENARIO))
     parser.add_argument("--style", default="Stepped", choices=["Flat", "Stepped", "Sloped"])
-    parser.add_argument("--tool", default="draw", choices=["draw", "elevation", "set_level", "convert", "cliff"])
+    parser.add_argument(
+        "--tool", default="draw", choices=["draw", "elevation", "set_level", "convert", "cliff", "unit_brush"]
+    )
     parser.add_argument("--convert-to", type=int, default=2, help="Convert's destination owner (--tool convert)")
+    parser.add_argument("--unit-const", type=int, default=349, help="--tool unit_brush object (default Oak 349)")
+    parser.add_argument("--unit-owner", type=int, default=0, help="--tool unit_brush owner (default GAIA)")
+    parser.add_argument("--unit-density", type=int, default=100, help="--tool unit_brush Density %% (default 100)")
     parser.add_argument("--cliff-piece", type=int, default=264, help="cliff unit const (--tool cliff; no brush)")
     parser.add_argument("--brush", type=_csv(int), default=[1, 5, 9], help="comma-separated brush sizes")
     parser.add_argument("--delays", type=_csv(float), default=[16.0], help="comma-separated ms between moves")

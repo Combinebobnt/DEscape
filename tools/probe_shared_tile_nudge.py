@@ -47,8 +47,8 @@ def _install_probes() -> None:
     # The clause-level form _splice_plan() reaches through the module global.
     orig_refusal = render_cache._batch_splice_refusal
 
-    def batch_probe(units_by_tile, changed):
-        reason = orig_refusal(units_by_tile, changed)
+    def batch_probe(units_by_tile, changed, *rest):
+        reason = orig_refusal(units_by_tile, changed, *rest)
         result = reason is None
         entry = {"result": result, "reason": reason, "n": len(changed), "const_ok": [], "blockers": []}
         for s in changed:

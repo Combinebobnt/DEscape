@@ -44,7 +44,6 @@ from operator import attrgetter
 import numpy as np
 
 from descape import asset_source, iso_geometry, render, terrain_blend
-from descape.edge_ticks import MAJORS_PER_MINOR
 
 # Stepped op-table layout, mirrored by DEF constants in _composite_native.pyx.
 OP_DIAMOND = 0
@@ -276,6 +275,9 @@ class UnitPack:
     sprites (by_anchor order). Each row ends in its unit's base rise, the
     value the Python path records in its ink plane. Farm override ids feed
     the texture choice in Python; the outline mask and colour go to the kernel.
+    A multi-tile sprite's column slices (TASK-221) are ordinary sprite rows:
+    a strided view, copied contiguous once per distinct rgba by _slot(), at
+    its own anchor tile, so neither the row layout nor the kernel changed.
 
     Rows live in an append-only arena: index[t] = (start, count). A tile is
     derived lazily, the first time a composite's candidates include it
@@ -646,13 +648,15 @@ def _blend_extra_tids(blend: terrain_blend.RectKeys | None) -> list[int]:
     return sorted(extra)
 
 
-def _edge_states(cx: np.ndarray, cy: np.ndarray, w: int, h: int, draw_minors: bool, elevations) -> np.ndarray:
+def _edge_states(
+    cx: np.ndarray, cy: np.ndarray, w: int, h: int, draw_minors: bool, elevations, major_every: int,
+) -> np.ndarray:
     """grid_overlay.owned_edges per candidate as one base-3 key over
     (x_low, y_low, x_high, y_high): 0 absent, 1 minor, 2 major, with the LOD
     minor filter already applied."""
 
     def state(n, present=True):
-        s = np.where(n % MAJORS_PER_MINOR == 0, 2, 1)
+        s = np.where(n % major_every == 0, 2, 1)
         s = np.where(present, s, 0)
         return s if draw_minors else np.where(s == 1, 0, s)
 
@@ -783,9 +787,9 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     stamps = None
     cand_grid = np.full(cx.size, -1, dtype=np.int32)
     if grid.paints:
-        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2)
+        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2, grid.major_every)
         if draw_grid:
-            keys = _edge_states(cx, cy, w, h, draw_minors, elevations)
+            keys = _edge_states(cx, cy, w, h, draw_minors, elevations, grid.major_every)
             cand_grid, stamps = _grid_stamps(tile_px, grid, keys)
     tables = stepped_tables(tile_px, proj.elev_step)
     if blend_tables is not None:
@@ -855,9 +859,9 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
     stamps = None
     cand_grid = np.full(cx.size, -1, dtype=np.int32)
     if grid.paints:
-        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2)
+        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2, grid.major_every)
         if draw_grid:
-            edge_keys = _edge_states(cx, cy, w, h, draw_minors, None)
+            edge_keys = _edge_states(cx, cy, w, h, draw_minors, None, grid.major_every)
             pair = edge_keys * len(shape_keys) + inv
             cand_grid, stamps = _grid_stamps(
                 tile_px, grid, pair, split=lambda p: (p // len(shape_keys), shape_keys[p % len(shape_keys)]),

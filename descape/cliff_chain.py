@@ -599,26 +599,33 @@ class ChainStroke:
             contacts = self._contacts(plan)
             if first is None and not any(arms for arms, _ in contacts):
                 return plan
-            # Every pass starts over from the path shapes, so a node that lost its contact reverts.
-            shapes = list(base)
-            start_touches = contacts[0][1]
-            start_joined = False
-            for i, (extra, _) in enumerate(contacts):
-                if not extra:
-                    continue
-                # A path arm keeps its edge's type over a contact on the same side.
-                found = self._shape({**extra, **path_arms[i]})
-                if found is not None:
-                    shapes[i] = found
-                    start_joined = start_joined or i == 0
+            shapes, start_joined = self._contact_shapes(contacts, base, path_arms)
             if first is not None and shapes == plan.shapes:
                 return plan
+            start_touches = contacts[0][1]
             plan = self._layout(side, shapes)
             plan.start_touches = start_touches
             plan.start_joined = start_touches and start_joined
             if first is None:
                 first = plan
-        return first
+        # TASK-453: the last pass's plan gets its check too, so a run that settles there keeps it.
+        shapes, _ = self._contact_shapes(self._contacts(plan), base, path_arms)
+        return plan if shapes == plan.shapes else first
+
+    def _contact_shapes(self, contacts, base: list[_Shape], path_arms) -> tuple[list[_Shape], bool]:
+        """(each node's shape widened by its contacts, whether node 0's was).
+        Every pass starts over from the path shapes, so a node that lost its contact reverts."""
+        shapes = list(base)
+        start_joined = False
+        for i, (extra, _) in enumerate(contacts):
+            if not extra:
+                continue
+            # A path arm keeps its edge's type over a contact on the same side.
+            found = self._shape({**extra, **path_arms[i]})
+            if found is not None:
+                shapes[i] = found
+                start_joined = start_joined or i == 0
+        return shapes, start_joined
 
     def _shape(self, arms: dict[Direction, bool]) -> _Shape | None:
         """The table's piece for these typed arms, or None when it has none.

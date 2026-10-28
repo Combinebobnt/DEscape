@@ -341,3 +341,54 @@ def test_opening_a_1_59_file_after_a_1_58_one_enables_the_row() -> None:
         assert "1.59" not in combo.toolTip()
     finally:
         _close(window)
+
+
+# -- the mouse wheel (TASK-344) ------------------------------------------------
+
+
+def _wheel(combo) -> None:
+    """One notch towards an item the combo has, delivered as Qt would."""
+    from PyQt5.QtCore import QPoint, QPointF, Qt
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    units = -120 if combo.currentIndex() < combo.count() - 1 else 120
+    centre = QPointF(combo.rect().center())
+    event = QWheelEvent(centre, centre, QPoint(0, 0), QPoint(0, units), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(combo, event)
+
+
+@pytest.mark.parametrize(
+    ("path", "key", "field_id"),
+    [(V158, _ARCHER_158, "status"), (V159, _P1_ARCHER, "capture_flag"), (V158, _ARCHER_158, "player")],
+    ids=["unit-state", "capture-flag", "owner"],
+)
+def test_the_wheel_edits_an_inspector_combo_only_once_it_has_focus(path: Path, key, field_id: str) -> None:
+    """A wheel notch over the inspector, which scrolls, must not edit the selection by passing over a combo."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window(path)
+    try:
+        window.show()
+        QApplication.setActiveWindow(window)
+        _select(window, key)
+        combo = _combo(window, field_id)
+        assert combo.isEnabled()
+        window.map_view.setFocus()
+        QApplication.processEvents()
+        assert not combo.hasFocus()
+        before = combo.currentData()
+
+        _wheel(combo)
+        assert combo.currentData() == before
+        assert _records(window) == 0
+        assert not combo.hasFocus(), "the wheel must not hand the combo focus either"
+
+        combo.setFocus()
+        QApplication.processEvents()
+        assert combo.hasFocus(), "offscreen focus failed -- the control below would pass vacuously"
+        _wheel(combo)
+        assert combo.currentData() != before
+        assert _records(window) == 1
+    finally:
+        _close(window)

@@ -26,6 +26,20 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **A Help menu with a built-in guide** (GH #160): Help > DEscape Guide (F1)
+  opens the guide at the current mode's page, and Help > Keyboard and Mouse
+  lists your current keys and wheel bindings above the fixed mouse gestures.
+  The menu also links to this version's release notes, a prefilled bug
+  report, DEscape on GitHub and the AoE2 Scenario Editor Guide
+  (ugc.aoe2.rocks). The README's usage notes moved into the guide, which is
+  also readable on GitHub under `descape/help/`.
+- **Flip and turn a selection in place**: Edit > Flip Selection and the new
+  Edit > Rotate Selection > Rotate Group pair flip or turn the selected units
+  (Units mode) as one group about their shared centre. With no units
+  selected, they flip or turn a selected region in place, with its terrain,
+  elevation and units, and the Rotate entries turn a selected region too.
+  Units keep their identity, so triggers that name them still work. A run of
+  flips and turns is one undo step: Enter applies it, Esc reverts it.
 - **File > Data Mod** (GH #58): show a scenario with a data mod's own units,
   stats and names, remembered per scenario; a mod's `.dat` is read once in
   the background and cached. See the README's profile folder section.
@@ -97,9 +111,41 @@ content, link the doc instead of summarizing it.
   with Draw, Draw Line or Draw Rectangle lays the beach on the water side.
   Beaches, bridges and non-navigable shores still lay none, and rice
   paddies, mangroves and reeds beside the stroke are kept.
+- **Unit Brush tool** in Units mode (GH #170): paint the picked object across
+  the brush in one drag, one undo step per drag. A Density setting decides
+  how many tiles get a unit (each tile is rolled once per drag). Place Unit's
+  placement rules apply (Free placement lifts them), and a stroke never
+  stacks units on itself. Each unit gets a random facing or tree variant, or,
+  with *Random facing/variant* unticked, the one last set in Place Unit or by
+  the Eyedropper. Walls, gates and cliffs keep their own tools.
+- **View > Grid can set how often the stronger line repeats** (GH #131):
+  every 2, 4, 8 or 16 tiles. 4 is the default and today's look.
 
 ### Changed
 
+- **Settings > Tools sets what each Tool Options control starts at**, with a
+  Default button per row, Load From Toolbar and Reset All to Defaults. A
+  change on the toolbar now lasts until DEscape closes. That includes Trees,
+  Eye candy, Edit Area and Tile borders, which used to keep their last tick:
+  the state you left them in became their default.
+- **The placement preview shows a refused placement**: Place Unit's hover
+  preview and the Move drag preview now show, before you click, a placement
+  the game would refuse. A refused sprite is tinted red, and a refused
+  coloured mark is filled red and cross-hatched. A group drag tints only the
+  units that can't go there. The colour is the new Refused placement row in
+  Settings > Appearance.
+- **Settings > Appearance separates its sections** with rules and more
+  spacing.
+- **Resize Map warns how many trigger references will point at deleted
+  objects** when the resize removes units that triggers name. The references
+  are kept as written, as Delete does.
+- **A message is limited to 32,767 bytes.** Longer text used to save a file
+  that would not reopen.
+- **A wheel row set to Brush size, Rotate preview or Brush size or rotate
+  preview no longer zooms where its action has nothing to act on** (GH
+  #245): it does nothing there instead, Ctrl + wheel by default included.
+  Only a row set to Zoom zooms, and so does a modifier combination with no
+  row of its own.
 - **GAIA-only objects stay with GAIA** (GH #32): wild animals, resources,
   trees and the Others the game's editor lists only for GAIA (rocks, plants,
   ruins, relics and more) are hidden from the Units catalog while Owner is a
@@ -132,6 +178,10 @@ content, link the doc instead of summarizing it.
 - **Faster large stroke ends and undos with Trees on** in Stepped and
   Sloped views: a batch of over 1000 trees updates the visible zoom level in
   place instead of rebuilding it.
+- **Zooming one wheel notch at a time repaints faster**: once a zoom
+  settles, the view one notch in and one notch out is drawn in the
+  background, and that notch then shows it at once, with identical pixels
+  (GH #181, in part).
 - **Faster redraws when zoomed in**: between detail levels the map draws
   about a third faster, and two to three times faster when zoomed in close
   on the most detailed level, with identical pixels.
@@ -177,6 +227,41 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Flip in top-down Flat mirrors on screen**: with Isometric View off, Flip
+  Horizontal and Flip Vertical now mirror a pasted region left/right and
+  top/bottom, instead of across a diagonal.
+- **Top-down Flat: zooming in the middle of a Convert drag** no longer
+  leaves the newly shown zoom level drawing units out of step with the map.
+- **Players mode: P1-P8 Pop Limit can no longer go below 0**, which crashed
+  the editor on edit.
+- **Players panel: switching player at a narrow pane no longer squeezes the
+  form's rows**; it scrolls.
+- **Units inspector: the mouse wheel over an unfocused Owner, Unit State or
+  Capture Flag dropdown scrolls the inspector** instead of changing the
+  selection.
+- **Units mode: the left pane can no longer be dragged narrower than the
+  Units panel needs.**
+- **Place Unit and Move accept a land unit on a bridge over water**: the
+  bridge's deck counts, not the water stored under it.
+- **Convert and the Inspector's Owner no longer move an occupant without its
+  host** when that host is refused for holding a GAIA-only object.
+- **Cliff drag keeps a run's layout when it settles on the last contact
+  pass**, instead of falling back to its first pass.
+- **Triggers: a multi-selection mixing Task Object (or 8 similar effects)
+  with an effect like Kill Object shows their shared Selected Object IDs
+  field.**
+- **Triggers: a ▲/▼ kept on only for Ctrl+click says so**: its tooltip reads
+  "(already first: Ctrl+click gathers the selection here)" instead of a bare
+  "(already first)", and the same for last.
+- **No faint line of smeared terrain at fixed places on the map.** At most
+  zoom levels a 1-2 pixel line showed every 2048 drawn pixels; the map now
+  draws seamlessly there.
+- **Units standing beside a building's front faces draw in front of it**
+  (GH #20, in part), not behind: an archer at a Barracks' front-left face or
+  a villager beside a Town Center is no longer covered by the building.
+- **An arrow-key nudge stops at the map edge.** A unit selection with a unit
+  on the edge no longer slides off the map, where it vanished and the next
+  nudge crashed; nothing moves, and the status line says why.
 - **Return and Enter pick a list row on a Mac**: in the unit catalog, the
   terrain swatches, a value picker and the Disables lists they now add or
   pick the row, as on Windows and Linux, instead of doing nothing.

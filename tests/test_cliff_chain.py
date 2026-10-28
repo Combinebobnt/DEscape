@@ -786,12 +786,28 @@ def test_a_run_that_never_settles_keeps_its_first_pass(monkeypatch):
     monkeypatch.setattr(cliff_chain.ChainStroke, "_contacts", contacts)
     monkeypatch.setattr(cliff_chain.ChainStroke, "_layout", layout)
     nodes = _path(press, steps, const=SHORT_MARBLE_01, width=200, height=200)
-    # The example must not settle: it hits the bound, and its third pass is its first again.
-    assert passes == [cliff_chain._MAX_CONTACT_PASSES]
+    # The example must not settle: it hits the bound (plus the last pass's own check, TASK-453),
+    # and its third pass is its first again.
+    assert passes == [cliff_chain._MAX_CONTACT_PASSES + 1]
     first, second, third = laid[0][1:4]
     assert second != first and third == first
     assert len(nodes) == len(steps) + 1
     assert _rows(nodes) == first_pass
+
+
+def test_a_run_that_settles_on_the_last_allowed_pass_keeps_it(monkeypatch):
+    """TASK-453. The Limestone loop above settles on its second contact pass:
+    with the bound at 2 that pass is the last one, and it is still checked
+    and kept rather than discarded for the first."""
+    press, steps = (206, 24), [E, E, E, S, S, S, W, W, W, N, N]
+    kwargs = {"const": LIMESTONE_01, "width": 240, "height": 240}
+    settled = _rows(_path(press, steps, **kwargs))
+    with monkeypatch.context() as bound:
+        bound.setattr(cliff_chain, "_MAX_CONTACT_PASSES", 1)
+        first_pass = _rows(_path(press, steps, **kwargs))
+    assert first_pass != settled, "the example must need more than one pass"
+    monkeypatch.setattr(cliff_chain, "_MAX_CONTACT_PASSES", 2)
+    assert _rows(_path(press, steps, **kwargs)) == settled
 
 
 # -- a press on an existing cliff anchors the run on it ----------------------

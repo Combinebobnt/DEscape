@@ -115,6 +115,47 @@ view_layers:
   translucent_walls: false
   mod_art: true
 
+# What each control on the Tool Options row starts at, set from Settings >
+# Tools. Holds only the values that differ from the default: a later version
+# that changes a default still reaches you. A change on the toolbar lasts
+# until DEscape closes and is never written here. An unknown name or an
+# illegal value is ignored. Each option, its default and its legal values:
+#   brush_size (default 1): 1-9
+#   brush_shape (default square): square, circle, rounded, square_outline,
+#     circle_outline, plus, line_x, line_y
+#   brush_thickness (default 1): 1-4
+#   auto_beach (default false): true or false
+#   beach_terrain (default null): null for Auto, or a beach terrain id
+#   beach_width (default 1): 1-3
+#   paint_trees (default true): true or false
+#   paint_eye_candy (default false): true or false
+#   elevation_level (default 0): 0-15
+#   rect_filled (default true): true or false
+#   paste_terrain (default true): true or false
+#   paste_elevation (default true): true or false
+#   paste_units (default true): true or false
+#   free_placement (default false): true or false
+#   off_grid (default false): true or false
+#   walls_skip_occupied (default false): true or false
+#   gate_walls (default false): true or false
+#   last_wall (default 117): a wall unit id
+#   cliff_family (default null): null for the first family, or a cliff
+#     graphic name
+#   cliff_piece (default null): null for the family's first piece, or a
+#     cliff unit id
+#   cliff_frame (default 0): 0 or more
+#   unit_brush_density (default 100): 1-100
+#   unit_brush_random (default true): true or false
+#   convert_sources (default [0, 1, 2, 3, 4, 5, 6, 7, 8]): a list of 0, 1,
+#     2, 3, 4, 5, 6, 7, 8
+#   eraser_targets (default [units, buildings]): a list of units, buildings,
+#     trees, overlay, invisible, gaia, cliffs
+#   area_edit (default false): true or false
+#   area_move (default true): true or false
+#   area_resize (default true): true or false
+#   area_tile_borders (default false): true or false
+tool_options: {}
+
 # Mods whose art View > Layers > Mod Art skips, Settings > Mods > Mod art,
 # as the game's mods/mod-status.json Path strings. A listed mod that is no
 # longer installed stays listed, so it stays off if resubscribed.
@@ -218,14 +259,6 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
-# Triggers mode's Edit Area toggle: with Pan, drag the selected trigger area's
-# middle to move it, or its edges and corners to resize it. Default: false.
-trigger_area_edit: false
-
-# Edit Area's Tile borders option: the outer ring of tiles resizes instead of
-# a thin border. Default: false.
-trigger_area_tile_borders: false
-
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -254,6 +287,11 @@ grid_blend: -50
 # with Follow Terrain Elevation off in Stepped or Sloped). Snaps to the
 # nearest of [1, 2, 3, 4]. Default: 1.
 grid_thickness: 1
+
+# How many tiles apart the stronger grid lines are, View > Grid. One of
+# [2, 4, 8, 16]; anything else reads as the default.
+# Default: 4.
+grid_major_every: 4
 
 # Main window size in pixels, [width, height]. Persisted automatically on
 # resize -- not something you normally set by hand.
@@ -342,6 +380,8 @@ keybinds:
   edit_find_replace: ''
   edit_flip_horizontal: ''
   edit_flip_vertical: ''
+  edit_rotate_group_ccw: ''
+  edit_rotate_group_cw: ''
   edit_settings: ''
   map_resize: ''
   map_mirror: ''
@@ -376,6 +416,12 @@ keybinds:
   view_pan_left: Left
   view_pan_right: Right
   analysis_run: ''
+  help_guide: F1
+  help_keys: ''
+  help_web_guide: ''
+  help_release_notes: ''
+  help_report_bug: ''
+  help_github: ''
   help_about: ''
   help_debug_log: ''
   help_perf_trace: ''
@@ -444,6 +490,7 @@ keybinds:
   tool_eyedropper: I
   tool_ruler: R
   tool_place_unit: ''
+  tool_unit_brush: ''
   tool_wall_rect: ''
   tool_wall_circle: ''
   tool_convert: ''
@@ -484,6 +531,7 @@ overlay_colors:
   unit_select_fill: '#50aaff'
   unit_stack: '#ffd24a'
   unit_stack_background: '#000000'
+  unit_ghost_refused: '#ff3c3c'
   footprint_outline: '#c8c8c8'
   range_ring: '#404040'
   ruler_line: '#ff8228'

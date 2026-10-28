@@ -99,6 +99,7 @@ ELCID = "C2_ElCid_coop_1_v0_16.aoe2scenario"
 JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
 OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
 LELOI = "R4_LeLoi_4.aoe2scenario"
+DOS_PILAS = "F7_2_Dos Pilas (648).aoe2scenario"
 # Matched by the release gate beside the quick corpus whatever entries exist (tests/test_release_render_diff.py).
 EXTRA_MATCH_FILES = (OLD_ALLIES, LELOI)
 STRIP_ROWS = 1024
@@ -134,6 +135,22 @@ def _unturned_flat_walls() -> None:
 
     _require(unit_sprites, "flat_art")
     unit_sprites.flat_art = lambda unit_const, rotation: (unit_const, rotation)
+
+
+def _single_anchor_sprites() -> None:
+    """Put the pre-TASK-221 depth order back: a multi-tile sprite paints whole at its front corner."""
+    from descape import render
+
+    _require(render, "SPRITE_COLUMN_SLICING")
+    render.SPRITE_COLUMN_SLICING = False
+
+
+def _no_garrison_flags() -> None:
+    """Put the pre-GH #203 hosts back: a unit holding a garrison draws no garrison flag."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "garrison_flag_pieces_for")
+    unit_sprites.garrison_flag_pieces_for = lambda *args, **kwargs: []
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +198,20 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         "GH #151 (TASK-227): walls and gates lie along the square grid in top-down Flat",
         since="v0.10", control_file=OLD_ALLIES, must_fail=frozenset({("flat", True)}),
         patch=_unturned_flat_walls,
+    ),
+    Neutralization(
+        "face-columns",
+        "TASK-221 (GH #20): units beside a building's front faces draw in front of it, not behind",
+        since="v0.10", control_file=DOS_PILAS,
+        must_fail=frozenset({("stepped", True), ("sloped", True)}),
+        patch=_single_anchor_sprites,
+    ),
+    Neutralization(
+        "garrison-flags",
+        "GH #203: a building, ram, siege tower or transport ship holding units draws its garrison flag",
+        since="v0.10", control_file=OLD_ALLIES,
+        must_fail=frozenset({("stepped", True), ("sloped", True)}),
+        patch=_no_garrison_flags,
     ),
 )
 

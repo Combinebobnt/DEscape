@@ -70,7 +70,9 @@ commands, and architecture.
     but only via `UnitEditModel.set_variant()`, i.e. the *Cycle Variant*
     exception below with its scope unchanged; `set_rotation()` stays
     ANGLE-only. On a just-pasted region (GH #197) the Rotate actions edit no
-    unit at all: they go through the *Region turn* exception below.
+    unit at all: they go through the *Region turn* exception below. On a
+    committed Select region with no paste armed (TASK-256) they go through
+    the *Selection transform* exception below instead.
   - *Region turn's unit images* (GH #197: Rotate, Edit > Flip Selection
     and, since GH #245, a wheel bound to Rotate preview, or to Brush size or
     rotate preview where no brush applies, on a just-pasted region,
@@ -85,6 +87,29 @@ commands, and architecture.
     orientation through `reorient_gate_const()`, and every other rotation,
     VARIANT and INERT alike, copied verbatim. `add()` is unvalidated, so the
     guard is `transform_block()`, pinned by `tests/test_region_transform.py`.
+  - *Selection transform's in-place unit images* (TASK-256: Edit > Flip
+    Selection and Rotate Selection's Rotate Group pair on a Units-mode
+    selection, and Flip, Rotate Group and the Rotate actions on a committed
+    Select region, all through `ViewerWindow.on_selection_transform()` or
+    `_transform_region()`), planned by `region_transform.plan_in_place()`.
+    Scope: existing units only (the selection plus what it holds, or the
+    units Copy Region would capture plus what they hold), edited in place
+    so each keeps its `reference_id`, list slot, owner and every other
+    field, and only the eight D4 elements. Every value comes from the same
+    functions as Map mirroring and the region turn (`mirror_tools.unit_image()`):
+    an ANGLE facing through `facing_image()`, written by `set_rotation()`;
+    a wall's shape index through `wall_index_image()`, in an
+    integer-encoded file only and only when the element changes it,
+    written by `set_wall_variant()`; a gate's orientation through
+    `reorient_gate_const()`, written by `set_unit_const()`; and every other
+    rotation (cliffs, VARIANT, INERT) left verbatim, with no write at all.
+    Guards: the three setters' own, plus `plan_in_place()` pinned by
+    `tests/test_region_transform.py`. Allowed for its own reason, not the
+    wall-run bullet's "derived from neighbours": the permuted value is the
+    element's image of a shape or facing the game already accepted, the
+    same reason Mirror Map and the region turn may write it. Each step
+    re-plans from the first state with the element composed since, so a
+    run of flips and turns cannot drift.
   - *Map mirroring's unit images*, via `mirror_tools.plan_mirror_units()`.
     This one transforms nothing in place: it derives a NEW unit's rotation
     from its source's and `UnitEditModel.add()`s it, so there is no model
@@ -151,7 +176,9 @@ commands, and architecture.
     `initial_animation_frame` is not touched (it is 0 on all 8193 corpus wall
     placements, and on all 1,548 Return of Rome ones). Gates are outside
     the scope and stay there: they have `angle_count == 1` and their
-    orientation lives in the const.
+    orientation lives in the const. `set_wall_variant()` has one other
+    caller, the *Selection transform* bullet above, under that bullet's own
+    rationale; the guard here is the same for both.
   - *Cliff drag's join rewrites* (GH #44), via
     `UnitEditModel.set_cliff_frame()`, which raises outside its guard. The
     guard: only the cliff consts (`unit_sprites.cliff_consts()`; 96 in AoE2,
@@ -206,6 +233,12 @@ commands, and architecture.
     orientation is a different catalog const, picked before the click, so
     this is a new unit and not a `set_unit_const()` case, the same as
     mirroring. Everything else (walls, cliffs, INERT) keeps `add()`'s `0.0`.
+    The Unit Brush (GH #170) writes `rotation_for()`'s value too: of the
+    pending state with Random facing/variant unticked, else of a state
+    `place_rotation.random_rotation()` rolls per unit (a facing on the
+    const's own grid for ANGLE, a variant index for a cyclable const, which
+    stays inside the *Cycle Variant* scope; nothing for any other const). It
+    refuses walls, gates and cliffs outright.
     `add()` itself stays unvalidated, as with mirroring and paste: the guard
     is `rotation_for()`, pinned by `tests/test_place_rotation.py`.
 - Gates carry no rotation at all: all 24 visible gate consts (6 families × 4
@@ -236,7 +269,11 @@ commands, and architecture.
     an off-map unit or a new footprint leaving the map, and a garrison the
     new const cannot hold or a host that cannot hold the new const.
   - `set_unit_const()` changes a gate's const only to one of the four
-    orientation siblings `descape/gate_orientation.py` derives for it. It
+    orientation siblings `descape/gate_orientation.py` derives for it. Its
+    callers are Rotate and the Rotation field (a selected gate cycles), and
+    the *Selection transform* (TASK-256: a turned or flipped gate takes
+    `reorient_gate_const()`'s sibling, then its planned position), all
+    inside that same sibling-only scope. It
     must re-anchor `x`/`y` by preserving the footprint's low corner
     (`span_low_corner()` forward, `render.span_anchor()` back), because the
     four orientations have four different spans and every corpus placement
@@ -248,9 +285,12 @@ commands, and architecture.
     gate's const, it `add()`s a *new* gate whose const comes from
     `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
     that sibling's own span.
-  - A region turn (GH #197) is not an exception either, for the same reason:
-    the turned block is re-pasted as *new* units, and a gate's const comes
-    from `reorient_gate_const()` through `mirror_tools.unit_image()`.
+  - A pasted region's turn (GH #197) is not an exception either, for the
+    same reason: the turned block is re-pasted as *new* units, and a gate's
+    const comes from `reorient_gate_const()` through
+    `mirror_tools.unit_image()`. A selection or committed region turned in
+    place (TASK-256) does change a placed gate's const, through
+    `set_unit_const()` above.
 - The same is true of walls, for a different reason, and it is confirmed
   in-game: a wall graphic's five stored frames are SHAPES (two diagonal runs, a
   tower, a flatter run, a narrow column), not five facings, so `rotation`
@@ -271,7 +311,9 @@ commands, and architecture.
   function of its neighbours (98.9%/99.1% agreement between neighbour mask and
   stored index across the corpus), so rotating one would write a value the game
   re-derives. Walls are VARIANT, and Rotate skips them in a unit selection; a
-  Region turn re-pastes them as new walls instead. Top-down Flat (GH #151)
+  Region turn re-pastes them as new walls instead, and Flip and Rotate Group
+  (the *Selection transform*, TASK-256) carry a selected wall's index through
+  `wall_index_image()`, written by `set_wall_variant()`. Top-down Flat (GH #151)
   draws a wall's stored shape with the frame `unit_sprites.flat_art()` picks
   for the square grid; that is draw-only, and no write path may use it.
 - **An existing unit's `garrisoned_in_id` changes only through
@@ -291,6 +333,15 @@ commands, and architecture.
   overlay and draws a pennant floating over nothing.
   `tools/gen_unit_graphic_map.py`'s `_BODY_GRAPHIC_OVERRIDES` records the
   confirmed cases.
+
+## User guide
+
+The in-app guide (Help > DEscape Guide) is the Markdown in `descape/help/`,
+one topic per file, registered in `help_guide.TOPICS`. A change to a
+behaviour the guide describes updates its topic in the same commit, and a
+new menu item, mode or tool gets a line in its topic. Guide prose names a
+command and where it lives, never its rebindable key (the Keyboard and Mouse
+page shows the live keys); `tests/test_help_guide.py` lints the rest.
 
 ## Contributing
 

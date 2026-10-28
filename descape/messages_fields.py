@@ -17,7 +17,7 @@ no newline at all.
 corpus but present in trigger `description`, whose prose editor
 (descape/text_edits.py's ProseTextEdit) shares these two functions. That
 field is why substitute_newlines() exists as a str -> str helper: a trigger
-field is stored as a str on the entry, and the <H length prefix and NUL
+field is stored as a str on the entry, and the <h length prefix and NUL
 guard encode_for_write() adds belong to the Messages block alone.
 """
 
@@ -29,9 +29,11 @@ from dataclasses import dataclass
 # all six id retrievers.
 STRING_ID_UNSET = 0xFFFFFFFE
 
-# The <H length prefix on each str16 payload is a hard ceiling: any text
-# whose UTF-8 encoding needs more bytes than this cannot be stored at all.
-MAX_FIELD_BYTES = 0xFFFF
+# The str16 length prefix is a hard ceiling: any text whose UTF-8 encoding
+# needs more bytes than this cannot be stored at all. The library reads that
+# prefix signed (bytes_parser.retrieve_bytes()), as map_strings and
+# player_fields do, so 32,768+ bytes wrote a file that no longer loads (TASK-397).
+MAX_FIELD_BYTES = 0x7FFF
 
 
 @dataclass(frozen=True)
@@ -83,7 +85,7 @@ def substitute_newlines(display: str, newline_token: str | None) -> str:
     to `newline_token`, defaulting to `\\n` when the field had none.
 
     Carries no NUL or length guard: those are encode_for_write()'s, and they
-    belong to the Messages block's <H length prefix rather than to every
+    belong to the Messages block's <h length prefix rather than to every
     caller (descape/trigger_panel.py's prose fields store a str on a trigger
     or effect, with no such prefix in the way).
     """

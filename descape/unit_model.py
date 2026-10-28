@@ -906,10 +906,12 @@ class UnitEditModel:
         transform a non-angle rotation") is enforced rather than merely
         documented.
 
-        The value is passed through as given: wrapping into [0, 2*pi) is
-        unit_rotation.rotate_step()'s job, and every caller in the app already
-        goes through it. That keeps this method's contract the same as
-        set_position()'s -- assign what you were handed, normalize nothing.
+        The value is passed through as given: wrapping into [0, 2*pi) is the
+        caller's, unit_rotation.rotate_step() for Rotate and the Rotation
+        field, mirror_tools.facing_image() for a selection's flip or turn
+        (region_transform.plan_in_place(), TASK-256). That keeps this method's
+        contract the same as set_position()'s -- assign what you were handed,
+        normalize nothing.
         """
         if not unit_rotation.rotation_is_angle(unit.unit_const):
             raise ValueError(
@@ -953,7 +955,11 @@ class UnitEditModel:
         folded into Place Unit by GH #98), the walls beside a gate Place
         Unit puts over a run (GH #159, wall_run.apply_gate_plan) and the
         walls beside a moved gate's old and new site (GH #194,
-        wall_run.apply_gate_move_plan).
+        wall_run.apply_gate_move_plan). Also a selected wall flipped or
+        turned in place (TASK-256), whose index is the element's image
+        through mirror_tools.wall_index_image() (region_transform.
+        plan_in_place()): AGENTS.md's *Selection transform* exception, under
+        its own rationale, with this method's guard unchanged.
 
         The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's

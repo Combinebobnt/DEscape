@@ -45,6 +45,10 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
   want to rule out something your machine has and CI won't.
 - New behavior comes with a default-tier test. `tests/README.md`, "Adding a
   test", says which tier a test belongs in.
+- A change to something the user guide describes updates its topic in
+  `descape/help/` in the same PR, and a new menu item, mode or tool gets a
+  line in its topic. `tests/test_help_guide.py` checks the guide's style,
+  menu paths and links; the guide names commands, never their default keys.
 - Never skip or loosen a failing test to get a green run. If a test looks
   wrong, say so in the PR.
 

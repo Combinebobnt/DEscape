@@ -124,6 +124,26 @@ def test_keybinds_never_scrolls_sideways() -> None:
         conftest.close_window(window)
 
 
+def test_tools_scrolls_vertically_but_never_sideways() -> None:
+    """TASK-272: one row per tool option outgrows the dialog's height, never its width."""
+    from PyQt5.QtWidgets import QScrollArea
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tabs, index = _tab(dialog, "Tools")
+        scroll = tabs.widget(index)
+        assert isinstance(scroll, QScrollArea)
+        dialog.show()
+        tabs.setCurrentIndex(index)
+        _pump()
+        _assert_no_sideways_scroll(scroll)
+        assert scroll.verticalScrollBar().maximum() > 0
+        assert dialog.height() < MAX_MIN_HEIGHT
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_mods_never_scrolls_sideways(monkeypatch, tmp_path) -> None:
     """GH #244: long scanned paths and mod titles scroll inside their own lists,
     never widening the Mods page past the dialog's default width."""

@@ -107,3 +107,34 @@ def test_the_label_reads_a_pct_and_still_marks_the_default() -> None:
         dialog.close()
         window.edit_history.mark_saved()
         window.close()
+
+
+@pytest.mark.parametrize("how", ["close", "accept"])
+def test_closing_the_dialog_applies_each_pending_slider_change_and_leaves_no_timer_armed(how) -> None:
+    """TASK-463: a keyboard step arms a 200 ms debounce; the dialog outlives its close, so an
+    armed timer fired later and wrote config.yaml after a test's settings isolation was gone.
+    Passes when, after close() (a never-shown dialog, which skips done()) or accept(), no QTimer
+    under the dialog is active and each slider's new value is already persisted."""
+    from PyQt5.QtCore import QTimer
+
+    dialog, window = _dialog_and_window()
+    try:
+        getters = {
+            "elev_step_slider": lambda: settings.elev_step_index(settings.get_elev_step_pct()),
+            "graphics_quality_slider": settings.get_graphics_quality,
+            "pan_speed_slider": settings.get_pan_speed,
+            "wall_opacity_slider": settings.get_wall_opacity_pct,
+        }
+        wanted = {}
+        for name in getters:
+            slider = getattr(dialog, name)
+            wanted[name] = slider.minimum() if slider.value() == slider.maximum() else slider.maximum()
+            slider.setValue(wanted[name])
+        assert dialog._elev_step_apply_timer.isActive(), "fixture assumption: a keyboard-path change debounces"
+        getattr(dialog, how)()
+        assert [t for t in dialog.findChildren(QTimer) if t.isActive()] == []
+        assert {name: get() for name, get in getters.items()} == wanted
+    finally:
+        dialog.close()
+        window.edit_history.mark_saved()
+        window.close()

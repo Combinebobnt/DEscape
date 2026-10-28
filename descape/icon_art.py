@@ -326,6 +326,11 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("line", Role.INK, (18, 9.5, 18, 18.5, 2.4)),
         ("line", Role.INK, (13.5, 14, 22.5, 14, 2.4)),
     ),
+    # GH #170: a figure over a dotted brush footprint.
+    "tool-unit_brush": (
+        *_figure(BLUE, 8.25, 0.5, 0.75),
+        *(("ellipse", Role.INK, (x, y, 3, 3)) for y in (15.5, 20) for x in (2, 7.5, 13, 18.5)),
+    ),
     # A ring of stone walls, mortar in ink.
     "tool-wall_rect": (
         ("rect", GREY, (3, 4, 18, 4)),
@@ -512,6 +517,21 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("poly", Role.INK, _HEAD_CW),
         ("poly", AMBER, (12, 9, 16, 13, 12, 17, 8, 13)),
     ),
+    # Rotate Group: the turn over three units that move as one.
+    "rotate-group-ccw": (
+        ("poly", Role.INK, _ARC_CCW),
+        ("poly", Role.INK, _HEAD_CCW),
+        ("rect", BLUE, (7, 11, 4.5, 4.5)),
+        ("rect", GREEN, (12.5, 11, 4.5, 4.5)),
+        ("rect", AMBER, (9.75, 16.5, 4.5, 4.5)),
+    ),
+    "rotate-group-cw": (
+        ("poly", Role.INK, _ARC_CW),
+        ("poly", Role.INK, _HEAD_CW),
+        ("rect", BLUE, (7, 11, 4.5, 4.5)),
+        ("rect", GREEN, (12.5, 11, 4.5, 4.5)),
+        ("rect", AMBER, (9.75, 16.5, 4.5, 4.5)),
+    ),
     # A tree and which way through its variants.
     "variant-prev": (
         *_TREE,
@@ -619,6 +639,56 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("ellipse", RED, (13, 12.5, 9, 10)),
         ("ellipse", Role.INK, (15.8, 10.2, 3.4, 3.4)),
         ("line", Role.INK, (17.5, 13, 17.5, 22, 1.2)),
+    ),
+    # An open book.
+    "help-guide": (
+        ("poly", BLUE, (2, 5, 11, 7, 11, 20, 2, 18)),
+        ("poly", BLUE, (22, 5, 13, 7, 13, 20, 22, 18)),
+        ("line", Role.INK, (12, 6.5, 12, 21, 1.6)),
+        ("line", Role.INK, (4.5, 10, 9, 11, 1.2)),
+        ("line", Role.INK, (15, 11, 19.5, 10, 1.2)),
+    ),
+    # A keyboard beside a mouse.
+    "help-keys": (
+        ("rect", Role.INK_SOFT, (1, 8, 15, 10)),
+        ("rect", Role.INK, (3, 10, 3, 2.5)),
+        ("rect", Role.INK, (7, 10, 3, 2.5)),
+        ("rect", Role.INK, (11, 10, 3, 2.5)),
+        ("line", Role.INK, (4, 15.5, 13, 15.5, 1.6)),
+        ("ellipse", TEAL, (17, 8, 6, 10)),
+        ("line", Role.INK, (20, 8.5, 20, 12, 1.2)),
+    ),
+    # A globe.
+    "help-web-guide": (
+        ("ellipse", GREEN, (2, 2, 20, 20)),
+        ("ring", Role.INK, (7.5, 2.5, 9, 19, 1.4)),
+        ("line", Role.INK, (2.5, 12, 21.5, 12, 1.4)),
+        ("line", Role.INK, (12, 2.5, 12, 21.5, 1.4)),
+    ),
+    # A page with a star.
+    "help-release-notes": (
+        ("rect", Role.INK_SOFT, (4, 2, 15, 20)),
+        ("line", Role.INK, (7, 14, 16, 14, 1.4)),
+        ("line", Role.INK, (7, 18, 13, 18, 1.4)),
+        ("poly", AMBER, (11.5, 3, 13, 7, 17, 7, 14, 9.5, 15, 13, 11.5, 10.8, 8, 13, 9, 9.5, 6, 7, 10, 7)),
+    ),
+    # A bug beside a plus.
+    "help-report-bug": (
+        ("ellipse", RED, (3, 6, 11, 14)),
+        ("ellipse", Role.INK, (6.5, 2.5, 4, 4)),
+        ("line", Role.INK, (8.5, 7, 8.5, 20, 1.2)),
+        ("line", Role.INK, (1, 10, 4, 11, 1.2)),
+        ("line", Role.INK, (1, 17, 4, 16, 1.2)),
+        ("line", Role.INK, (16, 13, 23, 13, 2.2)),
+        ("line", Role.INK, (19.5, 9.5, 19.5, 16.5, 2.2)),
+    ),
+    # A branching history: two commits joined to a third.
+    "help-github": (
+        ("line", Role.INK, (7, 5, 7, 19, 1.8)),
+        ("line", Role.INK, (17, 7, 7, 14, 1.8)),
+        ("ellipse", VIOLET, (4, 2, 6, 6)),
+        ("ellipse", VIOLET, (4, 16, 6, 6)),
+        ("ellipse", VIOLET, (14, 4, 6, 6)),
     ),
     # --- the Filters popup's bulk commands ---
     "filter-all-players": (

@@ -643,48 +643,76 @@ def QRectF_(*a):
 TILING_BLOCK_PX = 64
 
 
-@pytest.mark.gui
-@pytest.mark.parametrize(
-    ("residual", "k", "iso"), [(0.45, 1, False), (0.3, 1, False), (0.2, 2, False), (0.3, 1, True)],
-    ids=["0.45", "0.3", "0.2", "flat-iso-0.3"],
-)
-def test_block_tiling_matches_a_single_draw_with_a_reduction(env, canvas_scene, monkeypatch, residual, k, iso):
-    """test_mip_viewer's tiled-equals-single shape on textured content (and, under
-    Flat's rotated transform, on _NoiseCache), where a misplaced or unpadded
-    reduced block would show. Left out: device pixels whose centre maps into the
-    first half reduced pixel of a later block's padded source, [cx0 - PAINT_PAD_PX,
-    cx0 - PAINT_PAD_PX + 0.5) per axis. That block overwrites them with
-    edge-clamped samples, a seam paint() has at k = 0 too (up to ~100 on this
-    texture), which the blank fixture in test_mip_viewer cannot show."""
+# Each block's own clipped draw rounds its spans apart from one draw's (<= 2 measured on these cases).
+TILING_MAX_DIFF = 8
+
+
+def _tiled_vs_single(canvas_scene, monkeypatch, source, level, residual, k, iso) -> np.ndarray:
+    """Per-pixel max channel diff between a TILING_BLOCK_PX tiled paint and one
+    undivided draw. `level` is "coarsest" (zoom from `residual`) or 0 (zoom = residual)."""
     from test_rgb32_blit import _NoiseCache
 
     from descape.viewer_canvas import MapCanvasItem
 
-    if iso:
+    if source == "noise":
         cache = _NoiseCache()
-        probe = QRectF_(300, 300, 3000, 3000)
+        # The point overload's 1:1 level 0 target over a whole 3000 px probe is too big per xdist worker.
+        probe = QRectF_(300, 300, 700, 700) if level == 0 else QRectF_(300, 300, 3000, 3000)
     else:
-        cache = _make("stepped", _scenario())
+        cache = _make(source, _scenario())
         probe = QRectF_(0, 0, *cache.canvas_dims(0))
     scene, item = canvas_scene(cache)
-    mip = cache.mip_levels()[0]
-    zoom = _residual_scale(residual, mip)
+    mip = cache.mip_levels()[0] if level == "coarsest" else level
+    zoom = _residual_scale(residual, mip) if level == "coarsest" else residual
     pre = _flat_iso(probe, zoom) if iso else None
     monkeypatch.setattr(MapCanvasItem, "PAINT_BLOCK_PX", 100_000)
     single = _render(scene, probe, zoom, pre=pre)
     assert (item._last_mip, item._last_reduction) == (mip, k)
     monkeypatch.setattr(MapCanvasItem, "PAINT_BLOCK_PX", TILING_BLOCK_PX)
     tiled = _render(scene, probe, zoom, pre=pre)
-    assert item._last_reduction == k
+    assert (item._last_mip, item._last_reduction) == (mip, k)
     assert single.any()
-    sx, sy = _pixel_scene_coords(probe, zoom, single.shape, pre)
-    reduced_px = cache.mip_scale(mip) * 2**k
-    pad = MapCanvasItem.PAINT_PAD_PX
-    seam = ((sx / reduced_px + pad) % TILING_BLOCK_PX < 0.5) | ((sy / reduced_px + pad) % TILING_BLOCK_PX < 0.5)
-    assert seam.mean() < 0.05
-    diff = np.abs(tiled.astype(int) - single.astype(int)).max(axis=-1)
-    # Each block's own fetch rounds its sample positions apart (up to 3 on this high-contrast texture).
-    assert int(diff[~seam].max()) <= 8, f"tiled differs by {int(diff[~seam].max())} outside the overwrite seam"
+    return np.abs(tiled.astype(int) - single.astype(int)).max(axis=-1)
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize(
+    ("source", "level", "residual", "k", "iso"),
+    [
+        ("stepped", "coarsest", 0.45, 1, False),
+        ("stepped", "coarsest", 0.3, 1, False),
+        ("stepped", "coarsest", 0.2, 2, False),
+        ("noise", "coarsest", 0.3, 1, True),
+        ("stepped", "coarsest", 0.8, 0, False),
+        ("stepped", "coarsest", 0.95, 0, False),
+        ("noise", 0, 0.7, 0, False),
+        ("noise", "coarsest", 0.8, 0, True),
+    ],
+    ids=["0.45", "0.3", "0.2", "flat-iso-0.3", "k0-0.8", "k0-0.95", "level0-point-0.7", "flat-iso-k0-0.8"],
+)
+def test_block_tiling_matches_a_single_draw_on_textured_content(
+    env, canvas_scene, monkeypatch, source, level, residual, k, iso
+):
+    """test_mip_viewer's tiled-equals-single shape on textured content (and, under
+    Flat's rotated transform, on _NoiseCache), where a misplaced, unpadded or
+    unclipped block would show. Every pixel is barred, block edges included: each
+    block draws only its own core (TASK-031.75), so a later block's pad no longer
+    overwrites a neighbour with edge-clamped samples. The bar covers each block's
+    own span rounding, which a tiled paint keeps."""
+    diff = _tiled_vs_single(canvas_scene, monkeypatch, source, level, residual, k, iso)
+    assert int(diff.max()) <= TILING_MAX_DIFF, f"tiled differs from one draw by {int(diff.max())}"
+
+
+@pytest.mark.gui
+def test_block_tiling_control_sees_the_overwrite_seam(env, canvas_scene, monkeypatch):
+    """The same harness with each block's clip ignored must exceed the bar, so a
+    fixture that renders flat (which hid this seam on test_mip_viewer's blank
+    fixture) fails here instead of passing the case above."""
+    from descape.viewer_canvas import _BlockDraw
+
+    monkeypatch.setattr(_BlockDraw, "__call__", _BlockDraw._draw)
+    diff = _tiled_vs_single(canvas_scene, monkeypatch, "stepped", "coarsest", 0.8, 0, False)
+    assert int(diff.max()) > TILING_MAX_DIFF, f"unclipped tiling differs by only {int(diff.max())}"
 
 
 @pytest.mark.gui

@@ -173,9 +173,10 @@ def stepped_window(
     `show=False` returns the window unshown and unpumped, for a caller that
     must measure a paint cycle it triggers itself.
 
-    Elevation View and View > Layers persist (GH #182), so both are pinned
-    to their defaults here: a caller without settings isolation would
-    otherwise inherit the developer's last saved style and layers.
+    Elevation View and View > Layers persist (GH #182), and so do the Tool
+    Options row's Settings > Tools defaults, so all three are pinned to their
+    defaults here: a caller without settings isolation would otherwise inherit
+    the developer's last saved style, layers and tool defaults.
 
     Does NOT call terrain_style_combo.setCurrentText("Stepped"). Terrain
     Style is pinned to "stepped" above (ViewerWindow._terrain_style), and
@@ -202,6 +203,7 @@ def stepped_window(
         settings_module._graphics_quality = graphics_quality
     settings_module._terrain_style = settings_module.TERRAIN_STYLE_DEFAULT
     settings_module._view_layers = dict(settings_module._DEFAULT_VIEW_LAYERS)
+    settings_module._tool_option_overrides = {}  # Tool Options start at schema defaults
 
     window = ViewerWindow()
     if placeholders:

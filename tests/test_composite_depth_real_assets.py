@@ -37,6 +37,10 @@ TOWN_CENTRE = 109
 WAR_ELEPHANT = 239
 PASTURE = 1897
 CORNER_POST = 1888
+BARRACKS = 12
+CASTLE = 82
+ARCHER = 4
+VILLAGER = 83
 PLAYER = 1
 # DESERT_SAND: contrasts with the pasture's green drape.
 GROUND_TERRAIN = 14
@@ -55,7 +59,9 @@ CORNER_NUDGE = 0.1
 TC_UNIT_OFFSET = 0.1
 # Seeded pieces pick their variant from the reference id, so it must not vary
 # with a unit's position in the list.
-REFERENCE_IDS = {TOWN_CENTRE: 9101, WAR_ELEPHANT: 9102, PASTURE: 9133}
+REFERENCE_IDS = {
+    TOWN_CENTRE: 9101, WAR_ELEPHANT: 9102, PASTURE: 9133, BARRACKS: 9112, CASTLE: 9182, ARCHER: 9104, VILLAGER: 9183,
+}
 # A file_name no install has: a piece pointed at it resolves to nothing and is
 # skipped, while every other piece keeps its list index (seeded variants use it).
 _HIDDEN_FILE = "descape_test_hidden_piece"
@@ -68,7 +74,7 @@ def _require_install():
             "config.yaml install is deliberately hidden by conftest._isolated_settings."
         )
     table = unit_sprites.graphic_map()
-    for const in (TOWN_CENTRE, WAR_ELEPHANT, PASTURE):
+    for const in (TOWN_CENTRE, WAR_ELEPHANT, PASTURE, BARRACKS, CASTLE, ARCHER, VILLAGER):
         if const not in table:
             pytest.skip(f"unit_const {const} is not in this install's graphic map")
 
@@ -153,6 +159,7 @@ def _patched(const: int, transform, art: tuple | None = None):
     real_map = unit_sprites.graphic_map
     real_resolve = unit_sprites.resolve_entry
     unit_sprites._scaled_cache.clear()
+    unit_sprites.clear_slice_cache()
     if transform is not None and art is None:
         table = copy.deepcopy(real_map())
         table[const]["pieces"] = transform(table[const]["pieces"])
@@ -167,6 +174,7 @@ def _patched(const: int, transform, art: tuple | None = None):
         unit_sprites.graphic_map = real_map
         unit_sprites.resolve_entry = real_resolve
         unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
 
 
 def _keep_only(keep: frozenset[int]):
@@ -192,30 +200,47 @@ def _transform(patch):
     return const, _no_slots()
 
 
-# Bounded: each render is ~2 MB and the module makes ~140 distinct ones.
+def _sprite_layer(style: str, scn):
+    """(elevations, corner_rise, SpriteLayer) for one style on flat ground."""
+    mm = scn.map_manager
+    proj = _projection(style)
+    elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
+    corner_rise = ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE) if style == "sloped" else None
+    return elevations, corner_rise, render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+
+
+@contextmanager
+def _slicing(sliced: bool):
+    """True leaves render.SPRITE_COLUMN_SLICING as it stands, so flipping it is a revert check."""
+    saved = render.SPRITE_COLUMN_SLICING
+    render.SPRITE_COLUMN_SLICING = saved and sliced
+    try:
+        yield
+    finally:
+        render.SPRITE_COLUMN_SLICING = saved
+
+
+# Bounded: each render is ~2 MB and the module makes ~170 distinct ones.
 @functools.lru_cache(maxsize=48)
 def _render(
     style: str, placed: tuple, patch: tuple | None = None, terrain_id: int = GROUND_TERRAIN,
-    art: tuple | None = None,
+    art: tuple | None = None, sliced: bool = True,
 ) -> np.ndarray:
     """One style's composite over _box(style). `placed` is ((const, x, y), ...)
     in list order; `patch` is ("keep", const, indices) or ("no-slots", const);
-    `art` is PLAYER's building art (see _scenario)."""
+    `art` is PLAYER's building art (see _scenario); `sliced=False` is the
+    single-anchor render from before TASK-221 (render.SPRITE_COLUMN_SLICING)."""
     const, transform = _transform(patch)
     scn = _scenario(placed, terrain_id, art)
     mm = scn.map_manager
     box = _box(style)
-    with _patched(const, transform, art):
+    with _patched(const, transform, art), _slicing(sliced):
         if style == "flat":
             draws = render._flat_unit_draws(scn, TILE_PX)
             icons, _rows = render._flat_icon_layer(scn, TILE_PX)
             return render.composite_rect_flat(scn, *box, TILE_PX, unit_draws=draws, icons=icons)
         proj = _projection(style)
-        elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
-        corner_rise = (
-            ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE) if style == "sloped" else None
-        )
-        sprites = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+        elevations, corner_rise, sprites = _sprite_layer(style, scn)
         units_by_tile = render._units_by_tile(scn)
         bboxes = render.merge_sprite_bboxes(
             render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
@@ -262,6 +287,17 @@ def _depth_key(tile: tuple[int, int]) -> tuple[int, int]:
 def _unit_tile(const: int, x: float, y: float) -> tuple[int, int]:
     mm = _base().map_manager
     return unit_sprites.sprite_anchor_tile(render.unit_occupied_tiles(_unit(const, x, y), mm.map_width, mm.map_height))
+
+
+def _own_columns(style: str, tile: tuple[int, int]) -> np.ndarray:
+    """The two screen columns `tile` covers, over _box(style). A sliced building
+    paints each column at its own front tile, so only here does a unit's tile
+    order decide its order against every piece (TASK-221's stated limit)."""
+    sx, _sy = ig.tile_screen_origin(*tile, 0, _projection(style))
+    x0 = int(sx) - _box(style)[0]
+    cols = np.zeros(_render(style, ()).shape[:2], dtype=bool)
+    cols[:, max(0, x0):max(0, x0 + 2 * _projection(style).half_w)] = True
+    return cols
 
 
 def _slot_tiles(const: int, art: tuple | None = None) -> list[tuple[int, int]]:
@@ -335,7 +371,15 @@ def _tc_unit(tile: tuple[int, int]) -> tuple:
     return (WAR_ELEPHANT, tile[0] + TC_UNIT_OFFSET, tile[1] + TC_UNIT_OFFSET)
 
 
+def _narrowed(style: str, tile: tuple[int, int], masks) -> list[np.ndarray]:
+    cols = _own_columns(style, tile)
+    return [m & cols for m in masks]
+
+
 def test_a_unit_inside_a_town_centre_paints_between_its_back_and_front_pieces():
+    """Checked inside the unit's own two columns only. Its ink beyond them can
+    paint over a front piece: a column on the town centre's left face paints at
+    a footprint tile the unit's own tile follows (D1, the inside-unit limit)."""
     _require_install()
     tiles = _tc_unit_tiles()
     assert tiles, "no footprint tile sorts between the town centre's back and front slots"
@@ -343,7 +387,9 @@ def test_a_unit_inside_a_town_centre_paints_between_its_back_and_front_pieces():
         unit = _tc_unit(tile)
         assert _unit_tile(*unit) == tile
         for unit_first in (True, False):
-            front, back, bad_front, bad_back, _ = _oracle("stepped", TOWN_CENTRE, unit, unit_first)
+            front, back, bad_front, bad_back = _narrowed(
+                "stepped", tile, _oracle("stepped", TOWN_CENTRE, unit, unit_first)[:4]
+            )
             where = f"unit on {tile}, {'unit' if unit_first else 'town centre'} listed first"
             assert front.any() and back.any(), (
                 f"{where}: overlap front {int(front.sum())} px, back {int(back.sum())} px; the check needs both"
@@ -362,6 +408,7 @@ TC_ART_SETS = [(None, 3), (11, 3), (21, 5), (33, 4)]
 
 @pytest.mark.parametrize("art", TC_ART_SETS, ids=lambda a: f"civ{a[0]}-age{a[1]}")
 def test_each_town_centre_art_set_sandwiches_a_unit_between_its_own_back_and_front(art):
+    """Inside the unit's own two columns, as the test above."""
     _require_install()
     entry = unit_sprites.resolve_entry(TOWN_CENTRE, *art)
     assert entry is not unit_sprites.graphic_map()[TOWN_CENTRE], f"{art} draws the Gaia Dark Age set"
@@ -369,7 +416,9 @@ def test_each_town_centre_art_set_sandwiches_a_unit_between_its_own_back_and_fro
     assert tiles, f"{entry['file_name']}: no footprint tile sorts between its back and front slots"
     for tile in tiles:
         unit = _tc_unit(tile)
-        front, back, bad_front, bad_back, _ = _oracle("stepped", TOWN_CENTRE, unit, True, art=art)
+        front, back, bad_front, bad_back = _narrowed(
+            "stepped", tile, _oracle("stepped", TOWN_CENTRE, unit, True, art=art)[:4]
+        )
         where = f"{entry['file_name']}, unit on {tile}"
         assert front.any() or back.any(), f"{where}: the unit overlaps no piece, so this proves nothing"
         assert not bad_front.any(), f"{where}: {int(bad_front.sum())} px of it paint over a front piece"
@@ -461,12 +510,17 @@ def _post_check(style: str, corner: str, side: str, unit_first: bool, inject: st
 
 @pytest.mark.parametrize(("style", "corner", "side", "order"), list(_corner_cases()))
 def test_a_unit_at_a_pasture_corner_sorts_against_that_corner_post(style, corner, side, order):
+    """Inside the unit's own two columns. Beyond them its ink sorts against
+    each column's front tile: the elephant outside the right corner paints
+    ~10 px over fence art the slots put in front of it (D1)."""
     _require_install()
     unit_first = order == "unit-first"
-    _front, _back, bad_front, bad_back, _ = _oracle(style, PASTURE, _corner_unit(corner, side), unit_first)
+    unit = _corner_unit(corner, side)
+    tile = _unit_tile(*unit)
+    bad_front, bad_back = _narrowed(style, tile, _oracle(style, PASTURE, unit, unit_first)[2:4])
     assert not bad_front.any(), f"{int(bad_front.sum())} px of the unit paint over a front piece"
     assert not bad_back.any(), f"{int(bad_back.sum())} px of the unit hidden by a back piece"
-    overlap, wrong = _post_check(style, corner, side, unit_first)
+    overlap, wrong = _narrowed(style, tile, _post_check(style, corner, side, unit_first))
     assert overlap.any(), f"the unit {side} the {corner} corner does not overlap its post"
     assert not wrong.any(), f"{int(wrong.sum())} of {int(overlap.sum())} px sort the wrong way against the post"
 
@@ -510,3 +564,88 @@ def test_flat_draws_the_pasture_and_every_corner_unit():
             assert _changed(tile_view(bu_img, tx, ty), tile_view(b_img, tx, ty)).any(), (
                 f"the unit {side} the {corner} corner is missing in Flat"
             )
+
+
+# ------------------------------------------------- units at a building's faces
+
+# TASK-221: (building, unit const, in-front tiles, behind control tile). The
+# Barracks covers 60..62 and the town centre 58..61; the first two in-front
+# tiles of each are the ones the single anchor got wrong (343 and 14 px, 99 and
+# 191 px, measured 2026-10-20).
+FACE_CASES = {
+    "barracks": ((BARRACKS, 61.0, 61.0), ARCHER, [(59, 61), (62, 63), (61, 63), (59, 63)], (63, 59)),
+    "town-centre": ((TOWN_CENTRE, CENTRE, CENTRE), VILLAGER, [(57, 59), (60, 62)], (62, 57)),
+}
+_SINGLE_ANCHOR_WRONG = 2
+
+
+def _face_unit(const: int, tile: tuple[int, int]) -> tuple:
+    return (const, tile[0] + 0.5, tile[1] + 0.5)
+
+
+def _face_covered(style: str, building: tuple, unit: tuple, unit_first: bool, sliced: bool = True) -> tuple[int, int]:
+    """(covered, overlap): the unit's opaque ink the building paints over, and
+    the part of that ink lying over the building at all."""
+    placed = (unit, building) if unit_first else (building, unit)
+    mask = _unit_mask(style, unit)
+    overlap = mask & _changed(_render(style, (building,)), _render(style, ()))
+    covered = mask & _changed(_render(style, placed, sliced=sliced), _render(style, (unit,)))
+    return int(covered.sum()), int(overlap.sum())
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("case", list(FACE_CASES))
+def test_a_unit_in_front_of_a_buildings_face_paints_over_it(case, style):
+    """TASK-221: each column of a building paints at its own front tile, so a
+    unit in front of either face is not covered, in either list order, and a
+    unit behind it still is."""
+    _require_install()
+    building, unit_const, in_front, behind = FACE_CASES[case]
+    for tile in [*in_front, behind]:
+        unit = _face_unit(unit_const, tile)
+        assert _unit_tile(*unit) == tile
+        for unit_first in (True, False):
+            covered, overlap = _face_covered(style, building, unit, unit_first)
+            where = f"unit on {tile}, {'unit' if unit_first else 'building'} listed first"
+            assert overlap, f"{where}: the unit overlaps no building ink, so this proves nothing"
+            if tile == behind:
+                assert covered, f"{where}: the unit behind the building is not covered"
+            else:
+                assert not covered, f"{where}: {covered} of {overlap} px covered by the building"
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("case", list(FACE_CASES))
+def test_the_single_anchor_revert_breaks_the_face_oracle(case, style):
+    """The control: with SPRITE_COLUMN_SLICING off, the whole building paints
+    at its front corner and covers a unit at each face."""
+    _require_install()
+    building, unit_const, in_front, _behind = FACE_CASES[case]
+    for tile in in_front[:_SINGLE_ANCHOR_WRONG]:
+        for unit_first in (True, False):
+            covered, _ = _face_covered(style, building, _face_unit(unit_const, tile), unit_first, sliced=False)
+            assert covered, f"unit on {tile}: the single anchor left the face oracle green"
+
+
+# (const, art) for buildings drawn alone: slotted composites (town centre art
+# sets, pasture) and single-piece ones.
+ALONE_CASES = [
+    (TOWN_CENTRE, None), *((TOWN_CENTRE, art) for art in TC_ART_SETS), (PASTURE, None), (CASTLE, None),
+    (BARRACKS, None),
+]
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize(("const", "art"), ALONE_CASES, ids=str)
+def test_a_building_drawn_alone_is_byte_identical_to_the_single_anchor(const, art, style):
+    """Moved slices paint last at their tile in their pieces' own key order, the
+    order the whole pieces painted in, so a building alone on flat ground
+    renders exactly as before slicing."""
+    _require_install()
+    building = ((const, CENTRE, CENTRE),)
+    _e, _c, layer = _sprite_layer(style, _scenario(building, GROUND_TERRAIN, art))
+    moved = sum(type(d) is unit_sprites.MovedSlice for v in layer.by_anchor.values() for d, *_ in v)
+    assert moved, "no slice moved off its piece's key, so this proves nothing"
+    sliced = _render(style, building, art=art)
+    single = _render(style, building, art=art, sliced=False)
+    assert np.array_equal(sliced, single), f"{int(_changed(sliced, single).sum())} px differ"

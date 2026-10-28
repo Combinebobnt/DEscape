@@ -35,6 +35,7 @@ from descape import (
     grid_overlay,
     iso_geometry,
     perf_trace,
+    zoom_preframe,
 )
 from descape.render_cache import (
     FlatChunkCache,
@@ -222,6 +223,44 @@ def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int
     return x0, y0, x1, y1
 
 
+class _BlockDraw:
+    """One block MapCanvasItem blits: the converted QImage, the array its
+    pixels may still live in, and the drawImage() overload with its
+    arguments (the point overload at level 0, else target and source rects),
+    clipped to `clip` (the block's unpadded core in scene units) when set."""
+
+    __slots__ = ("_hold", "clip", "point", "qimg", "source", "target")
+
+    def __init__(self, qimg: QImage, hold, *, point=None, target=None, source=None, clip: QRectF | None = None) -> None:
+        self.qimg = qimg
+        # An unconverted QImage wraps this array's memory without owning it.
+        self._hold = hold
+        self.point = point
+        self.target = target
+        self.source = source
+        self.clip = clip
+
+    @property
+    def format(self) -> QImage.Format:
+        return self.qimg.format()
+
+    def _draw(self, painter: QPainter) -> None:
+        if self.point is not None:
+            painter.drawImage(self.point[0], self.point[1], self.qimg)
+        else:
+            painter.drawImage(self.target, self.qimg, self.source)
+
+    def __call__(self, painter: QPainter) -> None:
+        if self.clip is None:
+            self._draw(painter)
+            return
+        # IntersectClip keeps a caller's clip, such as a pre-rendered frame's strip (TASK-031.75).
+        painter.save()
+        painter.setClipRect(self.clip, Qt.IntersectClip)
+        self._draw(painter)
+        painter.restore()
+
+
 class MapCanvasItem(QGraphicsItem):
     """Qt-side wrapper around a descape.render chunk cache -- Phase B-C of
     Track B, replacing a mode's single monolithic
@@ -285,9 +324,10 @@ class MapCanvasItem(QGraphicsItem):
     # box-reduced (reduction_for()), so the residual is back in (0.5, 1] there
     # too, and the minifying band above is reached only past MAX_REDUCTIONS or
     # with level 0 as the coarsest level. Both sizes then count reduced pixels.
-    # The "byte-identical" above held on the blank pytest fixture only: on
-    # textured content the overlapping padded draws differ along a block edge
-    # (test_coarse_reduce.py's tiling case, at k = 0 as well).
+    # Since TASK-031.75 each block is clipped to its core, so the pads no
+    # longer overwrite a neighbour. A tiled paint still differs from one draw
+    # by each block's span rounding (up to 6 measured), so the B-D-d
+    # paragraph's "byte-identical" holds on the blank fixture only.
     #
     # PAINT_BLOCK_PX: at fit-to-view (the whole map exposed at once, e.g.
     # right after opening a file), a single render_rect() call over the
@@ -348,6 +388,10 @@ class MapCanvasItem(QGraphicsItem):
         self._last_drawn_mip: int | None = None
         # Called with the level once per new pending level, from inside paint().
         self.on_placeholder = on_placeholder
+        # Pre-rendered frames for the next zoom notch (TASK-031.71), and write-only like
+        # _last_mip: the last live paint's use of them (_blit_preframe()).
+        self._preframes: list = []
+        self._last_preframe: str | None = None
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
     def _select_mip(self, painter: QPainter) -> int:
@@ -404,6 +448,8 @@ class MapCanvasItem(QGraphicsItem):
                 # widget is None for QGraphicsScene.render() (captures): those never take a placeholder.
                 drawn = self._level_to_draw(mip, rect, widget is not None, _max_axis_scale(painter.deviceTransform()))
                 self._last_drawn_mip = drawn
+                if widget is not None and drawn == mip and self._blit_preframe(painter, rect, widget, mip):
+                    return
                 self._draw_level(painter, drawn, rect)
         finally:
             # Every paint, not just the first, and including the two early
@@ -413,23 +459,72 @@ class MapCanvasItem(QGraphicsItem):
             if first_paint:
                 perf_trace.first_paint_done()
 
+    def _blit_preframe(self, painter: QPainter, rect: QRectF, widget, mip: int) -> bool:
+        """Copies a pre-rendered frame (TASK-031.71) 1:1 instead of drawing the
+        level, when one was rendered under exactly this paint's key and the
+        level's chunks under it are unchanged; True if it did. A hit consumes
+        every frame, since the view has moved. _last_preframe records the
+        outcome for the zoom bench: `hit`, or `miss <reason>`."""
+        if not self._preframes:
+            self._last_preframe = "miss none"
+            return False
+        device, hints, dpr = painter.deviceTransform(), painter.renderHints(), widget.devicePixelRatioF()
+        offset = zoom_preframe.viewport_offset(widget)
+        key = zoom_preframe.paint_key(device, rect, widget.size(), offset, hints, dpr, self._bounding_rect)
+        frame = next((f for f in self._preframes if f.key == key and f.mip == mip), None)
+        if frame is None:
+            self._last_preframe = "miss key"
+            return False
+        if not self._cache.paints_without_build(mip) or not self._cache.stamps_current(frame.stamps):
+            self._last_preframe = "miss stale"
+            return False
+        self._preframes = []
+        with perf_trace.repaint_phase("blit"):
+            zoom_preframe.blit_frame(painter, frame)
+        self._last_reduction = frame.reduction
+        self._last_blit_format = frame.blit_format
+        self._last_preframe = "hit"
+        if zoom_preframe.CHECK:
+            viewport_device = zoom_preframe.viewport_device_rect(widget, widget.size())
+            zoom_preframe.check_hit(self, frame, device, rect, viewport_device, hints, dpr)
+        return True
+
+    def add_preframe(self, frame) -> None:
+        """Stores a finished frame for a later paint; at most one per key."""
+        self._preframes = [f for f in self._preframes if f.key != frame.key] + [frame]
+
+    def drop_preframes(self) -> None:
+        self._preframes = []
+
     def _draw_level(self, painter: QPainter, mip: int, rect: QRectF) -> None:
         """Blits level `mip` over the scene rect `rect` (already clipped to
         boundingRect()), whatever level the paint selected: the selected one,
         or a placeholder's source level (TASK-031.25). Its own reduction k,
         scale and RGB32 gate are `mip`'s, so a placeholder from level 0 keeps
         the point overload and one from the coarsest level its k."""
+        device = painter.deviceTransform()
+        k = self.reduction_at(mip, _max_axis_scale(device))
+        self._last_reduction = k
+        for draw in self._level_blocks(device, mip, rect, k):
+            with perf_trace.repaint_phase("blit"):
+                draw(painter)
+                self._last_blit_format = draw.format
+
+    def _level_blocks(self, device: QTransform, mip: int, rect: QRectF, k: int):
+        """Yields one _BlockDraw per block _draw_level() blits for level `mip`
+        reduced k times over `rect` under the painter device transform
+        `device`: the block fetched (render_rect() or render_reduced_rect())
+        and converted, with its destination. A generator, so a paint holds one
+        block's scratch at a time; a pre-rendered frame (TASK-031.71) lists
+        them once and draws them strip by strip."""
         # Everything below tiles and pads in LEVEL pixels, deriving each
         # destination rect in scene units by multiplying back by `scale`.
         # Doing it the other way (tiling in scene units) would round block
         # edges independently per block, so adjacent blocks' destination
         # rects could fail to abut -- `scale` is an exact power of two, so
         # this way they always do.
-        device = painter.deviceTransform()
         # Past the coarsest non-zero level, blit its box-reduced copy k times smaller (TASK-031.70);
         # "level pixels" below then means reduced-k pixels.
-        k = self.reduction_at(mip, _max_axis_scale(device))
-        self._last_reduction = k
         scale = self._cache.mip_scale(mip) * (1 << k)
         level_rect = level_rect_for(self._cache, mip, rect, k)
         if level_rect is None:
@@ -444,9 +539,8 @@ class MapCanvasItem(QGraphicsItem):
         # exposures of the same region always request the same block
         # boundaries -- irrelevant to correctness, since each block is
         # independently correct, but keeps cache chunk-fetch patterns
-        # stable across paint calls). Overlapping padded draws between
-        # adjacent blocks are harmless: each is an opaque, independently
-        # correct overwrite of its own destination rect.
+        # stable across paint calls). Each block draws only its core: the pad stays in the source
+        # so the filter sees real neighbours there, as Qt clamps at toAlignedRect(sr) (TASK-031.75).
         block_x0 = (x0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
         block_y0 = (y0 // self.PAINT_BLOCK_PX) * self.PAINT_BLOCK_PX
         for by in range(block_y0, y1, self.PAINT_BLOCK_PX):
@@ -466,6 +560,7 @@ class MapCanvasItem(QGraphicsItem):
                     block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
                 if block.size == 0:
                     continue
+                core = QRectF(cx0 * scale, cy0 * scale, (cx1 - cx0) * scale, (cy1 - cy0) * scale)
                 with perf_trace.repaint_phase("blit"):
                     h, w = block.shape[:2]
                     contiguous = np.ascontiguousarray(block)
@@ -475,22 +570,50 @@ class MapCanvasItem(QGraphicsItem):
                     if scale == 1.0:
                         # Level 0 always keeps the point overload (not bit-identical to the scaled
                         # path); at a non-scaling transform its RGB888 source too, for the 1:1 bars.
-                        painter.drawImage(px0, py0, qimg)
+                        draw = _BlockDraw(qimg, contiguous, point=(px0, py0), clip=core)
                     elif k:
                         # The reduced canvas overhangs boundingRect by under a reduced pixel: trim the
                         # source fractionally, so the mapping (and the pixels inside) stay unchanged.
                         sw = min(float(w), self._bounding_rect.width() / scale - px0)
                         sh = min(float(h), self._bounding_rect.height() / scale - py0)
-                        painter.drawImage(
-                            QRectF(px0 * scale, py0 * scale, sw * scale, sh * scale), qimg, QRectF(0, 0, sw, sh)
+                        draw = _BlockDraw(
+                            qimg,
+                            contiguous,
+                            target=QRectF(px0 * scale, py0 * scale, sw * scale, sh * scale),
+                            source=QRectF(0, 0, sw, sh),
+                            clip=core,
                         )
                     else:
-                        painter.drawImage(
-                            QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                        draw = _BlockDraw(
                             qimg,
-                            QRectF(0, 0, w, h),
+                            contiguous,
+                            target=QRectF(px0 * scale, py0 * scale, w * scale, h * scale),
+                            source=QRectF(0, 0, w, h),
+                            clip=core,
                         )
-                    self._last_blit_format = qimg.format()
+                yield draw
+
+    def frame_plan(self, device: QTransform, rect: QRectF) -> tuple[int, int, tuple[int, int, int, int]] | None:
+        """(mip, k, level_rect) a live paint of scene rect `rect` under the
+        painter device transform `device` would blit for real, or None where
+        it would draw a placeholder or build anything (TASK-031.71: a
+        pre-rendered frame never composites a chunk or builds a level)."""
+        rect = rect.intersected(self._bounding_rect)
+        if rect.isEmpty():
+            return None
+        scale = _max_axis_scale(device)
+        mip = self._cache.mip_for_scale(scale)
+        if not self._cache.paints_without_build(mip) or self._view_missing(mip, rect, scale):
+            return None
+        k = self.reduction_at(mip, scale)
+        level_rect = level_rect_for(self._cache, mip, rect, k)
+        return None if level_rect is None else (mip, k, level_rect)
+
+    def frame_stamps(self, mip: int, rect: QRectF, device_scale: float) -> tuple | None:
+        """The cache's chunk_stamps() over every real chunk a paint of `rect` at
+        `mip` reads (view_chunks()), or None if one is uncached."""
+        chunks = self.view_chunks(mip, rect.intersected(self._bounding_rect), device_scale)
+        return None if chunks is None else self._cache.chunk_stamps(mip, *chunks)
 
     def reduction_at(self, mip: int, max_axis_scale: float) -> int:
         """The box reductions paint() applies to level `mip` at a device
@@ -642,8 +765,12 @@ class MapCanvasItem(QGraphicsItem):
         Distinct from IsoChunkCache.invalidate_region() (Phase B-B): that
         one evicts cache entries to force a real recomposite; this one
         never touches the cache at all, just Qt's own dirty-region
-        tracking. Same name, different class, different layer."""
+        tracking. Same name, different class, different layer.
+
+        Also drops any pre-rendered zoom frame: their chunk stamps already
+        void them after the cache's patch, this is the second net."""
         x0, y0, x1, y1 = bbox
+        self._preframes = []
         self.update(QRectF(x0, y0, x1 - x0, y1 - y0))
 
     def refresh_canvas_dims(self) -> None:
@@ -950,7 +1077,7 @@ class EdgeTickItem(QGraphicsItem):
 
 class GridItem(QGraphicsItem):
     """View > Grid's ground-plane lattice: one line per tile boundary over the
-    whole map, with every fourth line a major. Geometry comes from the
+    whole map, with a major at the spacing set in View > Grid. Geometry comes from the
     Qt-free descape.grid_overlay.
 
     Not the usual grid. With Follow Terrain Elevation on (and always in Flat)
@@ -979,12 +1106,14 @@ class GridItem(QGraphicsItem):
         tile_px: int | None = None,
         blend: int = grid_overlay.BLEND_DEFAULT,
         thickness: int = grid_overlay.THICKNESS_DEFAULT,
+        major_every: int = grid_overlay.MAJOR_EVERY_DEFAULT,
     ) -> None:
         super().__init__()
         self._map_w = map_w
         self._map_h = map_h
         self._proj = proj
         self._tile_px = tile_px
+        self._major_every = major_every
         self._map_rect = QRectF(map_rect)
         self._pad = 0.0
         self._axes: tuple[grid_overlay.GridAxis, ...] = ()
@@ -1000,7 +1129,9 @@ class GridItem(QGraphicsItem):
         self._rebuild()
 
     def _rebuild(self) -> None:
-        self._axes = grid_overlay.grid_axes(self._map_w, self._map_h, proj=self._proj, tile_px=self._tile_px)
+        self._axes = grid_overlay.grid_axes(
+            self._map_w, self._map_h, proj=self._proj, tile_px=self._tile_px, major_every=self._major_every,
+        )
         self._batches = []
         xs: list[int] = []
         ys: list[int] = []
@@ -1035,6 +1166,16 @@ class GridItem(QGraphicsItem):
         self._major_pen.setCosmetic(True)
         self.update()
 
+    def set_major_every(self, major_every: int) -> None:
+        if major_every == self._major_every:
+            return
+        self._major_every = major_every
+        self._rebuild()
+        self.update()
+
+    def major_every(self) -> int:
+        return self._major_every
+
     def pens(self) -> tuple[QPen, QPen]:
         return self._minor_pen, self._major_pen
 
@@ -1062,7 +1203,9 @@ class GridItem(QGraphicsItem):
             painter.save()
             try:
                 for axis, (minors, majors) in zip(self._axes, self._batches, strict=True):
-                    lod = grid_overlay.grid_lod(math.hypot(*_mapped_delta(world, *axis.minor_step)))
+                    lod = grid_overlay.grid_lod(
+                        math.hypot(*_mapped_delta(world, *axis.minor_step)), self._major_every,
+                    )
                     self.last_lod[axis.axis] = lod
                     if not lod.draw_grid:
                         continue
@@ -1365,6 +1508,8 @@ class UnitGhostItem(QGraphicsItem):
     # Translucent enough to read as a preview rather than as the real thing,
     # opaque enough that a sprite's own art is still identifiable.
     GHOST_OPACITY = 0.6
+    # TASK-327: how far a refused sprite's RGB moves toward the refusal colour, as the game tints its ghost.
+    REFUSED_TINT = 0.6
 
     def __init__(self) -> None:
         super().__init__()
@@ -1375,10 +1520,33 @@ class UnitGhostItem(QGraphicsItem):
         self._images: list[tuple[QImage, float, float]] = []
         # (polygon, brush, pen) per mark polygon: a group ghost (GH #75) mixes owners.
         self._marks: list[tuple[QPolygonF, QBrush, QPen]] = []
+        # TASK-327: the refused look lives beside those three, which keep untinted content for every
+        # entry. Per mark: refused or not. Per image: its source draw.rgba when refused, and the tint.
+        self._refused_marks: list[bool] = []
+        self._refused_sources: list[np.ndarray | None] = []
+        self._tinted: list[QImage | None] = []
+        # id(source) -> (source, tinted copy, QImage over it). The source is held, so its id stays its own.
+        self._tint_cache: dict[int, tuple[np.ndarray, np.ndarray, QImage]] = {}
+        self._refusal_color = QColor(Qt.red)
         self._bounding_rect = QRectF()
         self.setOpacity(self.GHOST_OPACITY)
 
-    def set_sprites(self, draws) -> bool:
+    @property
+    def refused(self) -> bool:
+        """Whether any part of the ghost is drawn refused."""
+        return any(self._refused_marks) or any(tinted is not None for tinted in self._tinted)
+
+    def set_refusal_color(self, color: QColor) -> None:
+        """The overlay colour a refused part is tinted toward (MapView pushes it)."""
+        color = QColor(color)
+        if color == self._refusal_color:
+            return
+        self._refusal_color = color
+        self._tint_cache = {}
+        self._tinted = [None if source is None else self._tint(source) for source in self._refused_sources]
+        self.update()
+
+    def set_sprites(self, draws, refused: bool = False) -> bool:
         """draws: render.unit_sprite_draws_at()'s (draw, px, py) triples, in
         canvas pixels -- which ARE scene coordinates, since scene space is
         pinned to the reference mip (MapCanvasItem's plan decision D2).
@@ -1386,57 +1554,109 @@ class UnitGhostItem(QGraphicsItem):
         Returns whether anything is left to show, so the caller can fall back
         to the coloured mark on an empty resolve rather than leaving a stale
         ghost on screen."""
+        if refused:
+            return self.set_content((), (), refused_draws=draws)
         return self.set_content(draws, ())
 
-    def set_mark(self, polygons, color: tuple[int, int, int]) -> bool:
+    def set_mark(self, polygons, color: tuple[int, int, int], refused: bool = False) -> bool:
         """polygons: unit_pick.unit_polygons()' plain (x, y) point lists, in
         the same canvas/scene pixels as set_sprites(). The coloured-mark
         fallback, for Flat (which has no sprite compositor at all) and for any
         unit whose sprite does not resolve."""
+        if refused:
+            return self.set_content((), (), refused_marks=[(polygons, color)])
         return self.set_content((), [(polygons, color)])
 
-    def set_content(self, draws, marks) -> bool:
+    def set_content(self, draws, marks, refused_draws=(), refused_marks=()) -> bool:
         """Sprite draws and coloured marks together, for a group ghost whose
-        members resolve differently. `marks` is a list of (polygons, color)."""
+        members resolve differently. `marks` is a list of (polygons, color).
+        The refused_ pair is the same shape, drawn refused (TASK-327)."""
         self.prepareGeometryChange()
         self._arrays = []
         self._images = []
         self._marks = []
+        self._refused_marks = []
+        self._refused_sources = []
         rect = QRectF()
-        for polygons, color in marks:
-            qcolor = QColor(*color)
-            brush, pen = QBrush(qcolor), QPen(qcolor)
-            for points in polygons:
-                polygon = QPolygonF([QPointF(px, py) for px, py in points])
-                self._marks.append((polygon, brush, pen))
-                rect = rect.united(polygon.boundingRect())
-        for draw, ax, ay in draws:
-            rgba = np.ascontiguousarray(draw.rgba)
-            h, w = rgba.shape[:2]
-            if h == 0 or w == 0:
-                continue
-            # The same top-left _clipped_paint_rgba() composites at, and the
-            # same RGB channel order the canvas itself is built in -- the
-            # first three channels blend straight into an RGB888 canvas.
-            x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
-            image = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
-            self._arrays.append(rgba)
-            self._images.append((image, float(x0), float(y0)))
-            rect = rect.united(QRectF(x0, y0, w, h))
+        for mark_list, refused in ((marks, False), (refused_marks, True)):
+            for polygons, color in mark_list:
+                qcolor = QColor(*color)
+                brush, pen = QBrush(qcolor), QPen(qcolor)
+                for points in polygons:
+                    polygon = QPolygonF([QPointF(px, py) for px, py in points])
+                    self._marks.append((polygon, brush, pen))
+                    self._refused_marks.append(refused)
+                    rect = rect.united(polygon.boundingRect())
+        live: set[int] = set()
+        for draw_list, refused in ((draws, False), (refused_draws, True)):
+            for draw, ax, ay in draw_list:
+                rgba = np.ascontiguousarray(draw.rgba)
+                h, w = rgba.shape[:2]
+                if h == 0 or w == 0:
+                    continue
+                # The same top-left _clipped_paint_rgba() composites at, and the
+                # same RGB channel order the canvas itself is built in -- the
+                # first three channels blend straight into an RGB888 canvas.
+                x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
+                image = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
+                self._arrays.append(rgba)
+                self._images.append((image, float(x0), float(y0)))
+                self._refused_sources.append(draw.rgba if refused else None)
+                live.add(id(draw.rgba))
+                rect = rect.united(QRectF(x0, y0, w, h))
+        # Only what this content draws stays cached: a group drag re-sends the same sources every move.
+        self._tint_cache = {key: hit for key, hit in self._tint_cache.items() if key in live}
+        self._tinted = [None if source is None else self._tint(source) for source in self._refused_sources]
         self._bounding_rect = rect
         self.update()
         return bool(self._images or self._marks)
+
+    def _tint(self, source: np.ndarray) -> QImage:
+        """A copy of `source` with its RGB blended toward the refusal colour,
+        alpha untouched, cached per source. Never written in place:
+        np.ascontiguousarray() hands back the sprite cache's own array."""
+        hit = self._tint_cache.get(id(source))
+        if hit is not None:
+            return hit[2]
+        rgba = np.array(source, dtype=np.uint8, order="C", copy=True)
+        color = self._refusal_color
+        target = np.array([color.red(), color.green(), color.blue()], dtype=np.float32) * np.float32(self.REFUSED_TINT)
+        rgb = rgba[..., :3] * np.float32(1.0 - self.REFUSED_TINT) + target
+        rgba[..., :3] = np.rint(np.clip(rgb, 0.0, 255.0)).astype(np.uint8)
+        h, w = rgba.shape[:2]
+        image = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
+        self._tint_cache[id(source)] = (source, rgba, image)
+        return image
+
+    def _hatch_brush(self, painter: QPainter, polygon: QPolygonF) -> QBrush:
+        """A cross-hatch in ink that reads on the refusal colour, in device
+        pixels: the inverse world transform keeps its 8 px period at every
+        zoom, and anchoring it on the mark's device centre puts a hatch pixel
+        there, so a 3 px mark at minimum zoom still shows one."""
+        world = painter.worldTransform()
+        inverse, _invertible = world.inverted()
+        centre = world.map(polygon.boundingRect().center())
+        brush = QBrush(_contrast_ink(self._refusal_color), Qt.DiagCrossPattern)
+        brush.setTransform(QTransform.fromTranslate(math.floor(centre.x()), math.floor(centre.y())) * inverse)
+        return brush
 
     def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        for polygon, brush, pen in self._marks:
-            painter.setPen(pen)
-            painter.setBrush(brush)
+        for (polygon, brush, pen), refused in zip(self._marks, self._refused_marks, strict=True):
+            if refused:
+                painter.setPen(QPen(self._refusal_color))
+                painter.setBrush(QBrush(self._refusal_color))
+                painter.drawPolygon(polygon)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(self._hatch_brush(painter, polygon))
+            else:
+                painter.setPen(pen)
+                painter.setBrush(brush)
             painter.drawPolygon(polygon)
-        for image, x, y in self._images:
-            painter.drawImage(QPointF(x, y), image)
+        for (image, x, y), tinted in zip(self._images, self._tinted, strict=True):
+            painter.drawImage(QPointF(x, y), image if tinted is None else tinted)
 
 
 class CameraMarkerItem(QGraphicsItem):

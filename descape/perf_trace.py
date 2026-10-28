@@ -135,6 +135,8 @@ _warm_ticks: list[tuple[float, int, float]] = []
 # Kernel ms per chunk run on a margin-warm worker thread, timed there and
 # recorded on arrival, so this module stays GUI-thread-only.
 _warm_worker: list[float] = []
+# One (tick_ms, step kind) per PreframeWarmer tick (TASK-031.71).
+_preframe_ticks: list[tuple[float, str]] = []
 _armed_label: str | None = None
 _drag_active = False
 # begin_drag()'s brush text ("9 circle"), printed on the drag header until flush().
@@ -920,6 +922,27 @@ def warm_tick(tick_ms: float, chunks: int, slowest_chunk_ms: float) -> None:
     _schedule_idle()
 
 
+def preframe_tick(tick_ms: float, kind: str) -> None:
+    """Records one pre-rendered zoom frame tick (TASK-031.71): `kind` is
+    `predict`, `fetch`, `strip` or `finish`. Same idle-flush restart as warm_tick()."""
+    if not _enabled:
+        return
+    _preframe_ticks.append((tick_ms, kind))
+    _recent.append((time.perf_counter(), tick_ms, _op_label(), f"preframe {kind}"))
+    _schedule_idle()
+
+
+def _preframe_summary() -> str:
+    """`preframe: N ticks, T ms total (max tick M <kind>), F frames`."""
+    p = _preframe_ticks
+    worst = max(p, key=lambda t: t[0])
+    frames = sum(1 for _ms, kind in p if kind == "finish")
+    return (
+        f"preframe: {len(p)} ticks, {sum(t[0] for t in p):.0f}ms total "
+        f"(max tick {worst[0]:.1f} {worst[1]}), {frames} frames"
+    )
+
+
 def warm_worker(kernel_ms: float) -> None:
     """Records one worker-thread chunk kernel, on the GUI thread once its
     result arrives. Same idle-flush restart as warm_tick()."""
@@ -1057,13 +1080,15 @@ def _take_extras() -> list[str]:
 def _flush_view() -> None:
     """Logs pending repaints and warm ticks as a `perf view` line and clears
     only those (plus the extras it prints)."""
-    global _warm_ticks, _warm_worker, _level_warm_ticks, _level_warm_worst
+    global _warm_ticks, _warm_worker, _level_warm_ticks, _level_warm_worst, _preframe_ticks
     _drain_gc()
     parts = []
     if _repaint_durations:
         parts.append(_repaint_summary())
     if _warm_ticks or _warm_worker or _level_warm_ticks:
         parts.append(_warm_summary())
+    if _preframe_ticks:
+        parts.append(_preframe_summary())
     if parts or _level_events or _gc_pending.count:
         parts.extend(_take_extras())
         debug_log.log(f"perf view: {', '.join(parts)}{_backend_text()}")
@@ -1072,6 +1097,7 @@ def _flush_view() -> None:
         _warm_worker = []
         _level_warm_ticks = []
         _level_warm_worst = None
+        _preframe_ticks = []
 
 
 def _backend_text() -> str:
@@ -1228,6 +1254,7 @@ def _fresh_state() -> dict[str, object]:
         "_repaint_level_ms": 0.0,
         "_warm_ticks": [],
         "_warm_worker": [],
+        "_preframe_ticks": [],
         "_armed_label": None,
         "_drag_active": False,
         "_drag_brush": None,

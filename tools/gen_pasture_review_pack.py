@@ -178,6 +178,7 @@ def _patched(inject: str | None):
     real_map = unit_sprites.graphic_map
     saved_draped = render.DRAPED_SPRITE_CONSTS
     unit_sprites._scaled_cache.clear()
+    unit_sprites.clear_slice_cache()
     if inject is not None:
         transform, drape_off = INJECTS[inject]
         if transform is not None:
@@ -193,6 +194,7 @@ def _patched(inject: str | None):
         unit_sprites.graphic_map = real_map
         render.DRAPED_SPRITE_CONSTS = saved_draped
         unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
 
 
 # --------------------------------------------------------------- the spec

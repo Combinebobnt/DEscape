@@ -334,19 +334,27 @@ def test_a_lapsed_paste_says_so_by_action_and_writes_nothing(method, verb):
         _close(window)
 
 
-def test_terrain_mode_menu_enablement_follows_the_armed_paste():
+def test_terrain_mode_menu_enablement_follows_the_paste_then_the_committed_region():
+    """TASK-256: a committed region is a target of its own, so the menu stays
+    open around the paste; what changes is which target the actions take."""
     window = _select_window()
     try:
-        turn = [*window._rotate_actions, *window._flip_actions]
+        turn = [*window._rotate_actions, *window._flip_actions, *window._rotate_group_actions]
         _setup(window)
-        assert not any(action.isEnabled() for action in turn)
+        assert window._transform_target() == "region" and window._region_rotate_target()
+        assert all(action.isEnabled() for action in turn)
         _paste(window)
+        assert window._transform_target() == "paste" and not window._region_rotate_target()
         assert all(action.isEnabled() for action in turn)
         assert not any(action.isVisible() for action in window._rotate_toolbar_actions)
         window.on_hover((80, 80))
         window.paste_region()  # a second paste re-arms on the new one
+        assert window._transform_target() == "paste"
+        window.undo()  # the undo lapses it; the pasted rectangle stays selected
+        assert window._paste_move is None
+        assert window._transform_target() == "region" and window._region_rotate_target()
         assert all(action.isEnabled() for action in turn)
-        window.undo()  # the undo lapses it
+        window.deselect()
         assert not any(action.isEnabled() for action in turn)
     finally:
         _close(window)

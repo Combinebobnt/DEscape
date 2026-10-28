@@ -1,6 +1,6 @@
 """descape/terrain_units.py's ViewerWindow wiring: the Trees/Eye candy
 checkboxes, the composite-undo path Draw and Paint Can both feed into, the
-Paint Can large-fill confirm guard, and settings persistence. Same offscreen
+Paint Can large-fill confirm guard, and the checkboxes' defaults. Same offscreen
 technique tests/test_fill_tool.py documents; every ViewerWindow() here must
 call edit_history.mark_saved() before close().
 """
@@ -278,31 +278,44 @@ def test_checkbox_visibility_follows_the_terrain_param() -> None:
         window.close()
 
 
-def test_paint_trees_checkbox_defaults_and_persists() -> None:
-    assert settings.get_paint_trees() is True
-    assert settings.get_paint_eye_candy() is False
+def test_a_trees_tick_lasts_the_session_and_a_stored_default_starts_the_next(tmp_path, monkeypatch) -> None:
+    """TASK-272: the ticks no longer write through; Settings > Tools' default starts each window."""
+    import yaml
+
+    def tool_options_key():
+        path = tmp_path / "config.yaml"
+        return (yaml.safe_load(path.read_text()) or {}).get("tool_options") if path.is_file() else None
 
     window = _window("draw")
     try:
         assert window.paint_trees_check.isChecked() is True
         assert window.paint_eye_candy_check.isChecked() is False
-
         window.paint_trees_check.setChecked(False)
         window.paint_eye_candy_check.setChecked(True)
-        assert settings.get_paint_trees() is False
-        assert settings.get_paint_eye_candy() is True
     finally:
         window.edit_history.mark_saved()
         window.close()
+    assert tool_options_key() is None
 
-    # A fresh window picks up the persisted values.
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
     window2 = _window("draw")
     try:
-        assert window2.paint_trees_check.isChecked() is False
-        assert window2.paint_eye_candy_check.isChecked() is True
+        assert window2.paint_trees_check.isChecked() is True
+        assert window2.paint_eye_candy_check.isChecked() is False
     finally:
         window2.edit_history.mark_saved()
         window2.close()
+
+    settings.set_tool_option_defaults({"paint_trees": False, "paint_eye_candy": True})
+    assert tool_options_key() == {"paint_trees": False, "paint_eye_candy": True}
+    monkeypatch.setattr(settings, "_tool_option_overrides", None)
+    window3 = _window("draw")
+    try:
+        assert window3.paint_trees_check.isChecked() is False
+        assert window3.paint_eye_candy_check.isChecked() is True
+    finally:
+        window3.edit_history.mark_saved()
+        window3.close()
 
 
 # --- Stroke-end splice (stroke-end repaint splice plan, Steps 3, 5 and 6) ---

@@ -1164,6 +1164,23 @@ def test_replace_object_and_change_object_icon_still_share_their_unit_field() ->
     assert shared["object_list_unit_id_2"] == "object list unit id 2"
 
 
+def test_task370_a_none_defaulted_unit_list_shares_with_a_list_defaulted_one() -> None:
+    """task_object defaults selected_object_ids to None, kill_object to []; a
+    selection of both still shows the one field (GH #60)."""
+    vocabulary = library_compat.load_vocabulary("1.59")
+    by_name = {entry.name: entry for entry in vocabulary.effects.values()}
+    assert by_name["task_object"].default_attributes.get("selected_object_ids") is None, "fixture assumption"
+    assert isinstance(by_name["kill_object"].default_attributes.get("selected_object_ids"), list), "fixture assumption"
+    spec_lists = [
+        trigger_fields.field_specs(by_name[name], vocabulary.effect_presentation, "effect_type")
+        for name in ("task_object", "kill_object")
+    ]
+    shared = {spec.name: spec for spec in trigger_fields.shared_specs(spec_lists)}
+    assert "selected_object_ids" in shared
+    assert shared["selected_object_ids"].kind == trigger_fields.INT_LIST
+    assert shared["selected_object_ids"].sentinel is None
+
+
 def test_field_label_is_the_caption_or_the_name_derived_default() -> None:
     kill = _entry(["effect_type", "object_list_unit_id", "source_player", "message"], name="kill_object")
     assert trigger_fields.field_label(kill, "object_list_unit_id") == "source player unit"

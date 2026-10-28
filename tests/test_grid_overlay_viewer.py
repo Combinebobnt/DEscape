@@ -349,6 +349,83 @@ def test_building_the_window_writes_no_config_file(tmp_path) -> None:
     try:
         assert not (tmp_path / "config.yaml").exists()
         assert not window.grid_action.isChecked()
+        assert _checked_spacings(window) == [4]
+    finally:
+        conftest.close_window(window)
+
+
+def _checked_spacings(window) -> list[int]:
+    return [tiles for tiles, action in window.grid_major_every_actions.items() if action.isChecked()]
+
+
+def _major_counts(item) -> list[int]:
+    return [len(majors) for _minors, majors in item._batches]
+
+
+def test_the_spacing_actions_are_the_four_stops_with_their_text() -> None:
+    window = _plain_window()
+    try:
+        actions = window.grid_major_every_actions
+        assert list(actions) == [2, 4, 8, 16]
+        for tiles, action in actions.items():
+            assert action.text() == f"Stronger line every &{tiles} tiles"
+            assert action.toolTip() == f"A stronger grid line every {tiles} tiles; the others stay one per tile"
+            assert action.isCheckable() and action.actionGroup().isExclusive()
+        assert "stronger line at the spacing below" in window.grid_action.toolTip()
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_spacing_actions_open_at_the_persisted_value(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "_grid_major_every", 16)
+    window = _window()
+    try:
+        assert _checked_spacings(window) == [16]
+        assert window._cache.grid.major_every == 16
+        assert window.map_view._grid_item.major_every() == 16
+    finally:
+        conftest.close_window(window)
+
+
+def test_picking_a_spacing_persists_and_reaches_the_bake_with_one_eviction() -> None:
+    window = _window()
+    try:
+        assert window.map_view.grid_bake_live()
+        changes = _count_spec_changes(window._cache)
+        window.grid_major_every_actions[8].trigger()
+        assert settings.get_grid_major_every() == 8
+        assert settings._load_config()["grid_major_every"] == 8
+        assert _checked_spacings(window) == [8]
+        assert len(changes) == 1 and changes[0].major_every == 8
+        assert window._cache.grid == grid_overlay.grid_bake(
+            True, grid_overlay.BLEND_DEFAULT, grid_overlay.THICKNESS_DEFAULT, 8
+        )
+        assert window.map_view._grid_item.major_every() == 8
+        window.grid_major_every_actions[8].trigger()  # already checked: nothing
+        assert len(changes) == 1
+        window.grid_major_every_actions[2].trigger()
+        assert len(changes) == 2 and window._cache.grid.major_every == 2
+        assert _checked_spacings(window) == [2]
+    finally:
+        conftest.close_window(window)
+
+
+def test_follow_off_a_spacing_change_rebuilds_the_overlay_without_evicting() -> None:
+    window = _overlay_window()
+    try:
+        view = window.map_view
+        item = view._grid_item
+        assert item.isVisible() and not view.grid_bake_live()
+        before = _major_counts(item)
+        changes = _count_spec_changes(window._cache)
+        window.grid_major_every_actions[16].trigger()
+        assert changes == []
+        assert settings.get_grid_major_every() == 16
+        assert item.major_every() == 16
+        after = _major_counts(item)
+        assert after != before
+        assert after == [len(range(0, n + 1, 16)) for n in (view._map_width, view._map_height)]
+        assert view.set_grid_major_every(2) is False
     finally:
         conftest.close_window(window)
 
@@ -598,6 +675,22 @@ def test_both_toggles_survive_a_terrain_style_round_trip() -> None:
         QApplication.processEvents()
         assert window.map_view.grid_bake_live()
         assert window._cache.grid.paints
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_spacing_survives_a_terrain_style_round_trip() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _ramped_window("Stepped")
+    try:
+        window.grid_major_every_actions[8].trigger()
+        for style in ("Flat", "Sloped", "Stepped"):
+            window.terrain_style_combo.setCurrentText(style)
+            QApplication.processEvents()
+            assert window._cache.grid.major_every == 8, style
+            assert window.map_view._grid_item.major_every() == 8, style
+        assert _checked_spacings(window) == [8]
     finally:
         conftest.close_window(window)
 

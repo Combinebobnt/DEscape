@@ -224,84 +224,13 @@ python3 map_editor.py examples/2_Joan_coop_2_v0_15.aoe2scenario   # open a file 
 .venv/bin/python3 -m pytest tests/test_scenario_io.py -m "corpus or slow"
 ```
 
-Settings > Keybinds rebinds every shortcut and sets what the mouse wheel does
-over the map, alone or with Ctrl, Shift or Alt held (zoom, brush size, turning
-Place Unit's preview or a just-pasted region, panning, or nothing; by default
-it zooms, and Ctrl + wheel steps the brush size or turns the preview). Each
-choice's tooltip says where it applies; elsewhere the wheel zooms.
-
-Saving (Ctrl+S or File > Save) leaves a `.bak` and, on the first save of a
-given file, a one-time `.orig` snapshot beside it, so the write path always
-has something to fall back to. Settings > Saving can switch that pair off,
-except in the game's own profile folder (below), where Save always writes
-both. You can save straight into the game's scenario folder; a
-subscribed-mods `mods/subscribed/` folder is refused, because the game's
-mod manager re-syncs it and would silently undo the edit.
-
-Autosave (Settings > Saving, on by default) writes a recovery snapshot every
-few minutes to its own rotating slot. It never writes the file you have open,
-and never clears the unsaved-changes marker. A tick is skipped while the
-document is clean, unchanged since its last autosave, or mid-stroke, so the
-write only ever lands on an idle map. Slots go in an `autosave/` folder
-beside `config.yaml` or a folder you pick in Settings > Saving, or beside the
-scenario itself if you pick that (except for a scenario in the game's
-profile folder: its slots go to the autosave folder, to keep them out of
-the game's own folder). Switching folders leaves existing
-autosaves where they are, still listed in Recover, and a `mods/subscribed/`
-folder is refused. File > Recover from Autosave… lists them and opens one as a new untitled
-document, so recovering can never overwrite the file you're comparing it
-against.
-
-**Edit > Find and Replace…** searches every placed object, including ones
-hidden by the Filters menu, garrisoned or off the map: by name (substring or
-regex, `#id` for an exact type), owner, category, kind, specific types and
-area. Tick the results to select them on the map, delete them, change their
-owner, replace them with another object type (each keeps its id, so triggers
-and garrisons that name it still work) or export them as CSV. Each operation
-is one undo step. Its Triggers tab searches trigger names, descriptions,
-messages, identifiers and XS (with the same regex mode), the unit types
-conditions and effects name, and which triggers use a given placed object;
-it replaces text or types, deletes, enables or disables the matches, and
-double-clicking jumps to the trigger. Replacing an object offers to retarget
-the trigger effects that select it by type, in the same undo step.
-
-**Map > Resize Map…** grows or shrinks the open map, keeping any of nine
-anchors in place (a corner, an edge's midpoint, or the centre). Terrain,
-elevation, objects and trigger areas and locations move with the map; new
-ground is plain grass at the height of the old edge beside it, so no cliff-like
-jump appears. Objects that end up off the map, or that the new edge would cut
-through, are deleted, together with
-anything garrisoned in them, and the dialog says how many before you commit.
-Trigger areas are shifted only in files whose triggers DEscape can write back;
-otherwise the dialog warns that they are left as they were. A resize cannot be
-undone, and your unsaved edits are carried into the resized map. Only square
-maps for now. From a script: `batch_api.resize_map(scenario, 168, 168, "CENTER")`.
-
-**Trigger status colours.** In Triggers mode, a trigger, condition or effect
-shows green when every field its type needs is set and every unit and trigger
-it names exists, and red when something is missing. Hover a red row to see
-what. Green means complete, not that the trigger does what you meant in game:
-nothing here runs it. A trigger with no effects is red unless it is shown as
-an objective, an objective header or on screen, and a condition or effect of
-a type DEscape does not know is left unmarked. A section row is judged by its
-own conditions and effects, not the triggers in its section, and is not
-coloured unless you ask.
-Settings > Appearance > Trigger status switches the colours to tick and cross
-icons (or both, or off), stops marking rows that pass so only problems stand
-out, colours section rows, and changes the two colours. The icons sit in their
-own column between ID and Trigger, so the names line up; a section with no
-conditions or effects shows a dash there.
-
-**Button slots.** Change Train Location, Add Train Location and Change
-Research Location show the building's command buttons under the button slot
-field, as they will look after the trigger fires; click a cell to pick that
-slot. The grid shows only what the effect player's civilization can have
-(all civs when it is random), frames the effect's own button in green, or
-in red when it won't show or covers a tech; hover a cell for the details. Tick "Show all triggers' changes" to apply
-the player's other such effects too. Map Analysis's "Train and research
-buttons" check warns when the button won't show: a unit the civ can't have,
-a tech the player's starting age already researched, one hidden by a
-lower-id unit, a covered tech, or a slot with no button.
+**Using the editor.** DEscape has a built-in guide: Help > DEscape Guide (F1
+by default) opens the page for the mode you are in, and Help > Keyboard and
+Mouse lists your current keys and mouse gestures. The same pages are plain
+Markdown in [`descape/help/`](descape/help/), readable on GitHub:
+[Getting Started](descape/help/getting-started.md) covers opening, saving,
+backups and autosave, and each mode and the map-wide tools have their own
+page.
 
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.
@@ -322,7 +251,8 @@ correct elevation clamp, an order-safe bulk variant, and double-terrain-blend
 reset, matching what the viewer's own tools already enforce). `set_layer`
 sets or removes a tile's layered terrain (the second terrain drawn over its
 base) and leaves the base alone; call it after `set_terrain`, which still
-clears the layer.
+clears the layer. `resize_map(scenario, 168, 168, "CENTER")` does what
+Map > Resize Map… does (square maps only, not undoable).
 
 **Unit edits persist only through a `UnitEditModel`.** `batch_api.save()`
 always writes Map terrain exactly like the viewer's Save As does. Units are
@@ -430,6 +360,12 @@ Draw, Draw Line, Draw Rectangle and Paint Can follow it; the Eyedropper picks
 the layered terrain while it is on Layer. Hovering a tile names its layered
 terrain, and Paste Region carries it. A layered terrain is saved either way,
 but only drawn with an install configured and both View > Layers rows on.
+
+Every other control on the Tool Options row (brush size and shape, Trees and
+Eye candy, Free placement, the Eraser's targets and the rest) starts each
+launch at the default set in Settings > Tools. A change on the toolbar lasts
+until DEscape closes; Load From Toolbar on that tab makes the current values
+the defaults. Target always starts on Terrain.
 
 No install configured, or a specific terrain missing from it, both fall back
 to the guessed palette automatically — this is optional, not a hard

@@ -2,9 +2,13 @@
 terrain an object may stand on and the objects it may not overlap. Qt-free.
 viewer.py asks refusal() for a Place Unit click and move_refusal() for a
 drag-move: wall runs, nudges, Scatter, paste and the batch API stay
-unrestricted. Map Analysis (GH #173) is the second reader: it applies
-terrain_refusal() and BlockerGrid to the units a file already holds, and only
-it passes laid_terrain(), so a unit on a bridge is not on water there.
+unrestricted. refused() and move_refused() give the same answers without
+the message, for callers that ask per candidate (the Unit Brush, GH #170;
+the Place Unit hover ghost and the drag previews, TASK-327; a group drop)
+and build one message at most. Map Analysis (GH #173) is the second reader: it applies
+terrain_refusal() and BlockerGrid to the units a file already holds. Both
+read a mobile unit's terrain through laid_terrain(), so a unit on a bridge
+is not on water (TASK-349); refusal() reads it memoized per unit edit.
 
 Both rules read the game's own .dat, committed in object_catalog.json.
 
@@ -41,6 +45,7 @@ the message names the blocker and where it stands so a hidden one is findable.
 from __future__ import annotations
 
 import math
+import weakref
 
 from descape import game_dataset, object_catalog, render, terrain_catalog
 from descape.terrain_palette import (
@@ -52,6 +57,7 @@ from descape.terrain_palette import (
     tile_span,
 )
 from descape.unit_filter import GAIA_PLAYER_ID
+from descape.unit_kind import mobile_unit_consts
 
 # The .dat's Beach restriction row. No object uses it; it is what "a shore" widens to.
 BEACH_RESTRICTION = 2
@@ -115,10 +121,31 @@ def laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
     return {tile: frozenset(ids) for tile, ids in laid.items()}
 
 
-def _footprint_refusal(scenario, unit_const: int, tiles, laid=None) -> str | None:
-    """The first footprint tile whose terrain `unit_const`'s restriction row
-    does not pass, as a message, or None. A tile whose stored terrain is
-    refused still passes when `laid` (laid_terrain()) holds one the row passes."""
+# scenario -> ((unit_gen, map width, map height), laid_terrain()).
+_LAID_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _memoized_laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
+    """laid_terrain(), built once per unit edit (scenario.unit_gen, which every
+    UnitEditModel mutator bumps) rather than per click or per group-move
+    member. A scenario without unit_gen (a test fake) builds it fresh."""
+    gen = getattr(scenario, "unit_gen", None)
+    if gen is None:
+        return laid_terrain(scenario)
+    mm = scenario.map_manager
+    key = (gen, mm.map_width, mm.map_height)
+    cached = _LAID_MEMO.get(scenario)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    laid = laid_terrain(scenario)
+    _LAID_MEMO[scenario] = (key, laid)
+    return laid
+
+
+def _footprint_block(scenario, unit_const: int, tiles, laid=None) -> int | None:
+    """The terrain id of the first footprint tile `unit_const`'s restriction
+    row does not pass, or None. A tile whose stored terrain is refused still
+    passes when `laid` (laid_terrain()) holds one the row passes."""
     passable = _restrictions().get(_objects().get(unit_const, {}).get("restriction"))
     if passable is None:
         return None
@@ -129,16 +156,24 @@ def _footprint_refusal(scenario, unit_const: int, tiles, laid=None) -> str | Non
         if terrain_id in known and terrain_id not in passable:
             if laid and not passable.isdisjoint(laid.get((tx, ty), ())):
                 continue
-            return f"{object_catalog.display_name(unit_const)} can't stand on {_terrain_name(terrain_id)}"
+            return terrain_id
     return None
 
 
-def _shore_refusal(scenario, unit_const: int, tiles) -> str | None:
-    """A `side_terrain` const with no shore in the ring of tiles around its
-    footprint, as a message, or None. An unknown terrain id counts as shore."""
+def _footprint_refusal(scenario, unit_const: int, tiles, laid=None) -> str | None:
+    """_footprint_block() as a message, or None."""
+    terrain_id = _footprint_block(scenario, unit_const, tiles, laid)
+    if terrain_id is None:
+        return None
+    return f"{object_catalog.display_name(unit_const)} can't stand on {_terrain_name(terrain_id)}"
+
+
+def _shore_block(scenario, unit_const: int, tiles) -> bool:
+    """Whether a `side_terrain` const has no shore in the ring of tiles around
+    its footprint. An unknown terrain id counts as shore."""
     side_terrain = _objects().get(unit_const, {}).get("side_terrain")
     if not side_terrain:
-        return None
+        return False
     shore = frozenset(side_terrain) | _restrictions().get(BEACH_RESTRICTION, frozenset())
     mm = scenario.map_manager
     width, height = mm.map_width, mm.map_height
@@ -154,19 +189,35 @@ def _shore_refusal(scenario, unit_const: int, tiles) -> str | None:
     for tx, ty in ring:
         terrain_id = mm.terrain[ty * width + tx].terrain_id
         if terrain_id in shore or terrain_id not in known:
-            return None
+            return False
+    return True
+
+
+def _shore_refusal(scenario, unit_const: int, tiles) -> str | None:
+    """_shore_block() as a message, or None."""
+    if not _shore_block(scenario, unit_const, tiles):
+        return None
     return f"{object_catalog.display_name(unit_const)} needs a beach tile beside it"
 
 
 def terrain_refusal(scenario, unit_const: int, x: float, y: float, laid=None) -> str | None:
     """Why `unit_const` cannot stand at (x, y) on this map's terrain, or None.
     An off-map point is not this rule's to refuse. `laid` is laid_terrain()'s
-    map; refusal() passes none, so Place Unit and Move ignore foundations."""
+    map; refusal() passes it for a mobile unit only, as Map Analysis does."""
     mm = scenario.map_manager
     tiles = render.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
     if tiles is None:
         return None
     return _footprint_refusal(scenario, unit_const, tiles, laid) or _shore_refusal(scenario, unit_const, tiles)
+
+
+def _terrain_blocked(scenario, unit_const: int, x: float, y: float, laid=None) -> bool:
+    """terrain_refusal() is not None, without building the message."""
+    mm = scenario.map_manager
+    tiles = render.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
+    if tiles is None:
+        return False
+    return _footprint_block(scenario, unit_const, tiles, laid) is not None or _shore_block(scenario, unit_const, tiles)
 
 
 # --- objects -------------------------------------------------------------------
@@ -280,27 +331,41 @@ def _cells(shape_boxes: tuple[Box, ...]):
 class BlockerGrid:
     """blocker() for many movers against one unit list: one scan into a tile
     hash, then a lookup per mover. A group move builds one with every member
-    excluded. Answers exactly as blocker() does, the same unit included."""
+    excluded. Answers exactly as blocker() does, the same unit included.
+
+    Rows order by (player_id, index in that player's list), blocker()'s scan
+    order, so a unit add() learns after an append to its player's list sorts
+    exactly where a fresh build would put it."""
 
     def __init__(self, scenario, exclude=()):
         excluded = {id(unit) for unit in exclude}
-        shapes: dict[int, object] = {}
+        self._shapes: dict[int, object] = {}
         self._cells: dict[tuple[int, int], list] = {}
-        order = 0
+        self._next_index: dict[int, int] = {}
         for player_id, units in enumerate(scenario.unit_manager.units):
-            for unit in units:
-                order += 1
+            self._next_index[player_id] = len(units)
+            for index, unit in enumerate(units):
                 if unit.garrisoned_in_id != -1 or id(unit) in excluded:
                     continue
-                const = unit.unit_const
-                if const not in shapes:
-                    shapes[const] = _shape(const)
-                theirs = _boxes_for(shapes[const], unit.x, unit.y)
-                if not theirs:
-                    continue
-                row = (order, player_id, unit, theirs)
-                for cell in set(_cells(theirs)):
-                    self._cells.setdefault(cell, []).append(row)
+                self._insert((player_id, index), player_id, unit)
+
+    def _insert(self, order: tuple[int, int], player_id: int, unit) -> None:
+        const = unit.unit_const
+        if const not in self._shapes:
+            self._shapes[const] = _shape(const)
+        theirs = _boxes_for(self._shapes[const], unit.x, unit.y)
+        if not theirs:
+            return
+        row = (order, player_id, unit, theirs)
+        for cell in set(_cells(theirs)):
+            self._cells.setdefault(cell, []).append(row)
+
+    def add(self, player_id: int, unit) -> None:
+        """Learns `unit`, just appended to `player_id`'s list (UnitEditModel.add())."""
+        index = self._next_index.get(player_id, 0)
+        self._next_index[player_id] = index + 1
+        if unit.garrisoned_in_id == -1:
+            self._insert((player_id, index), player_id, unit)
 
     def blocker(self, unit_const: int, x: float, y: float, exclude=()):
         mine = boxes(unit_const, x, y)
@@ -318,11 +383,19 @@ class BlockerGrid:
 # --- both ----------------------------------------------------------------------
 
 
-def refusal(scenario, unit_const: int, x: float, y: float, exclude=(), grid: BlockerGrid | None = None) -> str | None:
+def refusal(
+    scenario, unit_const: int, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, laid=None
+) -> str | None:
     """Why a `unit_const` cannot go at (x, y), terrain first and then the
     object in the way, as a whole clause for a status line, or None.
-    `grid` replaces the scan; its own build-time exclusions still apply."""
+    `grid` replaces the scan; its own build-time exclusions still apply.
+    A mobile unit's terrain counts a building's foundation (laid_terrain()),
+    read only once the stored terrain refuses; `laid` is as refused()'s."""
     reason = terrain_refusal(scenario, unit_const, x, y)
+    if reason is not None and unit_const in mobile_unit_consts():
+        reason = terrain_refusal(
+            scenario, unit_const, x, y, _memoized_laid_terrain(scenario) if laid is None else laid
+        )
     if reason is not None:
         return reason
     if grid is not None:
@@ -343,3 +416,30 @@ def move_refusal(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGr
     if unit.garrisoned_in_id != -1:
         return None
     return refusal(scenario, unit.unit_const, x, y, exclude, grid)
+
+
+def refused(
+    scenario, unit_const: int, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, laid=None
+) -> bool:
+    """refusal() is not None, without building a message: no display_name()
+    or _terrain_name() call, which re-parses the language file per call.
+    `laid` is a caller-held laid_terrain() map in place of the per-edit memo,
+    for a caller that adds units between calls (the Unit Brush), since every
+    add() bumps unit_gen and the memo would rebuild (~80 ms on 32k units)."""
+    if _terrain_blocked(scenario, unit_const, x, y) and (
+        unit_const not in mobile_unit_consts()
+        or _terrain_blocked(
+            scenario, unit_const, x, y, _memoized_laid_terrain(scenario) if laid is None else laid
+        )
+    ):
+        return True
+    if grid is not None:
+        return grid.blocker(unit_const, x, y, exclude) is not None
+    return blocker(scenario, unit_const, x, y, exclude) is not None
+
+
+def move_refused(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None) -> bool:
+    """move_refusal() is not None, without building a message."""
+    if unit.garrisoned_in_id != -1:
+        return False
+    return refused(scenario, unit.unit_const, x, y, exclude, grid)

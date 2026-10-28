@@ -1089,12 +1089,14 @@ def _shrink_inject(name: str | None):
     if name == "straight-average":
         unit_sprites._box_resize_rgba = _straight_box
     unit_sprites._scaled_cache.clear()
+    unit_sprites.clear_slice_cache()
     try:
         yield
     finally:
         unit_sprites._box_resize_rgba = real
         unit_sprites.set_smooth_shrink(was)
         unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
 
 
 def _shrink_lineup(frame_id: str) -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
@@ -3069,6 +3071,7 @@ def _garrison_frame_images(inject: str | None, wrap=None, frame_id: str | None =
     wrap = GARRISON_INJECTS[inject] if inject else wrap
     with _garrison_flags_patched(wrap), _garrison_kept(frame_id) as loaded:
         unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
         cache = _garrison_cache(loaded)
         frames = [frame_id] if frame_id else list(_GARRISON_FRAMES)
         return {fid: cache.render_rect(*boxes[fid], mip=0).copy() for fid in frames}

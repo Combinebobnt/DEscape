@@ -10,10 +10,12 @@ Draw that removes and replaces the trees on that level's tiles.
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import pytest
+from test_native_composite import (
+    native_backend,  # noqa: F401 -- a fixture
+    native_kernel,  # noqa: F401 -- native_backend requests it
+)
 from test_sprite_toggle_viewer import sprite_install  # noqa: F401 -- tree_sprites requests it
 from test_terrain_units_viewer import (
     FOREST_OAK,
@@ -35,18 +37,6 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-def native_kernel():
-    """A pack warm exists only on the native backend (render_cache.pack_warm_job)."""
-    from descape import composite_backend
-
-    if composite_backend.available():
-        return
-    if os.environ.get("DESCAPE_REQUIRE_NATIVE") == "1":
-        pytest.fail(f"DESCAPE_REQUIRE_NATIVE=1 but {composite_backend.unavailable_reason}")
-    pytest.skip(composite_backend.unavailable_reason)
-
-
 def _packs(cache) -> dict[int, object]:
     return {m: cache._unit_pack_of(m, create=False) for m in cache.mip_levels()}
 
@@ -58,7 +48,7 @@ def _whole(cache, mip: int):
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_draw_through_trees_after_a_pack_warm_matches_a_fresh_render(
-    native_kernel, style, sprites, monkeypatch, request
+    native_backend, style, sprites, monkeypatch, request  # noqa: F811
 ) -> None:
     """Pass conditions, on a shown viewer after a forest stroke and the viewer's own level warm:
     - the warm pre-derived at least one level's pack that had no pack or pending tiles before it,
