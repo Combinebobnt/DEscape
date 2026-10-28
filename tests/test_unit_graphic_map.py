@@ -864,6 +864,233 @@ def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(mon
     assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [155, 446]
 
 
+# GH #262: a data mod's .dat breaks invariants measured on the stock one.
+# Lenient (dat_derive's run), each guard degrades only what it guards and
+# records a warning; strict (regen_game_data.py) it still fails the run.
+
+
+@pytest.fixture()
+def gen(monkeypatch):
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    return importlib.import_module("gen_unit_graphic_map")
+
+
+@pytest.fixture()
+def lenient(gen):
+    """gen's _game_root lenient for the test, its WARNINGS returned; strict and empty again after."""
+    root = gen._game_root
+    root.WARNINGS.clear()
+    root.set_lenient(True)
+    yield root.WARNINGS
+    root.set_lenient(False)
+    root.WARNINGS.clear()
+
+
+def _graphic(gid: int, file_name: str, deltas=(), angle_count: int = 1, layer: int = 20):
+    from types import SimpleNamespace as NS
+
+    return NS(id=gid, file_name=file_name, deltas=list(deltas), angle_count=angle_count,
+              frame_count=10, layer=layer, mirroring_mode=0)
+
+
+def _delta(graphic_id: int, offset_y: int = 0, display_angle: int = -1):
+    from types import SimpleNamespace as NS
+
+    return NS(graphic_id=graphic_id, display_angle=display_angle, offset_x=0, offset_y=offset_y)
+
+
+def _units(unit_const: int, *, type_: int = 80, class_: int = 3, building=None) -> list:
+    """A unit table holding one unit at unit_const, standing graphic 0, no garrison graphic."""
+    from types import SimpleNamespace as NS
+
+    units: list = [None] * (unit_const + 1)
+    units[unit_const] = NS(standing_graphic=(0, -1), type=type_, class_=class_, building=building, creatable=None)
+    return units
+
+
+def _dock_shell() -> list:
+    """GH #262's shape: a legacy shell with a modern hull then a sail, on a building."""
+    return [
+        _graphic(0, "-C1", deltas=[_delta(1), _delta(2, offset_y=-25)]),
+        _graphic(1, "BSHIPY1_S-C1_x1"),
+        _graphic(2, "BSHIPY1_S-C1_sail_x1"),
+    ]
+
+
+def test_a_buildings_multi_delta_shell_is_refused_when_strict(gen):
+    graphics = _dock_shell()
+    with pytest.raises(SystemExit, match=r"unit_const 45 \(type 80\) has a multi-delta legacy shell '-C1' but is not type 70"):
+        gen._resolve_shell_delta_pieces(graphics, 45, 80, graphics[0], graphics[1])
+
+
+def test_a_buildings_multi_delta_shell_is_drawn_as_its_hull_when_lenient(gen, lenient):
+    graphics = _dock_shell()
+    assert gen._resolve_shell_delta_pieces(graphics, 45, 80, graphics[0], graphics[1]) is None
+    entry, kind = gen._entry_for(_units(45), graphics, Path("no-graphics"), 45, {})
+    assert (entry, kind) == ({
+        "graphic_id": 1, "file_name": "BSHIPY1_S-C1_x1", "angle_count": 1, "mirroring_mode": 0, "frame_count": 10,
+    }, "plain")
+    assert lenient == [
+        (
+            "unit_const 45 (type 80) has a multi-delta legacy shell '-C1' but is not type 70, so its pieces would "
+            "not dispatch on a facing. Re-verify the ship-sail rule against the .dat (drawn as 'BSHIPY1_S-C1_x1' alone)"
+        )
+    ]
+    ship, ship_kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
+    assert ship_kind == "shell_deltas" and len(ship["pieces"]) == 2, "a creatable keeps its sails"
+
+
+@pytest.mark.parametrize("change", [{"copies": 3}, {"delta__display_angle": 2}], ids=["three_deltas", "one_angle_only"])
+def test_a_garrison_shell_outside_the_measured_shape_gives_no_flags_when_lenient(gen, lenient, change):
+    unit, graphics = _shell_case(**change)
+    assert gen._garrison_flags(unit, graphics, 109) == []
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn without garrison flags)")
+
+
+@pytest.mark.parametrize(
+    "shell_angles, deltas, match",
+    [(5, [-1, -1, 1], "graphic_id -1 deltas"), (1, [1, -1], "not 5")],
+    ids=["two_flag_slots", "flag_not_five_shapes"],
+)
+def test_a_wall_shell_outside_the_measured_shape_draws_its_body_alone(gen, lenient, shell_angles, deltas, match):
+    shell = _graphic(0, "b_wall_flag_x1", deltas=[_delta(d) for d in deltas], angle_count=shell_angles)
+    graphics = [shell, _graphic(1, "b_wall_x1", angle_count=5)]
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match=match):
+        gen._resolve_wall_pieces(graphics, 72, shell, 1)
+    gen._game_root.set_lenient(True)
+    assert gen._resolve_wall_pieces(graphics, 72, shell, 1) is None
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn as its body alone)")
+
+
+def test_a_rotating_gate_piece_skips_the_gate_when_lenient(gen, lenient):
+    units, graphics = _units(64, class_=39), [_graphic(0, "b_gate_x1", angle_count=8)]
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="gate pieces are assumed non-rotating"):
+        gen._entry_for(units, graphics, Path("no-graphics"), 64, {})
+    gen._game_root.set_lenient(True)
+    assert gen._entry_for(units, graphics, Path("no-graphics"), 64, {}) == (None, "gate_no_modern_replacement")
+    assert len(lenient) == 1
+
+
+def test_a_pasture_whose_annex_tree_changed_is_a_plain_entry_when_lenient(gen, lenient):
+    """The tree helper returns None instead of a tuple; the entry falls through to the generic path."""
+    from types import SimpleNamespace as NS
+
+    units, graphics = _units(1893, building=NS(annexes=[])), [_graphic(0, "b_pasture_x1")]
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="yields 0 pieces"):
+        gen._entry_for(units, graphics, Path("no-graphics"), 1893, {})
+    gen._game_root.set_lenient(True)
+    entry, kind = gen._entry_for(units, graphics, Path("no-graphics"), 1893, {})
+    assert kind == "plain" and "pieces" not in entry and entry["file_name"] == "b_pasture_x1"
+    assert len(lenient) == 1
+
+
+def test_a_fish_without_its_underwater_body_is_a_plain_entry_when_lenient(gen, lenient):
+    """Never tagged underwater: no frame_offset, though the splash has the Marlin body's name."""
+    units, graphics = _units(450), [_graphic(0, "a_fish_marlin1_underwater_x1")]
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="expected exactly 1"):
+        gen._entry_for(units, graphics, Path("no-graphics"), 450, {})
+    gen._game_root.set_lenient(True)
+    entry, kind = gen._entry_for(units, graphics, Path("no-graphics"), 450, {})
+    assert kind == "plain" and "frame_offset" not in entry and "dx" not in entry
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn as its standing graphic)")
+
+def test_a_sail_off_the_shell_layer_draws_the_ship_as_its_hull_when_lenient(gen, lenient):
+    graphics = _dock_shell()
+    graphics[2].layer = 19
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="is layer 19, display_angle -1, not layer 20"):
+        gen._resolve_shell_delta_pieces(graphics, 45, 70, graphics[0], graphics[1])
+    gen._game_root.set_lenient(True)
+    entry, kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
+    assert kind == "plain" and "pieces" not in entry and entry["file_name"] == "BSHIPY1_S-C1_x1"
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn as 'BSHIPY1_S-C1_x1' alone)")
+
+
+def test_a_town_centre_whose_art_has_no_slots_is_drawn_without_annexes_when_lenient(gen, lenient):
+    """GBG's 109: its annex art is no _PIECE_SLOTS_BY_ART key."""
+    from types import SimpleNamespace as NS
+
+    units = _units(109, building=NS(annexes=[NS(unit_id=0, misplacement_x=1.0, misplacement_y=0.0)]))
+    units[0] = NS(standing_graphic=(1, -1))
+    graphics = [_graphic(0, "b_tc_x1"), _graphic(1, "b_tc_annex_x1")]
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="_PIECE_SLOTS_BY_ART has no slot"):
+        gen._resolve_pieces(units, graphics, 109, graphics[0])
+    gen._game_root.set_lenient(True)
+    assert gen._resolve_pieces(units, graphics, 109, graphics[0]) is None
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn without its annexes)")
+
+
+def test_a_decoration_shell_without_its_body_is_not_drawn_when_lenient(gen, lenient, monkeypatch):
+    """The standing graphic of a _BODY_GRAPHIC_OVERRIDES const is only the pennant."""
+    monkeypatch.setattr(gen, "_BODY_GRAPHIC_OVERRIDES", {72: 1})
+    units = _units(72)
+    graphics = [_graphic(0, "b_palisade_flag_x1", deltas=[_delta(2)]), _graphic(1, "b_palisade_x1"),
+                _graphic(2, "legacy_body")]
+    assert gen._body_delta_positions(units, graphics) == {}
+    assert lenient[-1].endswith("(not drawn: its standing graphic is only a decoration over that body)")
+    assert gen._entry_for(units, graphics, Path("no-graphics"), 72, {}) == (None, "body_override_missing")
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="has no modern body at delta position 0"):
+        gen._entry_for(units, graphics, Path("no-graphics"), 72, {72: 0})
+    gen._game_root.set_lenient(True)
+    assert gen._entry_for(units, graphics, Path("no-graphics"), 72, {72: 0}) == (None, "body_override_missing")
+    assert len(lenient) == 2 and lenient[-1].endswith("(not drawn: its standing graphic is only a decoration over that body)")
+
+
+def _building_art_case(gen, monkeypatch):
+    """Gaia and one civ over consts 10-14. Civ 1's art for 10 rotates (angle_count
+    8, an invariant break), its 11 is a valid civ art; the age pair 11 -> 12 at
+    age 3 breaks angle_count, 11 -> 13 at age 4 is fine."""
+    from types import SimpleNamespace as NS
+
+    def table():
+        units: list = [None] * 15
+        for const in range(10, 15):
+            units[const] = NS(class_=3, name="b", clearance_size=(1.0, 1.0))
+        return units
+
+    gaia_units, civ_units = table(), table()
+    plain = {"graphic_id": 1, "file_name": "b_x1", "angle_count": 1}
+    gaia = {const: dict(plain) for const in range(10, 15)}
+    gaia[12] = {**plain, "angle_count": 8}
+    civ = {**gaia, 10: {**plain, "file_name": "civ10_x1", "angle_count": 8}, 11: {**plain, "file_name": "civ11_x1"}}
+    by_civ = {id(gaia_units): gaia, id(civ_units): civ}
+    monkeypatch.setattr(gen, "_entry_for", lambda units, *args: (dict(by_civ[id(units)][args[2]]), "plain"))
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {})
+    data = NS(civs=[NS(name="Gaia", units=gaia_units), NS(name="Civ", units=civ_units)])
+    gaia_entries = {str(const): entry for const, entry in gaia.items()}
+    return data, gaia_entries, {11: {3: 12, 4: 13}}
+
+
+def test_building_art_violations_fail_the_run_when_strict(gen, monkeypatch):
+    data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
+    with pytest.raises(SystemExit) as failed:
+        gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    assert failed.value.code == (
+        "per-civ/per-age building art breaks the placed const's own logic -- re-verify against the .dat:\n"
+        "  civ 0 age 3 11 -> 12: angle_count 8 != reference 1\n"
+        "  civ 1 const 10: angle_count 8 != reference 1\n"
+        "  civ 1 age 3 11 -> 12: angle_count 8 != reference 1\n"
+        "  holdouts measured [], listed []"
+    ), "the strict message and its violation order are today's"
+
+
+def test_building_art_holds_out_a_civ_entry_and_drops_an_age_pair_when_lenient(gen, lenient, monkeypatch):
+    data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
+    art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    assert art["civ_art"] == {"1": {"11": 0}} and art["entries"][0]["file_name"] == "civ11_x1"
+    assert art["age_upgrades"] == {"11": {"4": 13}}, "the bad pair is dropped from the one shared table"
+    assert lenient == [
+        "civ 0 age 3 11 -> 12: angle_count 8 != reference 1 (dropped from the age table for every civ)",
+        "civ 1 const 10: angle_count 8 != reference 1 (drawn with Gaia's art)",
+    ], "a lenient hold-out is not a measured one, so the holdout list check stays quiet"
+
+
 def test_the_generator_gives_a_unit_without_a_garrison_graphic_no_flags(monkeypatch):
     from types import SimpleNamespace as NS
 

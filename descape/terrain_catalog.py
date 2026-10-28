@@ -17,6 +17,8 @@ from descape import game_dataset, object_catalog
 from descape.terrain_palette import is_dat_only_terrain, name_for_terrain_id, terrain_ids
 
 CATEGORY_UNUSED = "Unused / moddable"
+# A data mod's own terrain whose name no prefix matches (GH #262).
+CATEGORY_OTHER = "Other"
 
 # (prefix, category). Matched in order, first hit wins.
 _PREFIX_CATEGORIES: tuple[tuple[str, str], ...] = (
@@ -63,8 +65,11 @@ def _category_for(name: str) -> str:
     for prefix, category in _PREFIX_CATEGORIES:
         if name.startswith(prefix):
             return category
-    # Deliberately not an "Other" bucket: a new enum member falling through
-    # should fail a test, not quietly appear in a catch-all nobody reads.
+    # A data mod names its own .dat-only terrains (Galactic Battlegrounds' SW_TERR_METAL1).
+    if game_dataset.data_mod() is not None:
+        return CATEGORY_OTHER
+    # Deliberately no "Other" bucket on the game's own data: a new enum member
+    # falling through should fail a test, not quietly appear in a catch-all nobody reads.
     raise KeyError(f"No terrain category for {name!r} -- add a _PREFIX_CATEGORIES row")
 
 

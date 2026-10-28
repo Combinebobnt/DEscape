@@ -49,13 +49,15 @@ class DataModTables:
     """An active data mod's derived tables (GH #58). `key` is its cache entry's
     name, unique per mod .dat and derivation inputs; `root` the mod folder, for
     its strings; `title` what the window title shows; `mod_only_ids` the unit
-    consts its .dat defines and the install's does not."""
+    consts its .dat defines and the install's does not; `warnings` what the
+    lenient derive simplified (GH #262)."""
 
     key: str
     tables_dir: Path
     root: Path
     title: str
     mod_only_ids: frozenset[int] = frozenset()
+    warnings: tuple[str, ...] = ()
 
 
 _active = AOE2

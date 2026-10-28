@@ -4,16 +4,21 @@ default tier the same way tests/test_brush.py does.
 The load-bearing assertion is that every TerrainId lands in exactly one
 category with nothing falling through: _category_for() raises rather than
 offering an "Other" bucket, so a new enum member fails here loudly instead
-of appearing in a catch-all nobody reads.
+of appearing in a catch-all nobody reads. Only a data mod's own terrains
+(GH #262) go under "Other".
 """
 
 from __future__ import annotations
 
+import json
+import shutil
+from pathlib import Path
+
 import pytest
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import terrain_catalog, terrain_palette
-from descape.terrain_catalog import CATEGORY_UNUSED, display_name, terrains
+from descape import dat_derive, game_dataset, terrain_catalog, terrain_palette
+from descape.terrain_catalog import CATEGORY_OTHER, CATEGORY_UNUSED, display_name, terrains
 
 _HIDDEN_PREFIXES = ("MODDABLE_", "OBSOLETE_", "BLACK", "CORRUPTION", "RESERVED")
 
@@ -105,6 +110,27 @@ def test_the_junk_prefixes_win_over_the_bare_ones_they_contain():
 def test_an_unmatched_name_raises_rather_than_bucketing():
     with pytest.raises(KeyError):
         terrain_catalog._category_for("SOMETHING_NEW_AND_UNMAPPED")
+
+
+def test_a_data_mods_own_terrain_goes_under_other(tmp_path):
+    """GH #262: Galactic Battlegrounds' .dat names terrain SW_TERR_METAL1, and
+    File > New Map, which reads this catalog, raised on it."""
+    descape_dir = Path(game_dataset.__file__).resolve().parent
+    folder = tmp_path / "tables"
+    folder.mkdir()
+    for name in dat_derive.TABLE_NAMES:
+        shutil.copy(descape_dir / name, folder / name)
+    catalog = json.loads((folder / "object_catalog.json").read_text())
+    catalog["terrains"]["140"] = {"code": "SW_TERR_METAL1", "hidden": False, "string_id": -1}
+    (folder / "object_catalog.json").write_text(json.dumps(catalog))
+    game_dataset.set_data_mod(game_dataset.DataModTables("gbg", folder, tmp_path / "mod", "GBG", frozenset()))
+    by_id = {e.id: e for e in terrains()}
+    assert (by_id[140].name, by_id[140].category, by_id[140].hidden) == ("SW_TERR_METAL1", CATEGORY_OTHER, False)
+    assert by_id[0].category == "Grass", "the game's own names keep their categories"
+    game_dataset.set_data_mod(None)
+    assert 140 not in {e.id for e in terrains()}
+    with pytest.raises(KeyError):
+        terrain_catalog._category_for("SW_TERR_METAL1")
 
 
 @pytest.mark.parametrize(

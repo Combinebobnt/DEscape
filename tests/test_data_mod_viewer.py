@@ -10,6 +10,7 @@ hit points changed, so "in effect" is one stats lookup."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
 import sys
@@ -229,6 +230,47 @@ def test_the_autosave_tick_records_the_chosen_mod(window, mods, tmp_path):
     _menu(window)["Alpha"].trigger()
     window._autosave_write()
     assert autosave.entries()[0].data_mod == data_mods.identity(mods.alpha)
+
+
+def test_a_mods_derive_warnings_are_logged_once_and_counted_in_its_tooltip(window, mods, tmp_path, monkeypatch):
+    """GH #262: the summary, up to 20 warning lines and the rest's count, once
+    per cache key; once it is logged, the menu item's tooltip carries the count."""
+    from descape import data_mod_menu
+
+    warnings = tuple(f"gen_unit_graphic_map.py: unit_const {i} broke a rule (drawn alone)" for i in range(25))
+    mods.tables[mods.alpha] = dataclasses.replace(mods.tables[mods.alpha], warnings=warnings)
+    mods.cached(mods.alpha)
+    lines = _logged(window, monkeypatch)
+    a, b = _scenario(tmp_path, "a.aoe2scenario"), _scenario(tmp_path, "b.aoe2scenario")
+    window.load_scenario(a)
+    assert _menu(window)["Alpha"].toolTip() == "subscribed//Alpha", "no count before the log has the summary"
+    _menu(window)["Alpha"].trigger()
+
+    def summaries():
+        return [line for line in lines if line.startswith("Data mod Alpha: 25 warnings: ")]
+
+    assert len(summaries()) == 1
+    body = summaries()[0].splitlines()
+    assert len(body) == 1 + data_mod_menu.WARNING_LINES + 1
+    assert body[1:21] == [f"  {warning}" for warning in warnings[:20]]
+    folder = mods.tables[mods.alpha].tables_dir
+    assert body[-1] == f"  ... and 5 more (full list in {folder / 'meta.json'})"
+    assert _menu(window)["Alpha"].toolTip() == "subscribed//Alpha (25 warnings; see the status log)"
+    assert _menu(window)["Beta"].toolTip() == "subscribed//Beta", "a mod not picked has no count"
+    _menu(window)["None (the game's own data)"].trigger()
+    window.load_scenario(b)
+    _menu(window)["Alpha"].trigger()
+    assert game_dataset.data_mod() == mods.tables[mods.alpha]
+    assert len(summaries()) == 1, "once per cache key"
+
+
+def test_a_mod_without_warnings_logs_no_summary(window, mods, monkeypatch):
+    mods.cached(mods.alpha)
+    lines = _logged(window, monkeypatch)
+    _menu(window)["Alpha"].trigger()
+    assert game_dataset.data_mod() == mods.tables[mods.alpha]
+    assert not [line for line in lines if "warnings" in line]
+    assert _menu(window)["Alpha"].toolTip() == "subscribed//Alpha"
 
 
 def test_an_uncached_pick_parses_in_a_subprocess_then_swaps(window, mods, tmp_path, monkeypatch):

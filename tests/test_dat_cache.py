@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zlib
@@ -35,6 +36,10 @@ def mod_dat(tmp_path) -> Path:
     return path
 
 
+# What fake_derive's derive() returns: one lenient guard's warning (GH #262).
+FAKE_WARNINGS = ["gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)"]
+
+
 @pytest.fixture()
 def fake_derive(monkeypatch):
     """derive() writes every table, the .dat parse yields fixed id sets; counts calls."""
@@ -45,6 +50,7 @@ def fake_derive(monkeypatch):
         out_dir.mkdir(parents=True, exist_ok=True)
         for name in dat_derive.TABLE_NAMES:
             (out_dir / name).write_text("{}")
+        return list(FAKE_WARNINGS)
 
     def ids(dat, parsed=None):
         return {1, 2, 2750} if Path(dat).name == "empires2_x2_p1.dat" and "mods" in Path(dat).parts else {1, 2}
@@ -67,6 +73,27 @@ def test_a_build_is_then_a_hit(tmp_path, install, mod_dat, fake_derive):
     assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == sorted([dat_cache.INSTALL_IDS_DIR, key]), "no staging left"
     meta = json.loads((entry.path / dat_cache.META_NAME).read_text())
     assert meta["mod_dat"] == str(mod_dat) and meta["source_digest"] == dat_derive.source_digest()
+
+
+def test_the_derive_warnings_land_in_meta_and_the_entry(tmp_path, install, mod_dat, fake_derive):
+    key = _key(mod_dat, install)
+    entry = dat_cache.build_entry(mod_dat, install, tmp_path / "cache" / key)
+    assert entry.warnings == tuple(FAKE_WARNINGS)
+    assert json.loads((entry.path / dat_cache.META_NAME).read_text())["warnings"] == FAKE_WARNINGS
+    assert dat_cache.lookup(key, tmp_path / "cache").warnings == tuple(FAKE_WARNINGS)
+
+
+@pytest.mark.parametrize("warnings", [None, "not a list"], ids=["absent", "not_a_list"])
+def test_an_entry_without_a_warnings_list_reads_as_none(tmp_path, install, mod_dat, fake_derive, warnings):
+    key = _key(mod_dat, install)
+    entry = dat_cache.build_entry(mod_dat, install, tmp_path / "cache" / key)
+    meta = json.loads((entry.path / dat_cache.META_NAME).read_text())
+    del meta["warnings"]
+    if warnings is not None:
+        meta["warnings"] = warnings
+    (entry.path / dat_cache.META_NAME).write_text(json.dumps(meta))
+    found = dat_cache.lookup(key, tmp_path / "cache")
+    assert found is not None and found.warnings == ()
 
 
 def test_an_entry_without_meta_is_a_miss(tmp_path, install, mod_dat, fake_derive):
@@ -192,6 +219,89 @@ def test_a_bare_parser_failure_names_the_dat_format(tmp_path):
     assert "not a readable .dat" in dat_derive.failure_message(AssertionError(), tmp_path / "junk.dat")
 
 
+# A stand-in for every generator: writes its tables, logs its argv, and the
+# graphic map's trips one guard through _game_root.refuse() (GH #262).
+_SPY_GENERATOR = """
+import json, sys
+from pathlib import Path
+import _game_root
+args = sys.argv
+out = Path(args[args.index("--out-dir") + 1])
+_game_root.set_lenient("--lenient" in args)
+for name in {names!r}:
+    (out / name).write_text("{{}}")
+with (out / "argv.jsonl").open("a") as log:
+    log.write(json.dumps(args) + "\\n")
+if {script!r} == "gen_unit_graphic_map.py":
+    _game_root.refuse("unit_const 45 broke a rule", "drawn alone")
+    _game_root.refuse("unit_const 45 broke a rule", "drawn alone")
+if {script!r} in ("gen_unit_graphic_map.py", "gen_unit_render_data.py"):
+    _game_root.refuse("a shared rule broke", "left out")
+"""
+
+
+@pytest.fixture()
+def spy_tools(tmp_path) -> Path:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    shutil.copy(DESCAPE.parent / "tools" / dat_derive.GAME_ROOT_HELPER, tools)
+    for script, names in dat_derive.GENERATORS:
+        (tools / script).write_text(_SPY_GENERATOR.format(names=names, script=script))
+    return tools
+
+
+@pytest.fixture()
+def no_cached_helper():
+    """No _game_root cached, so the spy's copy is the one derive() leaves behind; the old state after."""
+    saved = sys.modules.pop("_game_root", None)
+    yield
+    if saved is None:
+        sys.modules.pop("_game_root", None)
+    else:
+        sys.modules["_game_root"] = saved
+
+
+def _argvs(out: Path) -> list[list[str]]:
+    return [json.loads(line) for line in (out / "argv.jsonl").read_text().splitlines()]
+
+
+def test_a_lenient_derive_labels_each_warning_by_its_generator(tmp_path, spy_tools, monkeypatch):
+    pytest.importorskip("genieutils")
+    monkeypatch.syspath_prepend(str(DESCAPE.parent / "tools"))
+    import _game_root  # the repo's copy, as a test importing a generator has it
+
+    out = tmp_path / "out"
+    warnings = dat_derive.derive(tmp_path / "mod.dat", tmp_path / "install", out, tools=spy_tools)
+    assert warnings == [
+        "gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)",
+        "gen_unit_graphic_map.py: a shared rule broke (left out)",
+        "gen_unit_render_data.py: a shared rule broke (left out)",
+    ], "de-duplicated per generator run, so a later generator's repeat keeps its own label"
+    assert all("--lenient" in argv for argv in _argvs(out))
+    assert sys.modules["_game_root"] is _game_root, "the caller's copy is put back"
+    assert not _game_root.lenient()
+
+
+def test_a_strict_derive_fails_on_the_first_guard_and_stays_strict(tmp_path, spy_tools, no_cached_helper):
+    pytest.importorskip("genieutils")
+    out = tmp_path / "out"
+    with pytest.raises(dat_derive.DeriveError, match=r"gen_unit_graphic_map\.py exited with unit_const 45 broke a rule"):
+        dat_derive.derive(tmp_path / "mod.dat", tmp_path / "install", out, tools=spy_tools, lenient=False)
+    assert not any("--lenient" in argv for argv in _argvs(out))
+    helper = sys.modules["_game_root"]
+    assert Path(helper.__file__).parent == spy_tools
+    assert not helper.lenient() and helper.WARNINGS == []
+
+
+def test_a_derive_that_fails_leaves_the_helper_strict(tmp_path, spy_tools, no_cached_helper):
+    pytest.importorskip("genieutils")
+    (spy_tools / "gen_unit_stats.py").write_text("raise ValueError('a reshaped table')")
+    with pytest.raises(ValueError, match="a reshaped table"):
+        dat_derive.derive(tmp_path / "mod.dat", tmp_path / "install", tmp_path / "out", tools=spy_tools)
+    helper = sys.modules["_game_root"]
+    assert not helper.lenient() and helper.WARNINGS == []
+
+
 def test_the_regen_tool_uses_the_shared_registry():
     sys.path.insert(0, str(DESCAPE.parent / "tools"))
     try:
@@ -213,7 +323,7 @@ def test_derive_reproduces_the_committed_tables(tmp_path):
     pytest.importorskip("genieutils")
     code = (
         "import sys; from pathlib import Path; from descape import dat_derive; "
-        "dat_derive.derive(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))"
+        "print('WARNINGS', dat_derive.derive(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])))"
     )
     run = subprocess.run(
         [sys.executable, "-c", code, str(install / dat_cache.DAT_SUBPATH), str(install), str(tmp_path)],
@@ -222,3 +332,34 @@ def test_derive_reproduces_the_committed_tables(tmp_path):
     assert run.returncode == 0, run.stderr
     differ = [n for n in dat_derive.TABLE_NAMES if (tmp_path / n).read_bytes() != (DESCAPE / n).read_bytes()]
     assert differ == []
+    # Run lenient, as a data mod's is: the stock .dat must trip no guard at all (GH #262).
+    assert run.stdout.strip().splitlines()[-1] == "WARNINGS []"
+
+
+@pytest.mark.corpus
+@pytest.mark.slow
+def test_the_galactic_battlegrounds_dat_derives_with_warnings(tmp_path):
+    """GH #262, local only: the Galactic Battlegrounds Test - Data mod's .dat
+    (my-scenarios/, never committed; DESCAPE_GBG_DAT overrides the path) loads,
+    building 45's ship-sail shell simplified rather than failing the derive."""
+    from descape import asset_source
+
+    dat = Path(os.environ.get("DESCAPE_GBG_DAT") or DESCAPE.parent / "my-scenarios" / "gbg_empires2_x2_p1.dat")
+    if not dat.is_file():
+        pytest.skip(f"no Galactic Battlegrounds .dat at {dat}: set DESCAPE_GBG_DAT to one")
+    install = asset_source.get_install_path()
+    if install is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH to one")
+    pytest.importorskip("genieutils")
+    code = (
+        "import json, sys; from pathlib import Path; from descape import dat_derive; "
+        "print(json.dumps(dat_derive.derive(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))))"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", code, str(dat), str(install), str(tmp_path)],
+        capture_output=True, text=True, timeout=600, check=False, cwd=DESCAPE.parent,
+    )
+    assert run.returncode == 0, run.stderr
+    assert all((tmp_path / name).is_file() for name in dat_derive.TABLE_NAMES)
+    warnings = json.loads(run.stdout.strip().splitlines()[-1])
+    assert any(w.startswith("gen_unit_graphic_map.py: unit_const 45 (type 80)") for w in warnings), warnings[:5]

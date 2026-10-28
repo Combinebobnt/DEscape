@@ -19,7 +19,9 @@ Nothing here deletes: old entries and leftover staging folders stay until the
 folder is deleted by hand, which is safe while no data mod is active.
 
 meta.json also carries `mod_only_ids`, the unit consts the mod's .dat defines and
-the install's does not, which the catalog tags (object_catalog.DATA_MOD_TAG).
+the install's does not, which the catalog tags (object_catalog.DATA_MOD_TAG), and
+`warnings`, what derive()'s lenient generators simplified (GH #262), which the
+viewer shows in the status log.
 The install's id set is parsed once per install fingerprint and kept beside the
 entries.
 
@@ -62,11 +64,12 @@ _FINGERPRINT_PATHS = (
 
 @dataclass(frozen=True)
 class Entry:
-    """A complete cache entry: its key, its folder and the mod-only unit consts."""
+    """A complete cache entry: its key, its folder, the mod-only unit consts and the derive's warnings."""
 
     key: str
     path: Path
     mod_only_ids: frozenset[int]
+    warnings: tuple[str, ...] = ()
 
 
 def write_refusal(path: Path) -> str | None:
@@ -146,7 +149,10 @@ def _read_entry(folder: Path, key: str) -> Entry | None:
     ids = meta.get("mod_only_ids") if isinstance(meta, dict) else None
     if not isinstance(ids, list):
         return None
-    return Entry(key, folder, frozenset(int(i) for i in ids))
+    warnings = meta.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    return Entry(key, folder, frozenset(int(i) for i in ids), tuple(str(w) for w in warnings))
 
 
 def lookup(key: str, root: Path | None = None) -> Entry | None:
@@ -208,9 +214,12 @@ def build_entry(mod_dat: Path, install: Path, out_dir: Path) -> Entry:
     mod_ids = dat_derive.parse_unit_ids(Path(mod_dat), parsed)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = _unique_sibling(out_dir, "partial")
-    dat_derive.derive(Path(mod_dat), Path(install), staging, parsed=parsed)
+    warnings = dat_derive.derive(Path(mod_dat), Path(install), staging, parsed=parsed)
     # The mod's parse (~1 GB resident) goes before the install's is made.
     parsed.clear()
     install_ids = _install_ids(Path(install), out_dir.parent, parsed)
-    _write_json(staging / META_NAME, {**inputs, "mod_only_ids": sorted(mod_ids - install_ids)})
+    _write_json(
+        staging / META_NAME,
+        {**inputs, "mod_only_ids": sorted(mod_ids - install_ids), "warnings": list(warnings)},
+    )
     return _place(staging, out_dir)
