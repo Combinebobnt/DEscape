@@ -47,6 +47,7 @@ DOCK = 45  # 3x3 with no foundation terrain, given no art: it resolves to its co
 VILLAGER = 83
 HERO = 160
 STONE_WALL = 117
+PALISADE = 72
 GATE_NE = 64
 TOWER_PIECE = 9001
 
@@ -90,6 +91,9 @@ def art(tmp_path, monkeypatch):
     # Large, so a neighbour's reshaped frame reaches past the placed wall's own extent.
     # Team-coloured, like the gates, so a Convert of one changes its pixels.
     add(STONE_WALL, 6 * T, angles=5, colour_base=23, playercolor=True)
+    # A wall drawing each stored shape in its own colour (no team mask, frames picked by
+    # variant_index()), so a stale shape shows (GH #266).
+    add(PALISADE, 6 * T, angles=5, colour_base=29)["rotation_is_variant"] = True
     for i, const in enumerate((64, 88, 659, 667)):
         add(const, T, colour_base=5 * i + 1, playercolor=True)
     main = add(CASTLE, 6 * T, colour_base=13)
@@ -851,13 +855,135 @@ def test_a_stale_second_level_evicts_the_reach_bbox_and_is_not_recomposited(art,
         conftest.close_window(window)
 
 
-def _wall_run(window, xs=(50.5, 51.5, 52.5), y: float = 50.5):
-    """Stone walls in a row, radian-encoded, so every one's shape is derived from its neighbours."""
-    walls = [_add(window, 1, STONE_WALL, x, y) for x in xs]
+def _wall_run(window, xs=(50.5, 51.5, 52.5), y: float = 50.5, variant: int = 2, const: int = STONE_WALL):
+    """Walls in a row, radian-encoded, so every one's shape is derived from its neighbours.
+    Index 2 by default: what each derives once a move leaves it alone, so such a move writes no
+    shape (GH #266) and keeps the path a test is about."""
+    walls = [_add(window, 1, const, x, y) for x in xs]
     for wall in walls:
-        wall.rotation = 2 * math.pi / 5
+        wall.rotation = variant * 2 * math.pi / 5
     window._after_unit_mutation()
     return walls
+
+
+def _literal_walls(window, shapes: dict) -> dict:
+    """A Palisade on each tile of `shapes`, storing its literal index:
+    with no radian value in the file, each draws its stored shape, and
+    every shape draws differently (the `art` fixture)."""
+    walls = {tile: _add(window, 1, PALISADE, tile[0] + 0.5, tile[1] + 0.5) for tile in shapes}
+    for tile, wall in walls.items():
+        wall.rotation = float(shapes[tile])
+    window._after_unit_mutation()
+    return walls
+
+
+def _file_is_radian(window) -> bool:
+    units = window.scenario.unit_manager.units
+    return unit_sprites.file_is_radian(
+        [render.stored_rotation(p, u) for p, us in enumerate(units) for u in us if unit_sprites.rotation_variant_eligible(u.unit_const)],
+        5,
+    )
+
+
+def _drop(window, monkeypatch, unit, x: float, y: float) -> None:
+    """Move's real release of `unit` alone, resolved to (x, y). Shift keeps
+    it a plain move, so no garrison hit test reads the absent cursor."""
+    from PyQt5.QtCore import Qt
+
+    entry = _select(window, unit)
+    monkeypatch.setattr(window, "_placement_point", lambda _pos, _mods, unit_const=None: (x, y))
+    window.on_unit_move((entry.player_id, unit.reference_id), None, Qt.ShiftModifier)
+
+
+@pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+def test_a_wall_dragged_out_of_an_integer_run_repaints_every_reshaped_wall(style, mip, art, monkeypatch) -> None:
+    """GH #266 in an integer-encoded file: (52, 50) leaves its run for
+    (52, 53), which continues the NW-SE diagonal (53, 54)-(54, 55). The run
+    ends either side of the gap go 0 to 2 and (53, 54) goes 2 to 3. That one
+    is no orthogonal neighbour of either tile, so only its own-equals-own
+    splice repaints it."""
+    window = _window(style)
+    try:
+        run = {(50, 50): 2, (51, 50): 0, (52, 50): 0, (53, 50): 0, (54, 50): 2}
+        walls = _literal_walls(window, run | {(53, 54): 2, (54, 55): 2})
+        _show_level(window, monkeypatch, mip)
+        _level(window, mip)
+
+        _drop(window, monkeypatch, walls[(52, 50)], 52.5, 53.5)
+
+        reshaped = [walls[t].rotation for t in ((52, 50), (51, 50), (53, 50), (53, 54), (54, 55))]
+        assert reshaped == [2.0, 2.0, 2.0, 3.0, 2.0]
+        assert window.edit_history.peek_undo().unit_field_entries is not None, "not a fields-only record"
+        _check(window, mip, "wall drag")
+        window.undo()
+        assert walls[(53, 54)].rotation == 2.0
+        _check(window, mip, "undo")
+        window.redo()
+        _check(window, mip, "redo")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+def test_a_move_that_overwrites_the_last_radian_walls_goes_wholesale(style, mip, art, monkeypatch) -> None:
+    """GH #266: carrying the radian run's two ends off leaves all three walls
+    towers, written as literals over the file's only radian values, so it
+    now reads integer-encoded. The pair at (60, 56) stores 1: the radian
+    file's overrides draw them as the run ends they are (2), an integer one
+    as stored. They are outside the edit, so only the wholesale refresh
+    repaints them. Undo flips the file back."""
+    window = _window(style)
+    try:
+        walls = _wall_run(window, variant=1, const=PALISADE)
+        _literal_walls(window, {(60, 56): 1, (61, 56): 1})
+        assert _file_is_radian(window)
+        _show_level(window, monkeypatch, mip)
+        before = _level(window, mip)
+
+        entries = [e for e in window.map_view._unit_index.entries if e.unit is walls[0] or e.unit is walls[2]]
+        window._move_units(window._ensure_unit_edits(), entries, 0.0, 3.0, "Move 2 units")
+
+        _check(window, mip, "radian flip")
+        assert [w.rotation for w in walls] == [2.0, 2.0, 2.0]
+        assert not _file_is_radian(window)
+        assert window.edit_history.peek_undo().unit_field_entries is None, "the flip did not go wholesale"
+        window.undo()
+        assert _file_is_radian(window)
+        assert np.array_equal(_check(window, mip, "undo"), before)
+        window.redo()
+        _check(window, mip, "redo")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+def test_a_gate_stepping_off_a_run_reshapes_it_by_splice(style, mip, art, monkeypatch) -> None:
+    """GH #194 with "Moving a gate updates walls" ticked, and only reshapes:
+    the gate steps from beside the run's middle to the row beyond, so
+    (52..55, 50) go 2 to 0. A plan with rewrites only is a fields-only
+    splice edit since GH #266."""
+    from PyQt5.QtCore import Qt
+
+    window = _window(style)
+    try:
+        walls = _literal_walls(window, {(x, 50): 2 if x in (50, 57) or 52 <= x <= 55 else 0 for x in range(50, 58)})
+        gate = _add(window, 1, GATE_NE, 54.0, 51.5)
+        window.gate_walls_check.setChecked(True)
+        _show_level(window, monkeypatch, mip)
+        _level(window, mip)
+        _select(window, gate)
+
+        window.on_unit_nudge(0, 1, Qt.ShiftModifier)
+
+        assert gate.y == 52.5
+        assert [walls[(x, 50)].rotation for x in range(50, 58)] == [2.0] + [0.0] * 6 + [2.0]
+        assert window.status_log.toPlainText().splitlines()[-1].endswith(", reshaping 4 adjacent")
+        assert window.edit_history.peek_undo().unit_field_entries is not None, "not a fields-only record"
+        _check(window, mip, "gate step")
+        window.undo()
+        _check(window, mip, "undo")
+    finally:
+        conftest.close_window(window)
 
 
 def test_a_wholesale_wall_move_rebuilds_no_off_screen_level(art, monkeypatch) -> None:

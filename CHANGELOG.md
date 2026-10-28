@@ -26,6 +26,15 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Export and import settings** (GH #268): Settings > General > Export
+  settings… saves your preferences (keybinds, the look, tool defaults, View
+  menu choices and the rest; not folder paths, recent files or window
+  layout) to a `.descape-settings.yaml` file, and Import settings… loads
+  one, say on another computer. An import lists what would change, replaces
+  your preferences and applies the next time DEscape starts, keeping the old
+  `config.yaml` as `config.before-import.yaml`. A hand-edited `config.yaml`
+  value of the wrong type now reads as that setting's default instead of
+  stopping DEscape.
 - **A Help menu with a built-in guide** (GH #160): Help > DEscape Guide (F1)
   opens the guide at the current mode's page, and Help > Keyboard and Mouse
   lists your current keys and wheel bindings above the fixed mouse gestures.
@@ -123,6 +132,15 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **One key can go on commands of different modes** (GH #267): a Terrain
+  tool and a Units tool, say. A command that works only in some modes shows
+  them after its name in Settings > Keybinds and on the Keyboard and Mouse
+  page. Commands that work in every mode keep their key in every mode.
+- **Settings > Mods lists mods the game has disabled** (GH #264): the Mod
+  art list also shows mods switched off in the game's mod list, marked
+  "(disabled in game)" and off until ticked. A ticked one draws at its place
+  in the game's mod order, in DEscape only; the game's mod list is not
+  changed.
 - **Settings > Tools sets what each Tool Options control starts at**, with a
   Default button per row, Load From Toolbar and Reset All to Defaults. A
   change on the toolbar now lasts until DEscape closes. That includes Trees,
@@ -136,6 +154,11 @@ content, link the doc instead of summarizing it.
   Settings > Appearance.
 - **Settings > Appearance separates its sections** with rules and more
   spacing.
+- **Settings opens at its intended size again**, 520 px wide rather than
+  about 800: long font names are cut off in the closed UI font picker (its
+  list still shows them whole), and wide rows on Appearance, General, Tools
+  and Keybinds wrap or take a second line. Each Mouse Wheel dropdown sits on
+  its own line under its row's name.
 - **Resize Map warns how many trigger references will point at deleted
   objects** when the resize removes units that triggers name. The references
   are kept as written, as Delete does.
@@ -227,6 +250,10 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Moved walls reshape** (GH #266): a wall you move takes the shape of its
+  new place (a tower when it stands alone), and the walls it leaves or joins
+  reshape too, so DEscape shows the walls as the game does. Moving a wall
+  left stale by an earlier move fixes it.
 - **Flip in top-down Flat mirrors on screen**: with Isometric View off, Flip
   Horizontal and Flip Vertical now mirror a pasted region left/right and
   top/bottom, instead of across a diagonal.

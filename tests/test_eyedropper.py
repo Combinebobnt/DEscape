@@ -44,6 +44,7 @@ def test_eyedropper_registered_as_keybind_and_toolbar_action() -> None:
     window = ViewerWindow()
     try:
         assert window._keybind_actions["tool_eyedropper"] is window.eyedropper_action
+        window.mode_combo.setCurrentText("Terrain")  # a tool holds its key only in its own modes
         assert window.eyedropper_action.shortcut() == QKeySequence("I")
     finally:
         window.edit_history.mark_saved()

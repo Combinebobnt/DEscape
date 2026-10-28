@@ -25,7 +25,7 @@ Owner sets who owns what you place. Objects the game's editor lists only for GAI
 
 With a wall picked, Place Unit drags a run that bends once; Shift makes it straight, and right-click or Esc cancels. **Wall Rectangle** and **Wall Circle** drag a box and lay walls around its edge or around the ellipse inside it; Shift makes a square or a circle. The Wall button on the Tool Options row picks the last wall you used, and its arrow lists every wall.
 
-New walls join and reshape the walls they touch, always snap to tiles, and ignore Off-grid and Free placement. "Walls skip occupied tiles" leaves a gap at trees, resources, buildings, units, obstacles and invisible blockers (passable eye candy never blocks), and a wall or gate is never doubled. A gate placed on a wall line replaces the walls under it and reshapes those beside it.
+New walls join and reshape the walls they touch, always snap to tiles, and ignore Off-grid and Free placement. "Walls skip occupied tiles" leaves a gap at trees, resources, buildings, units, obstacles and invisible blockers (passable eye candy never blocks), and a wall or gate is never doubled. A gate placed on a wall line replaces the walls under it and reshapes those beside it. A moved wall takes the shape of its new place, and the walls beside where it left and where it landed reshape too; a moved wall left standing alone becomes a tower.
 
 ## Selecting and moving
 

@@ -293,6 +293,19 @@ def test_keys_markdown_lists_bound_actions_under_their_section() -> None:
     assert lines.index("### Mouse wheel over the map") < lines.index("### Edit")
 
 
+def test_keys_markdown_tags_a_mode_scoped_command_with_its_modes_and_leaves_a_global_one_bare() -> None:
+    """GH #267: two commands of different modes may share a key, so each row says whose it is."""
+    block = help_guide.keys_markdown(
+        _unbound(tool_place_unit="U", tool_set_level="U", tool_select="S", edit_undo="Ctrl+Z"),
+        settings.DEFAULT_WHEEL_BINDINGS,
+    )
+    lines = block.splitlines()
+    assert "| Set Elevation Tool (Terrain) | U |" in lines
+    assert "| Place Unit Tool (Units) | U |" in lines
+    assert "| Select Tool (Terrain, Units) | S |" in lines
+    assert "| Undo | Ctrl+Z |" in lines
+
+
 def test_keys_markdown_formats_keys_and_escapes_markdown(monkeypatch) -> None:
     monkeypatch.setattr(
         settings, "REBINDABLE_ACTIONS", [("edit_x", "A|B", ""), ("edit_y", "Turn <", ""), ("edit_z", "Z", "")]

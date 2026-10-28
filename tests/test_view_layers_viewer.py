@@ -673,7 +673,7 @@ def test_mod_art_is_greyed_when_no_mod_ships_art(sprite_install) -> None:
     window = conftest.blank_window()
     try:
         action = window.layer_actions[MOD_ART_LAYER]
-        assert not action.isEnabled() and action.toolTip().startswith("No enabled mod ships art")
+        assert not action.isEnabled() and action.toolTip().startswith("No mod in the profile ships art")
         assert action.isChecked(), "greying never unchecks"
     finally:
         conftest.close_window(window)
@@ -717,6 +717,89 @@ def sprite_install_profile_textures(status_path: str):
     return textures
 
 
+@pytest.fixture
+def disabled_mod_art_profile(mod_art_profile):
+    """mod_art_profile with its one mod disabled in the game's mod-status.json (GH #264)."""
+    import json
+    import os
+    from pathlib import Path
+
+    status = {"Mods": [{"Enabled": False, "Path": mod_art_profile, "Priority": 1}]}
+    (Path(os.environ["AOE2DE_PROFILE_PATH"]) / "7656" / "mods" / "mod-status.json").write_text(json.dumps(status))
+    return mod_art_profile
+
+
+def test_a_mod_disabled_in_the_game_lists_off_and_draws_once_ticked(disabled_mod_art_profile) -> None:
+    """GH #264: Settings > Mods lists a mod the game disables, marked and
+    unticked, and the Mod Art row stays live for it. Its tick writes
+    mod_art_included (never the opt-outs), draws its art and logs the plain
+    title; a reopened dialog shows it ticked; unticking reverts."""
+    from PyQt5.QtCore import Qt
+
+    window = _mod_art_window("Stepped")
+    dialog = reopened = None
+    try:
+        action = window.layer_actions[MOD_ART_LAYER]
+        assert action.isEnabled() and action.isChecked()
+        assert not _draws_mod_green(window)
+        assert window._mod_art_status() == ""
+
+        dialog = viewer.SettingsDialog(window)
+        item = dialog.mod_art_list.item(0)
+        assert item.data(Qt.UserRole) == disabled_mod_art_profile
+        assert item.text() == "1_Green (disabled in game)" and item.checkState() == Qt.Unchecked
+        assert item.toolTip().splitlines()[0] == "Disabled in the game's mod list, drawn here only when ticked"
+        item.setCheckState(Qt.Checked)
+        assert settings.get_mod_art_included() == {disabled_mod_art_profile}
+        assert settings.get_mod_art_excluded() == frozenset()
+        assert _draws_mod_green(window)
+        assert window._mod_art_status() == "Mod art: 1 mod"
+        log = window.status_log.toPlainText()
+        assert "Mod art from 1_Green: on" in log and "(disabled in game)" not in log
+
+        reopened = viewer.SettingsDialog(window)
+        assert reopened.mod_art_list.item(0).checkState() == Qt.Checked
+
+        item.setCheckState(Qt.Unchecked)
+        assert settings.get_mod_art_included() == frozenset()
+        assert not _draws_mod_green(window)
+        assert "Mod art from 1_Green: off" in window.status_log.toPlainText()
+    finally:
+        for opened in (dialog, reopened):
+            if opened is not None:
+                opened.deleteLater()
+        conftest.close_window(window)
+
+
+def test_a_window_seeds_disabled_mod_opt_ins_before_any_panel(disabled_mod_art_profile) -> None:
+    """GH #264, beside the opt-out seed test above: a persisted tick on a mod
+    the game disables reaches the first render, sprite and textures; without
+    the tick neither draws."""
+    from PIL import Image
+
+    from descape import mod_graphics
+
+    textures = sprite_install_profile_textures(disabled_mod_art_profile)
+    for name in set(asset_source._terrain_texture_map().values()):
+        Image.new("RGB", (4, 4), (0, 250, 0)).save(textures / name, format="DDS")
+    window = _mod_art_window("Stepped")
+    try:
+        assert mod_graphics.enabled() and not _draws_mod_green(window)
+        for tid, name in asset_source._terrain_texture_map().items():
+            assert asset_source.get_terrain_texture_path(tid) != textures / name, tid
+    finally:
+        conftest.close_window(window)
+
+    settings.set_mod_art_included({disabled_mod_art_profile})
+    window = _mod_art_window("Stepped")
+    try:
+        assert _draws_mod_green(window)
+        for tid, name in asset_source._terrain_texture_map().items():
+            assert asset_source.get_terrain_texture_path(tid) == textures / name, tid
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_profile_change_rescans_the_mod_folders(mod_art_profile, tmp_path, monkeypatch) -> None:
     window = _mod_art_window("Stepped")
     dialog = viewer.SettingsDialog(window)
@@ -728,6 +811,7 @@ def test_a_profile_change_rescans_the_mod_folders(mod_art_profile, tmp_path, mon
         dialog.use_auto_profile_path()
         assert not _draws_mod_green(window)
         assert dialog.mod_art_list.item(0).data(0x0100) is None  # Qt.UserRole: the placeholder row
+        assert dialog.mod_art_list.item(0).text() == "No mod in the profile folder above ships art."
     finally:
         dialog.deleteLater()
         conftest.close_window(window)

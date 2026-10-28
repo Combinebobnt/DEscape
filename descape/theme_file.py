@@ -14,22 +14,19 @@ it carries.
 
 from __future__ import annotations
 
-import os
-import reprlib
-import tempfile
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
-from descape import grid_overlay, settings, themes
-from descape.scenario_io import is_workshop_subscribed
+from descape import grid_overlay, settings, themes, yaml_file_io
+from descape.yaml_file_io import short as _short
 
 FORMAT_ID = "descape-theme"
 FORMAT_VERSION = 1
 FILE_SUFFIX = ".descape-theme.yaml"
 MAX_FILE_BYTES = 256 * 1024
+# settings_file.FORMAT_ID, spelled out: settings_file imports this module.
+_SETTINGS_FORMAT_ID = "descape-settings"
 
 # Range-checked, never clamped: an out-of-range value is a problem, not a fix-up.
 _INT_RANGES: dict[str, tuple[int, int]] = {
@@ -50,39 +47,14 @@ class ThemeFileRefused(ValueError):
     """The file is not a theme file this version can read; nothing applies."""
 
 
-class _AliasRefused(Exception):
-    pass
-
-
-class _NoAliasLoader(yaml.SafeLoader):
-    """SafeLoader that refuses aliases, so a tiny alias bomb can't expand into
-    a huge document (or a huge problem message)."""
-
-    def compose_node(self, parent, index):
-        if self.check_event(yaml.AliasEvent):
-            raise _AliasRefused()
-        return super().compose_node(parent, index)
-
-
-class _NoAliasDumper(yaml.SafeDumper):
-    """Export never emits anchors, so import's alias refusal can't reject our own file."""
-
-    def ignore_aliases(self, data) -> bool:
-        return True
-
-
-# Caps every echoed value in a problem or note, whatever the file holds.
-_SHORT = reprlib.Repr()
-_SHORT.maxstring = 60
-_SHORT.maxother = 60
-_SHORT.maxlevel = 2
-_SHORT_MAX = 80
-
-
-def _short(value) -> str:
-    # reprlib never builds the full repr; the slice bounds its per-container fan-out.
-    text = _SHORT.repr(value)
-    return text if len(text) <= _SHORT_MAX else text[: _SHORT_MAX - 3] + "..."
+_FORMAT = yaml_file_io.YamlFormat(
+    FORMAT_ID,
+    FORMAT_VERSION,
+    MAX_FILE_BYTES,
+    "theme",
+    ThemeFileRefused,
+    other_formats={_SETTINGS_FORMAT_ID: "It is a settings file: use Import settings… in Settings > General."},
+)
 
 
 @dataclass
@@ -117,64 +89,11 @@ def write_theme_file(path: Path | str, doc: dict) -> None:
     unresolvable one, and writes nothing. Otherwise writes through a temp file
     in the target directory and os.replace(), so an existing file is never
     truncated in place."""
-    path = Path(path)
-    try:
-        blocked = is_workshop_subscribed(path)
-    except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
-        raise ThemeWriteBlockedError(f"refusing to write a theme to a path that cannot be resolved ({e}): {path}") from e
-    if blocked:
-        raise ThemeWriteBlockedError(
-            f"refusing to write a theme into a subscribed-mods (mods/subscribed/) folder: {path}"
-        )
-    text = yaml.dump(doc, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        # mkstemp makes the file 0o600; a theme is meant to be shared.
-        umask = os.umask(0)
-        os.umask(umask)
-        tmp.chmod(0o644 & ~umask)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    yaml_file_io.write_export(path, doc, what="a theme", blocked=ThemeWriteBlockedError)
 
 
 def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _read_root(path: Path) -> dict:
-    """The parsed mapping, or ThemeFileRefused with the one reason why not."""
-    try:
-        size = path.stat().st_size
-    except OSError as e:
-        raise ThemeFileRefused(f"cannot read the file: {e}") from e
-    if size > MAX_FILE_BYTES:
-        raise ThemeFileRefused(f"the file is {size} bytes, over the {MAX_FILE_BYTES}-byte limit for a theme file")
-    try:
-        root = yaml.load(path.read_text(encoding="utf-8"), Loader=_NoAliasLoader)  # noqa: S506 (a SafeLoader)
-    except (OSError, UnicodeDecodeError) as e:
-        raise ThemeFileRefused(f"cannot read the file: {e}") from e
-    except yaml.YAMLError as e:
-        raise ThemeFileRefused(f"not valid YAML: {e}") from e
-    except _AliasRefused as e:
-        raise ThemeFileRefused("not a DEscape theme file (it uses YAML anchors/aliases, which a theme file never has)") from e
-    except RecursionError as e:
-        raise ThemeFileRefused("not a DEscape theme file (nested too deeply)") from e
-    except ValueError as e:  # e.g. an integer over Python's 4300-digit conversion limit
-        raise ThemeFileRefused(f"not valid YAML: {_short(str(e))}") from e
-    if not isinstance(root, dict):
-        raise ThemeFileRefused("not a DEscape theme file (the top level is not a mapping)")
-    if root.get("format") != FORMAT_ID:
-        raise ThemeFileRefused(f"not a DEscape theme file (format is {_short(root.get('format'))}, expected {FORMAT_ID!r})")
-    version = root.get("version")
-    if not _is_int(version) or version < 1:
-        raise ThemeFileRefused(f"unreadable theme file version {_short(version)}")
-    if version > FORMAT_VERSION:
-        raise ThemeFileRefused(f"theme file version {_short(version)} is newer than this DEscape reads ({FORMAT_VERSION})")
-    return root
 
 
 def _parse_colors(raw, known: Collection[str], what: str, plan: ImportPlan) -> dict[str, str] | None:
@@ -255,7 +174,7 @@ def parse_theme_file(path: Path | str, installed_families: Collection[str] | Non
     """Raises ThemeFileRefused for a file that can't be a theme file at all.
     `installed_families`, when given, turns an uninstalled font family into a
     note; the family is still applied."""
-    root = _read_root(Path(path))
+    root = yaml_file_io.read_root(Path(path), _FORMAT)
     plan = ImportPlan()
     for key, raw in root.items():
         if key in ("format", "version"):

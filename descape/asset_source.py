@@ -510,7 +510,11 @@ def read_config_text(path: Path) -> str:
     locale: Windows' cp1252 would mangle a hand-edited non-ASCII path. A file
     that is not UTF-8 (an older Notepad's ANSI save) reads as the locale's,
     or as cp1252 under a UTF-8 locale, so a later save keeps its characters."""
-    data = path.read_bytes()
+    return decode_config_bytes(path.read_bytes())
+
+
+def decode_config_bytes(data: bytes) -> str:
+    """read_config_text() for bytes already read."""
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:

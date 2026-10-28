@@ -39,7 +39,7 @@ No technology effects are applied, and siege units get no ring.
 - Small Trees: trees at 60% size, so the tiles around them stay readable.
 - Hero Glow: a gold outline round hero units, as in the game.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
-- Mod Art: the art your enabled cosmetic mods ship, listed in **Settings > Mods**.
+- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all.
 
 A greyed layer has nothing to do in the current view, and its tooltip says why.
 
@@ -53,6 +53,6 @@ Hidden units can't be selected, and the Eraser never erases them, but **Edit > F
 
 **Settings > Appearance** holds the app's look. Theme picks a preset for the app's menus, dialogs and toolbars: Light, Dark, Dim, two high contrast, two Solarized, and Wood and Dark Wood in red, blue, green or purple. The map's own colours never change with it. Chrome colours overrides single colours on top of the preset, and picking another preset clears those overrides.
 
-Export theme… saves the tab's look as a `.descape-theme.yaml` file, and Import theme… loads one: theme and chrome colours, UI font, tool overlay colours, label sizes, badge position and grid look. Graphics quality, preloading, elevation height, pan speed, toolbar buttons and trigger status are not part of a theme file. Export refuses a `mods/subscribed/` folder.
+Export theme… saves the tab's look as a `.descape-theme.yaml` file, and Import theme… loads one: theme and chrome colours, UI font, tool overlay colours, label sizes, badge position and grid look. Graphics quality, preloading, elevation height, pan speed, toolbar buttons and trigger status are not part of a theme file, though a settings file from **Settings > General** carries them with the rest of your preferences. Export refuses a `mods/subscribed/` folder.
 
 UI font sets the font and size of menus, dialogs, panels, toolbars and the status log; Reset to default goes back to the platform's. Text drawn on the map keeps its own sizes, set by Ruler label size and Distance ticks label size. Toolbar buttons shows the tools as icons, text, or both.

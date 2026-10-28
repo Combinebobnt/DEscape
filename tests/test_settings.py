@@ -631,13 +631,129 @@ def test_a_config_with_no_keybinds_block_gets_the_new_defaults(tmp_path: Path) -
     assert settings.get_keybind("tool_ruler") == "R"
 
 
-def test_default_keybinds_have_no_duplicate_sequences() -> None:
-    """Nothing in descape/ checks this at runtime (see the open duplicate-
-    binding item), so the hand-audited claim that the DEFAULTS are
-    collision-free is worth pinning here. Empty means unbound, and any number
-    of actions may share that."""
-    bound = [key for key in settings._DEFAULT_KEYBINDS.values() if key]
-    assert len(bound) == len(set(bound)), sorted(bound)
+def test_default_keybinds_are_pairwise_conflict_free() -> None:
+    """The defaults pass the same rule set_keybind() and the load-time
+    reconciler apply (GH #267): no key on two actions live in a common mode.
+    Nothing else checks the shipped table, and the Default button's refusal
+    reasons from it. Empty means unbound, and any number of actions may share that."""
+    bound = [(action_id, key) for action_id, key in settings._DEFAULT_KEYBINDS.items() if key]
+    conflicts = [
+        (a, b, key)
+        for i, (a, key) in enumerate(bound)
+        for b, other in bound[i + 1 :]
+        if key == other and settings.keybind_scopes_overlap(a, b)
+    ]
+    assert not conflicts, conflicts
+
+
+# -- GH #267: per-mode keybind scopes ---------------------------------------------
+
+
+def test_tool_rows_take_their_tooldef_modes_and_every_scope_names_real_rows_and_modes() -> None:
+    rebindable = {action_id for action_id, _label, _default in settings.REBINDABLE_ACTIONS}
+    for tool in settings.TOOLS:
+        assert settings.keybind_modes(f"tool_{tool.tool_id}") == frozenset(tool.modes), tool.tool_id
+    assert set(settings._SCOPED_KEYBINDS) <= rebindable
+    assert not any(action_id.startswith("tool_") for action_id in settings._SCOPED_KEYBINDS), "tools derive from TOOLS"
+    named = {mode for action_id in rebindable for mode in settings.keybind_modes(action_id)}
+    assert named and named <= set(settings.MODE_LABELS)
+    assert settings.keybind_modes("tool_pan") == frozenset() and settings.keybind_modes("tool_ruler") == frozenset()
+    assert settings.keybind_modes("unit_rotate_cw") == frozenset(), "Rotate also turns a region outside Units"
+    assert settings.keybind_modes("some_removed_action") == frozenset(), "an unknown id stays global"
+
+
+def test_the_mode_tag_lists_modes_in_combo_order_and_is_empty_for_a_global_action() -> None:
+    assert settings.keybind_mode_tag("tool_place_unit") == " (Units)"
+    assert settings.keybind_mode_tag("tool_select") == " (Terrain, Units)"
+    assert settings.keybind_mode_tag("trigger_move_up") == " (Triggers)"
+    assert settings.keybind_mode_tag("edit_undo") == ""
+    assert settings.keybind_display_label("tool_set_level") == "Set Elevation Tool (Terrain)"
+    assert settings.keybind_display_label("edit_undo") == "Undo"
+
+
+def test_scope_overlap_is_symmetric_and_a_global_action_overlaps_everything() -> None:
+    pairs = [
+        ("tool_place_unit", "tool_set_level", False),
+        ("tool_select", "tool_set_level", True),
+        ("tool_select", "tool_place_unit", True),
+        ("edit_undo", "tool_place_unit", True),
+        ("tool_pan", "trigger_move_up", True),
+        ("trigger_move_up", "unit_select_stack", False),
+    ]
+    for a, b, expected in pairs:
+        assert settings.keybind_scopes_overlap(a, b) is expected, (a, b)
+        assert settings.keybind_scopes_overlap(b, a) is expected, (b, a)
+
+
+def test_two_disjoint_tools_share_a_key_and_a_tool_of_both_modes_clears_them_both(tmp_path: Path) -> None:
+    assert settings.keybind_holder("U") is None, "test assumes nothing holds U"
+    assert settings.set_keybind("tool_place_unit", "U") == []
+    assert settings.set_keybind("tool_set_level", "U") == []
+    assert settings.get_keybind("tool_place_unit") == "U" and settings.get_keybind("tool_set_level") == "U"
+    assert settings.keybind_conflicts("U", "tool_select") == ["tool_set_level", "tool_place_unit"]
+
+    assert settings.set_keybind("tool_select", "U") == ["tool_set_level", "tool_place_unit"]
+    assert settings.get_keybind("tool_select") == "U"
+    assert settings.get_keybind("tool_set_level") == "" and settings.get_keybind("tool_place_unit") == ""
+
+
+def test_a_global_command_on_a_scoped_tools_key_clears_the_tool(tmp_path: Path) -> None:
+    settings.set_keybind("tool_place_unit", "U")
+    assert settings.keybind_conflicts("U", "edit_undo") == ["tool_place_unit"]
+    assert settings.set_keybind("edit_undo", "U") == ["tool_place_unit"]
+    assert settings.get_keybind("tool_place_unit") == ""
+
+
+def test_keybind_conflicts_ignores_the_action_itself_and_an_empty_key(tmp_path: Path) -> None:
+    settings.set_keybind("tool_place_unit", "U")
+    assert settings.keybind_conflicts("U", "tool_place_unit") == []
+    assert settings.keybind_conflicts("U", "tool_set_level") == []
+    assert settings.keybind_conflicts("", "tool_select") == []
+
+
+def test_load_time_reconciliation_keeps_two_disjoint_tools_on_one_key(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  tool_place_unit: U\n  tool_set_level: U\n")
+    assert settings.get_keybind("tool_place_unit") == "U"
+    assert settings.get_keybind("tool_set_level") == "U"
+
+
+def test_load_time_reconciliation_clears_draw_under_a_customized_select(tmp_path: Path) -> None:
+    """Draw (Terrain) is at its default D; Select (Terrain, Units) moved onto it overlaps it."""
+    _write_config(tmp_path, "keybinds:\n  tool_select: D\n")
+    assert settings.get_keybind("tool_select") == "D"
+    assert settings.get_keybind("tool_draw") == ""
+
+
+def test_load_time_reconciliation_keeps_draw_beside_a_units_tool_on_its_key(tmp_path: Path) -> None:
+    _write_config(tmp_path, "keybinds:\n  tool_place_unit: D\n")
+    assert settings.get_keybind("tool_place_unit") == "D"
+    assert settings.get_keybind("tool_draw") == "D"
+
+
+def test_load_time_reconciliation_resolves_the_non_transitive_case_in_declared_order(tmp_path: Path) -> None:
+    """Set Elevation and Place Unit are disjoint, Select overlaps both, all three
+    customized onto U. TOOLS order: Set Elevation claims U first, Select collides
+    with it and does not outrank a customized holder, so Select is cleared, and
+    Place Unit, disjoint from the only claim, keeps U."""
+    ids = [action_id for action_id, _label, _default in settings.REBINDABLE_ACTIONS]
+    assert ids.index("tool_set_level") < ids.index("tool_select") < ids.index("tool_place_unit")
+    _write_config(tmp_path, "keybinds:\n  tool_set_level: U\n  tool_select: U\n  tool_place_unit: U\n")
+    assert settings.get_keybind("tool_set_level") == "U"
+    assert settings.get_keybind("tool_select") == ""
+    assert settings.get_keybind("tool_place_unit") == "U"
+
+
+def test_load_time_reconciliation_lets_a_customized_action_clear_every_default_holder_it_collides_with(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No two shipped defaults share a key, so two disjoint tools get U as their
+    default here. A later-declared global action customized onto U collides with
+    both and outranks both, so both are cleared."""
+    defaults = dict(settings._DEFAULT_KEYBINDS, tool_set_level="U", tool_place_unit="U")
+    monkeypatch.setattr(settings, "_DEFAULT_KEYBINDS", defaults)
+    _write_config(tmp_path, "keybinds:\n  adjust_increment: U\n")
+    assert settings.get_keybind("adjust_increment") == "U"
+    assert settings.get_keybind("tool_set_level") == "" and settings.get_keybind("tool_place_unit") == ""
 
 
 def test_load_time_reconciliation_clears_a_default_colliding_with_a_persisted_override(
@@ -711,7 +827,7 @@ def test_the_retired_wall_run_keybind_is_dropped_on_load(tmp_path: Path) -> None
     _write_config(tmp_path, "keybinds:\n  tool_wall_run: W\n")
     assert "tool_wall_run" not in settings._load_keybinds()
     assert settings.get_keybind("tool_place_unit") == ""
-    assert settings.set_keybind("tool_pan", "W") is None
+    assert settings.set_keybind("tool_pan", "W") == []
 
 
 def test_a_saved_edit_disables_binding_loads_as_map_disables_and_is_then_dropped(tmp_path: Path) -> None:
@@ -721,7 +837,7 @@ def test_a_saved_edit_disables_binding_loads_as_map_disables_and_is_then_dropped
     _write_config(tmp_path, "keybinds:\n  edit_disables: F7\n")
     assert settings.get_keybind("map_disables") == "F7"
     assert "edit_disables" not in settings._load_keybinds()
-    assert settings.set_keybind("tool_pan", "F8") is None
+    assert settings.set_keybind("tool_pan", "F8") == []
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
     assert saved["map_disables"] == "F7" and "edit_disables" not in saved
 
@@ -741,7 +857,7 @@ def test_a_saved_file_resize_binding_loads_as_map_resize_and_is_then_dropped(tmp
     _write_config(tmp_path, "keybinds:\n  file_resize: F7\n")
     assert settings.get_keybind("map_resize") == "F7"
     assert "file_resize" not in settings._load_keybinds()
-    assert settings.set_keybind("tool_pan", "F8") is None
+    assert settings.set_keybind("tool_pan", "F8") == []
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
     assert saved["map_resize"] == "F7" and "file_resize" not in saved
 
@@ -1345,6 +1461,24 @@ def test_mod_art_exclusions_round_trip_through_the_file(tmp_path: Path, monkeypa
 def test_a_malformed_mod_art_exclusion_list_reads_as_nothing_excluded(tmp_path: Path, raw: str) -> None:
     _write_config(tmp_path, raw)
     assert settings.get_mod_art_excluded() == frozenset()
+
+
+def test_mod_art_inclusions_round_trip_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    """GH #264: the opt-ins of mods the game disables, a key of their own beside the opt-outs."""
+    assert settings.get_mod_art_included() == frozenset()
+    settings.set_mod_art_excluded({"subscribed//2_B"})
+    settings.set_mod_art_included({"subscribed//3_Off", "local//1_A"})
+    monkeypatch.setattr(settings, "_mod_art_included", None)
+    monkeypatch.setattr(settings, "_mod_art_excluded", None)
+    assert settings.get_mod_art_included() == {"subscribed//3_Off", "local//1_A"}
+    assert settings.get_mod_art_excluded() == {"subscribed//2_B"}
+    assert "mod_art_included:\n- local//1_A\n- subscribed//3_Off\n" in (tmp_path / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize("raw", ["mod_art_included: subscribed//x\n", "mod_art_included: [3, null]\n"])
+def test_a_malformed_mod_art_inclusion_list_reads_as_nothing_included(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, raw)
+    assert settings.get_mod_art_included() == frozenset()
 
 
 # --- TASK-272: Settings > Tools' tool option defaults ------------------------

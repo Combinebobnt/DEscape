@@ -811,7 +811,8 @@ class UnitEditModel:
 
     def _maybe_capture_field_delta(self, player: int, index: int, unit: Unit) -> None:
         """Batch D's D6 capture-on-first-write: called by set_position/
-        set_rotation/set_unit_const/set_status/set_capture_flag immediately
+        set_rotation/set_unit_const/set_status/set_capture_flag/
+        set_wall_variant immediately
         before mutating, a no-op unless self._pending is a fields_only
         UnitFieldSnapshot. Records
         `unit`'s pre-mutation state once, keyed by id(unit), so a unit
@@ -838,7 +839,7 @@ class UnitEditModel:
             raise RuntimeError(
                 f"{op}() changes unit membership/order and cannot run inside a fields_only "
                 f"unit edit -- only set_position/set_rotation/set_unit_const/replace_type/"
-                f"set_status/set_capture_flag may"
+                f"set_status/set_capture_flag/set_wall_variant may"
             )
 
     # -- operations --------------------------------------------------------
@@ -953,9 +954,17 @@ class UnitEditModel:
         """Writes a wall's neighbour-derived shape index to `rotation`, for
         Place Unit's wall-run junction rewrites (2026-09-19 wall-runs plan,
         folded into Place Unit by GH #98), the walls beside a gate Place
-        Unit puts over a run (GH #159, wall_run.apply_gate_plan) and the
+        Unit puts over a run (GH #159, wall_run.apply_gate_plan), the
         walls beside a moved gate's old and new site (GH #194,
-        wall_run.apply_gate_move_plan). Also a selected wall flipped or
+        wall_run.apply_gate_move_plan) and a move's walls (GH #266): a wall
+        a drag, group drag, arrow nudge, Inspector X/Y edit or Scatter's
+        move mode carries onto another tile, and the walls beside the tile
+        it left and the one it reached (wall_run.scenario_move_plan(),
+        written by wall_run.apply_move_plan() or the viewer's
+        _apply_wall_reshapes()). A wall a move or a gate move leaves with no
+        neighbour at all, a carried one landing alone included, takes the
+        tower index 2 (wall_run.ISOLATED_VARIANT).
+        Also a selected wall flipped or
         turned in place (TASK-256), whose index is the element's image
         through mirror_tools.wall_index_image() (region_transform.
         plan_in_place()): AGENTS.md's *Selection transform* exception, under
@@ -964,7 +973,10 @@ class UnitEditModel:
         The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's
         index from its neighbours, so writing the derived value converges
-        with what the game will do rather than diverging from it. Everything
+        with what the game will do rather than diverging from it. GH #266's
+        second screenshot is the in-game observation behind that: the game
+        drew towers where the file stored run indices, at lone walls and at
+        the run ends beside each gap. Everything
         else about a wall still passes through verbatim, including
         `initial_animation_frame`, which is 0 on all 8193 corpus wall
         placements and is not touched here.
@@ -983,9 +995,12 @@ class UnitEditModel:
         angle_count == 1 and their orientation lives in the const.
 
         Always the literal integer, never a radian re-encoding: correct for
-        the game either way, correct for DEscape's own render in both file
-        classes, and unable to flip file_is_radian()'s classification, which
-        keys on any NON-literal value.
+        the game either way and for DEscape's own render in both file
+        classes. file_is_radian()'s classification keys on any NON-literal
+        value, so a literal can never make a file radian, but overwriting
+        the file's last radian value makes it integer-only: a move whose
+        writes do that is planned `radian_flip` and goes wholesale
+        (wall_run.MovePlan).
         """
         if not unit_sprites.rotation_variant_eligible(unit.unit_const):
             raise ValueError(

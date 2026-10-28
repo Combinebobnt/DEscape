@@ -1,18 +1,20 @@
-"""Which file draws a sprite or terrain texture when the player's enabled
-cosmetic mods override the install's: per file stem, the highest-priority
-active mod that ships one, else the install (None here).
+"""Which file draws a sprite or terrain texture when the player's cosmetic
+mods override the install's: per file stem, the highest-priority drawn mod
+that ships one, else the install (None here).
 
 Qt-free module state, read by unit_sprites (sprites), asset_source (terrain
-textures) and the viewer (the View > Layers "Mod Art" row, the opt-out list in
+textures) and the viewer (the View > Layers "Mod Art" row, the Mod art list in
 Settings > Mods, the status line):
 
 - **Off by module default.** The viewer turns it on from the persisted layer,
   so tests and tools/ never pick up the developer's mods by accident.
 - **Active mods**: the profile id whose mods/mod-status.json is newest
   (content_roots.active_profile_id(); every profile when none has one), its
-  enabled mods in ascending Priority (1, the in-game list's top, wins), then
-  mods the status file does not list, by folder name, minus the Settings
-  exclusions (`status_path` strings).
+  mods in ascending Priority (1, the in-game list's top, wins), disabled ones
+  included at their stored Priority, then mods the status file does not
+  list, by folder name. A mod the game enables draws unless the Settings
+  exclusions name it; one it disables draws only when the Settings
+  inclusions name it (GH #264). Both are `status_path` strings.
 - **Inside one mod, .sld beats .smx**; stems and folder names match
   case-insensitively. `_x1` names are asked for, and their `_x2` copies at
   Graphics Quality Enhanced (GH #241).
@@ -54,19 +56,23 @@ class ModArt:
     sld: int
     smx: int
     textures: int
-    excluded: bool
+    excluded: bool  # in the Settings opt-outs, which apply while the game enables it
+    in_game: bool = True  # enabled in mods/mod-status.json
+    drawn: bool = True  # drawn while Mod Art is on: by the opt-out when in_game, else by the opt-in
 
 
 @dataclass
 class _Index:
-    roots: list  # every candidate mod root, resolution order, exclusions included
+    roots: list  # every candidate mod root, resolution order, exclusions and the game's disabled mods included
     sprites: dict[str, list[tuple[str, Path, str]]]  # stem -> [(status_path, path, format)] in order
     textures: dict[str, list[tuple[str, Path]]]
     counts: dict[str, tuple[int, int, int]]
+    disabled: frozenset[str]  # status paths of the roots mod-status.json disables
 
 
 _enabled = False
 _excluded: frozenset[str] = frozenset()
+_included: frozenset[str] = frozenset()
 _generation = 0
 _index: _Index | None = None
 _palettes: _Palettes | None = None
@@ -108,6 +114,17 @@ def set_excluded(status_paths) -> bool:
     return True
 
 
+def set_included(status_paths) -> bool:
+    """The Settings opt-ins of mods the game disables, as mod-status `Path` strings; True when changed."""
+    global _included
+    new = frozenset(str(p) for p in status_paths)
+    if new == _included:
+        return False
+    _included = new
+    _bump()
+    return True
+
+
 def clear() -> None:
     """Forget the scanned mod folders and palettes (an install or profile change)."""
     global _index, _palettes
@@ -118,10 +135,11 @@ def clear() -> None:
 
 
 def reset() -> None:
-    """Module defaults: off, nothing excluded, nothing scanned. For tests."""
-    global _enabled, _excluded
+    """Module defaults: off, nothing excluded or included, nothing scanned. For tests."""
+    global _enabled, _excluded, _included
     _enabled = False
     _excluded = frozenset()
+    _included = frozenset()
     clear()
 
 
@@ -132,8 +150,9 @@ def _candidate_roots() -> list:
     if profile is None:
         return []
     active = content_roots.active_profile_id(profile)
+    # Disabled mods too, at their stored Priority: Settings can tick one in (GH #264).
     roots = [
-        r for r in content_roots.content_roots(install=None, profile=profile)
+        r for r in content_roots.content_roots(install=None, profile=profile, include_disabled=True)
         if r.kind in (content_roots.KIND_MOD_SUBSCRIBED, content_roots.KIND_MOD_LOCAL)
         and (active is None or r.profile_id == active)
     ]
@@ -177,7 +196,8 @@ def _build_index() -> _Index:
         for path in texture_files:
             textures.setdefault(path.name.casefold(), []).append((root.status_path, path))
         counts[root.status_path] = (sld, smx, len(texture_files))
-    return _Index(roots, sprites, textures, counts)
+    disabled = frozenset(root.status_path for root in roots if not root.enabled)
+    return _Index(roots, sprites, textures, counts, disabled)
 
 
 def _get_index() -> _Index:
@@ -188,35 +208,48 @@ def _get_index() -> _Index:
         return _index
 
 
+def _drawn(status_path: str, index: _Index) -> bool:
+    """A mod the game enables draws unless opted out; one it disables only when opted in."""
+    if status_path in index.disabled:
+        return status_path in _included
+    return status_path not in _excluded
+
+
 def mods_with_art() -> list[ModArt]:
     """Every candidate mod shipping sprites or terrain textures, in resolution
-    order, excluded ones included (flagged) so Settings can list them."""
+    order, so Settings can list them: excluded ones and the ones the game
+    disables included, each flagged."""
     index = _get_index()
     found = []
     for root in index.roots:
         sld, smx, tex = index.counts.get(root.status_path, (0, 0, 0))
         if sld or smx or tex:
-            found.append(ModArt(root.status_path, root.mod_id, root.priority, sld, smx, tex, root.status_path in _excluded))
+            found.append(ModArt(
+                root.status_path, root.mod_id, root.priority, sld, smx, tex, root.status_path in _excluded,
+                in_game=root.enabled, drawn=_drawn(root.status_path, index),
+            ))
     return found
 
 
 def resolve_sprite(file_name: str) -> tuple[Path, str] | None:
-    """(path, "sld" | "smx") of the highest-priority active mod's file for
-    this stem, or None: off, or no active mod ships it (the install draws)."""
+    """(path, "sld" | "smx") of the highest-priority drawn mod's file for
+    this stem, or None: off, or no drawn mod ships it (the install draws)."""
     if not _enabled:
         return None
-    for status_path, path, fmt in _get_index().sprites.get(file_name.casefold(), ()):
-        if status_path not in _excluded:
+    index = _get_index()
+    for status_path, path, fmt in index.sprites.get(file_name.casefold(), ()):
+        if _drawn(status_path, index):
             return path, fmt
     return None
 
 
 def resolve_terrain_texture(file_name: str) -> Path | None:
-    """The highest-priority active mod's terrain/textures/2x/<file_name>, or None."""
+    """The highest-priority drawn mod's terrain/textures/2x/<file_name>, or None."""
     if not _enabled:
         return None
-    for status_path, path in _get_index().textures.get(file_name.casefold(), ()):
-        if status_path not in _excluded:
+    index = _get_index()
+    for status_path, path in index.textures.get(file_name.casefold(), ()):
+        if _drawn(status_path, index):
             return path
     return None
 

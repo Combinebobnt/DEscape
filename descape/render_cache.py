@@ -182,12 +182,16 @@ class UnitSplice:
     @property
     def is_move(self) -> bool:
         """Present before and after, same owner: Move, Nudge, Set field, a
-        gate orientation swap. For a wall/connector that changes its tiles
-        only. set_position() keeps rotation and list order, and no fields-only
-        edit writes a rotation-variant const's rotation (none is ANGLE or
-        cyclable), so the file's radian verdict and every override key hold.
-        What changes is the neighbour mask of the walls beside its old and
-        new tiles (_connector_neighbours())."""
+        gate orientation swap, or a wall whose shape index a move rewrote in
+        place (old and new tiles equal). For a wall/connector that changes
+        its tiles, set_position() keeps list order, and the only fields-only
+        write of a rotation-variant const's rotation is a move's literal wall
+        index (GH #266, viewer._apply_wall_reshapes()). A move whose writes
+        would flip the file's radian verdict goes wholesale instead
+        (wall_run.MovePlan.radian_flip), so the verdict and every override
+        key hold. What changes is the neighbour mask of the walls beside its
+        old and new tiles (_connector_neighbours()), and the rewritten walls'
+        own shapes, each of which carries a splice of its own."""
         return self.old_own_tile is not None and self.new_own_tile is not None and self.old_player_id is None
 
 

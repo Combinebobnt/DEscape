@@ -198,7 +198,7 @@ def _setup() -> None:
     settings_isolation.isolate_settings(Path(tempfile.mkdtemp(prefix="objects_pack_")))
     from descape import mod_graphics
 
-    titles = [m.title for m in mod_graphics.mods_with_art()]
+    titles = [m.title for m in mod_graphics.mods_with_art() if m.in_game]
     for needed in ("Chunky Tree Tiles", "Tower range mod"):
         if not any(needed in t for t in titles):
             raise SystemExit(f"no enabled mod named like {needed!r} in this profile")

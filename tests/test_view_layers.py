@@ -815,9 +815,11 @@ def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
     assert spec.styles is None and not spec.requires_sprites
     assert availability(spec, style="flat", sprites_enabled=False, has_map=True) == (True, spec.tooltip)
     enabled, tip = availability(spec, style="stepped", sprites_enabled=True, has_map=True, has_mod_art=False)
-    assert not enabled and tip.startswith("No enabled mod ships art")
+    assert not enabled and tip.startswith("No mod in the profile ships art")
     # GH #244: both point at the tab that holds the profile folder and the Mod art list.
     assert "Settings > Mods" in tip and "Settings > Mods lists the mods" in spec.tooltip
+    # GH #264: a disabled mod draws once ticked there.
+    assert "plus any disabled mod ticked in Settings > Mods" in spec.tooltip
     assert availability(spec, style="stepped", sprites_enabled=True, has_map=False, has_mod_art=False)[1] == (
         "Open a map first"
     )

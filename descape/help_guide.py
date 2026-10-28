@@ -127,7 +127,8 @@ def keys_markdown(
             section = prefix
             title = settings.KEYBIND_SECTION_TITLES.get(prefix, prefix.title())
             lines += ["", f"### {_md_escape(title)}", "", "| Command | Key |", "|---|---|"]
-        lines.append(f"| {_md_escape(label)} | {_md_escape(fmt(key))} |")
+        # A mode-scoped command names its modes, so two rows on one key read as each mode's.
+        lines.append(f"| {_md_escape(label + settings.keybind_mode_tag(action_id))} | {_md_escape(fmt(key))} |")
     noun = "command has" if unbound == 1 else "commands have"
     lines += ["", f"{unbound} {noun} no key. Set one in Settings > Keybinds.", ""]
     return "\n".join(lines)

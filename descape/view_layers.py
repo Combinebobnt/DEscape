@@ -113,7 +113,7 @@ class LayerSpec:
     keybind_label: str
     # Draws over the real textures, so greyed while Terrain Textures is off.
     requires_textures: bool = False
-    # Greyed while no mod in the game's enabled list ships art (the viewer passes has_mod_art).
+    # Greyed while no mod in the profile ships art (the viewer passes has_mod_art).
     requires_mod_art: bool = False
 
 
@@ -228,9 +228,10 @@ LAYERS: tuple[LayerSpec, ...] = (
         layer_id="mod_art",
         label="&Mod Art",
         tooltip=(
-            "Draw the art your enabled AoE2:DE cosmetic mods ship (trees, "
-            "buildings, units, walls, terrain textures) in place of the "
-            "game's own, in the game's mod order. Settings > Mods lists "
+            "Draw the art (trees, buildings, units, walls, terrain textures) "
+            "your enabled AoE2:DE cosmetic mods ship, plus any disabled mod "
+            "ticked in Settings > Mods, in place of the game's own, in the "
+            "game's mod order. Settings > Mods lists "
             "the mods and can leave single ones out. Off, only the game's "
             "own art draws."
         ),
@@ -275,5 +276,5 @@ def availability(
     if spec.requires_textures and not terrain_textures:
         return False, "Needs View > Layers > Terrain Textures, which is what this blends"
     if spec.requires_mod_art and not has_mod_art:
-        return False, "No enabled mod ships art (Settings > Mods shows the profile folder scanned)"
+        return False, "No mod in the profile ships art (Settings > Mods shows the profile folder scanned)"
     return True, spec.tooltip

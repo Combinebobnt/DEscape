@@ -142,6 +142,7 @@ from descape import (
     ruler,
     scatter,
     settings,
+    settings_file,
     terrain_classes,
     terrain_target,
     terrain_units,
@@ -327,6 +328,7 @@ from descape.viewer_common import (
     UNRESTRICTED_TOOLS,
     FontScaledWidth,
     KeepOpenMenu,
+    LabelFitButton,
     NoWheelComboBox,
     _set_player_item,
     brush_applicable,
@@ -973,6 +975,73 @@ class _WholeLabelComboBox(NoWheelComboBox):
         return QSize(hint.width() + self.fontMetrics().horizontalAdvance(" "), hint.height())
 
 
+class _KeyBox(QKeySequenceEdit):
+    """As wide as the widest of `samples` shown whole, no wider, so the Keybinds labels
+    take the slack (TASK-498). Re-measured on a font change."""
+
+    def __init__(self, sequence: QKeySequence, samples: list[str]) -> None:
+        super().__init__(sequence)
+        self._samples = [QKeySequence(s).toString(QKeySequence.NativeText) for s in samples]
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        line_edit = self.findChild(QLineEdit)
+        if line_edit is None:
+            return hint
+        metrics = line_edit.fontMetrics()
+        text = max(metrics.horizontalAdvance(s) for s in self._samples)
+        # QLineEdit's sizeHint is 17 'x' wide plus its frame and margins; swap the text part.
+        return QSize(line_edit.sizeHint().width() - 17 * metrics.horizontalAdvance("x") + text, hint.height())
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+
+class _TextWidthButton(LabelFitButton):
+    """LabelFitButton whose hint is its label's width too, so the Keybinds labels get the slack (TASK-498)."""
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
+
+
+class _FontPicker(QFontComboBox):
+    """Its minimum is about 12 characters, not the longest installed family, so a long
+    name is cut off in the closed box; the open list still shows each name whole (TASK-498)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(12)
+        # It is editable, and its line edit scrolls to the cursor: unfocused, keep a cut name's start in view.
+        self.lineEdit().textChanged.connect(self._show_name_start)
+
+    def _show_name_start(self) -> None:
+        if not self.lineEdit().hasFocus():
+            self._home()
+
+    def _home(self) -> None:
+        self.lineEdit().setCursorPosition(0)
+
+    def focusOutEvent(self, event) -> None:  # Qt override; the combo is its line edit's focus proxy
+        super().focusOutEvent(event)
+        # Deferred: editingFinished re-sets the same text after this, putting the cursor back at the end.
+        QTimer.singleShot(0, self._home)
+
+    def showPopup(self) -> None:
+        super().showPopup()
+        # QFontComboBox pins the list to 5/3 of the box's width on every resize.
+        view = self.view()
+        popup = view.window()
+        # Its delegate's width hint leaves out the icon drawn before the name, about a row high.
+        need = view.sizeHintForColumn(0) + view.sizeHintForRow(0) + popup.width() - view.viewport().width()
+        if need <= popup.width():
+            return
+        screen = self.screen().availableGeometry()
+        popup.setFixedWidth(min(need, screen.width()))
+        if popup.geometry().right() > screen.right():
+            popup.move(screen.right() + 1 - popup.width(), popup.y())
+
+
 class _ShrinkingComboBox(QComboBox):
     """Content width when the cell allows, down to about 12 characters when not, so the
     View table's Player combo elides inside its cell rather than past the viewport (TASK-407)."""
@@ -1132,7 +1201,7 @@ class SettingsDialog(QDialog):
         self._add_install_section(layout)
 
         if sys.platform.startswith("linux"):
-            self.xwayland_checkbox = QCheckBox("Linux: X11 compatibility on Wayland (takes effect next launch)")
+            self.xwayland_checkbox = QCheckBox("X11 compatibility on Wayland")
             self.xwayland_checkbox.setChecked(settings.get_xwayland_on_wayland())
             self.xwayland_checkbox.setToolTip(
                 "On a Wayland session, run under XWayland (QT_QPA_PLATFORM=xcb) "
@@ -1143,6 +1212,18 @@ class SettingsDialog(QDialog):
             )
             self.xwayland_checkbox.toggled.connect(self._on_xwayland_toggled)
             layout.addWidget(self.xwayland_checkbox)
+            # Under the checkbox text, by the indicator's own width (TASK-498).
+            hint_row = QHBoxLayout()
+            style = self.style()
+            hint_row.addSpacing(
+                style.pixelMetric(QStyle.PM_IndicatorWidth) + style.pixelMetric(QStyle.PM_CheckBoxLabelSpacing)
+            )
+            self.xwayland_hint = QLabel("Linux only. Takes effect next launch.")
+            self.xwayland_hint.setWordWrap(True)
+            hint_row.addWidget(self.xwayland_hint, stretch=1)
+            layout.addLayout(hint_row)
+
+        self._add_settings_file_section(layout)
 
         layout.addStretch(1)
         return tab
@@ -1167,12 +1248,184 @@ class SettingsDialog(QDialog):
         mode = "centered on mouse cursor" if centered_on_cursor else "overall (view center)"
         self._window._log_status(f"Zoom mode: {mode}")
 
+    def _add_settings_file_section(self, layout: QVBoxLayout) -> None:
+        """GH #268: Export settings… / Import settings…, and the line for an import staged for the next launch."""
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(divider)
+        layout.addWidget(QLabel("Settings file:"))
+        tooltip = (
+            "A settings file carries your preferences from every tab, the View menu and the panels: keybinds, "
+            "the look, tool defaults and the rest. Not folder paths, recent files, the New Map dialog's last "
+            "choices, window layout or X11 compatibility on Wayland. An import replaces your preferences and "
+            "takes effect the next time DEscape starts."
+        )
+        self.settings_export_button = QPushButton("Export settings…")
+        self.settings_export_button.setToolTip(tooltip)
+        self.settings_export_button.clicked.connect(self._export_settings)
+        self.settings_import_button = QPushButton("Import settings…")
+        self.settings_import_button.setToolTip(tooltip)
+        self.settings_import_button.clicked.connect(self._import_settings)
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.settings_export_button)
+        button_row.addWidget(self.settings_import_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+        self.settings_pending_row = QWidget()
+        pending_layout = QHBoxLayout(self.settings_pending_row)
+        pending_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_pending_label = QLabel()
+        self.settings_pending_label.setWordWrap(True)
+        pending_layout.addWidget(self.settings_pending_label, stretch=1)
+        self.settings_pending_discard_button = QPushButton("Discard")
+        self.settings_pending_discard_button.setToolTip("Drop the staged import; nothing changes at the next launch.")
+        self.settings_pending_discard_button.clicked.connect(self._discard_pending_import)
+        pending_layout.addWidget(self.settings_pending_discard_button)
+        layout.addWidget(self.settings_pending_row)
+        self._refresh_pending_import_row()
+
+    def _refresh_pending_import_row(self) -> None:
+        pending = settings_file.pending_import()
+        self.settings_pending_row.setVisible(pending is not None)
+        if pending is not None:
+            source = pending.get("source")
+            name = Path(source).name if isinstance(source, str) else "an earlier import"
+            self.settings_pending_label.setText(f"Settings from {name} apply the next time DEscape starts.")
+            self.settings_pending_label.setToolTip(source if isinstance(source, str) else "")
+
+    def _export_settings(self) -> None:
+        # A slider still on its apply timer must be in config.yaml before the file is built from it.
+        self._flush_pending_applies()
+        start = str(Path.home() / f"descape{settings_file.FILE_SUFFIX}")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export settings", start, f"DEscape settings (*{settings_file.FILE_SUFFIX})"
+        )
+        if not path:
+            return
+        if not path.endswith((".yaml", ".yml")):
+            path += settings_file.FILE_SUFFIX
+            # The dialog's overwrite question covered the unsuffixed name only.
+            if Path(path).exists():
+                answer = QMessageBox.question(
+                    self,
+                    "Export settings",
+                    f"{path} already exists. Replace it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    self._window._log_status("Settings export cancelled")
+                    return
+        try:
+            settings_file.write_settings_file(path, settings_file.build_document())
+        except settings_file.SettingsWriteBlockedError as e:
+            self._window._log_status(f"Settings export blocked: {e}")
+            QMessageBox.critical(self, "Export blocked", str(e))
+            return
+        except settings_file.ConfigUnreadable as e:
+            self._window._log_status(f"Settings export failed: {e}")
+            QMessageBox.critical(self, "Settings unreadable", f"{e}\n\nNothing was exported.")
+            return
+        except OSError as e:
+            self._window._log_status(f"Settings export failed: {e}")
+            QMessageBox.critical(self, "Export failed", str(e))
+            return
+        self._window._log_status(f"Settings exported to {path}")
+
+    def _import_settings(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import settings",
+            str(Path.home()),
+            f"DEscape settings (*{settings_file.FILE_SUFFIX} *.yaml *.yml);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            plan = settings_file.parse_settings_file(path, installed_families=QFontDatabase().families())
+        except settings_file.SettingsFileRefused as e:
+            self._window._log_status(f"Settings import refused: {e}")
+            QMessageBox.warning(self, "Import refused", f"{path}\n\n{e}")
+            return
+        # The summary is against config.yaml, so a slider still on its apply timer is saved first.
+        self._flush_pending_applies()
+        try:
+            summary = settings_file.format_import_summary(plan)
+        except (settings_file.ConfigUnreadable, OSError) as e:
+            self._window._log_status(f"Settings import refused: {e}")
+            QMessageBox.warning(self, "Import refused", f"{e}\n\nAn import would replace it, so nothing was staged.")
+            return
+        if not self._confirm_settings_import(summary):
+            self._window._log_status("Settings import cancelled")
+            return
+        try:
+            settings_file.stage_import(plan, path)
+        except OSError as e:
+            self._window._log_status(f"Settings import failed: {e}")
+            QMessageBox.critical(self, "Import failed", str(e))
+            return
+        self._refresh_pending_import_row()
+        skipped = f", {len(plan.problems)} skipped" if plan.problems else ""
+        self._window._log_status(f"Settings from {path} staged{skipped}: they apply the next time DEscape starts")
+        if self._ask_quit_after_import():
+            self._quit_for_import()
+
+    def _confirm_settings_import(self, summary: str) -> bool:
+        """Modal Apply/Cancel over the parsed file's summary. Its own method so
+        offscreen tests can answer it without exec_()."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Import settings")
+        body = QPlainTextEdit(summary)
+        body.setReadOnly(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Apply).clicked.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(body)
+        layout.addWidget(buttons)
+        dialog.resize(560, 360)
+        return dialog.exec_() == QDialog.Accepted
+
+    def _ask_quit_after_import(self) -> bool:
+        """True for Quit DEscape now, False for Later. Its own method so offscreen tests can answer it."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Import settings")
+        box.setIcon(QMessageBox.Information)
+        box.setText("The imported settings apply the next time DEscape starts.")
+        box.setInformativeText(
+            f"When they do, your current settings are first copied to {settings_file.BACKUP_NAME} beside config.yaml."
+        )
+        quit_button = box.addButton("Quit DEscape now", QMessageBox.AcceptRole)
+        later_button = box.addButton("Later", QMessageBox.RejectRole)
+        box.setDefaultButton(later_button)
+        box.exec_()
+        return box.clickedButton() is quit_button
+
+    def _quit_for_import(self) -> None:
+        # This dialog first: a close issued under the still-open modal dialog would not end the event loop.
+        self.close()
+        # The window's normal close, so the unsaved-changes prompt still runs.
+        QTimer.singleShot(0, self._window.close)
+
+    def _discard_pending_import(self) -> None:
+        try:
+            settings_file.discard_pending_import()
+        except OSError as e:
+            self._window._log_status(f"Discarding the staged settings import failed: {e}")
+            QMessageBox.warning(self, "Discard failed", str(e))
+            return
+        self._refresh_pending_import_row()
+        self._window._log_status("Staged settings import discarded")
+
     def _build_appearance_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Theme:"))
+        # Export and Import sit on a second line under the combo (TASK-498).
+        theme_grid = QGridLayout()
+        theme_grid.setColumnStretch(2, 1)
+        theme_grid.addWidget(QLabel("Theme:"), 0, 0)
         self.theme_combo = QComboBox()
         for preset_id, (preset_label, _colors) in themes.PRESETS.items():
             self.theme_combo.addItem(preset_label, preset_id)
@@ -1184,8 +1437,7 @@ class SettingsDialog(QDialog):
         )
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(settings.get_theme()))
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
-        theme_row.addWidget(self.theme_combo, stretch=0)
-        theme_row.addStretch(1)
+        theme_grid.addWidget(self.theme_combo, 0, 1)
         file_tooltip = (
             "A theme file carries this tab's look settings: theme and chrome colours, UI font, "
             "tool overlay colours, ruler and distance-tick label sizes, badge position, grid "
@@ -1195,19 +1447,24 @@ class SettingsDialog(QDialog):
         self.theme_export_button = QPushButton("Export theme…")
         self.theme_export_button.setToolTip(file_tooltip)
         self.theme_export_button.clicked.connect(self._export_theme)
-        theme_row.addWidget(self.theme_export_button)
         self.theme_import_button = QPushButton("Import theme…")
         self.theme_import_button.setToolTip(file_tooltip)
         self.theme_import_button.clicked.connect(self._import_theme)
-        theme_row.addWidget(self.theme_import_button)
-        layout.addLayout(theme_row)
+        theme_file_row = QHBoxLayout()
+        theme_file_row.addWidget(self.theme_export_button)
+        theme_file_row.addWidget(self.theme_import_button)
+        theme_file_row.addStretch(1)
+        theme_grid.addLayout(theme_file_row, 1, 1, 1, 2)
+        layout.addLayout(theme_grid)
         layout.addWidget(self._build_theme_colors_group())
         self._add_section_divider(layout)
 
-        ui_font_row = QHBoxLayout()
-        ui_font_row.addWidget(QLabel("UI font:"))
+        # Reset sits on a second line under the picker, as Export and Import do (TASK-498).
+        ui_font_grid = QGridLayout()
+        ui_font_grid.setColumnStretch(1, 1)
+        ui_font_grid.addWidget(QLabel("UI font:"), 0, 0)
         app_font = QApplication.instance().font()
-        self.ui_font_combo = QFontComboBox()
+        self.ui_font_combo = _FontPicker()
         self.ui_font_size_spin = QSpinBox()
         self.ui_font_size_spin.setRange(settings.UI_FONT_SIZE_MIN, settings.UI_FONT_SIZE_MAX)
         self.ui_font_size_spin.setSuffix(" pt")
@@ -1234,10 +1491,10 @@ class SettingsDialog(QDialog):
         self.ui_font_combo.currentFontChanged.connect(self._on_ui_font_family_changed)
         self.ui_font_size_spin.valueChanged.connect(self._on_ui_font_size_changed)
         ui_font_reset.clicked.connect(self._on_ui_font_reset)
-        ui_font_row.addWidget(self.ui_font_combo, stretch=1)
-        ui_font_row.addWidget(self.ui_font_size_spin, stretch=0)
-        ui_font_row.addWidget(ui_font_reset, stretch=0)
-        layout.addLayout(ui_font_row)
+        ui_font_grid.addWidget(self.ui_font_combo, 0, 1)
+        ui_font_grid.addWidget(self.ui_font_size_spin, 0, 2)
+        ui_font_grid.addWidget(ui_font_reset, 1, 1, Qt.AlignLeft)
+        layout.addLayout(ui_font_grid)
 
         toolbar_style_row = QHBoxLayout()
         toolbar_style_row.addWidget(QLabel("Toolbar buttons:"))
@@ -1739,21 +1996,19 @@ class SettingsDialog(QDialog):
         hex_str: str,
         on_pick: Callable[[], None],
         on_default: Callable[[], None],
-        column: int = 0,
     ) -> QPushButton:
         """One label / colour swatch / Default row in a 3-column grid, shared
-        by the tool overlay, chrome colour and trigger status groups. `column`
-        offsets it, for two rows side by side."""
-        grid.addWidget(QLabel(label), row, column)
+        by the tool overlay, chrome colour and trigger status groups."""
+        grid.addWidget(QLabel(label), row, 0)
         swatch = QPushButton()
         swatch.setFixedWidth(60)
         swatch.clicked.connect(lambda _checked: on_pick())
         self._set_swatch_color(swatch, hex_str)
         # Left-aligned so column 1, not Default, takes the grid's spare width.
-        grid.addWidget(swatch, row, column + 1, Qt.AlignLeft)
+        grid.addWidget(swatch, row, 1, Qt.AlignLeft)
         default_btn = QPushButton("Default")
         default_btn.clicked.connect(lambda _checked: on_default())
-        grid.addWidget(default_btn, row, column + 2)
+        grid.addWidget(default_btn, row, 2)
         return swatch
 
     def _build_theme_colors_group(self) -> QWidget:
@@ -2012,12 +2267,11 @@ class SettingsDialog(QDialog):
 
     def _build_trigger_status_group(self) -> QWidget:
         """GH #166's marker mode, the pass toggle and the two colours."""
-        # Two rows only: the Appearance tab does not scroll.
+        # The marker, its two toggles on their own line, then one row per colour (TASK-498).
         container = QWidget()
         grid = QGridLayout(container)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setColumnMinimumWidth(3, 12)
-        grid.setColumnStretch(7, 1)
+        grid.setColumnStretch(1, 1)
 
         marker_row = QHBoxLayout()
         heading = QLabel("Trigger status:")
@@ -2032,35 +2286,38 @@ class SettingsDialog(QDialog):
         self.trigger_status_marker_combo.setToolTip(self._TRIGGER_STATUS_TIP)
         self.trigger_status_marker_combo.currentIndexChanged.connect(self._on_trigger_status_marker_changed)
         marker_row.addWidget(self.trigger_status_marker_combo)
+        marker_row.addStretch(1)
+        grid.addLayout(marker_row, 0, 0, 1, 3)
+
+        toggles_row = QHBoxLayout()
         self.trigger_status_ok_rows_check = QCheckBox("Mark triggers that pass")
         self.trigger_status_ok_rows_check.setToolTip(
             "Off leaves only the rows that are missing something marked: rows that pass get no colour and no tick"
         )
         self.trigger_status_ok_rows_check.setChecked(settings.get_trigger_status_color_ok_rows())
         self.trigger_status_ok_rows_check.toggled.connect(self._on_trigger_status_ok_rows_toggled)
-        marker_row.addWidget(self.trigger_status_ok_rows_check)
+        toggles_row.addWidget(self.trigger_status_ok_rows_check)
         self.trigger_status_sections_check = QCheckBox("Colour section rows")
         self.trigger_status_sections_check.setToolTip(
             "Colour a section's own row by its conditions and effects; its icon shows either way"
         )
         self.trigger_status_sections_check.setChecked(settings.get_trigger_status_color_sections())
         self.trigger_status_sections_check.toggled.connect(self._on_trigger_status_sections_toggled)
-        marker_row.addWidget(self.trigger_status_sections_check)
-        marker_row.addStretch(1)
-        grid.addLayout(marker_row, 0, 0, 1, 8)
+        toggles_row.addWidget(self.trigger_status_sections_check)
+        toggles_row.addStretch(1)
+        grid.addLayout(toggles_row, 1, 0, 1, 3)
 
         self._trigger_status_swatches: dict[str, QPushButton] = {}
-        for column, (status_id, label, _default) in zip((0, 4), settings.TRIGGER_STATUS_COLORS, strict=True):
+        for row, (status_id, label, _default) in enumerate(settings.TRIGGER_STATUS_COLORS, start=2):
             self._trigger_status_swatches[status_id] = self._add_swatch_row(
                 grid,
-                1,
+                row,
                 label,
                 settings.get_trigger_status_color(status_id),
                 lambda sid=status_id: self._pick_trigger_status_color(sid),
                 lambda sid=status_id: self._apply_trigger_status_color(
                     sid, settings.get_default_trigger_status_color(sid)
                 ),
-                column=column,
             )
         return container
 
@@ -2518,7 +2775,10 @@ class SettingsDialog(QDialog):
 
         rows_widget = QWidget()
         grid = QGridLayout(rows_widget)
-        grid.setColumnStretch(1, 1)
+        # The wrapped action labels take the slack, not the key boxes (TASK-498).
+        grid.setColumnStretch(0, 1)
+        # A key box shows every default sequence whole. Room for three modifiers would break 520 px.
+        default_keys = [default for _aid, _label, default in settings.REBINDABLE_ACTIONS]
 
         self._keybind_edits: dict[str, QKeySequenceEdit] = {}
         # GH #116's filter: per section, its divider (None for the first), header and rows.
@@ -2542,10 +2802,12 @@ class SettingsDialog(QDialog):
                 current_section = section
                 self._keybind_sections.append((divider, section_label, []))
 
-            action_label = QLabel(label)
+            # A mode-scoped row names its modes (GH #267), and the search below matches them.
+            action_label = QLabel(label + settings.keybind_mode_tag(action_id))
+            action_label.setWordWrap(True)
             grid.addWidget(action_label, row, 0)
 
-            edit = QKeySequenceEdit(QKeySequence(settings.get_keybind(action_id)))
+            edit = _KeyBox(QKeySequence(settings.get_keybind(action_id)), default_keys)
             edit.keySequenceChanged.connect(
                 lambda seq, aid=action_id: self._on_keybind_changed(aid, seq)
             )
@@ -2557,11 +2819,11 @@ class SettingsDialog(QDialog):
             grid.addWidget(edit, row, 1)
             self._keybind_edits[action_id] = edit
 
-            default_btn = QPushButton("Default")
+            default_btn = _TextWidthButton("Default")
             default_btn.clicked.connect(lambda _checked, aid=action_id: self._reset_keybind(aid))
             grid.addWidget(default_btn, row, 2)
 
-            clear_btn = QPushButton("Clear")
+            clear_btn = _TextWidthButton("Clear")
             clear_btn.clicked.connect(lambda _checked, aid=action_id: self._keybind_edits[aid].clear())
             grid.addWidget(clear_btn, row, 3)
 
@@ -2611,22 +2873,23 @@ class SettingsDialog(QDialog):
         row = 1
         for slot in settings.WHEEL_SLOTS:
             slot_label = QLabel(settings.WHEEL_SLOT_LABELS[slot])
-            grid.addWidget(slot_label, row, 0)
+            grid.addWidget(slot_label, row, 0, 1, 4)
+            row += 1
 
             # NoWheel: scrolling the tab over a row must not rebind it.
             combo = _WholeLabelComboBox()
-            # The widest action label widens the dialog; the tab still never scrolls sideways.
+            # Whole at any width: the slot label's own line above leaves it the row (TASK-498).
             combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
             for i, action in enumerate(settings.WHEEL_ACTIONS):
                 combo.addItem(settings.WHEEL_ACTION_LABELS[action], action)
                 combo.setItemData(i, settings.WHEEL_ACTION_HINTS[action], Qt.ToolTipRole)
             combo.setCurrentIndex(settings.WHEEL_ACTIONS.index(bindings[slot]))
             combo.currentIndexChanged.connect(lambda _index, s=slot: self._on_wheel_binding_changed(s))
-            # Spans the key-box and Default columns, and Default takes Clear's, so no label is cut.
-            grid.addWidget(combo, row, 1, 1, 2)
+            # Spans the label, key-box and Default columns, and Default takes Clear's.
+            grid.addWidget(combo, row, 0, 1, 3)
             self._wheel_combos[slot] = combo
 
-            default_btn = QPushButton("Default")
+            default_btn = _TextWidthButton("Default")
             default_btn.clicked.connect(lambda _checked, s=slot: self._reset_wheel_binding(s))
             grid.addWidget(default_btn, row, 3)
 
@@ -2689,37 +2952,45 @@ class SettingsDialog(QDialog):
         self._wheel_note.setHidden(self._wheel_header.isHidden())
         self._keybind_no_match_label.setHidden(any_shown)
 
+    @staticmethod
+    def _keybind_names(action_ids: list[str]) -> str:
+        """The actions' tagged labels as "A", "A and B" or "A, B and C", for the warnings."""
+        labels = [settings.keybind_display_label(action_id) for action_id in action_ids]
+        return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+
     def _on_keybind_changed(self, action_id: str, key_sequence: QKeySequence) -> None:
         text = key_sequence.toString()
-        cleared_action_id = settings.set_keybind(action_id, text)
+        cleared = settings.set_keybind(action_id, text)
         self._window.apply_keybind(action_id)
         self._window._log_status(f"Keybind changed: {action_id} -> {text or '(cleared)'}")
-        if cleared_action_id is None:
+        if not cleared:
             self._keybind_warning_label.clear()
         else:
-            self._window.apply_keybind(cleared_action_id)
-            cleared_edit = self._keybind_edits.get(cleared_action_id)
-            if cleared_edit is not None:
-                cleared_edit.blockSignals(True)
-                cleared_edit.clear()
-                cleared_edit.blockSignals(False)
-            cleared_label = settings.get_action_label(cleared_action_id)
+            for cleared_action_id in cleared:
+                self._window.apply_keybind(cleared_action_id)
+                cleared_edit = self._keybind_edits.get(cleared_action_id)
+                if cleared_edit is not None:
+                    cleared_edit.blockSignals(True)
+                    cleared_edit.clear()
+                    cleared_edit.blockSignals(False)
+            which = "that binding has" if len(cleared) == 1 else "those bindings have"
             self._keybind_warning_label.setText(
-                f"'{text}' was already assigned to {cleared_label} -- that binding has been cleared."
+                f"'{text}' was already assigned to {self._keybind_names(cleared)} -- {which} been cleared."
             )
         # A search by key would otherwise keep showing rows by their old binding.
         self._filter_keybinds(self._keybind_filter_edit.text())
 
     def _reset_keybind(self, action_id: str) -> None:
         default = settings.get_default_keybind(action_id)
-        holder = settings.keybind_holder(default, exclude=action_id)
-        if holder is not None:
-            # Any other action holding this default is necessarily off its own
-            # default (test_default_keybinds_have_no_duplicate_sequences pins that
-            # the shipped defaults are unique), so a deliberate binding is at
-            # stake -- restoring a default must not outrank it. Typing the
-            # sequence in is still an explicit override.
-            holder_label = settings.get_action_label(holder)
+        holders = settings.keybind_conflicts(default, action_id)
+        if holders:
+            # Any other action holding this default where this one is live is
+            # necessarily off its own default (test_default_keybinds_are_pairwise_
+            # conflict_free pins that the shipped defaults are pairwise
+            # conflict-free), so a deliberate binding is at stake. Restoring a
+            # default must not outrank it. Typing the sequence in is still an
+            # explicit override.
+            holder_label = self._keybind_names(holders)
             self._keybind_warning_label.setText(
                 f"'{default}' is assigned to {holder_label} -- "
                 f"{settings.get_action_label(action_id)}'s default was not restored."
@@ -2858,8 +3129,10 @@ class SettingsDialog(QDialog):
 
     def _add_mod_art_section(self, layout: QVBoxLayout) -> None:
         """Every scanned mod that ships art, in the game's mod order (top
-        wins), ticked when View > Layers > Mod Art draws it (TASK-378). A tick
-        applies at once; an unticked mod stays off even if it is reinstalled."""
+        wins), ticked when View > Layers > Mod Art draws it (TASK-378). A mod
+        the game's mod list disables is listed too, marked and unticked until
+        ticked here (GH #264). A tick applies at once; an unticked mod stays
+        off even if it is reinstalled."""
         label = QLabel("Mod art drawn by View > Layers > Mod Art (the top mod wins where two ship one file):")
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -2873,22 +3146,25 @@ class SettingsDialog(QDialog):
 
     def _refresh_mod_art_list(self) -> None:
         view = self.mod_art_list
-        excluded = settings.get_mod_art_excluded()
         view.blockSignals(True)
         view.clear()
         for mod in mod_graphics.mods_with_art():
-            item = QListWidgetItem(mod.title)
+            item = QListWidgetItem(mod.title if mod.in_game else f"{mod.title} (disabled in game)")
+            # UserRole stays the bare status path; +1 whether the game enables it, +2 the plain title.
             item.setData(Qt.UserRole, mod.status_path)
+            item.setData(Qt.UserRole + 1, mod.in_game)
+            item.setData(Qt.UserRole + 2, mod.title)
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked if mod.status_path in excluded else Qt.Checked)
+            item.setCheckState(Qt.Checked if mod.drawn else Qt.Unchecked)
             order = "not in the game's mod list" if mod.priority is None else f"priority {mod.priority} in the game's mod list"
+            disabled = "" if mod.in_game else "Disabled in the game's mod list, drawn here only when ticked\n"
             item.setToolTip(
-                f"{mod.status_path}, {order}\n"
+                f"{disabled}{mod.status_path}, {order}\n"
                 f"{mod.sld} .sld and {mod.smx} .smx sprites, {mod.textures} terrain textures"
             )
             view.addItem(item)
         if view.count() == 0:
-            placeholder = QListWidgetItem("No enabled mod in the profile folder above ships art.")
+            placeholder = QListWidgetItem("No mod in the profile folder above ships art.")
             placeholder.setFlags(Qt.NoItemFlags)
             view.addItem(placeholder)
         view.blockSignals(False)
@@ -2899,13 +3175,22 @@ class SettingsDialog(QDialog):
         if status_path is None:
             return
         drawn = item.checkState() == Qt.Checked
-        excluded = set(settings.get_mod_art_excluded())
-        if drawn:
-            excluded.discard(status_path)
-        else:
-            excluded.add(status_path)
-        settings.set_mod_art_excluded(excluded)
-        self._window._apply_mod_art_change(f"Mod art from {item.text()}: {'on' if drawn else 'off'}")
+        if item.data(Qt.UserRole + 1):  # enabled in the game: the tick edits its opt-out
+            excluded = set(settings.get_mod_art_excluded())
+            if drawn:
+                excluded.discard(status_path)
+            else:
+                excluded.add(status_path)
+            settings.set_mod_art_excluded(excluded)
+        else:  # disabled in the game: its opt-in (GH #264)
+            included = set(settings.get_mod_art_included())
+            if drawn:
+                included.add(status_path)
+            else:
+                included.discard(status_path)
+            settings.set_mod_art_included(included)
+        title = item.data(Qt.UserRole + 2)
+        self._window._apply_mod_art_change(f"Mod art from {title}: {'on' if drawn else 'off'}")
 
     def _fit_profile_list_height(self) -> None:
         self._fit_list_height(self.profile_roots_list)
@@ -2952,11 +3237,17 @@ class SettingsDialog(QDialog):
         if self.profile_roots_list.count() == 0:
             self.profile_roots_list.addItem("Nothing yet: set the install path on the General tab.")
         skipped = content_roots.skipped_mods(profile) if profile is not None else []
-        self.profile_skipped_label.setText(
-            f"{len(skipped)} mod{'s' if len(skipped) != 1 else ''} disabled in the game's mod list "
-            f"{'are' if len(skipped) != 1 else 'is'} skipped."
-            if skipped else ""
-        )
+        # Every profile id's disabled mods, art or not; the Mod art list shows the active id's art mods.
+        if len(skipped) == 1:
+            note = "1 mod disabled in the game's mod list is skipped; if it ships art, it is listed below, off until ticked."
+        elif skipped:
+            note = (
+                f"{len(skipped)} mods disabled in the game's mod list are skipped; "
+                "any that ship art are listed below, off until ticked."
+            )
+        else:
+            note = ""
+        self.profile_skipped_label.setText(note)
         self.profile_skipped_label.setVisible(bool(skipped))
         self._fit_profile_list_height()
         # Built after this section on open; refreshed with it on every later profile or install change.
@@ -3389,6 +3680,7 @@ class ViewerWindow(QMainWindow):
         # Terrain panel's swatches resolve textures at construction, and that lookup is cached.
         mod_graphics.set_enabled(settings.get_view_layers().mod_art)
         mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        mod_graphics.set_included(settings.get_mod_art_included())
         # GH #241: Enhanced draws the game's x2 unit art where x1 would be enlarged.
         _sync_hi_res()
         asset_source.clear_art_caches()
@@ -4935,9 +5227,18 @@ class ViewerWindow(QMainWindow):
         # An occupant already on the typed value has nothing to write.
         changing += [e for e in self._garrison_occupant_entries(model, changing) if axis_value(e.unit) != value]
         mm = self.scenario.map_manager
-        players = sorted({e.player_id for e in changing})
+        # GH #266: a typed X or Y carries walls too (no gate part, as GH #194 kept this out of the box).
+        plan = None
+        if axis in ("x", "y"):
+            plan = self._move_plan(
+                model,
+                [(e, value if axis == "x" else e.unit.x, value if axis == "y" else e.unit.y) for e in changing],
+                gate_walls=False,
+            )
+        players = sorted({e.player_id for e in changing} | (wall_run.move_plan_players(plan) if plan else set()))
+        wholesale = plan is not None and plan.wholesale
         splices = []
-        with self._unit_edit(model, label, players, splices, fields_only=True):
+        with self._unit_edit(model, label, players, None if wholesale else splices, fields_only=not wholesale):
             for entry in changing:
                 unit = entry.unit
                 x, y, z = unit.x, unit.y, getattr(unit, "z", 0.0)
@@ -4954,6 +5255,10 @@ class ViewerWindow(QMainWindow):
                 new_own, new_tiles = self._unit_footprint(unit)
                 splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
                 self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+            if wholesale:
+                wall_run.apply_move_plan(model, plan)
+            elif plan:
+                self._apply_wall_reshapes(model, plan, splices)
 
     def _on_unit_field_stepped(self, spec: unit_fields.UnitFieldSpec, delta: float) -> None:
         """A group's X, Y or Z step (GH #154): every selected unit moves by
@@ -4997,7 +5302,7 @@ class ViewerWindow(QMainWindow):
         status = f"Moved {count} units by {moved:+g} on {spec.label}"
         if clamped:
             status += f", stopped {limit}"
-        self._log_status(status + self._gate_move_clauses(gate_plan))
+        self._log_status(status + self._gate_move_clauses(gate_plan, units))
 
     def _set_variant_field(self, model, entries, variant: int, single: bool) -> None:
         """The Rotation field's variant mode: every cyclable member takes
@@ -6265,37 +6570,64 @@ class ViewerWindow(QMainWindow):
         _tiles, existing_walls = self._gate_wall_scene()
         return [unit for _player_id, unit in wall_run.walls_under(gate_tiles, existing_walls)]
 
-    def _gate_move_plan(self, model, moves) -> wall_run.GateMovePlan | None:
+    def _move_plan(self, model, moves, *, gate_walls: bool) -> wall_run.MovePlan | None:
         """What moving `moves`, [(entry, new_x, new_y), ...], changes in the
-        walls around its gates (GH #194), or None with "Moving a gate updates
-        walls" off, no gate among them, or no gate changing tiles. The box is
-        read even while hidden, as Free placement is for a drag.
+        walls (wall_run.scenario_move_plan()): each wall carried onto another
+        tile takes its new place's shape and the walls beside where it left
+        and landed reshape (GH #266), and with `gate_walls` and "Moving a gate
+        updates walls" ticked, a gate's move swaps walls too (GH #194). None
+        with neither a wall nor such a gate among them, or none changing
+        tiles. The box is read even while hidden, as Free placement is for a
+        drag.
 
         A falsy plan can still carry `blocked` for the status line."""
-        if not self.gate_walls_check.isChecked():
-            return None
-        # Checked before the scene walk, so a move with no gate in it pays nothing.
-        if not any(gate_orientation.is_gate(entry.unit.unit_const) for entry, _x, _y in moves):
+        gate_walls = gate_walls and self.gate_walls_check.isChecked()
+        # Checked before the scene walk, so a move with no wall or gate in it pays nothing.
+        if not any(
+            unit_sprites.rotation_variant_eligible(entry.unit.unit_const)
+            or (gate_walls and gate_orientation.is_gate(entry.unit.unit_const))
+            for entry, _x, _y in moves
+        ):
             return None
         mm = self.scenario.map_manager
-        return wall_run.scenario_gate_moves(
+        return wall_run.scenario_move_plan(
             self.scenario,
             mm.map_width,
             mm.map_height,
             [(entry.unit, x, y) for entry, x, y in moves],
+            gate_walls=gate_walls,
             removable=lambda unit: not model.referencing(unit),
         )
 
+    def _apply_wall_reshapes(self, model, plan: wall_run.MovePlan, splices: list) -> None:
+        """`plan`'s wall shapes (GH #266), inside an open fields_only move
+        edit after every set_position(). A carried wall already has its move
+        splice; each other rewritten wall gets an own-equals-own one, the
+        Rotation field's shape, unless it moved within its own tile and so
+        has one too. Never for a plan that is `wholesale`."""
+        for _player_id, unit, variant in plan.moved:
+            model.set_wall_variant(unit, variant)
+        spliced = {id(splice.unit) for splice in splices}
+        for player_id, unit, variant in plan.rewrites:
+            model.set_wall_variant(unit, variant)
+            if id(unit) in spliced:
+                continue
+            own, tiles = self._unit_footprint(unit)
+            splices.append(UnitSplice(player_id, self._unit_list_index(player_id, unit), unit, own, own, tiles, tiles))
+
     @staticmethod
-    def _gate_move_replaced(plan: wall_run.GateMovePlan | None) -> list:
+    def _gate_move_replaced(plan: wall_run.MovePlan | None) -> list:
         """The walls `plan` removes, which placement_rules must not count as
         blockers: the gate replaces them (GH #194). A wall the model would
         refuse to remove is not among them, so it still blocks."""
         return [] if plan is None else [wall for _player_id, wall in plan.removals]
 
     @staticmethod
-    def _gate_move_clauses(plan: wall_run.GateMovePlan | None) -> str:
-        """The status-line tail for a move's gate plan, in on_unit_place's wording."""
+    def _gate_move_clauses(plan: wall_run.MovePlan | None, movers=()) -> str:
+        """The status-line tail for a move's plan, in on_unit_place's wording.
+        Only walls that stay count as reshaped: a carried wall's own shape,
+        and that of one of `movers` moved within its tile, are the user's move
+        (GH #266)."""
         if plan is None:
             return ""
         text = ""
@@ -6304,8 +6636,10 @@ class ViewerWindow(QMainWindow):
             text += f", replacing {count} wall{'' if count == 1 else 's'}"
         if plan.fills:
             text += f", filling {len(plan.fills)}"
-        if plan.rewrites:
-            text += f", reshaping {len(plan.rewrites)} adjacent"
+        moving = {id(unit) for unit in movers}
+        reshaped = sum(1 for _player_id, unit, _variant in plan.rewrites if id(unit) not in moving)
+        if reshaped:
+            text += f", reshaping {reshaped} adjacent"
         if plan.blocked:
             text += f" ({plan.blocked} occupied tiles left open)"
         return text
@@ -6546,7 +6880,9 @@ class ViewerWindow(QMainWindow):
         """Scatter's move mode (GH #105): every selected unit to a random
         eligible tile of the area (the Select region or the selection's grown
         box), in one undo record. Only x/y change
-        (set_position, z passed through), the same write a group move makes.
+        (set_position, z passed through), the same write a group move makes,
+        plus the wall shapes that move re-derives, as a group move's (GH #266,
+        with no gate part).
 
         A host's garrison rides to the host's new point (GH #42), and a
         selected occupant rides with its host rather than scattering alone."""
@@ -6569,17 +6905,29 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Scatter: none of the {len(movers)} selected units fits in the area; nothing moved")
             return
         touched = [e for e, _ in moves] + [r for e, _ in moves for r in riders[id(e.unit)]]
-        players = sorted({e.player_id for e in touched})
-        splices: list[UnitSplice] = []
+        writes = []
         moved_ids: set[int] = set()
-        with self._unit_edit(model, "Scatter selected units", players, splices, fields_only=True):
-            for entry, (x, y) in moves:
-                for row in [entry, *riders[id(entry.unit)]]:
-                    if id(row.unit) in moved_ids:
-                        continue
-                    moved_ids.add(id(row.unit))
-                    self._move_occupant_to(model, row, x, y, splices)
+        for entry, (x, y) in moves:
+            for row in [entry, *riders[id(entry.unit)]]:
+                if id(row.unit) in moved_ids:
+                    continue
+                moved_ids.add(id(row.unit))
+                writes.append((row, x, y))
+        wall_plan = self._move_plan(model, writes, gate_walls=False)
+        players = sorted({e.player_id for e in touched} | (wall_run.move_plan_players(wall_plan) if wall_plan else set()))
+        wholesale = wall_plan is not None and wall_plan.wholesale
+        splices: list[UnitSplice] = []
+        with self._unit_edit(
+            model, "Scatter selected units", players, None if wholesale else splices, fields_only=not wholesale
+        ):
+            for row, x, y in writes:
+                self._move_occupant_to(model, row, x, y, splices)
+            if wholesale:
+                wall_run.apply_move_plan(model, wall_plan)
+            elif wall_plan:
+                self._apply_wall_reshapes(model, wall_plan, splices)
         status = f"Scattered {len(moves)} selected units across the area"
+        status += self._gate_move_clauses(wall_plan, [row.unit for row, _x, _y in writes])
         if plan.reused:
             status += f" ({plan.reused} share a tile: the area has too few free tiles)"
         if stayed:
@@ -7112,8 +7460,13 @@ class ViewerWindow(QMainWindow):
 
         With "Moving a gate updates walls" ticked, a gate that changes tiles
         also clears the walls it lands on and fills the line it left, in the
-        same record (GH #194, _gate_move_plan()). Those walls never block
-        the move; anything else under the gate still does.
+        same record (GH #194, _move_plan()). Those walls never block the
+        move; anything else under the gate still does.
+
+        A wall that changes tiles takes the shape of its new place, and the
+        walls beside the tile it left and the one it reached reshape, in the
+        same record (GH #266, _move_plan()). That stays a fields-only splice
+        edit unless the plan is `wholesale`.
         """
         if self.scenario is None:
             return
@@ -7149,7 +7502,7 @@ class ViewerWindow(QMainWindow):
         # The garrison rides along, onto the host's new point (GH #42).
         occupants = self._garrison_occupant_entries(model, [entry])
         # Planned before the refusal, and only read by it: a refused move changes nothing.
-        gate_plan = self._gate_move_plan(model, [(e, x, y) for e in (entry, *occupants)])
+        gate_plan = self._move_plan(model, [(e, x, y) for e in (entry, *occupants)], gate_walls=True)
         if not self._restrictions_lifted():
             # GH #176. The mover never blocks itself; its occupants are garrisoned, so they never block.
             # GH #194: nor do the walls a moved gate replaces, as on_unit_place's gate_walls.
@@ -7159,31 +7512,34 @@ class ViewerWindow(QMainWindow):
                 self._log_status(f"Move: {reason}. Tick Free placement to move it anyway.")
                 return
         mm = self.scenario.map_manager
-        status = f"Moved {_unit_name(unit.unit_const)} to ({x:g}, {y:g}){self._gate_move_clauses(gate_plan)}"
+        status = f"Moved {_unit_name(unit.unit_const)} to ({x:g}, {y:g}){self._gate_move_clauses(gate_plan, [unit])}"
+        owners = {entry.player_id} | {e.player_id for e in occupants}
         if gate_plan:
+            owners |= wall_run.move_plan_players(gate_plan)
+        if gate_plan is not None and gate_plan.wholesale:
             # GH #194: removals and fills shift list indices, so no splice; one wholesale record.
-            owners = {entry.player_id} | {e.player_id for e in occupants} | wall_run.gate_move_players(gate_plan)
             with self._unit_edit(model, "Move unit", sorted(owners)):
                 # First: the only call that can refuse, so a refusal leaves nothing moved.
                 model.remove_many([wall for _player_id, wall in gate_plan.removals])
                 model.set_position(unit, x, y, unit.z)
                 for occupant in occupants:
                     model.set_position(occupant.unit, x, y, occupant.unit.z)
-                wall_run.apply_gate_move_plan(model, gate_plan)
+                wall_run.apply_move_plan(model, gate_plan)
             self._log_status(status)
             return
         old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
         old_own, old_tiles = self._unit_footprint(unit)
         idx = self._unit_list_index(entry.player_id, unit)
-        players = sorted({entry.player_id} | {e.player_id for e in occupants})
         splices: list[UnitSplice] = []
-        with self._unit_edit(model, "Move unit", players, splices, fields_only=True):
+        with self._unit_edit(model, "Move unit", sorted(owners), splices, fields_only=True):
             model.set_position(unit, x, y, unit.z)
             new_own, new_tiles = self._unit_footprint(unit)
             splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
             self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
             for occupant in occupants:
                 self._move_occupant_to(model, occupant, x, y, splices)
+            if gate_plan:
+                self._apply_wall_reshapes(model, gate_plan, splices)
         self._log_status(status)
 
     def _group_delta(self, anchor, pos, modifiers, commit: bool):
@@ -7249,7 +7605,7 @@ class ViewerWindow(QMainWindow):
         status = f"Moved {len(entries)} units by ({dx:g}, {dy:g})"
         if clamped:
             status += ", stopped at the map edge"
-        self._log_status(status + self._gate_move_clauses(gate_plan))
+        self._log_status(status + self._gate_move_clauses(gate_plan, [e.unit for e in entries]))
 
     def _group_move_refusal(self, entries, dx: float, dy: float, replaced=()) -> str | None:
         """Why placement_rules refuses moving every entry by (dx, dy), as a
@@ -7332,41 +7688,43 @@ class ViewerWindow(QMainWindow):
             rows.append(entry or unit_pick.UnitEntry(player_id, unit, int(unit.x), int(unit.y), -1))
         return rows
 
-    def _plan_unit_move(self, model, entries, dx: float, dy: float) -> tuple[list, wall_run.GateMovePlan | None]:
-        """(entries plus their garrison occupants, _gate_move_plan() for moving
+    def _plan_unit_move(self, model, entries, dx: float, dy: float) -> tuple[list, wall_run.MovePlan | None]:
+        """(entries plus their garrison occupants, _move_plan() for moving
         them all by (dx, dy)): what _move_units() moves and applies."""
         with perf_trace.phase("move_garrison"):
             entries = list(entries) + self._garrison_occupant_entries(model, entries)
-        return entries, self._gate_move_plan(model, [(e, e.unit.x + dx, e.unit.y + dy) for e in entries])
+        return entries, self._move_plan(model, [(e, e.unit.x + dx, e.unit.y + dy) for e in entries], gate_walls=True)
 
     def _move_units(
         self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0
-    ) -> wall_run.GateMovePlan | None:
+    ) -> wall_run.MovePlan | None:
         """Moves every entry by (dx, dy) in ONE undo record, splicing each
-        unit's footprint. `rotation` passes through verbatim, and so does `z`
-        unless a group Z step (GH #154) passes a non-zero `dz`.
+        unit's footprint. `rotation` passes through verbatim, except a wall's
+        shape index the move re-derives (GH #266), and so does `z` unless a
+        group Z step (GH #154) passes a non-zero `dz`.
 
         A host's garrison rides along (GH #42): its occupants sit at its own
         point and cannot be selected while hidden, so the same delta applies
         to them in the same undo record.
 
-        Returns _gate_move_plan()'s answer for the caller's status line (GH
-        #194). A truthy one is applied here, as one wholesale record.
+        Returns _move_plan()'s answer for the caller's status line (GH #194,
+        GH #266), applied here: a `wholesale` one as one wholesale record,
+        any other truthy one inside the splice edit (_apply_wall_reshapes()).
         `planned` is _plan_unit_move()'s answer for these same arguments, when
         the caller already has it (TASK-352); None plans here."""
         # Opened here so the garrison walk lands in the op; _unit_edit's same-label op is transparent.
         with perf_trace.op(label):
             entries, gate_plan = planned if planned is not None else self._plan_unit_move(model, entries, dx, dy)
-            players = sorted({e.player_id for e in entries})
-            if gate_plan:
+            players = sorted({e.player_id for e in entries} | (wall_run.move_plan_players(gate_plan) if gate_plan else set()))
+            if gate_plan is not None and gate_plan.wholesale:
                 # GH #194: removals and fills shift list indices, so no splices; see on_unit_move.
-                with self._unit_edit(model, label, sorted(set(players) | wall_run.gate_move_players(gate_plan))):
+                with self._unit_edit(model, label, players):
                     model.remove_many([wall for _player_id, wall in gate_plan.removals])
                     for entry in entries:
                         unit = entry.unit
                         # Guarded: unit.z + 0.0 would turn a stored -0.0 into 0.0.
                         model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
-                    wall_run.apply_gate_move_plan(model, gate_plan)
+                    wall_run.apply_move_plan(model, gate_plan)
                 return gate_plan
             mm = self.scenario.map_manager
             splices: list[UnitSplice] = []
@@ -7382,6 +7740,8 @@ class ViewerWindow(QMainWindow):
                     splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
                     with perf_trace.phase("move_pick_patch"):
                         self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+                if gate_plan:
+                    self._apply_wall_reshapes(model, gate_plan, splices)
         return gate_plan
 
     def on_unit_drag_preview(self, key: tuple[int, int], pos, modifiers) -> None:
@@ -7617,10 +7977,10 @@ class ViewerWindow(QMainWindow):
 
         Boundary worth knowing during an in-app pass: this is the override the
         unit's SOURCE neighbours give it. A wall dropped somewhere with
-        different neighbours has its index re-derived by the render on
-        release, so the ghost can show the wall shape it has now rather than
-        the one it lands as. Recomputing connectivity per move is the
-        whole-file walk this preview exists to avoid."""
+        different neighbours has its index re-derived by the move's plan on
+        release (GH #266, _move_plan()), so the ghost can show the wall shape
+        it has now rather than the one it lands as. Recomputing connectivity
+        per move is the whole-file walk this preview exists to avoid."""
         overrides = wall_variant_rotation_overrides(self.scenario)
         key = unit_pick.unit_key(entry.player_id, entry.unit)
         cached = self._ghost_rotation
@@ -7678,7 +8038,9 @@ class ViewerWindow(QMainWindow):
                 self._log_status(f"{len(entries)} units already at the map edge; nothing moved")
             return True
         label = "Nudge unit" if len(entries) == 1 else f"Nudge {len(entries)} units"
-        clauses = self._gate_move_clauses(self._move_units(model, entries, dx * step, dy * step, label))
+        clauses = self._gate_move_clauses(
+            self._move_units(model, entries, dx * step, dy * step, label), [e.unit for e in entries]
+        )
         if len(entries) == 1:
             unit = entries[0].unit
             self._log_status(f"Moved {_unit_name(unit.unit_const)} to ({unit.x:g}, {unit.y:g}){clauses}")
@@ -8611,16 +8973,17 @@ class ViewerWindow(QMainWindow):
         self._log_status(f"{status} (applied in {elapsed:.2f}s)")
 
     def _apply_mod_art_change(self, status: str, *, rescan: bool = False) -> None:
-        """The one path for a Mod Art toggle, a Settings opt-out and a profile
-        folder change (TASK-378): mod_graphics takes the window's state, every
+        """The one path for a Mod Art toggle, a Settings opt-out or opt-in and a
+        profile folder change (TASK-378): mod_graphics takes the window's state, every
         art cache drops, and the map, swatches and thumbnails redraw from the
         files that now win. rescan also forgets the scanned mod folders."""
         if rescan:
             mod_graphics.clear()
         toggled = mod_graphics.set_enabled(self._layers.mod_art)
         mod_graphics.set_excluded(settings.get_mod_art_excluded())
+        mod_graphics.set_included(settings.get_mod_art_included())
         if not (toggled or mod_graphics.enabled()):
-            # Off before and after (an opt-out or a profile change): nothing drawn changes.
+            # Off before and after (an opt-out, opt-in or profile change): nothing drawn changes.
             self._update_tool_enabled()
             self._log_status(status)
             return
@@ -8642,7 +9005,7 @@ class ViewerWindow(QMainWindow):
         mod-derived render never goes unsaid in the log."""
         if not mod_graphics.enabled():
             return ""
-        count = sum(not mod.excluded for mod in mod_graphics.mods_with_art())
+        count = sum(mod.drawn for mod in mod_graphics.mods_with_art())
         return f"Mod art: {count} mod{'s' if count != 1 else ''}" if count else ""
 
     def _has_mod_art(self) -> bool:
@@ -8847,9 +9210,7 @@ class ViewerWindow(QMainWindow):
         # "Units" (plural) rather than the plan's "Unit", matching Triggers.
         # on_mode_changed() lowercases, so the label decides the gate string
         # everywhere -- self.mode == "units".
-        self.mode_combo.addItems(
-            ["View", "Terrain", "Units", "Triggers", "Map Options", "Players", "Diplomacy", "Messages"]
-        )
+        self.mode_combo.addItems(list(settings.MODE_LABELS.values()))
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         toolbar.addWidget(self.mode_combo)
         toolbar.addSeparator()
@@ -9899,7 +10260,10 @@ class ViewerWindow(QMainWindow):
         if action is None:
             return
         key_text = settings.get_keybind(action_id)
-        action.setShortcut(QKeySequence(key_text) if key_text else QKeySequence())
+        # A mode-scoped action holds its key only in its own modes, so a key it shares with
+        # another mode's action never sits on two live shortcuts (GH #267, _apply_mode_shortcuts).
+        live = key_text if settings.keybind_live_in(action_id, self.mode) else ""
+        action.setShortcut(QKeySequence(live) if live else QKeySequence())
         tool_id = action_id.removeprefix("tool_")
         if action_id.startswith("tool_") and tool_id in _TOOL_LABELS:
             # An icon-only button shows no name, so the tooltip leads with it and the key.
@@ -9907,6 +10271,13 @@ class ViewerWindow(QMainWindow):
             key = QKeySequence(key_text).toString(QKeySequence.NativeText) if key_text else ""
             label = _TOOL_LABELS[tool_id]
             action.setToolTip(f"{label} ({key}): {base}" if key else f"{label}: {base}")
+
+    def _apply_mode_shortcuts(self) -> None:
+        """Re-applies every mode-scoped keybind for the current self.mode, so each
+        holds its key only where it is live. Run on every mode change."""
+        for action_id in self._keybind_actions:
+            if settings.keybind_modes(action_id):
+                self.apply_keybind(action_id)
 
     def _select_player(self, player_id: int) -> None:
         """Backs the player_select_0..8 shortcuts. There is no global
@@ -10472,6 +10843,7 @@ class ViewerWindow(QMainWindow):
         self.disarm_unit_picker()
         self.on_lift_finalize()  # TASK-256: a mode switch keeps a flip or turn as it stands
         self.mode = _mode_id(mode_text)
+        self._apply_mode_shortcuts()
         # Entering a trigger-parsing mode is what makes Files, and so the
         # embedded-XS info line, readable: refresh it once when that changes.
         triggers_known = None if self.scenario is None else self.scenario.trigger_read_supported
@@ -11870,6 +12242,7 @@ class ViewerWindow(QMainWindow):
         # label -> id conventions in one file is how the next multi-word mode
         # breaks silently.
         self.mode = _mode_id(mode_text)
+        self._apply_mode_shortcuts()
         self.map_view.set_mode(self.mode)
         self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
         self._apply_left_pane_floor()
@@ -17298,8 +17671,9 @@ class ViewerWindow(QMainWindow):
         caller above except Place and single Delete -- add()/remove() are
         membership mutators UnitEditModel refuses to run inside a
         fields_only edit, so only the pure set_position/set_rotation/
-        set_unit_const/set_status/set_capture_flag callers (Move/Nudge/
-        Rotate/Set field/gate orientation) may pass it.
+        set_unit_const/set_status/set_capture_flag/set_wall_variant callers
+        (Move/Nudge/Rotate/Set field/gate orientation, and a move's wall
+        reshapes, GH #266) may pass it.
 
         terrain_current: no caller of this method writes a tile, so the tail
         is told the terrain mirrors are current (_after_unit_mutation()),
@@ -21199,6 +21573,10 @@ def main() -> None:
     migrated = asset_source.migrate_legacy_config()
     if migrated is not None:
         debug_log.log(f"Migrated config from {asset_source.LEGACY_CONFIG_PATH} to {migrated}")
+    # Before the first settings read, so no memo holds a pre-import value (TASK-497).
+    import_line = settings_file.apply_pending_import()
+    if import_line is not None:
+        debug_log.log(import_line)
     debug_log.log(f"Config file: {asset_source.CONFIG_PATH}")
     inherited_line = qt_platform.inherited_line()
     if inherited_line is not None:
@@ -21220,6 +21598,8 @@ def main() -> None:
     # nothing has to be re-measured after the fact.
     apply_ui_font(app, settings.get_ui_font_family(), settings.get_ui_font_size())
     window = _app_window()
+    if import_line is not None:
+        window.status_log.appendPlainText(import_line)  # debug_log has it already
     window.show()
     ready_file = os.environ.get("DESCAPE_READY_FILE")
     if ready_file:

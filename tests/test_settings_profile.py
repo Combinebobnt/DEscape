@@ -108,7 +108,9 @@ def test_load_writes_the_key_lists_the_folders_and_rescans(opened, tmp_path) -> 
         f"Profile 7656: {profile / '7656'}",
         f"Mod (subscribed): 12_Alpha AI: {profile / '7656' / 'mods' / 'subscribed' / '12_Alpha AI'}",
     ]
-    assert dialog.profile_skipped_label.text() == "1 mod disabled in the game's mod list is skipped."
+    assert dialog.profile_skipped_label.text() == (
+        "1 mod disabled in the game's mod list is skipped; if it ships art, it is listed below, off until ticked."
+    )
     assert not dialog.profile_skipped_label.isHidden()
     assert f"Profile folder set to {profile}" in window.status_log.toPlainText()
 
@@ -130,11 +132,11 @@ def test_two_disabled_mods_read_plural_and_leave_the_dialog_width_alone(tmp_path
     """GH #126: the footnote's plural branch, and its width.
 
     Passes when a profile with two disabled mods on disk reads "2 mods
-    disabled ... are skipped." under the scanned list, and the shown dialog
-    with that section populated (list, footnote) is no wider than a shown
-    dialog with nothing loaded. The width half is a guard: the tabs' minimum
-    (793 px at the pinned test font) already exceeds the 520 px default and
-    the one-line footnote alike."""
+    disabled ... are skipped; any that ship art ..." under the scanned list,
+    and the shown dialog with that section populated (list, footnote) is no
+    wider than a shown dialog with nothing loaded. The width half is a guard:
+    the tabs' minimum (793 px at the pinned test font) already exceeds the
+    520 px default, and the footnote wraps."""
     profile = _profile_tree(tmp_path)
     mods = profile / "7656" / "mods"
     (mods / "subscribed" / "56_Second Off AI" / "resources" / "_common").mkdir(parents=True)
@@ -155,7 +157,9 @@ def test_two_disabled_mods_read_plural_and_leave_the_dialog_width_alone(tmp_path
     try:
         dialog.profile_path_edit.setText(str(profile))
         dialog.load_profile_path()
-        assert dialog.profile_skipped_label.text() == "2 mods disabled in the game's mod list are skipped."
+        assert dialog.profile_skipped_label.text() == (
+            "2 mods disabled in the game's mod list are skipped; any that ship art are listed below, off until ticked."
+        )
         assert not dialog.profile_skipped_label.isHidden()
         _select_tab(dialog, "Mods")
         assert _shown_width(dialog) <= empty_width

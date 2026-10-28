@@ -391,8 +391,11 @@ Cosmetic mods draw too: the art your enabled mods ship (trees, buildings,
 units, walls, terrain textures, `.sld` or `.smx`) replaces the game's own on
 the map, in the game's mod order, the top mod winning where two ship the
 same file. **View > Layers > Mod Art** turns it off, and the Mod art list in
-Settings > Mods leaves single mods out. Mods are read once per launch; after
-enabling one in the game, restart DEscape or reload the profile folder.
+Settings > Mods leaves single mods out. That list also shows the mods the
+game's own mod list disables, off until ticked: a ticked one draws in DEscape
+only, at its place in the game's mod order, and the game's list is not
+changed. Mods are read once per launch; after enabling or disabling one in
+the game, restart DEscape or reload the profile folder.
 
 Data mods (a mod that ships its own `resources/_common/dat/empires2_x2_p1.dat`,
 the kind the game's lobby selects rather than enables) are picked in

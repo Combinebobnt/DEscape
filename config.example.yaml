@@ -163,6 +163,15 @@ tool_options: {}
 # mod_art_excluded:
 #   - subscribed//12345_Example Mod
 
+# Mods the game's own mod list disables whose art View > Layers > Mod Art
+# draws anyway, ticked in Settings > Mods > Mod art, as the game's
+# mods/mod-status.json Path strings. A ticked mod draws at its place in the
+# game's mod order; the game's mod list is never changed. A listed mod that
+# is no longer installed stays listed.
+# Default: [] (no disabled mod's art draws). The value below is only an example.
+# mod_art_included:
+#   - subscribed//67890_Example Disabled Mod
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false

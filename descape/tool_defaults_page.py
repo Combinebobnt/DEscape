@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
     QAction,
     QCheckBox,
@@ -58,11 +58,38 @@ def _unavailable(value: object) -> str:
     return f"Unavailable ({value})"
 
 
+# Combos are this many characters wide and the set buttons' text is elided to it, so the labels take the slack (TASK-498).
+_CONTROL_CHARS = 14
+
+
+class _SetButton(QToolButton):
+    """Shows its list elided to the combos' text width, re-elided on a font change; the tooltip has it whole."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._full = ""
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def _elide(self) -> None:
+        metrics = self.fontMetrics()
+        self.setText(metrics.elidedText(self._full, Qt.ElideRight, metrics.horizontalAdvance("X") * _CONTROL_CHARS))
+
+    def changeEvent(self, event) -> None:  # Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.FontChange:
+            self._elide()
+
+
 class ToolDefaultsPage(QWidget):
     def __init__(self, window: ViewerWindow):
         super().__init__()
         self._window = window
         self._values = settings.get_tool_option_defaults()
+        self.labels: dict[str, QLabel] = {}
         self.controls: dict[str, QWidget] = {}
         self.default_buttons: dict[str, QPushButton] = {}
         self._set_actions: dict[str, dict[object, QAction]] = {}
@@ -89,7 +116,7 @@ class ToolDefaultsPage(QWidget):
         rows = QWidget()
         grid = QGridLayout(rows)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(0, 1)
         row = 0
         for group_id, title in tool_options.GROUPS:
             names = [spec.name for spec in tool_options.OPTIONS if spec.group == group_id]
@@ -110,7 +137,10 @@ class ToolDefaultsPage(QWidget):
                 grid.addWidget(note, row, 0, 1, 3)
                 row += 1
             for name in names:
-                grid.addWidget(QLabel(tool_options.option(name).label), row, 0)
+                label = QLabel(tool_options.option(name).label)
+                label.setWordWrap(True)
+                self.labels[name] = label
+                grid.addWidget(label, row, 0)
                 control = self._make_control(name)
                 self.controls[name] = control
                 grid.addWidget(control, row, 1, Qt.AlignLeft)
@@ -147,7 +177,7 @@ class ToolDefaultsPage(QWidget):
             spin.setRange(spec.minimum, spec.maximum if spec.maximum is not None else spec.minimum)
             return spin
         if spec.kind == tool_options.SET:
-            button = QToolButton()
+            button = _SetButton()
             button.setPopupMode(QToolButton.InstantPopup)
             menu = KeepOpenMenu(button)
             self._set_actions[name] = {}
@@ -157,7 +187,12 @@ class ToolDefaultsPage(QWidget):
                 self._set_actions[name][member] = action
             button.setMenu(menu)
             return button
-        return FocusWheelComboBox()
+        combo = FocusWheelComboBox()
+        combo.setSizeAdjustPolicy(FocusWheelComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(_CONTROL_CHARS)
+        # A long entry is cut in the closed box; the tooltip shows it whole.
+        combo.currentIndexChanged.connect(lambda _index, box=combo: box.setToolTip(box.currentText()))
+        return combo
 
     def _entries(self, name: str) -> list[tuple[str, object]]:
         return self._window.tool_option_bindings[name].entries(self._values)
@@ -186,7 +221,7 @@ class ToolDefaultsPage(QWidget):
                 action.blockSignals(True)
                 action.setChecked(member in value)
                 action.blockSignals(False)
-            control.setText(self._shown(name, value))
+            control.set_full_text(self._shown(name, value))
             return
         control.blockSignals(True)
         try:
@@ -206,6 +241,7 @@ class ToolDefaultsPage(QWidget):
                     control.addItem(_unavailable(value), value)
                     index = control.count() - 1
                 control.setCurrentIndex(index)
+                control.setToolTip(control.currentText())
         finally:
             control.blockSignals(False)
 

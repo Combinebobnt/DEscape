@@ -770,8 +770,9 @@ def test_the_wheel_combos_list_every_action_and_start_from_the_stored_values() -
 def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
     """TASK-356: at the dialog's default size the combo clipped "Brush size or
     rotate preview" (190 px field, 225 px label at 96 DPI, offscreen Qt, pinned test font; 276 px after).
-    Those numbers are this machine's font list: the font picker sets the dialog's width (TASK-375).
-    The wheel combos span the key-box and Default columns; Default sits in Clear's."""
+    Those numbers were this machine's font list: the font picker set the dialog's width (TASK-375).
+    The wheel combos sit under their slot label and span the label, key-box and Default columns;
+    Default sits in Clear's (TASK-498)."""
     from PyQt5.QtWidgets import QApplication, QStyle, QStyleOptionComboBox, QTabWidget
 
     from descape import settings
@@ -806,14 +807,11 @@ def test_the_ctrl_wheel_combo_shows_its_whole_default_label() -> None:
 def test_every_wheel_combo_fits_its_longest_label_at_the_minimum_dialog_width() -> None:
     """TASK-375: with short installed font names the font picker no longer widened
     Settings, and the wheel combos shrank to a 104 px field (DejaVu-only fontconfig,
-    96 DPI, offscreen Qt). Pinning the picker narrow takes the machine's font list out."""
+    96 DPI, offscreen Qt). The picker's minimum no longer follows the font list (TASK-498)."""
     from PyQt5.QtWidgets import QApplication, QScrollArea, QStyle, QStyleOptionComboBox, QTabWidget
 
     dialog, window = conftest.dialog_and_window()
     try:
-        dialog.ui_font_combo.setFixedWidth(60)
-        # Appearance stays a hidden tab, so its row's cached minimum (735 px) only re-measures when activated.
-        dialog.ui_font_combo.parentWidget().layout().activate()
         tabs = dialog.findChild(QTabWidget)
         tabs.setCurrentIndex(next(i for i in range(tabs.count()) if tabs.tabText(i) == "Keybinds"))
         dialog.resize(dialog.minimumSizeHint())
@@ -1046,6 +1044,8 @@ def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_hea
     window = ViewerWindow()
     try:
         panel = window.trigger_panel
+        # Scoped to Triggers mode (GH #267): a fresh window opens in View, where they hold no key.
+        window.mode_combo.setCurrentText("Triggers")
         for action_id, default in expected:
             action = window._keybind_actions[action_id]
             assert action.shortcut() == QKeySequence(default), action_id
@@ -1054,12 +1054,7 @@ def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_hea
             assert not action.autoRepeat(), action_id
             assert action.associatedWidgets() == [panel.tree, panel.entry_tree], action_id
             assert action not in window.actions(), action_id
-        # The label column is as wide as its widest label, and the key boxes get what is left.
-        mine = {label for _action_id, label, _default in rows}
-        others = {label for _a, label, _d in settings.REBINDABLE_ACTIONS} - mine
-        assert max(QLabel(label).sizeHint().width() for label in mine) <= max(
-            QLabel(label).sizeHint().width() for label in others
-        ), "a trigger move label widens the Keybinds label column"
+        # Their tagged labels' width is test_settings_dialog_width.py's three-line cap.
         dialog = SettingsDialog(window)
         try:
             # A freshly built tab, as in the section-header test above.
@@ -1235,4 +1230,181 @@ def test_a_recover_autosave_binding_survives_a_config_reload_and_a_window_rebuil
         finally:
             dialog.close()
     finally:
+        conftest.close_window(window)
+
+
+# -- GH #267: per-mode keybind scopes -------------------------------------------------
+
+_SHARED_KEY = "Ctrl+Alt+F7"
+
+
+def test_the_mode_combo_lists_mode_labels_in_order_and_each_item_maps_to_its_id() -> None:
+    from descape import settings
+    from descape.viewer import ViewerWindow, _mode_id
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        combo = window.mode_combo
+        texts = [combo.itemText(i) for i in range(combo.count())]
+        assert texts == list(settings.MODE_LABELS.values())
+        assert [_mode_id(text) for text in texts] == list(settings.MODE_LABELS)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_key_on_a_terrain_tool_and_a_units_tool_checks_each_in_its_own_mode() -> None:
+    """Real presses on a shown, active window. The mode switch between them is a
+    press of the Units Mode key too, so the shortcut swap runs inside Qt's own
+    shortcut dispatch."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window = conftest.shown_terrain_window()
+    try:
+        assert settings.keybind_holder(_SHARED_KEY) is None, f"test assumes nothing holds {_SHARED_KEY}"
+        assert settings.get_keybind("mode_units") == "Ctrl+U"
+        assert settings.set_keybind("tool_place_unit", _SHARED_KEY) == []
+        assert settings.set_keybind("tool_set_level", _SHARED_KEY) == []
+        window.apply_keybind("tool_place_unit")
+        window.apply_keybind("tool_set_level")
+
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+
+        assert window.mode == "terrain" and window.set_level_action.isEnabled()
+        QTest.keyClick(window, Qt.Key_F7, Qt.ControlModifier | Qt.AltModifier)
+        QApplication.processEvents()
+        assert window.set_level_action.isChecked() and window._current_tool == "set_level"
+
+        QTest.keyClick(window, Qt.Key_U, Qt.ControlModifier)
+        QApplication.processEvents()
+        assert window.mode == "units" and window.place_unit_action.isEnabled()
+        assert not window.place_unit_action.isChecked()
+
+        QTest.keyClick(window, Qt.Key_F7, Qt.ControlModifier | Qt.AltModifier)
+        QApplication.processEvents()
+        assert window.place_unit_action.isChecked() and window._current_tool == "place_unit"
+    finally:
+        conftest.close_window(window)
+
+
+def test_scoped_keybinds_hold_their_key_only_in_their_own_modes_and_no_two_shortcuts_collide() -> None:
+    """Independent of the hide and enable gates: in every mode, reached through
+    mode_combo, a scoped action out of scope has no shortcut at all."""
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.map_view import MapView
+
+    window = conftest.blank_window()
+    try:
+        shared = ("tool_place_unit", "tool_set_level", "tool_create_objects")
+        for action_id in shared:
+            assert settings.set_keybind(action_id, _SHARED_KEY) == [], action_id
+            window.apply_keybind(action_id)
+        scoped = [a for a in window._keybind_actions if settings.keybind_modes(a)]
+        assert set(shared) <= set(scoped) and "trigger_move_up" in scoped and "unit_select_stack" in scoped
+
+        for mode, text in settings.MODE_LABELS.items():
+            window.mode_combo.setCurrentText(text)
+            assert window.mode == mode
+            for action_id in scoped:
+                shortcut = window._keybind_actions[action_id].shortcut()
+                if mode in settings.keybind_modes(action_id):
+                    assert shortcut == QKeySequence(settings.get_keybind(action_id)), (mode, action_id)
+                else:
+                    assert shortcut.isEmpty(), (mode, action_id, shortcut.toString())
+            live: dict[str, list[str]] = {}
+            seen: set[int] = set()
+            for action_id, action in window._keybind_actions.items():
+                if action_id in MapView.PAN_DIRECTIONS or id(action) in seen:
+                    continue
+                seen.add(id(action))
+                if not action.shortcut().isEmpty():
+                    live.setdefault(action.shortcut().toString(), []).append(action_id)
+            assert not {key: ids for key, ids in live.items() if len(ids) > 1}, mode
+            assert live.get(_SHARED_KEY, []) == [a for a in shared if mode in settings.keybind_modes(a)], mode
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_keybinds_tab_tags_two_rows_sharing_a_key_and_select_clears_both() -> None:
+    """Place Unit (Units) and Set Elevation (Terrain) may share Select's default S;
+    Select (Terrain, Units) then may not have it back, by Default or by typing it."""
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog, ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    try:
+        dialog = SettingsDialog(window)
+        try:
+            edits = dialog._keybind_edits
+            assert settings.get_keybind("tool_select") == "S"
+            edits["tool_place_unit"].setKeySequence(QKeySequence("S"))
+            assert edits["tool_select"].keySequence().isEmpty()
+            assert dialog._keybind_warning_label.text() == (
+                "'S' was already assigned to Select Tool (Terrain, Units) -- that binding has been cleared."
+            )
+            edits["tool_set_level"].setKeySequence(QKeySequence("S"))
+            assert dialog._keybind_warning_label.text() == ""
+            for action_id, shown in (
+                ("tool_place_unit", "Place Unit Tool (Units)"),
+                ("tool_set_level", "Set Elevation Tool (Terrain)"),
+            ):
+                label, edit, _default_btn, _clear_btn = _row_widgets(dialog, action_id)
+                assert label.text() == shown
+                assert edit.keySequence() == QKeySequence("S") and settings.get_keybind(action_id) == "S"
+            assert _row_widgets(dialog, "edit_undo")[0].text() == "Undo"
+
+            dialog._keybind_filter_edit.setText("(terrain")
+            assert not edits["tool_set_level"].isHidden() and not edits["tool_select"].isHidden()
+            assert edits["tool_place_unit"].isHidden() and edits["mode_terrain"].isHidden()
+            dialog._keybind_filter_edit.setText("")
+
+            _row_widgets(dialog, "tool_select")[2].click()
+            assert edits["tool_select"].keySequence().isEmpty() and settings.get_keybind("tool_select") == ""
+            assert dialog._keybind_warning_label.text() == (
+                "'S' is assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units) -- "
+                "Select Tool's default was not restored."
+            )
+
+            edits["tool_select"].setKeySequence(QKeySequence("S"))
+            assert settings.get_keybind("tool_select") == "S"
+            for action_id in ("tool_place_unit", "tool_set_level"):
+                assert edits[action_id].keySequence().isEmpty() and settings.get_keybind(action_id) == "", action_id
+            assert dialog._keybind_warning_label.text() == (
+                "'S' was already assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units) -- "
+                "those bindings have been cleared."
+            )
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_warning_names_three_cleared_holders_with_commas_then_and() -> None:
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        for action_id in ("tool_set_level", "tool_place_unit", "tool_create_objects"):
+            assert settings.set_keybind(action_id, _SHARED_KEY) == [], action_id
+        dialog._keybind_edits["edit_undo"].setKeySequence(QKeySequence(_SHARED_KEY))
+        assert dialog._keybind_warning_label.text() == (
+            f"'{_SHARED_KEY}' was already assigned to Set Elevation Tool (Terrain), Place Unit Tool (Units) "
+            "and Create Objects Tool (Triggers) -- those bindings have been cleared."
+        )
+    finally:
+        dialog.close()
         conftest.close_window(window)

@@ -1149,6 +1149,196 @@ def test_apply_gate_move_plan_adds_the_fills_then_rewrites():
     assert _unit(loaded, _REF_WALL).rotation != 4.0
 
 
+def test_a_wall_a_moved_gate_leaves_with_no_neighbour_becomes_a_tower():
+    """GH #266's tower rule in the gate part too: between two gates the wall
+    is run interior, and once both leave with their lines kept open it
+    stands alone, so it takes 2 rather than keeping its run index."""
+    gate_a, gate_b = _gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 3, 10)
+    wall = _wall_at(7, 10, rotation=0.0)
+    away = [(gate_a, _gate_tiles(GATE, 30, 30)), (gate_b, _gate_tiles(GATE, 30, 40))]
+    plan = _move_plan(away, [wall], blocked=set(gate_a) | set(gate_b))
+    assert plan.fills == []
+    assert plan.rewrites == [(1, wall, 2)]
+
+
+# --- a moved wall (GH #266) -----------------------------------------------
+#
+# Each fixture wall stores the index its neighbours derive, unless a test
+# says it is stale on purpose, so no test passes on a mis-shaped fixture.
+
+_RADIAN_1 = 2 * 3.141592653589793 / 5  # index 1 in the radian convention
+
+
+def _walls_scenario(*walls, gaia=()):
+    """`walls` owned by player 1, and `gaia` by GAIA, on a 60x60 map."""
+    return _Scenario(60, [list(gaia), list(walls), [], [], [], [], [], [], []])
+
+
+def _plan_moves(scenario, moves, gate_walls: bool = False):
+    return wall_run.scenario_move_plan(scenario, 60, 60, moves, gate_walls=gate_walls)
+
+
+def _by_tile(entries) -> dict[tuple[int, int], int]:
+    """(player_id, unit, variant) entries keyed by each unit's tile before the move."""
+    return {_tile(u): v for _p, u, v in entries}
+
+
+def test_a_mid_run_wall_moved_off_its_run_is_a_tower_and_so_are_its_old_neighbours():
+    """The GH #266 screenshot: the moved piece, and the run ends either side of the gap it left."""
+    run = _x_run(5, 15, 10)
+    wall = run[5]
+    assert (_tile(wall), wall.rotation) == ((10, 10), 0.0)
+    plan = _plan_moves(_walls_scenario(*run), [(wall, wall.x, wall.y + 3)])
+    assert plan.moved == [(1, wall, 2)]
+    assert _by_tile(plan.rewrites) == {(9, 10): 2, (11, 10): 2}
+    assert (plan.removals, plan.fills, plan.blocked, plan.radian_flip) == ([], [], 0, False)
+    assert plan and not plan.wholesale
+
+
+def test_a_lone_tower_moved_into_a_runs_gap_joins_it():
+    run = [u for u in _x_run(5, 15, 10) if _tile(u) != (10, 10)]
+    for unit in run:
+        if _tile(unit) in ((9, 10), (11, 10)):
+            unit.rotation = 2.0  # the run ends either side of the gap
+    tower = _wall_at(30, 30, rotation=2.0)
+    plan = _plan_moves(_walls_scenario(*run, tower), [(tower, 10.5, 10.5)])
+    assert plan.moved == [(1, tower, 0)]
+    assert _by_tile(plan.rewrites) == {(9, 10): 0, (11, 10): 0}
+
+
+def test_a_stale_lone_wall_moved_into_the_open_again_becomes_a_tower():
+    """Re-derived whether or not its mask changed, so moving a wall an earlier move left stale fixes it."""
+    stale = _wall_at(30, 30, rotation=0.0)
+    plan = _plan_moves(_walls_scenario(stale), [(stale, 40.5, 40.5)])
+    assert plan.moved == [(1, stale, 2)]
+    assert plan.rewrites == []
+
+
+def test_a_whole_consistent_run_moved_together_changes_no_wall():
+    run = _x_run(5, 15, 10)
+    plan = _plan_moves(_walls_scenario(*run), _shifted(run, 0, 5))
+    assert (plan.moved, plan.rewrites) == ([], [])
+    assert not plan
+
+
+def test_a_whole_run_moved_together_rewrites_only_its_stale_wall():
+    """The cost of always re-deriving a carried wall, pinned: a structure moved whole fixes any stale wall in it."""
+    run = _x_run(5, 15, 10)
+    run[3].rotation = 4.0
+    plan = _plan_moves(_walls_scenario(*run), _shifted(run, 0, 5))
+    assert plan.moved == [(1, run[3], 0)]
+    assert plan.rewrites == []
+
+
+def test_a_wall_moved_off_a_stack_reshapes_nothing_beside_the_tile_it_left():
+    """The trigger rule: (10, 10) still holds a wall afterwards, so no
+    neighbour's mask changed, and the neighbour storing radian noise (index 1
+    where it derives 2) is left as it is."""
+    staying, leaving = _wall_at(10, 10, rotation=0.0), _wall_at(10, 10, rotation=0.0)
+    noisy, end = _wall_at(9, 10, rotation=_RADIAN_1), _wall_at(11, 10, rotation=2.0)
+    plan = _plan_moves(_walls_scenario(noisy, staying, leaving, end), [(leaving, 10.5, 15.5)])
+    assert plan.moved == [(1, leaving, 2)]
+    assert plan.rewrites == []
+
+
+def test_a_wall_landing_diagonal_to_a_stationary_wall_reshapes_it():
+    """The 8-bit mask: (20, 20) ends a NW-SE diagonal at (19, 19), and the landing wall continues it."""
+    tail, end, lone = _wall_at(19, 19, rotation=2.0), _wall_at(20, 20, rotation=2.0), _wall_at(40, 40, rotation=2.0)
+    plan = _plan_moves(_walls_scenario(tail, end, lone), [(lone, 21.5, 21.5)])
+    assert plan.rewrites == [(1, end, 3)]
+    assert plan.moved == []
+
+
+def test_a_runs_middle_left_by_both_its_ends_becomes_a_tower():
+    """`isolated`: no neighbour derives no shape, which _neighbour_rewrites() skips without it."""
+    west, middle, east = _x_run(5, 7, 10)
+    plan = _plan_moves(_walls_scenario(west, middle, east), [(west, 5.5, 20.5), (east, 7.5, 20.5)])
+    assert plan.rewrites == [(1, middle, 2)]
+    assert plan.moved == []
+    alone = [wall_run.ExistingWall(unit=middle, player_id=1, tx=6, ty=10)]
+    assert wall_run._neighbour_rewrites(alone, {(6, 10)}, set(), set()) == []
+    assert wall_run._neighbour_rewrites(alone, {(6, 10)}, set(), set(), isolated=2) == [(1, middle, 2)]
+
+
+def test_a_group_nudge_re_derives_a_neighbour_that_stays_in_its_tile():
+    """The same 0.1 carries one wall over a tile edge and not its neighbour, which counts as staying."""
+    run = _x_run(9, 12, 10)
+    crossing, staying = run[1], run[2]
+    crossing.y = 10.95
+    plan = _plan_moves(_walls_scenario(*run), _shifted([crossing, staying], 0, 0.1))
+    assert plan.moved == [(1, crossing, 2)]
+    assert plan.rewrites == [(1, staying, 2)]
+
+
+def test_a_gate_moved_with_the_box_off_reshapes_nothing_beside_its_old_site():
+    """The walls either side of the gate's old site keep their run index. A
+    moved wall still counts the co-moved gate on its new tiles: landing
+    between it and a lone wall, it is run interior."""
+    lone, beyond = _wall_at(30, 30, rotation=2.0), _wall_at(13, 13, rotation=2.0)
+    gate, _walls, scenario = _gate_scenario([lone, beyond])
+    plan = _plan_moves(scenario, [(gate, gate.x, gate.y + 3), (lone, 12.5, 13.5)])
+    assert plan.moved == [(1, lone, 0)]
+    assert plan.rewrites == []
+    assert (plan.removals, plan.fills) == ([], [])
+    assert not plan.wholesale
+
+
+def test_a_gate_and_a_wall_moved_with_the_box_on_name_each_rewritten_wall_once():
+    """GH #194's removals and fills as before. (12, 10) loses its east
+    neighbour, the moved wall, so both parts rewrite it; the merge keeps one."""
+    gate, walls, scenario = _gate_scenario()
+    carried = next(u for u in walls if _tile(u) == (13, 10))
+    moves = _shifted([gate, carried], 0, 3)
+    assert [_tile(u) for _p, u, _v in wall_run.scenario_gate_moves(scenario, 60, 60, moves).rewrites] == [(12, 10)]
+
+    plan = _plan_moves(scenario, moves, gate_walls=True)
+
+    assert plan.removals == []
+    assert _fills(plan) == {(x, 10): 0 for x in range(8, 12)}
+    assert [(_tile(u), v) for _p, u, v in plan.rewrites] == [((12, 10), 2), ((14, 10), 2)]
+    assert plan.moved == [(1, carried, 2)]
+    assert plan.wholesale
+
+
+def test_radian_flip_is_set_only_when_the_plan_overwrites_the_last_radian_wall_value():
+    def plan_for(rotation=_RADIAN_1, gaia=()):
+        wall = _wall_at(10, 10, rotation=rotation)
+        return _plan_moves(_walls_scenario(wall, gaia=gaia), [(wall, 20.5, 20.5)])
+
+    flipping = plan_for()
+    assert flipping.moved and flipping.radian_flip and flipping.wholesale
+    # A GAIA wall keeps its radian index 2 (a tower already), so the file stays radian.
+    kept = plan_for(gaia=(_wall_at(40, 40, rotation=2 * _RADIAN_1),))
+    assert kept.moved and not kept.radian_flip and not kept.wholesale
+    integer = plan_for(rotation=1.0)
+    assert integer.moved and not integer.radian_flip
+
+
+def test_scenario_move_plan_answers_none_without_a_scene_walk(monkeypatch):
+    """A villager, a 0.1 wall nudge inside its tile, and a gate with the box off."""
+    villager = _wall_at(40, 40, const=_VILLAGER)
+    gate, walls, scenario = _gate_scenario([villager])
+    wall = walls[3]
+    assert _tile(wall) == (12, 10)
+
+    def walk(*_args, **_kwargs):
+        raise AssertionError("planned through a scene walk")
+
+    monkeypatch.setattr(wall_run, "wall_scene", walk)
+    assert _plan_moves(scenario, _shifted([villager], 5, 0), gate_walls=True) is None
+    assert _plan_moves(scenario, _shifted([wall], 0.1, 0), gate_walls=True) is None
+    assert _plan_moves(scenario, _shifted([gate], 5, 0), gate_walls=False) is None
+    with pytest.raises(AssertionError, match="scene walk"):
+        _plan_moves(scenario, _shifted([wall], 1, 0))
+
+
+def test_move_plan_players_adds_each_carried_walls_owner():
+    plan = wall_run.MovePlan(
+        removals=[(0, _wall_at(13, 10))], fills=[], rewrites=[(5, _wall_at(12, 10), 2)], moved=[(3, _wall_at(9, 9), 2)]
+    )
+    assert wall_run.move_plan_players(plan) == {0, 3, 5}
+
+
 # --- set_cliff_frame()'s guard ----------------------------------------
 #
 # set_wall_variant()'s sibling for the Cliff drag's join rewrites (GH #44),

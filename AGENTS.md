@@ -9,7 +9,7 @@ commands, and architecture.
 - Never write into a subscribed-mods `mods/subscribed/` folder: the game's
   mod manager re-syncs it, so an edit there is silently lost. Every path that writes a scenario
   file (Save, autosave, and the tools that write one directly) and every
-  CSV/theme export refuses an output path with the consecutive parts
+  CSV, theme or settings export refuses an output path with the consecutive parts
   `mods`, `subscribed` (case-insensitive), as written or resolved through
   symlinks (`scenario_io.is_workshop_subscribed()`). A new one must too.
   The game profile itself (Proton `compatdata/` on Linux,
@@ -105,7 +105,7 @@ commands, and architecture.
     rotation (cliffs, VARIANT, INERT) left verbatim, with no write at all.
     Guards: the three setters' own, plus `plan_in_place()` pinned by
     `tests/test_region_transform.py`. Allowed for its own reason, not the
-    wall-run bullet's "derived from neighbours": the permuted value is the
+    *Wall shapes re-derived from neighbours* bullet's: the permuted value is the
     element's image of a shape or facing the game already accepted, the
     same reason Mirror Map and the region turn may write it. Each step
     re-plans from the first state with the element composed since, so a
@@ -151,14 +151,23 @@ commands, and architecture.
     because the game re-derives their index from neighbours, so a written
     value would be overridden. It always writes a literal integer index: every
     corpus placement on a cyclable const stores one, never the radian form.
-  - *Place Unit's wall-run junction rewrites*, its rewrites of the walls
+  - *Wall shapes re-derived from neighbours*: Place Unit's wall-run
+    junction rewrites, its rewrites of the walls
     beside a gate it places (GH #159, which also removes the walls under the
-    gate's footprint), and a gate move's rewrites of the walls beside its old
+    gate's footprint), a gate move's rewrites of the walls beside its old
     and new site when "Moving a gate updates walls" is ticked (GH #194, which
     also removes the walls under the new footprint and fills the line the
     gate left with new walls, `add_many()`ed with the same neighbour-derived
     literal integer index and frame 0; the gate itself only changes
-    position), via
+    position), and a move's rewrites (GH #266: a wall carried onto another
+    tile by a drag, group drag, arrow nudge, the Inspector's X or Y, or
+    Scatter's move mode takes the shape its new neighbours give it, and a
+    wall that stays takes the one its neighbours give it when a tile beside
+    it starts or stops holding a connector because a wall moved; a gate's
+    own move reshapes walls only under the GH #194 option). A wall a move or
+    a gate move leaves with no neighbour takes the tower index 2, which all
+    24 isolated walls in the integer-encoded corpus store and AoE2:DE draws
+    for a lone wall. All of these go via
     `UnitEditModel.set_wall_variant()`, only on the wall-family consts (9 in
     AoE2, 8 in Return of Rome)
     `unit_sprites.rotation_variant_eligible()` accepts (`angle_count == 5`)
@@ -301,7 +310,8 @@ commands, and architecture.
   correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
   field through verbatim here too, with the exceptions listed above:
   `UnitEditModel.set_wall_variant()`, which writes the value derived from
-  the same neighbours the game would read; *Replace*
+  the same neighbours the game would read (or, for a wall a move leaves
+  with none, the tower index 2); *Replace*
   (`UnitEditModel.replace_type()`, by `unit_model.replaced_rotation()`),
   which keeps a wall's index verbatim when the new const is also a wall and
   writes `0.0` when a non-wall becomes a wall; and the new wall images of

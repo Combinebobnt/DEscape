@@ -7,7 +7,7 @@ import contextlib
 import dataclasses
 from typing import ClassVar
 
-from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -30,8 +30,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
-    QStyle,
-    QStyleOptionButton,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -79,6 +77,7 @@ from descape.value_picker import PickerItem, ValueLineEdit, _HScrollStableTreeWi
 from descape.viewer_common import (
     FontScaledWidth,
     IndeterminateDoubleSpinBox,
+    LabelFitButton,
     _fit_combo_width,
     _IndeterminateMixin,
     _make_spinbox,
@@ -378,29 +377,6 @@ class _MoveButton(QToolButton):
             super().mouseReleaseEvent(event)
         finally:
             self.click_modifiers = Qt.NoModifier
-
-
-class _LabelFitButton(QPushButton):
-    """A push button that may shrink to its own label (GH #213). Fusion
-    floors a labelled button's size hint at 80 px, which the entry row cannot
-    spare beside its ▲▼ pair. The hint stays; only the minimum drops, to what
-    the style gives the same label without that floor. Read off the live font
-    and style on every query, so a UI font change needs no refit."""
-
-    def __init__(self, text: str) -> None:
-        super().__init__(text)
-        # Shrinkable: under QPushButton's own Minimum policy the layout takes sizeHint() as the floor.
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-
-    def minimumSizeHint(self) -> QSize:
-        hint = self.sizeHint()
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
-        label = self.fontMetrics().size(Qt.TextShowMnemonic, self.text())
-        # The style applies its floor only to an option that carries text; frame and margins are the same.
-        option.text = ""
-        fitted = self.style().sizeFromContents(QStyle.CT_PushButton, option, label, self).width()
-        return QSize(min(fitted, hint.width()), hint.height())
 
 
 class TriggerPanel(QWidget):
@@ -969,7 +945,7 @@ class TriggerPanel(QWidget):
             lambda op: (lambda checked=False: self._request_entry_op(op)),
             ("new", "copy", "delete", "retype"),
             # GH #213: the four give up Fusion's 80 px floor, which is the room ▲▼ take.
-            button_class=_LabelFitButton,
+            button_class=LabelFitButton,
         )
         moves = QHBoxLayout()
         moves.setContentsMargins(0, 0, 0, 0)
