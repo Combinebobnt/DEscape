@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import secrets
 import stat
 from collections.abc import Collection
 from dataclasses import dataclass, field
@@ -54,75 +55,81 @@ _TOOLBAR = "Toolbar"
 _PANELS = "Panels"
 _OTHER = "Other"
 
-# key -> group label. Legacy keys travel too, so the importing build migrates them on read.
-PORTABLE_KEYS: dict[str, str] = {
-    "zoom_centered_on_cursor": _GENERAL,
-    "mod_art_excluded": _MODS,
-    "mod_art_included": _MODS,
-    "theme": _APPEARANCE,
-    "theme_colors": _APPEARANCE,
-    "dark_mode": _APPEARANCE,
-    "ui_font_family": _APPEARANCE,
-    "ui_font_size": _APPEARANCE,
-    "preload_zoom_levels": _APPEARANCE,
-    "graphics_quality": _APPEARANCE,
-    "potato_mode": _APPEARANCE,
-    "elev_step_pct": _APPEARANCE,
-    "elev_step_divisor": _APPEARANCE,
-    "pan_speed": _APPEARANCE,
-    "wall_opacity_pct": _APPEARANCE,
-    "overlay_colors": _APPEARANCE,
-    "overlay_opacity": _APPEARANCE,
-    "ruler_label_font_px": _APPEARANCE,
-    "distance_tick_font_px": _APPEARANCE,
-    "stack_badge_position": _APPEARANCE,
-    "terrain_grid_swatch_px": _APPEARANCE,
-    "grid_blend": _APPEARANCE,
-    "grid_lightness": _APPEARANCE,
-    "grid_thickness": _APPEARANCE,
-    "toolbar_style": _APPEARANCE,
-    "trigger_status_colors": _APPEARANCE,
-    "trigger_status_marker": _APPEARANCE,
-    "trigger_status_color_ok_rows": _APPEARANCE,
-    "trigger_status_color_sections": _APPEARANCE,
-    "tool_options": _TOOLS,
-    **{legacy_key: _TOOLS for legacy_key, _name in settings._LEGACY_TOOL_OPTION_KEYS},
-    "autosave_enabled": _SAVING,
-    "autosave_interval_min": _SAVING,
-    "autosave_retention": _SAVING,
-    "autosave_location": _SAVING,
-    "backups_enabled": _SAVING,
-    "keybinds": _KEYBINDS,
-    "wheel_bindings": _KEYBINDS,
-    "game_data": _ADVANCED,
-    "gaia_only_catalog_mode": _ADVANCED,
-    "view_layers": _VIEW,
-    "distance_ticks": _VIEW,
-    "distance_tick_interval": _VIEW,
-    "stack_badges": _VIEW,
-    "selection_by_owner": _VIEW,
-    "grid_overlay": _VIEW,
-    "grid_follow_elevation": _VIEW,
-    "grid_major_every": _VIEW,
-    "footprint_outlines": _VIEW,
-    "footprint_scope": _VIEW,
-    "footprint_merged": _VIEW,
-    "footprint_by_owner": _VIEW,
-    "range_rings": _VIEW,
-    "range_rings_by_owner": _VIEW,
-    "range_rings_revealers": _VIEW,
-    "range_rings_buildings": _VIEW,
-    "range_rings_selected_revealers": _VIEW,
-    "range_rings_triggers": _VIEW,
-    "camera_markers": _VIEW,
-    "trigger_overlay": _VIEW,
-    "terrain_style": _TOOLBAR,
-    "units_catalog_mode": _PANELS,
-    "terrain_picker_mode": _PANELS,
-    "text_box_lines": _PANELS,
-    "button_grid_all_triggers": _PANELS,
-    "language": _OTHER,
+# key -> (group label, the label of the control that sets it). The change summary shows both, or
+# the group alone where the label repeats it. Legacy keys travel too, so the importing build
+# migrates them on read; each takes its successor's label.
+PORTABLE_KEYS: dict[str, tuple[str, str]] = {
+    "zoom_centered_on_cursor": (_GENERAL, "Mouse wheel zoom"),
+    "mod_art_excluded": (_MODS, "Mod art left unticked"),
+    "mod_art_included": (_MODS, "Mod art ticked while disabled in game"),
+    "theme": (_APPEARANCE, "Theme"),
+    "theme_colors": (_APPEARANCE, "Chrome colours"),
+    "dark_mode": (_APPEARANCE, "Theme"),
+    "ui_font_family": (_APPEARANCE, "UI font"),
+    "ui_font_size": (_APPEARANCE, "UI font size"),
+    "preload_zoom_levels": (_APPEARANCE, "Preload neighbouring zoom levels"),
+    "graphics_quality": (_APPEARANCE, "Graphics quality"),
+    "potato_mode": (_APPEARANCE, "Graphics quality"),
+    "elev_step_pct": (_APPEARANCE, "Isometric elevation height"),
+    "elev_step_divisor": (_APPEARANCE, "Isometric elevation height"),
+    "pan_speed": (_APPEARANCE, "Pan speed"),
+    "wall_opacity_pct": (_APPEARANCE, "Wall opacity"),
+    "overlay_colors": (_APPEARANCE, "Tool overlay colors"),
+    "overlay_opacity": (_APPEARANCE, "Tool overlay opacity"),
+    "ruler_label_font_px": (_APPEARANCE, "Ruler label size"),
+    "distance_tick_font_px": (_APPEARANCE, "Distance ticks label size"),
+    "stack_badge_position": (_APPEARANCE, "Stacked-unit badge position"),
+    "terrain_grid_swatch_px": (_APPEARANCE, "Terrain grid swatch size"),
+    "grid_blend": (_APPEARANCE, "Grid line blend"),
+    "grid_lightness": (_APPEARANCE, "Grid line blend"),
+    "grid_thickness": (_APPEARANCE, "Grid thickness"),
+    "toolbar_style": (_APPEARANCE, "Toolbar buttons"),
+    "trigger_status_colors": (_APPEARANCE, "Trigger status colours"),
+    "trigger_status_marker": (_APPEARANCE, "Trigger status"),
+    "trigger_status_color_ok_rows": (_APPEARANCE, "Mark triggers that pass"),
+    "trigger_status_color_sections": (_APPEARANCE, "Colour section rows"),
+    "tool_options": (_TOOLS, _TOOLS),
+    **{legacy_key: (_TOOLS, _TOOLS) for legacy_key, _name in settings._LEGACY_TOOL_OPTION_KEYS},
+    "autosave_enabled": (_SAVING, "Autosave on a timer"),
+    "autosave_interval_min": (_SAVING, "Autosave every"),
+    "autosave_retention": (_SAVING, "Keep per document"),
+    "autosave_location": (_SAVING, "Autosaves go"),
+    "backups_enabled": (_SAVING, "Write .bak and .orig backups on save"),
+    "keybinds": (_KEYBINDS, _KEYBINDS),
+    "wheel_bindings": (_KEYBINDS, "Mouse Wheel"),
+    "game_data": (_ADVANCED, "Game data"),
+    "gaia_only_catalog_mode": (_ADVANCED, "GAIA-only objects"),
+    "view_layers": (_VIEW, "Layers"),
+    "distance_ticks": (_VIEW, "Distance Ticks > Show"),
+    "distance_tick_interval": (_VIEW, "Distance Ticks > Every N tiles"),
+    "stack_badges": (_VIEW, "Show Stacked-Unit Badges"),
+    "selection_by_owner": (_VIEW, "Colour Selection by Owner"),
+    "grid_overlay": (_VIEW, "Grid > Show"),
+    "grid_follow_elevation": (_VIEW, "Grid > Follow Terrain Elevation"),
+    "grid_major_every": (_VIEW, "Grid > Stronger line every N tiles"),
+    "footprint_outlines": (_VIEW, "Footprint Outlines > Show"),
+    "footprint_scope": (_VIEW, "Footprint Outlines > which units"),
+    "footprint_merged": (_VIEW, "Footprint Outlines > Merge tiles"),
+    "footprint_by_owner": (_VIEW, "Footprint Outlines > Colour by Owner"),
+    "range_rings": (_VIEW, "Range Rings > Selected Buildings"),
+    "range_rings_by_owner": (_VIEW, "Range Rings > Colour by Owner"),
+    "range_rings_revealers": (_VIEW, "Range Rings > All Map Revealers"),
+    "range_rings_buildings": (_VIEW, "Range Rings > All Buildings"),
+    "range_rings_selected_revealers": (_VIEW, "Range Rings > Selected Map Revealers"),
+    "range_rings_triggers": (_VIEW, "Range Rings > Trigger Changes"),
+    "camera_markers": (_VIEW, "Show Player Cameras"),
+    "trigger_overlay": (_VIEW, "Show Trigger Overlay"),
+    "trigger_ghosts": (_VIEW, "Show Trigger-Created Units"),
+    "terrain_style": (_TOOLBAR, "Elevation View"),
+    "units_catalog_mode": (_PANELS, "Units catalog view"),
+    "terrain_picker_mode": (_PANELS, "Terrain picker view"),
+    "text_box_lines": (_PANELS, "Text box heights"),
+    "button_grid_all_triggers": (_PANELS, "Show all triggers' changes"),
+    "language": (_OTHER, "Language"),
 }
+
+# The staged import's id, written into config.yaml in the same write as its settings.
+IMPORT_APPLIED_KEY = "import_applied"
 
 # key -> why it stays on this machine.
 LOCAL_KEYS: dict[str, str] = {
@@ -136,6 +143,7 @@ LOCAL_KEYS: dict[str, str] = {
     "split_sizes": "window layout for this screen",
     "log_height": "window layout for this screen",
     "xwayland_on_wayland": "a Linux session workaround",
+    IMPORT_APPLIED_KEY: "this machine's record of the last applied import",
 }
 
 # Legacy key -> (its successor key, the tool_options entry it fed or None). The getters read
@@ -154,8 +162,8 @@ class SettingsFileRefused(ValueError):
 
 
 class SettingsWriteBlockedError(ValueError):
-    """The export target is in a subscribed-mods (mods/subscribed/) folder, or
-    cannot be resolved; nothing was written."""
+    """The export target is in a subscribed-mods (mods/subscribed/) folder, is
+    one of config_files(), or cannot be resolved; nothing was written."""
 
 
 class ConfigUnreadable(ValueError):
@@ -209,6 +217,11 @@ def backup_path() -> Path:
     return settings.CONFIG_PATH.parent / BACKUP_NAME
 
 
+def config_files() -> tuple[Path, ...]:
+    """config.yaml and the files an import keeps beside it: no export may replace one."""
+    return (settings.CONFIG_PATH, pending_path(), bad_pending_path(), backup_path())
+
+
 def read_current_config() -> tuple[bytes | None, dict]:
     """config.yaml's bytes and its parsed mapping; (None, {}) when there is
     none and {} for an empty one. Unlike settings._load_config(), a file that
@@ -243,10 +256,11 @@ def build_document() -> dict:
 
 
 def write_settings_file(path: Path | str, doc: dict) -> None:
-    """Refuses a mods/subscribed/ path, as written or resolved, or an
-    unresolvable one, raising SettingsWriteBlockedError and writing nothing.
-    Otherwise writes through a temp file and os.replace()."""
-    yaml_file_io.write_export(path, doc, what="settings", blocked=SettingsWriteBlockedError)
+    """Refuses a mods/subscribed/ path, as written or resolved, an
+    unresolvable one, or one of config_files(), raising
+    SettingsWriteBlockedError and writing nothing. Otherwise writes through a
+    temp file and os.replace()."""
+    yaml_file_io.write_export(path, doc, what="settings", blocked=SettingsWriteBlockedError, protected=config_files())
 
 
 def _too_deep(value) -> bool:
@@ -393,17 +407,19 @@ def _show(value) -> str:
 def describe_changes(plan: ImportPlan) -> list[str]:
     """What applying `plan` would change against config.yaml as it is now:
     the changed settings, then the ones reset to default, one line each under
-    their group. A dict-valued setting is compared entry by entry with both
-    sides filled in from its defaults, and shows as a count. A legacy key reads
-    as its successor's change. Raises ConfigUnreadable like apply would."""
+    their group and control label. A dict-valued setting is compared entry by
+    entry with both sides filled in from its defaults, and shows as a count. A
+    legacy key reads as its successor's change. Raises ConfigUnreadable like
+    apply would."""
     _data, current = read_current_config()
     target = _target_config(current, plan.known_keys, plan.values)
     entry_ids = _entry_ids()
     changed: list[str] = []
     reset: list[str] = []
-    for key, group in PORTABLE_KEYS.items():
+    for key, (group, label) in PORTABLE_KEYS.items():
         if key in LEGACY_SUCCESSORS:
             continue  # shown as its successor's change
+        where = group if label == group else f"{group}: {label}"
         if key in entry_ids:
             defaults, one, many = entry_ids[key]
             old, new = {**defaults, **_entries(current, key)}, {**defaults, **_entries(target, key)}
@@ -411,12 +427,12 @@ def describe_changes(plan: ImportPlan) -> list[str]:
             count = sum(not _same(old.get(i, _MISSING), new.get(i, _MISSING)) for i in ids)
             if not count:
                 continue
-            line = f"{group}: {key}: {count} {one} differs" if count == 1 else f"{group}: {key}: {count} {many} differ"
+            line = f"{where}: {count} {one} differs" if count == 1 else f"{where}: {count} {many} differ"
         else:
             old, new = _scalar(current, key), _scalar(target, key)
             if old is new or (old is not _MISSING and new is not _MISSING and _same(old, new)):
                 continue
-            line = f"{group}: {key}: {_show(old)} -> {_show(new)}"
+            line = f"{where}: {_show(old)} -> {_show(new)}"
         (reset if _present(current, key) and not _present(target, key) else changed).append(line)
     if not changed and not reset:
         return ["Nothing in this file differs from the current settings."]
@@ -438,13 +454,15 @@ def format_import_summary(plan: ImportPlan) -> str:
 
 
 def stage_import(plan: ImportPlan, source_path: Path | str) -> Path:
-    """Writes the pending import beside config.yaml, for the next launch to apply."""
+    """Writes the pending import beside config.yaml, for the next launch to
+    apply. Its fresh `id` is what tells apply that config.yaml already holds it."""
     path = pending_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = {
         "format": PENDING_FORMAT_ID,
         "version": PENDING_VERSION,
         "mode": "replace",
+        "id": secrets.token_hex(8),
         "source": str(source_path),
         "known_keys": list(plan.known_keys),
         "settings": dict(plan.values),
@@ -453,36 +471,67 @@ def stage_import(plan: ImportPlan, source_path: Path | str) -> Path:
     return path
 
 
-def pending_import() -> dict | None:
-    """The staged import's document, {} when one is staged but unreadable, None when none is."""
-    path = pending_path()
-    if not path.exists():
-        return None
+@dataclass(frozen=True)
+class PendingImport:
+    """A staged import, its keys re-filtered to this build's portable keys.
+    `source` and `import_id` are None when the file lacks them. `refusal`, when
+    set, is why this build will not apply it; the other fields are then empty."""
+
+    source: str | None = None
+    import_id: str | None = None
+    known_keys: list[str] = field(default_factory=list)
+    settings: dict = field(default_factory=dict)
+    refusal: str | None = None
+
+
+def pending_import() -> PendingImport | None:
+    """The staged import, None when none is, or when config.yaml already
+    records its id: a failed unlink left it, and the next launch only removes
+    it. A newer build's file stays staged; an unreadable one is moved aside
+    at the next launch."""
     try:
-        return yaml_file_io.read_root(path, _PENDING_FORMAT)
+        staged = _read_pending(pending_path())
+    except _PendingNewer as e:
+        return PendingImport(refusal=f"a newer DEscape staged it ({e})")
     except _PendingRefused as e:
-        return None if isinstance(e.__cause__, FileNotFoundError) else {}
+        return PendingImport(refusal=f"it cannot be read ({e})")
+    if staged is None or staged.import_id is None:
+        return staged
+    try:
+        _data, current = read_current_config()
+    except (ConfigUnreadable, OSError):
+        return staged
+    return None if _already_applied(staged, current) else staged
+
+
+def _already_applied(staged: PendingImport, current: dict) -> bool:
+    return staged.import_id is not None and current.get(IMPORT_APPLIED_KEY) == staged.import_id
 
 
 def discard_pending_import() -> None:
     pending_path().unlink(missing_ok=True)
 
 
-def _read_pending(path: Path) -> tuple[str, list[str], dict] | None:
-    """(source, known keys, entries) re-filtered to this build's portable keys,
-    or None when the file is gone (another instance took it)."""
+def _read_pending(path: Path) -> PendingImport | None:
+    """The staged import, or None when the file is gone (another instance
+    took it). Raises _PendingNewer for a file a newer build staged, which stays
+    staged, and _PendingRefused for one no build can apply."""
     try:
         root = yaml_file_io.read_root(path, _PENDING_FORMAT)
     except _PendingRefused as e:
         if not isinstance(e, _PendingNewer) and isinstance(e.__cause__, FileNotFoundError):
             return None
         raise
-    if root.get("mode") != "replace":
-        raise _PendingNewer(f"its mode {_short(root.get('mode'))} is not one this DEscape applies")
+    mode = root.get("mode")
+    if not isinstance(mode, str):
+        raise _PendingRefused(f"not a DEscape staged settings file (its mode {_short(mode)} is not text)")
+    if mode != "replace":
+        raise _PendingNewer(f"its mode {_short(mode)} is not one this DEscape applies")
     known, entries = _structure(root, _PendingRefused, "staged settings")
-    source = root.get("source")
-    return (
-        source if isinstance(source, str) else "a settings file",
+    source, import_id = root.get("source"), root.get("id")
+    return PendingImport(
+        source if isinstance(source, str) else None,
+        import_id if isinstance(import_id, str) and import_id else None,
         [key for key in known if key in PORTABLE_KEYS],
         {key: value for key, value in entries.items() if key in PORTABLE_KEYS},
     )
@@ -495,7 +544,9 @@ def apply_pending_import() -> str | None:
     config.yaml is written leaves it untouched and moves the staged file to
     BAD_PENDING_NAME. The old config.yaml is copied to BACKUP_NAME first, and
     only when the import changes it, so a re-run never backs up an imported
-    config (D7)."""
+    config (D7). The config write also records the import's id
+    (IMPORT_APPLIED_KEY), so a pending file left behind by a failed unlink is
+    only removed later, never re-applied over edits made since."""
     pending = pending_path()
     if not pending.exists():
         return None
@@ -508,19 +559,29 @@ def apply_pending_import() -> str | None:
             return f"Settings import not applied, left staged in {pending}: {e}"
         if staged is None:
             return None
-        source, known, values = staged
+        source = staged.source or source
         data, current = read_current_config()
-        target = _target_config(current, known, values)
+        if _already_applied(staged, current):
+            try:
+                pending.unlink(missing_ok=True)
+            except OSError as e:
+                # Not the generic handler's "nothing changed": the import did apply, at an earlier launch.
+                return f"Settings from {source} were already applied; {pending} could not be removed: {e}"
+            return f"Settings from {source} were already applied."
+        target = _target_config(current, staged.known_keys, staged.settings)
+        changes = not _same(target, current)
+        if staged.import_id is not None:
+            target[IMPORT_APPLIED_KEY] = staged.import_id
         if not _same(target, current):
             config = settings.CONFIG_PATH.resolve()  # a symlinked config.yaml stays a symlink
             mode = stat.S_IMODE(config.stat().st_mode) if data is not None else None
-            if data is not None:
+            if changes and data is not None:
                 yaml_file_io.atomic_write(backup_path(), data, mode=mode)
             config.parent.mkdir(parents=True, exist_ok=True)
             yaml_file_io.atomic_write(config, yaml.safe_dump(target, default_flow_style=False, sort_keys=False), mode=mode)
             written = True
         pending.unlink(missing_ok=True)
-        if not written:
+        if not changes:
             return f"Settings from {source} were already applied."
         backup = f"; the previous settings are in {backup_path()}" if data is not None else ""
         return f"Settings imported from {source}{backup}."

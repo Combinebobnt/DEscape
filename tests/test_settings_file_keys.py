@@ -2,11 +2,13 @@
 
 Discovery reads descape/'s sources for the shapes config keys are read and
 written through (`config["k"]`, `config.get("k"`, `config.pop("k"`,
-`_load_config().get("k"`), plus the two names that reach config through a
-variable: settings._LEGACY_TOOL_OPTION_KEYS' legacy keys and
-content_roots.PROFILE_CONFIG_KEY. A key in neither map would drop out of
-exported files without anyone noticing, or a path would leak into them; a
-registry key discovery never finds is a retired key lingering there.
+`_load_config().get("k"`), plus the names that reach config through a
+variable: settings._LEGACY_TOOL_OPTION_KEYS' legacy keys,
+content_roots.PROFILE_CONFIG_KEY and settings_file.IMPORT_APPLIED_KEY. A key
+in neither map would drop out of exported files without anyone noticing, or a
+path would leak into them; a registry key discovery never finds is a retired
+key lingering there. tests/test_settings_getter_fuzz.py adds a second
+discovery: every key a settings getter reads from the loaded config.
 """
 
 from __future__ import annotations
@@ -36,6 +38,8 @@ def _scan() -> tuple[set[str], set[str]]:
         written.update(_WRITE.findall(text))
     read.update(legacy for legacy, _name in settings._LEGACY_TOOL_OPTION_KEYS)
     read.add(content_roots.PROFILE_CONFIG_KEY)
+    read.add(settings_file.IMPORT_APPLIED_KEY)
+    written.add(settings_file.IMPORT_APPLIED_KEY)
     return read - NOT_CONFIG_KEYS, written
 
 
@@ -56,6 +60,19 @@ def test_every_registry_key_is_one_the_code_uses() -> None:
     discovered, _written = _scan()
     stale = (set(settings_file.PORTABLE_KEYS) | set(settings_file.LOCAL_KEYS)) - discovered
     assert not stale, f"registry keys no code reads or writes any more: {sorted(stale)}"
+
+
+def test_every_portable_key_has_its_controls_label() -> None:
+    """The import summary names a setting by its group and label, never its raw key. Two shown
+    keys of one group never share a label, and a legacy key reads as its successor."""
+    seen: dict[tuple[str, str], str] = {}
+    for key, (group, label) in settings_file.PORTABLE_KEYS.items():
+        assert label.strip() and label not in settings_file.PORTABLE_KEYS, key
+        if key in settings_file.LEGACY_SUCCESSORS:
+            assert label == settings_file.PORTABLE_KEYS[settings_file.LEGACY_SUCCESSORS[key][0]][1], key
+            continue
+        assert (group, label) not in seen, (key, seen.get((group, label)))
+        seen[(group, label)] = key
 
 
 def test_every_legacy_key_has_a_successor_the_registry_carries() -> None:

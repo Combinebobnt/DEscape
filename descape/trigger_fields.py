@@ -536,6 +536,39 @@ def field_specs(
     return tuple(specs)
 
 
+# -- the property form's order and object list type row (GH #41) --------------
+
+# The object list fields object_group and object_type filter alongside.
+OBJECT_LIST_FIELDS = ("object_list", "object_list_unit_id")
+_OBJECT_FILTER_FIELDS = ("object_group", "object_type")
+
+
+def form_order(specs: Sequence[FieldSpec]) -> tuple[FieldSpec, ...]:
+    """`specs` in the property form's order: object_group then object_type
+    (those present) directly after the first OBJECT_LIST_FIELDS field, so the
+    object filters sit above every Set row. Without one, unchanged. Always a
+    permutation, and the panel's alone: other field_specs() callers keep
+    vocabulary order."""
+    anchor = next((spec.name for spec in specs if spec.name in OBJECT_LIST_FIELDS), None)
+    if anchor is None:
+        return tuple(specs)
+    moved = sorted((s for s in specs if s.name in _OBJECT_FILTER_FIELDS), key=lambda s: _OBJECT_FILTER_FIELDS.index(s.name))
+    ordered: list[FieldSpec] = []
+    for spec in specs:
+        if spec.name in _OBJECT_FILTER_FIELDS:
+            continue
+        ordered.append(spec)
+        if spec.name == anchor:
+            ordered.extend(moved)
+    return tuple(ordered)
+
+
+def has_list_type(spec: FieldSpec) -> bool:
+    """Whether the form gives this field an object list type row: an editable
+    object picker (UnitInfo or BuildingInfo), never a TechInfo one."""
+    return spec.kind == REFERENCE and spec.presentation in _COMBINED_OBJECT_PRESENTATIONS and not spec.read_only
+
+
 def checkbox_checked(spec: FieldSpec, value: Any) -> bool:
     """Whether a BOOL spec's checkbox shows `value` ticked: truthy and not the
     spec's sentinel, so allow_in_fog's -1 (unset) shows unticked like its 0."""

@@ -109,10 +109,42 @@ def test_load_writes_the_key_lists_the_folders_and_rescans(opened, tmp_path) -> 
         f"Mod (subscribed): 12_Alpha AI: {profile / '7656' / 'mods' / 'subscribed' / '12_Alpha AI'}",
     ]
     assert dialog.profile_skipped_label.text() == (
-        "1 mod disabled in the game's mod list is skipped; if it ships art, it is listed below, off until ticked."
+        "1 mod disabled in the game's mod list is skipped; if it is in the profile the game last used "
+        "and ships art, it is listed below, off until ticked."
     )
     assert not dialog.profile_skipped_label.isHidden()
     assert f"Profile folder set to {profile}" in window.status_log.toPlainText()
+
+
+def test_on_two_accounts_the_skipped_note_says_whose_art_mods_are_listed(opened, tmp_path) -> None:
+    """GH #264 review: skipped_mods() counts every account's disabled mods, but the Mod art list
+    shows only those of the account the game last ran. With a disabled mod in each account, the
+    note counts both and says the list below is the last-used profile's."""
+    import os
+
+    from descape import content_roots
+
+    dialog, _window, _rescans = opened
+    profile = _profile_tree(tmp_path)
+    old_mods = profile / "0" / "mods"
+    (old_mods / "local" / "Old Art Mod" / "resources" / "_common").mkdir(parents=True)
+    (old_mods / "mod-status.json").write_text(json.dumps({"Mods": [{"Enabled": False, "Path": "local//Old Art Mod"}]}))
+    os.utime(old_mods / "mod-status.json", (1_000_000, 1_000_000))
+    assert content_roots.active_profile_id(profile) == "7656"
+    dialog.profile_path_edit.setText(str(profile))
+    dialog.load_profile_path()
+    note = dialog.profile_skipped_label.text()
+    assert note.startswith("2 mods disabled")
+    assert "any in the profile the game last used that ship art are listed below" in note
+
+
+def test_the_guide_says_the_scanned_list_leaves_out_disabled_mods() -> None:
+    """The list under the profile row is content_roots() without disabled mods, which the Mod art
+    list and File > Data Mod still read: the guide must not call it every folder DEscape scans."""
+    guide = (Path(__file__).resolve().parent.parent / "descape" / "help" / "settings.md").read_text(encoding="utf-8")
+    mods = guide.split("## Mods", 1)[1].split("\n## ", 1)[0]
+    profile_row = next(line for line in mods.splitlines() if line.startswith("- AoE2DE profile folder"))
+    assert "disabled" in profile_row
 
 
 def _pump() -> None:
@@ -132,7 +164,7 @@ def test_two_disabled_mods_read_plural_and_leave_the_dialog_width_alone(tmp_path
     """GH #126: the footnote's plural branch, and its width.
 
     Passes when a profile with two disabled mods on disk reads "2 mods
-    disabled ... are skipped; any that ship art ..." under the scanned list,
+    disabled ... are skipped; any in the profile ..." under the scanned list,
     and the shown dialog with that section populated (list, footnote) is no
     wider than a shown dialog with nothing loaded. The width half is a guard:
     the tabs' minimum (793 px at the pinned test font) already exceeds the
@@ -158,7 +190,8 @@ def test_two_disabled_mods_read_plural_and_leave_the_dialog_width_alone(tmp_path
         dialog.profile_path_edit.setText(str(profile))
         dialog.load_profile_path()
         assert dialog.profile_skipped_label.text() == (
-            "2 mods disabled in the game's mod list are skipped; any that ship art are listed below, off until ticked."
+            "2 mods disabled in the game's mod list are skipped; any in the profile the game last used "
+            "that ship art are listed below, off until ticked."
         )
         assert not dialog.profile_skipped_label.isHidden()
         _select_tab(dialog, "Mods")

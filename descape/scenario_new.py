@@ -37,6 +37,15 @@ tools/gen_blank_template.py, so every new map is a 1.59 scenario.
 tests/test_blank_template.py compares it against a blank map saved by the
 1.59 game editor.
 
+Trees and eye candy (blank_scenario_bytes()'s trees/doodads) are planted
+into the generated file, not edited in after load: the spliced bytes are
+parsed, terrain_units.plan_fill()'s units add_many()ed to GAIA under the
+donor's own game's tables (game_dataset.activated()), and the body rebuilt
+through scenario_write.build_patched_body(), the same unit write a save
+makes. So a new map with trees opens unmodified and with nothing to undo,
+like any file that already had them. Planting nothing returns the bare
+bytes untouched.
+
 MIN_MAP_TILES is set by a structural constraint, not the donor's own size:
 Units.player_data_3's editor_camera_x/y and initial_camera_x/y are (60, 60)
 in all three shipped exports regardless of map size -- the game does not
@@ -49,18 +58,21 @@ path.
 
 from __future__ import annotations
 
+import random
 import struct
 from pathlib import Path
 
-from descape import game_dataset, iso_geometry, player_fields
+from descape import game_dataset, iso_geometry, player_fields, terrain_units
 from descape.scenario_io import (
     BLANK_ROR_TEMPLATE_PATH,
     BLANK_TEMPLATE_PATH,
     TERRAIN_STRUCT_SIZE,
     LoadedScenario,
     load_map_and_units,
+    load_map_and_units_from_bytes,
 )
-from descape.scenario_write import _compress_bytes
+from descape.scenario_write import WriteBlockedError, _compress_bytes, build_patched_body
+from descape.unit_model import UnitEditModel, UnitEditsUnavailableError
 
 BLANK_TERRAIN_STRUCT = b"\x00\x00\x00\xff\xff\xff\xff"
 
@@ -99,6 +111,13 @@ MAX_MAP_TILES = 480
 # deliberate choice on the one large size already in-game proven, not a
 # custom guess, so a confirm there would just be a nag.
 LARGE_MAP_CONFIRM_TILES = 240
+
+# GUI-only: New Map… asks first above this many planted units (expected_unit_count()).
+# A full forest: Giant (57,600) is not asked, Ludicrous (230,400, ~1 GB more memory) is.
+NEW_MAP_UNIT_CONFIRM = 100_000
+
+# Planted units belong to GAIA, as the Terrain tool's do.
+_GAIA = 0
 
 _SIZE_STRUCT = struct.Struct("<ii")
 
@@ -273,16 +292,51 @@ def blank_scenario_bytes(
     terrain_id: int = 0,
     elevation: int = 0,
     game_data: str = game_dataset.AOE2,
+    trees: bool = False,
+    doodads: bool = False,
+    rng: random.Random | None = None,
 ) -> bytes:
     """Full .aoe2scenario file bytes for a blank width x height map (square
     when height is None), every tile terrain_id at elevation: donor's
     FileHeader verbatim, followed by the recompressed spliced body. donor
     defaults to game_data's shipped 120x120 template
-    (blank_template_path_for())."""
+    (blank_template_path_for()).
+
+    trees / doodads plant GAIA trees / eye candy on every tile the way the
+    Terrain tool does (terrain_units.plan_fill(), rolled with `rng`, a fresh
+    Random() when None), under the donor's own game's tables. The defaults,
+    and a terrain with nothing enabled to plant, give the bare bytes exactly.
+
+    Raises BlankGenerationError, besides blank_body()'s errors, when the
+    planted units cannot be written into the spliced map."""
     if donor is None:
         donor = load_map_and_units(blank_template_path_for(game_data))
     body = blank_body(donor, width, height, terrain_id=terrain_id, elevation=elevation)
-    return donor.header_bytes + _compress_bytes(body)
+    data = donor.header_bytes + _compress_bytes(body)
+    if not (trees or doodads):
+        return data
+    width, height = validate_map_size(width, height)
+    with game_dataset.activated(game_dataset.from_variant(donor.game_variant)):
+        specs = terrain_units.plan_fill(
+            width, height, terrain_id, trees=trees, doodads=doodads, rng=random.Random() if rng is None else rng
+        )
+        if not specs:
+            return data
+        return _planted_bytes(data, specs, f"blank_{width}x{height}.aoe2scenario")
+
+
+def _planted_bytes(data: bytes, specs: list, display_path: str) -> bytes:
+    """`data` reparsed with `specs` add_many()ed to GAIA and written back
+    through build_patched_body(), the way a save writes them. No undo
+    history: a commit would capture every unit for a record nobody keeps."""
+    loaded = load_map_and_units_from_bytes(data, display_path)
+    try:
+        model = UnitEditModel(loaded)
+        model.add_many(_GAIA, specs)
+        header, body = build_patched_body(loaded, units=model)
+    except (UnitEditsUnavailableError, WriteBlockedError) as e:
+        raise BlankGenerationError(f"Could not plant {len(specs)} units into the new map: {e}") from e
+    return header + _compress_bytes(body)
 
 
 def load_blank_scenario(
@@ -293,17 +347,25 @@ def load_blank_scenario(
     terrain_id: int = 0,
     elevation: int = 0,
     game_data: str = game_dataset.AOE2,
+    trees: bool = False,
+    doodads: bool = False,
+    rng: random.Random | None = None,
 ) -> LoadedScenario:
     """blank_scenario_bytes() reloaded through the real loader -- offsets are
     never carried across a length-changing splice, the same discipline
     tools/strip_units.py uses ('reload through the real loader, not just
-    re-decompress in place'). Imported here rather than at module scope to
-    avoid a cycle: scenario_io does not import this module."""
-    from descape.scenario_io import load_map_and_units_from_bytes
-
+    re-decompress in place'), and none across the planted units' splice."""
     width, height = validate_map_size(width, height)
     data = blank_scenario_bytes(
-        width, donor, height, terrain_id=terrain_id, elevation=elevation, game_data=game_data
+        width,
+        donor,
+        height,
+        terrain_id=terrain_id,
+        elevation=elevation,
+        game_data=game_data,
+        trees=trees,
+        doodads=doodads,
+        rng=rng,
     )
     return load_map_and_units_from_bytes(data, f"blank_{width}x{height}.aoe2scenario")
 
@@ -313,6 +375,7 @@ __all__ = [
     "LARGE_MAP_CONFIRM_TILES",
     "MAX_MAP_TILES",
     "MIN_MAP_TILES",
+    "NEW_MAP_UNIT_CONFIRM",
     "STANDARD_MAP_SIZES",
     "STANDARD_MAP_SIZE_NAMES",
     "BlankFillError",

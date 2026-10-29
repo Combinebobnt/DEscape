@@ -48,4 +48,13 @@ GAIA has only Civilization, Architecture, the two locks, Starting age, the four 
 
 Where this is in the in-game editor: the Players tab, with the starting camera under the Options tab's Point of View.
 
-DEscape has no Swap Players. Swap two players' settings in the in-game editor.
+## Swap players
+
+**Swap Players…** at the bottom of the panel, or **Map > Swap Players…**, makes two players exchange slots, so the scenario plays as before with the two renumbered. The dialog starts on the player selected here, or Player 1 when GAIA is selected. Only the scenario's own players can be swapped, never GAIA.
+
+Each player's units, every setting on this panel, Personality and disabled objects always move to the other. Two boxes, both ticked to start, choose the rest:
+
+- **Swap players in triggers**: conditions and effects that name one of the two as their source or target player name the other instead. A condition or effect type DEscape doesn't know is left as it is, and the dialog counts them.
+- **Swap diplomacy**: each one's stances toward the others, the others' stances toward them, and allied victory.
+
+Trigger names, messages and scripts are never rewritten, so a message or script that mentions a player by number still does after the swap. The line under the boxes says what will move, or why this file can't be swapped, and Swap stays greyed then. The whole swap is one undo step. In the in-game editor, this is the Players tab's Swap Players.

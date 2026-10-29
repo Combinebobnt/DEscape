@@ -17,7 +17,10 @@ unit art draws at all, and this is a render-category question -- which
 categories of rendering happen, and (small_trees, translucent_walls) how
 one category's art is drawn. That is why a row about tree or
 wall ART still belongs here and not in Filters, which decides membership
-rather than appearance.
+rather than appearance. Fish Outlines (TASK-499) is the first overlay row
+(`LayerSpec.scene_overlay`): a MapView item drawn over the map, like View >
+Footprint Outlines, never chunk pixels, so render_key() keeps it out of
+every chunk cache's state.
 
 Every row persists across launches, by user decision (GH #182), stored by
 settings.get_view_layers()/set_view_layer() under the config key
@@ -29,6 +32,7 @@ persist, the old idea of a per-row `persist` field is moot.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from descape import terrain_style
@@ -50,14 +54,16 @@ WALL_OPACITY_DEFAULT_PCT = 50
 class LayerState:
     """An immutable "render these layers" state, whose defaults are each row's
     own LayerSpec.default (on for the two visibility rows, Hero Glow and Mod Art, off
-    for Small Trees and Translucent Walls).
+    for Small Trees, Translucent Walls and Fish Outlines).
 
     Frozen for exactly the reason UnitFilter is: it is stored on a chunk
     cache and compared BY VALUE to decide whether a change needs the cache
     evicting, and a mutable state edited in place would silently skip that
-    eviction -- every field here is composited into cached chunk PIXELS, so
-    the toggle would appear to do nothing until the user scrolled somewhere
-    uncached.
+    eviction -- every field here except the scene-overlay rows' is composited
+    into cached chunk PIXELS, so the toggle would appear to do nothing until
+    the user scrolled somewhere uncached. The caches store and compare
+    render_key(state), which resets the scene-overlay fields, so toggling one
+    of those evicts nothing.
 
     No `is_default` property, unlike UnitFilter: nothing here needs to
     collapse a combination of checkboxes into one canonical default-equal
@@ -72,6 +78,8 @@ class LayerState:
     translucent_walls: bool = False
     # Read by mod_graphics, not by the render: the viewer pushes it there (TASK-378).
     mod_art: bool = True
+    # A scene overlay (MapView's fish rings), never in chunk pixels: render_key() drops it.
+    fish_outlines: bool = False
     # Not a registry row: Settings > Appearance owns it, and the viewer fills it in.
     wall_opacity_pct: int = WALL_OPACITY_DEFAULT_PCT
 
@@ -115,6 +123,9 @@ class LayerSpec:
     requires_textures: bool = False
     # Greyed while no mod in the profile ships art (the viewer passes has_mod_art).
     requires_mod_art: bool = False
+    # Drawn as a MapView scene item rather than into chunk pixels, so no cache
+    # sees it (render_key()) and the viewer routes its toggle to MapView.
+    scene_overlay: bool = False
 
 
 LAYERS: tuple[LayerSpec, ...] = (
@@ -207,6 +218,25 @@ LAYERS: tuple[LayerSpec, ...] = (
         keybind_label="Hero Glow Layer",
     ),
     LayerSpec(
+        layer_id="fish_outlines",
+        label="Fish &Outlines",
+        tooltip=(
+            "Outline every fish: shore fish, turtles, oysters, and each "
+            "deep-water fish, dolphin and whale round its whole footprint, "
+            "so they are easy to find on the water. The colour is set in "
+            "Settings > Appearance. This adds an outline, it does not change "
+            "the fish."
+        ),
+        # Off, like Small Trees: it draws something the game does not.
+        default=False,
+        # Drawn from MapView's own footprint geometry, which every style has.
+        styles=None,
+        # A ring, not art: meaningful with sprites off too.
+        requires_sprites=False,
+        keybind_label="Fish Outlines Layer",
+        scene_overlay=True,
+    ),
+    LayerSpec(
         layer_id="translucent_walls",
         label="T&ranslucent Walls",
         tooltip=(
@@ -244,6 +274,15 @@ LAYERS: tuple[LayerSpec, ...] = (
         requires_mod_art=True,
     ),
 )
+
+
+_SCENE_OVERLAY_RESET = {spec.layer_id: getattr(DEFAULT_LAYERS, spec.layer_id) for spec in LAYERS if spec.scene_overlay}
+
+
+def render_key(state: LayerState) -> LayerState:
+    """`state` with every scene-overlay row reset to its default: what a chunk
+    cache stores and compares, so toggling an overlay row evicts nothing."""
+    return dataclasses.replace(state, **_SCENE_OVERLAY_RESET)
 
 
 def availability(

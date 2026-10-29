@@ -956,6 +956,45 @@ def test_a_move_that_overwrites_the_last_radian_walls_goes_wholesale(style, mip,
         conftest.close_window(window)
 
 
+@pytest.mark.parametrize("how", ["typed_x", "scatter"])
+def test_a_typed_x_or_scatter_that_overwrites_the_last_radian_walls_goes_wholesale(how, art, monkeypatch) -> None:
+    """The case above through the Inspector's typed X and Scatter's move
+    mode, which plan with no gate part: the radian run's middle wall leaves
+    for (56, 50), so all three walls are towers written as literals over the
+    file's only radian values. The pair at (60, 56) repaints only through
+    the wholesale refresh. Undo flips the file back."""
+    from descape.scatter_dialog import ScatterParams
+
+    window = _window("Stepped")
+    try:
+        walls = _wall_run(window, variant=1, const=PALISADE)
+        _literal_walls(window, {(60, 56): 1, (61, 56): 1})
+        assert _file_is_radian(window)
+        _show_level(window, monkeypatch, 0)
+        before = _level(window, 0)
+        entry = _select(window, walls[1])
+
+        if how == "typed_x":
+            window.units_panel.unit_field_editors["x"].setValue(56.5)
+        else:
+            params = ScatterParams(
+                tiles=[(56, 50)], unit_const=None, player=1, count=None, density=None, seed=7, jitter=0.0,
+                min_spacing=0, move_selected=True,
+            )
+            window._scatter_selected_units([entry], params)
+
+        assert (int(walls[1].x), int(walls[1].y)) == (56, 50)
+        assert [w.rotation for w in walls] == [2.0, 2.0, 2.0]
+        assert not _file_is_radian(window)
+        assert window.edit_history.peek_undo().unit_field_entries is None, "the flip did not go wholesale"
+        _check(window, 0, how)
+        window.undo()
+        assert _file_is_radian(window)
+        assert np.array_equal(_check(window, 0, "undo"), before)
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
 def test_a_gate_stepping_off_a_run_reshapes_it_by_splice(style, mip, art, monkeypatch) -> None:
     """GH #194 with "Moving a gate updates walls" ticked, and only reshapes:

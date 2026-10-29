@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from descape import grid_overlay, settings, themes, yaml_file_io
+from descape.yaml_file_io import is_int as _is_int
 from descape.yaml_file_io import short as _short
 
 FORMAT_ID = "descape-theme"
@@ -39,8 +40,8 @@ _OVERLAY_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COLORS)
 
 
 class ThemeWriteBlockedError(ValueError):
-    """The export target is in a subscribed-mods (mods/subscribed/) folder, or
-    cannot be resolved; nothing was written."""
+    """The export target is in a subscribed-mods (mods/subscribed/) folder, is
+    config.yaml or a file kept beside it, or cannot be resolved; nothing was written."""
 
 
 class ThemeFileRefused(ValueError):
@@ -85,15 +86,16 @@ def build_document() -> dict:
 
 
 def write_theme_file(path: Path | str, doc: dict) -> None:
-    """Refuses a mods/subscribed/ path, as written or resolved, or an
-    unresolvable one, and writes nothing. Otherwise writes through a temp file
-    in the target directory and os.replace(), so an existing file is never
-    truncated in place."""
-    yaml_file_io.write_export(path, doc, what="a theme", blocked=ThemeWriteBlockedError)
+    """Refuses a mods/subscribed/ path, as written or resolved, an
+    unresolvable one, or config.yaml or a file kept beside it
+    (settings_file.config_files()), and writes nothing. Otherwise writes
+    through a temp file in the target directory and os.replace(), so an
+    existing file is never truncated in place."""
+    from descape import settings_file  # settings_file imports this module
 
-
-def _is_int(value) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+    yaml_file_io.write_export(
+        path, doc, what="a theme", blocked=ThemeWriteBlockedError, protected=settings_file.config_files()
+    )
 
 
 def _parse_colors(raw, known: Collection[str], what: str, plan: ImportPlan) -> dict[str, str] | None:

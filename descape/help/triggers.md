@@ -23,7 +23,7 @@ The buttons under the list:
 - **Duplicate** copies the selected triggers in place. Their trigger links still point at the originals; use Copy and Paste to re-link a block.
 - ▲ and ▼ move the selected triggers one place in display order. Shift+click moves them five places, and Ctrl+click to the top or bottom of their section (of the list, if it has no sections). ⇈ and ⇊ move the selected trigger's whole section past the next one.
 
-Moving needs Display order and an empty filter and tag; a greyed button's tooltip says why. You can't drag rows to reorder them.
+Moving needs Display order and an empty filter and tag; a greyed button's tooltip says why. You can't drag rows to reorder them. In a file whose Map Options trigger execution order is Legacy, moving changes the list but not which trigger runs first, and the status log under the map says so on the first move.
 
 In Triggers mode the Edit menu reads **Edit > Cut Triggers**, **Edit > Copy Triggers** and **Edit > Paste Triggers**, unless a text field or the condition and effect list has focus. In a text field its plain **Edit > Cut**, **Edit > Copy** and **Edit > Paste** act on the text. A cut trigger pasted back keeps its name and the links other triggers held to it. Copied triggers also paste into another scenario of the same version: copy, open the other file and paste. Links to triggers outside the block and placed-unit references are cleared then, since they name the first file's triggers and units.
 
@@ -41,6 +41,8 @@ The lower pane lists a **Trigger** row, which holds the trigger's own fields (na
 Select a row to edit its fields underneath. Select several and the form shows only the fields they share; one they disagree on reads "(differs)" and changes nothing until you set it. Each change is one undo step.
 
 Unit, building and technology fields take a typed name, or their "…" button browses the list. An unset number reads "(unset)". Descriptions, messages and scripts get a full-width box that applies your text when you leave it; while it has focus, **Edit > Undo** and **Edit > Redo** act on its text. Drag the strip along a box's bottom edge to change its height in whole lines, or double-click the strip to reset it. Each field remembers its height.
+
+An object list field has an **object list type** row above it, as in the in-game editor: Units, Buildings, Heroes or Others. It narrows the field's suggestions and its "…" list to that kind and follows the field's value, but isn't saved in the scenario. A typed name of another kind still applies. Object Group and Object Type sit right under the object list, above the Set rows.
 
 Some types show extra help under their fields:
 
@@ -64,7 +66,7 @@ A trigger, condition or effect shows green when every field its type needs is se
 
 ## The overlay and variables
 
-**View > Show Trigger Overlay** draws the selected trigger's areas and locations on the map, with a line from an area to its destination, and keeps them there when you switch modes. The selected condition or effect is drawn strongest. **View > Range Rings > Trigger Changes** adds a dashed ring for each trigger that changes a selected building's range; see [View and Filters](view-and-filters.md).
+**View > Show Trigger Overlay** draws the selected trigger's areas and locations on the map, with a line from an area to its destination, and keeps them there when you switch modes. The selected condition or effect is drawn strongest. **View > Show Trigger-Created Units** draws each unit a Create Object or Place Foundation effect would create, see-through on its location, as if the effect fired. **View > Range Rings > Trigger Changes** adds a dashed ring for each trigger that changes a selected building's range; see [View and Filters](view-and-filters.md).
 
 **Variables…** under the panel lists the scenario's trigger variables. Add one by name, or rename (also by double-clicking) or remove the selected one.
 

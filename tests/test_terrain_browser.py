@@ -512,7 +512,7 @@ def _shown_panel(mode: str = "grid"):
     return panel
 
 
-def test_a_mode_switch_flips_the_page_buttons_and_preview_and_emits_once() -> None:
+def test_a_mode_switch_flips_the_page_buttons_and_emits_once() -> None:
     from PyQt5.QtCore import Qt
 
     panel = _shown_panel("list")
@@ -521,19 +521,33 @@ def test_a_mode_switch_flips_the_page_buttons_and_preview_and_emits_once() -> No
         modes: list[str] = []
         panel.display_mode_changed.connect(modes.append)
         assert view.stack.currentWidget() is view.tree and view.mode_buttons["list"].isChecked()
-        assert view.preview.isVisible()
         view.mode_buttons["grid"].click()
         assert modes == ["grid"] and panel.display_mode() == "grid"
         assert view.stack.currentWidget() is view.grid
         assert view.mode_buttons["grid"].isChecked() and not view.mode_buttons["list"].isChecked()
-        assert not view.preview.isVisible()
         view.mode_buttons["grid"].click()
         assert modes == ["grid"]
         view.mode_buttons["list"].click()
-        assert modes == ["grid", "list"] and view.preview.isVisible()
+        assert modes == ["grid", "list"]
         assert all(b.focusPolicy() == Qt.NoFocus for b in view.mode_buttons.values())
         assert view.grid.focusPolicy() == Qt.ClickFocus
         assert view.mode_buttons["grid"].toolTip() == "Show terrains as a grid of swatches"
+    finally:
+        panel.close()
+
+
+def test_the_list_view_has_no_side_preview_and_the_list_takes_its_width() -> None:
+    """GH #258: every row already draws its own swatch, so the 64 px one
+    beside the tree is gone and the list spans the row."""
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        assert view.preview is None
+        assert view._tree_row.count() == 1
+        assert view.stack.width() >= view._tree_row.geometry().width() - 4, (
+            view.stack.width(),
+            view._tree_row.geometry().width(),
+        )
     finally:
         panel.close()
 

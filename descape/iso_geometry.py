@@ -1126,6 +1126,67 @@ def corner_rise_px(elevations: np.ndarray, proj: IsoProjection, rule: str = "ave
     return (sums * elev_step) // counts
 
 
+def tile_folds(elevations: np.ndarray) -> np.ndarray:
+    """(h, w) bool: True where AoE2:DE folds Sloped tile (x, y) along its
+    NW-SE diagonal (fx = fy, the screen-horizontal one), False along NE-SW
+    (fx + fy = 1, screen-vertical). Sloped's per-tile fold (TASK-008, GH
+    #62), the companion of corner_rise_px(rule="max"): every Sloped
+    consumer of corner_rise that draws or places on the surface takes this
+    array beside it.
+
+    Fitted to the game's own stored unit `z` (the ground height it writes at
+    each placement), not derived: no fold-deciding corpus placement
+    contradicts it, and tests/test_sloped_fold_corpus.py re-measures that
+    on every corpus run. Per tile:
+
+    1. c2[k], the second-highest of the four tile elevations touching
+       corner k, with off-map tiles replicating the nearest edge tile (the
+       clamp is measured: skipping them instead leaves border
+       counterexamples).
+    2. If |c2.ne - c2.sw| != |c2.nw - c2.se|, fold along NE-SW when the
+       NE-SW difference is the larger, else along NW-SE.
+    3. Else along the diagonal whose max-corner sum is lower.
+
+    A planar tile (nw + se == ne + sw over the max corners, flat included)
+    is always False: both folds give it the same heights, and False keeps
+    its paint byte-identical to the fixed NE-SW fold every tile had before.
+
+    Depends on elevations only, never on a projection, so one array serves
+    every mip level. Vectorized, like corner_rise_px."""
+    h, w = elevations.shape
+    padded = np.pad(elevations.astype(np.int64), 1, mode="edge")
+    # The four tiles touching each grid vertex, clamped; a min/max network
+    # gives the top two without stacking and sorting a (4, h+1, w+1) copy.
+    pair_hi = np.maximum(padded[:-1, :-1], padded[:-1, 1:])
+    pair_lo = np.minimum(padded[:-1, :-1], padded[:-1, 1:])
+    other_hi = np.maximum(padded[1:, :-1], padded[1:, 1:])
+    other_lo = np.minimum(padded[1:, :-1], padded[1:, 1:])
+    top = np.maximum(pair_hi, other_hi)
+    second = np.maximum(np.minimum(pair_hi, other_hi), np.maximum(pair_lo, other_lo))
+    nw, ne, sw, se = top[:h, :w], top[:h, 1:], top[1:, :w], top[1:, 1:]
+    nw2, ne2, sw2, se2 = second[:h, :w], second[:h, 1:], second[1:, :w], second[1:, 1:]
+    a = np.abs(ne2 - sw2)
+    b = np.abs(nw2 - se2)
+    nwse = np.where(a != b, b > a, nw + se < ne + sw)
+    return nwse & (nw + se != ne + sw)
+
+
+def tile_nwse(fold: np.ndarray | None, x: int, y: int) -> bool:
+    """Tile (x, y)'s fold from a tile_folds() array; None is the fixed NE-SW
+    fold, for a caller with no fold to hand (a flat or Stepped path)."""
+    return fold is not None and bool(fold[y, x])
+
+
+def require_fold(corner_rise: np.ndarray | None, fold: np.ndarray | None, where: str) -> None:
+    """Raises where a Sloped consumer got no fold but corner_rise has a
+    non-planar tile, the one case where None would silently fold NE-SW."""
+    if fold is not None or corner_rise is None:
+        return
+    cr = corner_rise
+    if np.any(cr[:-1, :-1] + cr[1:, 1:] != cr[:-1, 1:] + cr[1:, :-1]):
+        raise ValueError(f"{where} needs the tile_folds() array on a non-planar Sloped map")
+
+
 @lru_cache(maxsize=8)
 def tile_uv_fractions(tile_px: int) -> tuple[np.ndarray, np.ndarray]:
     """(fp, fq), one entry per diamond_indices(tile_px) destination pixel in
@@ -1276,32 +1337,37 @@ def _sloped_column_runs(
     return cols, run_start, run_len, raw_len
 
 
-def unit_rise_px(corner_rise: np.ndarray, x: int, y: int, fx: float, fy: float) -> int:
+def unit_rise_px(corner_rise: np.ndarray, x: int, y: int, fx: float, fy: float, nwse: bool = False) -> int:
     """The pixel rise of Sloped's own painted surface at one point inside
     tile (x, y) -- (fx, fy) in [0, 1] are the point's axis-aligned tile
     fractions (fx = mapx - x, fy = mapy - y), the same convention
-    tile_uv_fractions' docstring names (fx = 1 - fq, fy = fp).
+    tile_uv_fractions' docstring names (fx = 1 - fq, fy = fp). `nwse` is
+    the tile's own fold, tile_folds()[y, x]; False is the NE-SW fold.
 
     NOT bilinear -- that was this project's own superseded framing for this
     surface (every spec source that used to call this "bilinear unit-height
-    interpolation" predates the seam resample). _sloped_column_runs derives
-    each screen column's cut by interpolating corner values along the tile
-    EDGE it shares with a neighbour -- the left half of the tile
-    (column < half_w) only ever sees nw/ne/sw, the right half only ever
-    sees ne/sw/se -- which is a two-triangle piecewise-planar surface split
-    along the screen-vertical NE-SW diagonal (fx + fy = 1), not a smooth
-    4-corner blend:
+    interpolation" predates the seam resample). It is a two-triangle
+    piecewise-planar surface, folded per tile along one diagonal the way
+    the game folds it (tile_folds()), not a smooth 4-corner blend. On a
+    NE-SW tile (nwse False) the fold is the screen-vertical diagonal
+    (fx + fy = 1): _sloped_column_runs' left columns (c < half_w) only ever
+    see nw/ne/sw, the right ones ne/sw/se. On a NW-SE tile the fold is the
+    screen-horizontal diagonal (fx = fy), which every column crosses
+    (sloped_quad_indices resamples each column's upper and lower halves
+    apart there):
 
-        fx + fy <= 1:  rise = nw + fx*(ne - nw) + fy*(sw - nw)
-        fx + fy >  1:  rise = se - (1 - fx)*(se - sw) - (1 - fy)*(se - ne)
+        NE-SW, fx + fy <= 1:  rise = nw + fx*(ne - nw) + fy*(sw - nw)
+        NE-SW, fx + fy >  1:  rise = se - (1 - fx)*(se - sw) - (1 - fy)*(se - ne)
+        NW-SE, fx >= fy:      rise = nw + fx*(ne - nw) + fy*(se - ne)
+        NW-SE, fx <  fy:      rise = nw + fy*(sw - nw) + fx*(se - sw)
 
-    Measured against the shipped renderer (recovering the per-pixel rise
-    sloped_quad_indices actually paints, over every painted pixel of all 81
-    corner configurations at tile_px=64, elev_step=8): this two-triangle
-    model disagrees with the renderer by at most 0.88px (integer-rounding
-    residual). A bilinear fit over the same 4 corners disagrees by up to
-    7.99px -- a full elevation level -- because it is not the surface the
-    renderer draws.
+    Measured against the shipped renderer on both folds (recovering the
+    per-pixel rise sloped_quad_indices actually paints, over every painted
+    pixel of all 81 corner configurations at tile_px=64, elev_step=8): this
+    two-triangle model disagrees with the renderer by at most 0.88px
+    (integer-rounding residual). A bilinear fit over the same 4 corners
+    disagrees by up to 7.99px -- a full elevation level -- because it is not
+    the surface the renderer draws.
 
     Rounding contract: this and `_round_div` are the only two places this
     module rounds a rise, and both round half-up, exactly once, from an
@@ -1320,7 +1386,12 @@ def unit_rise_px(corner_rise: np.ndarray, x: int, y: int, fx: float, fy: float) 
     se = int(corner_rise[y + 1, x + 1])
     p = Fraction(fx)
     q = Fraction(fy)
-    if p + q <= 1:
+    if nwse:
+        if p >= q:
+            rise = nw + p * (ne - nw) + q * (se - ne)
+        else:
+            rise = nw + q * (sw - nw) + p * (se - sw)
+    elif p + q <= 1:
         rise = nw + p * (ne - nw) + q * (sw - nw)
     else:
         rise = se - (1 - p) * (se - sw) - (1 - q) * (se - ne)
@@ -1368,28 +1439,35 @@ def map_point_to_screen(
 
 
 def _sloped_map_point(
-    sx: int, sy: int, x: int, y: int, corner_rise: np.ndarray, proj: IsoProjection
+    sx: int, sy: int, x: int, y: int, corner_rise: np.ndarray, proj: IsoProjection, nwse: bool = False
 ) -> tuple[float, float] | None:
     """The fractional point inside tile (x, y) that map_point_to_screen() maps
-    to (sx, sy) on Sloped's point-placement surface, or None.
+    to (sx, sy) on Sloped's point-placement surface, or None. `nwse` is the
+    tile's fold, as unit_rise_px() takes it.
 
     The "Sloped has no analytic inverse" claim is true, and it is about the
     TERRAIN surface -- sloped_quad_indices' per-screen-column integer
     resample. A unit is not placed on that surface. It is placed on
     unit_rise_px()'s two-triangle piecewise-planar one, which inverts in one
-    division:
+    division per triangle:
 
     - `sx` fixes `mx + my` outright, with no elevation term at all, so
       `c = fx + fy` is known before anything else is.
-    - The triangle split is `fx + fy = 1`, i.e. a constant-`c` line, so a
-      constant-`sx` line lies wholly in ONE triangle. `sx` picks the branch;
-      there is no candidate enumeration here.
-    - Substituting `fy = c - fx` makes `rise` affine in `fx` with the SAME
-      slope `(ne - sw)` in both triangles, so `sy` is affine in `fx` with
-      slope `-(2*half_h + ne - sw)`. One division gives `fx`; `fy = c - fx`.
+    - Substituting `fy = c - fx` makes `rise` affine in `fx` within each
+      triangle, so `sy` is affine in `fx` there and one division gives `fx`;
+      `fy = c - fx`.
+    - On a NE-SW tile the split `fx + fy = 1` is a constant-`c` line, so a
+      constant-`sx` line lies wholly in ONE triangle and `sx` picks the
+      branch. Both triangles then share the slope `(ne - sw)`, so `sy`'s
+      slope in `fx` is `-(2*half_h + ne - sw)`.
+    - On a NW-SE tile a constant-`sx` line crosses the split `fx = fy` at
+      `fx = c/2`, so each triangle's equation is solved and the candidate
+      that lands inside its own triangle is kept (_sloped_map_point_nwse()).
 
-    Returns None on a zero or wrong-signed denominator rather than a wrong
-    answer. That is reachable, not theoretical: half_w = 2*half_h and
+    On a NE-SW tile, returns None on a zero or wrong-signed denominator
+    rather than a wrong answer; on a NW-SE tile that only drops the edge-on
+    triangle's candidate, and None means neither triangle answered. That is
+    reachable, not theoretical: half_w = 2*half_h and
     elev_step = max(1, round(half_h * pct / 100)), so at pct = 200 one level
     of drop from sw to ne gives exactly ne - sw = -2*half_h -- the same stop
     at which _sloped_column_runs' max(raw_len, 1) clamp becomes reachable.
@@ -1401,18 +1479,50 @@ def _sloped_map_point(
     sw = int(corner_rise[y + 1, x])
     se = int(corner_rise[y + 1, x + 1])
 
+    c = (sx - proj.origin_x) / half_w - x - y
+    row = proj.origin_y + (y - x + c) * half_h
+    if nwse:
+        return _sloped_map_point_nwse(sy, c, row, half_h, nw, ne, sw, se)
+
     denom = 2 * half_h + ne - sw
     if denom <= 0:
         return None
-
-    c = (sx - proj.origin_x) / half_w - x - y
-    row = proj.origin_y + (y - x + c) * half_h
     if c <= 1:
         k = row - nw - c * (sw - nw)
     else:
         k = row + se - sw - ne - c * (se - ne)
     fx = (k - (sy - half_h)) / denom
     return fx, c - fx
+
+
+def _sloped_map_point_nwse(
+    sy: int, c: float, row: float, half_h: int, nw: int, ne: int, sw: int, se: int
+) -> tuple[float, float] | None:
+    """_sloped_map_point() on a NW-SE tile. With fy = c - fx, the upper
+    triangle (fx >= fy) has rise = nw + c*(se - ne) + fx*(2*ne - nw - se)
+    and the lower one rise = nw + c*(sw - nw) + fx*(se + nw - 2*sw). When
+    both denominators are positive, sy is strictly monotone in fx and
+    continuous at fx = c/2, so exactly one candidate lands in its own
+    triangle (both, equal, on the fold line itself). A non-positive
+    denominator is an edge-on or back-facing triangle and yields no
+    candidate. The tolerance only absorbs float noise at the fold line."""
+    target = sy - half_h
+    half_c = c / 2
+    best = None
+    for base, slope, upper in (
+        (nw + c * (se - ne), 2 * ne - nw - se, True),
+        (nw + c * (sw - nw), se + nw - 2 * sw, False),
+    ):
+        denom = 2 * half_h + slope
+        if denom <= 0:
+            continue
+        fx = (row - base - target) / denom
+        miss = max(0.0, half_c - fx) if upper else max(0.0, fx - half_c)
+        if best is None or miss < best[0]:
+            best = (miss, fx)
+    if best is None or best[0] > 1e-9:
+        return None
+    return best[1], c - best[1]
 
 
 def screen_to_map_point(
@@ -1424,11 +1534,15 @@ def screen_to_map_point(
     elevations: np.ndarray | None = None,
     corner_rise: np.ndarray | None = None,
     tile: tuple[int, int] | None = None,
+    fold: np.ndarray | None = None,
 ) -> tuple[float, float] | None:
     """The CONTINUOUS map point under canvas pixel (sx, sy), or None --
     map_point_to_screen()'s inverse, one branch per render style. Free
     placement's Stage 2: the thing that lets a click put a unit exactly where
     the cursor is instead of at the centre of whatever tile it fell in.
+
+    Sloped takes `fold` (tile_folds()) beside corner_rise and raises without
+    it: a fold-blind inverse lands off the cursor on every refolded tile.
 
     `tile` is Sloped's already-resolved terrain tile, from
     render_cache.SlopedChunkCache.pick_tile() -- the same parameter and the
@@ -1477,13 +1591,16 @@ def screen_to_map_point(
         raise ValueError(f"unknown terrain style {style!r}")
     if corner_rise is None or tile is None:
         return None
+    if fold is None:
+        raise ValueError("Sloped screen_to_map_point() needs the tile_folds() array")
 
     h1, w1 = corner_rise.shape
     x, y = tile
     for _attempt in (0, 1):
         if not (0 <= x < w1 - 1 and 0 <= y < h1 - 1):
             return None
-        solved = _sloped_map_point(sx, sy, x, y, corner_rise, proj)
+        nwse = bool(fold[y, x])
+        solved = _sloped_map_point(sx, sy, x, y, corner_rise, proj, nwse)
         if solved is None:
             return None
         fx, fy = solved
@@ -1493,7 +1610,7 @@ def screen_to_map_point(
         # perfectly good edge click off to a neighbour that cannot match it.
         # The round-trip below is what decides whether the clamp was honest.
         cfx, cfy = min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0)
-        rise = unit_rise_px(corner_rise, x, y, cfx, cfy)
+        rise = unit_rise_px(corner_rise, x, y, cfx, cfy, nwse)
         rx, ry = map_point_to_screen(x + cfx, y + cfy, rise, proj)
         if abs(rx - sx) <= 1 and abs(ry - sy) <= 1:
             return x + cfx, y + cfy
@@ -1509,8 +1626,83 @@ def screen_to_map_point(
     return None
 
 
-@lru_cache(maxsize=1024)
 def sloped_quad_indices(
+    tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int, nwse: bool = False
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """_sloped_quad_nesw() below, or on a non-planar NW-SE tile (`nwse`,
+    tile_folds()[y, x]) _sloped_quad_nwse(). A planar quad (nw + se ==
+    ne + sw, flat included) is the same surface under either fold, so it
+    always takes the NE-SW entry: one cache entry per shape, and every
+    planar and flat tile stays byte-identical to the fixed NE-SW fold.
+
+    The tile's painted pixels (dst_y, dst_x) never depend on the fold: the
+    NW-SE entry returns the NE-SW entry's very dst arrays and resamples only
+    src_y/src_x/uv_idx (TASK-008). Anything that reads only which pixels a
+    tile covers (the pick plane, conforming marks, occlusion, index_extent,
+    outlines, grid stamps, farm edges) therefore needs no fold."""
+    if nwse and d_nw + d_se != d_ne + d_sw:
+        return _sloped_quad_nwse(tile_px, d_nw, d_ne, d_sw, d_se)
+    return _sloped_quad_nesw(tile_px, d_nw, d_ne, d_sw, d_se)
+
+
+def _clear_sloped_quad_caches() -> None:
+    _sloped_quad_nesw.cache_clear()
+    _sloped_quad_nwse.cache_clear()
+
+
+# The public name keeps lru_cache's cache_clear(), clearing both folds' entries.
+sloped_quad_indices.cache_clear = _clear_sloped_quad_caches
+
+
+@lru_cache(maxsize=1024)
+def _sloped_quad_nwse(
+    tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """sloped_quad_indices() on a NW-SE tile: the NE-SW entry's dst arrays
+    and runs, with each column's run split at the fold row. The fold (fx =
+    fy) is the screen-horizontal diagonal, which crosses every column at the
+    unwarped diamond's middle row half_h (tops + bottoms == 2*half_h - 1 on
+    every used column, so each column's n rows split evenly). Raised, that
+    row is half_h minus the fold's rise, interpolated nw -> se by column on
+    the edge cuts' own integer parametrization. Clamped into the run, the
+    rows above it resample the column's upper diamond half and the rows
+    below its lower half, so a triangle steeper than edge-on squashes to
+    zero rows instead of painting past the cut.
+
+    maxsize matches _sloped_quad_nesw()'s: a NW-SE key is a non-planar one
+    the NE-SW cache would otherwise hold, so the two together hold at most
+    twice the non-planar keys of one open map."""
+    dst_y, dst_x, _sy, _sx, _uv = _sloped_quad_nesw(tile_px, d_nw, d_ne, d_sw, d_se)
+    d_min = min(d_nw, d_ne, d_sw, d_se)
+    nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
+    half_w, half_h = half_dims(tile_px)
+    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
+    _cols, _tops, lens, col_starts, order = _diamond_column_runs(tile_px)
+    _dia_dst_y, _dia_dst_x, dia_src_y, dia_src_x = diamond_indices(tile_px)
+
+    t = np.where(cols < half_w, cols, cols - 1)
+    fold_row = half_h - (nw + _round_div(t * (se - nw), 2 * (half_w - 1)))
+    lengths = run_len[cols]
+    upper = np.clip(fold_row - run_start[cols], 0, lengths)
+    n_half = lens[cols] // 2
+    ends = np.cumsum(lengths)
+    which = np.repeat(np.arange(cols.size, dtype=np.int64), lengths)
+    row_in_run = np.arange(int(ends[-1]), dtype=np.int64) - np.repeat(ends - lengths, lengths)
+
+    n = n_half[which]
+    up = upper[which]
+    is_up = row_in_run < up
+    # The same uniform integer pick as _sloped_quad_nesw(), per half; a
+    # zero-row half never reaches its own branch.
+    i = np.where(is_up, row_in_run, row_in_run - up)
+    span = np.where(is_up, up, lengths[which] - up)
+    pick = np.minimum(((2 * i + 1) * n) // (2 * np.maximum(span, 1)), n - 1) + np.where(is_up, 0, n)
+    uv_idx = order[col_starts[cols][which] + pick]
+    return dst_y, dst_x, dia_src_y[uv_idx], dia_src_x[uv_idx], uv_idx
+
+
+@lru_cache(maxsize=1024)
+def _sloped_quad_nesw(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Sloped mode's counterpart to diamond_indices -- the same diamond
@@ -1583,25 +1775,20 @@ def sloped_quad_indices(
     since every invariant is stated on dst_y/run_len, never on the pick.
 
     maxsize=1024, not skirt_quad_indices'/shadow_quad_indices' 256: this
-    key is a 4-tuple under an averaging rule, not those functions' 3-tuple,
-    so the reachable key space is larger for the same real maps -- see
+    key is a 4-tuple, not those functions' 3-tuple -- see
     tests/test_sloped_geometry.py's corpus-tier cardinality measurement,
     which this constant should be revisited against if it ever undersizes
     in practice (a bounded lru_cache degrades to slower re-computation on a
     miss, never incorrect output, so undersizing is a perf regression, not
     a correctness one).
 
-    Sized from measurement 2026-08-20, not by feel, because the 5-tuple's
-    per-entry payload is 7.5x the old one's (every array freshly allocated,
-    where the predecessor had three of four aliasing diamond_indices' own
-    cache): 61 KB per entry at tile_px=64, 246 KB at 128. The realistic
-    working set is ONE open map's corner keys across its live mip levels --
-    measured at most 171 distinct corner keys in any single corpus file,
-    times 5 mip levels = 855 entries, about 55 MB with every level
-    resident. 1024 covers that with headroom while halving the theoretical
-    worst case the old 2048 allowed. (329 keys is the count across the
-    WHOLE corpus at once; that is not a working set, since only one map is
-    open at a time.)"""
+    The per-entry payload is 61 KB at tile_px=64, 246 KB at 128 (every
+    array freshly allocated). Under the live `max` corner rule the whole
+    corpus reaches 21 NE-SW keys and 12 NW-SE ones (2026-10-29), so a
+    working set of one map's keys across 5 mip levels is about 105 entries
+    here. 1024 was sized 2026-08-20 for the old `average` rule (at most 171
+    keys in one corpus file, 855 entries) and keeps that headroom should
+    the rule ever change back."""
     d_min = min(d_nw, d_ne, d_sw, d_se)
     nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
     dia_dst_y, dia_dst_x, dia_src_y, dia_src_x = diamond_indices(tile_px)

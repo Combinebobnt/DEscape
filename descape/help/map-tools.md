@@ -24,6 +24,10 @@ Preview applies the mirror and leaves the dialog open, so you can look at the re
 
 **Map > Disabled Objects…** chooses which buildings, units and technologies each player cannot use. Pick a player, then move entries between the Available and Disabled lists on the Buildings, Units and Techs tabs. OK applies every player's changes as one undo step. The Players panel has the same dialog. In the in-game editor, this is the Options tab's Disable Objects.
 
+## Swap Players
+
+**Map > Swap Players…** makes two players exchange slots: their units, settings and disabled objects, and optionally their trigger references and diplomacy, as one undo step. The Players panel has the same dialog; [Players](players.md) covers what moves.
+
 ## Map Analysis
 
 **Tools > Map Analysis…** checks the open map for common problems before you ship it, and changes nothing. It covers illegal elevation steps, off-map and off-grid objects, objects on terrain they can't stand on or inside each other, GAIA-only objects owned by a player, dangling trigger, unit and garrison references, trigger display order, players with no units, player units stranded on small land areas, missing scenario instructions and a map that is not square.

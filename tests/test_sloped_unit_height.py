@@ -1,13 +1,13 @@
 """Verifies iso_geometry.unit_rise_px -- Track C5's Step 1, the surface
-model a unit in Sloped will be placed on and picked against (Steps 2-3,
-not yet wired in).
+model a unit in Sloped is placed on and picked against.
 
 Checks:
   1. The load-bearing agreement check: at every painted pixel's own (fx,
      fy), unit_rise_px must agree with the rise sloped_quad_indices
      actually produced, to within 1px (measured 0.88px, an
      integer-rounding residual) -- across all 81 corner configurations
-     (3 deltas x 4 corners) at every shipped tile_px.
+     (3 deltas x 4 corners) under both folds (81 x 2, TASK-008) at every
+     shipped tile_px.
   2. Exactness on a flat tile: equal corners must reduce to exactly that
      corner value at every (fx, fy), integer, no rounding -- the same
      byte-identity bar the rest of Sloped is held to.
@@ -42,7 +42,7 @@ from descape import iso_geometry as ig
 _DELTAS = (0, 1, 2)
 
 
-def _measured_rise(tile_px: int, corners: tuple[int, int, int, int]):
+def _measured_rise(tile_px: int, corners: tuple[int, int, int, int], nwse: bool = False):
     """(fx, fy, rise) per painted pixel of sloped_quad_indices(tile_px,
     *corners) -- fx/fy from tile_uv_fractions gathered through uv_idx (the
     same alignment tests/test_sloped_geometry.py's uv_idx checks pin), rise
@@ -51,7 +51,7 @@ def _measured_rise(tile_px: int, corners: tuple[int, int, int, int]):
     because both share the same base_y placement convention, just offset
     by the -d_min normalization sloped_quad_indices' own docstring
     requires callers to fold back in."""
-    dst_y, _dst_x, _src_y, _src_x, uv_idx = ig.sloped_quad_indices(tile_px, *corners)
+    dst_y, _dst_x, _src_y, _src_x, uv_idx = ig.sloped_quad_indices(tile_px, *corners, nwse=nwse)
     d_dst_y, _d_dst_x, _d_src_y, _d_src_x = ig.diamond_indices(tile_px)
     d_min = min(corners)
     rise = d_dst_y[uv_idx] - dst_y + d_min
@@ -61,21 +61,27 @@ def _measured_rise(tile_px: int, corners: tuple[int, int, int, int]):
     return fx, fy, rise
 
 
+@pytest.mark.parametrize("nwse", [False, True])
 @pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 32, 64, ig.MIP_MAX_TILE_PIXELS])
-def test_unit_rise_px_matches_painted_surface_across_all_corner_configs(tile_px):
+def test_unit_rise_px_matches_painted_surface_across_all_corner_configs(tile_px, nwse):
     elev_step = max(1, tile_px // 8)  # 8px per level at tile_px=64, per ELEV_STEP_DIVISOR
     worst = 0
     worst_combo = None
     for combo in itertools.product([d * elev_step for d in _DELTAS], repeat=4):
-        fx, fy, rise = _measured_rise(tile_px, combo)
+        fx, fy, rise = _measured_rise(tile_px, combo, nwse)
         corner_rise = np.array([[combo[0], combo[1]], [combo[2], combo[3]]], dtype=np.int64)
         preds = np.array(
-            [ig.unit_rise_px(corner_rise, 0, 0, float(a), float(b)) for a, b in zip(fx.tolist(), fy.tolist(), strict=True)]
+            [
+                ig.unit_rise_px(corner_rise, 0, 0, float(a), float(b), nwse)
+                for a, b in zip(fx.tolist(), fy.tolist(), strict=True)
+            ]
         )
         diff = int(np.abs(preds - rise).max())
         if diff > worst:
             worst, worst_combo = diff, combo
-    assert worst <= 1, f"unit_rise_px disagreed with the painted surface by {worst}px at corners={worst_combo}"
+    assert worst <= 1, (
+        f"unit_rise_px disagreed with the painted surface by {worst}px at corners={worst_combo} (nwse={nwse})"
+    )
 
 
 def test_unit_rise_px_is_exact_on_a_flat_tile():

@@ -324,6 +324,40 @@ def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) 
         window.close()
 
 
+def test_pick_map_point_round_trips_on_a_nwse_folded_tile() -> None:
+    """TASK-008: a point drawn on a NW-SE tile's own surface picks back to
+    itself through the viewer, where the two folds put it pixels apart."""
+    from PyQt5.QtCore import QPointF
+
+    from descape import iso_geometry
+
+    window = _bumpy_sloped_window()
+    try:
+        mv = window.map_view
+        cache, proj = mv._sloped_cache(), mv._iso_proj
+        cr = cache.corner_rise
+        fx, fy = 0.3, 0.6
+        checked = 0
+        for ty, tx in zip(*(a.tolist() for a in cache.fold.nonzero()), strict=True):
+            nwse_rise = iso_geometry.unit_rise_px(cr, tx, ty, fx, fy, True)
+            if abs(nwse_rise - iso_geometry.unit_rise_px(cr, tx, ty, fx, fy, False)) < 2:
+                continue
+            sx, sy = iso_geometry.map_point_to_screen(tx + fx, ty + fy, nwse_rise, proj)
+            pos = QPointF(sx + 0.5, sy + 0.5)
+            if mv._pick_tile(pos) != (tx, ty):
+                continue  # occluded by a taller neighbour
+            point = mv._pick_map_point(pos)
+            assert point is not None
+            assert abs(point[0] - (tx + fx)) < 0.05 and abs(point[1] - (ty + fy)) < 0.05, (tx, ty, point)
+            checked += 1
+            if checked == 5:
+                break
+        assert checked == 5, f"the fixture has only {checked} visible fold-deciding NW-SE tiles"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def _bumpy_sloped_window():
     """terrain_edit_window() in Sloped over a 3-level blocked field, so a
     block of tiles carries many distinct corner shapes."""
@@ -483,7 +517,9 @@ def test_scene_space_reads_stay_at_level_0_while_another_level_is_shown(monkeypa
 
         def stand_in(rise):
             # Only what the readers touch, so no reader can reach a level of its own.
-            return SimpleNamespace(corner_rise=rise, pick_tile=fresh.pick_tile, with_units=True, sprites_enabled=False)
+            return SimpleNamespace(
+                corner_rise=rise, fold=fresh.fold, pick_tile=fresh.pick_tile, with_units=True, sprites_enabled=False
+            )
 
         right = stand_in(fresh.corner_rise)
         monkeypatch.setattr(mv, "_sloped_cache", lambda: right)

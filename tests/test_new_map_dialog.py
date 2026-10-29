@@ -502,6 +502,69 @@ def test_game_data_note_warns_only_when_the_new_map_would_open_read_only(dialog_
         assert "opens read-only" in dialog.game_data_note.text()
 
 
+_GRASS_1, _FOREST_OAK, _GRASS_2 = 0, 10, 12
+
+
+def _set_terrain(dialog, terrain_id) -> None:
+    dialog.terrain_combo.setCurrentIndex(dialog.terrain_combo.findData(terrain_id))
+
+
+def test_the_plant_row_follows_what_the_terrain_can_place(dialog_for) -> None:
+    """Trees only where the terrain has a tree, Eye candy only where it has
+    doodads; a disabled box keeps its tick, and the choice carries it."""
+    from descape.new_map_dialog import NewMapChoice
+
+    dialog = dialog_for(NewMapChoice(trees=True, eye_candy=True))
+    for terrain_id, trees, eye_candy in (
+        (_GRASS_1, False, True),
+        (_FOREST_OAK, True, False),
+        (_BEACH, False, False),
+        (_GRASS_2, False, True),
+    ):
+        _set_terrain(dialog, terrain_id)
+        assert (dialog.trees_check.isEnabled(), dialog.eye_candy_check.isEnabled()) == (trees, eye_candy), terrain_id
+        assert dialog.trees_check.isChecked() and dialog.eye_candy_check.isChecked()
+    choice = dialog.current_choice()
+    assert (choice.trees, choice.eye_candy) == (True, True)
+
+
+def test_the_plant_row_reads_the_picked_games_tables(dialog_for, monkeypatch) -> None:
+    """Read under the picked game (both shipped tables agree on which terrains
+    have trees, so a stand-in tells them apart), and AoE2 is active after."""
+    from descape import game_dataset, terrain_units
+    from descape.new_map_dialog import AOE2, ROR
+
+    monkeypatch.setattr(terrain_units, "is_tree_terrain", lambda terrain_id: game_dataset.is_ror())
+    dialog = dialog_for()
+    assert not dialog.trees_check.isEnabled()
+    dialog.game_data_combo.setCurrentIndex(dialog.game_data_combo.findData(ROR))
+    assert dialog.trees_check.isEnabled()
+    assert game_dataset.active() == AOE2
+    dialog.game_data_combo.setCurrentIndex(dialog.game_data_combo.findData(AOE2))
+    assert not dialog.trees_check.isEnabled()
+
+
+def test_the_plant_boxes_persist_through_set_initial_and_the_choice(dialog_for) -> None:
+    from descape import settings
+    from descape.new_map_dialog import NewMapChoice
+
+    dialog = dialog_for()
+    assert dialog.trees_check.isChecked() is settings.NEW_MAP_DEFAULT_TREES
+    assert dialog.eye_candy_check.isChecked() is settings.NEW_MAP_DEFAULT_EYE_CANDY
+    for trees, eye_candy in ((False, True), (True, False)):
+        initial = NewMapChoice(terrain_id=_FOREST_OAK, trees=trees, eye_candy=eye_candy)
+        dialog.set_initial(initial)
+        assert dialog.current_choice() == initial
+    dialog.trees_check.setChecked(False)
+    dialog.accept()
+    assert dialog.choice == NewMapChoice(terrain_id=_FOREST_OAK, trees=False, eye_candy=False)
+    dialog.set_initial(NewMapChoice(trees="yes", eye_candy=None))
+    assert (dialog.trees_check.isChecked(), dialog.eye_candy_check.isChecked()) == (
+        settings.NEW_MAP_DEFAULT_TREES,
+        settings.NEW_MAP_DEFAULT_EYE_CANDY,
+    )
+
+
 def test_game_data_note_follows_a_setting_changed_between_opens(dialog_for) -> None:
     """The panel is reused, so set_initial() re-reads the setting."""
     from descape import settings

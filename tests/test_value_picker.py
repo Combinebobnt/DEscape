@@ -412,3 +412,86 @@ def test_set_enabled_disables_both_the_line_edit_and_the_browse_button() -> None
     widget.setEnabled(False)
     assert not widget.line_edit.isEnabled()
     assert not widget.browse_button.isEnabled()
+
+
+# -- ValueLineEdit: the group filter (GH #41's object list type) ---------------
+
+
+def _suggestions(widget) -> list[str]:
+    return widget.line_edit.completer().model().stringList()
+
+
+def test_set_group_narrows_the_suggestions_and_empty_restores_them() -> None:
+    widget = _line_edit(_grouped_items())
+    every = _suggestions(widget)
+    assert sorted(every) == sorted(item.label for item in _grouped_items())
+
+    widget.set_group("Units")
+    assert sorted(_suggestions(widget)) == ["Archer", "Brown Bear"]
+    widget.set_group("")
+    assert _suggestions(widget) == every
+
+
+def test_browse_lists_only_the_groups_items(monkeypatch) -> None:
+    built = []
+
+    def fake_exec(dialog):
+        built.append(dialog)
+        return ValueBrowseDialog.Rejected
+
+    monkeypatch.setattr(ValueBrowseDialog, "exec_", fake_exec)
+    widget = _line_edit(_grouped_items())
+    widget.set_group("Others")
+    widget._browse()
+    (dialog,) = built
+    assert dialog.view._items == tuple(i for i in _grouped_items() if i.group == "Others")
+    headings = [dialog.tree.topLevelItem(i) for i in range(dialog.tree.topLevelItemCount())]
+    assert [h.text(0) for h in headings] == ["Others (2)"]
+    assert headings[0].isExpanded()
+
+    widget.set_group("")
+    widget._browse()
+    assert built[1].view._items == tuple(_grouped_items()), "no group browses everything, as before"
+
+
+@pytest.mark.parametrize("typed, expected", [("Town Center", 109), ("768", 768)])
+def test_a_name_or_raw_value_outside_the_group_still_commits(typed: str, expected: int) -> None:
+    widget = _line_edit(_grouped_items())
+    widget.set_group("Units")
+    received = []
+    widget.committed.connect(received.append)
+    widget.line_edit.setText(typed)
+    widget.line_edit.editingFinished.emit()
+    assert received == [expected]
+
+
+@pytest.mark.parametrize("group, expected", [("Units", 2), ("Others", 1), ("", 1)])
+def test_a_label_two_groups_share_commits_the_rows_groups_item(group: str, expected: int) -> None:
+    """Treasure Chest is in Others and Units: a pick on a Units row must not
+    write the Others const (first in item order) and flip the row's group."""
+    items = [
+        PickerItem(label="Treasure Chest", value=1, group="Others"),
+        PickerItem(label="Treasure Chest", value=2, group="Units"),
+    ]
+    widget = _line_edit(items)
+    widget.set_group(group)
+    received = []
+    widget.committed.connect(received.append)
+    widget.line_edit.setText("Treasure Chest")
+    widget.line_edit.editingFinished.emit()
+    assert received == [expected]
+
+
+def test_set_value_shows_a_label_outside_the_group() -> None:
+    widget = _line_edit(_grouped_items())
+    widget.set_group("Units")
+    widget.set_value(109)
+    assert widget.line_edit.text() == "Town Center"
+
+
+def test_group_of_names_a_known_values_group_and_nothing_for_an_unknown_one() -> None:
+    widget = _line_edit(_grouped_items())
+    widget.set_group("Units")  # the panel asks after a commit, with a group set
+    assert widget.group_of(109) == "Buildings"
+    assert widget.group_of(48) == "Units"
+    assert widget.group_of(999999) == ""

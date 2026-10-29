@@ -55,6 +55,7 @@ ACTION_ICONS: dict[str, str] = {
     "map_resize": "map-resize",
     "map_mirror": "map-mirror",
     "map_disables": "map-disables",
+    "map_swap_players": "map-swap-players",
     "analysis_run": "map-analysis",
     "help_guide": "help-guide",
     "help_keys": "help-keys",

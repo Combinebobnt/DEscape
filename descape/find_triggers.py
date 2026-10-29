@@ -5,9 +5,10 @@ Field classes come from each field's presentation (trigger_fields.field_specs()
 over the file's own vocabulary), never from attribute names: `unit_object`
 has presentation "" before v1.44, so a name rule misreads older files.
 
-Nothing here mutates. find_triggers() returns hits; the plan_* functions turn
-checked hits into a list of writes plus refusals, which the viewer applies in
-one bracket declaring only the triggers that change. The manager is re-fetched
+Only write_fields() mutates. find_triggers() returns hits; the plan_* functions
+turn checked hits into a list of writes plus refusals, which the viewer applies
+through write_fields() in one bracket declaring only the triggers that change
+(Swap Players, GH #185, plans its own writes). The manager is re-fetched
 through scenario_io.parse_triggers() on every call, never held
 (trigger_model.py's invariant 1).
 """
@@ -274,6 +275,18 @@ def entry_at(manager, trigger_index: int, kind: str, entry_index: int):
         return trigger
     entries = _entries(trigger, kind)
     return entries[entry_index] if 0 <= entry_index < len(entries) else None
+
+
+def write_fields(manager, writes: Iterable[Write]) -> None:
+    """setattr for each Write, inside a caller's open trigger bracket. Text,
+    type and player writes never touch effect_type or object_attributes, so the
+    quantity cluster stays put (cluster_fixup() would return ()); asserted."""
+    for w in writes:
+        target = entry_at(manager, w.trigger_index, w.kind, w.entry_index)
+        slot = trigger_fields.live_quantity_slot(target) if w.kind == "effect" else None
+        setattr(target, w.attribute, w.new_value)
+        if slot is not None:
+            assert trigger_fields.live_quantity_slot(target) == slot, "a trigger field write moved an effect's quantity slot"
 
 
 def _live_value(target, h: TriggerHit):

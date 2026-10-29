@@ -23,7 +23,8 @@ one cache per pair, and generation() moves on every change to either.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache, update_wrapper
 from pathlib import Path
@@ -121,6 +122,23 @@ def set_active(dataset: str) -> bool:
     if dataset == _active:
         return False
     return _set_state(dataset, _data_mod)
+
+
+@contextmanager
+def activated(dataset: str) -> Iterator[None]:
+    """`dataset` active for the block, the previous one again after it,
+    even on a raise. No switch at all when it is already active; the data
+    mod stays set throughout. A switch drops what set_active() drops, so
+    keep the block free of anything that paints with the other game's tables."""
+    previous = _active
+    if dataset == previous:
+        yield
+        return
+    set_active(dataset)
+    try:
+        yield
+    finally:
+        set_active(previous)
 
 
 def set_data_mod(mod: DataModTables | None) -> bool:

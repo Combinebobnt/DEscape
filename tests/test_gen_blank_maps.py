@@ -104,3 +104,52 @@ def test_raw_verifier_rejects_a_stray_or_a_missing_marker(tool, donor, tmp_path)
     transposed = tool.apply_markers(blank_body(donor, 168, 120), off, markers)
     with pytest.raises(tool.GenerationVerificationError):
         tool._verify_raw(_write(tmp_path, donor, transposed), donor, 120, 168, markers)
+
+
+# --- New Map's fill and planting (the in-game pairs for trees on a new map) ---
+
+
+@pytest.mark.parametrize(
+    ("flags", "expect"),
+    [
+        (["--terrain", "10", "--trees"], "verified 120x120 aoe2 terrain 10, 14400 GAIA units planted, seed 3"),
+        (["--eye-candy"], "verified 120x120 aoe2 terrain 0, "),  # off-centre doodads: f32 positions
+        (["--terrain", "89", "--trees", "--game-data", "ror"], "verified 120x120 ror terrain 89, "),
+    ],
+)
+def test_main_fills_and_plants_a_square_map_and_verifies_it(tool, tmp_path, monkeypatch, capsys, flags, expect) -> None:
+    argv = ["gen_blank_maps", "--out", str(tmp_path), "--sizes", "120", "--seed", "3", "--name", "m.aoe2scenario"]
+    monkeypatch.setattr(sys, "argv", argv + flags)
+    tool.main()
+    out = capsys.readouterr().out
+    assert expect in out
+    assert " 0 GAIA units" not in out
+    assert [p.name for p in tmp_path.iterdir()] == ["m.aoe2scenario"]
+
+
+def test_the_planted_verifier_rejects_units_other_than_the_planned_ones(tool, tmp_path) -> None:
+    import random
+
+    from descape import terrain_units
+    from descape.scenario_new import blank_scenario_bytes
+
+    path = tmp_path / "f.aoe2scenario"
+    path.write_bytes(blank_scenario_bytes(120, terrain_id=10, trees=True, rng=random.Random(1)))
+    planned = terrain_units.plan_fill(120, 120, 10, trees=True, doodads=False, rng=random.Random(1))
+    tool._verify(path, 120, terrain_id=10, planted=planned)
+    for wrong in (planned[1:], terrain_units.plan_fill(120, 120, 10, trees=True, doodads=False, rng=random.Random(2))):
+        with pytest.raises(tool.GenerationVerificationError):
+            tool._verify(path, 120, terrain_id=10, planted=wrong)
+    with pytest.raises(tool.GenerationVerificationError):
+        tool._verify(path, 120, terrain_id=10, game_data="ror", planted=planned)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--sizes", "120x168", "--trees"], ["--sizes", "120", "144", "--name", "x.aoe2scenario"]],
+)
+def test_main_refuses_planting_a_non_square_size_or_one_name_for_two_sizes(tool, tmp_path, monkeypatch, argv) -> None:
+    monkeypatch.setattr(sys, "argv", ["gen_blank_maps", "--out", str(tmp_path), *argv])
+    with pytest.raises(SystemExit):
+        tool.main()
+    assert list(tmp_path.iterdir()) == []

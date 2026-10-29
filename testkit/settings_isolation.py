@@ -80,6 +80,7 @@ MEMOIZED_GLOBALS = (
     "_range_rings_triggers",
     "_camera_markers",
     "_trigger_overlay",
+    "_trigger_ghosts",
     "_stack_badge_position",
     "_autosave_dir_refused",
     "_footprint_merged",

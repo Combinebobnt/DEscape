@@ -47,7 +47,7 @@ from __future__ import annotations
 import math
 import weakref
 
-from descape import game_dataset, object_catalog, render, terrain_catalog
+from descape import game_dataset, gate_orientation, object_catalog, render, terrain_catalog
 from descape.terrain_palette import (
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
@@ -409,13 +409,36 @@ def refusal(
     return f"blocked by {object_catalog.display_name(unit.unit_const)} ({owner}) at ({unit.x:g}, {unit.y:g})"
 
 
+def gate_companions(scenario, unit) -> list:
+    """The corner pieces a gate `unit` keeps as separate solid units, or []
+    (TASK-340). Real files store them on the gate's own end tiles: all 32
+    corpus corners (GTBC2 95, both ends of a GTBA2 88, 1.5 tiles off its
+    point) share their gate's owner, family and orientation (2026-10-29).
+    A piece counts when it is gate_orientation.corner_piece()'s const, in
+    the gate's owner list, with its point inside the gate's own boxes()."""
+    corner = gate_orientation.corner_piece(unit.unit_const)
+    if corner is None:
+        return []
+    own = next((units for units in scenario.unit_manager.units if any(u is unit for u in units)), None)
+    if own is None:
+        return []
+    shape = boxes(unit.unit_const, unit.x, unit.y)
+    return [
+        piece
+        for piece in own
+        if piece.unit_const == corner
+        and any(x0 <= piece.x < x1 and y0 <= piece.y < y1 for x0, y0, x1, y1 in shape)
+    ]
+
+
 def move_refusal(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None) -> str | None:
     """refusal() for an existing `unit` going to (x, y). A garrisoned unit
     skips both rules: it stands wherever its host does, and with Show
-    Garrisoned on it can be dragged alone or inside a selection."""
+    Garrisoned on it can be dragged alone or inside a selection. A gate's
+    own corner pieces never block its move (gate_companions(), TASK-340)."""
     if unit.garrisoned_in_id != -1:
         return None
-    return refusal(scenario, unit.unit_const, x, y, exclude, grid)
+    return refusal(scenario, unit.unit_const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
 
 
 def refused(
@@ -442,4 +465,4 @@ def move_refused(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGr
     """move_refusal() is not None, without building a message."""
     if unit.garrisoned_in_id != -1:
         return False
-    return refused(scenario, unit.unit_const, x, y, exclude, grid)
+    return refused(scenario, unit.unit_const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)

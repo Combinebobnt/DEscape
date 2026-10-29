@@ -298,6 +298,70 @@ def test_toggling_with_no_map_open_is_remembered_not_dropped() -> None:
         conftest.close_window(window)
 
 
+FISH_LAYER = "fish_outlines"
+
+
+def test_the_fish_toggle_reaches_map_view_never_the_cache_and_persists(monkeypatch) -> None:
+    """TASK-499: a scene-overlay row goes to MapView alone. No set_layers()
+    call, no cache rebuild, and the pick index it draws from is built outside
+    Units mode; the choice survives a restart like every other row."""
+    window = conftest.blank_window()
+    try:
+        calls = []
+        real = type(window._cache).set_layers
+        monkeypatch.setattr(
+            type(window._cache), "set_layers",
+            lambda self, layers: (calls.append(layers), real(self, layers))[1],
+        )
+        cache = window._cache
+        assert window.mode != "units" and window.map_view._unit_index is None
+        action = window.layer_actions[FISH_LAYER]
+        spec = next(s for s in view_layers.LAYERS if s.layer_id == FISH_LAYER)
+        assert action.isEnabled() and action.toolTip() == spec.tooltip
+        assert action.text() == spec.label and action.isChecked() is False
+        action.setChecked(True)
+        assert calls == [] and window._cache is cache
+        assert window._layers.fish_outlines is True and settings.get_view_layers().fish_outlines is True
+        assert cache.layers.fish_outlines is False
+        view = window.map_view
+        assert view._fish_enabled is True and view._fish_item.isVisible()
+        assert view._unit_index is not None, "no index outside Units mode, so no ring would draw"
+        assert window._needs_unit_index()
+        assert window.status_log.toPlainText().splitlines()[-1] == "Fish Outlines: on"
+
+        action.setChecked(False)
+        assert calls == [] and window._cache is cache
+        assert view._fish_enabled is False and not view._fish_item.isVisible()
+        action.setChecked(True)
+    finally:
+        conftest.close_window(window)
+
+    monkeypatch.setattr(settings, "_view_layers", None)
+    second = conftest.blank_window()
+    try:
+        assert second.layer_actions[FISH_LAYER].isChecked() is True
+        assert second._layers.fish_outlines is True
+        assert second.map_view._fish_enabled is True and second.map_view._fish_item.isVisible()
+        assert second.map_view._unit_index is not None
+    finally:
+        conftest.close_window(second)
+
+
+def test_the_fish_row_survives_a_style_switch_and_another_layer_toggle(sprite_install) -> None:
+    window = conftest.blank_window()
+    try:
+        window.layer_actions[FISH_LAYER].setChecked(True)
+        for style in ("Flat", "Sloped", "Stepped"):
+            window.terrain_style_combo.setCurrentText(style)
+            assert window.map_view._fish_item.isVisible(), style
+            assert window.map_view._unit_index is not None, style
+        window.layer_actions[TEXTURES_LAYER].setChecked(False)
+        assert window._cache.layers == view_layers.LayerState(terrain_textures=False)
+        assert window.map_view._fish_enabled is True
+    finally:
+        conftest.close_window(window)
+
+
 def test_the_small_trees_toggle_reaches_the_live_cache(sprite_install) -> None:
     """The size row, mirroring test_toggling_reaches_the_live_cache above:
     it is baked into the cache's sprites, so the window's copy alone reaching

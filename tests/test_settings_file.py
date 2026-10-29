@@ -62,7 +62,14 @@ def _portable(config: dict) -> dict:
 
 
 def _local(config: dict) -> dict:
-    return {k: v for k, v in config.items() if k in settings_file.LOCAL_KEYS}
+    return {k: v for k, v in config.items() if k in settings_file.LOCAL_KEYS and k != settings_file.IMPORT_APPLIED_KEY}
+
+
+def _applied() -> dict:
+    """config.yaml less the import id an apply records beside the settings."""
+    config = yaml.safe_load(_config().read_text())
+    config.pop(settings_file.IMPORT_APPLIED_KEY, None)
+    return config
 
 
 # --- round trip, replace and legacy keys --------------------------------------
@@ -134,7 +141,7 @@ def test_a_newer_exporters_known_successor_drops_a_stale_local_legacy_key(tmp_pa
     _write_yaml(_config(), {"dark_mode": True, "pan_speed": 900})
     _stage(tmp_path, _doc({}, known_keys=["theme"]))
     settings_file.apply_pending_import()
-    assert yaml.safe_load(_config().read_text()) == {"pan_speed": 900}
+    assert _applied() == {"pan_speed": 900}
     _reset_memos(monkeypatch)
     assert settings.get_theme() != "dark"
 
@@ -183,6 +190,57 @@ def test_a_subscribed_path_is_refused_with_nothing_written(tmp_path) -> None:
     with pytest.raises(settings_file.SettingsWriteBlockedError):
         settings_file.write_settings_file(subscribed / f"s{settings_file.FILE_SUFFIX}", settings_file.build_document())
     assert list(subscribed.iterdir()) == []
+
+
+@pytest.mark.parametrize("exporter", ["settings", "theme"])
+@pytest.mark.parametrize(
+    "target_name",
+    [settings.CONFIG_PATH.name, settings_file.PENDING_NAME, settings_file.BAD_PENDING_NAME, settings_file.BACKUP_NAME],
+)
+def test_an_export_refuses_config_yaml_and_the_files_beside_it(tmp_path, exporter, target_name) -> None:
+    """A `.yaml` name gets no suffix, so Export could otherwise replace config.yaml or an import file."""
+    settings.set_pan_speed(800)
+    target = settings.CONFIG_PATH.parent / target_name
+    if not target.exists():
+        target.write_text("keep me\n")
+    before = target.read_bytes()
+    write, doc, blocked = (
+        (settings_file.write_settings_file, settings_file.build_document(), settings_file.SettingsWriteBlockedError)
+        if exporter == "settings"
+        else (theme_file.write_theme_file, theme_file.build_document(), theme_file.ThemeWriteBlockedError)
+    )
+    with pytest.raises(blocked, match=target_name):
+        write(target, doc)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@conftest.requires_symlinks
+def test_an_export_refuses_a_symlinked_configs_target_and_a_path_through_a_link(tmp_path) -> None:
+    real = _write_yaml(tmp_path / "dotfiles" / "config.yaml", {"pan_speed": 800})
+    _config().symlink_to(real)
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(_config().parent, target_is_directory=True)
+    before = real.read_bytes()
+    for target in (real, link_dir / "config.yaml"):
+        with pytest.raises(settings_file.SettingsWriteBlockedError):
+            settings_file.write_settings_file(target, settings_file.build_document())
+    assert real.read_bytes() == before
+    assert _config().is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX hard link semantics")
+def test_an_export_refuses_a_hard_link_of_config_yaml(tmp_path) -> None:
+    """Neither the name nor resolve() matches a hard link: only yaml_file_io._same_file()'s samefile() does."""
+    settings.set_pan_speed(800)
+    link = tmp_path / "elsewhere" / "linked.yaml"
+    link.parent.mkdir()
+    os.link(_config(), link)
+    before = _config().read_bytes()
+    with pytest.raises(settings_file.SettingsWriteBlockedError, match=_config().name):
+        settings_file.write_settings_file(link, settings_file.build_document())
+    assert _config().read_bytes() == before and link.read_bytes() == before
+    assert os.path.samefile(_config(), link), "the link must survive, or the write went through"
 
 
 @conftest.requires_symlinks
@@ -254,6 +312,23 @@ def _nested(depth: int):
         (yaml.safe_dump({k: v for k, v in _doc().items() if k != "known_keys"}), "known_keys"),
         (yaml.safe_dump(_doc({"tool_options": _nested(40)})), "nested too deeply"),
     ],
+    # Short ids: the oversized text as an id overflows Windows' 32767-char PYTEST_CURRENT_TEST.
+    ids=[
+        "oversized",
+        "bad-yaml",
+        "alias-bomb",
+        "not-a-mapping",
+        "other-format",
+        "theme-file",
+        "newer-version",
+        "string-version",
+        "settings-list",
+        "settings-missing",
+        "known-keys-string",
+        "known-keys-ints",
+        "known-keys-missing",
+        "too-deep",
+    ],
 )
 def test_a_file_that_is_not_a_settings_file_is_refused_whole_and_nothing_is_staged(tmp_path, text, fragment) -> None:
     path = tmp_path / "s.yaml"
@@ -283,7 +358,7 @@ def test_one_differing_keybind_counts_one_binding_not_every_action(tmp_path) -> 
     settings.set_keybind("file_open", "Ctrl+Shift+O")  # writes every action
     stored = yaml.safe_load(_config().read_text())["keybinds"]
     lines = _describe(tmp_path, {"keybinds": {**stored, "file_open": "Ctrl+Alt+O"}})
-    assert lines == ["Will change:", "  Keybinds: keybinds: 1 binding differs"]
+    assert lines == ["Will change:", "  Keybinds: 1 binding differs"]
 
 
 def test_a_retired_or_unknown_keybind_counts_nothing(tmp_path) -> None:
@@ -294,7 +369,7 @@ def test_a_retired_or_unknown_keybind_counts_nothing(tmp_path) -> None:
 def test_a_files_legacy_dark_mode_reads_as_a_theme_change(tmp_path) -> None:
     settings.set_theme("solarized_light")
     lines = _describe(tmp_path, {"dark_mode": True})
-    assert lines == ["Will change:", "  Appearance: theme: 'solarized_light' -> True (as dark_mode)"]
+    assert lines == ["Will change:", "  Appearance: Theme: 'solarized_light' -> True (as dark_mode)"]
 
 
 def test_resets_are_listed_under_their_own_heading(tmp_path) -> None:
@@ -303,12 +378,28 @@ def test_resets_are_listed_under_their_own_heading(tmp_path) -> None:
     lines = _describe(tmp_path, {"pan_speed": 900})
     assert lines == [
         "Will change:",
-        "  Appearance: pan_speed: default -> 900",
+        "  Appearance: Pan speed: default -> 900",
         "",
         "Will reset to default:",
-        "  View menu: view_layers: 1 layer differs",
-        "  View menu: grid_overlay: True -> default",
+        "  View menu: Layers: 1 layer differs",
+        "  View menu: Grid > Show: True -> default",
     ]
+
+
+def test_every_summary_line_names_its_control_not_its_config_key(tmp_path) -> None:
+    """One file changing every shown portable key at once, a dict-valued one in a single entry:
+    one line each, none naming a raw key, and a label that repeats its group (Keybinds, Tools)
+    shown once."""
+    shown = [key for key in settings_file.PORTABLE_KEYS if key not in settings_file.LEGACY_SUCCESSORS]
+    entries: dict = dict.fromkeys(shown, "zz-changed")
+    for key, (defaults, _one, _many) in settings_file._entry_ids().items():
+        entries[key] = {next(iter(defaults)) if defaults else "messages.instructions": "zz-changed"}
+    lines = [line.strip() for line in _describe(tmp_path, entries) if line.startswith("  ")]
+    assert len(lines) == len(shown), lines
+    for line in lines:
+        assert not set(line.split(": ")[:2]) & set(settings_file.PORTABLE_KEYS), line
+    assert "Keybinds: 1 binding differs" in lines
+    assert "Tools: 1 tool default differs" in lines
 
 
 def test_the_summary_adds_problems_notes_and_the_next_launch_rule(tmp_path) -> None:
@@ -343,7 +434,7 @@ def test_an_empty_config_reads_as_empty_for_export_and_apply(tmp_path) -> None:
     assert settings_file.build_document()["settings"] == {}
     _stage(tmp_path, _doc({"pan_speed": 900}))
     line = settings_file.apply_pending_import()
-    assert yaml.safe_load(_config().read_text()) == {"pan_speed": 900}
+    assert _applied() == {"pan_speed": 900}
     assert settings_file.backup_path().read_bytes() == b""
     assert settings_file.BACKUP_NAME in line
 
@@ -388,8 +479,74 @@ def test_a_failure_after_the_config_write_is_reported_as_applied(tmp_path, monke
     monkeypatch.setattr(Path, "unlink", locked)
     line = settings_file.apply_pending_import()
     assert line is not None and line.startswith("Settings imported from") and "could not be removed" in line
-    assert yaml.safe_load(_config().read_text()) == {"pan_speed": 900}
+    assert _applied() == {"pan_speed": 900}
     assert not settings_file.bad_pending_path().exists()
+
+
+def test_a_pending_file_a_failed_unlink_left_is_not_reapplied_over_later_edits(tmp_path, monkeypatch) -> None:
+    """The unlink after a good config write fails; the user then edits a portable key and
+    relaunches. That apply must only remove the pending file: the edit survives and the backup
+    still holds the pre-import config."""
+    settings.set_pan_speed(800)
+    old = _config().read_bytes()
+    _stage(tmp_path, _doc({"pan_speed": 900}))
+    pending = settings_file.pending_path()
+    real_unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self == pending:
+            raise PermissionError("locked")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    assert "could not be removed" in settings_file.apply_pending_import()
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    _reset_memos(monkeypatch)
+    assert settings.get_pan_speed() == 900
+    settings.set_pan_speed(1200)
+
+    line = settings_file.apply_pending_import()
+    assert line is not None and "already applied" in line
+    assert settings_file.backup_path().read_bytes() == old
+    _reset_memos(monkeypatch)
+    assert settings.get_pan_speed() == 1200
+    assert not pending.exists()
+
+
+def _lock_pending(monkeypatch) -> None:
+    """Path.unlink refuses the staged file, as one held open on Windows does."""
+    pending = settings_file.pending_path()
+    real_unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self == pending:
+            raise PermissionError("locked")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+
+
+def test_a_pending_file_a_failed_unlink_left_is_not_shown_as_pending(tmp_path, monkeypatch) -> None:
+    """Settings > General said such an import still applies at the next start."""
+    _stage(tmp_path, _doc({"pan_speed": 900}))
+    assert settings_file.pending_import() is not None
+    _lock_pending(monkeypatch)
+    assert "could not be removed" in settings_file.apply_pending_import()
+    assert settings_file.pending_path().exists()
+    assert settings_file.pending_import() is None
+
+
+def test_a_second_failed_unlink_says_already_applied_not_failed(tmp_path, monkeypatch) -> None:
+    _stage(tmp_path, _doc({"pan_speed": 900}))
+    pending = settings_file.pending_path()
+    _lock_pending(monkeypatch)
+    assert "could not be removed" in settings_file.apply_pending_import()
+    applied = _config().read_bytes()
+
+    line = settings_file.apply_pending_import()
+    assert line is not None and "already applied" in line and f"{pending} could not be removed" in line
+    assert pending.exists() and not settings_file.bad_pending_path().exists()
+    assert _config().read_bytes() == applied
 
 
 def test_a_pending_file_another_instance_took_is_nothing_pending(tmp_path, monkeypatch) -> None:
@@ -430,13 +587,11 @@ def test_a_rerun_against_the_applied_config_backs_up_and_writes_nothing(tmp_path
     assert not settings_file.pending_path().exists()
 
 
-@pytest.mark.parametrize(
-    "header",
-    [{"version": settings_file.PENDING_VERSION + 1}, {"mode": "merge"}],
-)
-def test_a_pending_file_from_a_newer_build_stays_staged_and_changes_nothing(tmp_path, header) -> None:
-    settings.set_pan_speed(800)
-    before = _config().read_bytes()
+_ABSENT = object()
+
+
+def _pending_doc(**header) -> dict:
+    """A staged file as stage_import() writes it, less its id; an _ABSENT value drops that key."""
     doc = {
         "format": settings_file.PENDING_FORMAT_ID,
         "version": settings_file.PENDING_VERSION,
@@ -446,12 +601,51 @@ def test_a_pending_file_from_a_newer_build_stays_staged_and_changes_nothing(tmp_
         "settings": {"pan_speed": 900},
         **header,
     }
-    _write_yaml(settings_file.pending_path(), doc)
+    return {k: v for k, v in doc.items() if v is not _ABSENT}
+
+
+@pytest.mark.parametrize(
+    "header",
+    [{"version": settings_file.PENDING_VERSION + 1}, {"mode": "merge"}],
+)
+def test_a_pending_file_from_a_newer_build_stays_staged_and_changes_nothing(tmp_path, header) -> None:
+    settings.set_pan_speed(800)
+    before = _config().read_bytes()
+    _write_yaml(settings_file.pending_path(), _pending_doc(**header))
     line = settings_file.apply_pending_import()
     assert line is not None and line.startswith("Settings import not applied, left staged")
     assert settings_file.pending_path().is_file()
     assert not settings_file.bad_pending_path().exists()
     assert _config().read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", [_ABSENT, None, 7, ["replace"]])
+def test_a_pending_file_whose_mode_is_not_text_is_moved_aside_and_changes_nothing(tmp_path, mode) -> None:
+    """Only a text mode other than replace can be a newer build's; anything else no build applies."""
+    settings.set_pan_speed(800)
+    before = _config().read_bytes()
+    _write_yaml(settings_file.pending_path(), _pending_doc(mode=mode))
+    line = settings_file.apply_pending_import()
+    assert line is not None and line.startswith("Settings import failed and nothing changed")
+    assert not settings_file.pending_path().exists()
+    assert settings_file.bad_pending_path().is_file()
+    assert _config().read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("header", "fragment"),
+    [
+        ({"version": settings_file.PENDING_VERSION + 1}, "a newer DEscape staged it"),
+        ({"mode": "merge"}, "a newer DEscape staged it"),
+        ({"mode": None}, "it cannot be read"),
+        ({"settings": [1]}, "it cannot be read"),
+    ],
+)
+def test_pending_import_says_why_this_build_will_not_apply_a_staged_file(tmp_path, header, fragment) -> None:
+    _write_yaml(settings_file.pending_path(), _pending_doc(**header))
+    pending = settings_file.pending_import()
+    assert pending is not None and pending.refusal is not None and pending.refusal.startswith(fragment)
+    assert pending.settings == {}
 
 
 def test_a_corrupt_pending_file_is_moved_aside_and_changes_nothing(tmp_path) -> None:
@@ -470,7 +664,7 @@ def test_with_no_config_the_apply_writes_one_and_names_no_backup(tmp_path) -> No
     _stage(tmp_path, _doc({"pan_speed": 900}))
     assert not _config().exists()
     line = settings_file.apply_pending_import()
-    assert yaml.safe_load(_config().read_text()) == {"pan_speed": 900}
+    assert _applied() == {"pan_speed": 900}
     assert settings_file.backup_path().read_text() == "an older backup\n"
     assert line is not None and settings_file.BACKUP_NAME not in line
 
@@ -482,7 +676,8 @@ def test_nothing_pending_returns_none(tmp_path) -> None:
 
 def test_discard_removes_the_pending_file(tmp_path) -> None:
     _stage(tmp_path, _doc({"pan_speed": 900}))
-    assert settings_file.pending_import()["settings"] == {"pan_speed": 900}
+    pending = settings_file.pending_import()
+    assert (pending.settings, pending.refusal) == ({"pan_speed": 900}, None)
     settings_file.discard_pending_import()
     assert settings_file.pending_import() is None
 
@@ -506,7 +701,7 @@ def test_a_symlinked_config_stays_a_symlink_to_the_updated_target(tmp_path) -> N
     settings_file.apply_pending_import()
     assert _config().is_symlink()
     assert _config().resolve() == real.resolve()
-    assert yaml.safe_load(real.read_text()) == {"pan_speed": 900}
+    assert _applied() == {"pan_speed": 900}
 
 
 # --- startup (viewer.main()) ------------------------------------------------------
@@ -617,6 +812,38 @@ def _save_to(monkeypatch, path: Path) -> None:
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(path), "")))
 
 
+# LOCAL_KEYS -> the words the tooltip and the guide name it by; None for one no user sets.
+_LOCAL_KEY_WORDS: dict[str, str | None] = {
+    "aoe2de_install": "folder paths",
+    "aoe2de_profile": "folder paths",
+    "autosave_dir": "folder paths",
+    "recent_files": "recent files",
+    "new_map": "New Map dialog's last choices",
+    "data_mod_by_scenario": "Data Mod",
+    "window_size": "window",
+    "split_sizes": "window",
+    "log_height": "window",
+    "xwayland_on_wayland": "X11 compatibility on Wayland",
+    settings_file.IMPORT_APPLIED_KEY: None,
+}
+
+
+def test_the_guide_names_everything_that_stays_on_this_computer() -> None:
+    assert set(_LOCAL_KEY_WORDS) == set(settings_file.LOCAL_KEYS)
+    guide = (Path(__file__).resolve().parent.parent / "descape" / "help" / "settings.md").read_text(encoding="utf-8")
+    general = guide.split("## General", 1)[1].split("\n## ", 1)[0]
+    missing = {key: words for key, words in _LOCAL_KEY_WORDS.items() if words is not None and words not in general}
+    assert not missing
+
+
+@pytest.mark.gui
+def test_the_settings_file_tooltip_names_everything_that_stays_on_this_computer(qt_dialog) -> None:
+    tooltip = qt_dialog.settings_export_button.toolTip()
+    assert qt_dialog.settings_import_button.toolTip() == tooltip
+    missing = {key: words for key, words in _LOCAL_KEY_WORDS.items() if words is not None and words not in tooltip}
+    assert not missing
+
+
 @pytest.mark.gui
 def test_the_general_tab_has_both_buttons_and_no_pending_line(qt_dialog) -> None:
     from PyQt5.QtWidgets import QTabWidget
@@ -635,9 +862,9 @@ def test_an_import_stages_and_shows_the_pending_line_and_discard_removes_both(tm
     path = _write_yaml(tmp_path / f"mine{settings_file.FILE_SUFFIX}", _doc({"pan_speed": 900}))
     shown, asked = _answer_import(monkeypatch, path, apply=True)
     qt_dialog.settings_import_button.click()
-    assert len(shown) == 1 and "  Appearance: pan_speed: default -> 900" in shown[0].splitlines()
+    assert len(shown) == 1 and "  Appearance: Pan speed: default -> 900" in shown[0].splitlines()
     assert asked == [1]
-    assert settings_file.pending_import()["settings"] == {"pan_speed": 900}
+    assert settings_file.pending_import().settings == {"pan_speed": 900}
     assert not qt_dialog.settings_pending_row.isHidden()
     assert qt_dialog.settings_pending_label.text() == f"Settings from {path.name} apply the next time DEscape starts."
     assert settings.get_pan_speed() == settings.PAN_SPEED_DEFAULT  # nothing applies live
@@ -656,6 +883,21 @@ def test_a_dialog_opened_with_an_import_staged_shows_the_pending_line(tmp_path, 
     try:
         assert not second.settings_pending_row.isHidden()
         assert second.settings_pending_label.text().startswith(f"Settings from s{settings_file.FILE_SUFFIX} apply")
+    finally:
+        second.close()
+
+
+@pytest.mark.gui
+def test_the_pending_line_says_when_this_build_will_not_apply_the_staged_file(qt_dialog) -> None:
+    from descape.viewer import SettingsDialog
+
+    _write_yaml(settings_file.pending_path(), _pending_doc(mode="merge"))
+    second = SettingsDialog(qt_dialog._window)
+    try:
+        assert not second.settings_pending_row.isHidden()
+        text = second.settings_pending_label.text()
+        assert "'merge'" in text and "next time DEscape starts" not in text
+        assert not second.settings_pending_discard_button.isHidden()
     finally:
         second.close()
 

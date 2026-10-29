@@ -62,7 +62,7 @@ class _Style:
         corner_rise = (
             iso_geometry.corner_rise_px(elevations, self.proj, rule=render.SLOPE_CORNER_RULE) if self.sloped else None
         )
-        return elevations, corner_rise
+        return elevations, corner_rise, iso_geometry.tile_folds(elevations) if self.sloped else None
 
 
 def _normalized(layer: render.SpriteLayer):
@@ -89,10 +89,10 @@ def _walk(
     style: _Style, memo, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False,
     wall_alpha=1.0,
 ):
-    elevations, corner_rise = style.args()
+    elevations, corner_rise, fold = style.args()
     return render._drain(render.sprite_draws_by_anchor_sliced(
         style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
-        wall_alpha, memo=memo,
+        wall_alpha, memo=memo, fold=fold,
     ))
 
 
@@ -100,10 +100,10 @@ def _fresh(
     style: _Style, unit_filter=UnitFilter(), with_farms=True, tree_scale=1.0, hero_glow=False,
     wall_alpha=1.0,
 ):
-    elevations, corner_rise = style.args()
+    elevations, corner_rise, fold = style.args()
     return render.sprite_draws_by_anchor(
         style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
-        wall_alpha,
+        wall_alpha, fold=fold,
     )
 
 
@@ -198,6 +198,26 @@ def test_memo_layer_equals_a_fresh_one_and_resolves_only_the_edited_units(monkey
     assert counter.calls == (sloped_misses if sloped else stepped_misses)
     assert _normalized(layer) == _normalized(_fresh(style))
     assert set(new_memo.entries) == {id(u) for units in _units(scenario) for u in units}
+
+
+def test_a_fold_flip_with_no_corner_change_reresolves_the_unit(monkeypatch):
+    """TASK-008: lowering (41, 39) flips (40, 40)'s Sloped fold to NW-SE and
+    moves none of its corners, so only the key's fold bit can miss."""
+    scenario = _scenario()
+    hill = [(41, 40), (39, 41), (41, 39)]
+    for tile in hill:
+        scenario.map_manager.get_tile(*tile).elevation = 3
+    style = _Style(True, scenario)
+    _elevations_before, corners_before, fold_before = style.args()
+    _layer, memo = _walk(style, render.SpriteMemo())
+    scenario.map_manager.get_tile(*hill[-1]).elevation = 2
+    _elevations_after, corners_after, fold_after = style.args()
+    assert np.array_equal(corners_before[40:42, 40:42], corners_after[40:42, 40:42]), "the fixture moved a corner"
+    assert (bool(fold_before[40, 40]), bool(fold_after[40, 40])) == (False, True), "the fixture did not flip the fold"
+    counter = _ResolveCounter(monkeypatch)
+    layer, _new_memo = _walk(style, memo)
+    assert counter.calls == 1
+    assert _normalized(layer) == _normalized(_fresh(style))
 
 
 def test_the_fixture_draws_real_sprites_and_a_farm():

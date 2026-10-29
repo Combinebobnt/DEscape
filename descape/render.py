@@ -2393,13 +2393,15 @@ def prepare_rect_native(
     bystander_grid: BystanderGrid | None, layers: LayerState, grid: GridBake, unit_pack,
     terrain_ids: np.ndarray | None = None, layer_ids: np.ndarray | None = None,
     key_map: terrain_blend.KeyMap | None = None, snapshot: np.ndarray | None = None,
+    fold: np.ndarray | None = None,
 ) -> tuple | None:
     """composite_rect_iso (heights = elevations) or composite_rect_sloped
     (heights = corner_rise) with every Python step done here and only the
     nogil kernel left, for margin_warm's worker threads (Batch F T2) and a
     pooled render_rect() (TASK-031.64). snapshot (Stepped only): a copy of
     heights the caller owns, passed to the kernel uncopied
-    (native_composite.prepare_iso).
+    (native_composite.prepare_iso). fold (Sloped only): tile_folds() beside
+    corner_rise, rebound with it, never written in place.
 
     Returns (kernel, scratch, args, holds): kernel(scratch, *args) paints what
     the composite would return, or returns False having painted nothing (take
@@ -2420,7 +2422,7 @@ def prepare_rect_native(
     from descape import native_composite
 
     prepare = native_composite.prepare_sloped if sloped else native_composite.prepare_iso
-    extra = {} if sloped else {"snapshot": snapshot}
+    extra = {"fold": fold} if sloped else {"snapshot": snapshot}
     args = prepare(
         scenario, x0, y0, candidates, heights, proj, tile_px, unit_pack if with_units else None,
         layers.terrain_textures, grid, share=True, terrain_ids=terrain_ids, blend=blend, **extra,
@@ -2704,6 +2706,7 @@ def _render_tile_sloped(
     terrain_override: int | None = None,
     textures: bool = True,
     blend=None,
+    fold: np.ndarray | None = None,
 ) -> None:
     """Sloped mode's counterpart to _render_tile_iso -- same texture-crop
     and offset/clip contract, but no skirt loop and no contact-shadow loop
@@ -2734,7 +2737,9 @@ def _render_tile_sloped(
     textures=False (View > Layers): same flat-colour branch _render_tile_iso
     documents. _slope_shade()'s multiplier still applies on top, so a
     texture-less Sloped render keeps its slope shading. blend: the tile's
-    blend key, as _render_tile_iso's."""
+    blend key, as _render_tile_iso's. fold: iso_geometry.tile_folds()'s
+    array, which picks how the texture and shade resample (never which
+    pixels the tile covers); None is the fixed NE-SW fold."""
     d_nw = int(corner_rise[tile.y, tile.x])
     d_ne = int(corner_rise[tile.y, tile.x + 1])
     d_sw = int(corner_rise[tile.y + 1, tile.x])
@@ -2742,7 +2747,8 @@ def _render_tile_sloped(
     d_min = min(d_nw, d_ne, d_sw, d_se)
 
     base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx = _sloped_tile_quad(
-        tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset
+        tile.x, tile.y, tile_px, proj, d_nw, d_ne, d_sw, d_se, offset,
+        nwse=iso_geometry.tile_nwse(fold, tile.x, tile.y),
     )
     # RAW d_nw..d_se, not the d_min-normalized ones: that is the tuple
     # _sloped_tile_quad passed sloped_quad_indices to get dst_y/dst_x.
@@ -2777,6 +2783,7 @@ def _sloped_tile_quad(
     d_sw: int,
     d_se: int,
     offset: tuple[int, int] = (0, 0),
+    nwse: bool = False,
 ) -> tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx) -- the placement
     and warp-index computation _render_tile_sloped paints a tile's own
@@ -2785,12 +2792,14 @@ def _sloped_tile_quad(
     parallel copy. Inheriting this is the whole point: it is what makes the
     marker structurally unable to drift from the tile it stands on, the
     same way _render_tile_sloped_ids inherits agreement with the colour pass
-    by copying its inputs rather than re-deriving them."""
+    by copying its inputs rather than re-deriving them. `nwse` (the tile's
+    fold) changes only src_y/src_x/uv_idx, so a caller that paints solid
+    pixels may leave it False."""
     off_x, off_y = offset
     base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
     base_x -= off_x
     base_y -= off_y + min(d_nw, d_ne, d_sw, d_se)
-    dst_y, dst_x, src_y, src_x, uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se)
+    dst_y, dst_x, src_y, src_x, uv_idx = iso_geometry.sloped_quad_indices(tile_px, d_nw, d_ne, d_sw, d_se, nwse)
     return base_x, base_y, dst_y, dst_x, src_y, src_x, uv_idx
 
 
@@ -2961,9 +2970,11 @@ def _sloped_mark_conforms(unit) -> bool:
     return span_x <= 1 and span_y <= 1 and unit_paint_offset(unit) == (0.0, 0.0)
 
 
-def _sloped_mark_rise(unit, corner_rise: np.ndarray) -> int:
+def _sloped_mark_rise(unit, corner_rise: np.ndarray, fold: np.ndarray | None = None) -> int:
     ux, uy = int(unit.x), int(unit.y)
-    return iso_geometry.unit_rise_px(corner_rise, ux, uy, unit.x - ux, unit.y - uy)
+    return iso_geometry.unit_rise_px(
+        corner_rise, ux, uy, unit.x - ux, unit.y - uy, iso_geometry.tile_nwse(fold, ux, uy)
+    )
 
 
 def _sloped_tile_floor(corner_rise: np.ndarray, tx: int, ty: int) -> int:
@@ -2976,14 +2987,15 @@ def _sloped_tile_floor(corner_rise: np.ndarray, tx: int, ty: int) -> int:
 
 
 def _unit_mark_sloped(
-    unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, corner_rise: np.ndarray
+    unit, tx: int, ty: int, proj: iso_geometry.IsoProjection, corner_rise: np.ndarray,
+    fold: np.ndarray | None = None,
 ) -> tuple[tuple[int, int] | None, int]:
     """The native UnitPack's view of one Sloped mark: (None when it conforms
     to its tile's quad, else its plain diamond's (base_y, base_x); its base
     rise, as _paint_objects_sloped records it)."""
     if _sloped_mark_conforms(unit):
         return None, _sloped_tile_floor(corner_rise, tx, ty)
-    rise_px = _sloped_mark_rise(unit, corner_rise)
+    rise_px = _sloped_mark_rise(unit, corner_rise, fold)
     return _sloped_mark_base(unit, tx, ty, rise_px, proj), rise_px
 
 
@@ -3001,6 +3013,7 @@ def _paint_tile_and_units_sloped(
     textures: bool = True,
     grid: GridBake = DEFAULT_GRID,
     blend=None,
+    fold: np.ndarray | None = None,
 ) -> None:
     """Sloped's counterpart to _paint_tile_and_units_iso -- same
     "terrain then this tile's own units, interleaved in depth_order" step,
@@ -3073,9 +3086,11 @@ def _paint_tile_and_units_sloped(
     (this function's own `d_min` trap, a second time)."""
     _paint_terrain_sloped(
         img, tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset, sprites=sprites,
-        textures=textures, grid=grid, blend=blend,
+        textures=textures, grid=grid, blend=blend, fold=fold,
     )
-    _paint_objects_sloped(img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites)
+    _paint_objects_sloped(
+        img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites, fold=fold
+    )
 
 
 def _paint_terrain_sloped(
@@ -3091,9 +3106,11 @@ def _paint_terrain_sloped(
     textures: bool = True,
     grid: GridBake = DEFAULT_GRID,
     blend=None,
+    fold: np.ndarray | None = None,
 ) -> None:
     """A tile's terrain half: its terrain (a farm's override included), the
-    farm outline, the grid. `sprites` is read for its farm tiles only."""
+    farm outline, the grid. `sprites` is read for its farm tiles only; `fold`
+    reaches the terrain's resample only (outline and grid are dst-only)."""
     d_nw = int(corner_rise[tile.y, tile.x])
     d_ne = int(corner_rise[tile.y, tile.x + 1])
     d_sw = int(corner_rise[tile.y + 1, tile.x])
@@ -3102,7 +3119,7 @@ def _paint_terrain_sloped(
     terrain_override = farm[0] if farm is not None else None
     _render_tile_sloped(
         img, tile, tile_px, proj, corner_rise, offset=offset,
-        terrain_override=terrain_override, textures=textures, blend=blend,
+        terrain_override=terrain_override, textures=textures, blend=blend, fold=fold,
     )
     if farm is not None:
         _, outline_color, edge_mask = farm
@@ -3136,6 +3153,7 @@ def _paint_objects_sloped(
     offset: tuple[int, int] = (0, 0),
     sprites: SpriteLayer | None = None,
     ink: np.ndarray | None = None,
+    fold: np.ndarray | None = None,
 ) -> None:
     """A tile's objects half: its marks, then the sprites anchored on it. ink,
     when given, records every pixel they touch at the unit's base rise: the
@@ -3166,7 +3184,7 @@ def _paint_objects_sloped(
                 ink=ink, ink_rise=min(corners),
             )
             continue
-        rise_px = _sloped_mark_rise(unit, corner_rise)
+        rise_px = _sloped_mark_rise(unit, corner_rise, fold)
         _draw_unit_sloped(
             img, unit, color, tile.x, tile.y, tile_px, proj, rise_px, offset=offset, ink=ink, ink_rise=rise_px
         )
@@ -3230,25 +3248,26 @@ def _paint_candidates_sloped(
     sprites: SpriteLayer | None = None,
     textures: bool = True,
     grid: GridBake = DEFAULT_GRID,
+    fold: np.ndarray | None = None,
 ) -> None:
     """Sloped's _paint_candidates_iso, same two passes and same pre-scan."""
     if sprites is None:
         for i, tile in enumerate(tiles):
             _paint_tile_and_units_sloped(
                 img, tile, units_by_tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset,
-                textures=textures, grid=grid, blend=None if keys is None else keys[i],
+                textures=textures, grid=grid, blend=None if keys is None else keys[i], fold=fold,
             )
         return
     for i, tile in enumerate(tiles):
         _paint_terrain_sloped(
             img, tile, tile_px, proj, corner_rise, map_w, map_h, offset=offset, sprites=sprites,
-            textures=textures, grid=grid, blend=None if keys is None else keys[i],
+            textures=textures, grid=grid, blend=None if keys is None else keys[i], fold=fold,
         )
 
     def mark_rise(unit, tile) -> int:
         if _sloped_mark_conforms(unit):
             return _sloped_tile_floor(corner_rise, tile.x, tile.y)
-        return _sloped_mark_rise(unit, corner_rise)
+        return _sloped_mark_rise(unit, corner_rise, fold)
 
     floor = _ink_floor(tiles, units_by_tile, sprites, mark_rise)
     terrain = ink = None
@@ -3259,7 +3278,8 @@ def _paint_candidates_sloped(
         if ink is not None:
             _occlude_sloped(img, terrain, ink, tile, tile_px, proj, corner_rise, offset, floor)
         _paint_objects_sloped(
-            img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites, ink=ink
+            img, tile, units_by_tile, tile_px, proj, corner_rise, offset=offset, sprites=sprites, ink=ink,
+            fold=fold,
         )
 
 
@@ -3352,6 +3372,7 @@ def render_terrain_sloped_with_proj(
         corner_headroom_steps=1,
     )
     corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=SLOPE_CORNER_RULE)
+    fold = iso_geometry.tile_folds(elevations)
 
     skirt_headroom = (max_elev - min_elev) * proj.elev_step
     img = np.zeros((proj.canvas_h + skirt_headroom, proj.canvas_w, 3), dtype=np.uint8)
@@ -3359,7 +3380,7 @@ def render_terrain_sloped_with_proj(
     units_by_tile = _units_by_tile(scenario) if with_units else {}
     sprites = (
         sprite_draws_by_anchor(
-            scenario, proj, elevations, corner_rise=corner_rise, hero_glow=DEFAULT_LAYERS.hero_glow
+            scenario, proj, elevations, corner_rise=corner_rise, hero_glow=DEFAULT_LAYERS.hero_glow, fold=fold
         )
         if (with_units and with_sprites)
         else None
@@ -3368,7 +3389,7 @@ def render_terrain_sloped_with_proj(
     order = iso_geometry.depth_order(w, h).tolist()
     _paint_candidates_sloped(
         img, [tile_grid[y][x] for x, y in order], None if keys is None else [keys[y * w + x] for x, y in order],
-        units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid,
+        units_by_tile, tile_px, proj, corner_rise, w, h, sprites=sprites, grid=grid, fold=fold,
     )
     return img, elevations, corner_rise, proj
 
@@ -3407,6 +3428,7 @@ def composite_rect_sloped(
     terrain_ids: np.ndarray | None = None,
     layer_ids: np.ndarray | None = None,
     key_map: terrain_blend.KeyMap | None = None,
+    fold: np.ndarray | None = None,
 ) -> np.ndarray:
     """Sloped's counterpart to composite_rect_iso() -- same rect-keyed-core
     contract (see that function's own docstring for the full argument: a
@@ -3435,7 +3457,10 @@ def composite_rect_sloped(
     into whatever `sprites` was built with.
 
     unit_pack, terrain_ids: same N2 contract as composite_rect_iso()'s;
-    layer_ids, key_map and blending likewise."""
+    layer_ids, key_map and blending likewise. fold: iso_geometry.tile_folds()
+    of the elevations corner_rise came from (None only on a planar map,
+    where every fold is NE-SW; iso_geometry.require_fold() raises otherwise)."""
+    iso_geometry.require_fold(corner_rise, fold, "composite_rect_sloped()")
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
 
@@ -3451,7 +3476,7 @@ def composite_rect_sloped(
         if native_composite.composite_sloped(
             native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
             unit_pack if with_units else None, layers.terrain_textures, grid, terrain_ids=terrain_ids,
-            blend=blend,
+            blend=blend, fold=fold,
         ):
             return scratch
     keys = None if blend is None else blend.as_list()
@@ -3459,6 +3484,7 @@ def composite_rect_sloped(
     _paint_candidates_sloped(
         scratch, [mm.terrain[cy * w + cx] for cx, cy in candidates.tolist()], keys, units_by_tile, tile_px, proj,
         corner_rise, w, h, offset=(x0, y0), sprites=sprite_layer, textures=layers.terrain_textures, grid=grid,
+        fold=fold,
     )
     return scratch
 
@@ -4167,6 +4193,7 @@ def unit_sprite_draws_at(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
+    fold: np.ndarray | None = None,
 ) -> list[tuple[object, int, int]]:
     """Every sprite piece `unit` would paint at its own stored position, as
     (draw, px, py) triples in canvas pixels, ordered the way the composite
@@ -4189,12 +4216,13 @@ def unit_sprite_draws_at(
     tree_scale must be the WINDOW's current View > Layers value: a ghost left
     on the default 1.0 would drag a tree at full size and snap it small on
     drop. hero_glow likewise, or a hero would lose its ring mid-drag, and
-    wall_alpha, or a wall would drag opaque."""
+    wall_alpha, or a wall would drag opaque. fold goes with corner_rise, as
+    sprite_draws_by_anchor()'s."""
     overrides = {} if rotation_override is None else {(player_id, 0): rotation_override}
     # Unsliced: the ghost draws as scaled QImages, where adjacent column slices would seam.
     contribution = _resolve_unit_sprite(
         scenario, proj, elevations, UnitFilter(), corner_rise, overrides, False,
-        player_id, 0, unit, tree_scale, hero_glow, wall_alpha, sliced=False,
+        player_id, 0, unit, tree_scale, hero_glow, wall_alpha, sliced=False, fold=fold,
     )
     if contribution is None:
         return []
@@ -4942,6 +4970,7 @@ def sprite_draws_by_anchor(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
+    fold: np.ndarray | None = None,
 ) -> SpriteLayer:
     """Resolves every visible unit to a real .sld sprite or a farm-terrain
     override, or leaves it to the coloured mark.
@@ -4962,7 +4991,9 @@ def sprite_draws_by_anchor(
     instead of Stepped's flat `elevation * elev_step`. None (the default)
     keeps Stepped's exact expression, including its rounding, so
     render_terrain_sloped's flat-map byte-identity oracle stays exact
-    character for character.
+    character for character. fold: iso_geometry.tile_folds() of the same
+    elevations, the unit's own tile's fold for unit_rise_px(); None only on
+    a planar corner_rise (sprite_draws_by_anchor_sliced() raises otherwise).
 
     with_farms=False (Track P3-g6) suppresses the farm-terrain-override
     branch entirely -- neither farm_by_tile nor skip_ids gains an entry for
@@ -4985,6 +5016,7 @@ def sprite_draws_by_anchor(
     unit_kind.wall_consts() art (GH #35); see unit_sprites.sprite_pieces_for()."""
     return _drain(sprite_draws_by_anchor_sliced(
         scenario, proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow, wall_alpha,
+        fold=fold,
     ))
 
 
@@ -5093,6 +5125,7 @@ def _resolve_unit_sprite(
     wall_alpha: float = 1.0,
     flag_hosts: frozenset[int] | None = None,
     sliced: bool = True,
+    fold: np.ndarray | None = None,
 ) -> _SpriteContribution | None:
     """Resolves ONE unit to its sprite or farm-terrain-override contribution
     -- the per-unit body sprite_draws_by_anchor_sliced()'s loop inlined
@@ -5184,7 +5217,7 @@ def _resolve_unit_sprite(
     # docstring records).
     own_fx, own_fy = unit.x - ux, unit.y - uy
     rise_px = (
-        iso_geometry.unit_rise_px(corner_rise, ux, uy, own_fx, own_fy)
+        iso_geometry.unit_rise_px(corner_rise, ux, uy, own_fx, own_fy, iso_geometry.tile_nwse(fold, ux, uy))
         if corner_rise is not None
         else int(elevations[uy, ux]) * proj.elev_step
     )
@@ -5275,12 +5308,15 @@ def _sprite_memo_invariants(
 
 def _sprite_memo_key(
     scenario, heights: list, sloped: bool, overrides: dict, player_id: int, i: int, unit, flag_hosts: frozenset[int],
+    folds: list | None = None,
 ) -> tuple:
     """Every per-unit input of _resolve_unit_sprite() that isn't a memo
     invariant. `heights` is elevations (Stepped) or corner_rise (Sloped) as
     nested lists, read with the resolver's own indices so an elevation edit
     under a unit changes its key; Sloped keys the four corners, which with
-    x/y fully determine unit_rise_px(). An index the resolver would fail on
+    x/y and the tile's fold (`folds`, tile_folds() as nested lists; a fold
+    can flip with all four corners unchanged) fully determine
+    unit_rise_px(). An index the resolver would fail on
     keys as None and the resolver decides. `flag_hosts` is the walk's
     garrison_host_ids(): whether the unit draws a garrison flag is set by
     other units' links, which no field of its own carries (GH #203)."""
@@ -5288,7 +5324,7 @@ def _sprite_memo_key(
     try:
         if sloped:
             row, below = heights[uy], heights[uy + 1]
-            rise = (row[ux], row[ux + 1], below[ux], below[ux + 1])
+            rise = (row[ux], row[ux + 1], below[ux], below[ux + 1], folds is not None and folds[uy][ux])
         else:
             rise = heights[uy][ux]
     except IndexError:
@@ -5368,6 +5404,7 @@ def sprite_draws_by_anchor_sliced(
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
     memo: SpriteMemo | None = None,
+    fold: np.ndarray | None = None,
 ) -> Generator[object, None, SpriteLayer | tuple[SpriteLayer, SpriteMemo]]:
     """sprite_draws_by_anchor() as a resumable generator -- one yield per
     unit, so level_warm.LevelWarmer can advance it a few milliseconds at a
@@ -5394,6 +5431,7 @@ def sprite_draws_by_anchor_sliced(
     layer alone. None keeps the exact memo-free walk. The merge below copies
     out of every contribution, never aliasing its lists, so a memoized one
     stays untouched by later layer splices."""
+    iso_geometry.require_fold(corner_rise, fold, "sprite_draws_by_anchor()")
     overrides = wall_variant_rotation_overrides(scenario)
     flag_hosts = garrison_host_ids(scenario)
     by_anchor: dict[tuple[int, int], list] = {}
@@ -5409,6 +5447,7 @@ def sprite_draws_by_anchor_sliced(
         sloped = corner_rise is not None
         # A snapshot: a warm that outlives an edit under a unit is refused at install.
         heights = (corner_rise if sloped else elevations).tolist()
+        folds = fold.tolist() if sloped and fold is not None else None
 
     for player_id, units in enumerate(scenario.unit_manager.units):
         for i, unit in enumerate(units):
@@ -5416,7 +5455,7 @@ def sprite_draws_by_anchor_sliced(
             if memo is None:
                 contribution = _resolve_unit_sprite(
                     scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                    player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts,
+                    player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts, fold=fold,
                 )
             else:
                 if not unit_filter.matches(player_id, unit):
@@ -5425,14 +5464,14 @@ def sprite_draws_by_anchor_sliced(
                     if entry is not None:
                         entries[id(unit)] = entry
                     continue
-                key = _sprite_memo_key(scenario, heights, sloped, overrides, player_id, i, unit, flag_hosts)
+                key = _sprite_memo_key(scenario, heights, sloped, overrides, player_id, i, unit, flag_hosts, folds)
                 entry = old.get(id(unit))
                 if entry is not None and entry[0] is unit and entry[1] == key:
                     contribution = entry[2]
                 else:
                     contribution = _resolve_unit_sprite(
                         scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                        player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts,
+                        player_id, i, unit, tree_scale, hero_glow, wall_alpha, flag_hosts=flag_hosts, fold=fold,
                     )
                 entries[id(unit)] = (unit, key, contribution)
             if contribution is not None:

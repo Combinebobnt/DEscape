@@ -730,6 +730,16 @@ class OptionsEditModel:
         override. Empty for a document nothing has been changed in."""
         return dict(self._pending)
 
+    def can_set(self, field_id: str) -> bool:
+        """Whether set_value() accepts this per-player, Diplomacy, disables or
+        personality id on this file (GH #185's cross-check on its preflight)."""
+        return (
+            field_id in self._player_targets
+            or field_id in self._diplomacy_field_ids
+            or field_id in self._disables_field_ids
+            or field_id in self._personality_field_ids
+        )
+
     def set_value(self, field_id: str, value: OptionValue) -> None:
         """Record `field_id` as set to raw `value`. Must be wrapped in an undo
         record by the caller -- a model that is dirty while the history is not

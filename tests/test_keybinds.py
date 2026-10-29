@@ -223,11 +223,13 @@ _TOGGLE_ACTION_IDS = (
     "view_range_rings_selected_revealers",
     "view_player_cameras",
     "view_trigger_overlay",
+    "view_trigger_ghosts",
     "view_layer_terrain_textures",
     "view_layer_terrain_blend",
     "view_layer_farm_overlay",
     "view_layer_small_trees",
     "view_layer_hero_glow",
+    "view_layer_fish_outlines",
     "view_layer_translucent_walls",
     "view_layer_mod_art",
     "help_perf_trace",
@@ -1254,10 +1256,12 @@ def test_the_mode_combo_lists_mode_labels_in_order_and_each_item_maps_to_its_id(
 
 
 def test_a_key_on_a_terrain_tool_and_a_units_tool_checks_each_in_its_own_mode() -> None:
-    """Real presses on a shown, active window. The mode switch between them is a
-    press of the Units Mode key too, so the shortcut swap runs inside Qt's own
-    shortcut dispatch."""
+    """Real presses on a shown, active window, the mode switch between them a press of the
+    Units Mode key. The presses alone would pass without the per-mode shortcut swap (the
+    hidden tool's own gate drops the press), so the swap is asserted directly: Place Unit
+    holds no shortcut in Terrain mode, and the key in Units mode, where Set Elevation holds none."""
     from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
 
@@ -1278,6 +1282,8 @@ def test_a_key_on_a_terrain_tool_and_a_units_tool_checks_each_in_its_own_mode() 
         assert window.isActiveWindow()
 
         assert window.mode == "terrain" and window.set_level_action.isEnabled()
+        assert window.place_unit_action.shortcut().isEmpty()
+        assert window.set_level_action.shortcut() == QKeySequence(_SHARED_KEY)
         QTest.keyClick(window, Qt.Key_F7, Qt.ControlModifier | Qt.AltModifier)
         QApplication.processEvents()
         assert window.set_level_action.isChecked() and window._current_tool == "set_level"
@@ -1286,6 +1292,8 @@ def test_a_key_on_a_terrain_tool_and_a_units_tool_checks_each_in_its_own_mode() 
         QApplication.processEvents()
         assert window.mode == "units" and window.place_unit_action.isEnabled()
         assert not window.place_unit_action.isChecked()
+        assert window.place_unit_action.shortcut() == QKeySequence(_SHARED_KEY)
+        assert window.set_level_action.shortcut().isEmpty()
 
         QTest.keyClick(window, Qt.Key_F7, Qt.ControlModifier | Qt.AltModifier)
         QApplication.processEvents()
@@ -1408,3 +1416,21 @@ def test_a_warning_names_three_cleared_holders_with_commas_then_and() -> None:
     finally:
         dialog.close()
         conftest.close_window(window)
+
+
+def test_set_keybind_clears_exactly_what_keybind_conflicts_names(tmp_path, monkeypatch) -> None:
+    """A config from another build binds U to an action this build has no row for. Binding Set
+    Elevation to U clears only what keybind_conflicts() names: the unknown id keeps U, and the
+    returned (warned) list never names it."""
+    import yaml
+
+    from descape import settings
+
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"keybinds": {"tool_from_another_build": "U"}}))
+    monkeypatch.setattr(settings, "_keybinds", None)
+    expected = settings.keybind_conflicts("U", "tool_set_level")
+    assert settings.set_keybind("tool_set_level", "U") == expected
+    stored = yaml.safe_load((tmp_path / "config.yaml").read_text())["keybinds"]
+    assert stored["tool_from_another_build"] == "U"
+    assert stored["tool_set_level"] == "U"
+    assert all(stored[action_id] == "" for action_id in expected)

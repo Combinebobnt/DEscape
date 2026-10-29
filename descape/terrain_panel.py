@@ -33,8 +33,8 @@ def default_terrain_id() -> int:
 
 
 class TerrainPanel(QWidget):
-    # Measured (tools/gen_terrain_browser_eyeball.py): the widest row, "Beach Non Navigable Wet
-    # Gravel", is a 350 px column, plus ~86 px of preview and scrollbar. At 320 four rows clipped alike.
+    # Measured (tools/gen_terrain_browser_eyeball.py): the widest row, "Beach Non Navigable Wet Gravel", is a
+    # 350 px column plus the scrollbar; the rest is slack for Grid view and larger fonts. At 320 four rows clipped.
     MIN_USEFUL_WIDTH = FontScaledWidth(440)
 
     terrain_changed = pyqtSignal(int)

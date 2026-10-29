@@ -104,6 +104,17 @@ def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, 
 
 
 @conftest.requires_symlinks
+def test_gen_swap_players_probe_make_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("gen_swap_players_probe")
+    monkeypatch.setattr(sys, "argv", ["gen_swap_players_probe", "make", "--out", str(link / "out")])
+
+    with pytest.raises(WriteBlockedError):
+        module.main()
+    assert list(real.iterdir()) == []
+
+
+@conftest.requires_symlinks
 def test_gen_blank_maps_refuses_a_linked_output_file(tmp_path, monkeypatch) -> None:
     """--out itself is clean; only the per-size file inside it links into mods/subscribed/."""
     real, _link = _linked_subscribed_dir(tmp_path)

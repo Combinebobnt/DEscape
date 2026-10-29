@@ -220,6 +220,13 @@ class PlayersPanel(QWidget):
         "Read-only for this file: its Options disable lists failed verification, "
         "so rewriting that region would land at an offset that cannot be trusted."
     )
+    # GH #185. Its finer refusals are the dialog's own preview line.
+    _SWAP_LABEL = "Swap Players…"
+    _SWAP_TOOLTIP = (
+        "Exchange two players' slots: units, settings, Personality and disabled "
+        "objects, and optionally their trigger references and diplomacy."
+    )
+    _SWAP_GATE_REASON = "Needs a scenario with at least two players, open in its own game's data."
     _SET_VIEW_LABEL = "Set View"
     _SET_VIEW_TOOLTIP = (
         "Set this player's starting camera to the tile at the centre of the "
@@ -259,6 +266,7 @@ class PlayersPanel(QWidget):
         on_reset_view=None,
         on_player_selected=None,
         on_centre_view=None,
+        on_swap_requested=None,
     ):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
@@ -266,6 +274,7 @@ class PlayersPanel(QWidget):
         self._on_player_field = on_player_field or (lambda *args: None)
         self._on_player_count = on_player_count or (lambda *args: None)
         self._on_disables_requested = on_disables_requested or (lambda *args: None)
+        self._on_swap_requested = on_swap_requested or (lambda *args: None)
         # GH #22's four Point of View buttons (GH #157 added Set to Centre) and
         # the selection notice the camera markers' emphasis follows. All five
         # stay model-free: the panel reports the gesture and the player it was
@@ -341,7 +350,17 @@ class PlayersPanel(QWidget):
         self.disables_button = QPushButton(self._DISABLES_LABEL)
         self.disables_button.setEnabled(False)
         self.disables_button.clicked.connect(lambda *_: self._on_disables_requested())
-        layout.addWidget(self.disables_button)
+        # GH #185, beside it: also scenario-wide, also a dialog (Map > Swap Players… too).
+        self.swap_button = QPushButton(self._SWAP_LABEL)
+        self.swap_button.clicked.connect(lambda *_: self._on_swap_requested())
+        self.set_swap_enabled(False)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.addWidget(self.disables_button)
+        buttons.addWidget(self.swap_button)
+        self.scenario_buttons = QWidget()
+        self.scenario_buttons.setLayout(buttons)
+        layout.addWidget(self.scenario_buttons)
 
         self._rebuild_host()
 
@@ -378,6 +397,7 @@ class PlayersPanel(QWidget):
             self._personality = PersonalityOptions()
             self.player_count_spin.setEnabled(False)
             self._set_disables_enabled(False)
+            self.set_swap_enabled(False)
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             self.player_combo.blockSignals(False)
@@ -398,6 +418,7 @@ class PlayersPanel(QWidget):
         disables_editable: bool = False,
         disables_carrier_ok: bool = True,
         personality: PersonalityOptions | None = None,
+        swap_editable: bool = False,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_players() (mode entry, a new document) and
@@ -446,6 +467,10 @@ class PlayersPanel(QWidget):
 
         `personality` is the Personality combo's choices and per-row
         refusals (GH #126); None means Standard and None only.
+
+        `swap_editable` is the Swap Players… button's gate (GH #185), the
+        window's _swap_editable(): not the Disabled Objects one, which would
+        grey Swap out wherever the disables block fails to verify.
         """
         if loaded is None:
             self.clear_document()
@@ -461,6 +486,7 @@ class PlayersPanel(QWidget):
             defined_player_count(loaded) if player_count is None else player_count
         )
         self._set_disables_enabled(disables_editable, disables_carrier_ok)
+        self.set_swap_enabled(swap_editable)
 
         if not same_document:
             self._player_id = 1
@@ -490,6 +516,11 @@ class PlayersPanel(QWidget):
         else:
             reason = self._DISABLES_CARRIER_GATE_REASON
         self.disables_button.setToolTip(reason)
+
+    def set_swap_enabled(self, editable: bool) -> None:
+        """The window re-gates the button here too, after edits that skip show_scenario() (a player count)."""
+        self.swap_button.setEnabled(editable)
+        self.swap_button.setToolTip(self._SWAP_TOOLTIP if editable else self._SWAP_GATE_REASON)
 
     def _populate_player_count(self, count: int) -> None:
         """Put Number of Players' spinbox in step with `count`, widening its

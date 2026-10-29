@@ -7,6 +7,12 @@ memo reset, then every settings getter called (each per-id one over its ids)
 plus asset_source.get_language(). None may raise, and each result must have
 its annotated type exactly: `type(v) is int`, so a bool or a float never
 passes as an int. Each key's failures are reported together.
+
+The sweep also records every top-level key a getter reads from the loaded
+config, which must be in settings_file's registry: a second discovery path
+beside tests/test_settings_file_keys.py's source scan, which only sees
+literal keys in the shapes it knows. And each dict-valued key gets one bad
+entry among valid ones, which must come back unchanged.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import inspect
 import math
 import types
 import typing
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -146,13 +153,48 @@ def _configs(key: str) -> list[dict]:
     return configs
 
 
+class _RecordingConfig(dict):
+    """A loaded config.yaml that adds every top-level key read from it to `seen`."""
+
+    def __init__(self, data: dict, seen: set) -> None:
+        super().__init__(data)
+        self._seen = seen
+
+    def get(self, key, default=None):
+        self._seen.add(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self._seen.add(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key) -> bool:
+        self._seen.add(key)
+        return super().__contains__(key)
+
+    def setdefault(self, key, default=None):
+        self._seen.add(key)
+        return super().setdefault(key, default)
+
+    def pop(self, key, *default):
+        self._seen.add(key)
+        return super().pop(key, *default)
+
+
+def _use_loaded(loaded: dict, monkeypatch) -> set:
+    """Every settings read returns a fresh recording copy of `loaded`; returns the keys read."""
+    seen: set = set()
+    monkeypatch.setattr(settings, "_load_config", lambda: _RecordingConfig(copy.deepcopy(loaded), seen))
+    for name in MEMOIZED_GLOBALS:
+        setattr(settings, name, None)
+    return seen
+
+
 def _sweep(config: dict, config_path: Path, monkeypatch) -> list[str]:
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     loaded = yaml.safe_load(asset_source.read_config_text(config_path))
     # Every getter parses the same file; one parse, a fresh copy per read, keeps the sweep fast.
-    monkeypatch.setattr(settings, "_load_config", lambda: copy.deepcopy(loaded))
-    for name in MEMOIZED_GLOBALS:
-        setattr(settings, name, None)
+    seen = _use_loaded(loaded, monkeypatch)
     zero, _one = _getters()
     calls = [(f"settings.{name}", ()) for name in zero]
     calls += [(f"settings.{name}", (entry_id,)) for name, ids in PER_ID_GETTERS.items() for entry_id in ids]
@@ -171,7 +213,66 @@ def _sweep(config: dict, config_path: Path, monkeypatch) -> list[str]:
             why = f"raised {type(e).__name__}: {e}"
         if why is not None:
             failures.append(f"{name}{args!r:.40}: {why}")
+    unclassified = seen - set(settings_file.PORTABLE_KEYS) - set(settings_file.LOCAL_KEYS)
+    failures += [f"a getter read {key!r}, in neither PORTABLE_KEYS nor LOCAL_KEYS" for key in sorted(unclassified, key=repr)]
     return failures
+
+
+def _two(ids: tuple, a, b) -> dict:
+    return {ids[0]: a, ids[1]: b}
+
+
+def _one_bad_entry_cases() -> dict[str, tuple[Callable[[str], object], dict, str]]:
+    """Dict-valued key -> (reader of one entry's effective value, valid entries none of which is
+    its default, a known id for the bad entry)."""
+    layers = {spec.layer_id: spec.default for spec in view_layers.LAYERS}
+    layer_ids = tuple(layers)
+    hex_pair = ("#123456", "#654321")
+    return {
+        "keybinds": (settings.get_keybind, _two(_KEYBIND_IDS, "Ctrl+Alt+Shift+F9", "Ctrl+Alt+Shift+F10"), _KEYBIND_IDS[2]),
+        "wheel_bindings": (
+            lambda slot: settings.get_wheel_bindings()[slot],
+            {"plain": "pan_horizontal", "shift": "pan_vertical"},
+            "ctrl",
+        ),
+        "tool_options": (
+            settings.get_tool_option_default,
+            {"brush_size": tool_options.default("brush_size") + 1, "paint_trees": not tool_options.default("paint_trees")},
+            "paint_eye_candy",
+        ),
+        "overlay_colors": (settings.get_overlay_color, _two(_OVERLAY_COLOR_IDS, *hex_pair), _OVERLAY_COLOR_IDS[2]),
+        "view_layers": (
+            lambda layer: getattr(settings.get_view_layers(), layer),
+            _two(layer_ids, not layers[layer_ids[0]], not layers[layer_ids[1]]),
+            layer_ids[2],
+        ),
+        "overlay_opacity": (settings.get_overlay_opacity, _two(_OVERLAY_OPACITY_IDS, 37, 41), _OVERLAY_OPACITY_IDS[2]),
+        "trigger_status_colors": (settings.get_trigger_status_color, {_TRIGGER_STATUS_IDS[0]: "#123456"}, _TRIGGER_STATUS_IDS[1]),
+        "theme_colors": (lambda role: settings.get_theme_colors().get(role), _two(themes.ROLE_IDS, *hex_pair), themes.ROLE_IDS[2]),
+        "text_box_lines": (settings.get_text_box_lines, {_TEXT_BOX_IDS[0]: 7}, _TEXT_BOX_IDS[1]),
+    }
+
+
+def test_every_dict_key_has_a_one_bad_entry_case() -> None:
+    assert set(_one_bad_entry_cases()) == set(DICT_KEY_IDS)
+
+
+@pytest.mark.parametrize("key", list(DICT_KEY_IDS))
+def test_one_bad_entry_leaves_the_valid_entries_beside_it_unchanged(key, monkeypatch) -> None:
+    """The hostile-everything sweep would pass a getter that drops its whole mapping on one bad
+    entry. Here each hostile value sits alone, under a known id or a non-text one, among valid entries."""
+    reader, valid, bad_id = _one_bad_entry_cases()[key]
+    _use_loaded({}, monkeypatch)
+    defaults = {entry_id: reader(entry_id) for entry_id in valid}
+    assert all(defaults[entry_id] != value for entry_id, value in valid.items()), (defaults, valid)
+    failures = []
+    for value in HOSTILE:
+        for bad in ({bad_id: value}, {7: value}):
+            _use_loaded({key: {**valid, **copy.deepcopy(bad)}}, monkeypatch)
+            got = {entry_id: reader(entry_id) for entry_id in valid}
+            if got != valid:
+                failures.append(f"{bad!r:.60} -> {got!r:.120}")
+    assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)
 
 
 def test_every_one_argument_getter_has_ids_to_call() -> None:

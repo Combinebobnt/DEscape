@@ -26,6 +26,27 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **View > Layers > Fish Outlines** rings every fish (shore fish, turtles,
+  oysters, and deep-water fish, dolphins and whales round their whole
+  footprint) in its own Settings > Appearance colour, independent of
+  Footprint Outlines.
+- **New Map plants trees on a forest terrain**, like the Terrain tool:
+  File > New Map… has Trees and Eye candy boxes (Trees on by default), and
+  asks first when that means over 100,000 trees.
+- **Trigger-created units preview** (GH #167): View > Show Trigger-Created
+  Units draws each unit the selected trigger's Create Object and Place
+  Foundation effects would create, see-through on its tile, with or without
+  the trigger overlay. Facing is not shown yet.
+- **Swap Players** (GH #185): Players mode's Swap Players… button, also
+  Map > Swap Players…, exchanges two players' slots: their units, settings,
+  Personality and disabled objects, and by default their trigger player
+  fields and diplomacy, as one undo step.
+- **Triggers: Object List Type** (GH #41): an object list field now has an
+  object list type row above it (Units, Buildings, Heroes or Others, as in
+  the in-game editor) that narrows its suggestions and Browse list to that
+  kind. It follows the field's value and is not saved in the scenario.
+  Object Group and Object Type now sit directly under the object list, above
+  the Location, Area and Objects Set rows.
 - **Export and import settings** (GH #268): Settings > General > Export
   settings… saves your preferences (keybinds, the look, tool defaults, View
   menu choices and the rest; not folder paths, recent files or window
@@ -132,6 +153,8 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- Terrain mode's List view drops the large swatch beside the terrain list;
+  each row already shows its own (GH #258).
 - **One key can go on commands of different modes** (GH #267): a Terrain
   tool and a Units tool, say. A command that works only in some modes shows
   them after its name in Settings > Keybinds and on the Keyboard and Mouse
@@ -250,6 +273,23 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Sloped hills fold like the game's**: each tile's slope now creases
+  along the diagonal AoE2:DE picks for it, so a unit on such a tile stands
+  on the same spot of its tile as in the game.
+- **The stack badge stops counting half-visible units**: a unit placed off
+  its tile's centre whose mark shows past a building's edge is no longer
+  counted as hidden under it.
+- **Moving triggers in a Legacy-order file warns**: the first move in a file
+  that runs triggers in ID order says the move does not change which runs
+  first.
+- **A gate moves past its own corner pieces**: a gate dragged less than its
+  own length is no longer refused on the corner pieces real files store at
+  its ends.
+- **Mirror Map's shaded source slice has no stray line**: on an odd-sized
+  map, 4-way rotational and 4-way reflective (map axes) also sourced the
+  centre column's or row's far half, and on any map 4-way reflective (screen
+  axes) sourced a diagonal line from the West tip to the centre, copying
+  tiles from outside the shaded slice.
 - **Moved walls reshape** (GH #266): a wall you move takes the shape of its
   new place (a tower when it stands alone), and the walls it leaves or joins
   reshape too, so DEscape shows the walls as the game does. Moving a wall

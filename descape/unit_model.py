@@ -580,8 +580,9 @@ class UnitFieldSnapshot:
     """One side of a fields_only delta undo record -- O(units actually
     touched) rather than UnitSnapshot's O(whole player list), for
     set_position/set_rotation/set_unit_const/replace_type/set_status/
-    set_capture_flag edits (Move/Nudge/Rotate/Set field/gate orientation/
-    Unit State/Capture Flag). `entries` is keyed by id(unit), filled lazily
+    set_capture_flag/set_wall_variant edits (Move/Nudge/Rotate/Set field/
+    gate orientation/Unit State/Capture Flag, and a move's or a Selection
+    transform's wall shapes). `entries` is keyed by id(unit), filled lazily
     on each unit's first field write so N field writes to the same unit
     still cost one entry."""
 
@@ -970,7 +971,7 @@ class UnitEditModel:
         plan_in_place()): AGENTS.md's *Selection transform* exception, under
         its own rationale, with this method's guard unchanged.
 
-        The fourth and narrowest exception to AGENTS.md's "verbatim" rule,
+        The narrowest exception to AGENTS.md's "verbatim" rule,
         and the reason it is allowed at all: the game re-derives a wall's
         index from its neighbours, so writing the derived value converges
         with what the game will do rather than diverging from it. GH #266's
@@ -1244,6 +1245,34 @@ class UnitEditModel:
         # Resyncs the cached _player that render.py/unit_filter.py read for
         # colour -- reassign never touches it otherwise, since ownership here
         # is purely which list the unit lives in.
+        self.loaded.unit_manager.update_unit_player_values()
+        self._dirty = True
+        self._bump_unit_gen()
+
+    def swap_players(self, a: int, b: int) -> None:
+        """Exchanges players `a` and `b`'s whole unit lists (Swap Players, GH
+        #185): every unit of one goes to the other, each list keeping its
+        order, as pure blob moves like reassign()'s. So a swap and a swap back
+        are byte-identical, and the caller's begin_unit_edit([a, b]) snapshot
+        undoes it exactly.
+
+        P1..P8 only: GAIA has no slot to swap into, and GAIA-only objects never
+        go to a player (GH #32). A GAIA-only object a player already holds moves
+        with its player, which gives it to no logical player that lacked one.
+        The garrison map stays: the set of units and every reference_id and
+        garrisoned_in_id are unchanged.
+        """
+        self._refuse_inside_field_delta("swap_players")
+        if not (1 <= a <= 8 and 1 <= b <= 8) or a == b:
+            raise ValueError(f"swap_players() takes two different players in 1..8, got {a} and {b}")
+        # Slice assignment, never rebinding: restore()'s trap 2 (the setter re-wraps in UuidList).
+        for lists in (self.loaded.unit_manager.units, self._blobs, self._tracked):
+            old_a = list(lists[a])
+            lists[a][:] = lists[b]
+            lists[b][:] = old_a
+        self._reindex_pos_tail(a, 0)
+        self._reindex_pos_tail(b, 0)
+        # The cached _player render.py reads for colour; never the banned `unit.player` setter.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
         self._bump_unit_gen()
@@ -1661,9 +1690,10 @@ class UnitEditModel:
         `fields_only` (Batch D's D6): True opens a UnitFieldSnapshot instead
         of capturing `players`' whole lists up front -- cheap for a single-
         or few-unit edit that only ever calls set_position/set_rotation/
-        set_unit_const/set_status/set_capture_flag, which is exactly what
-        add/remove/reassign are then refused for (_refuse_inside_field_delta())
-        until this edit commits or aborts. `players` is unused in this mode
+        set_unit_const/set_status/set_capture_flag/set_wall_variant, which
+        is exactly what add/remove/reassign are then refused for
+        (_refuse_inside_field_delta()) until this edit commits or aborts.
+        `players` is unused in this mode
         (nothing is captured up front) but still required, so a caller can't
         silently drop the declaration when flipping this flag.
         """

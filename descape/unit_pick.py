@@ -440,6 +440,7 @@ def _pick_unit_sloped(
     proj: iso_geometry.IsoProjection,
     terrain_tile: tuple[int, int] | None,
     farms_draped: bool,
+    fold: np.ndarray | None = None,
 ) -> _PickHits:
     """_pick_unit_stepped()'s shape, keyed on the SCREEN LATTICE instead of
     on integer elevation levels -- Track C5's Step 3.
@@ -569,7 +570,7 @@ def _pick_unit_sloped(
                     # height (the flat pad _paint_tile_and_units_sloped paints),
                     # but two units covering this same tile can sit at two
                     # different heights, so membership cannot be hoisted out.
-                    rise = unit_rise_px_for(entry, corner_rise)
+                    rise = unit_rise_px_for(entry, corner_rise, fold)
                     dx, dy = paint_off
                     if dx or dy:
                         cen_x, cen_y = iso_geometry.map_point_to_screen(
@@ -589,7 +590,7 @@ def _pick_unit_sloped(
     return hits
 
 
-def unit_rise_px_for(entry: UnitEntry, corner_rise: np.ndarray) -> int:
+def unit_rise_px_for(entry: UnitEntry, corner_rise: np.ndarray, fold: np.ndarray | None = None) -> int:
     """The canvas-pixel rise one unit's whole footprint sits at in Sloped --
     the single place picking and highlighting resolve it, so neither can
     drift from render._paint_tile_and_units_sloped's own call.
@@ -597,10 +598,13 @@ def unit_rise_px_for(entry: UnitEntry, corner_rise: np.ndarray) -> int:
     Reads the unit's OWN tile's corners at its OWN sub-tile fractions, the
     asymmetry-1 rule expressed in pixels (see this module's header): a
     multi-tile building is still a flat slab at one height, so every
-    footprint diamond gets this same value rather than its own tile's."""
+    footprint diamond gets this same value rather than its own tile's.
+    fold is iso_geometry.tile_folds() beside corner_rise, read at the own
+    tile too; None is the fixed NE-SW fold."""
     unit = entry.unit
     return iso_geometry.unit_rise_px(
-        corner_rise, entry.own_x, entry.own_y, unit.x - entry.own_x, unit.y - entry.own_y
+        corner_rise, entry.own_x, entry.own_y, unit.x - entry.own_x, unit.y - entry.own_y,
+        iso_geometry.tile_nwse(fold, entry.own_x, entry.own_y),
     )
 
 
@@ -618,13 +622,14 @@ def pick_unit(
     terrain_tile: tuple[int, int] | None = UNRESOLVED_TILE,
     farms_draped: bool = False,
     sprites_on: bool = False,
+    fold: np.ndarray | None = None,
 ) -> UnitEntry | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy), or None. A wrapper
     over pick_unit_cover(), which documents the parameters, so the occlusion
     rule lives in exactly one place."""
     found = pick_unit_cover(
         index, style, sx, sy, tile_px, tile_w, tile_h, elevations, proj, corner_rise, terrain_tile, farms_draped,
-        sprites_on,
+        sprites_on, fold,
     )
     return None if found is None else found[0]
 
@@ -643,6 +648,7 @@ def pick_unit_cover(
     terrain_tile: tuple[int, int] | None = UNRESOLVED_TILE,
     farms_draped: bool = False,
     sprites_on: bool = False,
+    fold: np.ndarray | None = None,
 ) -> tuple[UnitEntry, tuple[int, int]] | None:
     """The topmost VISIBLE unit at canvas pixel (sx, sy) AND the footprint
     tile it was covering when it won, or None. That covering tile is what
@@ -725,7 +731,7 @@ def pick_unit_cover(
         if corner_rise is None or proj is None:
             return None
         terrain = None if terrain_tile is UNRESOLVED_TILE else terrain_tile
-        hits = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain, farms_draped)
+        hits = _pick_unit_sloped(index, sx, sy, corner_rise, proj, terrain, farms_draped, fold)
     elif style == "stepped":
         if elevations is None or proj is None:
             return None
@@ -751,7 +757,7 @@ def pick_unit_cover(
         return found
     tx, ty = terrain
     if (ty - tx, tx) > (cover_y - cover_x, cover_x):
-        if sprites_on and not _occluded_with_sprites(winner, terrain, style, elevations, proj, corner_rise):
+        if sprites_on and not _occluded_with_sprites(winner, terrain, style, elevations, proj, corner_rise, fold):
             return found
         return hits.draped
     return found
@@ -764,6 +770,7 @@ def _occluded_with_sprites(
     elevations: np.ndarray | None,
     proj: iso_geometry.IsoProjection,
     corner_rise: np.ndarray | None,
+    fold: np.ndarray | None = None,
 ) -> bool:
     """Step 3 of pick_unit_cover(): whether the later terrain tile under a
     winner covers it in the sprites-on paint. A tile's height and an ink base
@@ -782,7 +789,7 @@ def _occluded_with_sprites(
         if render._sloped_mark_conforms(unit):
             base = render._sloped_tile_floor(corner_rise, entry.own_x, entry.own_y)
         else:
-            base = unit_rise_px_for(entry, corner_rise)
+            base = unit_rise_px_for(entry, corner_rise, fold)
     else:
         height = int(elevations[ty, tx]) * proj.elev_step
         base = render._unit_mark_rise_iso(unit, proj, elevations)
@@ -794,12 +801,32 @@ def _is_multi_tile(unit) -> bool:
     return span_x > 1 or span_y > 1
 
 
+def _mark_tiles(unit) -> list[tuple[int, int]]:
+    """The tiles a span-1 unit's one-tile mark paints on: its own, plus the
+    neighbour on each axis its render.unit_paint_offset() leans into."""
+    dx, dy = render.unit_paint_offset(unit)
+    tx, ty = int(unit.x), int(unit.y)
+    xs = (tx,) if dx == 0 else (tx, tx + (1 if dx > 0 else -1))
+    ys = (ty,) if dy == 0 else (ty, ty + (1 if dy > 0 else -1))
+    return [(x, y) for x in xs for y in ys]
+
+
+def _slab_covers(unit, tx: int, ty: int) -> bool:
+    """Whether multi-tile `unit` occupies (tx, ty): inside its span's rect,
+    then render.unit_occupies_tile() for a diagonal gate's gaps."""
+    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    x0, y0 = render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+    return x0 <= tx < x0 + span_x and y0 <= ty < y0 + span_y and render.unit_occupies_tile(unit, tx, ty)
+
+
 def _hides(top: UnitEntry, under: UnitEntry) -> bool:
     """Whether `top` exactly covers `under` on `under`'s own tile: a span-1
-    unit under a multi-tile slab, or an identical point with an identical
-    span. Callers guarantee top.rank > under.rank."""
+    unit under a multi-tile slab that occupies every tile its mark reaches
+    (TASK-051: an off-centre mark can lean past the slab's edge), or an
+    identical point with an identical span. Callers guarantee top.rank >
+    under.rank."""
     if not _is_multi_tile(under.unit) and _is_multi_tile(top.unit):
-        return True
+        return all(_slab_covers(top.unit, x, y) for x, y in _mark_tiles(under.unit))
     if (top.unit.x, top.unit.y) != (under.unit.x, under.unit.y):
         return False
     top_span = render.tile_span(top.unit.unit_const, render.NON_BUILDING_SPAN)
@@ -841,8 +868,9 @@ def stack_groups(index: UnitIndex) -> dict[tuple[int, int], list[UnitEntry]]:
     stack's members ordered top-first (descending `rank`, which is paint
     order within one fixed tile in every style).
 
-    "Stacked" is exact overlap only: a span-1 unit under a multi-tile slab, or two
-    units at an identical point with an identical span. Two 1x1 units at
+    "Stacked" is exact overlap only: a span-1 unit under a multi-tile slab
+    that covers its whole mark, or two units at an identical point with an
+    identical span. Two 1x1 units at
     different sub-tile positions are deliberately not stacked. Members are
     the hidden units and the units hiding them, never an unrelated occupant
     that merely overlaps the tile.
@@ -1009,6 +1037,7 @@ def unit_polygons(
     proj: iso_geometry.IsoProjection | None = None,
     corner_rise: np.ndarray | None = None,
     farms_draped: bool = False,
+    fold: np.ndarray | None = None,
 ) -> list[list[tuple[float, float]]] | None:
     """The unit's on-screen highlight, as a list of polygons, each a list of
     (x, y) points. Plain tuples rather than QPolygonF so this module stays
@@ -1087,7 +1116,7 @@ def unit_polygons(
                 points = iso_geometry.sloped_tile_outline(tile_px, d_nw, d_ne, d_sw, d_se)
                 polygons.append([(ox + px, oy + py) for px, py in points])
             return polygons
-        rise = unit_rise_px_for(entry, corner_rise)
+        rise = unit_rise_px_for(entry, corner_rise, fold)
         elevation = 0
     elif style == "stepped":
         if elevations is None or proj is None:
@@ -1178,6 +1207,7 @@ def units_in_screen_rect(
     elevations: np.ndarray | None = None,
     proj: iso_geometry.IsoProjection | None = None,
     corner_rise: np.ndarray | None = None,
+    fold: np.ndarray | None = None,
 ) -> list[UnitEntry]:
     """Every entry whose on-screen ANCHOR lies inside the canvas-pixel rect,
     edges inclusive, in `order` -- the Stepped/Sloped marquee's query (GH
@@ -1254,7 +1284,7 @@ def units_in_screen_rect(
         if style == "stepped":
             rise = int(elevations[entry.own_y, entry.own_x]) * proj.elev_step
         else:
-            rise = unit_rise_px_for(entry, corner_rise)
+            rise = unit_rise_px_for(entry, corner_rise, fold)
         _ax, ay = iso_geometry.map_point_to_screen(cx, cy, rise, proj)
         if top <= ay <= bottom:
             result.append(entry)

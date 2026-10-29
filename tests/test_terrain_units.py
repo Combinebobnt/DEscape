@@ -10,7 +10,9 @@ import json
 import random
 from pathlib import Path
 
-from descape import terrain_units, unit_rotation
+import pytest
+
+from descape import game_dataset, terrain_units, unit_rotation, unit_variant
 
 _TERRAIN_UNIT_MAP_PATH = Path(__file__).resolve().parent.parent / "descape" / "terrain_unit_map.json"
 _TREE_UNIT_IDS_PATH = Path(__file__).resolve().parent.parent / "descape" / "tree_unit_ids.json"
@@ -118,6 +120,20 @@ def test_variant_is_in_range_and_varies():
     variants = {terrain_units.variant_for(FOREST_OAK_CONST, rng) for _ in range(100)}
     assert variants <= set(range(angle_count))
     assert len(variants) > 1
+
+
+@pytest.mark.parametrize("dataset", [game_dataset.AOE2, game_dataset.ROR])
+def test_every_planted_const_rolls_inside_its_cycle_variant_range(dataset):
+    # docs/WRITE_RULES.md's Terrain planting bullet: variant_for()'s range is unit_variant's modulus on every planted const.
+    with game_dataset.activated(dataset):
+        planted = terrain_units.TREE_CONSTS | terrain_units.DOODAD_CONSTS
+        assert planted
+        bad = {
+            const: (unit_rotation.angle_count_for(const), unit_variant.variant_count_for(const))
+            for const in sorted(planted)
+            if unit_rotation.angle_count_for(const) != unit_variant.variant_count_for(const)
+        }
+        assert not bad, bad
 
 
 def test_plan_one_unit_per_tile_never_two():
@@ -259,3 +275,121 @@ def test_the_default_blocked_set_plans_what_an_explicit_empty_one_does():
     )
     assert default.adds == explicit.adds
     assert any(a.unit_const == FOREST_OAK_CONST for a in default.adds)
+
+
+# --- TASK-456: the whole-map planner behind New Map's Trees and Eye candy ---
+
+# Synthetic, so a regen of the real tables never moves the captured specs below.
+_PARTIAL = 900  # a doodad, then two trees, all partial density
+_FULL = 901  # one tree at density 1000
+_SYNTHETIC_TERRAINS = {
+    _PARTIAL: [
+        {"id": 9001, "density": 300, "centering": 0},
+        {"id": 9002, "density": 500, "centering": 1},
+        {"id": 9003, "density": 200, "centering": 0},
+    ],
+    _FULL: [{"id": 9004, "density": 1000, "centering": 1}],
+}
+_SYNTHETIC_ANGLES = {9001: 3, 9002: 5, 9003: 7, 9004: 4}
+
+
+@pytest.fixture
+def synthetic_tables(monkeypatch):
+    monkeypatch.setattr(terrain_units, "_TERRAIN_UNITS", _SYNTHETIC_TERRAINS)
+    monkeypatch.setattr(terrain_units, "TREE_CONSTS", {9002, 9003, 9004})
+    monkeypatch.setattr(terrain_units, "DOODAD_CONSTS", {9001})
+    monkeypatch.setattr(unit_rotation, "angle_count_for", _SYNTHETIC_ANGLES.__getitem__)
+
+
+def _synthetic_changes() -> tuple[list, dict]:
+    changes = [(i, (DIRT_1, 0, -1), (_FULL if i % 3 == 0 else _PARTIAL, 0, -1)) for i in range(12)]
+    return changes, {i: (i % 4, i // 4) for i in range(12)}
+
+
+def _rows(adds) -> list[tuple]:
+    return [(a.x, a.y, a.unit_const, a.rotation, a.initial_animation_frame) for a in adds]
+
+
+# Captured from plan_terrain_units() before _spec_for_tile() was split out of it.
+_CAPTURED = {
+    (True, True): [
+        (0.5, 0.5, 9004, 3.0, 3),
+        (3.5, 0.5, 9004, 2.0, 2),
+        (0.6566183237281052, 1.1337694064564727, 9003, 1.0, 1),
+        (1.2480510814816745, 1.412369906876008, 9001, 2.0, 2),
+        (2.5, 1.5, 9004, 3.0, 3),
+        (3.5, 1.5, 9002, 4.0, 4),
+        (0.7655625700113993, 2.6513489647193387, 9001, 1.0, 1),
+        (1.5, 2.5, 9004, 3.0, 3),
+        (2.7383055323211773, 2.2032412721496306, 9001, 1.0, 1),
+        (3.609469415966534, 2.353825806767755, 9001, 0.0, 0),
+    ],
+    (True, False): [
+        (0.5, 0.5, 9004, 3.0, 3),
+        (1.5, 0.5, 9002, 0.0, 0),
+        (3.5, 0.5, 9004, 0.0, 0),
+        (0.5, 1.5, 9002, 0.0, 0),
+        (1.5, 1.5, 9002, 3.0, 3),
+        (2.5, 1.5, 9004, 1.0, 1),
+        (3.5, 1.5, 9002, 1.0, 1),
+        (1.5, 2.5, 9004, 3.0, 3),
+        (2.52651958485626, 2.390349470567424, 9003, 5.0, 5),
+    ],
+}
+
+
+@pytest.mark.parametrize(("trees", "doodads"), list(_CAPTURED))
+def test_a_seeded_plan_is_the_captured_one(synthetic_tables, trees, doodads):
+    """Pins the roll walk's draw order: the same seed plans the same units."""
+    changes, tiles = _synthetic_changes()
+    plan = terrain_units.plan_terrain_units(
+        changes, tiles, {}, trees=trees, doodads=doodads, rng=random.Random(456)
+    )
+    assert _rows(plan.adds) == _CAPTURED[(trees, doodads)]
+
+
+@pytest.mark.parametrize("terrain_id", (_PARTIAL, _FULL))
+def test_plan_fill_plants_what_the_terrain_tool_plants_on_a_whole_map_fill(synthetic_tables, terrain_id):
+    width, height = 9, 6
+    changes = [(i, (DIRT_1, 0, -1), (terrain_id, 0, -1)) for i in range(width * height)]
+    tiles = {i: (i % width, i // width) for i in range(width * height)}
+    fill = terrain_units.plan_fill(width, height, terrain_id, trees=True, doodads=True, rng=random.Random(3))
+    paint = terrain_units.plan_terrain_units(changes, tiles, {}, trees=True, doodads=True, rng=random.Random(3))
+    assert fill == paint.adds
+    assert fill
+
+
+def test_plan_fill_puts_one_unit_on_every_tile_of_a_full_density_forest():
+    width, height = 13, 7
+    specs = terrain_units.plan_fill(width, height, FOREST_OAK, trees=True, doodads=False, rng=random.Random(0))
+    assert sorted((int(s.x), int(s.y)) for s in specs) == [(x, y) for x in range(width) for y in range(height)]
+    assert {s.unit_const for s in specs} == {FOREST_OAK_CONST}
+
+
+def test_plan_fill_places_only_the_enabled_kinds(synthetic_tables):
+    def consts(**kinds):
+        return {s.unit_const for s in terrain_units.plan_fill(20, 20, _PARTIAL, rng=random.Random(1), **kinds)}
+
+    assert consts(trees=True, doodads=False) == {9002, 9003}
+    assert consts(trees=False, doodads=True) == {9001}
+    assert consts(trees=True, doodads=True) == {9001, 9002, 9003}
+    assert consts(trees=False, doodads=False) == set()
+    assert terrain_units.plan_fill(20, 20, GRASS_1, trees=True, doodads=False, rng=random.Random(1)) == []
+
+
+@pytest.mark.parametrize(("trees", "doodads", "rate"), ((True, True, 0.72), (True, False, 0.6), (False, True, 0.3)))
+def test_expected_unit_count_matches_a_seeded_fill_on_a_partial_density_terrain(synthetic_tables, trees, doodads, rate):
+    tiles = 100 * 100
+    expected = terrain_units.expected_unit_count(_PARTIAL, tiles, trees=trees, doodads=doodads)
+    assert expected == round(tiles * rate)
+    planted = len(terrain_units.plan_fill(100, 100, _PARTIAL, trees=trees, doodads=doodads, rng=random.Random(5)))
+    assert abs(planted - expected) <= 0.02 * tiles  # about four standard deviations
+
+
+def test_expected_unit_count_is_exact_at_full_density():
+    for tiles in (61 * 61, 480 * 480):
+        assert terrain_units.expected_unit_count(FOREST_OAK, tiles, trees=True, doodads=False) == tiles
+    assert len(terrain_units.plan_fill(61, 61, FOREST_OAK, trees=True, doodads=False, rng=random.Random(2))) == 61 * 61
+    assert terrain_units.expected_unit_count(FOREST_OAK, 480 * 480, trees=False, doodads=True) == 0
+    beach = 2  # no terrain_unit_map entry
+    assert terrain_units.expected_unit_count(beach, 480 * 480, trees=True, doodads=True) == 0

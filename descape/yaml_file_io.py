@@ -4,7 +4,8 @@
 Reading refuses a whole file that can't be one of ours (oversize, not YAML,
 aliases, deep nesting, no top-level mapping, the wrong format id, a bad or
 newer version), so a caller only ever sees a mapping. Writing never truncates
-an existing file in place, and an export refuses a mods/subscribed/ path.
+an existing file in place, and an export refuses a mods/subscribed/ path and
+the files it is told to protect (config.yaml and the files kept beside it).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import os
 import reprlib
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def short(value) -> str:
     return text if len(text) <= _SHORT_MAX else text[: _SHORT_MAX - 3] + "..."
 
 
-def _is_int(value) -> bool:
+def is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -109,7 +110,7 @@ def read_root(path: Path, fmt: YamlFormat) -> dict:
             + (f". {hint}" if hint else "")
         )
     version = root.get("version")
-    if not _is_int(version) or version < 1:
+    if not is_int(version) or version < 1:
         raise fmt.refused(f"unreadable {noun} file version {short(version)}")
     if version > fmt.max_version:
         raise (fmt.newer_refused or fmt.refused)(
@@ -146,16 +147,29 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int | None = None) -> N
         tmp.unlink(missing_ok=True)
 
 
-def write_export(path: Path | str, doc: dict, *, what: str, blocked: type[Exception]) -> None:
-    """Refuses a mods/subscribed/ path, as written or resolved, or an
-    unresolvable one, raising `blocked` and writing nothing. Otherwise dumps
-    `doc` without anchors through atomic_write(). `what` names the file in the
-    refusal ("a theme")."""
+def _same_file(a: Path, b: Path) -> bool:
+    """Whether two resolved paths name one file; samefile() also catches a case-insensitive volume or a hard link."""
+    if os.path.normcase(a) == os.path.normcase(b):
+        return True
+    return a.exists() and b.exists() and os.path.samefile(a, b)
+
+
+def write_export(
+    path: Path | str, doc: dict, *, what: str, blocked: type[Exception], protected: Collection[Path] = ()
+) -> None:
+    """Refuses a mods/subscribed/ path, as written or resolved, an
+    unresolvable one, or one of `protected` (both sides resolved), raising
+    `blocked` and writing nothing. Otherwise dumps `doc` without anchors
+    through atomic_write(). `what` names the file in the refusal ("a theme")."""
     path = Path(path)
     try:
         is_blocked = is_workshop_subscribed(path)
+        resolved = path.resolve()
+        hit = next((p for p in protected if _same_file(resolved, Path(p).resolve())), None)
     except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
         raise blocked(f"refusing to write {what} to a path that cannot be resolved ({e}): {path}") from e
     if is_blocked:
         raise blocked(f"refusing to write {what} into a subscribed-mods (mods/subscribed/) folder: {path}")
+    if hit is not None:
+        raise blocked(f"refusing to write {what} over DEscape's own {Path(hit).name}: {path}")
     atomic_write(path, dump(doc))

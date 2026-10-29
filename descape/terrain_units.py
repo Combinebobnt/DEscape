@@ -191,23 +191,64 @@ def plan_terrain_units(
 
         if (x, y) in blocked:
             continue
-        rolled = roll_unit(new_terrain_id, trees=trees, doodads=doodads, rng=rng)
-        if rolled is None:
-            continue
-        const, centering = rolled
-        if centering:
-            px, py = x + 0.5, y + 0.5
-        else:
-            px, py = x + rng.uniform(0.1, 0.9), y + rng.uniform(0.1, 0.9)
-        variant = variant_for(const, rng)
-        plan.adds.append(
-            UnitAddSpec(
-                x=px,
-                y=py,
-                unit_const=const,
-                rotation=float(variant),
-                initial_animation_frame=variant,
-            )
-        )
+        spec = _spec_for_tile(x, y, new_terrain_id, trees=trees, doodads=doodads, rng=rng)
+        if spec is not None:
+            plan.adds.append(spec)
 
     return plan
+
+
+def _spec_for_tile(
+    x: int, y: int, terrain_id: int, *, trees: bool, doodads: bool, rng: random.Random
+) -> UnitAddSpec | None:
+    """One tile's roll: the unit placed on tile (x, y) of `terrain_id`, or
+    None. Shared by plan_terrain_units() and plan_fill(), in one draw order."""
+    rolled = roll_unit(terrain_id, trees=trees, doodads=doodads, rng=rng)
+    if rolled is None:
+        return None
+    const, centering = rolled
+    if centering:
+        px, py = x + 0.5, y + 0.5
+    else:
+        px, py = x + rng.uniform(0.1, 0.9), y + rng.uniform(0.1, 0.9)
+    variant = variant_for(const, rng)
+    return UnitAddSpec(
+        x=px,
+        y=py,
+        unit_const=const,
+        rotation=float(variant),
+        initial_animation_frame=variant,
+    )
+
+
+def _has_enabled_entry(terrain_id: int, *, trees: bool, doodads: bool) -> bool:
+    enabled = _enabled_consts(trees=trees, doodads=doodads)
+    return any(spec["id"] in enabled for spec in _TERRAIN_UNITS.get(terrain_id, ()))
+
+
+def plan_fill(
+    width: int, height: int, terrain_id: int, *, trees: bool, doodads: bool, rng: random.Random
+) -> list[UnitAddSpec]:
+    """The units a new width x height map of `terrain_id` gets (File > New
+    Map…): every tile rolled once, row-major, as plan_terrain_units() would
+    for a fill of the whole map, with nothing blocked or removed."""
+    if not _has_enabled_entry(terrain_id, trees=trees, doodads=doodads):
+        return []
+    specs = []
+    for y in range(height):
+        for x in range(width):
+            spec = _spec_for_tile(x, y, terrain_id, trees=trees, doodads=doodads, rng=rng)
+            if spec is not None:
+                specs.append(spec)
+    return specs
+
+
+def expected_unit_count(terrain_id: int, tile_count: int, *, trees: bool, doodads: bool) -> int:
+    """How many units plan_fill() places on `tile_count` tiles, on average:
+    a tile stays empty only when every enabled entry misses its roll."""
+    enabled = _enabled_consts(trees=trees, doodads=doodads)
+    miss = 1.0
+    for spec in _TERRAIN_UNITS.get(terrain_id, ()):
+        if spec["id"] in enabled:
+            miss *= 1 - max(0, min(spec["density"], 1000)) / 1000
+    return round(tile_count * (1 - miss))

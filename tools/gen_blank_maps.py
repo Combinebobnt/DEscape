@@ -16,6 +16,13 @@ reload-and-verify discipline tools/strip_units.py uses ("reload through the
 real loader, not just re-decompress in place") rather than trusting
 in-place state.
 
+A square map can also be filled and planted the way File > New Map… does it
+(`--terrain 10 --trees --eye-candy --game-data ror --seed 7`): the reload
+then checks every tile's terrain, the header's game, and that the units are
+exactly the ones the same seed plans under that game's tables. The seed is
+printed, so a file can be made again. `--name` sets the file name for a
+single size.
+
 A non-square size (`--sizes 120x168 168x120`, width x height) is the
 non-square in-game gate. A blank uniform grid cannot gate it: the bytes are
 identical whether the game reads terrain row-major by width (i = y*w + x,
@@ -29,6 +36,7 @@ the user should see in the real editor for each file.
 from __future__ import annotations
 
 import argparse
+import random
 import struct
 import sys
 import zlib
@@ -36,6 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from descape import game_dataset, terrain_units
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
     TERRAIN_STRUCT_SIZE,
@@ -65,6 +74,12 @@ BLOCK_SPAN = 11
 BLOCK_FAR_INSET = 7
 
 _SIZE_STRUCT = struct.Struct("<ii")
+_F32 = struct.Struct("<f")
+
+
+def _f32(value: float) -> float:
+    """`value` as a unit's x or y reads back: the file stores them as f32."""
+    return _F32.unpack(_F32.pack(value))[0]
 
 
 class GenerationVerificationError(Exception):
@@ -127,7 +142,10 @@ def apply_markers(body: bytes, terrain_offset: int, markers: dict[int, int]) -> 
     return bytes(patched)
 
 
-def _verify(path: Path, tiles: int) -> None:
+def _verify(path: Path, tiles: int, *, terrain_id: int = 0, game_data: str = game_dataset.AOE2, planted=()) -> None:
+    """The reload matches: size, every tile `terrain_id` at elevation 0, the
+    header's game, and GAIA's units exactly `planted`'s specs, in order
+    (no units for a bare map), with every other player empty."""
     reloaded = load_map_and_units(path)
     mm = reloaded.map_manager
     if not (mm.map_width == mm.map_height == tiles):
@@ -138,10 +156,17 @@ def _verify(path: Path, tiles: int) -> None:
         raise GenerationVerificationError(f"{path}: not square after reload")
     if not reloaded.terrain_write_supported:
         raise GenerationVerificationError(f"{path}: terrain block failed reload verification")
-    if not all(t.terrain_id == 0 and t.elevation == 0 and t.layer == -1 for t in mm.terrain):
-        raise GenerationVerificationError(f"{path}: not uniformly blank after reload")
-    if sum(len(units) for units in reloaded.unit_manager.units) != 0:
-        raise GenerationVerificationError(f"{path}: has units after reload")
+    if not all(t.terrain_id == terrain_id and t.elevation == 0 and t.layer == -1 for t in mm.terrain):
+        raise GenerationVerificationError(f"{path}: not uniformly terrain {terrain_id} after reload")
+    if game_dataset.from_variant(reloaded.game_variant) != game_data:
+        raise GenerationVerificationError(f"{path}: reloaded as a {game_dataset.from_variant(reloaded.game_variant)} map")
+    units = reloaded.unit_manager.units
+    if sum(len(player_units) for player_units in units[1:]) != 0:
+        raise GenerationVerificationError(f"{path}: has non-GAIA units after reload")
+    got = [(u.x, u.y, u.unit_const, u.rotation, u.initial_animation_frame) for u in units[0]]
+    want = [(_f32(s.x), _f32(s.y), s.unit_const, s.rotation, s.initial_animation_frame) for s in planted]
+    if got != want:
+        raise GenerationVerificationError(f"{path}: {len(got)} GAIA units after reload, not the {len(want)} planned")
 
 
 def _verify_raw(path: Path, donor: LoadedScenario, width: int, height: int, markers: dict[int, int]) -> None:
@@ -238,16 +263,46 @@ def main() -> None:
         default=[(n, n) for n in STANDARD_MAP_SIZES],
         help=f"Sizes to generate, N or WxH (default: {STANDARD_MAP_SIZES})",
     )
+    parser.add_argument("--terrain", type=int, default=0, help="Terrain id every tile gets (square sizes; default 0, Grass 1)")
+    parser.add_argument("--trees", action="store_true", help="Plant trees as New Map's Trees box does (square sizes)")
+    parser.add_argument("--eye-candy", action="store_true", help="Plant eye candy as New Map's Eye candy box does (square sizes)")
+    parser.add_argument(
+        "--game-data", choices=game_dataset.DATASETS, default=game_dataset.AOE2, help="Which game's donor and tables (square sizes)"
+    )
+    parser.add_argument("--seed", type=int, help="Planting seed (default: a random one, printed)")
+    parser.add_argument("--name", help="Output file name, for a single size (default: blank_WxH.aoe2scenario)")
     args = parser.parse_args()
+    filled = args.terrain != 0 or args.trees or args.eye_candy or args.game_data != game_dataset.AOE2
+    if filled and any(width != height for width, height in args.sizes):
+        parser.error("--terrain, --trees, --eye-candy and --game-data are for square sizes only")
+    if args.name is not None and len(args.sizes) != 1:
+        parser.error("--name needs exactly one size")
 
     if is_workshop_subscribed(args.out):
         raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {args.out}")
     args.out.mkdir(parents=True, exist_ok=True)
     donor = None
     for width, height in args.sizes:
-        path = args.out / f"blank_{width}x{height}.aoe2scenario"
+        path = args.out / (args.name or f"blank_{width}x{height}.aoe2scenario")
         if is_workshop_subscribed(path):  # a per-file symlink inside --out
             raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {path}")
+        if width == height and filled:
+            seed = random.SystemRandom().randrange(2**32) if args.seed is None else args.seed
+            kinds = {"trees": args.trees, "doodads": args.eye_candy}
+            data = blank_scenario_bytes(
+                width, terrain_id=args.terrain, game_data=args.game_data, rng=random.Random(seed), **kinds
+            )
+            path.write_bytes(data)
+            planted = []
+            if args.trees or args.eye_candy:
+                with game_dataset.activated(args.game_data):
+                    planted = terrain_units.plan_fill(width, width, args.terrain, rng=random.Random(seed), **kinds)
+            _verify(path, width, terrain_id=args.terrain, game_data=args.game_data, planted=planted)
+            print(
+                f"{path}: {len(data)} bytes, verified {width}x{height} {args.game_data} terrain {args.terrain}, "
+                f"{len(planted)} GAIA units planted, seed {seed}"
+            )
+            continue
         if width == height:
             data = blank_scenario_bytes(width)
             path.write_bytes(data)

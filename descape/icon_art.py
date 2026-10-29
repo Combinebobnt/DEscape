@@ -618,6 +618,15 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("ring", RED, (3, 3, 18, 18, 2.4)),
         ("line", RED, (6.2, 17.8, 17.8, 6.2, 2.4)),
     ),
+    # Two players under a pair of opposed arrows.
+    "map-swap-players": (
+        ("line", Role.INK, (4, 3.5, 16, 3.5, 1.8)),
+        ("poly", Role.INK, (20, 3.5, 15.5, 0.8, 15.5, 6.2)),
+        ("line", Role.INK, (8, 8.5, 20, 8.5, 1.8)),
+        ("poly", Role.INK, (4, 8.5, 8.5, 5.8, 8.5, 11.2)),
+        *_figure(BLUE, 2, 11.6, 0.68),
+        *_figure(RED, 15, 11.6, 0.68),
+    ),
     # A map tile under a magnifier.
     "map-analysis": (
         ("poly", GREEN, (10, 2, 19, 7, 10, 12, 1, 7)),

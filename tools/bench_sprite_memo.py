@@ -102,7 +102,7 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
     sloped = corner_rise is not None
     layers = cache.layers
     kwargs = {
-        "corner_rise": corner_rise, "with_farms": layers.farm_overlay,
+        "corner_rise": corner_rise, "fold": cache._level_fold(), "with_farms": layers.farm_overlay,
         "tree_scale": layers.tree_scale, "hero_glow": layers.hero_glow,
         "wall_alpha": layers.wall_alpha,
     }
@@ -119,7 +119,7 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
         return [
             render._resolve_unit_sprite(
                 scenario, proj, elevations, uf, corner_rise, overrides, layers.farm_overlay,
-                pid, i, u, layers.tree_scale, layers.hero_glow, layers.wall_alpha,
+                pid, i, u, layers.tree_scale, layers.hero_glow, layers.wall_alpha, fold=cache._level_fold(),
             )
             for pid, i, u in units
         ]

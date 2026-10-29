@@ -1300,6 +1300,24 @@ def test_a_gate_and_a_wall_moved_with_the_box_on_name_each_rewritten_wall_once()
     assert plan.wholesale
 
 
+def test_a_wall_moved_within_its_tile_beside_a_moved_gate_is_reshaped():
+    """An off-grid group drag of -0.9 with the box on: the gate's footprint
+    starts on 7, not 8, so (11, 10) empties, and the wall at (12.95, 10) stays
+    in its tile with only (13, 10) beside it, a run end. The gate part
+    re-derives static walls only, and no wall changed tile for the wall part
+    to trigger on."""
+    gate, walls, scenario = _gate_scenario()
+    wall = next(u for u in walls if _tile(u) == (12, 10))
+    wall.x = 12.95
+    assert wall.rotation == 0.0
+
+    plan = _plan_moves(scenario, _shifted([gate, wall], -0.9, 0), gate_walls=True)
+
+    assert [_tile(u) for _p, u in plan.removals] == [(7, 10)]
+    assert plan.fills == [] and plan.moved == []
+    assert plan.rewrites == [(1, wall, 2)]
+
+
 def test_radian_flip_is_set_only_when_the_plan_overwrites_the_last_radian_wall_value():
     def plan_for(rotation=_RADIAN_1, gaia=()):
         wall = _wall_at(10, 10, rotation=rotation)

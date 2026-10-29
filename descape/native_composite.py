@@ -200,12 +200,14 @@ class SlopedShapes:
     """Sloped quad and farm-edge geometry per normalized corner shape, for one
     tile_px. Shapes accumulate as candidates reveal them; both producers are
     normalization-invariant (they subtract the corner minimum themselves), so
-    a shape's arrays are the same for every tile that has it."""
+    a shape's arrays are the same for every tile that has it. A key is the
+    four corners plus the tile's fold (TASK-008), False on every planar
+    shape; the fold reaches the quad's resample only, never its edges."""
 
     def __init__(self, tile_px: int):
         self.tile_px = tile_px
-        self.ids: dict[tuple[int, int, int, int], int] = {}
-        self.corners: list[tuple[int, int, int, int]] = []
+        self.ids: dict[tuple[int, int, int, int, bool], int] = {}
+        self.corners: list[tuple[int, int, int, int, bool]] = []
         self._quads: list[tuple] = []
         self._edges: list[tuple] = []
         self._packed: tuple | None = None
@@ -213,19 +215,19 @@ class SlopedShapes:
         self.diamond = _pack_ops([diamond[:2]])
         self._diamond_src = diamond[2:4]
 
-    def shape_ids(self, keys: list[tuple[int, int, int, int]]) -> list[int]:
+    def shape_ids(self, keys: list[tuple[int, int, int, int, bool]]) -> list[int]:
         out = []
         for key in keys:
             sid = self.ids.get(key)
             if sid is None:
                 sid = len(self.corners)
                 g = iso_geometry
-                dy, dx, sy, sx, uv = g.sloped_quad_indices(self.tile_px, *key)
+                dy, dx, sy, sx, uv = g.sloped_quad_indices(self.tile_px, *key[:4], nwse=key[4])
                 assert sy.size == 0 or (sy.min() >= 0 and sy.max() < self.tile_px)
                 assert sx.size == 0 or (sx.min() >= 0 and sx.max() < self.tile_px)
                 self._quads.append((dy, dx, sy, sx, uv))
                 for side in _EDGE_SIDES:
-                    self._edges.append(g.sloped_tile_edge_indices(self.tile_px, side, *key))
+                    self._edges.append(g.sloped_tile_edge_indices(self.tile_px, side, *key[:4]))
                 self.corners.append(key)
                 self.ids[key] = sid
                 self._packed = None
@@ -295,7 +297,9 @@ class UnitPack:
     unit_rise_px), and each owner refreshes the tiles of every unit whose
     height input an edit moved, the same set its SpriteLayer re-anchors."""
 
-    def __init__(self, sloped: bool, w: int, h: int, proj, units_by_tile: dict, sprites, version: int, heights):
+    def __init__(
+        self, sloped: bool, w: int, h: int, proj, units_by_tile: dict, sprites, version: int, heights, fold=None
+    ):
         self.sloped = sloped
         self.w, self.h = w, h
         self.proj = proj
@@ -325,13 +329,14 @@ class UnitPack:
             xy = np.array(keys, dtype=np.int64).reshape(-1, 2)
             on_map = (xy[:, 0] >= 0) & (xy[:, 0] < w) & (xy[:, 1] >= 0) & (xy[:, 1] < h)
             self.has[xy[on_map, 1] * w + xy[on_map, 0]] = True
-        self._bind(units_by_tile, sprites, version, heights)
+        self._bind(units_by_tile, sprites, version, heights, fold)
 
-    def _bind(self, units_by_tile, sprites, version, heights) -> None:
+    def _bind(self, units_by_tile, sprites, version, heights, fold) -> None:
         self._ubt = units_by_tile
         self._sprites = sprites
         self._version = version
         self._heights = heights
+        self._fold = fold
 
     def matches(self, units_by_tile, sprites, version: int, heights) -> bool:
         return (
@@ -339,11 +344,11 @@ class UnitPack:
             and self._version == version and self._heights is heights
         )
 
-    def refresh(self, tiles, units_by_tile, sprites, version: int, heights) -> None:
+    def refresh(self, tiles, units_by_tile, sprites, version: int, heights, fold=None) -> None:
         """Rebinds to the new sources and marks `tiles` for re-derivation.
         Only valid when the pack matched the pre-edit sources and `tiles`
         covers every tile whose rows the edit could have changed."""
-        self._bind(units_by_tile, sprites, version, heights)
+        self._bind(units_by_tile, sprites, version, heights, fold)
         w, h = self.w, self.h
         flat = [y * w + x for x, y in tiles if 0 <= x < w and 0 <= y < h]
         if flat:
@@ -393,7 +398,7 @@ class UnitPack:
                 continue
             packed = (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
             if self.sloped:
-                base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights)
+                base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights, self._fold)
             else:
                 base = render._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
                 rise = render._unit_mark_rise_iso(unit, self.proj, self._heights)
@@ -809,11 +814,11 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
 
 def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
                      pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None,
-                     blend: terrain_blend.RectKeys | None = None) -> bool:
+                     blend: terrain_blend.RectKeys | None = None, fold: np.ndarray | None = None) -> bool:
     """render.composite_rect_sloped's loop, natively; same False contract."""
     args = prepare_sloped(
         scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
-        blend=blend,
+        blend=blend, fold=fold,
     )
     if args is None:
         return False
@@ -823,9 +828,10 @@ def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise,
 
 def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack: UnitPack | None,
                    textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None,
-                   blend: terrain_blend.RectKeys | None = None) -> tuple | None:
+                   blend: terrain_blend.RectKeys | None = None, fold: np.ndarray | None = None) -> tuple | None:
     """prepare_iso() for native.composite_sloped. corner_rise needs no copy:
-    SlopedChunkCache replaces it on every refresh, never writes it in place."""
+    SlopedChunkCache replaces it on every refresh, never writes it in place,
+    and its fold (tile_folds(), None for the fixed NE-SW fold) with it."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     pack = _units_of(pack)
@@ -839,18 +845,20 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
     sw, se = corner_rise[cy + 1, cx], corner_rise[cy + 1, cx + 1]
     dmin = np.minimum(np.minimum(nw, ne), np.minimum(sw, se))
     norm = [nw - dmin, ne - dmin, sw - dmin, se - dmin]
+    # The fold bit on non-planar shapes only, so a planar key stays the NE-SW one.
+    nwse = np.zeros(cx.size, dtype=np.int64) if fold is None else (fold[cy, cx] & (nw + se != ne + sw)).astype(np.int64)
     # One scalar per shape (base past the largest normalized corner), far
     # cheaper to unique than rows.
     base = int(max(int(c.max()) for c in norm)) + 1
-    scalar = ((norm[0] * base + norm[1]) * base + norm[2]) * base + norm[3]
+    scalar = (((norm[0] * base + norm[1]) * base + norm[2]) * base + norm[3]) * 2 + nwse
     _uniq, first, inv = np.unique(scalar, return_index=True, return_inverse=True)
     inv = inv.reshape(-1)
-    shape_keys = [tuple(int(c[i]) for c in norm) for i in first.tolist()]
+    shape_keys = [(*(int(c[i]) for c in norm), bool(nwse[i])) for i in first.tolist()]
     registry = sloped_shapes(tile_px)
     shape_of = np.array(registry.shape_ids(shape_keys), dtype=np.int32)
     cand_shape = np.ascontiguousarray(shape_of[inv], dtype=np.int32)
 
-    shades = [render._slope_shade(tile_px, *key, proj.elev_step) for key in shape_keys]
+    shades = [render._slope_shade(tile_px, *key[:4], proj.elev_step) for key in shape_keys]
     shade_start = np.zeros(len(shades), dtype=np.int64)
     np.cumsum([s.size for s in shades[:-1]], out=shade_start[1:])
     shade = np.ascontiguousarray(np.concatenate(shades), dtype=np.float32)
@@ -864,7 +872,7 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
             edge_keys = _edge_states(cx, cy, w, h, draw_minors, None, grid.major_every)
             pair = edge_keys * len(shape_keys) + inv
             cand_grid, stamps = _grid_stamps(
-                tile_px, grid, pair, split=lambda p: (p // len(shape_keys), shape_keys[p % len(shape_keys)]),
+                tile_px, grid, pair, split=lambda p: (p // len(shape_keys), shape_keys[p % len(shape_keys)][:4]),
             )
     quads, edges, samples = registry.packed()
     if blend_tables is not None:

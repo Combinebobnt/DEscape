@@ -58,6 +58,9 @@ def _corner_rise(combo: tuple[int, int, int, int], tx: int, ty: int) -> np.ndarr
     return field
 
 
+NESW = np.zeros((MAP_H, MAP_W), dtype=bool)  # every tile on the NE-SW fold (tests/test_sloped_fold.py has NW-SE)
+
+
 # --- Flat and Stepped -------------------------------------------------
 
 
@@ -135,7 +138,7 @@ def _sweep(elev_step_pct: int) -> tuple[int, int, int]:
             rise = ig.unit_rise_px(field, tx, ty, fx, fy)
             sx, sy = ig.map_point_to_screen(tx + fx, ty + fy, rise, proj)
             got = ig.screen_to_map_point(
-                sx, sy, "sloped", proj, corner_rise=field, tile=(tx, ty)
+                sx, sy, "sloped", proj, corner_rise=field, tile=(tx, ty), fold=NESW
             )
             if got is None:
                 if is_degenerate:
@@ -184,7 +187,7 @@ def test_a_degenerate_tile_returns_none_rather_than_a_wrong_point():
     assert 2 * proj.half_h + 0 - proj.elev_step <= 0
     assert ig.screen_to_map_point(
         proj.origin_x + 2 * proj.half_w, proj.origin_y, "sloped", proj,
-        corner_rise=field, tile=(tx, ty),
+        corner_rise=field, tile=(tx, ty), fold=NESW,
     ) is None
 
 
@@ -192,3 +195,10 @@ def test_sloped_without_a_resolved_tile_is_none():
     proj = _proj(50)
     field = np.zeros((MAP_H + 1, MAP_W + 1), dtype=np.int64)
     assert ig.screen_to_map_point(100, 100, "sloped", proj, corner_rise=field, tile=None) is None
+
+
+def test_sloped_without_a_fold_raises_rather_than_inverting_the_wrong_triangle():
+    proj = _proj(50)
+    field = np.zeros((MAP_H + 1, MAP_W + 1), dtype=np.int64)
+    with pytest.raises(ValueError):
+        ig.screen_to_map_point(100, 100, "sloped", proj, corner_rise=field, tile=(1, 1))

@@ -7085,6 +7085,26 @@ def test_gh137_pasting_a_cut_block_on_a_legacy_order_file_says_it_runs_last(lega
         window.close()
 
 
+@pytest.mark.parametrize("legacy", [True, False], ids=["legacy order", "display order"])
+def test_task053_02_moving_triggers_on_a_legacy_order_file_warns_once(legacy: bool) -> None:
+    """Move Up/Down and Move to Bottom permute display order only, which a
+    legacy file does not run by: said on the first move, then not again."""
+    from types import SimpleNamespace
+
+    from descape.viewer import LEGACY_REORDER_MESSAGE
+
+    window = _triggers_window()
+    try:
+        if legacy:
+            window._set_exec_order(SimpleNamespace(label="execution order"), 1)
+        for op, indices in (("move_down", [0]), ("move_up", [1]), ("move_bottom", [0])):
+            window.trigger_structural_edit(op, indices)
+            assert _status(window).count(LEGACY_REORDER_MESSAGE) == (1 if legacy else 0), op
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_gh137_a_focused_editor_retitles_edit_cut_copy_paste() -> None:
     """Focus moves retitle the three, a tree-to-editor move included, which
     _on_app_focus_changed's text-box early return used to swallow."""
@@ -8035,6 +8055,253 @@ def test_replace_objects_unit_rows_are_captioned_after_their_player() -> None:
         unit.line_edit.setText(str(_SCOUT))
         unit.line_edit.editingFinished.emit()
         assert window.edit_history.records[-1].label == "Set effect source player unit"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #41: the object list type row, and the object filters above the Set rows --
+
+_MILITIA, _TOWN_CENTER = 74, 109
+_UNKNOWN_CONST = 99999
+
+
+def _object_list_window(effect: str, *per_entry):
+    """The trigger window with `effect` effects appended to trigger 0, the first selected."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    indices = _appended_effects(window, _effect_type_id(window.trigger_panel, effect), list(per_entry))
+    window.trigger_panel.refresh_entries(select=("effect", indices[0]))
+    QApplication.processEvents()
+    return window, indices
+
+
+def _form_captions(form) -> list[str]:
+    """Every side caption, top to bottom."""
+    from PyQt5.QtWidgets import QFormLayout
+
+    captions = []
+    for row in range(form.rowCount()):
+        item = form.itemAt(row, QFormLayout.LabelRole)
+        if item is not None and item.widget() is not None:
+            captions.append(item.widget().text())
+    return captions
+
+
+def _list_type_above(panel, field: str):
+    """The object list type combo on the row directly above `field`'s."""
+    from PyQt5.QtWidgets import QFormLayout
+
+    from descape.trigger_panel import TriggerPanel
+
+    form = panel.property_form
+    row = _form_row_of(form, _row_widget(panel, field)) - 1
+    caption = form.itemAt(row, QFormLayout.LabelRole)
+    assert caption is not None and caption.widget().text() == TriggerPanel.LIST_TYPE_CAPTION, f"no type row above {field}"
+    return form.itemAt(row, QFormLayout.FieldRole).widget()
+
+
+def _suggestions(picker) -> set[str]:
+    return set(picker.line_edit.completer().model().stringList())
+
+
+def _catalog_names(category: str) -> set[str]:
+    from descape import object_catalog
+
+    return {entry.name for entry in object_catalog.objects() if entry.category == category}
+
+
+def test_kill_object_reads_the_object_filters_above_its_set_rows() -> None:
+    window, _indices = _object_list_window("kill_object", {})
+    try:
+        assert _form_captions(window.trigger_panel.property_form) == [
+            "object list type",
+            "source player unit",
+            "object group",
+            "object type",
+            "source player",
+            "area x1",
+            "area y1",
+            "area x2",
+            "area y2",
+            "Area",
+            "selected object ids",
+            "Objects",
+            "max units affected",
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_objects_in_area_reads_its_type_row_and_filters_under_its_quantity() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        index = len(panel._manager().triggers[0].conditions)
+        condition = next(i for i, d in panel._vocabulary.conditions.items() if d.name == "objects_in_area")
+        window.entry_structural_edit("new", 0, "condition", -1, condition)
+        panel.refresh_entries(select=("condition", index))
+        QApplication.processEvents()
+        assert _form_captions(panel.property_form)[:6] == [
+            "quantity",
+            "object list type",
+            "object list",
+            "object group",
+            "object type",
+            "source player",
+        ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_type_row_shows_the_values_kind_else_units() -> None:
+    from descape.trigger_panel import TriggerPanel
+
+    window, indices = _object_list_window(
+        "kill_object",
+        {"object_list_unit_id": _CASTLE},
+        {"object_list_unit_id": _MILITIA},
+        {},
+        {"object_list_unit_id": _UNKNOWN_CONST},
+    )
+    try:
+        panel = window.trigger_panel
+        shown = []
+        for index in indices:
+            _select_entries(panel, ("effect", index))
+            combo = _list_type_above(panel, "object_list_unit_id")
+            shown.append(combo.currentText())
+            assert combo.isEnabled()
+            assert combo.toolTip() == TriggerPanel._LIST_TYPE_TIP
+            assert panel.property_form.labelForField(combo).toolTip() == TriggerPanel._LIST_TYPE_TIP
+        assert shown == ["Buildings", "Units", "Units", "Units"]
+        assert not window.edit_history.is_dirty
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_choosing_a_type_narrows_the_field_and_writes_nothing() -> None:
+    window, indices = _object_list_window("kill_object", {"object_list_unit_id": _MILITIA})
+    try:
+        panel = window.trigger_panel
+        picker = _row_widget(panel, "object_list_unit_id")
+        assert _suggestions(picker) == _catalog_names("Units")
+        records = len(window.edit_history.records)
+
+        _list_type_above(panel, "object_list_unit_id").setCurrentText("Buildings")
+        assert _suggestions(picker) == _catalog_names("Buildings")
+        assert len(window.edit_history.records) == records and not window.edit_history.is_dirty
+        assert _effects0(window)[indices[0]].object_list_unit_id == _MILITIA
+        assert picker.value() == _MILITIA, "the field still shows its value"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_chosen_type_survives_a_repopulate_and_resets_with_the_selection() -> None:
+    """The form rebuilds after a Set or Reset; the choice lasts while the same effect stays selected."""
+    window, indices = _object_list_window("kill_object", {}, {})
+    try:
+        panel = window.trigger_panel
+        first = _list_type_above(panel, "object_list_unit_id")
+        first.setCurrentText("Buildings")
+
+        area = {"area_x1": 2, "area_y1": 3, "area_x2": 6, "area_y2": 7}
+        window.set_entry_field_group(0, ("effect", indices[0]), area, "Set area")
+        rebuilt = _list_type_above(panel, "object_list_unit_id")
+        assert rebuilt is not first, "fixture assumption: the group write repopulates the form"
+        assert rebuilt.currentText() == "Buildings"
+        assert _suggestions(_row_widget(panel, "object_list_unit_id")) == _catalog_names("Buildings")
+
+        _select_entries(panel, ("effect", indices[1]))
+        assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
+        _select_entries(panel, ("effect", indices[0]))
+        assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_committing_a_name_of_another_kind_turns_the_row() -> None:
+    from descape import object_catalog
+
+    window, indices = _object_list_window("kill_object", {})
+    try:
+        panel = window.trigger_panel
+        combo = _list_type_above(panel, "object_list_unit_id")
+        combo.setCurrentText("Heroes")
+        picker = _row_widget(panel, "object_list_unit_id")
+        picker.line_edit.setText(object_catalog.name_for(object_catalog.objects(), _CASTLE))
+        picker.line_edit.editingFinished.emit()
+
+        assert _effects0(window)[indices[0]].object_list_unit_id == _CASTLE
+        assert combo.currentText() == "Buildings"
+        assert _suggestions(picker) == _catalog_names("Buildings")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_replace_object_has_a_type_row_above_each_unit_field() -> None:
+    window, _indices = _object_list_window("replace_object", {"object_list_unit_id": _MILITIA, "object_list_unit_id_2": _CASTLE})
+    try:
+        panel = window.trigger_panel
+        assert _form_captions(panel.property_form).count("object list type") == 2
+        source = _list_type_above(panel, "object_list_unit_id")
+        target = _list_type_above(panel, "object_list_unit_id_2")
+        assert (source.currentText(), target.currentText()) == ("Units", "Buildings")
+
+        source.setCurrentText("Heroes")
+        assert _suggestions(_row_widget(panel, "object_list_unit_id")) == _catalog_names("Heroes")
+        assert _suggestions(_row_widget(panel, "object_list_unit_id_2")) == _catalog_names("Buildings"), "each row filters its own field"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_build_objects_building_list_starts_on_buildings() -> None:
+    """The one BuildingInfo field (1.57+): unset, it starts on its picker's own category."""
+    window, _indices = _object_list_window("build_object", {})
+    try:
+        panel = window.trigger_panel
+        assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
+        assert _list_type_above(panel, "building_list").currentText() == "Buildings"
+        assert _suggestions(_row_widget(panel, "building_list")) == _catalog_names("Buildings")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_type_row_is_disabled_on_a_read_only_file() -> None:
+    window, indices = _object_list_window("kill_object", {"object_list_unit_id": _MILITIA})
+    try:
+        panel = window.trigger_panel
+        window.scenario.trigger_write_supported = False
+        panel.show_scenario(window.scenario)
+        panel.select_trigger(0)
+        _select_entries(panel, ("effect", indices[0]))
+        assert not panel._editable
+        assert not _list_type_above(panel, "object_list_unit_id").isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_two_effects_with_different_objects_get_the_row_on_units() -> None:
+    """Both are buildings, but "(differs)" is no one value's kind."""
+    window, indices = _object_list_window("kill_object", {"object_list_unit_id": _CASTLE}, {"object_list_unit_id": _TOWN_CENTER})
+    try:
+        panel = window.trigger_panel
+        _select_entries(panel, ("effect", indices[0]), ("effect", indices[1]))
+        assert _row_widget(panel, "object_list_unit_id").line_edit.placeholderText() == panel._DIFFERS
+        assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
     finally:
         window.edit_history.mark_saved()
         window.close()

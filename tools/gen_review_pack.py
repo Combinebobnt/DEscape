@@ -631,7 +631,8 @@ def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
     if style == "sloped":
         rise = ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
         return render.composite_rect_sloped(
-            scenario, x0, y0, x0 + cw, y0 + ch, rise, proj, tile_px, {}, {}, with_units=False
+            scenario, x0, y0, x0 + cw, y0 + ch, rise, proj, tile_px, {}, {}, with_units=False,
+            fold=ig.tile_folds(elevations),
         )
     return render.composite_rect_iso(
         scenario, x0, y0, x0 + cw, y0 + ch, elevations, proj, tile_px, {}, {}, with_units=False

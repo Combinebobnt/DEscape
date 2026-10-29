@@ -644,6 +644,9 @@ class TriggerPanel(QWidget):
         self._facet_preview_field = ""
         self._button_grid: ButtonGrid | None = None
         self._rows: list[tuple] = []
+        # GH #41: field name -> object list type last chosen, kept across repopulates of one selection.
+        self._list_types: dict[str, str] = {}
+        self._list_types_refs: tuple | None = None
         # The (kind, index) refs the property form was last built for. None
         # means "holds nothing", so the next sync always repopulates.
         self._form_refs: tuple[tuple[str, int], ...] | None = None
@@ -1183,6 +1186,7 @@ class TriggerPanel(QWidget):
         self._pending_exec_order = pending_exec_order
         if not same_document:
             self._collapsed_keys = set()
+            self._list_types_refs = None
 
         self._populating = True
         try:
@@ -2528,11 +2532,17 @@ class TriggerPanel(QWidget):
             # Which cluster slot is authoritative is a runtime decision, and
             # writing an inert one can corrupt the live one.
             specs = trigger_fields.apply_quantity_cluster_rule(specs, entry)
-        return specs
+        # GH #41: the object filters under the object list, above every Set row.
+        return trigger_fields.form_order(specs)
 
     def _populate_property_form(self) -> None:
         self._populating = True
         refs = self._form_refs_now()
+        selection = (self.current_trigger_index(), refs)
+        if selection != self._list_types_refs:
+            # GH #41: a remembered object list type lasts only while the same entries stay selected.
+            self._list_types = {}
+            self._list_types_refs = selection
         try:
             self._clear_property_form()
             entries = self._entries_for(refs)
@@ -2561,6 +2571,8 @@ class TriggerPanel(QWidget):
                     objects, spec.attribute, lambda e, a, s=spec: trigger_fields.form_value(s, self._read(e, a))
                 )
                 widget = self._build_widget(spec, refs, value)
+                if trigger_fields.has_list_type(spec) and isinstance(widget, ValueLineEdit):
+                    self._add_list_type_row(spec, widget, value)
                 if spec.kind == trigger_fields.STR and spec.multiline:
                     # GH #38/#139: caption on its own row, the box (or a locked field's text) full width below.
                     label = QLabel(spec.label)
@@ -3173,6 +3185,45 @@ class TriggerPanel(QWidget):
         # note on why _changed()'s _populating guard is otherwise unreachable).
         widget.committed.connect(lambda new, s=spec, r=refs: self._changed(s, r, new))
         return widget
+
+    LIST_TYPE_CAPTION = "object list type"
+    _LIST_TYPE_TIP = "Which kind of object the field below lists. Narrows its suggestions and Browse; not saved in the scenario."
+
+    def _add_list_type_row(self, spec, widget: ValueLineEdit, value) -> None:
+        """GH #41: the in-game Object List Type, a row above an object list
+        field that narrows its picker. A filter, not a field: it never enters
+        _rows, so it writes nothing and records no undo step."""
+        known = widget.group_of(value) if isinstance(value, int) and not isinstance(value, bool) else ""
+        # The value's own kind, else this selection's last choice, else the picker's default category.
+        current = known or self._list_types.get(spec.name) or trigger_fields.CATALOG_PRESENTATIONS[spec.presentation].default_category
+        combo = QComboBox()
+        _fit_combo_width(combo)
+        combo.addItems(object_catalog.OBJECT_CATEGORIES)
+        combo.setCurrentText(current)
+        combo.setEnabled(widget.isEnabled())
+        combo.setToolTip(self._LIST_TYPE_TIP)
+        self.property_form.addRow(self.LIST_TYPE_CAPTION, combo)
+        self.property_form.labelForField(combo).setToolTip(self._LIST_TYPE_TIP)
+        widget.set_group(combo.currentText())
+        # Connected after the index is set, like every field widget: a populate is not a choice.
+        combo.currentIndexChanged.connect(lambda _i, n=spec.name, c=combo, w=widget: self._list_type_chosen(n, c.currentText(), w))
+        widget.committed.connect(lambda new, n=spec.name, c=combo, w=widget: self._list_type_follows(n, c, w, new))
+
+    def _list_type_chosen(self, name: str, group: str, widget: ValueLineEdit) -> None:
+        widget.set_group(group)
+        self._list_types[name] = group
+
+    def _list_type_follows(self, name: str, combo: QComboBox, widget: ValueLineEdit, value: int) -> None:
+        """A committed value of another kind (a typed name or raw id) turns the row to its kind."""
+        group = widget.group_of(value)
+        if not group:
+            return
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentText(group)
+        finally:
+            combo.blockSignals(False)
+        self._list_type_chosen(name, group, widget)
 
     def _build_enum_picker_widget(self, spec, refs, value, editable: bool) -> QWidget:
         """A large ENUM (trigger_fields.wants_picker()): a ValueLineEdit over

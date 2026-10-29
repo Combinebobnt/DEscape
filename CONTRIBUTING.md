@@ -73,7 +73,8 @@ If you can't run it, say so in the PR. The maintainer runs it before merging.
 
 Read the "Hard rules" in `AGENTS.md` first: never write into a
 `mods/subscribed/` folder, and pass a unit's `rotation` through verbatim
-except in the exceptions listed there. Say in the PR how you checked the
+except in the exceptions listed there; `docs/WRITE_RULES.md` gives each
+one's exact scope. Say in the PR how you checked the
 written file. The maintainer confirms write-path changes in the real AoE2:DE
 editor before a release.
 

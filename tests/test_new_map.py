@@ -145,12 +145,15 @@ def test_file_menu_has_new_map_dialog_action_and_no_size_submenu() -> None:
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_default_action_ignores_the_stored_dialog_choice() -> None:
-    """file_new_default stays 120x120 Grass 1 at 0 whatever New Map… last saved."""
+    """file_new_default stays 120x120 Grass 1 at 0 whatever New Map… last saved,
+    and plants nothing: Grass 1 carries eye candy, so the saved boxes would show."""
     conftest.ensure_qapp()
     from descape import game_dataset, settings
     from descape.viewer import ViewerWindow
 
-    settings.set_new_map_choice({"tiles": 144, "game_data": "ror", "terrain_id": _CORNER_TERRAIN, "elevation": 5})
+    settings.set_new_map_choice(
+        {"tiles": 144, "game_data": "ror", "terrain_id": _CORNER_TERRAIN, "elevation": 5, "trees": True, "eye_candy": True}
+    )
     window = ViewerWindow()
     try:
         window.new_action.trigger()
@@ -158,12 +161,15 @@ def test_default_action_ignores_the_stored_dialog_choice() -> None:
         assert mm.map_width == mm.map_height == BLANK_TEMPLATE_TILES
         assert all(t.terrain_id == 0 and t.elevation == 0 for t in mm.terrain)
         assert game_dataset.from_variant(window.scenario.game_variant) == game_dataset.AOE2
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == 0
     finally:
         window.edit_history.mark_saved()
         window.close()
 
 
-def _patch_new_map_dialog(monkeypatch, *, tiles=None, terrain_id=None, elevation=None, accept=True, seen=None):
+def _patch_new_map_dialog(
+    monkeypatch, *, tiles=None, terrain_id=None, elevation=None, trees=None, eye_candy=None, accept=True, seen=None
+):
     """NewMapDialog.exec_in without its event loop: records the dialog's
     initial choice into `seen`, sets the given widgets, then accepts or
     rejects. The size goes through the dialog's own Size/Custom logic."""
@@ -185,6 +191,10 @@ def _patch_new_map_dialog(monkeypatch, *, tiles=None, terrain_id=None, elevation
             dialog.terrain_combo.setCurrentIndex(index)
         if elevation is not None:
             dialog.elevation_spin.setValue(elevation)
+        if trees is not None:
+            dialog.trees_check.setChecked(trees)
+        if eye_candy is not None:
+            dialog.eye_candy_check.setChecked(eye_candy)
         dialog.accept()
         return QDialog.Accepted
 
@@ -214,7 +224,14 @@ def test_new_map_dialog_creates_the_choice_and_remembers_it(monkeypatch) -> None
         assert window._untitled is True
         assert seen == [NewMapChoice()]
 
-        expected = {"tiles": 144, "game_data": "aoe2", "terrain_id": _CORNER_TERRAIN, "elevation": 3}
+        expected = {
+            "tiles": 144,
+            "game_data": "aoe2",
+            "terrain_id": _CORNER_TERRAIN,
+            "elevation": 3,
+            "trees": settings.NEW_MAP_DEFAULT_TREES,
+            "eye_candy": settings.NEW_MAP_DEFAULT_EYE_CANDY,
+        }
         assert settings.get_new_map_choice() == expected
         monkeypatch.setattr(settings, "_new_map", None)  # re-read from disk
         assert settings.get_new_map_choice() == expected
@@ -289,10 +306,11 @@ def test_new_map_while_the_panel_is_open_does_nothing(monkeypatch) -> None:
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_preset_480_does_not_confirm(monkeypatch) -> None:
     """Pins the deliberate asymmetry in new_map_dialog()'s docstring: the
-    labelled 480 preset never pops the large-map confirmation, only a typed
-    Custom size above LARGE_MAP_CONFIRM_TILES does. Fails loudly (instead of
-    hanging on an unclickable modal) if a future 'consistency fix' routes
-    presets through the same confirm."""
+    labelled 480 preset never pops the large-map confirmation for its size,
+    only a typed Custom size above LARGE_MAP_CONFIRM_TILES does (a Ludicrous
+    forest with Trees ticked asks about its trees instead; Grass 1 here has
+    none). Fails loudly (instead of hanging on an unclickable modal) if a
+    future 'consistency fix' routes presets through the same confirm."""
     conftest.ensure_qapp()
     import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
@@ -704,4 +722,323 @@ def test_open_after_new_clears_untitled() -> None:
         assert window.windowTitle() == f"{BLANK_TEMPLATE_PATH.name} — DEscape"
     finally:
         window.edit_history.mark_saved()
+        window.close()
+
+
+# --- Trees and Eye candy (GH #243 follow-up) ---
+
+_GRASS_1, _FOREST_OAK = 0, 10
+
+
+def _unit_counts(window) -> tuple[int, int]:
+    units = window.scenario.unit_manager.units
+    return len(units[0]), sum(len(player_units) for player_units in units[1:])
+
+
+def _no_question(monkeypatch, *, ask=True) -> None:
+    """Fails on the plain large-map question, and on _ask_new_map_confirm unless `ask`."""
+    import descape.viewer as viewer_module
+
+    def fail_question(*args, **kwargs):
+        raise AssertionError("QMessageBox.question must not be called here")
+
+    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_question))
+    if not ask:
+
+        def fail_ask(self, *args, **kwargs):
+            raise AssertionError("_ask_new_map_confirm must not be called here")
+
+        monkeypatch.setattr(viewer_module.ViewerWindow, "_ask_new_map_confirm", fail_ask)
+
+
+def _stub_ask(monkeypatch, answer: str) -> list:
+    from descape.viewer import ViewerWindow
+
+    asked: list = []
+
+    def ask(self, text, **kwargs):
+        asked.append((text, kwargs))
+        return answer
+
+    monkeypatch.setattr(ViewerWindow, "_ask_new_map_confirm", ask)
+    return asked
+
+
+def _spy_create(monkeypatch) -> list:
+    """Records _create_new_map's arguments instead of generating."""
+    from descape.viewer import ViewerWindow
+
+    created: list = []
+    monkeypatch.setattr(ViewerWindow, "_create_new_map", lambda self, tiles, **kwargs: created.append((tiles, kwargs)))
+    return created
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_forest_choice_opens_with_its_trees_unmodified_and_nothing_to_undo(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import terrain_units
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch, ask=False)
+    _patch_new_map_dialog(monkeypatch, tiles=120, terrain_id=_FOREST_OAK, trees=True, eye_candy=False)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert _unit_counts(window) == (120 * 120, 0)
+        assert {u.unit_const for u in window.scenario.unit_manager.units[0]} <= terrain_units.TREE_CONSTS
+        assert window._untitled is True
+        assert window.edit_history.is_dirty is False
+        assert window.edit_history.can_undo is False
+        assert not window.undo_action.isEnabled()
+        assert window.isEnabled()
+        assert QApplication.overrideCursor() is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_trees_on_a_terrain_with_none_plant_nothing(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch, ask=False)
+    _patch_new_map_dialog(monkeypatch, tiles=120, terrain_id=_GRASS_1, trees=True, eye_candy=False)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert _unit_counts(window) == (0, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_ludicrous_forest_asks_and_cancel_creates_nothing(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch)
+    asked = _stub_ask(monkeypatch, "cancel")
+    _patch_new_map_dialog(monkeypatch, tiles=480, terrain_id=_FOREST_OAK, trees=True)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert window.scenario is None
+        ((text, kwargs),) = asked
+        assert "230,400 trees" in text and "1 GB" in text
+        assert "larger than" not in text  # 480 is a preset: no size reason
+        assert kwargs == {"bare_label": "Create without trees"}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_create_passes_the_kinds_the_terrain_can_place_on(monkeypatch) -> None:
+    """Forest Oak has no eye candy, so a ticked Eye candy box plants nothing there."""
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch)
+    asked = _stub_ask(monkeypatch, "create")
+    created = _spy_create(monkeypatch)
+    _patch_new_map_dialog(monkeypatch, tiles=480, terrain_id=_FOREST_OAK, trees=True, eye_candy=True)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert len(asked) == 1
+        assert created == [(480, {"terrain_id": _FOREST_OAK, "elevation": 0, "game_data": "aoe2", "trees": True, "doodads": False})]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_bare_creates_a_bare_map_and_keeps_the_saved_boxes(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape import settings
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch)
+    asked = _stub_ask(monkeypatch, "bare")
+    _patch_new_map_dialog(monkeypatch, tiles=480, terrain_id=_FOREST_OAK, trees=True, eye_candy=True)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert len(asked) == 1
+        assert window.scenario.map_manager.map_width == 480
+        assert all(t.terrain_id == _FOREST_OAK for t in window.scenario.map_manager.terrain)
+        assert _unit_counts(window) == (0, 0)
+        saved = settings.get_new_map_choice()
+        assert (saved["trees"], saved["eye_candy"]) == (True, True)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_ludicrous_forest_with_trees_off_asks_nothing(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from descape.viewer import ViewerWindow
+
+    _no_question(monkeypatch, ask=False)
+    created = _spy_create(monkeypatch)
+    _patch_new_map_dialog(monkeypatch, tiles=480, terrain_id=_FOREST_OAK, trees=False, eye_candy=True)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        assert created == [(480, {"terrain_id": _FOREST_OAK, "elevation": 0, "game_data": "aoe2", "trees": False, "doodads": False})]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize(
+    ("tiles", "terrain_id", "trees", "eye_candy", "both", "reasons", "bare_label"),
+    [
+        (400, _FOREST_OAK, True, False, False, ("larger than", "160,000 trees"), "Create without trees"),
+        (300, _FOREST_OAK, True, False, False, ("larger than",), "Create without trees"),
+        (300, _GRASS_1, True, True, False, ("larger than",), "Create without eye candy"),
+        (300, _FOREST_OAK, True, True, True, ("larger than",), "Create without trees or eye candy"),
+    ],
+)
+def test_a_large_custom_size_that_plants_asks_once_naming_each_reason(
+    monkeypatch, tiles, terrain_id, trees, eye_candy, both, reasons, bare_label
+) -> None:
+    """The size question and the trees question merge into one, never two.
+    No terrain in either game's tables plants both kinds, so `both` gives Forest Oak eye candy too."""
+    conftest.ensure_qapp()
+    from descape import terrain_units
+    from descape.viewer import ViewerWindow
+
+    if both:
+        real = terrain_units.is_doodad_terrain
+        monkeypatch.setattr(terrain_units, "is_doodad_terrain", lambda tid: tid == terrain_id or real(tid))
+    _no_question(monkeypatch)
+    asked = _stub_ask(monkeypatch, "cancel")
+    _patch_new_map_dialog(monkeypatch, tiles=tiles, terrain_id=terrain_id, trees=trees, eye_candy=eye_candy)
+    window = ViewerWindow()
+    try:
+        window.new_map_action.trigger()
+        ((text, kwargs),) = asked
+        assert all(reason in text for reason in reasons), text
+        assert ("It gets about" in text) is (len(reasons) == 2)  # the count only past the cutoff
+        assert kwargs["bare_label"] == bare_label
+        assert window.scenario is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_planting_failure_reaches_the_error_box_and_frees_the_window(monkeypatch) -> None:
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QApplication
+
+    import descape.viewer as viewer_module
+    from descape import scenario_new
+    from descape.unit_model import UnitEditsUnavailableError
+    from descape.viewer import ViewerWindow
+
+    def refuse(*args, **kwargs):
+        raise UnitEditsUnavailableError("refused")
+
+    errors = []
+    monkeypatch.setattr(scenario_new, "UnitEditModel", refuse)
+    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
+    window = ViewerWindow()
+    try:
+        window._create_new_map(120, terrain_id=_FOREST_OAK, trees=True)
+        assert window.scenario is None
+        assert len(errors) == 1 and "refused" in errors[0][2]
+        assert window.isEnabled()
+        assert QApplication.overrideCursor() is None
+        assert window.statusBar().currentMessage() == ""
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("game_data", ("aoe2", "ror"))
+def test_planting_runs_disabled_under_a_wait_cursor_and_frees_the_window_before_the_load(monkeypatch, game_data) -> None:
+    """The busy state covers generation only; the warms are dropped before
+    another game's tables come in, and not for the same game."""
+    conftest.ensure_qapp()
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    import descape.viewer as viewer_module
+    from descape.viewer import ViewerWindow
+
+    events: list = []
+    window = ViewerWindow()
+    real_generate = viewer_module.blank_scenario_bytes
+    real_load = ViewerWindow.load_scenario
+    real_cancel = ViewerWindow._cancel_warms
+
+    def generate(*args, **kwargs):
+        cursor = QApplication.overrideCursor()
+        events.append(("generate", window.isEnabled(), cursor and cursor.shape(), window.statusBar().currentMessage()))
+        return real_generate(*args, **kwargs)
+
+    def load(self, *args, **kwargs):
+        events.append(("load", self.isEnabled(), QApplication.overrideCursor()))
+        return real_load(self, *args, **kwargs)
+
+    def cancel(self):
+        events.append(("cancel",))
+        return real_cancel(self)
+
+    monkeypatch.setattr(viewer_module, "blank_scenario_bytes", generate)
+    monkeypatch.setattr(ViewerWindow, "load_scenario", load)
+    monkeypatch.setattr(ViewerWindow, "_cancel_warms", cancel)
+    try:
+        window._create_new_map(120, terrain_id=_FOREST_OAK, game_data=game_data, trees=True)
+        start = events.index(("load", True, None))
+        before = events[:start]
+        assert before[-1] == ("generate", False, Qt.WaitCursor, "Planting trees…")
+        assert (("cancel",) in before) is (game_data == "ror")
+        assert _unit_counts(window) == (120 * 120, 0)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize(("click", "expected"), (("Create", "create"), ("Create without trees", "bare"), ("Cancel", "cancel")))
+def test_the_planting_question_has_three_buttons_and_maps_each(monkeypatch, click, expected) -> None:
+    conftest.ensure_qapp()
+    import descape.viewer as viewer_module
+    from descape.viewer import ViewerWindow
+
+    seen = []
+
+    def exec_(box):
+        seen.append(([b.text() for b in box.buttons()], box.defaultButton().text(), box.text()))
+        next(b for b in box.buttons() if b.text() == click).click()
+        return 0
+
+    monkeypatch.setattr(viewer_module.QMessageBox, "exec_", exec_)
+    window = ViewerWindow()
+    try:
+        assert window._ask_new_map_confirm("Plants a lot.", bare_label="Create without trees") == expected
+        ((texts, default, text),) = seen
+        assert sorted(texts) == sorted(["Create", "Create without trees", "Cancel"])
+        assert default == "Cancel" and text == "Plants a lot."
+    finally:
         window.close()

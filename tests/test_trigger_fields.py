@@ -1228,3 +1228,72 @@ def test_button_location_stays_a_combo_with_a_tooltip() -> None:
         assert not trigger_fields.wants_picker(spec)
         assert "command panel" in spec.tooltip
         assert all(not other.tooltip for other in specs if other.name != "button_location")
+
+
+# -- GH #41: the property form's order and object list type row --------------
+
+
+def _every_shipped_form():
+    """(label, field_specs()) for every condition and effect type of every shipped version."""
+    for version in library_compat.vocabulary_versions():
+        vocabulary = library_compat.load_vocabulary(version)
+        for kind, entries, presentation, type_attribute in (
+            ("condition", vocabulary.conditions, vocabulary.condition_presentation, "condition_type"),
+            ("effect", vocabulary.effects, vocabulary.effect_presentation, "effect_type"),
+        ):
+            for entry in entries.values():
+                yield f"v{version}/{kind}/{entry.name}", trigger_fields.field_specs(entry, presentation, type_attribute)
+
+
+def test_form_order_puts_the_object_filters_under_the_object_list_in_every_version() -> None:
+    """A permutation; object_group then object_type (those listed) directly
+    under the object list field; every other field in vocabulary order; and a
+    type with no object list field unchanged."""
+    filters = ("object_group", "object_type")
+    moved = unchanged = 0
+    offenders = []
+    for label, specs in _every_shipped_form():
+        ordered = trigger_fields.form_order(specs)
+        names, new = [s.name for s in specs], [s.name for s in ordered]
+        if sorted(new) != sorted(names) or len(ordered) != len(specs):
+            offenders.append(f"{label}: not a permutation {new}")
+            continue
+        if [n for n in new if n not in filters] != [n for n in names if n not in filters]:
+            offenders.append(f"{label}: other fields reordered {new}")
+        anchor = next((n for n in names if n in trigger_fields.OBJECT_LIST_FIELDS), None)
+        if anchor is None:
+            if ordered != tuple(specs):
+                offenders.append(f"{label}: changed with no object list field {new}")
+            unchanged += 1
+            continue
+        listed = [f for f in filters if f in names]
+        at = new.index(anchor)
+        if new[at + 1 : at + 1 + len(listed)] != listed:
+            offenders.append(f"{label}: {listed} not under {anchor} {new}")
+        moved += bool(listed)
+    assert offenders == [], offenders
+    assert moved > 100 and unchanged > 100, (moved, unchanged)
+
+
+def test_every_type_listing_an_object_filter_has_an_object_list_field() -> None:
+    """form_order() leaves a filter alone on a type with no anchor; none ships."""
+    orphans = [
+        label
+        for label, specs in _every_shipped_form()
+        if {"object_group", "object_type"} & {s.name for s in specs}
+        and not {s.name for s in specs} & set(trigger_fields.OBJECT_LIST_FIELDS)
+    ]
+    assert orphans == []
+
+
+def test_has_list_type_is_editable_object_pickers_only() -> None:
+    from dataclasses import replace
+
+    unit = FieldSpec("object_list_unit_id", trigger_fields.REFERENCE, presentation="UnitInfo")
+    building = FieldSpec("building_list", trigger_fields.REFERENCE, presentation="BuildingInfo")
+    tech = FieldSpec("technology", trigger_fields.REFERENCE, presentation="TechInfo")
+    placed = FieldSpec("unit_object", trigger_fields.REFERENCE, presentation="Unit")
+    assert trigger_fields.has_list_type(unit) and trigger_fields.has_list_type(building)
+    assert not trigger_fields.has_list_type(replace(unit, read_only=True))
+    assert not trigger_fields.has_list_type(tech) and not trigger_fields.has_list_type(placed)
+    assert not trigger_fields.has_list_type(FieldSpec("object_list_unit_id", trigger_fields.INT))

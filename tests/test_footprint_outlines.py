@@ -1234,3 +1234,208 @@ def test_scope_merge_and_owner_colour_ticked_in_the_menu_survive_a_restart(monke
         assert view._footprint_merged is True and view._footprint_by_owner is True
     finally:
         conftest.close_window(window)
+
+
+# --- View > Layers > Fish Outlines (TASK-499) --------------------------------
+
+_SHORE_FISH, _BOX_TURTLES, _OYSTERS, _DORADO, _WHALE = 69, 1141, 2170, 455, 2625
+_TURTLE_SHIP, _GOLD_MINE = 831, 66
+# Each fish's tile count: three 1x1s, a 2x2 deep fish and the 3x3 Whale.
+_FISH_TILES = {_SHORE_FISH: 1, _BOX_TURTLES: 1, _OYSTERS: 1, _DORADO: 4, _WHALE: 9}
+
+
+def _window_with_fish(style: str = "Stepped"):
+    """GAIA fish of every size plus a Turtle Ship and a gold mine, the two
+    near misses, with Fish Outlines on and Footprint Outlines left off."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    units = window.scenario.unit_manager.units
+    units[0].append(_Unit(10.5, 10.5, _SHORE_FISH, reference_id=401))
+    units[0].append(_Unit(20.5, 10.5, _BOX_TURTLES, reference_id=402))
+    units[0].append(_Unit(30.5, 10.5, _OYSTERS, reference_id=403))
+    units[0].append(_Unit(40.0, 10.0, _DORADO, reference_id=404))
+    units[0].append(_Unit(50.5, 10.5, _WHALE, reference_id=405))
+    units[0].append(_Unit(60.5, 10.5, _GOLD_MINE, reference_id=406))
+    units[1].append(_Unit(70.5, 10.5, _TURTLE_SHIP, reference_id=407))
+    window.terrain_style_combo.setCurrentText(style)
+    window.refresh_map()
+    QApplication.processEvents()
+    window.layer_actions["fish_outlines"].setChecked(True)
+    view = window.map_view
+    if style == "Flat":
+        # Offscreen, a restyle never reaches MapView (GOTCHAS); safe for geometry-only checks.
+        view._terrain_style = "flat"
+        view.refresh_fish_overlay()
+    assert view._terrain_style == style.lower()
+    return window
+
+
+def _fish_rings(view) -> list[list[tuple[float, float]]]:
+    from PyQt5.QtGui import QPainterPath
+
+    path = view._fish_item.path()
+    rings: list[list[tuple[float, float]]] = []
+    for i in range(path.elementCount()):
+        element = path.elementAt(i)
+        if element.type == QPainterPath.MoveToElement:
+            rings.append([])
+        rings[-1].append((element.x, element.y))
+    return rings
+
+
+def _area(points) -> float:
+    pairs = zip(points, [*points[1:], points[0]], strict=True)
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in pairs)) / 2
+
+
+def _fish_points(view) -> set[tuple[float, float]]:
+    return {(round(x, 3), round(y, 3)) for ring in _fish_rings(view) for x, y in ring}
+
+
+def _unit_points(view, entry) -> set[tuple[float, float]]:
+    return {(round(x, 3), round(y, 3)) for polygon in view._unit_polygons_for(entry) for x, y in polygon}
+
+
+def _expected_fish_points(view) -> set[tuple[float, float]]:
+    """Freshly recomputed: every indexed fish's merged ring, from the live heights."""
+    points = set()
+    for entry in view._unit_index.entries:
+        if entry.unit.unit_const in _FISH_TILES:
+            for ring in unit_pick.merge_footprint_polygons(view._unit_polygons_for(entry)):
+                points |= {(round(x, 3), round(y, 3)) for x, y in ring}
+    return points
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped"])
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_fish_outlines_draw_one_ring_per_fish_of_its_whole_footprint(style: str) -> None:
+    """Five fish, five rings, of 1, 1, 1, 4 and 9 tiles' area, with Footprint
+    Outlines off; the Turtle Ship (a warship) and the gold mine get none."""
+    window = _window_with_fish(style)
+    try:
+        view = window.map_view
+        assert not window.footprint_action.isChecked()
+        tile = [(p.x(), p.y()) for p in view._tile_polygon(5, 5)]
+        areas = sorted(round(_area(ring) / _area(tile), 3) for ring in _fish_rings(view))
+        assert areas == sorted(_FISH_TILES.values())
+        by_const = {e.unit.unit_const: e for e in view._unit_index.entries}
+        drawn = _fish_points(view)
+        assert drawn == _expected_fish_points(view)
+        for const in _FISH_TILES:
+            assert _unit_points(view, by_const[const]) & drawn, const
+        for const in (_TURTLE_SHIP, _GOLD_MINE):
+            assert not _unit_points(view, by_const[const]) & drawn, const
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_fish_outlines_ignore_footprint_scope_merge_and_colour_and_sit_above_them() -> None:
+    from descape.map_view import MapView
+
+    window = _window_with_fish("Stepped")
+    try:
+        view = window.map_view
+        before = _fish_points(view)
+        window.footprint_action.setChecked(True)
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_BUILDINGS].setChecked(True)
+        window.footprint_merged_action.setChecked(False)
+        window.footprint_by_owner_action.setChecked(True)
+        assert _fish_points(view) == before
+        assert len(_fish_rings(view)) == len(_FISH_TILES)
+        assert MapView.FOOTPRINT_Z < view._fish_item.zValue() < MapView.RANGE_RING_Z
+        pen = view._fish_item.pen()
+        assert pen.isCosmetic() and pen.width() == MapView.FISH_OUTLINE_PEN_WIDTH
+        assert pen.color().name() == settings.get_default_overlay_color("fish_outline")
+        settings.set_overlay_color("fish_outline", "#123456")
+        view.apply_overlay_colors()
+        assert view._fish_item.pen().color().name() == "#123456"
+        assert view._fish_item.pen().width() == MapView.FISH_OUTLINE_PEN_WIDTH
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_fish_outlines_follow_the_unit_filter() -> None:
+    """Every fish is GAIA's, so Filters > Show GAIA unticked leaves no ring."""
+    window = _window_with_fish("Stepped")
+    try:
+        view = window.map_view
+        assert len(_fish_rings(view)) == len(_FISH_TILES)
+        window.show_gaia_action.setChecked(False)
+        assert _fish_rings(view) == []
+        window.show_gaia_action.setChecked(True)
+        assert len(_fish_rings(view)) == len(_FISH_TILES)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_moving_a_fish_moves_its_ring_and_undo_puts_it_back() -> None:
+    """A move patches the index in place (refresh_after_index_patch), the path
+    a whole-index refresh would not cover. Free placement lifts the water rule."""
+    window = _units_window_outlines_off()
+    try:
+        view = window.map_view
+        window.layer_actions["fish_outlines"].setChecked(True)
+        window.unrestricted_check.setChecked(True)
+        # pick_object(), not _place(): the catalog lists a GAIA-only Whale for GAIA alone (GH #32).
+        assert window.units_panel.pick_object(_WHALE)
+        window.on_unit_place(view._tile_polygon(50, 50).boundingRect().center(), None)
+        (entry,) = [e for e in view._unit_index.entries if e.unit.unit_const == _WHALE]
+        placed = _fish_points(view)
+        assert placed and placed <= _unit_points(view, entry)
+        start_x = entry.unit.x
+        window._move_units(window._ensure_unit_edits(), [entry], 1.0, 0.0, "Move unit")
+        assert entry.unit.x == pytest.approx(start_x + 1.0), "the move did not happen"
+        moved = _fish_points(view)
+        assert moved != placed, "the move left the ring where it was"
+        assert moved == _expected_fish_points(view)
+        window.undo()
+        assert _fish_points(view) == placed
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_an_elevation_edit_resyncs_the_fish_rings_with_footprints_off() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window_with_fish("Stepped")
+    try:
+        view = window.map_view
+        before = _fish_points(view)
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(50, 10, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        after = _fish_points(view)
+        assert after != before, "the edit did not move any ring"
+        assert after == _expected_fish_points(view)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_closing_a_map_then_toggling_fish_outlines_does_not_touch_a_deleted_item() -> None:
+    window = _window_with_fish("Stepped")
+    try:
+        view = window.map_view
+        view.clear_image()
+        assert view._fish_item is None
+        view.set_fish_outlines(False)
+        view.set_fish_outlines(True)
+        view.apply_overlay_colors()
+        view.schedule_footprint_refresh()
+    finally:
+        conftest.close_window(window)

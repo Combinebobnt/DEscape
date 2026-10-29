@@ -251,6 +251,7 @@ def _per_tile_sloped(cache):
     return lambda *r: render.composite_rect_sloped(
         cache.scenario, *r, cache.corner_rise, cache.proj, cache.tile_px, cache.units_by_tile, cache.building_bboxes,
         cache.with_units, sprites=cache.sprites, bystander_grid=cache.bystander_grid, layers=cache.layers, grid=cache.grid,
+        fold=cache.fold,
     )
 
 
@@ -1410,18 +1411,20 @@ def test_sloped_blend_samples_cover_every_quad_including_later_ones(tile_px):
         "flat": (0, 0, 0, 0), "one corner": (s, 0, 0, 0), "two corners": (s, s, 0, 0),
         "ridge": (s, 0, 0, s), "diagonal": (0, s, s, 2 * s),
     }
-    registry.shape_ids(list(shapes.values()))
+    # Both folds (TASK-008): a NW-SE quad resamples different texels.
+    keys = {(name, nwse): (*corners, nwse) for name, corners in shapes.items() for nwse in (False, True)}
+    registry.shape_ids(list(keys.values()))
     before = registry.blend_samples
     samples = _sample_set(before)
-    for name, corners in shapes.items():
-        _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *corners)
+    for name, key in keys.items():
+        _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *key[:4], nwse=key[4])
         assert sy.size, f"{name} reads nothing -- vacuous"
-        assert not _missing(samples, sy, sx), f"{name} {corners} at tile_px {tile_px}"
-    late = (0, 2 * s, 0, s)
+        assert not _missing(samples, sy, sx), f"{name} {key} at tile_px {tile_px}"
+    late = (0, 2 * s, 0, s, True)
     registry.shape_ids([late])
     after = registry.blend_samples
     assert after is not before, "a new shape did not rebuild the samples"
-    _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *late)
+    _dy, _dx, sy, sx, _uv = iso_geometry.sloped_quad_indices(tile_px, *late[:4], nwse=True)
     assert not _missing(_sample_set(after), sy, sx), f"a shape registered later, {late}"
     assert registry.packed()[2] is after
 

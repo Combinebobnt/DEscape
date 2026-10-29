@@ -611,7 +611,8 @@ def scenario_move_plan(
 
     None, before any walk, when no wall changes its tile and no gate does
     (or `gate_walls` is off). A wall moving onto or off the map is no
-    WallMove; one moved within its tile stays. The wall part counts every
+    WallMove; one moved within its tile stays, and is re-derived beside a
+    moved gate's sites as a static wall is. The wall part counts every
     moved connector (a co-moved gate too) on its new tiles and the gate
     part's fills, and leaves the walls the gate part removes alone. Both
     parts derive against the same tiles with the same tower rule, so they
@@ -647,7 +648,8 @@ def scenario_move_plan(
     connectors = unit_sprites.wall_connector_consts()
     carried_ids = {id(unit) for unit, _old, _new in carried}
     pre_tiles = set(static_tiles)
-    staying = list(static_walls)
+    # The walls the move carries within their own tile.
+    kept_in_tile = []
     for unit, x, y in moves:
         if unit.unit_const not in connectors:
             continue
@@ -656,17 +658,24 @@ def scenario_move_plan(
             continue
         tile = _wall_tile(unit.unit_const, x, y, map_width, map_height)
         if tile is not None and tile == _wall_tile(unit.unit_const, unit.x, unit.y, map_width, map_height):
-            staying.append(ExistingWall(unit=unit, player_id=census.owners[id(unit)], tx=tile[0], ty=tile[1]))
-    post_tiles = static_tiles | moved_tiles | {(int(node.x), int(node.y)) for _p, node in gate_plan.fills}
+            kept_in_tile.append(ExistingWall(unit=unit, player_id=census.owners[id(unit)], tx=tile[0], ty=tile[1]))
+    fill_tiles = {(int(node.x), int(node.y)) for _p, node in gate_plan.fills}
+    post_tiles = static_tiles | moved_tiles | fill_tiles
     removed_ids = {id(unit) for _p, unit in gate_plan.removals}
+    removed_tiles = {(wall.tx, wall.ty) for wall in static_walls if id(wall.unit) in removed_ids}
     rewrites, moved = plan_wall_moves(
         [WallMove(unit=unit, player_id=census.owners[id(unit)], old_tile=old, new_tile=new) for unit, old, new in carried],
         pre_tiles=pre_tiles,
         post_tiles=post_tiles,
-        staying_walls=staying,
-        exclude={(wall.tx, wall.ty) for wall in static_walls if id(wall.unit) in removed_ids},
+        staying_walls=static_walls + kept_in_tile,
+        exclude=removed_tiles,
     )
     merged = list(gate_plan.rewrites)
+    if gates and kept_in_tile:
+        # plan_gate_moves() sees static walls only; a wall moved within its tile stays too.
+        sites = {tile for gate in gates for tile in gate.old_tiles | gate.new_tiles} | fill_tiles
+        neighbourhood = {(tx + dx, ty + dy) for tx, ty in sites for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS}
+        merged += _neighbour_rewrites(kept_in_tile, neighbourhood, removed_tiles, post_tiles, isolated=ISOLATED_VARIANT)
     named = {id(unit) for _p, unit, _v in merged}
     merged += [entry for entry in rewrites if id(entry[1]) not in named]
 

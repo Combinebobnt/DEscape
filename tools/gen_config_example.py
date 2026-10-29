@@ -35,6 +35,7 @@ from descape import (
     scenario_io,
     scenario_new,
     settings,
+    settings_file,
     terrain_style,
     themes,
     tool_options,
@@ -356,6 +357,11 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
+# The units the selected trigger's Create Object and Place Foundation effects
+# would create, drawn see-through on their tiles, View > Show Trigger-Created
+# Units. Independent of the overlay. Default: true.
+trigger_ghosts: true
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -445,12 +451,22 @@ units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 # that dialog -- not something you normally set by hand. Omitted entirely
 # until first saved; until then the dialog opens at the values below.
 # tiles is clamped to {_NEW_MAP_TILES} and elevation to {_NEW_MAP_ELEVATIONS}; game_data is
-# {_NEW_MAP_GAME_DATA}; terrain_id is a terrain id (0 is Grass 1).
+# {_NEW_MAP_GAME_DATA}; terrain_id is a terrain id (0 is Grass 1); trees and
+# eye_candy are the Trees and Eye candy boxes, true or false.
 # new_map:
 #   tiles: {scenario_io.BLANK_TEMPLATE_TILES}
 #   game_data: {settings.NEW_MAP_GAME_DATA[0]}
 #   terrain_id: {settings.NEW_MAP_DEFAULT_TERRAIN_ID}
 #   elevation: {settings.NEW_MAP_DEFAULT_ELEVATION}
+#   trees: {str(settings.NEW_MAP_DEFAULT_TREES).lower()}
+#   eye_candy: {str(settings.NEW_MAP_DEFAULT_EYE_CANDY).lower()}
+
+# The id of the last settings import (Settings > General's Import settings…),
+# written when an import applies at startup; not something you set. It stays
+# on this machine and lets the next launch tell an import it already applied
+# from one still to apply. Omitted entirely until an import applies.
+# The value below is only an example.
+# {settings_file.IMPORT_APPLIED_KEY}: 0123456789abcdef
 
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.

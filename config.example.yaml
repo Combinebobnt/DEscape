@@ -104,7 +104,8 @@ terrain_style: stepped
 # launches. Rows:
 # terrain_textures (Terrain Textures), terrain_blend (Terrain Blending),
 # farm_overlay (Farm Terrain Overlay), small_trees (Small Trees), hero_glow
-# (Hero Glow), translucent_walls (Translucent Walls), mod_art (Mod Art).
+# (Hero Glow), fish_outlines (Fish Outlines), translucent_walls (Translucent
+# Walls), mod_art (Mod Art).
 # An unknown row or a non-true/false value keeps that row's default, shown here.
 view_layers:
   terrain_textures: true
@@ -112,6 +113,7 @@ view_layers:
   farm_overlay: true
   small_trees: false
   hero_glow: true
+  fish_outlines: false
   translucent_walls: false
   mod_art: true
 
@@ -268,6 +270,11 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
+# The units the selected trigger's Create Object and Place Foundation effects
+# would create, drawn see-through on their tiles, View > Show Trigger-Created
+# Units. Independent of the overlay. Default: true.
+trigger_ghosts: true
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -357,12 +364,22 @@ units_catalog_mode: icons
 # that dialog -- not something you normally set by hand. Omitted entirely
 # until first saved; until then the dialog opens at the values below.
 # tiles is clamped to 61-480 and elevation to 0-15; game_data is
-# aoe2 or ror; terrain_id is a terrain id (0 is Grass 1).
+# aoe2 or ror; terrain_id is a terrain id (0 is Grass 1); trees and
+# eye_candy are the Trees and Eye candy boxes, true or false.
 # new_map:
 #   tiles: 120
 #   game_data: aoe2
 #   terrain_id: 0
 #   elevation: 0
+#   trees: true
+#   eye_candy: false
+
+# The id of the last settings import (Settings > General's Import settings…),
+# written when an import applies at startup; not something you set. It stays
+# on this machine and lets the next launch tell an import it already applied
+# from one still to apply. Omitted entirely until an import applies.
+# The value below is only an example.
+# import_applied: 0123456789abcdef
 
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.
@@ -395,6 +412,7 @@ keybinds:
   map_resize: ''
   map_mirror: ''
   map_disables: ''
+  map_swap_players: ''
   view_isometric: Ctrl+Shift+I
   view_distance_ticks: ''
   view_show_sprites: ''
@@ -413,11 +431,13 @@ keybinds:
   view_range_rings_selected_revealers: ''
   view_player_cameras: ''
   view_trigger_overlay: ''
+  view_trigger_ghosts: ''
   view_layer_terrain_textures: ''
   view_layer_terrain_blend: ''
   view_layer_farm_overlay: ''
   view_layer_small_trees: ''
   view_layer_hero_glow: ''
+  view_layer_fish_outlines: ''
   view_layer_translucent_walls: ''
   view_layer_mod_art: ''
   view_pan_up: Up
@@ -542,6 +562,7 @@ overlay_colors:
   unit_stack_background: '#000000'
   unit_ghost_refused: '#ff3c3c'
   footprint_outline: '#c8c8c8'
+  fish_outline: '#3cc8ff'
   range_ring: '#404040'
   ruler_line: '#ff8228'
   ruler_label: '#ffbe6e'

@@ -52,6 +52,7 @@ from descape import (
     shape_tools,
     trigger_geometry,
     trigger_range,
+    unit_kind,
     unit_pick,
     zoom_preframe,
 )
@@ -283,6 +284,11 @@ class MapView(QGraphicsView):
     # a map-wide outline layer. Colour is settings.OVERLAY_COLORS'
     # "footprint_outline", rebuilt by _rebuild_overlay_ink().
     FOOTPRINT_Z = 5.0
+    # View > Layers > Fish Outlines (TASK-499): just above the footprint layer,
+    # so where both are on the fish ring is the one seen. Colour is "fish_outline".
+    FISH_OUTLINE_Z = 5.5
+    # Cosmetic device pixels, so the ring stays readable over water art at any zoom.
+    FISH_OUTLINE_PEN_WIDTH = 2
 
     # View > Range Rings. Above the footprint layer and below the hover cue,
     # so the two cues that say "this one, right now" both read over it: the
@@ -405,6 +411,10 @@ class MapView(QGraphicsView):
     TRIGGER_DIM_PEN_ALPHA = 110
     # A location mark is its tile's own polygon shrunk to this fraction.
     TRIGGER_LOCATION_SCALE = 0.6
+    # GH #167's trigger-created unit ghosts: between the area fill and the location
+    # marks, so a mark's outline stays readable over a ghost's feet.
+    TRIGGER_GHOST_Z = 11.35
+    TRIGGER_GHOST_DIM_OPACITY = 0.3
     # GH #229: the edge and corner grab bands' screen width.
     AREA_EDIT_BAND_PX = 6
     # Each grab zone's drag direction in map axes, for its on-screen cursor.
@@ -494,6 +504,9 @@ class MapView(QGraphicsView):
         self._footprint_merged = settings.get_footprint_merged()
         self._footprint_by_owner = settings.get_footprint_by_owner()
         self._footprint_refresh_pending = False
+        # View > Layers > Fish Outlines: one path item while a map is loaded; ViewerWindow pushes the flag.
+        self._fish_item: QGraphicsPathItem | None = None
+        self._fish_enabled = False
         # Stacked-unit badges: groups recomputed on every index swap, item
         # rebuilt per set_source() like _edge_tick_item.
         self._stack_badge_item: StackBadgeItem | None = None
@@ -522,6 +535,22 @@ class MapView(QGraphicsView):
         self._trigger_emphasis: frozenset[tuple[str, int]] | None = None
         self._trigger_items: list[QGraphicsItem] = []
         self._trigger_overlay_enabled = settings.get_trigger_overlay()
+        # GH #167: the trigger_geometry.CreatedUnit records the selected triggers would place,
+        # kept like the shapes; the two ghost items (strong, dim) go with every scene().clear().
+        self._trigger_ghost_records: list = []
+        self._trigger_ghost_emphasis: frozenset[tuple[str, int]] | None = None
+        self._trigger_ghost_sprites = True
+        self._trigger_ghost_items: list[UnitGhostItem] = []
+        self._trigger_ghosts_enabled = settings.get_trigger_ghosts()
+        # {(record.payload, sprites): (draws, mark)}, dropped wherever the look can change.
+        self._trigger_ghost_parts: dict[tuple, tuple[list, tuple | None]] = {}
+        self._trigger_ghost_refresh_pending = False
+        # An elevation edit landed mid-stroke: one rebuild at stroke end.
+        self._trigger_ghosts_stale = False
+        # The window assigns this ((record, sprites) -> (draws, mark)): MapView holds no scenario.
+        self.resolve_trigger_ghost: Callable[[object, bool], tuple[list, tuple | None]] = lambda _r, _s: ([], None)
+        # Called once per rebuild, before its first resolve: the window's one depoison() (batch_adds()'s rule).
+        self.prepare_trigger_ghost_resolve: Callable[[], None] = lambda: None
         # The Ruler's grammar lives in the Qt-free descape.ruler; this
         # class only turns its two tiles into scene items. Like the tick
         # state above it sits on MapView, which outlives every set_source().
@@ -1039,6 +1068,7 @@ class MapView(QGraphicsView):
         # TASK-327: pushed into the ghost item when it is created; apply_overlay_colors() drops a live one.
         self._unit_ghost_refused_color = QColor(settings.get_overlay_color("unit_ghost_refused"))
         self._footprint_pen = _pen("footprint_outline", 0)
+        self._fish_pen = _pen("fish_outline", self.FISH_OUTLINE_PEN_WIDTH, cosmetic=True)
         # Cosmetic width 0 like the footprint outline: Flat's squash
         # transform would thin a real-width line unevenly around the ellipse.
         self._range_ring_pen = _pen("range_ring", 0)
@@ -1121,6 +1151,8 @@ class MapView(QGraphicsView):
         if None in self._footprint_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._footprint_items[None].setPen(self._footprint_pen)
+        if self._fish_item is not None:
+            self._fish_item.setPen(self._fish_pen)
         if None in self._range_ring_items:
             # Owner groups draw in player colours, which this setting does not reach.
             self._range_ring_items[None].setPen(self._range_ring_pen)
@@ -1676,24 +1708,25 @@ class MapView(QGraphicsView):
         self.refresh_stack_groups()
         self._clear_unit_hover()
         self.refresh_unit_highlight()
-        self.refresh_footprint_overlay()
+        self._refresh_unit_outline_overlays()
         self.refresh_ring_layer()
 
     def refresh_drape_outlines(self) -> None:
         """For a Show sprites or Farm Overlay toggle: a draped farm's outline
         shape follows both (TASK-015), so the hover, the selection and the
-        footprint outlines are redrawn. The hover memo is dropped too, or a
-        cursor resting on the farm keeps its old path."""
+        footprint outlines are redrawn (the fish rings with them, on the same
+        geometry). The hover memo is dropped too, or a cursor resting on the
+        farm keeps its old path."""
         self._clear_unit_hover()
         self.refresh_unit_highlight()
-        self.refresh_footprint_overlay()
+        self._refresh_unit_outline_overlays()
 
     def refresh_after_index_patch(self) -> None:
         """For a caller that patched _unit_index in place rather than
         swapping it: everything derived from the index, which is the stacks,
-        the footprint outlines and the always-on ring layer."""
+        the footprint and fish outlines and the always-on ring layer."""
         self.refresh_stack_groups()
-        self.refresh_footprint_overlay()
+        self._refresh_unit_outline_overlays()
         self.refresh_ring_layer()
 
     def refresh_stack_groups(self) -> None:
@@ -1816,6 +1849,7 @@ class MapView(QGraphicsView):
             self._iso_proj,
             corner_rise=None if cache is None else cache.corner_rise,
             farms_draped=self._farms_draped(),
+            fold=None if cache is None else cache.fold,
         )
 
     def _unit_path(self, entry) -> QPainterPath | None:
@@ -1970,7 +2004,7 @@ class MapView(QGraphicsView):
         dropping the ring."""
         cache = self._sloped_cache()
         if cache is not None:
-            return unit_pick.unit_rise_px_for(entry, cache.corner_rise)
+            return unit_pick.unit_rise_px_for(entry, cache.corner_rise, cache.fold)
         if self._iso_elevations is None or self._iso_proj is None:
             return None
         return int(self._iso_elevations[entry.own_y, entry.own_x]) * self._iso_proj.elev_step
@@ -2411,6 +2445,7 @@ class MapView(QGraphicsView):
                 elevations=self._iso_elevations,
                 proj=self._iso_proj,
                 corner_rise=None if cache is None else cache.corner_rise,
+                fold=None if cache is None else cache.fold,
             )
         return [unit_pick.unit_key(e.player_id, e.unit) for e in entries]
 
@@ -2456,6 +2491,7 @@ class MapView(QGraphicsView):
             terrain_tile=tile,
             farms_draped=self._farms_draped(),
             sprites_on=self._objects_after_terrain(),
+            fold=None if cache is None else cache.fold,
         )
 
     def _farms_draped(self) -> bool:
@@ -2642,7 +2678,7 @@ class MapView(QGraphicsView):
                 return None
             return iso_geometry.screen_to_map_point(
                 int(pos.x()), int(pos.y()), "sloped", self._iso_proj,
-                corner_rise=cache.corner_rise, tile=tile,
+                corner_rise=cache.corner_rise, tile=tile, fold=cache.fold,
             )
         return iso_geometry.screen_to_map_point(
             int(pos.x()), int(pos.y()), "flat", tile_px=self._tile_pixels
@@ -2713,6 +2749,9 @@ class MapView(QGraphicsView):
             # Resumes the highlight pulse the press paused. See
             # _sync_pulse_timer() for why a stroke stops it.
             self._sync_pulse_timer()
+            if self._trigger_ghosts_stale:
+                self._trigger_ghosts_stale = False
+                self._schedule_trigger_ghost_refresh()
             try:
                 self._on_stroke_end()
             finally:
@@ -4140,6 +4179,110 @@ class MapView(QGraphicsView):
         """The live scene items, for tests and the review pack."""
         return list(self._trigger_items)
 
+    def show_trigger_ghosts(self, records: Sequence, emphasis: Collection[tuple[str, int]] | None, sprites: bool) -> None:
+        """GH #167: a see-through copy of each unit the selected triggers'
+        Create Object and Place Foundation effects would place
+        (trigger_geometry.CreatedUnit records). `emphasis` follows
+        show_trigger_overlay()'s rule; `sprites` False draws every ghost as its mark."""
+        self._trigger_ghost_records = list(records)
+        self._trigger_ghost_emphasis = frozenset(emphasis) if emphasis else None
+        self._trigger_ghost_sprites = bool(sprites)
+        self._rebuild_trigger_ghosts()
+
+    def clear_trigger_ghosts(self) -> None:
+        """No trigger selected, or its document went away. Idempotent."""
+        self._trigger_ghost_records = []
+        self._trigger_ghost_emphasis = None
+        self._rebuild_trigger_ghosts()
+
+    def set_trigger_ghosts_enabled(self, enabled: bool) -> None:
+        """View > Show Trigger-Created Units: off removes the items and keeps the records and memo."""
+        self._trigger_ghosts_enabled = bool(enabled)
+        self._rebuild_trigger_ghosts()
+
+    def refresh_trigger_ghosts(self) -> None:
+        """A look input set_source() does not cover changed (sprites, layers, player colours): re-resolve."""
+        self._trigger_ghost_parts = {}
+        self._rebuild_trigger_ghosts()
+
+    def trigger_ghost_items(self) -> list[UnitGhostItem]:
+        """The live ghost items, strong and dim, for tests and the review pack."""
+        return list(self._trigger_ghost_items)
+
+    def _forget_trigger_ghost_items(self) -> None:
+        """After scene().clear(): the items are gone, and the memo holds the old projection."""
+        self._trigger_ghost_items = []
+        self._trigger_ghost_parts = {}
+
+    def _rebuild_trigger_ghosts(self) -> None:
+        """Rebuilds both ghost items from the records. Only a record whose
+        (payload, sprites) is not in the memo is resolved, so an emphasis
+        change or a unit edit with the same records resolves nothing. Items
+        never touch the chunk cache."""
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in self._trigger_ghost_items:
+            scene.removeItem(item)
+        self._trigger_ghost_items = []
+        if not self._trigger_ghost_records:
+            self._trigger_ghost_parts = {}
+            return
+        if not self._trigger_ghosts_enabled or self._map_width is None:
+            return
+        sprites = self._trigger_ghost_sprites
+        parts = self._trigger_ghost_parts
+        live: dict[tuple, tuple[list, tuple | None]] = {}
+        content: dict[bool, tuple[list, list]] = {True: ([], []), False: ([], [])}
+        prepared = False
+        # Row-major by tile, the order the composite walk paints units in.
+        for record in sorted(self._trigger_ghost_records, key=lambda r: (r.tile[1], r.tile[0])):
+            key = (record.payload, sprites)
+            hit = live.get(key) or parts.get(key)
+            if hit is None:
+                if not prepared:
+                    self.prepare_trigger_ghost_resolve()
+                    prepared = True
+                hit = self.resolve_trigger_ghost(record, sprites)
+            live[key] = hit
+            draws, mark = hit
+            strong = self._trigger_ghost_emphasis is None or record.entry_ref in self._trigger_ghost_emphasis
+            content[strong][0].extend(draws)
+            if not draws and mark is not None:
+                content[strong][1].append(mark)
+        # Only what this selection draws stays cached.
+        self._trigger_ghost_parts = live
+        for strong in (False, True):
+            draws, marks = content[strong]
+            if not draws and not marks:
+                continue
+            item = UnitGhostItem()
+            item.set_content(draws, marks)
+            item.setOpacity(UnitGhostItem.GHOST_OPACITY if strong else self.TRIGGER_GHOST_DIM_OPACITY)
+            item.setZValue(self.TRIGGER_GHOST_Z)
+            item.setData(0, "ghosts_strong" if strong else "ghosts_dim")
+            scene.addItem(item)
+            self._trigger_ghost_items.append(item)
+
+    def _schedule_trigger_ghost_refresh(self) -> None:
+        """An elevation edit moves the ghosts' ground: drop the memo and queue
+        one re-resolve on the event loop, coalesced like schedule_footprint_refresh()."""
+        if not self._trigger_ghost_records:
+            return
+        self._trigger_ghost_parts = {}
+        if self._trigger_ghost_refresh_pending:
+            return
+        self._trigger_ghost_refresh_pending = True
+        QTimer.singleShot(0, self._flush_trigger_ghost_refresh)
+
+    def _flush_trigger_ghost_refresh(self) -> None:
+        self._trigger_ghost_refresh_pending = False
+        # A timer can fire between drag steps: rebuild once at stroke end (_end_stroke()).
+        if self._stroke_active:
+            self._trigger_ghosts_stale = True
+            return
+        self._rebuild_trigger_ghosts()
+
     def _rect_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath:
         """A half-open tile rect's outer boundary as one closed ring that
         follows each border tile's own edge, so it climbs Stepped risers and
@@ -4605,6 +4748,7 @@ class MapView(QGraphicsView):
         self._edge_tick_item = None
         self._grid_item = None
         self._footprint_items = {}
+        self._fish_item = None
         self._stack_badge_item = None
         self._stack_groups = {}
         # Same hazard, and the pushed list goes too: File > Close leaves no
@@ -4616,10 +4760,14 @@ class MapView(QGraphicsView):
         self._analysis_marker_item = None
         self._analysis_markers = []
         self._analysis_focus = None
-        # Same again for the trigger overlay, snapshot included.
+        # Same again for the trigger overlay, snapshot included, and its ghosts.
         self._forget_trigger_items()
         self._trigger_shapes = []
         self._trigger_emphasis = None
+        self._forget_trigger_ghost_items()
+        self._trigger_ghost_records = []
+        self._trigger_ghost_emphasis = None
+        self._trigger_ghosts_stale = False
         # Same hazard: scene().clear() destroyed the ghost's C++ object, so
         # _clear_unit_ghost()'s removeItem() on the next drag exit would raise.
         self._unit_ghost_item = None
@@ -5031,11 +5179,14 @@ class MapView(QGraphicsView):
         if reset_view:
             self._analysis_markers = []
             self._analysis_focus = None
-        # The trigger overlay follows the same rule, rebuilt at the end of this method.
+        # The trigger overlay follows the same rule, rebuilt at the end of this method; its ghosts too.
         self._forget_trigger_items()
+        self._forget_trigger_ghost_items()
         if reset_view:
             self._trigger_shapes = []
             self._trigger_emphasis = None
+            self._trigger_ghost_records = []
+            self._trigger_ghost_emphasis = None
         self._unit_hover_key = None
         self._unit_select_keys = []
         self._marquee_item = None
@@ -5142,6 +5293,7 @@ class MapView(QGraphicsView):
         self._apply_grid()
 
         self._footprint_items = {None: self._add_footprint_item(self._footprint_pen)}
+        self._fish_item = self._add_fish_item()
 
         # Empty until the caller installs an index via set_unit_index().
         tile_extent = 2 * proj.half_w if iso_proj is not None else tile_pixels
@@ -5176,6 +5328,7 @@ class MapView(QGraphicsView):
         self._rebuild_camera_markers()
         self._rebuild_analysis_markers()
         self._rebuild_trigger_overlay()
+        self._rebuild_trigger_ghosts()
         self._rebuild_pinned_rulers()
         # Forces the next poll fire to notify regardless of what it finds:
         # without this, a cache swap whose new viewport_chunk_target()
@@ -5675,6 +5828,43 @@ class MapView(QGraphicsView):
                 item = self._footprint_items[key] = self._add_footprint_item(QPen(QColor(*key), 0))
             item.setPath(path)
 
+    def set_fish_outlines(self, enabled: bool) -> None:
+        """Shows or hides View > Layers > Fish Outlines (TASK-499). A scene
+        item like set_footprint_outlines()'s, so no chunk cache is evicted."""
+        self._fish_enabled = enabled
+        if self._fish_item is not None:
+            self._fish_item.setVisible(enabled)
+        self.refresh_fish_overlay()
+
+    def _add_fish_item(self) -> QGraphicsPathItem:
+        item = self.scene().addPath(QPainterPath(), self._fish_pen)
+        item.setZValue(self.FISH_OUTLINE_Z)
+        item.setVisible(self._fish_enabled)
+        return item
+
+    def refresh_fish_overlay(self) -> None:
+        """Rebuilds the fish rings from the live index and height field: one
+        merged ring per unit_kind.fish_consts() member the filter shows,
+        whatever Footprint Outlines' scope and Merge tiles say. Skipped while
+        disabled, like the footprint path; set_fish_outlines() rebuilds on enable."""
+        if self._fish_item is None or not self._fish_enabled:
+            return
+        path = QPainterPath()
+        if self._unit_index is not None:
+            fish = unit_kind.fish_consts()
+            for entry in self._unit_index.entries:
+                if entry.unit.unit_const not in fish:
+                    continue
+                polygons = self._unit_polygons_for(entry)
+                if polygons:
+                    _add_closed_polygons(path, unit_pick.merge_footprint_polygons(polygons))
+        self._fish_item.setPath(path)
+
+    def _refresh_unit_outline_overlays(self) -> None:
+        """Every outline overlay built from the unit index: footprints and fish."""
+        self.refresh_footprint_overlay()
+        self.refresh_fish_overlay()
+
     def set_camera_markers(
         self, markers: Sequence[tuple[int, int, int, QColor]], emphasised: int | None = None
     ) -> None:
@@ -5841,6 +6031,8 @@ class MapView(QGraphicsView):
         self._rebuild_analysis_markers()
         # _tile_polygon reads the elevations, so Stepped and Sloped rings move. O(perimeter).
         self._rebuild_trigger_overlay()
+        # The ghosts re-resolve sprites, so deferred like the footprints, and held to stroke end.
+        self._schedule_trigger_ghost_refresh()
         # Same for a pinned ruler's endpoints: at most a handful of items.
         self._rebuild_pinned_rulers()
         # Stack badges anchor on the tile outline too (GH #100). Two outline lookups per
@@ -5848,13 +6040,14 @@ class MapView(QGraphicsView):
         self._rebuild_stack_badges()
 
     def schedule_footprint_refresh(self) -> None:
-        """Queues one rebuild of the footprint outlines, the always-on ring
-        layer and a drawn unit selection (TASK-359), whichever is live."""
+        """Queues one rebuild of the footprint and fish outlines, the always-on
+        ring layer and a drawn unit selection (TASK-359), whichever is live."""
         if self._footprint_refresh_pending:
             return
         # Hidden: nothing to queue per drag step (refresh_footprint_overlay's invariant).
         footprints = bool(self._footprint_items) and self._footprint_enabled
-        if not footprints and not self._ring_layer_wanted() and not self._unit_select_keys:
+        fish = self._fish_item is not None and self._fish_enabled
+        if not footprints and not fish and not self._ring_layer_wanted() and not self._unit_select_keys:
             return
         self._footprint_refresh_pending = True
         QTimer.singleShot(0, self._flush_footprint_refresh)
@@ -5866,6 +6059,9 @@ class MapView(QGraphicsView):
         if self._footprint_items:
             with perf_trace.phase("footprint_refresh"):
                 self.refresh_footprint_overlay()
+        if self._fish_item is not None and self._fish_enabled:
+            with perf_trace.phase("fish_refresh"):
+                self.refresh_fish_overlay()
         if self._ring_layer_wanted():
             with perf_trace.phase("ring_layer_refresh"):
                 self.refresh_ring_layer()

@@ -53,6 +53,8 @@ _OBJECT_DATASETS = (
     (HeroInfo, "Heroes"),
     (OtherInfo, "Others"),
 )
+# Every objects() category, in the in-game Object List Type's own option order (GH #41).
+OBJECT_CATEGORIES = tuple(category for _dataset, category in _OBJECT_DATASETS)
 
 # tools/gen_object_catalog.py's output: integers and short .dat codes only,
 # never generated at runtime and never touching an install by itself --

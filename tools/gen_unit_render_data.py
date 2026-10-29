@@ -185,7 +185,7 @@ consts:
   Flat's icon contain-fits the 6x6 rect; snapped Place Unit and a group
   move's edge clamp put an even-span doodad on whole coordinates and keep
   its footprint on the map; Replace re-anchors on the low corner when the
-  span changes (root AGENTS.md), so a tree replaced by a mountain lands the
+  span changes (docs/WRITE_RULES.md), so a tree replaced by a mountain lands the
   mountain's low corner on the tree's tile; Scatter and Mirror treat doodads
   as multi-tile; a free-placed doodad's footprint quantizes like an off-grid
   building's, up to 0.74 tile from its sprite; and a 1x1 unit under a

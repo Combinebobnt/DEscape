@@ -2154,6 +2154,7 @@ def test_typing_x_on_a_wall_carries_it_off_its_run():
         assert _shapes(wall, west, east) == (2.0, 2.0, 2.0)
         assert len(window.edit_history.records) == records + 1
         assert _is_field_delta(window)
+        assert _last_status(window) == "Set unit X, reshaping 2 adjacent"
         window.undo()
         assert (wall.x, *_shapes(wall, west, east)) == (30.5, 0.0, 0.0, 0.0)
     finally:

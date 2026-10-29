@@ -754,6 +754,9 @@ _camera_markers: bool | None = None
 # patrol runs on the map. ON by default, unlike the two above: it draws nothing
 # until a trigger is selected in the Triggers panel, so it costs nothing idle.
 _trigger_overlay: bool | None = None
+# View > Show Trigger-Created Units (GH #167): ON by default for the same
+# reason, independent of the overlay.
+_trigger_ghosts: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 _grid_major_every: int | None = None
@@ -988,6 +991,21 @@ def set_trigger_overlay(enabled: bool) -> None:
     _save_config(config)
 
 
+def get_trigger_ghosts() -> bool:
+    global _trigger_ghosts
+    if _trigger_ghosts is None:
+        _trigger_ghosts = bool(_load_config().get("trigger_ghosts", True))
+    return _trigger_ghosts
+
+
+def set_trigger_ghosts(enabled: bool) -> None:
+    global _trigger_ghosts
+    _trigger_ghosts = enabled
+    config = _load_config()
+    config["trigger_ghosts"] = enabled
+    _save_config(config)
+
+
 def get_grid_blend() -> int:
     """Always within grid_overlay's blend range; an out-of-range integer
     clamps, anything else falls back to the default. A config predating this
@@ -1156,6 +1174,8 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
     ("unit_ghost_refused", "Refused placement", "#ff3c3c"),
     ("footprint_outline", "Footprint outlines", "#c8c8c8"),
+    # View > Layers > Fish Outlines (TASK-499).
+    ("fish_outline", "Fish outlines", "#3cc8ff"),
     ("range_ring", "Range ring", "#404040"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
@@ -1921,6 +1941,9 @@ def set_data_mod_for(path: Path, identity: dict | None) -> None:
 NEW_MAP_GAME_DATA = game_dataset.DATASETS
 NEW_MAP_DEFAULT_TERRAIN_ID = 0
 NEW_MAP_DEFAULT_ELEVATION = 0
+# The Terrain tool's own defaults. Off for eye candy: Grass 1, the default terrain, carries some.
+NEW_MAP_DEFAULT_TREES = True
+NEW_MAP_DEFAULT_EYE_CANDY = False
 
 _new_map: dict | None = None
 
@@ -1944,6 +1967,7 @@ def _clean_new_map(raw) -> dict:
     terrain_id = _int_or_none(raw.get("terrain_id"))
     elevation = _int_or_none(raw.get("elevation"))
     game_data = raw.get("game_data")
+    trees, eye_candy = raw.get("trees"), raw.get("eye_candy")
     return {
         "tiles": BLANK_TEMPLATE_TILES if tiles is None else max(MIN_MAP_TILES, min(MAX_MAP_TILES, tiles)),
         "game_data": game_data if game_data in NEW_MAP_GAME_DATA else NEW_MAP_GAME_DATA[0],
@@ -1953,15 +1977,18 @@ def _clean_new_map(raw) -> dict:
             if elevation is None
             else max(iso_geometry.MIN_ELEVATION, min(iso_geometry.MAX_ELEVATION, elevation))
         ),
+        "trees": trees if isinstance(trees, bool) else NEW_MAP_DEFAULT_TREES,
+        "eye_candy": eye_candy if isinstance(eye_candy, bool) else NEW_MAP_DEFAULT_EYE_CANDY,
     }
 
 
 def get_new_map_choice() -> dict:
     """File > New Map…'s last choices as {tiles, game_data, terrain_id,
-    elevation}. Each field falls back on its own: tiles and elevation are
-    clamped into range, an unknown game_data or a terrain id outside 0..255
-    takes the default. Whether the terrain id is in the catalog is the
-    dialog's check, not this one."""
+    elevation, trees, eye_candy}. Each field falls back on its own: tiles
+    and elevation are clamped into range, an unknown game_data, a terrain
+    id outside 0..255 or a non-bool trees or eye_candy takes the default
+    (a choice saved before those two existed takes theirs). Whether the
+    terrain id is in the catalog is the dialog's check, not this one."""
     global _new_map
     if _new_map is None:
         _new_map = _clean_new_map(_load_config().get("new_map"))
@@ -2049,6 +2076,7 @@ class ToolDef:
     # Deliberately separate from enablement (has_map / write_ok /
     # elevation_ok, still driving setEnabled): a Terrain tool on a
     # non-square map should stay greyed and visible, not vanish.
+    # Widening it needs a _migrate_elevate_off_r-style migration: the load reconciler silently clears a binding it makes collide.
     modes: tuple[str, ...] = ()
 
 
@@ -2274,6 +2302,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #57's Disabled Objects dialog, a dialog opener so unbound. Was edit_disables until it
     # moved to the Map menu; _load_keybinds() migrates a saved binding.
     ("map_disables", "Disabled Objects…", ""),
+    # GH #185's Swap Players dialog, an unbound dialog opener like map_disables, global like it.
+    ("map_swap_players", "Swap Players…", ""),
     # Moved off Ctrl+I when mode_view claimed it below -- see that entry.
     ("view_isometric", "Isometric View", "Ctrl+Shift+I"),
     # Ships unbound, which needs no collision audit (a duplicate binding
@@ -2314,6 +2344,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_player_cameras", "Player Cameras", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_trigger_overlay", "Trigger Overlay", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_trigger_ghosts", "Trigger-Created Units", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
     # below are generated from TOOLS, so the table stays single-source.
@@ -2501,6 +2533,7 @@ def modes_include(modes: tuple[str, ...] | frozenset[str], mode: str) -> bool:
 # go on a command of another mode. Each one's own enable gate already kills it
 # outside these. Tool rows take ToolDef.modes instead (_TOOL_KEYBIND_MODES).
 # unit_rotate_* stay global: they also turn a pasted or committed region.
+# Widening a scope needs a _migrate_elevate_off_r-style migration: the load reconciler silently clears a binding it makes collide.
 _SCOPED_KEYBINDS: dict[str, frozenset[str]] = {
     "unit_variant_prev": frozenset({"units"}),
     "unit_variant_next": frozenset({"units"}),
@@ -2647,9 +2680,8 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
             keybinds[action_id] = ""
 
 
-# Action ids of removed tools and renamed actions. A config written before the removal still
-# names them, and set_keybind()'s collision loop walks keybinds.items(), so a
-# phantom entry could be auto-cleared and reported in Settings.
+# Action ids of removed tools and renamed actions, which a config written before the removal
+# still names: dropped on load, so set_keybind()'s whole-dict write does not carry them on.
 _RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables", "file_resize")
 
 # Renamed action ids, old -> new. A saved old binding carries over unless the new id is saved too.
@@ -2699,19 +2731,18 @@ def set_keybind(action_id: str, key_sequence: str) -> list[str]:
     key_sequence whose scope overlaps action_id's (keybind_scopes_overlap())
     is auto-cleared here rather than left to silently break both. An action
     of a disjoint mode keeps it (GH #267). Returns the auto-cleared
-    action_ids in declared order, empty when there was no collision.
+    action_ids in declared order, empty when there was no collision: exactly
+    keybind_conflicts(key_sequence, action_id), so an id this build has no
+    row for (another build's config) keeps its key.
 
     An empty key_sequence is exempt from the check in both directions --
     several actions ship unbound on purpose, so two actions both being ""
     is not a collision.
     """
     keybinds = _load_keybinds()
-    cleared: list[str] = []
-    if key_sequence:
-        for other_id, other_sequence in keybinds.items():
-            if other_id != action_id and other_sequence == key_sequence and keybind_scopes_overlap(action_id, other_id):
-                keybinds[other_id] = ""
-                cleared.append(other_id)
+    cleared = keybind_conflicts(key_sequence, action_id)
+    for other_id in cleared:
+        keybinds[other_id] = ""
     keybinds[action_id] = key_sequence
     config = _load_config()
     config["keybinds"] = keybinds

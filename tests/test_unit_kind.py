@@ -279,6 +279,32 @@ def test_mobile_unit_consts_is_the_eraser_units_target() -> None:
     assert by_class == {40: 6, 41: 4, 42: 12}
 
 
+# TASK-499: one member of each fish kind the Fish Outlines layer rings, and the near misses.
+SHORE_FISH, BOX_TURTLES, OYSTERS, WHALE, FISH1 = 69, 1141, 2170, 2625, 455
+TURTLE_SHIPS, BEACHED_WHALE, OLD_FISH3, SHARKATZOR = (831, 832), 2457, 260, 1222
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror"])
+def test_fish_consts_is_the_four_class_rule_in_both_games(dataset) -> None:
+    """The literal rule rather than unit_kind's own constant, so a narrowed
+    class list fails here; 17 in both catalogs as measured 2026-10-29."""
+    from descape import game_dataset
+
+    game_dataset.set_active(dataset)
+    fish = unit_kind.fish_consts()
+    assert fish == {c for c, e in unit_kind._objects().items() if e.get("class") in {5, 31, 33, 63}}
+    assert {SHORE_FISH, BOX_TURTLES, OYSTERS, WHALE, FISH1} <= fish
+    assert fish.isdisjoint({*TURTLE_SHIPS, BEACHED_WHALE, OLD_FISH3, SHARKATZOR})
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror"])
+def test_player_stats_counts_exactly_the_fish_the_layer_rings(dataset) -> None:
+    from descape import game_dataset, player_stats
+
+    game_dataset.set_active(dataset)
+    assert player_stats.bucket_sets()["fish"] == unit_kind.fish_consts()
+
+
 def test_the_module_stays_a_stdlib_only_leaf() -> None:
     """unit_filter.py imports this, and view_layers.py:6-8 records that
     unit_filter staying a leaf is load-bearing. numpy or asset_source

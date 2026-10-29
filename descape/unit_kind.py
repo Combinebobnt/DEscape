@@ -26,7 +26,7 @@ rather than copied; tests/test_unit_kind.py pins the two against each other.
 
 ## wall_consts(): 105 consts in AoE2, 9 walls plus 96 gates
 
-Raw `class == 27` is the wrong basis, and AGENTS.md says so ("excluded by
+Raw `class == 27` is the wrong basis, and docs/WRITE_RULES.md says so ("excluded by
 const set, never by `unit.class_`"). Class 27 holds 39 consts and 30 of them
 are invisible scaffolding: Empty building x5, Sheep annex1/2, Empty TC annex,
 Mole annex 1-4, Thin blocker spawner A/B, Gaia transition building, Relic
@@ -236,6 +236,26 @@ and 65 (prey, predators, birds, foxes) and Discovery 16, and the Other tab
 keeps only _ROR_PLAYER_OTHERS. The 8 RoR sample files agree: none of their
 432 class 9/10/11 placements is player-owned, and of the Other tab only
 Granary 1089 is. Heroes stay player-ownable (Ornlu the Wolf is class 10).
+
+## fish_consts(): .dat classes 5, 31, 33 and 63, 17 consts (TASK-499)
+
+The rule player_stats' Fish count has always used, moved here so the count
+and View > Layers > Fish Outlines read one set and cannot disagree. Measured
+2026-10-29, the same 17 consts in the AoE2 and Return of Rome catalogs:
+
+- class 5 (ocean fish), 14: FISHX 53, DOLP3 61, DOLP1/2/3/5 450-452 and 454
+  (there is no 453), FISH1-5 455-459, WHAL1/2 460/461.
+- class 33 (shore fish), 2: FISHS 69 and TURTLES 1141 (Box Turtles).
+- class 63, 2: Oysters 2170 and WHALE 2625.
+- class 31 (deep-sea fish) has no member; it stays in the rule for data mods.
+
+Spans come from terrain_palette.FISH_TILE_SPANS: 2x2 for 53, 61, 450 and
+455-458, 3x3 for WHALE 2625, 1x1 for every other member.
+
+Left out by the rule, correctly: Turtle Ship 831/832 (class 22, a warship),
+Beached Whale 2457 (class 14, a doodad), OLD-FISH3 260 (class 11, hidden) and
+Sharkatzor 1222 (class 13). A data mod could put a non-fish in one of the four
+classes; accepted, as the Fish count always did.
 
 ## Two documented non-changes
 
@@ -504,6 +524,17 @@ def owner_refused(unit_const: int, player: int) -> bool:
     """Whether giving `unit_const` to `player` is refused (GH #32): a
     gaia_only_consts() member may only belong to GAIA."""
     return player != _GAIA_PLAYER_ID and unit_const in gaia_only_consts()
+
+
+# Ocean fish, deep-sea fish, shore fish, and DE's class 63 (Oysters/Whale).
+_FISH_CLASSES = frozenset({5, 31, 33, 63})
+
+
+@game_dataset.cache(maxsize=1)
+def fish_consts() -> frozenset[int]:
+    """Every fish: what player_stats counts as Fish and View > Layers > Fish
+    Outlines rings. See the module docstring for the members and exclusions."""
+    return frozenset(const for const, entry in _objects().items() if entry.get("class") in _FISH_CLASSES)
 
 
 @game_dataset.cache(maxsize=1)

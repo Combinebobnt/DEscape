@@ -37,7 +37,7 @@ from descape import (
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
-from descape.view_layers import DEFAULT_LAYERS, LayerState
+from descape.view_layers import DEFAULT_LAYERS, LayerState, render_key
 
 # LayerState fields that are baked into a SpriteLayer's own contents when it
 # is BUILT, rather than read off self.layers at paint time. Flipping one needs
@@ -184,14 +184,18 @@ class UnitSplice:
         """Present before and after, same owner: Move, Nudge, Set field, a
         gate orientation swap, or a wall whose shape index a move rewrote in
         place (old and new tiles equal). For a wall/connector that changes
-        its tiles, set_position() keeps list order, and the only fields-only
-        write of a rotation-variant const's rotation is a move's literal wall
-        index (GH #266, viewer._apply_wall_reshapes()). A move whose writes
-        would flip the file's radian verdict goes wholesale instead
-        (wall_run.MovePlan.radian_flip), so the verdict and every override
-        key hold. What changes is the neighbour mask of the walls beside its
-        old and new tiles (_connector_neighbours()), and the rewritten walls'
-        own shapes, each of which carries a splice of its own."""
+        its tiles, set_position() keeps list order, and two fields-only
+        writes of a rotation-variant const's rotation exist, both literal
+        set_wall_variant() indices that keep the file's radian verdict and
+        so every override key. A move's (GH #266,
+        viewer._apply_wall_reshapes()) goes wholesale instead when it would
+        flip the verdict (wall_run.MovePlan.radian_flip). The Selection
+        transform's (viewer._write_lift_units()) writes only in an
+        integer-encoded file (region_transform._rotation_write()), where
+        every wall already stores a literal. What changes is the neighbour
+        mask of the walls beside its old and new tiles
+        (_connector_neighbours()), and the rewritten walls' own shapes, each
+        of which carries a splice of its own."""
         return self.old_own_tile is not None and self.new_own_tile is not None and self.old_player_id is None
 
 
@@ -720,13 +724,16 @@ def _splice_tiles(splices: list[UnitSplice]) -> set[tuple[int, int]]:
     return tiles
 
 
-def _refreshed_pack(pack, splices, units_by_tile, old_sprites, old_version, old_heights, sprites, version, heights):
+def _refreshed_pack(
+    pack, splices, units_by_tile, old_sprites, old_version, old_heights, sprites, version, heights, fold=None
+):
     """pack refreshed over the batch's tiles, or None to force a full rebuild
     when it didn't describe the pre-edit sources (a refresh can't repair a
-    pack that was already stale)."""
+    pack that was already stale). fold rides with Sloped's heights: it is
+    rebound whenever they are, so the `is` match on heights covers it."""
     if pack is None or not pack.matches(units_by_tile, old_sprites, old_version, old_heights):
         return None
-    pack.refresh(_splice_tiles(splices), units_by_tile, sprites, version, heights)
+    pack.refresh(_splice_tiles(splices), units_by_tile, sprites, version, heights, fold)
     return pack
 
 
@@ -746,6 +753,14 @@ def _corner_changed_tiles(old_cr: np.ndarray, new_cr: np.ndarray) -> set[tuple[i
     corner_rise arrays."""
     c = old_cr != new_cr
     ys, xs = np.nonzero(c[:-1, :-1] | c[:-1, 1:] | c[1:, :-1] | c[1:, 1:])
+    return set(zip(xs.tolist(), ys.tolist(), strict=True))
+
+
+def _fold_changed_tiles(old_fold: np.ndarray, new_fold: np.ndarray) -> set[tuple[int, int]]:
+    """Every tile whose Sloped fold (iso_geometry.tile_folds()) differs. A
+    fold reads the second-highest tile at each corner, which corner_rise
+    does not carry, so it can flip with all four corners unchanged."""
+    ys, xs = np.nonzero(old_fold != new_fold)
     return set(zip(xs.tolist(), ys.tolist(), strict=True))
 
 
@@ -809,6 +824,7 @@ def _splice_building_and_sprites(
     tree_scale: float = 1.0,
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
+    fold: np.ndarray | None = None,
 ) -> render.SpriteLayer | None:
     """_reanchor_units() for a single splice, with overrides {}. {} is only
     right for a splice of a unit that isn't rotation-variant-eligible, whose
@@ -818,7 +834,7 @@ def _splice_building_and_sprites(
     _splice_overrides() instead, as both invalidate_units() do."""
     return _reanchor_units(
         building_bboxes, sprites, scenario, proj, elevations, unit_filter, corner_rise,
-        extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow, wall_alpha,
+        extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow, wall_alpha, fold=fold,
     )
 
 
@@ -838,6 +854,7 @@ def _reanchor_units(
     hero_glow: bool = False,
     wall_alpha: float = 1.0,
     old_bboxes: dict | None = None,
+    fold: np.ndarray | None = None,
 ) -> render.SpriteLayer | None:
     """Applies every splice in `splices` to one level's building_bboxes --
     keyed by own-tile -- and, if `sprites` is not None, its SpriteLayer.
@@ -945,7 +962,7 @@ def _reanchor_units(
         if sprites is not None and splice.new_tiles:
             contribution = render._resolve_unit_sprite(
                 scenario, proj, elevations, unit_filter, corner_rise, overrides, with_farms,
-                splice.player_id, splice.index, unit, tree_scale, hero_glow, wall_alpha,
+                splice.player_id, splice.index, unit, tree_scale, hero_glow, wall_alpha, fold=fold,
             )
             if contribution is not None:
                 render._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
@@ -1259,8 +1276,14 @@ class _ChunkCacheBase:
     def _unit_level_state(self, mip: int):
         """(proj, sprites, building_bboxes, corner_rise, extra_top_px) for level
         `mip`, as currently installed: never rebuilt by this call. Stepped and
-        Sloped implement it; Flat has no per-unit sprite extent and raises."""
+        Sloped implement it; Flat has no per-unit sprite extent and raises.
+        The fold that goes with corner_rise is _level_fold()'s."""
         raise NotImplementedError(f"{type(self).__name__} has no unit-edit sprite extent")
+
+    def _level_fold(self) -> np.ndarray | None:
+        """The tile_folds() array that goes with the level's corner_rise: None
+        off Sloped. Level-independent, since a fold reads elevations only."""
+        return None
 
     def _extent_fallback(self, changed: list[UnitSplice], mip: int | None) -> bool:
         """Whether a unit edit must be sized with today's reach bbox rather
@@ -1363,7 +1386,7 @@ class _ChunkCacheBase:
             if self.sprites_enabled:
                 contribution = render._resolve_unit_sprite(
                     scenario, proj, self.elevations, self.unit_filter, corner_rise, overrides, with_farms,
-                    s.player_id, s.index, s.unit, tree_scale, hero_glow, wall_alpha,
+                    s.player_id, s.index, s.unit, tree_scale, hero_glow, wall_alpha, fold=self._level_fold(),
                 )
                 if contribution is not None:
                     for bbox in contribution.bboxes.values():
@@ -2689,7 +2712,11 @@ class _ChunkCacheBase:
         farm_overlay at build time (its drape and FLAT_DRAPED icons, GH #150),
         rebuilt by the same _refresh_unit_sources(), and reaches none of the
         other build-time fields (icon_for() contain-fits every unit into its
-        own footprint), so those flips repaint to the same pixels."""
+        own footprint), so those flips repaint to the same pixels.
+
+        A scene-overlay row (Fish Outlines) never reaches a chunk: render_key()
+        resets it, so toggling one is the equal-state no-op (TASK-499)."""
+        layers = render_key(layers)
         if layers == self.layers:
             return
         rebuild = any(
@@ -2863,10 +2890,10 @@ class _LeveledChunkCache(_ChunkCacheBase):
         `seeds` are the own tiles whose units the edit can move:
         elevation_changed on Stepped, which reads a unit's own tile only
         (_resolve_unit_sprite's elevations[uy, ux], _unit_iso_footprint's own
-        floored tile), plus elevation_seed_tiles()' corner-changed tiles on
-        Sloped. The affected units are exactly those, plus any unit sharing a
-        tile with one, which re-derives unchanged (_elevation_splices()'
-        component). Each already-current level gets one _reanchor_units()
+        floored tile), plus elevation_seed_tiles()' corner-changed and
+        fold-changed tiles on Sloped. The affected units are exactly those,
+        plus any unit sharing a tile with one, which re-derives unchanged
+        (_elevation_splices()' component). Each already-current level gets one _reanchor_units()
         call with the real wall overrides (an elevation edit leaves them
         valid) and a patched bystander_grid. A stale level is left stale and
         rebuilds fully in _level(). No gen bump, so _splice_epoch is bumped
@@ -2931,7 +2958,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
             lvl.sprites = _reanchor_units(
                 lvl.building_bboxes, lvl.sprites, self.scenario, lvl.proj, self.elevations,
                 self.unit_filter, self._level_corner_rise(lvl), extra_top, splices, overrides,
-                *self._layer_resolve_args(), old_bboxes=old_bboxes,
+                *self._layer_resolve_args(), old_bboxes=old_bboxes, fold=self._level_fold(),
             )
         if extra_top != lvl.extra_top:
             mip = next(m for m, other in self._levels.items() if other is lvl)
@@ -2950,7 +2977,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
         heights = self._level_heights(lvl)
         lvl.unit_pack = _refreshed_pack(
             lvl.unit_pack, splices, self.units_by_tile, old_sprites, old_version, lvl.heights,
-            lvl.sprites, self._units_version, heights,
+            lvl.sprites, self._units_version, heights, self._level_fold(),
         )
         lvl.heights = heights
 
@@ -3049,6 +3076,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
         return render.sprite_draws_by_anchor_sliced(
             self.scenario, lvl.proj, self.elevations, self.unit_filter,
             corner_rise=self._level_corner_rise(lvl),
+            fold=self._level_fold(),
             with_farms=self.layers.farm_overlay,
             tree_scale=self.layers.tree_scale,
             hero_glow=self.layers.hero_glow,
@@ -3433,6 +3461,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
         Walls the same for every wall and gate. Flipping the farm layer
         re-walks the units but decodes no new .sld, so it does not pay
         that method's 0.5-4.1s cold-decode case."""
+        layers = render_key(layers)
         if layers == self.layers:
             return
         if all(
@@ -3489,7 +3518,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
             with perf_trace.level("pack", mip):
                 pack = lvl.unit_pack = native_composite.UnitPack(
                     self._sloped, mm.map_width, mm.map_height, lvl.proj, self.units_by_tile, lvl.sprites,
-                    self._units_version, self._level_heights(lvl),
+                    self._units_version, self._level_heights(lvl), self._level_fold(),
                 )
         return pack
 
@@ -3614,7 +3643,7 @@ class IsoChunkCache(_LeveledChunkCache):
         self.sprites_enabled = sprites
         # Same ordering constraint: _level() reads the build-time layer
         # fields (_BUILD_TIME_LAYER_FIELDS) to build a level's sprite layer.
-        self.layers = layers
+        self.layers = render_key(layers)
         # Phase B-D-b: the REAL per-level projection set. settings.
         # get_elev_step_pct() is read here rather than threaded through as
         # a parameter because it's exactly the same function every real
@@ -3818,7 +3847,7 @@ class FlatChunkCache(_ChunkCacheBase):
         self.sprites_enabled = sprites
         # terrain_textures/terrain_blend are read per composite; farm_overlay
         # at build time, by _refresh_source_caches() and the icon walks.
-        self.layers = layers
+        self.layers = render_key(layers)
         # Phase B-D-b: the real candidate ladder, UNFILTERED -- "unfiltered"
         # here means the MIP ladder, nothing to do with unit_filter. Flat has no
         # projection (canvas_dims() is a bare multiply, exact at every
@@ -4428,7 +4457,7 @@ class SlopedChunkCache(_LeveledChunkCache):
         self.sprites_enabled = sprites
         # Same ordering constraint: _level() reads the build-time layer
         # fields (_BUILD_TIME_LAYER_FIELDS) when it builds the sprite layer.
-        self.layers = layers
+        self.layers = render_key(layers)
         self._pick_planes: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
         assert proj.tile_px == tile_px, f"proj.tile_px {proj.tile_px} != tile_px {tile_px}"
         mm = scenario.map_manager
@@ -4473,6 +4502,9 @@ class SlopedChunkCache(_LeveledChunkCache):
     def _level_corner_rise(self, lvl: _IsoLevel) -> np.ndarray | None:
         return self._level_rise(lvl).corner_rise
 
+    def _level_fold(self) -> np.ndarray | None:
+        return self.fold
+
     def _level_heights(self, lvl: _IsoLevel) -> np.ndarray:
         return self._level_rise(lvl).corner_rise
 
@@ -4482,7 +4514,11 @@ class SlopedChunkCache(_LeveledChunkCache):
     def _refresh_corner_rise(self) -> None:
         """corner_rise rebuilt from self.elevations (a new array, never
         written in place) and the headroom recomputed against it. The
-        rebinding is what makes every other level re-derive its own in _level_rise()."""
+        rebinding is what makes every other level re-derive its own in _level_rise().
+        The fold (iso_geometry.tile_folds(), TASK-008) is rebuilt with it: it
+        reads elevations only, so one array serves every level, and rebinding
+        it beside corner_rise keeps every `heights is` staleness check exact."""
+        self.fold = iso_geometry.tile_folds(self.elevations)
         self.corner_rise = iso_geometry.corner_rise_px(self.elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
         self._target_headroom = render._unit_rise_headroom_px(self.corner_rise, self.elevations, self.proj)
 
@@ -4596,7 +4632,10 @@ class SlopedChunkCache(_LeveledChunkCache):
         elevation_changed (a building bbox reads its own tile's elevation)
         plus every tile with a corner that actually moved
         (_corner_changed_tiles(), which drops a ring tile held up by a higher
-        neighbour), plus any unit sharing a tile with one (_elevation_splices()'
+        neighbour), plus every tile whose fold flipped (_fold_changed_tiles():
+        a fold reads the second-highest elevation at each corner, which
+        corner_rise does not carry, so it can flip with no corner moving),
+        plus any unit sharing a tile with one (_elevation_splices()'
         component, re-derived unchanged).
         They are re-anchored on each current level against that level's NEW
         corner_rise (_level_rise(), recomputed at its own proj) and checked
@@ -4626,11 +4665,12 @@ class SlopedChunkCache(_LeveledChunkCache):
             return
         if not elevation_changed:
             return
-        old_corner_rise = self.corner_rise
+        old_corner_rise, old_fold = self.corner_rise, self.fold
         self._refresh_corner_rise()
         if not self.with_units:
             return
-        self._refresh_level_units(elevation_changed | _corner_changed_tiles(old_corner_rise, self.corner_rise), splice_levels)
+        seeds = elevation_changed | _corner_changed_tiles(old_corner_rise, self.corner_rise)
+        self._refresh_level_units(seeds | _fold_changed_tiles(old_fold, self.fold), splice_levels)
 
     def elevation_splice_cap(self) -> int:
         return _SLOPED_ELEV_SPLICE_MAX_UNITS
@@ -4641,7 +4681,8 @@ class SlopedChunkCache(_LeveledChunkCache):
         for (x, y), level in new_elev.items():
             elevations[y, x] = level
         new_cr = iso_geometry.corner_rise_px(elevations, self.proj, rule=render.SLOPE_CORNER_RULE)
-        return elevation_changed | _corner_changed_tiles(self.corner_rise, new_cr)
+        seeds = elevation_changed | _corner_changed_tiles(self.corner_rise, new_cr)
+        return seeds | _fold_changed_tiles(self.fold, iso_geometry.tile_folds(elevations))
 
     def refresh_wholesale(self, dirty_indices, flatten: bool = False) -> bool | None:
         """IsoChunkCache.refresh_wholesale() for Sloped: the elevations written
@@ -4721,6 +4762,7 @@ class SlopedChunkCache(_LeveledChunkCache):
                 terrain_ids=self._terrain_ids,
                 layer_ids=self._layer_ids,
                 key_map=self._blend_key_map,
+                fold=self.fold,
             )
 
     def _prepare_rect(
@@ -4737,6 +4779,7 @@ class SlopedChunkCache(_LeveledChunkCache):
                 lvl.building_bboxes,
                 self.with_units, lvl.bystander_grid, self.layers, self.grid, unit_pack,
                 terrain_ids=self._terrain_ids, layer_ids=self._layer_ids, key_map=self._blend_key_map,
+                fold=self.fold,
             )
 
     def _pick_plane(self, cx: int, cy: int) -> np.ndarray:

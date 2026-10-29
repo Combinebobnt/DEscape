@@ -260,6 +260,8 @@ def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(
         real = trigger_geometry.shapes_for_trigger
         monkeypatch.setattr(trigger_geometry, "shapes_for_trigger", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
 
+        # GH #167's ghosts default on and derive a union of their own (the twin below).
+        window.trigger_ghosts_action.setChecked(False)
         window.trigger_overlay_action.setChecked(False)
         monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
         panel.select_trigger(pair[0])
@@ -281,6 +283,51 @@ def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(
         window.trigger_overlay_action.setChecked(True)
         assert len(view._trigger_shapes) == total, "turning it on draws the union"
         assert view.trigger_overlay_items() and all(i.isVisible() for i in view.trigger_overlay_items())
+    finally:
+        conftest.close_window(window)
+
+
+def test_with_the_overlay_off_and_ghosts_on_a_union_is_derived_for_the_ghosts_alone(monkeypatch) -> None:
+    """GH #167's twin of the TASK-352 test: the ghosts' records are derived,
+    the overlay's shapes are not, and the overlay's cap never speaks."""
+    import descape.viewer as viewer_module
+    from descape import trigger_geometry
+
+    window = _window()
+    try:
+        view = window.map_view
+        panel = window.trigger_panel
+        name = panel._manager().triggers[GEOMETRY_TRIGGER].name
+        window.trigger_structural_edit("copy", [GEOMETRY_TRIGGER])
+        triggers = window.trigger_edits.manager().triggers
+        pair = [
+            next(i for i, t in enumerate(triggers) if t.name == name),
+            next(i for i, t in enumerate(triggers) if t.name == f"{name} (copy)"),
+        ]
+        panel.select_triggers(pair)
+        total = len(view._trigger_shapes)
+        shape_calls, record_calls = [], []
+        real_shapes, real_records = trigger_geometry.shapes_for_trigger, trigger_geometry.created_units_for_trigger
+        monkeypatch.setattr(
+            trigger_geometry, "shapes_for_trigger", lambda *a, **k: (shape_calls.append(1), real_shapes(*a, **k))[1]
+        )
+        monkeypatch.setattr(
+            trigger_geometry, "created_units_for_trigger", lambda *a, **k: (record_calls.append(1), real_records(*a, **k))[1]
+        )
+
+        assert window.trigger_ghosts_action.isChecked(), "ghosts default on"
+        window.trigger_overlay_action.setChecked(False)
+        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        panel.select_trigger(pair[0])
+        shape_calls.clear()
+        record_calls.clear()
+        panel.select_triggers(pair)
+        assert shape_calls == [], "the overlay's union was derived while it is off"
+        assert len(record_calls) == 2, "one ghost read per selected trigger"
+        assert sorted(r.trigger_index for r in view._trigger_ghost_records) == sorted(pair)
+        assert view._trigger_shapes == []
+        assert "Trigger overlay hidden" not in window.status_log.toPlainText()
+        assert window._trigger_overlay_ref == (tuple(pair), frozenset())
     finally:
         conftest.close_window(window)
 

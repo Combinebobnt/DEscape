@@ -12,6 +12,7 @@ The View menu stays open while you tick its entries, so you can switch several i
 - **View > Colour Selection by Owner** outlines selected units in their owner's colour. GAIA and the box you drag keep the Selection colour from **Settings > Appearance**.
 - **View > Show Player Cameras** puts a camera on each player's starting view tile, in that player's colour. In Players mode the selected player's camera stands out.
 - **View > Show Trigger Overlay** draws the trigger selected in Triggers mode on the map, in every mode: its areas, its locations, and a line with the distance from an area to its destination. The selected condition or effect is drawn strongest.
+- **View > Show Trigger-Created Units** draws the units the selected trigger's Create Object and Place Foundation effects would create, see-through on their tiles, with or without the overlay. Their facing is not shown yet.
 
 ### Range Rings
 
@@ -38,6 +39,7 @@ No technology effects are applied, and siege units get no ring.
 - Farm Terrain Overlay: a farm's footprint draws as farm terrain in its owner's colour.
 - Small Trees: trees at 60% size, so the tiles around them stay readable.
 - Hero Glow: a gold outline round hero units, as in the game.
+- Fish Outlines: a ring round every fish, so they are easy to find on the water. A deep-water fish, dolphin or whale is ringed round its whole footprint. Fish the Filters hide get no ring, and the colour is set in **Settings > Appearance**.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
 - Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all.
 
@@ -53,6 +55,6 @@ Hidden units can't be selected, and the Eraser never erases them, but **Edit > F
 
 **Settings > Appearance** holds the app's look. Theme picks a preset for the app's menus, dialogs and toolbars: Light, Dark, Dim, two high contrast, two Solarized, and Wood and Dark Wood in red, blue, green or purple. The map's own colours never change with it. Chrome colours overrides single colours on top of the preset, and picking another preset clears those overrides.
 
-Export theme… saves the tab's look as a `.descape-theme.yaml` file, and Import theme… loads one: theme and chrome colours, UI font, tool overlay colours, label sizes, badge position and grid look. Graphics quality, preloading, elevation height, pan speed, toolbar buttons and trigger status are not part of a theme file, though a settings file from **Settings > General** carries them with the rest of your preferences. Export refuses a `mods/subscribed/` folder.
+Export theme… saves the tab's look as a `.descape-theme.yaml` file, and Import theme… loads one: theme and chrome colours, UI font, tool overlay colours, label sizes, badge position and grid look. Graphics quality, preloading, elevation height, pan speed, toolbar buttons and trigger status are not part of a theme file, though a settings file from **Settings > General** carries them with the rest of your preferences. Export refuses a `mods/subscribed/` folder, and will not replace `config.yaml` or the import files kept beside it.
 
 UI font sets the font and size of menus, dialogs, panels, toolbars and the status log; Reset to default goes back to the platform's. Text drawn on the map keeps its own sizes, set by Ruler label size and Distance ticks label size. Toolbar buttons shows the tools as icons, text, or both.

@@ -24,6 +24,9 @@ Rules, each with its reason:
   also yields one "unit" shape per id that resolves to an on-map unit: the
   footprint as inclusive corners, like an area. Its coords are derived, not
   stored, so a writer (map resize) must skip "unit" shapes.
+- created_units_for_trigger() reads the units a Create Object or Place
+  Foundation effect would place (GH #167), matched on the vocabulary's effect
+  name, never a type number. The map's trigger ghosts draw them.
 """
 
 from __future__ import annotations
@@ -58,6 +61,12 @@ _KINDS = (
     (ENTRY_EFFECT, "effects", "effect_type"),
 )
 
+# GH #167: the effects that put a new unit of their const on their location.
+CREATING_EFFECTS = ("create_object", "place_foundation")
+CREATED_UNIT_FIELD = "object_list_unit_id"
+CREATED_PLAYER_FIELD = "source_player"
+FACET_FIELD = "facet"
+
 
 @dataclass(frozen=True)
 class TriggerShape:
@@ -82,6 +91,32 @@ class TriggerShape:
     def entry_ref(self) -> tuple[str, int]:
         """(entry_kind, entry_index), the panel's own entry reference shape."""
         return (self.entry_kind, self.entry_index)
+
+
+@dataclass(frozen=True)
+class CreatedUnit:
+    """One unit a Create Object or Place Foundation effect would place, as
+    plain ints (GH #167). `effect` is the vocabulary name; `player` may be
+    UNSET; `facet` is UNSET when unset or when the effect has no facet."""
+
+    trigger_index: int
+    entry_index: int
+    effect: str
+    unit_const: int
+    player: int
+    tile: tuple[int, int]
+    facet: int = UNSET
+
+    @property
+    def entry_ref(self) -> tuple[str, int]:
+        """(entry_kind, entry_index), as TriggerShape's: always an effect."""
+        return (ENTRY_EFFECT, self.entry_index)
+
+    @property
+    def payload(self) -> tuple:
+        """Everything but the two indices: what the ghost looks like, so the
+        map's resolve memo keys on it and survives an entry renumbering."""
+        return (self.effect, self.unit_const, self.player, self.tile, self.facet)
 
 
 def _read(obj: Any, attribute: str) -> Any:
@@ -188,6 +223,25 @@ def shapes_for_trigger(
                 )
             )
     return shapes
+
+
+def created_units_for_trigger(trigger: Any, vocabulary: Any, *, trigger_index: int) -> list[CreatedUnit]:
+    """The units one trigger's Create Object and Place Foundation effects
+    would place, in list order. An unset const and an unset or half-set
+    location yield nothing; the facet is read only where the type lists it."""
+    records: list[CreatedUnit] = []
+    for entry_index, entry in enumerate(_read(trigger, "effects") or ()):
+        definition = vocabulary.effects.get(_read(entry, "effect_type"))
+        if definition is None or definition.name not in CREATING_EFFECTS:
+            continue
+        const = coordinate(entry, CREATED_UNIT_FIELD)
+        x, y = (coordinate(entry, f) for f in LOCATION_FIELDS)
+        if const < 0 or x < 0 or y < 0:
+            continue
+        facet = coordinate(entry, FACET_FIELD) if FACET_FIELD in definition.attributes else UNSET
+        player = coordinate(entry, CREATED_PLAYER_FIELD)
+        records.append(CreatedUnit(trigger_index, entry_index, definition.name, const, player, (x, y), facet))
+    return records
 
 
 def area_centre(coords: Sequence[int]) -> tuple[int, int]:

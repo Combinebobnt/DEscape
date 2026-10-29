@@ -45,6 +45,18 @@ def test_objects_covers_every_dataset_with_no_duplicate_ids() -> None:
     assert categories == {"Units", "Buildings", "Heroes", "Others"}
 
 
+@pytest.mark.parametrize("dataset", ["aoe2", "ror"])
+def test_every_objects_category_is_an_object_list_type(dataset: str) -> None:
+    """GH #41: the form's object list type row offers only OBJECT_CATEGORIES,
+    so an entry under any other category could never be narrowed to."""
+    from descape import game_dataset
+
+    game_dataset.set_active(dataset)
+    categories = {entry.category for entry in object_catalog.objects()}
+    assert categories and categories <= set(object_catalog.OBJECT_CATEGORIES)
+    assert object_catalog.OBJECT_CATEGORIES == ("Units", "Buildings", "Heroes", "Others"), "the in-game option order"
+
+
 def test_objects_is_alphabetical_by_name() -> None:
     names = [e.name for e in object_catalog.objects()]
     assert names == sorted(names)

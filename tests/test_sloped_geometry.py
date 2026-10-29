@@ -40,6 +40,8 @@ Checks:
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -402,9 +404,10 @@ def test_identity_uv_idx_is_a_cached_readonly_identity(tile_px):
         idx[0] = 123
 
 
+@pytest.mark.parametrize("nwse", [False, True])
 @pytest.mark.parametrize("tile_px", [8, 16, 64, 128])
 @pytest.mark.parametrize("corners", [(0, 8, 0, 8), (8, 0, 0, 0), (1, 2, 0, 3), (0, 0, 4, 8)])
-def test_uv_idx_stays_inside_its_own_column(tile_px, corners):
+def test_uv_idx_stays_inside_its_own_column(tile_px, corners, nwse):
     """The structural half of the _slope_shade alignment bar (the render
     half is tests/test_sloped_render.py's own).
 
@@ -418,7 +421,7 @@ def test_uv_idx_stays_inside_its_own_column(tile_px, corners):
     the gather can never smear shading sideways across the tile; the
     src_y/src_x equalities alone would pass even under a column shift,
     since they are gathered through uv_idx by the same code."""
-    dst_y, dst_x, src_y, src_x, uv_idx = ig.sloped_quad_indices(tile_px, *corners)
+    dst_y, dst_x, src_y, src_x, uv_idx = ig.sloped_quad_indices(tile_px, *corners, nwse=nwse)
     d_dst_y, d_dst_x, d_src_y, d_src_x = ig.diamond_indices(tile_px)
     assert uv_idx.shape == dst_y.shape
     assert int(uv_idx.min()) >= 0 and int(uv_idx.max()) < d_dst_y.size
@@ -431,6 +434,33 @@ def test_uv_idx_stays_inside_its_own_column(tile_px, corners):
     for c in np.unique(dst_x):
         col = src_rows[dst_x == c]
         assert np.all(np.diff(col) >= 0), f"column {c} resamples out of order"
+
+
+@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 32, 64, ig.MIP_MAX_TILE_PIXELS])
+def test_nwse_fold_keeps_the_tiles_own_pixels(tile_px):
+    """TASK-008: a NW-SE tile paints exactly the NE-SW entry's pixels (the
+    very dst arrays), so abutment, no-holes and every dst-only consumer hold
+    by identity; only the resample differs. A planar quad, flat included,
+    is one surface under both folds and takes the NE-SW entry outright.
+
+    The split at half_h rests on every used column being symmetric about
+    the diamond's middle row, which is pinned here too."""
+    tops, bottoms, used = ig._diamond_column_edges(tile_px)
+    _half_w, half_h = ig.half_dims(tile_px)
+    assert np.all((tops + bottoms)[used] == 2 * half_h - 1)
+    step = max(1, tile_px // 8)
+    differs = 0
+    # Identity holds per cache generation: an earlier test can evict a NE-SW entry the NW-SE cache still aliases.
+    ig.sloped_quad_indices.cache_clear()
+    for combo in itertools.product([0, step, 2 * step], repeat=4):
+        nwse = ig.sloped_quad_indices(tile_px, *combo, nwse=True)
+        nesw = ig.sloped_quad_indices(tile_px, *combo)
+        assert nwse[0] is nesw[0] and nwse[1] is nesw[1], combo
+        if combo[0] + combo[3] == combo[1] + combo[2]:
+            assert all(a is b for a, b in zip(nwse, nesw, strict=True)), combo
+        else:
+            differs += not np.array_equal(nwse[4], nesw[4])
+    assert differs, "no non-planar shape resampled differently under NW-SE"
 
 
 def _patch_intervals(tile_px: int, corner_rise: np.ndarray, proj) -> dict:
@@ -650,15 +680,17 @@ def test_sloped_quad_indices_key_cardinality(corpus_files):
     assumed; this is that measurement, kept as a permanent regression
     signal rather than a one-off note. A cache miss is a perf regression,
     never a correctness one, so this only warns (via a generous upper
-    bound assertion), it doesn't require an exact number."""
-    from descape.render import elevations_and_proj
+    bound assertion), it doesn't require an exact number. Each fold has its
+    own cache (TASK-008), so the keys are counted per fold, on the corner
+    rule and fold Sloped renders with."""
+    from descape.render import sloped_elevations_and_proj
     from descape.scenario_io import load_map_and_units
 
-    seen: set[tuple[int, int, int, int]] = set()
+    seen: dict[bool, set[tuple[int, int, int, int]]] = {False: set(), True: set()}
     for path in corpus_files:
         scenario = load_map_and_units(str(path))
-        elevations, proj = elevations_and_proj(scenario)
-        corner_rise = ig.corner_rise_px(elevations, proj, rule="average")
+        elevations, corner_rise, _proj = sloped_elevations_and_proj(scenario)
+        folds = ig.tile_folds(elevations)
         h, w = elevations.shape
         for y in range(h):
             for x in range(w):
@@ -669,20 +701,21 @@ def test_sloped_quad_indices_key_cardinality(corpus_files):
                     int(corner_rise[y + 1, x + 1]),
                 )
                 d_min = min(d_nw, d_ne, d_sw, d_se)
-                seen.add((d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min))
+                nwse = bool(folds[y, x]) and d_nw + d_se != d_ne + d_sw  # a planar quad takes the NE-SW entry
+                seen[nwse].add((d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min))
     # Print it, don't just bound it: the ceiling below is deliberately
     # generous, so a passing run says almost nothing on its own, and the
     # number is what any future maxsize decision has to be made against.
-    # Run with -s to see it. Measured 2026-08-20: 318 keys on the quick
-    # subset, 329 across the full corpus (--corpus-full) -- the subset
-    # already covers almost the whole reachable key space, so the extra 17
-    # files add 11 keys. Both are two orders of magnitude under the ceiling.
-    print(f"\nsloped_quad_indices distinct keys across this corpus: {len(seen)}")
+    # Run with -s to see it. Measured 2026-08-20 (average rule, one fold):
+    # 318 keys on the quick subset, 329 across the full corpus. Measured
+    # 2026-10-29 (max rule, per fold): NE-SW 21, NW-SE 12, subset and full alike.
+    print(f"\nsloped_quad_indices distinct keys: NE-SW {len(seen[False])}, NW-SE {len(seen[True])}")
     # Generous ceiling, not a tight bound -- see the docstring above.
-    assert len(seen) < 100_000, (
-        f"{len(seen)} distinct sloped_quad_indices keys across the corpus -- "
-        "revisit that function's maxsize=1024 against this number"
-    )
+    for nwse, keys in seen.items():
+        assert len(keys) < 100_000, (
+            f"{len(keys)} distinct {'NW-SE' if nwse else 'NE-SW'} sloped_quad_indices keys across the corpus -- "
+            "revisit that cache's maxsize=1024 against this number"
+        )
 
 
 @pytest.mark.corpus

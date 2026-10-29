@@ -234,15 +234,17 @@ MODES: tuple[MirrorMode, ...] = (
     _mode(2, "Mirror North ↔ South (top/bottom on screen)", ("id", "d"), lambda u, v: v - u < 0),
     _mode(3, "Mirror West ↔ North", ("id", "mx"), lambda u, v: u < 0),
     _mode(4, "Mirror West ↔ South", ("id", "my"), lambda u, v: v < 0),
-    _mode(5, "180° rotation", ("id", "r2"), lambda u, v: u + v < 0),
-    _mode(6, "4-way rotational (90°)", ("id", "r", "r2", "r3"), lambda u, v: u > 0 and v > 0),
+    _mode(5, "180° rotation", ("id", "r2"), lambda u, v: u + v < 0 or (u + v == 0 and v < 0)),
+    # Every on-boundary orbit needs a member in the domain, or rep falls back to a far-side tile:
+    # a rotation's domain takes one boundary ray, a reflection's both (they are mirror axes).
+    _mode(6, "4-way rotational (90°)", ("id", "r", "r2", "r3"), lambda u, v: u > 0 and v >= 0),
     _mode(
         7,
         "4-way reflective, screen axes",
         ("id", "d", "a", "r2"),
-        lambda u, v: u + v > 0 and v - u < 0,
+        lambda u, v: u + v >= 0 and v - u <= 0,
     ),
-    _mode(8, "4-way reflective, map axes", ("id", "mx", "my", "r2"), lambda u, v: u > 0 and v > 0),
+    _mode(8, "4-way reflective, map axes", ("id", "mx", "my", "r2"), lambda u, v: u >= 0 and v >= 0),
     _mode(
         9,
         "8-way (full symmetry)",
@@ -910,7 +912,7 @@ def _image_position(
     gathered by a snap that need not agree), and a building rotates its
     footprint CENTRE and re-anchors the same axis-aligned span around it:
     AoE2 has no rotated footprint, so the image is the closest placeable one.
-    Images are never checked against each other, so two may overlap (accepted, root AGENTS.md).
+    Images are never checked against each other, so two may overlap (accepted, docs/WRITE_RULES.md).
     """
     if isinstance(element, AngularElement):
         if element in _D4_EQUIVALENT:

@@ -12,6 +12,10 @@ Custom stays square: non-square maps do not load through the pinned library
 yet (see scenario_new.blank_body()). Game data picks the donor: Age of
 Empires II or Return of Rome (GH #67). Both games list the same terrains, so
 the Terrain list does not change with it.
+
+Plant's Trees and Eye candy boxes are the dialog's own, not the Terrain
+toolbar's. Each is enabled only when the picked terrain can place that kind
+under the picked game's tables, and keeps its tick while disabled.
 """
 
 from __future__ import annotations
@@ -24,17 +28,27 @@ from PyQt5.QtCore import QEvent, QEventLoop, QObject, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from descape import asset_source, game_dataset, iso_geometry, settings, terrain_browser, terrain_catalog
+from descape import (
+    asset_source,
+    game_dataset,
+    iso_geometry,
+    settings,
+    terrain_browser,
+    terrain_catalog,
+    terrain_units,
+)
 from descape.scenario_io import BLANK_TEMPLATE_TILES
 from descape.scenario_new import (
     MAX_MAP_TILES,
@@ -60,6 +74,8 @@ class NewMapChoice:
     game_data: str = AOE2
     terrain_id: int = settings.NEW_MAP_DEFAULT_TERRAIN_ID
     elevation: int = settings.NEW_MAP_DEFAULT_ELEVATION
+    trees: bool = settings.NEW_MAP_DEFAULT_TREES
+    eye_candy: bool = settings.NEW_MAP_DEFAULT_EYE_CANDY
 
     @classmethod
     def from_dict(cls, raw: dict) -> NewMapChoice:
@@ -81,8 +97,8 @@ def terrain_entries() -> list[terrain_catalog.TerrainEntry]:
 
 class NewMapDialog(QDialog):
     """Size (the seven presets, then Custom with a square size spin), Game
-    data, Terrain and Elevation. After accept, `choice` holds the picked
-    NewMapChoice. An initial value the widgets cannot show (an unknown
+    data, Terrain, Plant (Trees, Eye candy) and Elevation. After accept,
+    `choice` holds the picked NewMapChoice. An initial value the widgets cannot show (an unknown
     terrain, an unknown game data, an out-of-range number) falls back to
     NewMapChoice's default for that field.
 
@@ -133,6 +149,26 @@ class NewMapDialog(QDialog):
         self.terrain_combo.setToolTip("The terrain every tile starts with")
         form.addRow("Terrain:", self.terrain_combo)
 
+        self.trees_check = QCheckBox("Trees")
+        self.trees_check.setToolTip(
+            "Plant the terrain's GAIA trees (varied graphic per tree) the way the Terrain tool's "
+            "Trees option does: a tree on every tile of a full forest. Unavailable for a terrain with no trees."
+        )
+        self.eye_candy_check = QCheckBox("Eye candy")
+        self.eye_candy_check.setToolTip(
+            "Also place the non-tree doodads the terrain carries (grass tufts, jungle underbrush), "
+            "like the Terrain tool's Eye candy option. Unavailable for a terrain with none."
+        )
+        plant = QWidget()
+        plant_layout = QHBoxLayout(plant)
+        plant_layout.setContentsMargins(0, 0, 0, 0)
+        plant_layout.addWidget(self.trees_check)
+        plant_layout.addWidget(self.eye_candy_check)
+        plant_layout.addStretch(1)
+        form.addRow("Plant:", plant)
+        # game data -> {terrain id: (can place a tree, can place eye candy)}, read once per game.
+        self._plant_kinds: dict[str, dict[int, tuple[bool, bool]]] = {}
+
         self.elevation_spin = QSpinBox()
         self.elevation_spin.setRange(iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION)
         # Measured in the 1.59 editor: a stored 3 shows as height 4 there.
@@ -157,6 +193,8 @@ class NewMapDialog(QDialog):
 
         self.size_combo.currentIndexChanged.connect(self._sync_custom_spin)
         self.game_data_combo.currentIndexChanged.connect(self._sync_game_data_note)
+        self.game_data_combo.currentIndexChanged.connect(self._sync_plant_boxes)
+        self.terrain_combo.currentIndexChanged.connect(self._sync_plant_boxes)
         # Every swatch waits for the timer, except the shown one (set_initial()).
         self._pending_swatches = list(range(self.terrain_combo.count()))
         self._swatch_timer = QTimer(self)
@@ -188,7 +226,30 @@ class NewMapDialog(QDialog):
             self._set_swatch(terrain_index)
         in_range = iso_geometry.MIN_ELEVATION <= initial.elevation <= iso_geometry.MAX_ELEVATION
         self.elevation_spin.setValue(initial.elevation if in_range else default.elevation)
+        self.trees_check.setChecked(initial.trees if isinstance(initial.trees, bool) else default.trees)
+        eye_candy = initial.eye_candy if isinstance(initial.eye_candy, bool) else default.eye_candy
+        self.eye_candy_check.setChecked(eye_candy)
         self._sync_game_data_note()
+        self._sync_plant_boxes()
+
+    def plant_kinds(self, game_data: str, terrain_id: int) -> tuple[bool, bool]:
+        """Whether `terrain_id` can place a tree and eye candy under
+        `game_data`'s tables. Each game's answers are read in one switch
+        (game_dataset.activated()), so picking terrains switches nothing."""
+        kinds = self._plant_kinds.get(game_data)
+        if kinds is None:
+            ids = [self.terrain_combo.itemData(i) for i in range(self.terrain_combo.count())]
+            with game_dataset.activated(game_data):
+                kinds = {
+                    tid: (terrain_units.is_tree_terrain(tid), terrain_units.is_doodad_terrain(tid)) for tid in ids
+                }
+            self._plant_kinds[game_data] = kinds
+        return kinds.get(terrain_id, (False, False))
+
+    def _sync_plant_boxes(self) -> None:
+        trees_ok, eye_candy_ok = self.plant_kinds(self.game_data_combo.currentData(), self.terrain_combo.currentData())
+        self.trees_check.setEnabled(trees_ok)
+        self.eye_candy_check.setEnabled(eye_candy_ok)
 
     def game_data_note_text(self) -> str:
         """Why the picked game would open read-only, or "" (Settings > Advanced > Game data not Auto)."""
@@ -232,6 +293,8 @@ class NewMapDialog(QDialog):
             game_data=self.game_data_combo.currentData(),
             terrain_id=self.terrain_combo.currentData(),
             elevation=self.elevation_spin.value(),
+            trees=self.trees_check.isChecked(),
+            eye_candy=self.eye_candy_check.isChecked(),
         )
 
     def accept(self) -> None:

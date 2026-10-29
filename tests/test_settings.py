@@ -1083,12 +1083,26 @@ def test_the_pan_speed_setter_clamps_rather_than_writing_an_illegal_value() -> N
     assert settings.get_pan_speed() == settings.PAN_SPEED_MAX
 
 
-_NEW_MAP_DEFAULT = {"tiles": 120, "game_data": "aoe2", "terrain_id": 0, "elevation": 0}
+_NEW_MAP_DEFAULT = {
+    "tiles": 120,
+    "game_data": "aoe2",
+    "terrain_id": 0,
+    "elevation": 0,
+    "trees": settings.NEW_MAP_DEFAULT_TREES,
+    "eye_candy": settings.NEW_MAP_DEFAULT_EYE_CANDY,
+}
 
 
 def test_new_map_choice_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
     assert settings.get_new_map_choice() == _NEW_MAP_DEFAULT
-    choice = {"tiles": 300, "game_data": "ror", "terrain_id": 35, "elevation": 7}
+    choice = {
+        "tiles": 300,
+        "game_data": "ror",
+        "terrain_id": 35,
+        "elevation": 7,
+        "trees": not settings.NEW_MAP_DEFAULT_TREES,
+        "eye_candy": not settings.NEW_MAP_DEFAULT_EYE_CANDY,
+    }
     settings.set_new_map_choice(choice)
     monkeypatch.setattr(settings, "_new_map", None)
     assert settings.get_new_map_choice() == choice
@@ -1113,6 +1127,11 @@ def test_new_map_choice_returns_a_copy() -> None:
     ("new_map: {terrain_id: -1}\n", {}),
     ("new_map: {terrain_id: 35, elevation: 99}\n", {"terrain_id": 35, "elevation": 15}),
     ("new_map: {elevation: -3}\n", {"elevation": 0}),
+    ("new_map: {trees: 1, eye_candy: 'yes'}\n", {}),
+    ("new_map: {trees: null, eye_candy: [true]}\n", {}),
+    ("new_map: {trees: false, eye_candy: true}\n", {"trees": False, "eye_candy": True}),
+    # A choice saved before Trees and Eye candy existed.
+    ("new_map: {tiles: 144, game_data: aoe2, terrain_id: 10, elevation: 2}\n", {"tiles": 144, "terrain_id": 10, "elevation": 2}),
     ("new_map: [1, 2]\n", {}),
     ("new_map:\n", {}),
 ])
@@ -1122,8 +1141,12 @@ def test_a_bad_new_map_field_falls_back_on_its_own(tmp_path: Path, raw: str, exp
 
 
 def test_the_new_map_setter_cleans_before_writing(tmp_path: Path) -> None:
-    settings.set_new_map_choice({"tiles": 5000, "game_data": "x", "terrain_id": 2, "elevation": 3})
-    assert settings.get_new_map_choice() == {**_NEW_MAP_DEFAULT, "tiles": 480, "terrain_id": 2, "elevation": 3}
+    settings.set_new_map_choice(
+        {"tiles": 5000, "game_data": "x", "terrain_id": 2, "elevation": 3, "trees": "no", "eye_candy": True}
+    )
+    assert settings.get_new_map_choice() == {
+        **_NEW_MAP_DEFAULT, "tiles": 480, "terrain_id": 2, "elevation": 3, "eye_candy": True
+    }
 
 
 def test_wall_opacity_defaults_and_round_trips(tmp_path: Path, monkeypatch) -> None:
