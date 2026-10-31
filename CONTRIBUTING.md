@@ -3,6 +3,8 @@
 Bug reports, feature ideas and pull requests are all welcome. This page says
 where each goes and what a pull request needs before it can be merged.
 
+Posts written by an agent should open with `Automated comment: `
+
 ## Reporting a bug or proposing a feature
 
 Open a [GitHub issue](https://github.com/Combinebobnt/DEscape/issues). For a
