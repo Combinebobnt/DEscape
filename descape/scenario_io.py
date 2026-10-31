@@ -72,7 +72,7 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import gc_hold, library_compat, unlinked_fields
+from descape import effect_quantity, gc_hold, library_compat, unlinked_fields
 from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
 
@@ -1616,6 +1616,7 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
                 manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True
             ):
                 unlinked_fields.pull(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
+                effect_quantity.pull(trigger.effects, entry.retriever_map["effect_data"].data or [])
     except (EndOfFileError, ValueError, KeyError, IndexError, TypeError, struct.error):
         # The shapes a misparse actually throws. The 1.54/3.9 set raises
         # ValueError from the pinned 0.9.3's failure dump; EndOfFileError is

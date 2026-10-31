@@ -6,7 +6,7 @@ Where this is in the in-game editor: the Terrain tab (painting, elevation, cliff
 
 ## Choosing a terrain
 
-The panel on the left lists every terrain by category, each with a swatch of its ground texture. Type in the filter box to find one by name or number. The List and Grid buttons switch between a list and a grid of swatches; **Settings > Appearance** sets the grid's swatch size. Tick "Show unused / moddable terrains" to list the unused, moddable and obsolete terrain slots too. Forest and snow variants share a ground texture, so their swatches look alike. The line at the bottom of the panel describes the tile under the cursor.
+The panel on the left lists every terrain by category, each with a swatch of its ground texture. Type in the filter box to find one by name or number. The List and Grid buttons switch between a list and a grid of swatches; **Settings > Appearance** sets the grid's swatch size. In the grid, click a category heading to collapse it or open it again. Tick "Show unused / moddable terrains" to list the unused, moddable and obsolete terrain slots too. Forest and snow variants share a ground texture, so their swatches look alike. The line at the bottom of the panel describes the tile under the cursor.
 
 ## The tools
 

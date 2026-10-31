@@ -13,6 +13,7 @@ The View menu stays open while you tick its entries, so you can switch several i
 - **View > Show Player Cameras** puts a camera on each player's starting view tile, in that player's colour. In Players mode the selected player's camera stands out.
 - **View > Show Trigger Overlay** draws the trigger selected in Triggers mode on the map, in every mode: its areas, its locations, and a line with the distance from an area to its destination. The selected condition or effect is drawn strongest.
 - **View > Show Trigger-Created Units** draws the units the selected trigger's Create Object and Place Foundation effects would create, see-through on their tiles, with or without the overlay. Their facing is not shown yet.
+- **View > Show Instruction on Map** draws the selected Display Instructions effect's message over the map, in Triggers mode only, sized and placed as the game draws it. On by default.
 
 ### Range Rings
 
@@ -42,6 +43,7 @@ No technology effects are applied, and siege units get no ring.
 - Fish Outlines: a ring round every fish, so they are easy to find on the water. A deep-water fish, dolphin or whale is ringed round its whole footprint. Fish the Filters hide get no ring, and the colour is set in **Settings > Appearance**.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
 - Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all.
+- Colour Mood: off by default. On, it tints the map with the scenario's colour mood (Map Options), as the game does, approximately. It covers brightness and tint only, not fog, bloom or shadows, and the water definition is not previewed. DEscape's own overlays keep their colours. To see a mood a trigger would set, pick it in Map Options, look, then undo.
 
 A greyed layer has nothing to do in the current view, and its tooltip says why.
 

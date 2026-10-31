@@ -2,9 +2,9 @@
 
 Players mode edits each player's own settings: name, civilization, starting age and resources, colour, AI and starting camera. Pick **Players** in the toolbar's Mode list.
 
-**Number of players** at the top sets how many players the scenario has, from 2 to 8. Lowering it deactivates the highest-numbered players and leaves their other settings as they were, and Diplomacy's stance list follows it. It can be read-only on a file whose other player settings are editable; its tooltip says why.
+**Number of players** at the top sets how many players the scenario has, from 2 to 8 (from 1 on a file that stores one player). Lowering it deactivates the highest-numbered players and leaves their other settings as they were, and Diplomacy's stance list follows it. It can be read-only on a file whose other player settings are editable; its tooltip says why.
 
-The selector below it picks the player to edit: GAIA first, then Players 1 to 8. The Select Player commands pick one from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys. Each change is one undo step. A setting this file's scenario version doesn't store isn't listed, and a greyed row's tooltip says why it is read-only.
+The selector below it picks the player to edit: GAIA first, then Players 1 to 8. It keeps all eight whatever **Number of players** says, and greys the ones past it; their tooltip says so. A greyed player can still be picked and edited, which is how to check or repair the settings a lower count left behind. The Select Player commands pick one from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys. Each change is one undo step. A setting this file's scenario version doesn't store isn't listed, and a greyed row's tooltip says why it is read-only.
 
 ## Identity
 

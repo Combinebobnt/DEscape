@@ -265,6 +265,31 @@ def test_an_elevated_ghost_draws_the_placed_units_own_sprite(sprite_install, sty
         _close(window)
 
 
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_unit_brush_ghost_draws_the_painted_units_own_sprite(sprite_install, style) -> None:
+    """GH #270: real MapView events, and Random unticked so the stroke paints the ghost's rotation."""
+    window = _window(style, const=None)
+    try:
+        window.show_sprites_action.setChecked(True)
+        assert window._sprites_enabled
+        window.units_panel._set_pending_object(SPRITE_CONST)
+        window.unit_brush_action.setChecked(True)
+        window.brush_size_spin.setValue(1)
+        window.unit_brush_random_check.setChecked(False)
+        view = window.map_view
+        assert view._terrain_style == style.lower()
+        pos = conftest.polygon_viewport_pos(view, 40, 40)
+        view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton))
+        got = _ghost_draws(view)
+
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+        entry = next(entry for entry in view._unit_index.entries if entry.unit.unit_const == SPRITE_CONST)
+        assert got == _placed_draws(window, entry)
+    finally:
+        _close(window)
+
+
 # --- The scene item's lifecycle ----------------------------------------------
 
 
@@ -379,10 +404,11 @@ def test_leaving_and_reentering_the_same_tile_shows_the_ghost_again() -> None:
         _close(window)
 
 
+@pytest.mark.parametrize("tool", ["place_unit", "unit_brush"])
 @pytest.mark.parametrize("on_unit", [True, False], ids=["unit_drag", "marquee"])
-def test_a_keybound_switch_mid_drag_keeps_the_drag_or_marquee(on_unit) -> None:
-    """Place Unit can be bound to a key, so the tool can change under a held
-    button; the next move must stay with the drag or marquee it began. A
+def test_a_keybound_switch_mid_drag_keeps_the_drag_or_marquee(on_unit, tool) -> None:
+    """Either hover-ghost tool can be bound to a key, so the tool can change under
+    a held button; the next move must stay with the drag or marquee it began. A
     drag starts under Move, a marquee under Select (TASK-252)."""
     window = _window()
     try:
@@ -401,7 +427,8 @@ def test_a_keybound_switch_mid_drag_keeps_the_drag_or_marquee(on_unit) -> None:
         view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press, Qt.LeftButton, Qt.LeftButton))
         assert (view._unit_drag_key is not None) is on_unit
         assert (view._marquee_start_pos is not None) is not on_unit
-        window.place_unit_action.setChecked(True)
+        getattr(window, f"{tool}_action").setChecked(True)
+        assert view._tool == tool
         move = conftest.viewport_pos(view, tile[0] + 3, tile[1] + 3)
         view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, move, Qt.NoButton, Qt.LeftButton))
         assert view._place_hover is None
@@ -542,42 +569,6 @@ _OAK = 349  # cyclable, 42 variants
 _STONE_GATE = 64
 _HOUSE = 33  # INERT: angle_count 1
 _FEMALE_VILLAGER = 293  # _UNIT_CONST's sibling under Villager (Random), GH #164
-
-
-@pytest.fixture
-def rotating_install(tmp_path, monkeypatch):
-    """A synthetic install where a turn is visible: the villager stores one
-    differently coloured frame per facing, the oak one per variant, and each
-    stone gate orientation its own colour. Warms _wall_consts first, for the
-    reason sprite_install records."""
-    from descape import viewer
-    from descape.gate_orientation import orientation_siblings
-
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
-    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
-    graphics.mkdir(parents=True)
-    table: dict[int, dict] = {}
-
-    def add(const, frames, colour_base=0, **extra):
-        name = f"t_rotate_{const}_x1"
-        # No team-colour mask: it would paint over the per-frame colour that tells frames apart.
-        art = build_sld(frames, canvas=16, colour_base=colour_base, playercolor=False)
-        (graphics / f"{name}.sld").write_bytes(art)
-        table[const] = {"graphic_id": const, "file_name": name, "angle_count": frames,
-                        "mirroring_mode": 0, "frame_count": 1, **extra}
-
-    add(_UNIT_CONST, 16)
-    add(_FEMALE_VILLAGER, 16, colour_base=11)
-    add(_OAK, 42, colour_base=3, rotation_is_variant=True)
-    for i, const in enumerate(orientation_siblings(_STONE_GATE)):
-        add(const, 1, colour_base=5 * i + 1)
-    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
-    asset_source.set_install_path_override(tmp_path)
-    unit_sprites.clear_caches()
-    yield tmp_path
-    asset_source.set_install_path_override(None)
-    unit_sprites.clear_caches()
 
 
 def _sprite_window(const: int, owner: int = 1):

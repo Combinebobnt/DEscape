@@ -146,7 +146,8 @@ def file_gates(loaded, *, personality_custom: bool | None = None) -> SwapGates:
         personality_custom = options_model.personality_custom_supported(loaded)
     return SwapGates(
         player_fields=fields,
-        diplomacy=carrier and options_model.diplomacy_write_supported(loaded),
+        # A swap permutes the allied-victory flags too, so it needs their mirror as well as the grid.
+        diplomacy=carrier and options_model.allied_victory_write_supported(loaded),
         disables=carrier and options_model.disables_write_supported(loaded),
         units=bool(loaded.units_write_supported) and loaded.number_of_unit_sections == 9,
         personality_custom=personality_custom,

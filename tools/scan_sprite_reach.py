@@ -47,7 +47,7 @@ reach shifted by its offset -- a piece sitting 192px to one side needs that
 under-widen and leave a stale fragment. Town centre pieces net (0, 0) (finding
 5's cancellation) so this is a no-op for them; pastures are the real case.
 
-**Particle entries (GH #20, the butterflies) have no .sld.** Their one drawn
+**Particle entries (GH #20, GH #67, GH #256) have no .sld.** Their one drawn
 frame is measured from the effect's atlas instead, scaled by the entry's
 art_scale: _sprite_reach_px multiplies these constants by sprite_scale() alone,
 so a particle's reach has to be stated in the x1 px that product assumes.

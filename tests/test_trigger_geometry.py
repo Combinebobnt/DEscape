@@ -581,3 +581,58 @@ def test_a_wider_pixel_band_with_tile_borders_still_keeps_a_middle() -> None:
     assert trigger_geometry.area_hit_zone(six, (1.9, 3.0), 3.0, tile_borders=True) == "w", "capped at a third: 2 tiles"
     assert trigger_geometry.area_hit_zone(six, (2.1, 3.0), 3.0, tile_borders=True) == "move"
     assert trigger_geometry.area_hit_zone(six, (0.9, 3.0), 0.5) == "move", "off: today's thin band"
+
+
+# -- GH #41: dragging a location ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("point", "hit"),
+    [
+        ((10.5, 20.5), True),
+        ((10.2, 20.8), True),  # on the reach, both axes
+        ((10.8, 20.2), True),
+        ((10.15, 20.5), False),
+        ((10.85, 20.5), False),
+        ((10.5, 20.15), False),
+        ((10.5, 20.85), False),
+    ],
+)
+def test_location_hit_reaches_from_the_tile_centre_on_both_axes(point, hit) -> None:
+    assert trigger_geometry.location_hit((10, 20), point, 0.3 + 1e-9) is hit
+
+
+def test_a_location_hit_reach_can_pass_the_tile_edge() -> None:
+    assert trigger_geometry.location_hit((10, 20), (11.2, 20.5), 0.8)
+    assert not trigger_geometry.location_hit((10, 20), (11.2, 20.5), 0.3)
+
+
+def test_run_origin_is_the_area_centre_else_the_selection_centroid_else_none() -> None:
+    index = _index(_ref(1, (50, 55), (50, 51, 55, 56)), _ref(2, (53, 58), (53, 54, 58, 59)))
+    definition = _definition("selected_object_ids", *trigger_geometry.AREA_FIELDS, *trigger_geometry.LOCATION_FIELDS)
+    unset = {"area_x1": -1, "area_y1": -1, "area_x2": -1, "area_y2": -1}
+    area = {"area_x1": 10, "area_y1": 20, "area_x2": 14, "area_y2": 30}
+    for selected, corners, origin in (
+        ([1, 2], area, (12, 25)),
+        ([1, 2], unset, (51, 56)),
+        ([], area, (12, 25)),
+        ([], unset, None),
+    ):
+        entry = SimpleNamespace(selected_object_ids=selected, location_x=70, location_y=80, **corners)
+        assert trigger_geometry.run_origin(_unit_shapes(entry, definition, index)) == origin
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ((-50, 22), (0, 22)),
+        ((500, 22), (119, 22)),
+        ((15, -50), (15, 0)),
+        ((15, 500), (15, 79)),
+        ((18, 24), (18, 24)),
+    ],
+)
+def test_a_dragged_location_is_a_one_tile_rect_clamped_to_each_map_edge(end, expected) -> None:
+    coords = (15, 22, 15, 22)
+    moved = trigger_geometry.dragged_area(coords, trigger_geometry.ZONE_LOCATION, (15, 22), end, 120, 80)
+    assert moved == (*expected, *expected)

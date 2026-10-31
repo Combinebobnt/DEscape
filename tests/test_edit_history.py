@@ -25,6 +25,7 @@ from descape.edit_history import (
     CompositeDiffRecord,
     DiffRecord,
     EditHistory,
+    RulerDiffRecord,
     TileDiffRecord,
     TriggerDiffRecord,
     UnitDiffRecord,
@@ -485,6 +486,108 @@ def test_pushing_an_empty_composite_raises() -> None:
     with pytest.raises(ValueError, match="no children"):
         hist.push_composite_record(CompositeDiffRecord("paste", children=[]))
     assert hist.records == []
+
+
+def _notifications(hist: EditHistory) -> list[int]:
+    fired: list[int] = []
+    hist.on_change = lambda: fired.append(1)
+    return fired
+
+
+def test_replace_top_swaps_the_newest_record_under_a_new_content_key() -> None:
+    hist = EditHistory()
+    older, newer = _unit_record("older"), _unit_record("newer")
+    hist.push_unit_record(older)
+    key = hist.content_key
+    fired = _notifications(hist)
+
+    assert hist.replace_top(older, newer) is True
+
+    assert hist.peek_undo() is newer
+    assert (hist.cursor, len(hist.records)) == (1, 1)
+    assert hist.content_key != key, "autosave compares this key: the document changed"
+    assert fired == [1]
+
+
+@pytest.mark.parametrize("refusal", ["another_top_record", "redo_tail", "saved_on_the_cursor"])
+def test_replace_top_changes_nothing_when_it_refuses(refusal: str) -> None:
+    hist = EditHistory()
+    older, top = _unit_record("older"), _unit_record("top")
+    hist.push_unit_record(older)
+    if refusal == "another_top_record":
+        hist.push_unit_record(top)
+    elif refusal == "redo_tail":
+        hist.push_unit_record(top)
+        hist.undo([], None, None, FakeUnitModel())
+    else:
+        hist.mark_saved()
+    records, cursor, key = list(hist.records), hist.cursor, hist.content_key
+    fired = _notifications(hist)
+
+    assert hist.replace_top(older, _unit_record("replacement")) is False
+
+    assert all(a is b for a, b in zip(hist.records, records, strict=True))
+    assert (hist.cursor, hist.content_key, fired) == (cursor, key, [])
+
+
+def _viewed(hist: EditHistory) -> None:
+    hist.push_ruler_record(RulerDiffRecord("ruler", ((0, object()),), (), lambda _remove, _insert: None))
+
+
+def test_drop_redo_truncates_and_notifies_once() -> None:
+    hist = EditHistory()
+    hist.push_unit_record(_unit_record("first"))
+    hist.push_unit_record(_unit_record("second"))
+    hist.undo([], None, None, FakeUnitModel())
+    fired = _notifications(hist)
+
+    hist.drop_redo()
+
+    assert not hist.can_redo
+    assert len(hist.records) == 1
+    assert fired == [1]
+
+
+def test_a_push_still_notifies_once_after_the_truncation_moved_out() -> None:
+    hist = EditHistory()
+    hist.push_unit_record(_unit_record("first"))
+    hist.undo([], None, None, FakeUnitModel())
+    fired = _notifications(hist)
+    hist.push_unit_record(_unit_record("second"))
+    assert fired == [1]
+
+
+@pytest.mark.parametrize("drop", [EditHistory.drop_redo, lambda hist: hist.push_unit_record(_unit_record("new"))], ids=["drop", "push"])
+def test_truncating_past_a_save_on_a_file_edit_loses_the_save(drop) -> None:
+    """The saved state sat ahead of the cursor on a real edit: no position reconstructs it now."""
+    hist = EditHistory()
+    hist.push_unit_record(_unit_record("first"))
+    hist.mark_saved()
+    hist.undo([], None, None, FakeUnitModel())
+    drop(hist)
+    assert hist.saved_at_cursor is None
+    assert hist.is_dirty
+
+
+def test_drop_redo_keeps_a_save_that_only_view_records_lie_past() -> None:
+    hist = EditHistory()
+    _viewed(hist)
+    hist.mark_saved()
+    hist.undo([], None, None, FakeUnitModel())
+    hist.drop_redo()
+    assert hist.saved_at_cursor == hist.cursor == 0
+    assert not hist.is_dirty
+
+
+def test_drop_redo_leaves_a_save_behind_the_cursor_alone() -> None:
+    hist = EditHistory()
+    hist.mark_saved()
+    hist.push_unit_record(_unit_record("first"))
+    hist.push_unit_record(_unit_record("second"))
+    hist.undo([], None, None, FakeUnitModel())
+    hist.drop_redo()
+    assert hist.saved_at_cursor == 0
+    assert hist.is_dirty
 
 
 def _tile_record() -> TileDiffRecord:

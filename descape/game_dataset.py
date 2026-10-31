@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache, update_wrapper
 from pathlib import Path
 
@@ -50,13 +50,16 @@ class DataModTables:
     """An active data mod's derived tables (GH #58). `key` is its cache entry's
     name, unique per mod .dat and derivation inputs; `root` the mod folder, for
     its strings; `title` what the window title shows; `mod_only_ids` the unit
-    consts its .dat defines and the install's does not."""
+    consts its .dat defines and the install's does not; `warnings` what the
+    lenient derive simplified (GH #262)."""
 
     key: str
     tables_dir: Path
     root: Path
     title: str
     mod_only_ids: frozenset[int] = frozenset()
+    # Outside the hash game_dataset.cache takes on every call; `key` already identifies the derive.
+    warnings: tuple[str, ...] = field(default=(), compare=False)
 
 
 _active = AOE2

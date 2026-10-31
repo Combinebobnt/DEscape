@@ -39,7 +39,7 @@ The icons sit in their own column between ID and Trigger, so the names line up, 
 
 ## Tools
 
-**Settings > Tools** sets what each control on the Tool Options row starts at when you launch DEscape: the brush size, shape and outline thickness; Auto beach, the beach terrain and width, Trees and Eye candy; the Set Elevation level and whether Draw Rectangle is filled; the Paste Region ticks; Free placement, Off-grid, Walls skip occupied tiles and Moving a gate updates walls; the wall the Wall button picks, and the Cliff family, piece and frame; the Unit Brush's density and Random facing/variant; Convert's sources, the Eraser's targets, and the Edit Area options for trigger areas.
+**Settings > Tools** sets what each control on the Tool Options row starts at when you launch DEscape: the brush size, shape and outline thickness; Auto beach, the beach terrain and width, Trees and Eye candy; the Set Elevation level and whether Draw Rectangle is filled; the Paste Region ticks; Free placement, Off-grid, Walls skip occupied tiles and Moving a gate updates walls; the wall the Wall button picks, and the Cliff family, piece and frame; the Unit Brush's density and Random facing/variant; Convert's sources, the Eraser's targets, and the Edit Area options for trigger areas and locations.
 
 A change on this tab shows on the toolbar at once and is kept for every later launch. A change you make on the toolbar itself lasts until you close DEscape. **Default** on a row puts that option back to DEscape's own default, **Load From Toolbar** makes everything the toolbar shows right now the default, and **Reset All to Defaults** puts every option, and the toolbar, back to DEscape's own defaults. Changing the Cliff family resets the piece and frame, and changing the piece resets the frame. A wall, beach or cliff the current game data doesn't have shows as Unavailable and is kept until you change it. Target always starts on Terrain.
 
@@ -60,7 +60,7 @@ The Mouse Wheel section comes first, with a row for the wheel alone and one each
 
 - Zoom.
 - Brush size: steps the size in tools with a Brush size box.
-- Rotate preview: turns Place Unit's preview or a just-pasted region.
+- Rotate preview: turns a unit you're dragging with Move, Place Unit's preview or a just-pasted region.
 - Brush size or rotate preview: whichever of the two applies.
 - Pan up / down, or Pan left / right.
 - Nothing.

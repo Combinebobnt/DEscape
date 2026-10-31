@@ -38,6 +38,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 BLEND_TYPES = 8
 
 
+def _blend_table(terrains: list) -> tuple[dict[str, dict], list[str]]:
+    """({terrain id: entry} for every enabled terrain, violations). Lenient,
+    each offending terrain is left out with a warning instead (a duplicate
+    priority drops the later terrain), so violations is empty."""
+    table: dict[str, dict] = {}
+    violations: list[str] = []
+    owner_of_priority: dict[int, int] = {}
+    for i, t in enumerate(terrains):
+        if not t.enabled:
+            continue
+        priority, blend_type = int(t.blend_priority), int(t.blend_type)
+        found = []
+        if not 0 <= blend_type < BLEND_TYPES:
+            found.append(f"  id={i} name={t.name!r}: blend_type {blend_type} outside 0..{BLEND_TYPES - 1}")
+        if priority in owner_of_priority:
+            found.append(f"  id={i} name={t.name!r}: blend_priority {priority} already used by id={owner_of_priority[priority]}")
+        if found and _game_root.lenient():
+            for line in found:
+                _game_root.refuse(
+                    f"terrain blend invariant: {line.strip()}",
+                    "left out of the blend table: it does not blend onto its neighbours",
+                )
+            continue
+        violations += found
+        owner_of_priority[priority] = i
+        table[str(i)] = {
+            "priority": priority,
+            "blend_type": blend_type,
+            "overlay_mask": t.overlay_mask_name or "",
+        }
+    return table, violations
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -53,6 +86,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
 
     from genieutils.datfile import DatFile
 
@@ -63,23 +97,7 @@ def main() -> None:
     data = DatFile.parse(str(dat_path))
     terrains = data.terrain_block.terrains
 
-    table: dict[str, dict] = {}
-    violations: list[str] = []
-    owner_of_priority: dict[int, int] = {}
-    for i, t in enumerate(terrains):
-        if not t.enabled:
-            continue
-        priority, blend_type = int(t.blend_priority), int(t.blend_type)
-        if not 0 <= blend_type < BLEND_TYPES:
-            violations.append(f"  id={i} name={t.name!r}: blend_type {blend_type} outside 0..{BLEND_TYPES - 1}")
-        if priority in owner_of_priority:
-            violations.append(f"  id={i} name={t.name!r}: blend_priority {priority} already used by id={owner_of_priority[priority]}")
-        owner_of_priority[priority] = i
-        table[str(i)] = {
-            "priority": priority,
-            "blend_type": blend_type,
-            "overlay_mask": t.overlay_mask_name or "",
-        }
+    table, violations = _blend_table(terrains)
 
     if violations:
         print("A terrain blend invariant no longer holds:", file=sys.stderr)

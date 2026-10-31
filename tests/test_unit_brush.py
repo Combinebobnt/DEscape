@@ -11,7 +11,7 @@ import pytest
 from descape import asset_source, brush, placement_rules, unit_kind, unit_rotation, unit_sprites, unit_variant
 from descape.place_rotation import PlaceRotation, rotation_for
 from descape.render import occupied_tiles_for
-from descape.unit_brush import BrushStroke, Spec, is_refused_const, paint_dab
+from descape.unit_brush import BrushStroke, Spec, hover_anchor, is_refused_const, paint_dab
 from testkit.fakes import FakeScenario, SyntheticTile
 
 OAK = 349  # cyclable, 1x1, a full-tile box
@@ -20,6 +20,8 @@ DEER = 65  # GAIA-only, ANGLE
 VILLAGER = 83  # mobile, ANGLE
 HOUSE = 70  # 2x2, INERT
 FARM = 50  # 3x3, passable
+BARRACKS = 12  # 3x3
+FORTRESS = 33  # 4x4
 MOUNTAIN = 744  # 6x6 footprint, 4x4 clearance
 STONE_WALL = 117
 STONE_GATE = 64
@@ -46,11 +48,11 @@ class _Unit:
     garrisoned_in_id: int = -1
 
 
-def _scenario(terrain=None, units_by_player=None) -> FakeScenario:
+def _scenario(terrain=None, units_by_player=None, size=SIZE) -> FakeScenario:
     terrain = terrain or {}
-    tiles = [SyntheticTile(x, y, 0, terrain.get((x, y), GRASS)) for y in range(SIZE) for x in range(SIZE)]
+    tiles = [SyntheticTile(x, y, 0, terrain.get((x, y), GRASS)) for y in range(size) for x in range(size)]
     units = units_by_player or [[] for _ in range(9)]
-    return FakeScenario(SIZE, SIZE, tiles, units)
+    return FakeScenario(size, size, tiles, units)
 
 
 def _adder(scenario):
@@ -266,6 +268,29 @@ def test_jitter_leaves_a_houses_two_wide_axes_on_the_grid() -> None:
     stroke = _stroke(HOUSE, rules=False, jitter=0.4)
     placed = paint_dab(scenario, stroke, _square(6, 6, 6), _adder(scenario))
     assert placed and all(u.x == int(u.x) and u.y == int(u.y) for _p, u in placed)
+
+
+def test_hover_anchor_is_where_a_dab_stands_the_unit_and_none_exactly_where_it_places_nothing() -> None:
+    """The oracle behind the hover ghost: every case runs a real dab, with the
+    rules and density out of the way so the map edge is the only skip left."""
+    size = 120
+    scenario = _scenario(size=size)
+    edges = (0, 1, 2, size - 3, size - 2, size - 1)
+    tiles = [(40, 40)] + [(x, y) for x in edges for y in edges]
+    wrong = []
+    outcomes = {}
+    for const in (OAK, HOUSE, BARRACKS, FORTRESS):
+        for tile in tiles:
+            stroke = _stroke(const, rules=False, density=1.0, jitter=0.0)
+            placed = paint_dab(scenario, stroke, [tile], lambda spec: _Unit(spec.x, spec.y, spec.unit_const))
+            painted = (placed[0][1].x, placed[0][1].y) if placed else None
+            anchor = hover_anchor(const, tile, size, size)
+            outcomes[const, tile] = anchor
+            if anchor != painted:
+                wrong.append((const, tile, anchor, painted))
+    assert not wrong, wrong
+    assert outcomes[BARRACKS, (0, 0)] is None and outcomes[BARRACKS, (size - 1, size - 1)] is None
+    assert outcomes[HOUSE, (0, 0)] is not None and outcomes[FORTRESS, (size - 1, size - 1)] is not None
 
 
 # --- objects, owners, rotation ------------------------------------------------------------

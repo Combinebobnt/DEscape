@@ -28,6 +28,23 @@ from testkit import qt_capture, qt_window, settings_isolation
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT / "tools"
 
+# TASK-509: at (2, 2) on blank the propagation alone leaves (5, 1) = 2 beside (6, 0) = 0;
+# the repair raises (6, 0), its only write. Rows, y ascending.
+ILLEGAL_STEP_HILL = (
+    (4, 3, 2, 2, 2),
+    (4, 3, 2, 1, 1),
+    (4, 3, 2, 1, 0),
+    (4, 3, 2, 1, 1),
+    (4, 3, 2, 2, 2),
+)
+ILLEGAL_STEP_HILL_ANCHOR = (2, 2)
+ILLEGAL_STEP_HILL_REPAIRED_TILE = (6, 0)
+
+
+def illegal_step_hill_targets(ax: int, ay: int) -> list[tuple[int, int, int]]:
+    return [(ax + x, ay + y, e) for y, row in enumerate(ILLEGAL_STEP_HILL) for x, e in enumerate(row)]
+
+
 # Every pre-rendered zoom frame hit re-checks itself against a fresh render (TASK-031.71);
 # _no_stale_preframe below fails the test that served a stale one. Set before descape imports.
 os.environ.setdefault("DESCAPE_PREFRAME_CHECK", "1")
@@ -168,6 +185,45 @@ def fake_install(tmp_path):
 scene_rect_to_array = qt_capture.scene_rect_to_array
 
 
+@pytest.fixture
+def rotating_install(tmp_path, monkeypatch):
+    """A synthetic install where a turn is visible: the male and female
+    villager (83, 293) store one differently coloured frame per facing, the
+    oak (349) one per variant, and each stone gate orientation (64 and its
+    siblings) its own colour. Warms _wall_consts first: patching graphic_map
+    before a hover would cache an empty wall set for the xdist worker."""
+    from descape import asset_source, unit_sprites, viewer
+    from descape.gate_orientation import orientation_siblings
+
+    from test_unit_sprites import build_sld
+
+    viewer._wall_consts.cache_clear()
+    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    table: dict[int, dict] = {}
+
+    def add(const, frames, colour_base=0, **extra):
+        name = f"t_rotate_{const}_x1"
+        # No team-colour mask: it would paint over the per-frame colour that tells frames apart.
+        art = build_sld(frames, canvas=16, colour_base=colour_base, playercolor=False)
+        (graphics / f"{name}.sld").write_bytes(art)
+        table[const] = {"graphic_id": const, "file_name": name, "angle_count": frames,
+                        "mirroring_mode": 0, "frame_count": 1, **extra}
+
+    add(83, 16)
+    add(293, 16, colour_base=11)
+    add(349, 42, colour_base=3, rotation_is_variant=True)
+    for i, const in enumerate(orientation_siblings(64)):
+        add(const, 1, colour_base=5 * i + 1)
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield tmp_path
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
 def stepped_window(
     path,
     *,
@@ -272,7 +328,9 @@ def dialog_and_window():
 def close_window(window) -> None:
     """Close without the dirty-document modal. Same requirement
     stepped_window() documents: closeEvent() -> _confirm_discard_changes()
-    pops a QMessageBox that blocks forever offscreen."""
+    pops a QMessageBox that blocks forever offscreen, and that prompt commits
+    a focused field first, so this commits it before mark_saved()."""
+    window._commit_focused_field()
     window.edit_history.mark_saved()
     window.close()
 

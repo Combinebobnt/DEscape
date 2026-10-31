@@ -1,16 +1,19 @@
 """Widgets for picking an id-dataset catalog entry (descape/object_catalog.py)
 by name instead of typing a raw integer: CatalogLineEdit (the fast path, type-
-ahead) and CatalogBrowseDialog (a category-grouped tree, opened from the
-line edit's "..." button).
+ahead) and CatalogBrowseDialog (the Units catalog as a modal, GH #273, opened
+from an object field's "..." button).
 
-Both are thin adapters over descape/value_picker.py's domain-free
-ValueLineEdit/ValueBrowseDialog: this module supplies the one piece of
-domain knowledge value_picker.py has none of, a sprite preview, plus the
-"Show editor-hidden objects" affordance. Dumb and callback-driven like
-TriggerPanel itself (see trigger_fields.py's own module docstring): neither
-touches EditHistory or writes anything back on its own. CatalogLineEdit
-reports a committed value through its `committed` signal, and TriggerPanel
-decides what that means.
+CatalogLineEdit is a thin adapter over descape/value_picker.py's domain-free
+ValueLineEdit. CatalogBrowseDialog hosts catalog_browser.CatalogBrowserView
+and a unit_card.UnitCard. A tech field's "..." stays value_picker's plain
+tree, since a tech id is not a const: a portrait or stats would answer for an
+unrelated object. This module also keeps the one piece of domain knowledge
+value_picker.py has none of, a sprite preview, which the Disables dialog's
+Full List, the Cliff row and the facet preview use. Dumb and callback-driven
+like TriggerPanel itself (see trigger_fields.py's own module docstring):
+neither touches EditHistory or writes anything back on its own.
+CatalogLineEdit reports a committed value through its `committed` signal, and
+TriggerPanel decides what that means.
 """
 
 from __future__ import annotations
@@ -20,9 +23,12 @@ from collections.abc import Sequence
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout
 
-from descape import object_catalog, unit_sprites
-from descape.value_picker import PickerItem, ValueBrowseDialog, ValueLineEdit
+from descape import catalog_thumbs, object_catalog, settings, unit_sprites
+from descape.catalog_browser import HIDDEN_LABEL, CatalogBrowserView
+from descape.unit_card import UnitCard
+from descape.value_picker import PickerItem, ValueLineEdit
 
 # Neutral preview: GAIA's own team_index (unit_sprites.py's own team_index
 # docstring), so a preview never implies a player that picking this entry has
@@ -39,7 +45,10 @@ _PREVIEW_BOX_PX = 2 * _PREVIEW_HALF_W
 # piece, not sprite_for()'s single graphic.
 _PREVIEW_BG = np.array([255, 255, 255], dtype=np.uint8)
 
-HIDDEN_LABEL = "Show editor-hidden objects"
+# The trigger tech picker's box: object_catalog.INTERNAL_TECH_FAMILIES' rows.
+INTERNAL_TECHS_LABEL = "Show internal techs"
+# Ten icon rows above the card.
+_BROWSE_SIZE = (460, 640)
 
 
 def _composite_pieces(pieces: list[unit_sprites.SpritePiece]) -> np.ndarray | None:
@@ -104,16 +113,16 @@ def preview_pixmap(object_id: int, rotation: float = _PREVIEW_ROTATION) -> QPixm
     )
 
 
-def items_for(catalog: Sequence[object_catalog.CatalogEntry]) -> tuple[PickerItem, ...]:
+def items_for(catalog: Sequence[object_catalog.CatalogEntry], hide_internal: bool = False) -> tuple[PickerItem, ...]:
     """catalog's own CatalogEntry rows reduced to value_picker.py's
     domain-free PickerItem shape. `class_id` is dropped -- no widget here
-    ever read it."""
+    ever read it. `hide_internal` folds `internal` into `hidden`."""
     return tuple(
         PickerItem(
             label=entry.name,
             value=entry.id,
             group=entry.category,
-            hidden=entry.hidden,
+            hidden=entry.hidden or (hide_internal and entry.internal),
             search_text=entry.search_text,
         )
         for entry in catalog
@@ -135,12 +144,17 @@ def catalog_preview(item: PickerItem) -> QPixmap | None:
     return preview_pixmap(item.value)
 
 
-class CatalogBrowseDialog(ValueBrowseDialog):
-    """A category-grouped tree over one id-dataset catalog, filtered by name
-    or id.
+class CatalogBrowseDialog(QDialog):
+    """The Units catalog over one object catalog (GH #273): category buttons,
+    class combo, filter and three views, with the Placing card under the list.
 
-    "Show editor-hidden objects" starts unchecked, so `hide_in_editor`
-    entries stay out of the tree until opted into.
+    "Show editor-hidden objects" starts unchecked, so `hide_in_editor` entries
+    stay out of the list until opted into, select()'s own value excepted.
+
+    OK returns what the card shows. A category switch drops the list's current
+    row with signals blocked, so the pick is held here, as UnitsPanel holds its
+    pending object. Enter in the filter is the exception: it could accept a row
+    the filter just hid, so it moves to the first match and never accepts.
     """
 
     def __init__(
@@ -149,20 +163,77 @@ class CatalogBrowseDialog(ValueBrowseDialog):
         default_category: str = "",
         parent=None,
     ):
+        super().__init__(parent)
+        self.setWindowTitle("Browse")
+        self.resize(*_BROWSE_SIZE)
         self._catalog = catalog
-        self._default_category = default_category
-        super().__init__(
-            items_for(catalog),
-            default_group=default_category,
-            show_values=False,
-            hidden_label=HIDDEN_LABEL,
-            preview=catalog_preview,
-            title="Browse",
-            parent=parent,
+        self._picked: int | None = None
+        self._selected_id: int | None = None
+
+        loader = catalog_thumbs.ThumbLoader(self)
+        self.view = CatalogBrowserView(
+            loader,
+            self,
+            entries=catalog,
+            default_category=default_category,
+            mode_store=(settings.get_browse_catalog_mode, settings.set_browse_catalog_mode),
         )
+        self.view.current_changed.connect(self._on_current_changed)
+        self.view.activated.connect(self._on_activated)
+        self.filter_edit = self.view.filter_edit
+        self.show_hidden_checkbox = self.view.show_hidden_checkbox
+        self.card = UnitCard(stable=True, loader=loader)
+        self.card.clear("No object picked")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept_current)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.view, stretch=1)
+        layout.addWidget(self.card)
+        layout.addWidget(buttons)
+
+        # Here, not in the view: the sidebar's policies keep the map's arrow keys.
+        for button in (*self.view.category_buttons.values(), *self.view.display_buttons.values()):
+            button.setFocusPolicy(Qt.TabFocus)
+        self.view.class_combo.setFocusPolicy(Qt.StrongFocus)
+        self.view.list.setFocusPolicy(Qt.StrongFocus)
+        # The tab order now starts on a button.
+        self.filter_edit.setFocus()
+        # Each open holds a populated list and a memo, and callers parent it to long-lived widgets.
+        self.finished.connect(self.deleteLater)
+
+    def select(self, value: int) -> None:
+        """Opens on `value`, the field's current one: pinned, so a hidden row stays pickable."""
+        self.view.pin(value)
+        self.view.select(value)
 
     def selected_id(self) -> int | None:
-        return self.selected_value()
+        return self._selected_id
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and self.focusWidget() is self.filter_edit:
+            self.view.focus_first_row()
+            return
+        super().keyPressEvent(event)
+
+    def _on_current_changed(self, value: int | None) -> None:
+        if value is None:
+            return
+        self._picked = value
+        # The row's own name: display_name() can spell it differently.
+        self.card.show_const(value, name=object_catalog.name_for(self._catalog, value))
+
+    def _on_activated(self, value: int) -> None:
+        self._picked = value
+        self._accept_current()
+
+    def _accept_current(self) -> None:
+        if self._picked is None:
+            return
+        self._selected_id = self._picked
+        self.accept()
 
 
 class CatalogLineEdit(ValueLineEdit):
@@ -172,6 +243,13 @@ class CatalogLineEdit(ValueLineEdit):
     Accepts a typed name (case-insensitively, matched against the catalog) or
     a raw integer, so an id the catalog does not cover -- always possible,
     since it is library-backed until slice 4 -- is still settable.
+
+    `hide_internal` (the trigger tech picker) keeps internal techs out of
+    Browse until INTERNAL_TECHS_LABEL is ticked; a typed name still matches
+    them, as it matches editor-hidden objects.
+
+    Browse is CatalogBrowseDialog for an object catalog, narrowed by
+    set_group(), and the base class's plain tree for a tech one.
     """
 
     def __init__(
@@ -180,17 +258,28 @@ class CatalogLineEdit(ValueLineEdit):
         default_category: str = "",
         parent=None,
         placeholder: str = "(unset)",
+        hide_internal: bool = False,
     ):
         self._catalog = catalog
         self._default_category = default_category
         super().__init__(
-            items_for(catalog),
+            items_for(catalog, hide_internal),
             default_group=default_category,
             show_values=False,
-            hidden_label=HIDDEN_LABEL,
-            preview=catalog_preview,
+            hidden_label=INTERNAL_TECHS_LABEL if hide_internal else HIDDEN_LABEL,
             browse_title="Browse",
             # A parameter so a multi-entry form can say "(differs)" (GH #60).
             placeholder=placeholder,
             parent=parent,
         )
+
+    def _browse(self) -> None:
+        if any(row.category == "Techs" for row in self._catalog):
+            super()._browse()
+            return
+        rows = [row for row in self._catalog if row.category == self._group] if self._group else self._catalog
+        dialog = CatalogBrowseDialog(rows, self._group or self._default_category, parent=self)
+        if self._value is not None:
+            dialog.select(self._value)
+        if dialog.exec_() == QDialog.Accepted and dialog.selected_id() is not None:
+            self.commit_value(dialog.selected_id())

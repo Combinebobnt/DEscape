@@ -3,7 +3,9 @@ coverage of testkit/review_pack.py's own rules.
 
 Qt-free: gen_review_pack.check() never touches PyQt5 or ViewerWindow (see
 that tool's docstring for why it renders off-engine throughout), so this
-carries no gui marker and runs regardless of PyQt5 availability.
+carries no gui marker and runs regardless of PyQt5 availability. The one
+exception is marked: tools/gen_instruction_box_review_pack.py has to drive a
+window, since its subject never reaches scene.render().
 
 check() renders real crops, so it is the slowest thing here by a wide
 margin. It stays in the default tier anyway: a review pack whose framing
@@ -92,6 +94,28 @@ def test_garrison_flags_pack_check_passes() -> None:
     gen.check("garrison_flags")
 
 
+@pytest.mark.corpus
+def test_particle_doodads_pack_check_passes() -> None:
+    """Needs the real install's particle atlases (TASK-454, GH #256)."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._particle_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("particle_doodads")
+
+
+@pytest.mark.corpus
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_instruction_box_pack_check_passes() -> None:
+    """Needs examples/old-allies-final-v2.aoe2scenario and the real install (TASK-550)."""
+    gen = conftest.load_verify_module("gen_instruction_box_review_pack")
+    reason = gen.prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check()
+
+
 # ------------------------------------------------------------ spec coupling
 
 
@@ -137,6 +161,34 @@ def test_a_valid_spec_passes() -> None:
 def test_frame_kind_is_constrained() -> None:
     with pytest.raises(rp.PackError, match="kind"):
         rp.Frame("a", "a.png", "screenshot")
+
+
+def test_leaks_finds_a_word_or_a_task_number_in_any_reviewer_text() -> None:
+    clean = _spec([_frame("a")], [rp.Check("c", "What is drawn?", ("a",), ("YES", "NO"))])
+    assert rp.leaks(clean) == []
+    leaky = _spec([rp.Frame("a", "a.png", "raw", caption="TASK-454 render")], [rp.Check("no_flame", "Fixed?", ("a",))])
+    found = rp.leaks(leaky)
+    assert any("'flame'" in leak and "check no_flame" in leak for leak in found)
+    assert any("'fix'" in leak for leak in found)
+    assert any("'task'" in leak and leak.startswith("frame a") for leak in found)
+    assert any("number 454" in leak for leak in found)
+
+
+def test_particle_doodads_text_leaks_nothing_and_lands_in_a_neutral_directory() -> None:
+    gen = conftest.load_verify_module("gen_review_pack")
+    spec = gen.PACKS["particle_doodads"]()
+    rp.validate_spec(spec)
+    assert rp.leaks(spec) == []
+    assert "particle" not in gen._PACK_DIRS["particle_doodads"], "REVIEW.md prints this directory"
+
+
+def test_instruction_box_text_leaks_nothing_and_lands_in_a_neutral_directory() -> None:
+    gen = conftest.load_verify_module("gen_instruction_box_review_pack")
+    spec = gen._spec()
+    rp.validate_spec(spec)
+    assert rp.leaks(spec) == []
+    assert "instruction" not in gen.OUT_SUBDIR, "REVIEW.md prints this directory"
+    assert set(gen.REACH) == set(gen.INJECTS), "every inject registers its reach"
 
 
 # ------------------------------------------------------------ framing rules

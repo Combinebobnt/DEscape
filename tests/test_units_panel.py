@@ -1429,16 +1429,118 @@ def test_a_wheel_step_reports_the_next_facing_and_wraps() -> None:
     assert received == [("rotation", 0)]
 
 
-def test_a_wheel_step_off_a_mixed_group_facing_reports_facing_0() -> None:
-    """The "(mixed)" placeholder parks one below 0, so the first step up is a
-    real edit to facing 0, not a no-op on the sentinel."""
-    received = []
-    panel = _panel(on_unit_field=lambda spec, value: received.append((spec.field_id, value)))
+def test_a_step_over_a_mixed_group_facing_turns_instead_of_landing_on_facing_0() -> None:
+    """TASK-548: the viewer turns every member, so the field keeps its "(mixed)"
+    and neither the sentinel nor a wrap reaches on_unit_field."""
+    calls = []
+    panel = _panel(
+        on_unit_field=lambda spec, value: calls.append(("set", spec.field_id, value)),
+        on_unit_field_step=lambda spec, steps: calls.append(("step", spec.field_id, steps)),
+    )
     panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
     spin = _rotation_spin(panel)
     assert spin.text() == "(mixed)"
     spin.stepBy(1)
-    assert received == [("rotation", 0)]
+    spin.stepBy(-1)
+    assert calls == [("step", "rotation", 1), ("step", "rotation", -1)]
+    assert spin.text() == "(mixed)"
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        pytest.param([{"unit_const": _TREE_CONST, "rotation": 3.0}, {"unit_const": _TREE_CONST, "rotation": 4.0}], id="variant"),
+        pytest.param([{"unit_const": _GATE_CONST}, {"unit_const": 88}], id="gate"),
+    ],
+)
+def test_a_step_over_mixed_turns_in_the_other_field_modes_too(members) -> None:
+    calls = []
+    panel = _panel(on_unit_field_step=lambda spec, steps: calls.append((spec.field_id, steps)))
+    panel.show_group([_entry(**kwargs) for kwargs in members])
+    assert _rotation_spin(panel).text() == "(mixed)"
+    _rotation_spin(panel).stepBy(1)
+    assert calls == [("rotation", 1)]
+
+
+def test_a_dial_wheel_notch_over_mixed_is_a_step_too() -> None:
+    calls = []
+    panel = _panel(on_unit_field_step=lambda spec, steps: calls.append((spec.field_id, steps)))
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    _wheel(_dial(panel), -120)
+    assert calls == [("rotation", -1)]
+
+
+def test_a_rotation_typed_but_not_committed_lands_before_the_step() -> None:
+    calls = []
+    panel = _panel(
+        on_unit_field=lambda spec, value: calls.append(("set", spec.field_id, value)),
+        on_unit_field_step=lambda spec, steps: calls.append(("step", spec.field_id, steps)),
+    )
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    spin = _rotation_spin(panel)
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin, "5")
+    assert calls == []
+    QTest.keyClick(spin, Qt.Key_Up)
+    assert calls == [("set", "rotation", 5), ("step", "rotation", 1)]
+
+
+def test_a_step_that_a_typed_rotation_just_aligned_is_a_plain_step() -> None:
+    """The commit re-populates an aligned group, so the step must go on from the typed value."""
+    calls = []
+    aligned = [_entry(rotation=5 * 2 * math.pi / 16), _entry(rotation=5 * 2 * math.pi / 16)]
+
+    def typed(spec, value):
+        calls.append(value)
+        if value == 5:
+            panel.show_group(aligned)
+
+    panel = _panel(on_unit_field=typed, on_unit_field_step=lambda *_args: calls.append("step"))
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    spin = _rotation_spin(panel)
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin, "5")
+    QTest.keyClick(spin, Qt.Key_Up)
+    assert calls == [5, 6]
+    assert spin.value() == 6
+
+
+def test_only_a_shown_mixed_rotation_steps_relatively() -> None:
+    panel = _panel()
+    spin = _rotation_spin(panel)
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    assert spin.relative_steps
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=0.5)])
+    assert not spin.relative_steps
+    panel.show_group([_entry(rotation=0.5), _entry(rotation=1.5)])
+    panel.show_unit(_entry(rotation=0.5))
+    assert not spin.relative_steps
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        pytest.param([{"rotation": 0.5}, {"rotation": 1.5}], id="facing"),
+        pytest.param([{"unit_const": _TREE_CONST}, {"unit_const": _TREE_CONST}], id="variant"),
+        pytest.param([{"unit_const": _GATE_CONST}, {"unit_const": 88}], id="gate"),
+    ],
+)
+def test_a_groups_rotation_tooltip_says_what_a_step_does_and_a_single_units_does_not(members) -> None:
+    from descape.units_panel import _GROUP_TURN_TOOLTIP
+
+    panel = _panel()
+    panel.show_group([_entry(**kwargs) for kwargs in members])
+    assert _rotation_spin(panel).toolTip().endswith(_GROUP_TURN_TOOLTIP)
+    assert not _dial_shown(panel) or _dial(panel).toolTip() == _rotation_spin(panel).toolTip()
+    panel.show_unit(_entry(**members[0]))
+    assert _GROUP_TURN_TOOLTIP not in _rotation_spin(panel).toolTip()
+
+
+def test_a_mixed_count_group_written_to_a_tied_facing_reads_back() -> None:
+    """Archer (16) + trebuchet (32) at facing 1, written by the facing rule: frames 1 and 1."""
+    panel = _panel()
+    panel.show_group([_entry(rotation=2 * math.pi / 16), _entry(unit_const=_TREBUCHET_CONST, rotation=2 * math.pi / 32)])
+    assert _rotation_spin(panel).text() == "1"
 
 
 def test_a_mixed_count_group_edits_on_the_finest_grid() -> None:
@@ -2080,18 +2182,175 @@ def test_a_click_on_the_current_facing_records_nothing() -> None:
     assert received == []
 
 
-def test_a_drag_across_three_spokes_commits_once_with_the_release_spoke() -> None:
-    panel, received = _recording_panel()
+def _bracketing_panel(**kwargs):
+    """A panel recording spokes and the drag bracket, in call order, into one list."""
+    calls = []
+
+    def on_drag(active, hidden=False):
+        calls.append(("drag", active, hidden))
+        return True
+
+    kwargs.setdefault("on_rotation_drag", on_drag)
+    panel = _panel(on_unit_field=lambda spec, value: calls.append((spec.field_id, value)), **kwargs)
+    return panel, calls
+
+
+def test_a_gate_drag_previews_and_commits_once_on_release_with_no_bracket() -> None:
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(unit_const=_GATE_CONST))  # orientation 0
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(1), Qt.LeftButton)
+    _send_mouse(dial, "move", dial.spoke_point(2), Qt.LeftButton)
+    assert dial.shown_value == 2, "the drag previews the axis under the cursor"
+    assert calls == [] and _rotation_spin(panel).value() == 0
+    _send_mouse(dial, "move", dial.spoke_point(3), Qt.LeftButton)
+    _send_mouse(dial, "release", dial.spoke_point(3), Qt.NoButton)
+    assert calls == [("rotation", 3)]
+    assert dial.shown_value == 3
+
+
+def test_a_facing_drag_commits_each_spoke_inside_one_bracket() -> None:
+    panel, calls = _bracketing_panel()
     panel.show_unit(_entry(rotation=0.0))
     dial = _dial(panel)
     _send_mouse(dial, "press", dial.spoke_point(2), Qt.LeftButton)
+    assert calls == [("drag", True, False), ("rotation", 2)]
     _send_mouse(dial, "move", dial.spoke_point(3), Qt.LeftButton)
-    assert dial.shown_value == 3, "the drag previews the spoke under the cursor"
-    assert received == [] and _rotation_spin(panel).value() == 0
+    _send_mouse(dial, "move", dial.spoke_point(3), Qt.LeftButton)
+    assert dial.shown_value == 3
+    assert _rotation_spin(panel).value() == 3
     _send_mouse(dial, "move", dial.spoke_point(4), Qt.LeftButton)
     _send_mouse(dial, "release", dial.spoke_point(4), Qt.NoButton)
-    assert received == [("rotation", 4)]
+    assert calls == [("drag", True, False), ("rotation", 2), ("rotation", 3), ("rotation", 4), ("drag", False, False)]
     assert dial.shown_value == 4
+
+
+def test_a_release_off_the_last_spoke_commits_that_spoke_before_closing() -> None:
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(2), Qt.LeftButton)
+    _send_mouse(dial, "release", dial.spoke_point(3), Qt.NoButton)
+    assert calls == [("drag", True, False), ("rotation", 2), ("rotation", 3), ("drag", False, False)]
+
+
+def test_a_release_on_the_committed_spoke_leaves_a_change_made_during_the_drag() -> None:
+    """A Ctrl+Z or Rotate key mid-drag re-populates the field: the release must not write over it."""
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(2), Qt.LeftButton)
+    panel.show_unit(_entry(rotation=5 * 2 * math.pi / 16))
+    _send_mouse(dial, "release", dial.spoke_point(2), Qt.NoButton)
+    assert calls == [("drag", True, False), ("rotation", 2), ("drag", False, False)]
+    assert _rotation_spin(panel).value() == 5
+    assert dial.shown_value == 5
+
+
+def test_a_press_at_the_centre_commits_only_once_the_drag_leaves_it() -> None:
+    from PyQt5.QtCore import QPointF
+
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    centre = QPointF(dial.width() / 2, dial.height() / 2)
+    _send_mouse(dial, "press", centre, Qt.LeftButton)
+    assert calls == [("drag", True, False)]
+    assert dial.shown_value == 0, "no spoke yet: the pointer stays on the value"
+    _send_mouse(dial, "move", dial.spoke_point(3), Qt.LeftButton)
+    _send_mouse(dial, "move", centre, Qt.LeftButton)
+    _send_mouse(dial, "release", centre, Qt.NoButton)
+    assert calls == [("drag", True, False), ("rotation", 3), ("drag", False, False)]
+
+
+def test_a_refused_press_previews_nothing_and_commits_nothing() -> None:
+    panel, calls = _bracketing_panel(on_rotation_drag=lambda active, hidden=False: False)
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(3), Qt.LeftButton)
+    assert dial.shown_value == 0
+    _send_mouse(dial, "move", dial.spoke_point(4), Qt.LeftButton)
+    assert dial.shown_value == 0
+    _send_mouse(dial, "release", dial.spoke_point(4), Qt.NoButton)
+    assert calls == []
+    assert _rotation_spin(panel).value() == 0
+
+
+def test_a_press_after_a_release_lost_to_a_modal_commits_afresh() -> None:
+    """The dial never saw the release, so its old spoke must not read as already committed."""
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(4), Qt.LeftButton)
+    panel.show_unit(_entry(rotation=0.0))  # the release went to the modal; a Ctrl+Z put the unit back
+    calls.clear()
+    _send_mouse(dial, "press", dial.spoke_point(4), Qt.LeftButton)
+    assert calls == [("drag", True, False), ("rotation", 4)]
+    _send_mouse(dial, "release", dial.spoke_point(4), Qt.NoButton)
+
+
+def test_a_gate_selected_under_a_held_facing_drag_closes_it_and_commits_nothing() -> None:
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(4), Qt.LeftButton)
+    panel.show_unit(_entry(unit_const=_GATE_CONST))
+    assert calls[-1] == ("drag", False, True)
+    calls.clear()
+    _send_mouse(dial, "move", dial.spoke_point(1), Qt.LeftButton)
+    _send_mouse(dial, "release", dial.spoke_point(1), Qt.NoButton)
+    assert calls == [], "the rest of that press writes no gate"
+
+
+def test_a_gate_press_after_a_lost_release_is_still_previewed_not_live() -> None:
+    panel, calls = _bracketing_panel()
+    panel.show_unit(_entry(rotation=0.0))
+    dial = _dial(panel)
+    _send_mouse(dial, "press", dial.spoke_point(4), Qt.LeftButton)
+    panel.show_unit(_entry(unit_const=_GATE_CONST))
+    calls.clear()
+    _send_mouse(dial, "press", dial.spoke_point(1), Qt.LeftButton)
+    _send_mouse(dial, "move", dial.spoke_point(2), Qt.LeftButton)
+    assert calls == []
+    _send_mouse(dial, "release", dial.spoke_point(2), Qt.NoButton)
+    assert calls == [("rotation", 2)]
+
+
+def test_only_a_dial_spoke_reads_as_dial_committing() -> None:
+    seen = []
+    panel = _panel(on_unit_field=lambda _spec, value: seen.append((value, panel.dial_committing)))
+    panel.show_unit(_entry(rotation=0.0))
+    _click(_dial(panel), _dial(panel).spoke_point(3))
+    _rotation_spin(panel).setValue(7)
+    assert seen == [(3, True), (7, False)]
+    assert panel.dial_committing is False
+
+
+def test_a_dial_hidden_mid_drag_closes_it_and_a_late_release_does_nothing() -> None:
+    """Through show_unit() of a wall, which hides the dial under the populating guard."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel, calls = _bracketing_panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        panel.show_unit(_entry(rotation=0.0))
+        dial = _dial(panel)
+        assert dial.isVisible()
+        _send_mouse(dial, "press", dial.spoke_point(2), Qt.LeftButton)
+        spoke = dial.spoke_point(3)
+
+        panel.show_unit(_entry(unit_const=_WALL_CONST))
+
+        assert not dial.isVisible()
+        assert calls == [("drag", True, False), ("rotation", 2), ("drag", False, True)]
+        assert dial.shown_value == dial.value, "a stale spoke must not outlive the drag"
+        _send_mouse(dial, "move", spoke, Qt.LeftButton)
+        _send_mouse(dial, "release", spoke, Qt.NoButton)
+        assert calls == [("drag", True, False), ("rotation", 2), ("drag", False, True)]
+    finally:
+        panel.close()
 
 
 def test_a_click_on_a_gate_axis_picks_that_orientation_from_either_end() -> None:

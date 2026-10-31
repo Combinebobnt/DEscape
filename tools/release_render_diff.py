@@ -153,6 +153,14 @@ def _no_garrison_flags() -> None:
     unit_sprites.garrison_flag_pieces_for = lambda *args, **kwargs: []
 
 
+def _fixed_sloped_fold() -> None:
+    """Put the pre-TASK-008 Sloped surface back: every tile folds along NE-SW."""
+    from descape import iso_geometry
+
+    _require(iso_geometry, "tile_folds")
+    iso_geometry.tile_folds = lambda elevations: np.zeros(elevations.shape, dtype=bool)
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -212,6 +220,13 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         since="v0.10", control_file=OLD_ALLIES,
         must_fail=frozenset({("stepped", True), ("sloped", True)}),
         patch=_no_garrison_flags,
+    ),
+    Neutralization(
+        "sloped-fold",
+        "TASK-008 (GH #62): Sloped tiles crease along the diagonal the game folds them on",
+        since="v0.10", control_file=ELCID,
+        must_fail=frozenset({("sloped", False), ("sloped", True)}),
+        patch=_fixed_sloped_fold,
     ),
 )
 

@@ -25,6 +25,7 @@ so the browser is readable at 340 px, where the single-tree 4a.3 layout needed
 from __future__ import annotations
 
 import os
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -766,6 +767,62 @@ def test_a_float_attribute_gets_an_editable_float_row_with_the_real_value() -> N
         row.setValue(2.5)
         effect = window.trigger_edits.manager().triggers[1].effects[1]
         assert effect.quantity == 2.5
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_stored_zero_shows_in_the_quantity_float_row(tmp_path: Path) -> None:
+    """The library's reader swaps a stored 0.0 for the int half, here -1."""
+    from PyQt5.QtWidgets import QDoubleSpinBox
+    from test_effect_quantity import SHAPE_TRIGGER, shape_index, write_quantity_shapes
+
+    window = _window()
+    try:
+        window.load_scenario(write_quantity_shapes(tmp_path / "shapes.aoe2scenario"))
+        window.mode_combo.setCurrentText("Triggers")
+        panel = window.trigger_panel
+        panel.select_trigger(SHAPE_TRIGGER)
+        effects = panel.entry_tree.topLevelItem(2)
+        panel.entry_tree.setCurrentItem(effects.child(shape_index("sentinel int, stored 0.0")))
+        row = _row_widget(panel, "quantity_float")
+        assert isinstance(row, QDoubleSpinBox) and row.value() == 0.0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_attribute_family_shares_one_field_order_on_the_form_and_the_row() -> None:
+    """GH #278, GH #275: For Class lays out as Modify Attribute does, its row
+    text opens with the same field its form does, and the live cluster slot
+    never moves a row."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        for_class = _appended_effects(
+            window, _effect_type_id(panel, "modify_attribute_for_class"), [{"quantity": 5, "object_group2": 3}]
+        )[0]
+        modify = _appended_effects(window, _effect_type_id(panel, "modify_attribute"), [{}])[0]
+        cluster = ["quantity", "quantity_float", "armour_attack_quantity", "armour_attack_class"]
+
+        _select_entries(panel, ("effect", for_class))
+        assert [spec.name for spec, *_ in panel._rows] == [
+            *cluster, "object_group2", "object_type2", "source_player", "operation", "object_attributes", "message",
+        ]
+        entry = panel._manager().triggers[0].effects[for_class]
+        assert panel._describe("effect", entry)[1].startswith("quantity=5")
+
+        _select_entries(panel, ("effect", for_class), ("effect", modify))
+        assert [spec.name for spec, *_ in panel._rows] == [
+            *cluster, "source_player", "operation", "object_attributes", "message",
+        ]
+
+        _select_armour_split_effect(panel, 0)
+        before = [spec.name for spec, *_ in panel._rows]
+        assert before[:4] == cluster
+        _switch_attribute(panel, 13)  # WORK_RATE
+        assert _editable_cluster(panel) == {"quantity_float"}
+        assert [spec.name for spec, *_ in panel._rows] == before
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -2230,9 +2287,11 @@ def test_a_long_form_scrolls_instead_of_crushing_its_rows(what: str) -> None:
 @pytest.mark.font_sensitive
 def test_dragging_the_splitter_refits_the_form_height() -> None:
     """A splitter drag reaches the form only through TriggerPanel.resizeEvent.
-    The form's height is a function of its width (wrapped rows, and the
-    Display Instructions preview's aspect), so the host's must follow it."""
+    The form's height is a function of its width (wrapped rows), so the host's
+    must follow it."""
     from PyQt5.QtWidgets import QApplication
+
+    from testkit.qt_window import FONT_DPI_OVERRIDE_ENV
 
     window = _triggers_window()
     try:
@@ -2247,7 +2306,9 @@ def test_dragging_the_splitter_refits_the_form_height() -> None:
             needed.append(max(form.minimumSize().height(), form.heightForWidth(width)))
             assert panel.property_host.minimumHeight() == needed[-1], (sizes, width)
             _assert_form_rows_do_not_overlap(form)
-        assert len(set(needed)) == len(needed), f"two widths need the same height, so a step checks nothing: {needed}"
+        if not os.environ.get(FONT_DPI_OVERRIDE_ENV):
+            # At the pinned baseline font a step changes the wrap; at 72 DPI no row wraps at these widths.
+            assert all(a != b for a, b in pairwise(needed)), f"a step kept its height, so it checks nothing: {needed}"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -5250,6 +5311,303 @@ def test_rename_section_refuses_a_title_that_would_not_read_back(monkeypatch) ->
         window.close()
 
 
+# -- GH #279: double-click a trigger to rename it in place --------------------
+
+
+def _rename_window(window=None):
+    """A window active enough for the inline editor to hold focus."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = window if window is not None else _triggers_window()
+    window.activateWindow()
+    QApplication.processEvents()
+    return window
+
+
+def _double_click(panel, item, column: int | None = None, modifiers=None) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    column = panel._COL_NAME if column is None else column
+    modifiers = Qt.NoModifier if modifiers is None else modifiers
+    viewport = panel.tree.viewport()
+    pos = panel.tree.visualRect(panel.tree.indexFromItem(item, column)).center()
+    # The view needs the first click's press too: alone, a double-click event reads as a single press.
+    QTest.mouseClick(viewport, Qt.LeftButton, modifiers, pos)
+    QTest.mouseDClick(viewport, Qt.LeftButton, modifiers, pos)
+    # A real double click ends with a release; QTest's leaves the button held process-wide.
+    QTest.mouseRelease(viewport, Qt.LeftButton, modifiers, pos)
+    QApplication.processEvents()
+
+
+def _name_editor(panel):
+    """The open inline editor, or None."""
+    from PyQt5.QtWidgets import QLineEdit
+
+    return next((edit for edit in panel.tree.viewport().findChildren(QLineEdit) if edit.isVisible()), None)
+
+
+def _type_into(editor, text: str) -> None:
+    from PyQt5.QtTest import QTest
+
+    editor.selectAll()
+    QTest.keyClicks(editor, text)
+
+
+def _editor_key(editor, key) -> None:
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    QTest.keyClick(editor, key)
+    QApplication.processEvents()
+
+
+def test_double_click_renames_a_trigger_in_place_in_one_undo_step() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        before_name = _names(window)[0]
+        item = panel._item_for_index[0]
+        before = _record_count(window)
+
+        _double_click(panel, item, panel._COL_ID)  # any column of the row
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == before_name
+        assert editor.selectedText() == before_name and editor.hasFocus()
+
+        _type_into(editor, "Renamed in place")
+        _editor_key(editor, Qt.Key_Return)
+        assert _name_editor(panel) is None
+        assert _names(window)[0] == "Renamed in place"
+        assert panel._item_for_index[0].text(panel._COL_NAME).startswith("Renamed in place")
+        assert _row_widget(panel, "name").text() == "Renamed in place"
+        assert _record_count(window) == before + 1
+
+        window.undo()
+        assert _names(window)[0] == before_name
+        assert panel._item_for_index[0].text(panel._COL_NAME).startswith(before_name)
+        assert _row_widget(panel, "name").text() == before_name
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_disabled_row_seeds_its_raw_name_and_an_unchanged_enter_records_nothing() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape import trigger_fields
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        window.set_trigger_field(0, next(s for s in trigger_fields.TRIGGER_FIELDS if s.name == "enabled"), 0)
+        panel._refresh_labels(0)
+        name = _names(window)[0]
+        item = panel._item_for_index[0]
+        assert item.text(panel._COL_NAME) != name, "fixture: the row shows a decorated label"
+        before = _record_count(window)
+
+        _double_click(panel, item)
+        editor = _name_editor(panel)
+        assert editor.text() == name
+        _editor_key(editor, Qt.Key_Return)
+        assert _record_count(window) == before
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_jump_away_keeps_the_typed_name_and_a_later_esc_renames_nothing() -> None:
+    """The view commits and closes its editor itself on a current-row change,
+    past the delegate's closeEditor signal: a Sections jump does that with the
+    editor still focused."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        other_name = _names(window)[1]
+        before = _record_count(window)
+
+        _double_click(panel, panel._item_for_index[0])
+        _type_into(_name_editor(panel), "Jumped away")
+        panel.reveal_trigger(1)
+        QApplication.processEvents()
+        assert _name_editor(panel) is None
+        assert _names(window)[0] == "Jumped away"
+        assert panel.current_trigger_index() == 1
+        assert _record_count(window) == before + 1
+
+        _double_click(panel, panel._item_for_index[1])
+        _editor_key(_name_editor(panel), Qt.Key_Escape)
+        assert _names(window)[:2] == ["Jumped away", other_name]
+        assert _record_count(window) == before + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("key_name", ["Key_Up", "Key_Down"])
+def test_an_arrow_key_commits_and_stays_on_the_row_across_a_repartition(key_name: str) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        before = _record_count(window)
+
+        _double_click(panel, panel._item_for_index[2])
+        _type_into(_name_editor(panel), "--- Arrow ---")
+        _editor_key(_name_editor(panel), getattr(Qt, key_name))
+        assert _name_editor(panel) is None
+        assert _names(window)[2] == "--- Arrow ---"
+        assert panel.selected_trigger_indices() == [2]
+        assert _record_count(window) == before + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_esc_cancels_and_tab_commits_and_stays_on_the_row() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        name = _names(window)[0]
+        item = panel._item_for_index[0]
+        before = _record_count(window)
+
+        _double_click(panel, item)
+        editor = _name_editor(panel)
+        _type_into(editor, "Never kept")
+        _editor_key(editor, Qt.Key_Escape)
+        assert _name_editor(panel) is None
+        assert _names(window)[0] == name and _record_count(window) == before
+
+        for key, text in ((Qt.Key_Tab, "By Tab"), (Qt.Key_Backtab, "By Shift Tab")):
+            _double_click(panel, panel._item_for_index[0])
+            editor = _name_editor(panel)
+            _type_into(editor, text)
+            _editor_key(editor, key)
+            assert _names(window)[0] == text
+            assert panel.current_trigger_index() == 0, "the current row stays"
+            assert _name_editor(panel) is None, "no second editor on the next row"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_double_click_opens_no_editor_where_it_is_not_a_rename() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _rename_window(_sectioned_window())
+    try:
+        panel = window.trigger_panel
+        panel.select_triggers([0, 3])
+        _double_click(panel, panel._item_for_index[5], modifiers=Qt.ControlModifier)
+        assert len(panel.selected_trigger_indices()) > 1, "fixture: Ctrl adds to the selection"
+        assert _name_editor(panel) is None, "a row in a multi-selection"
+
+        panel.select_trigger(0)
+        panel._editable = False
+        _double_click(panel, panel._item_for_index[0])
+        assert _name_editor(panel) is None, "a read-only panel"
+        panel._editable = True
+
+        panel.tree.setFocus()
+        QTest.keyClick(panel.tree, Qt.Key_A)
+        QApplication.processEvents()
+        assert _name_editor(panel) is None, "a typed key keeps the tree's keyboard search"
+
+        header = panel._item_for_index[2]
+        assert header.childCount() and header.isExpanded()
+        _double_click(panel, header)
+        assert _name_editor(panel) is None
+        assert not header.isExpanded(), "a header with members keeps its collapse"
+
+        synthetic = panel.tree.topLevelItem(0)
+        assert synthetic.data(panel._ROLE_COL, Qt.UserRole) is None
+        _double_click(panel, synthetic)
+        assert _name_editor(panel) is None
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_rename_across_the_divider_predicate_repartitions_by_enter_and_by_a_click_away() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QAbstractItemView, QApplication
+
+    window = _rename_window(_sectioned_window())
+    try:
+        panel = window.trigger_panel
+        sections = len(panel._sections)
+
+        panel.select_trigger(5)
+        _double_click(panel, panel._item_for_index[5])
+        editor = _name_editor(panel)
+        _type_into(editor, "--By Enter--")
+        _editor_key(editor, Qt.Key_Return)
+        assert len(panel._sections) == sections + 1
+        assert panel.current_trigger_index() == 5
+        assert panel.tree.state() == QAbstractItemView.NoState
+
+        panel.select_trigger(5)
+        _double_click(panel, panel._item_for_index[5])
+        editor = _name_editor(panel)
+        _type_into(editor, "plain again")
+        # The row above: one below the renamed row can shift when the tree rebuilds.
+        above = panel.tree.visualItemRect(panel._item_for_index[0]).center()
+        QTest.mouseClick(panel.tree.viewport(), Qt.LeftButton, Qt.NoModifier, above)
+        QApplication.processEvents()
+        assert _name_editor(panel) is None
+        assert _names(window)[5] == "plain again"
+        assert len(panel._sections) == sections
+        assert panel.current_trigger_index() == 0
+        assert panel.selected_trigger_indices() == [0]
+        assert panel.tree.state() == QAbstractItemView.NoState
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_locked_document_refuses_the_rename_at_commit(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        name = _names(window)[0]
+        before = _record_count(window)
+        label = panel._item_for_index[0].text(panel._COL_NAME)
+
+        _double_click(panel, panel._item_for_index[0])
+        editor = _name_editor(panel)
+        _type_into(editor, "Refused")
+        monkeypatch.setattr(window, "_refuse_locked_edit", lambda: True)
+        _editor_key(editor, Qt.Key_Return)
+        assert _record_count(window) == before
+        assert _names(window)[0] == name
+        assert panel._item_for_index[0].text(panel._COL_NAME) == label
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_the_section_dialogs_report_through_the_funnels(monkeypatch) -> None:
     window = _divided_window()
     try:
@@ -5593,27 +5951,34 @@ def test_the_split_never_takes_the_detail_pane_below_its_minimum(height: int) ->
         window.close()
 
 
-def test_dragging_the_tree_detail_handle_still_moves_and_keeps_the_split() -> None:
+def _drag_handle(handle, dy: int) -> None:
+    """Press a splitter handle, drag it `dy` px down and let go, on real mouse events."""
     from PyQt5.QtCore import QEvent, QPoint, Qt
     from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtWidgets import QApplication
+
+    start = handle.rect().center()
+
+    def send(kind, pos, button, buttons) -> None:
+        event = QMouseEvent(kind, pos, handle.mapToGlobal(pos), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(handle, event)
+
+    send(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+    send(QEvent.MouseMove, start + QPoint(0, dy), Qt.NoButton, Qt.LeftButton)
+    send(QEvent.MouseButtonRelease, start + QPoint(0, dy), Qt.LeftButton, Qt.NoButton)
+    QApplication.processEvents()
+
+
+def test_dragging_the_tree_detail_handle_still_moves_and_keeps_the_split() -> None:
     from PyQt5.QtWidgets import QApplication
 
     window = _sectioned_window()
     try:
         QApplication.processEvents()
         panel = window.trigger_panel
-        handle = panel.splitter.handle(1)
         top, bottom = panel.splitter.sizes()
-        start = handle.rect().center()
 
-        def send(kind, pos, button, buttons) -> None:
-            event = QMouseEvent(kind, pos, handle.mapToGlobal(pos), button, buttons, Qt.NoModifier)
-            QApplication.sendEvent(handle, event)
-
-        send(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
-        send(QEvent.MouseMove, start - QPoint(0, 40), Qt.NoButton, Qt.LeftButton)
-        send(QEvent.MouseButtonRelease, start - QPoint(0, 40), Qt.LeftButton, Qt.NoButton)
-        QApplication.processEvents()
+        _drag_handle(panel.splitter.handle(1), -40)
         assert panel.splitter.sizes() == [top - 40, bottom + 40]
 
         # A later resize keeps the dragged proportion; it does not go back to the starting split.
@@ -5622,6 +5987,81 @@ def test_dragging_the_tree_detail_handle_still_moves_and_keeps_the_split() -> No
         grown_top, grown_bottom = panel.splitter.sizes()
         assert grown_top + grown_bottom == top + bottom + 100
         assert grown_bottom - grown_top >= bottom - top + 80
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #274: the bar between the condition and effect list and its form -------
+
+
+def test_the_entry_bar_trades_height_between_the_list_and_the_form() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _sectioned_window()
+    try:
+        QApplication.processEvents()
+        panel = window.trigger_panel
+        bars = panel.splitter.sizes()
+        top, bottom = panel.detail_splitter.sizes()
+        handle = panel.detail_splitter.handle(1)
+        tree_bottom = panel.entry_tree.mapTo(window, panel.entry_tree.rect().bottomLeft()).y()
+        bar = handle.mapTo(window, handle.rect().center()).y()
+        new_top = panel.entry_new_button.mapTo(window, panel.entry_new_button.rect().topLeft()).y()
+        assert tree_bottom < bar < new_top, "the bar sits under the list, above the buttons"
+
+        # Up: at this window the form's floor leaves the list almost no room to grow.
+        _drag_handle(handle, -40)
+        assert panel.detail_splitter.sizes() == [top - 40, bottom + 40]
+        assert panel.splitter.sizes() == bars, "the upper bar stays where it was"
+
+        # A later resize keeps the dragged proportion; it does not go back to equal.
+        window.resize(1500, 1000)
+        QApplication.processEvents()
+        grown_top, grown_bottom = panel.detail_splitter.sizes()
+        assert grown_top + grown_bottom > top + bottom
+        assert grown_bottom - grown_top >= bottom - top + 80
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_neither_side_of_the_entry_bar_collapses() -> None:
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        total = sum(panel.detail_splitter.sizes())
+        for dy, side, name in ((-total, 0, "entry list"), (total, 1, "form")):
+            _drag_handle(panel.detail_splitter.handle(1), dy)
+            size = panel.detail_splitter.sizes()[side]
+            assert size >= panel.detail_splitter.widget(side).minimumSizeHint().height(), f"the {name} went below its minimum"
+            _assert_the_detail_pane_fits(panel)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_picker_takes_the_pane_and_gives_the_dragged_split_back() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        QApplication.processEvents()
+        handle = panel.detail_splitter.handle(1)
+        _drag_handle(handle, -30)
+        dragged = panel.detail_splitter.sizes()
+        stack = panel.detail_stack.height()
+
+        panel.entry_new_button.click()
+        QApplication.processEvents()
+        assert not panel.entry_tree.isVisible() and not handle.isVisible()
+        assert panel.detail_stack.height() > stack
+
+        panel._close_picker()
+        QApplication.processEvents()
+        assert panel.entry_tree.isVisible() and handle.isVisible()
+        assert panel.detail_splitter.sizes() == dragged
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -6748,8 +7188,7 @@ def test_gh137_slice0_g_cut_copy_paste_defer_to_a_focused_editor(which: str, rou
         assert len(window.trigger_panel._manager().triggers) == count, "Cut cut triggers"
     finally:
         QTest.keyRelease(window, Qt.Key_Control)
-        window.edit_history.mark_saved()
-        window.close()
+        conftest.close_window(window)
 
 
 def _texts(menu) -> list[str]:
@@ -6769,8 +7208,8 @@ def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
         panel.select_trigger(1)
         menu = panel.trigger_context_menu(panel._item_for_index[1])
         assert _texts(menu) == [
-            "Cut", "Copy", "Paste", "Move Up", "Move Down", "Move to Top", "Move to Bottom", "",
-            "Select Section", "Select Tag",
+            "Cut", "Copy", "Paste", "Move Up", "Move Down", "Move to Top", "Move to Bottom",
+            "Renumber IDs to Display Order", "", "Select Section", "Select Tag",
         ]
         assert menu.toolTipsVisible()
         assert _action(menu, "Cut").isEnabled() and _action(menu, "Copy").isEnabled()
@@ -7100,6 +7539,141 @@ def test_task053_02_moving_triggers_on_a_legacy_order_file_warns_once(legacy: bo
         for op, indices in (("move_down", [0]), ("move_up", [1]), ("move_bottom", [0])):
             window.trigger_structural_edit(op, indices)
             assert _status(window).count(LEGACY_REORDER_MESSAGE) == (1 if legacy else 0), op
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #2: Renumber IDs to Display Order -----------------------------------------
+
+
+def _renumber_action(panel, index: int = 0):
+    return _action(panel.trigger_context_menu(panel._item_for_index[index]), "Renumber IDs to Display Order")
+
+
+def _gh2_window():
+    """_triggers_window() whose failure box fails the test: a real one hangs a headless worker."""
+    window = _triggers_window()
+    window._warn = lambda title, text: pytest.fail(f"{title}: {text}")
+    return window
+
+
+def test_gh2_renumber_is_offered_only_while_ids_differ_from_display_order() -> None:
+    window = _gh2_window()
+    try:
+        panel = window.trigger_panel
+        action = _renumber_action(panel)
+        assert not action.isEnabled()
+        assert action.toolTip() == panel._RENUMBER_TIP + " (IDs already follow display order)"
+        panel.select_trigger(0)
+        panel.trigger_move_down_button.click()
+        assert _order(window) == [1, 0, 2, 3]
+        action = _renumber_action(panel)
+        assert action.isEnabled() and action.toolTip() == panel._RENUMBER_TIP
+        panel.sort_combo.setCurrentIndex(1)
+        assert _renumber_action(panel).isEnabled(), "File order view, where it is needed"
+        panel.sort_combo.setCurrentIndex(0)
+        panel.filter_edit.setText("Fixture")
+        assert _renumber_action(panel).isEnabled(), "it acts on the whole list, so a filter does not gate it"
+        panel.filter_edit.clear()
+        panel._editable = False
+        assert _renumber_action(panel).toolTip().endswith(" (this file's triggers cannot be edited)")
+        panel._editable = True
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh2_renumber_is_one_record_and_file_order_then_matches_the_list() -> None:
+    window = _gh2_window()
+    try:
+        panel = window.trigger_panel
+        window.trigger_structural_edit("move_down", [0])
+        window.trigger_structural_edit("move_down", [2])
+        listed = _display_names(window)
+        panel.select_trigger(3)
+        selected = _names(window)[3]
+        records = _record_count(window)
+        panel.sort_combo.setCurrentIndex(1)
+        _renumber_action(panel, 3).trigger()
+        assert _record_count(window) == records + 1
+        assert window.edit_history.peek_undo().label == "Renumber trigger IDs to display order"
+        assert _order(window) == [0, 1, 2, 3]
+        names = _names(window)
+        assert [names[i] for i in _tree_order(panel)] == listed, "File order view now lists the display order"
+        assert [names[i] for i in panel.selected_trigger_indices()] == [selected]
+        assert not _renumber_action(panel).isEnabled()
+        window.undo()
+        assert _display_names(window) == listed and _names(window)[3] == selected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("mode", ["legacy", "display", "unknown"])
+def test_gh2_renumber_says_what_it_changed_for_the_files_execution_order(mode: str, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from descape import viewer
+    from descape.viewer import DISPLAY_RENUMBER_MESSAGE, LEGACY_RENUMBER_MESSAGE, UNKNOWN_RENUMBER_MESSAGE
+
+    window = _gh2_window()
+    try:
+        if mode == "legacy":
+            window._set_exec_order(SimpleNamespace(label="execution order"), 1)
+        elif mode == "unknown":
+            monkeypatch.setattr(viewer, "exec_order_value", lambda loaded: None)
+        window.trigger_structural_edit("move_down", [0])
+        window.trigger_structural_edit("renumber", [])
+        said = {
+            "legacy": LEGACY_RENUMBER_MESSAGE in _status(window),
+            "display": DISPLAY_RENUMBER_MESSAGE in _status(window),
+            "unknown": UNKNOWN_RENUMBER_MESSAGE in _status(window),
+        }
+        assert said == {key: key == mode for key in said}
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_trigger_tech_field_hides_internal_techs_and_an_object_field_does_not() -> None:
+    from descape import object_catalog, trigger_fields
+    from descape.constant_picker import HIDDEN_LABEL, INTERNAL_TECHS_LABEL
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        current = next(e for e in object_catalog.techs() if e.internal)
+        tech = panel._build_catalog_widget(None, [], current.id, trigger_fields.CATALOG_PRESENTATIONS["TechInfo"], True)
+        assert tech._hidden_label == INTERNAL_TECHS_LABEL
+        assert {i.value for i in tech._items if i.hidden} == {e.id for e in object_catalog.techs() if e.internal}
+        assert tech.line_edit.text() == current.name, "an internal tech already in a trigger still displays"
+        unit = panel._build_catalog_widget(None, [], None, trigger_fields.CATALOG_PRESENTATIONS["UnitInfo"], True)
+        assert unit._hidden_label == HIDDEN_LABEL
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh2_a_cut_trigger_reconnects_its_links_when_pasted_after_a_renumber() -> None:
+    from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
+
+    from descape.trigger_model import ids_follow_display_order
+
+    window = _gh2_window()
+    try:
+        panel = window.trigger_panel
+        window.trigger_structural_edit("move_down", [1])
+        assert _names(window)[2] == "Fixture: references" and _names(window)[0] == "Fixture: setup"
+        panel.select_trigger(0)
+        window.cut_triggers()
+        assert not ids_follow_display_order(_order(window)), "the cut leaves a renumber to do"
+        window.trigger_structural_edit("renumber", [])
+        window.paste_triggers()
+        manager = panel._manager()
+        holder = next(t for t in manager.triggers if t.name == "Fixture: references")
+        linked = [manager.triggers[ce.trigger_id].name for ce in get_trigger_referencing_ce(holder) if ce.trigger_id >= 0]
+        assert "Fixture: setup" in linked
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -7550,13 +8124,6 @@ def _live_previews(panel) -> list:
     return panel.property_host.findChildren(InstructionPreview)
 
 
-def _drawn_third(preview) -> int:
-    """Which third of the mock screen the box's centre sits in, 0 top to 2 bottom."""
-    screen, box = preview.screen, preview.box
-    assert screen.height() > 0 and box.height() > 0, "the preview was never laid out"
-    return min(2, box.geometry().center().y() * 3 // screen.height())
-
-
 def test_a_single_display_instructions_effect_gets_a_preview_under_its_form() -> None:
     from PyQt5.QtWidgets import QFormLayout
 
@@ -7568,9 +8135,8 @@ def test_a_single_display_instructions_effect_gets_a_preview_under_its_form() ->
         form = panel.property_form
         last = form.itemAt(form.rowCount() - 1, QFormLayout.SpanningRole)
         assert last is not None and last.widget() is preview, "a full-width row below the fields"
-        assert "Fixture scenario loaded." in preview.text_label.text()
-        assert preview.drawn_position == 0
-        assert _drawn_third(preview) == 0
+        assert "Fixture scenario loaded." in preview.view.html
+        assert preview.view.slot == 0
         assert window.trigger_edits is None
         assert not window.edit_history.is_dirty
     finally:
@@ -7606,13 +8172,12 @@ def test_no_preview_for_a_trigger_a_condition_another_effect_or_a_multi_select()
         window.close()
 
 
-@pytest.mark.parametrize(("stored", "third", "note"), [(0, 0, ""), (1, 1, ""), (2, 2, ""), (-1, 0, "unset, drawn as TOP")])
-def test_the_box_sits_in_its_positions_third(stored: int, third: int, note: str) -> None:
+@pytest.mark.parametrize(("stored", "slot", "note"), [(0, 0, ""), (1, 1, ""), (2, 2, ""), (-1, 0, "unset, drawn as TOP")])
+def test_the_position_picks_the_slot(stored: int, slot: int, note: str) -> None:
     window = _instruction_window(instruction_panel_position=stored)
     try:
         preview = _preview(window.trigger_panel)
-        assert preview.drawn_position == third
-        assert _drawn_third(preview) == third
+        assert preview.view.slot == slot
         if note:
             assert note in preview.note_label.text()
         else:
@@ -7633,7 +8198,7 @@ def test_typing_in_the_message_updates_the_preview_but_writes_nothing() -> None:
         preview = _preview(panel)
         entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
         _row_widget(panel, "message").setPlainText("<BLUE>Scout: <GREY>over here & <fixture_var>")
-        html = preview.text_label.text()
+        html = preview.view.html
         assert "Scout: " in html and "over here &amp; " in html
         assert "color:#{:02x}{:02x}{:02x}".format(*TEXT_COLORS["BLUE"]) in html
         assert "color:#{:02x}{:02x}{:02x}".format(*TEXT_COLORS["GREY"]) in html
@@ -7676,10 +8241,10 @@ def test_real_keystrokes_in_the_message_follow_in_the_preview_and_commit_once_on
 
         QTest.keyClicks(box, "X")
         QApplication.processEvents()
-        assert "Fixture scenario loaded.X" in preview.text_label.text()
+        assert "Fixture scenario loaded.X" in preview.view.html
         QTest.keyClicks(box, "Y")
         QApplication.processEvents()
-        assert "Fixture scenario loaded.XY" in preview.text_label.text()
+        assert "Fixture scenario loaded.XY" in preview.view.html
         assert box.toPlainText() == "Fixture scenario loaded.XY"
         assert _record_count(window) == 0, "a keystroke recorded an undo step"
         assert entry.message == "Fixture scenario loaded."
@@ -7713,9 +8278,7 @@ def test_a_field_edit_records_only_its_own_undo_step_and_the_preview_follows() -
         combo.setCurrentIndex(combo.findData(2))
         QApplication.processEvents()
         assert _record_count(window) == 1, "the position edit, and nothing from the preview"
-        preview = _preview(panel)
-        assert preview.drawn_position == 2
-        assert _drawn_third(preview) == 2
+        assert _preview(panel).view.slot == 2
 
         _row_widget(panel, "play_sound").setChecked(True)
         QApplication.processEvents()
@@ -7786,8 +8349,7 @@ def test_with_no_install_a_string_id_is_not_available_and_the_icon_falls_back() 
         preview = _preview(window.trigger_panel)
         assert "language string #60014 (not available)" in preview.note_label.text()
         assert preview.icon_source in ("sprite", None)
-        if preview.icon_source is None:
-            assert preview.icon_label.pixmap() is None or preview.icon_label.pixmap().isNull()
+        assert (preview.view.icon is None) == (preview.icon_source is None)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -7819,13 +8381,13 @@ def test_an_install_supplies_the_string_the_icon_and_the_colours(tmp_path: Path)
         window = _instruction_window(string_id=60014, object_list_unit_id=448)
         try:
             preview = _preview(window.trigger_panel)
-            assert "From the table" in preview.text_label.text(), "the string replaces the message"
-            assert "Fixture scenario loaded." not in preview.text_label.text()
-            assert "color:#010203" in preview.text_label.text(), "the install's Blue"
+            assert "From the table" in preview.view.html, "the string replaces the message"
+            assert "Fixture scenario loaded." not in preview.view.html
+            assert "color:#010203" in preview.view.html, "the install's Blue"
             assert "language string #60014" in preview.note_label.text()
             assert "not available" not in preview.note_label.text()
             assert preview.icon_source == "icon"
-            assert not preview.icon_label.pixmap().isNull()
+            assert not preview.view.icon.isNull()
         finally:
             window.edit_history.mark_saved()
             window.close()
@@ -7850,7 +8412,7 @@ def test_a_building_icon_comes_from_the_building_portraits(tmp_path: Path) -> No
         try:
             preview = _preview(window.trigger_panel)
             assert preview.icon_source == "icon"
-            image = preview.icon_label.pixmap().toImage()
+            image = preview.view.icon.toImage()
             centre = image.pixelColor(image.width() // 2, image.height() // 2)
             assert (centre.red(), centre.green(), centre.blue()) == (10, 200, 10)
         finally:
@@ -7870,27 +8432,26 @@ def test_the_icon_frame_takes_the_source_players_colour_or_the_leading_tag_colou
         panel = window.trigger_panel
         colors = window.scenario.player_colors
         assert colors is not None
-        assert _preview(panel).tint == tuple(colors[1]), "source player ONE's colour"
+        assert _preview(panel).view.tint == tuple(colors[1]), "source player ONE's colour"
 
         panel.refresh_player_labels(panel._player_labels, None)
         QApplication.processEvents()
-        assert _preview(panel).tint is None, "no colours, no tint"
+        assert _preview(panel).view.tint is None, "no colours, no tint"
 
         entry = panel._manager().triggers[_SETUP_TRIGGER].effects[0]
         entry.use_tag_color_for_icon = 1
         panel.refresh_player_labels(panel._player_labels, colors)
         panel.refresh_entries(select=("effect", 0))
         QApplication.processEvents()
-        assert _preview(panel).tint == TEXT_COLORS["BLUE"]
+        assert _preview(panel).view.tint == TEXT_COLORS["BLUE"]
     finally:
         window.edit_history.mark_saved()
         window.close()
 
 
 @pytest.mark.font_sensitive
-def test_a_long_message_grows_the_preview_without_overlap_or_widening() -> None:
-    """A box taller than a third grows the screen rather than clipping, a long
-    unbreakable word cannot widen the pane, and typing re-fits the form."""
+def test_a_long_footer_grows_the_preview_without_overlap_or_widening() -> None:
+    """A long unbreakable word cannot widen the pane, and typing re-fits the form."""
     from PyQt5.QtWidgets import QApplication
 
     from descape.trigger_panel import TriggerPanel
@@ -7901,21 +8462,16 @@ def test_a_long_message_grows_the_preview_without_overlap_or_widening() -> None:
         _assert_form_rows_do_not_overlap(panel.property_form)
         assert preview.minimumSizeHint().width() <= TriggerPanel.MIN_USEFUL_WIDTH
         assert not panel.property_area.horizontalScrollBar().isVisible()
-        box, screen = preview.box, preview.screen
-        assert box.height() >= box.heightForWidth(box.width()), "the box clips its text"
-        assert box.geometry().top() >= 0
-        assert box.geometry().bottom() < screen.height()
-        assert _drawn_third(preview) == 2
         assert panel.property_host.height() >= panel.property_form.heightForWidth(panel.property_host.width())
 
-    window = _instruction_window(message="<BLUE>" + "W" * 120, instruction_panel_position=2)
+    window = _instruction_window(sound_name="W" * 120)
     try:
         panel = window.trigger_panel
         check(panel)
         before = _preview(panel).height()
-        _row_widget(panel, "message").setPlainText("<GREY>" + "A long line of narration. " * 30)
+        _row_widget(panel, "sound_name").setText("A long line of narration. " * 30)
         check(panel)
-        assert _preview(panel).height() > before, "the screen grew with its box"
+        assert _preview(panel).height() > before, "the rows grew with their text"
         assert not window.edit_history.is_dirty
     finally:
         window.edit_history.mark_saved()
@@ -8121,10 +8677,6 @@ def test_kill_object_reads_the_object_filters_above_its_set_rows() -> None:
             "object group",
             "object type",
             "source player",
-            "area x1",
-            "area y1",
-            "area x2",
-            "area y2",
             "Area",
             "selected object ids",
             "Objects",
@@ -8155,6 +8707,95 @@ def test_objects_in_area_reads_its_type_row_and_filters_under_its_quantity() -> 
             "object type",
             "source player",
         ]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #277: an area's four boxes, as the in-game editor lays them out -----------
+
+
+def _area_window(kind: str):
+    """The trigger window with a condition or an effect that has an area selected.
+    Not objects_in_area: its long checkbox caption alone overflows the narrowest pane."""
+    from PyQt5.QtWidgets import QApplication
+
+    if kind == "effect":
+        return _object_list_window("kill_object", {})[0]
+    window = _triggers_window()
+    panel = window.trigger_panel
+    panel.select_trigger(0)
+    index = len(panel._manager().triggers[0].conditions)
+    condition = next(i for i, d in panel._vocabulary.conditions.items() if d.name == "bring_object_to_area")
+    window.entry_structural_edit("new", 0, "condition", -1, condition)
+    panel.refresh_entries(select=("condition", index))
+    QApplication.processEvents()
+    return window
+
+
+def _area_boxes(panel) -> list:
+    from descape import trigger_geometry
+
+    return [_row_widget(panel, field) for field in trigger_geometry.AREA_FIELDS]
+
+
+@pytest.mark.font_sensitive
+@pytest.mark.parametrize("kind", ["condition", "effect"])
+def test_an_area_shows_two_rows_of_two_boxes_with_their_captions_above(kind: str) -> None:
+    from PyQt5.QtWidgets import QApplication, QLabel
+
+    from descape.trigger_panel import TriggerPanel
+    from testkit.qt_window import FONT_DPI_OVERRIDE_ENV
+
+    window = _area_window(kind)
+    try:
+        panel = window.trigger_panel
+        boxes = _area_boxes(panel)
+        x1, y1, x2, y2 = boxes
+        assert x1.y() == y1.y() < x2.y() == y2.y()
+        assert x1.x() == x2.x() < y1.x() == y2.x()
+
+        grid = x1.parentWidget()
+        captions = grid.findChildren(QLabel)
+        for box, text in zip(boxes, ("X1", "Y1", "X2", "Y2"), strict=True):
+            caption = next(label for label in captions if label.buddy() is box)
+            assert caption.text() == text
+            assert caption.x() == box.x() and caption.geometry().bottom() < box.y()
+
+        assert panel._group_rows["area"].set_button.parentWidget().y() > grid.geometry().bottom()
+        _assert_form_rows_do_not_overlap(panel.property_form)
+
+        # A box's inner line edit is in the chain too, so count only the boxes.
+        reached, widget = [], x1
+        for _ in range(32):
+            widget = widget.nextInFocusChain()
+            if widget in boxes and widget not in reached:
+                reached.append(widget)
+        assert reached[:3] == [y1, x2, y2]
+
+        # The floor itself, whatever the font: 9 pt fits a narrow pane even without it.
+        assert grid.minimumSizeHint().width() < 2 * x1.sizeHint().width()
+        assert grid.minimumSizeHint().width() <= TriggerPanel._PROPERTY_MIN_WIDTH
+        if not os.environ.get(FONT_DPI_OVERRIDE_ENV):
+            # Only at the pinned font: above it the form's other rows outgrow this unscaled width.
+            panel.property_area.setFixedWidth(TriggerPanel._PROPERTY_MIN_WIDTH)
+            QApplication.processEvents()
+            assert panel.property_area.horizontalScrollBar().maximum() == 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_selection_of_areas_shows_the_boxes_without_a_set_row() -> None:
+    window, indices = _object_list_window("kill_object", {}, {})
+    try:
+        panel = window.trigger_panel
+        _select_entries(panel, *[("effect", index) for index in indices])
+        x1, y1, x2, y2 = _area_boxes(panel)
+        assert x1.y() == y1.y() < x2.y() == y2.y()
+        assert x1.x() == x2.x() < y1.x() == y2.x()
+        assert "area" not in panel._group_rows
+        assert x1.toolTip() == "area x1", "with no Set row, the tooltip is what still says area"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -10433,7 +11074,8 @@ def test_gh211_the_trigger_menu_moves_follow_their_gates(tmp_path: Path) -> None
         found = _move_menu_states(panel, 15)
         assert tuple(found) == ("Move Up", "Move Down", "Move to Top", "Move to Bottom"), "File order has no sections"
         assert [enabled for enabled, _ in found.values()] == [False] * 4
-        assert all(tip.endswith(" (switch to Display order to reorder)") for _, tip in found.values())
+        assert all(tip.endswith(panel._move_view_reason()) for _, tip in found.values())
+        assert "Renumber IDs to Display Order" in panel._move_view_reason(), "File order names the renumber"
         panel.sort_combo.setCurrentIndex(0)
 
         off = (False, " (clear the filter or tag to reorder)")

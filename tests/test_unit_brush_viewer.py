@@ -1,6 +1,6 @@
 """The Unit Brush tool in the viewer (GH #170), offscreen: routing, the one
 undo record per drag, the rules and Free placement, rotation, the widgets,
-the refused picks, the status line and the write path.
+the refused picks, the status line, the write path and the hover ghost (GH #270).
 
 Every ViewerWindow() here closes through _close(), which marks the
 document saved first (tests/test_fill_tool.py's module docstring)."""
@@ -25,10 +25,14 @@ OAK = 349  # GAIA-only, cyclable
 DEER = 65  # GAIA-only, ANGLE
 VILLAGER = 83  # ANGLE, mobile
 HOUSE = 70  # 2x2
+BARRACKS = 12  # 3x3
 STONE_WALL = 117
 STONE_GATE = 64
 WATER_DEEP = 22
 P1, GAIA = 1, 0
+TILE_CENTRE = (0.5, 0.5)
+# Low in the tile, where Place Unit's even-span snap rounds down and the brush's does not.
+TILE_LOW = (0.2, 0.2)
 
 
 def _window(const: int = OAK, owner: int = GAIA, size: int = 3, shown: bool = False):
@@ -67,8 +71,76 @@ def _stroke(window, path, button=None, modifiers=None) -> None:
     window.map_view._stroke_button = None
 
 
+def _view_pos(window, tile, at=TILE_CENTRE):
+    """The viewport point `at` inside a Flat tile."""
+    from PyQt5.QtCore import QPointF
+
+    view = window.map_view
+    tile_px = view._tile_pixels
+    return QPointF(view.mapFromScene(QPointF((tile[0] + at[0]) * tile_px, (tile[1] + at[1]) * tile_px)))
+
+
+def _hover(window, tile, at=TILE_CENTRE) -> None:
+    """A real mouse move with no button down, through MapView (_stroke() bypasses it)."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    event = conftest.mouse_event(QEvent.MouseMove, _view_pos(window, tile, at), Qt.NoButton, Qt.NoButton)
+    window.map_view.mouseMoveEvent(event)
+
+
+def _press(window, tile, button=None, at=TILE_CENTRE) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    button = Qt.LeftButton if button is None else button
+    event = conftest.mouse_event(QEvent.MouseButtonPress, _view_pos(window, tile, at), button, button)
+    window.map_view.mousePressEvent(event)
+
+
+def _held_move(window, tile, button=None) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    buttons = Qt.LeftButton if button is None else button
+    event = conftest.mouse_event(QEvent.MouseMove, _view_pos(window, tile), Qt.NoButton, buttons)
+    window.map_view.mouseMoveEvent(event)
+
+
+def _release(window, tile, button=None, at=TILE_CENTRE) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    button = Qt.LeftButton if button is None else button
+    event = conftest.mouse_event(QEvent.MouseButtonRelease, _view_pos(window, tile, at), button, Qt.NoButton)
+    window.map_view.mouseReleaseEvent(event)
+
+
+def _drag(window, path, button=None, at=TILE_CENTRE) -> None:
+    """A real press-drag-release through MapView, with no move before the press."""
+    _press(window, path[0], button, at)
+    for tile in path[1:]:
+        _held_move(window, tile, button)
+    _release(window, path[-1], button, at)
+
+
 def _units(window) -> list:
     return [(p, u) for p, units in enumerate(window.scenario.unit_manager.units) for u in units]
+
+
+def _ghost(window):
+    return window.map_view._unit_ghost_item
+
+
+def _ghost_polygons(window) -> list:
+    return [[(p.x(), p.y()) for p in polygon] for polygon, _brush, _pen in _ghost(window)._marks]
+
+
+def _ghost_colors(window) -> set:
+    return {brush.color().getRgb()[:3] for _polygon, brush, _pen in _ghost(window)._marks}
+
+
+def _placed_polygons(window, unit) -> list:
+    """The mark a placed `unit` shows, test_place_preview.py's _expected_mark() shape."""
+    view = window.map_view
+    entry = next(entry for entry in view._unit_index.entries if entry.unit is unit)
+    return [[(float(x), float(y)) for x, y in pts] for pts in view._unit_polygons_for(entry)]
 
 
 def _status(window) -> str:
@@ -339,7 +411,7 @@ def test_the_tool_hides_outside_units_mode_and_shows_its_widgets() -> None:
 
 
 def test_a_tool_wheel_slot_resizes_the_brush_and_a_rotate_slot_does_nothing() -> None:
-    """GH #245: the brush has a size box, and no ghost to turn."""
+    """GH #245: the brush has a size box, and a ghost that does not turn."""
     from PyQt5.QtCore import Qt
 
     window = _window()
@@ -357,6 +429,299 @@ def test_the_tool_is_disabled_without_a_map() -> None:
     window = conftest.blank_window(load=False)
     try:
         assert not window.unit_brush_action.isEnabled()
+    finally:
+        _close(window)
+
+
+# --- the hover ghost (GH #270) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("const", [VILLAGER, HOUSE])
+def test_the_ghost_is_the_unit_a_size_1_press_places(const) -> None:
+    window = _window(const=const, owner=P1, size=1, shown=True)
+    try:
+        _hover(window, (40, 40), TILE_LOW)
+        ghost = _ghost_polygons(window)
+        assert ghost
+        _drag(window, [(40, 40)], at=TILE_LOW)
+        (_player, unit), = _units(window)
+        assert ghost == _placed_polygons(window, unit)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("end", ["leave", "pan", "place_unit", "mode"])
+def test_the_ghost_goes_with_the_hover_the_tool_and_the_mode(end) -> None:
+    from PyQt5.QtCore import QEvent
+
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        view = window.map_view
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        if end == "leave":
+            view.leaveEvent(QEvent(QEvent.Leave))
+        elif end == "mode":
+            window.mode_combo.setCurrentText("View")
+        else:
+            getattr(window, f"{end}_action").setChecked(True)
+            assert view._tool == end
+        assert _ghost(window) is None
+        assert view._place_hover is None
+        view.refresh_place_ghost()
+        assert _ghost(window) is None, "a refresh must not resurrect it"
+    finally:
+        _close(window)
+
+
+def test_switching_from_place_unit_to_the_brush_drops_place_units_ghost() -> None:
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        window.place_unit_action.setChecked(True)
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        window.unit_brush_action.setChecked(True)
+        assert _ghost(window) is None and window.map_view._place_hover is None
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("pick", ["nothing", "wall", "gate", "cliff"])
+def test_a_pick_the_press_refuses_shows_no_ghost(pick) -> None:
+    from descape import unit_kind
+
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        panel = window.units_panel
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        if pick == "nothing":
+            panel._pending_object_const = None
+            window._refresh_place_ghost()
+        else:
+            panel._set_pending_object(
+                {"wall": STONE_WALL, "gate": STONE_GATE, "cliff": min(unit_kind.cliff_consts())}[pick]
+            )
+        assert _ghost(window) is None
+        _hover(window, (41, 41))
+        assert _ghost(window) is None
+    finally:
+        _close(window)
+
+
+def test_a_random_pick_ghosts_its_roll_unless_any_const_of_it_is_refused(monkeypatch) -> None:
+    from descape.place_random import RANDOM_VILLAGER, choices
+
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        panel = window.units_panel
+        panel.catalog_view.select(RANDOM_VILLAGER)
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        # No shipped random pick holds a wall; the press would refuse the whole pick if one did.
+        monkeypatch.setattr(panel, "selected_object_choices", lambda: (VILLAGER, STONE_WALL))
+        _hover(window, (41, 41))
+        assert panel.selected_object_const() in choices(RANDOM_VILLAGER), "vacuous: the roll itself must be paintable"
+        assert _ghost(window) is None
+        _stroke(window, [(41, 41)])
+        assert _units(window) == [] and "can't paint" in _status(window)
+    finally:
+        _close(window)
+
+
+def test_a_footprint_past_the_map_edge_shows_no_ghost() -> None:
+    window = _window(const=BARRACKS, owner=P1, size=1, shown=True)
+    try:
+        _hover(window, (0, 0))
+        assert _ghost(window) is None
+        _hover(window, (1, 1))
+        assert _ghost(window) is not None
+        _hover(window, (119, 119))
+        assert _ghost(window) is None
+    finally:
+        _close(window)
+
+
+def test_a_catalog_pick_an_owner_change_and_free_placement_update_the_ghost_with_no_move() -> None:
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        _flood(window, [(70, 70)])
+        _hover(window, (70, 70))
+        assert _ghost(window).refused
+        window.unrestricted_check.setChecked(True)
+        assert not _ghost(window).refused
+        window.unrestricted_check.setChecked(False)
+        assert _ghost(window).refused
+
+        colors = window.scenario.player_colors
+        assert colors[1] != colors[2]
+        assert _ghost_colors(window) == {tuple(colors[1])}
+        window.units_panel.select_owner(2)
+        assert _ghost_colors(window) == {tuple(colors[2])}
+
+        before = _ghost(window).sceneBoundingRect()
+        window.units_panel.select_object(HOUSE)
+        assert _ghost(window).sceneBoundingRect() != before
+    finally:
+        _close(window)
+
+
+def test_the_ghost_is_refused_on_water_and_over_a_unit_and_undo_turns_it_back() -> None:
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        _flood(window, [(70, 70)])
+        _hover(window, (70, 70))
+        assert _ghost(window).refused
+        _hover(window, (40, 40))
+        assert not _ghost(window).refused
+        _drag(window, [(40, 40)])
+        assert len(_units(window)) == 1
+        assert _ghost(window).refused, "the unit just painted blocks the next one on its tile"
+        _hover(window, (42, 42))
+        assert not _ghost(window).refused
+        _hover(window, (40, 40))
+        assert _ghost(window).refused
+        window.undo()
+        assert not _ghost(window).refused
+    finally:
+        _close(window)
+
+
+def test_a_stroke_hides_the_ghost_and_asks_for_none_until_the_release_at_the_live_point() -> None:
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        view = window.map_view
+        calls = []
+        real = view._on_place_preview
+        view.set_place_preview(lambda pos, modifiers: (calls.append(pos), real(pos, modifiers))[1])
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None and len(calls) == 1
+        calls.clear()
+
+        _press(window, (40, 40))
+        assert _ghost(window) is None
+        for tile in ((41, 40), (42, 40)):
+            _held_move(window, tile)
+            assert _ghost(window) is None
+        view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Alt, Qt.AltModifier))
+        view.keyReleaseEvent(QKeyEvent(QEvent.KeyRelease, Qt.Key_Alt, Qt.NoModifier))
+        window.unrestricted_check.setChecked(True)
+        window.unrestricted_check.setChecked(False)
+        assert _ghost(window) is None
+        assert calls == []
+
+        _release(window, (42, 40))
+        assert calls
+        placed = {(int(u.x), int(u.y)): u for _p, u in _units(window)}
+        assert sorted(placed) == [(40, 40), (41, 40), (42, 40)]
+        assert _ghost_polygons(window) == _placed_polygons(window, placed[42, 40])
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("stroke", ["placing", "all_refused", "right_button"])
+def test_a_release_restores_the_ghost_with_no_move(stroke) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        tile = (40, 40)
+        button = Qt.RightButton if stroke == "right_button" else Qt.LeftButton
+        if stroke == "all_refused":
+            _flood(window, [tile])
+        _hover(window, tile)
+        assert _ghost(window) is not None
+        _press(window, tile, button)
+        assert _ghost(window) is None
+        _release(window, tile, button)
+        assert _ghost(window) is not None
+        assert bool(_units(window)) is (stroke == "placing")
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("end", ["leave", "tool"])
+def test_a_stroke_closed_by_a_leave_or_a_tool_switch_ends_with_no_ghost(end) -> None:
+    from PyQt5.QtCore import QEvent
+
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        view = window.map_view
+        _hover(window, (40, 40))
+        _press(window, (40, 40))
+        if end == "leave":
+            view.leaveEvent(QEvent(QEvent.Leave))
+        else:
+            window.pan_action.setChecked(True)
+        assert not view._stroke_active
+        assert len(_units(window)) == 1
+        assert _ghost(window) is None and view._place_hover is None
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("random_ticked", [True, False], ids=["random", "unticked"])
+def test_the_ghost_carries_the_pending_rotation(random_ticked, monkeypatch) -> None:
+    from descape import viewer
+
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        window.unit_brush_random_check.setChecked(random_ticked)
+        pending = PlaceRotation(facing=1.0)
+        window._place_rotation = pending
+        seen = []
+        real = viewer.new_unit
+        monkeypatch.setattr(viewer, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        expected = rotation_for(pending, VILLAGER, P1)
+        assert expected != 0.0
+        assert seen == [expected]
+    finally:
+        _close(window)
+
+
+def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -> None:
+    """test_place_preview.py's test of the same name: the ghost is an overlay under the brush too."""
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        assert window.unit_edits is None, "the fixture must start with the model unbuilt"
+        calls = {"units": 0, "region": 0}
+        cache = window._cache
+        real_units, real_region = cache.invalidate_units, cache.invalidate_region
+
+        def counted_units(*a, **k):
+            calls["units"] += 1
+            return real_units(*a, **k)
+
+        def counted_region(*a, **k):
+            calls["region"] += 1
+            return real_region(*a, **k)
+
+        cache.invalidate_units = counted_units
+        cache.invalidate_region = counted_region
+        for step in range(8):
+            _hover(window, (30 + step, 30 + step))
+        window.units_panel.select_owner(3)
+        window.unrestricted_check.setChecked(True)
+        assert _ghost(window) is not None
+        assert window.unit_edits is None
+        assert _units(window) == []
+        assert calls == {"units": 0, "region": 0}
+    finally:
+        _close(window)
+
+
+def test_the_ghost_arms_no_rotate_input() -> None:
+    """GH #170's Out of scope stands: rotate inputs turn only Place Unit's ghost."""
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        assert not window._place_ghost_active()
     finally:
         _close(window)
 

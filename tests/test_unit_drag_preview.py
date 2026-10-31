@@ -21,13 +21,17 @@ pixels, and it is the design that it never becomes cache pixels. So:
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
+from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtWidgets import QApplication
+from test_place_preview import _ghost_draws, _placed_draws
 
-from descape import iso_geometry, render, unit_pick
+from descape import iso_geometry, object_catalog, placement_rules, render, unit_pick, unit_rotation
 from testkit import fakes
 
 import conftest
@@ -759,5 +763,831 @@ def test_past_the_cap_the_grabbed_ghost_tints_for_a_blocked_member_inside_the_ca
         assert len(window.map_view._unit_ghost_item._marks) == 1
         assert _refused(window) is tinted
         assert any("placement is checked in full on release" in line for line in logged)
+    finally:
+        _close(window)
+
+
+# --- GH #280: Rotate during a live drag --------------------------------------------------
+
+_OAK = 349  # cyclable, 42 variants
+_WALL = 117
+_GATE = 64  # (4, 1); one step is a 4x4 diagonal, two are (1, 4)
+_GATE_DIAGONAL = 659
+_GATE_Y = 88  # (1, 4)
+_CORNER_Y = 95  # _GATE_Y's own corner piece
+_RAM = 35  # ANGLE, and holds a garrison
+_TURN = 2 * math.pi
+
+# MapView.leaveEvent reads QApplication.mouseButtons() and a synthetic press never sets it (TASK-406).
+_HELD = {"value": False}
+
+
+@pytest.fixture(autouse=True)
+def _hold_the_synthetic_button(monkeypatch):
+    monkeypatch.setattr(
+        QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if _HELD["value"] else Qt.NoButton)
+    )
+    _HELD["value"] = False
+    yield
+    _HELD["value"] = False
+
+
+def _start(window, from_tile, to_tile):
+    """Press on `from_tile`, move to `to_tile`, button still down."""
+    _HELD["value"] = True
+    _drag(window, None, from_tile, to_tile, release=False)
+
+
+def _release(window, tile) -> None:
+    pos = _viewport_pos(window, *tile)
+    window.map_view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+    _HELD["value"] = False
+
+
+def _escape(window) -> None:
+    window.map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    _HELD["value"] = False
+
+
+def _cw(window, presses: int = 1) -> None:
+    """The fine Rotate key, by the QAction it fires, which refuses when disabled."""
+    for _ in range(presses):
+        window.rotate_cw_action.trigger()
+
+
+def _ccw(window, presses: int = 1) -> None:
+    for _ in range(presses):
+        window.rotate_ccw_action.trigger()
+
+
+def _at(window, const: int, x: float, y: float, player: int = 1, rotation: float | None = None, **fields):
+    """One unit at an exact point, which _add()'s tile centres can't give a gate."""
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [player]):
+        unit = model.add(player, const, x, y, **fields)
+    if rotation is not None:
+        unit.rotation = rotation
+    return unit
+
+
+def _select_units(window, *units, player: int = 1) -> list:
+    window._selection = [(player, u.reference_id) for u in units]
+    window._refresh_selection_view()
+    return list(window._selection)
+
+
+def _fields(unit) -> tuple:
+    return (unit.x, unit.y, unit.z, unit.unit_const, unit.rotation, unit.initial_animation_frame)
+
+
+def _last_status(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
+def _undo_label(window) -> str:
+    return window.edit_history.peek_undo().label
+
+
+def _spy_positions(window, monkeypatch) -> list:
+    model = window._ensure_unit_edits()
+    calls: list = []
+    real = model.set_position
+    monkeypatch.setattr(model, "set_position", lambda unit, *a, **k: (calls.append(unit), real(unit, *a, **k))[1])
+    return calls
+
+
+def _count_invalidations(window) -> dict[str, int]:
+    calls = {"units": 0, "region": 0}
+    cache = window._cache
+    real_units, real_region = cache.invalidate_units, cache.invalidate_region
+
+    def counted_units(*a, **k):
+        calls["units"] += 1
+        return real_units(*a, **k)
+
+    def counted_region(*a, **k):
+        calls["region"] += 1
+        return real_region(*a, **k)
+
+    cache.invalidate_units, cache.invalidate_region = counted_units, counted_region
+    return calls
+
+
+def _zoomed(window):
+    """A view where one tile spans well past UNIT_DRAG_THRESHOLD_PX, so a real
+    drag can end on the tile it began on."""
+    window.map_view.scale(12, 12)
+    assert window.map_view.transform().m11() * window.map_view._tile_pixels > 2 * window.map_view.UNIT_DRAG_THRESHOLD_PX
+    return window
+
+
+def test_rotate_mid_drag_writes_nothing_and_the_release_lands_it_in_one_undo_record() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        before = _fields(unit)
+        _start(window, (60, 60), (66, 66))
+        gen, records = window.scenario.unit_gen, len(window.edit_history.records)
+        calls = _count_invalidations(window)
+
+        _cw(window)
+        window.rotate_cw_coarse_action.trigger()
+
+        assert _fields(unit) == before
+        assert window.scenario.unit_gen == gen and len(window.edit_history.records) == records
+        assert calls == {"units": 0, "region": 0}
+        assert _last_status(window) == "Move: Archer facing 5/16"
+
+        _release(window, (66, 66))
+        assert (unit.x, unit.y) == (66.5, 66.5)
+        assert unit.rotation == pytest.approx(5 * _TURN / 16)
+        assert len(window.edit_history.records) == records + 1
+        assert _undo_label(window) == "Move and rotate unit"
+        assert _last_status(window) == "Moved Archer to (66.5, 66.5), facing 5/16"
+
+        window.undo()
+        assert _fields(unit) == before
+    finally:
+        _close(window)
+
+
+def test_a_coarse_key_mid_drag_is_a_quarter_of_the_first_rotatable_members_frames() -> None:
+    window = _window()
+    try:
+        (eight,) = _add(window, 1956, [(60, 60)])
+        (archer,) = _add(window, _ARCHER, [(62, 60)])
+        (oak,) = _add(window, _OAK, [(64, 60)], player=1)
+        _select_units(window, eight, archer, oak)
+        _start(window, (60, 60), (60, 66))
+        window.rotate_cw_coarse_action.trigger()
+        _release(window, (60, 66))
+        # Eight frames give two steps for every rotatable member, as on_unit_rotate_coarse.
+        assert eight.rotation == pytest.approx(2 * _TURN / 8)
+        assert archer.rotation == pytest.approx(2 * _TURN / 16)
+        assert oak.rotation == 11.0, "a variant steps a quarter of its own count"
+    finally:
+        _close(window)
+
+
+def test_escape_after_a_turn_writes_nothing() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        before = _fields(unit)
+        gen = window.scenario.unit_gen
+        _start(window, (60, 60), (66, 66))
+        _cw(window, 3)
+        _escape(window)
+        _release(window, (66, 66))
+        assert _fields(unit) == before and window.scenario.unit_gen == gen
+    finally:
+        _close(window)
+
+
+def test_a_refused_drop_after_a_turn_writes_nothing() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        _add(window, _ARCHER, [(66, 66)], player=2)
+        before = _fields(unit)
+        gen, records = window.scenario.unit_gen, len(window.edit_history.records)
+        _start(window, (60, 60), (66, 66))
+        _cw(window)
+        assert _refused(window)
+        _release(window, (66, 66))
+        assert "Tick Free placement" in _last_status(window)
+        assert _fields(unit) == before
+        assert (window.scenario.unit_gen, len(window.edit_history.records)) == (gen, records)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize(
+    ("const", "press", "x", "y", "presses", "landed"),
+    [
+        pytest.param(83, (60, 60), 60.5, 60.5, 6, 83, id="angle"),
+        pytest.param(349, (60, 60), 60.5, 60.5, 5, 349, id="tree"),
+        pytest.param(64, (60, 60), 60.0, 60.5, 2, 88, id="gate"),
+    ],
+)
+def test_the_turned_ghost_is_the_unit_the_drop_lands(rotating_install, const, press, x, y, presses, landed) -> None:
+    window = _window("Stepped")
+    try:
+        window.show_sprites_action.setChecked(True)
+        assert window._sprites_enabled
+        view = window.map_view
+        unit = _at(window, const, x, y, player=0 if const == 349 else 1)
+        key = (0 if const == 349 else 1, unit.reference_id)
+        _select_units(window, unit, player=key[0])
+        start = conftest.polygon_viewport_pos(view, *press)
+        end = conftest.polygon_viewport_pos(view, 70, 74)
+        _HELD["value"] = True
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+        unturned = _ghost_draws(view)
+
+        _cw(window, presses)
+        ghost = _ghost_draws(view)
+        assert ghost != unturned, "the turn must show with no mouse move"
+
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+        _HELD["value"] = False
+        assert unit.unit_const == landed
+        assert ghost == _placed_draws(window, view._unit_index.entry_for_key(key))
+    finally:
+        _close(window)
+
+
+def test_a_turned_group_ghost_is_the_units_the_drop_lands(rotating_install) -> None:
+    window = _window("Stepped")
+    try:
+        window.show_sprites_action.setChecked(True)
+        view = window.map_view
+        villager = _at(window, _VILLAGER, 60.5, 60.5)
+        gate = _at(window, _GATE, 66.0, 60.5)
+        keys = _select_units(window, villager, gate)
+        start = conftest.polygon_viewport_pos(view, 60, 60)
+        end = conftest.polygon_viewport_pos(view, 70, 74)
+        _HELD["value"] = True
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+        unturned = _ghost_draws(view)
+
+        _cw(window, 2)
+        ghost = _ghost_draws(view)
+        assert ghost != unturned
+
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+        _HELD["value"] = False
+        assert gate.unit_const == _GATE_Y
+        landed = [draw for key in keys for draw in _placed_draws(window, view._unit_index.entry_for_key(key))]
+        assert sorted(ghost) == sorted(landed)
+    finally:
+        _close(window)
+
+
+def test_a_turned_gate_resolves_its_landing_point_by_its_turned_span() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 60.5)
+        view = window.map_view
+        # Off the even axis' rounding tie (GH #206), as the real cursor pixel is.
+        cursor = (69.8, 69.7)
+        _start(window, (60, 60), cursor)
+        scene = view.mapToScene(_viewport_pos(window, *cursor).toPoint())
+        tp = view._tile_pixels
+        unturned = view._unit_ghost_item.sceneBoundingRect()
+        assert (unturned.width(), unturned.height()) == (4 * tp, tp)
+
+        _cw(window, 2)
+        point = window._resolve_placement_point(scene, Qt.NoModifier, unit_const=_GATE_Y)[0]
+        assert point != window._resolve_placement_point(scene, Qt.NoModifier, unit_const=_GATE)[0]
+        turned = view._unit_ghost_item.sceneBoundingRect()
+        assert (turned.width(), turned.height()) == (tp, 4 * tp), "the ghost redraws with no mouse move"
+
+        _release(window, cursor)
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_Y, *point)
+        assert point[0] == 70.5 and point[1].is_integer()
+    finally:
+        _close(window)
+
+
+def test_the_refusal_tint_and_the_drop_read_the_turned_footprint() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 60.5)
+        cursor = (69.8, 69.7)  # lands (1, 4) on rows 68..71
+        # On the (1, 4) footprint's top tile, two rows off what (4, 1) covers at that point or its own.
+        _add(window, _ARCHER, [(70, 68)], player=2)
+        before = _fields(gate)
+        _start(window, (60, 60), cursor)
+        assert not _refused(window)
+        _cw(window, 2)
+        assert _refused(window)
+        _release(window, cursor)
+        assert "Tick Free placement" in _last_status(window)
+        assert _fields(gate) == before
+    finally:
+        _close(window)
+
+
+def test_a_quarter_turn_at_one_point_is_a_new_question_for_the_tint() -> None:
+    """Two diagonals resolve the same point from one cursor pixel, so only the const tells their answers apart."""
+    window = _window()
+    try:
+        _at(window, _GATE_DIAGONAL, 60.0, 60.0)
+        cursor = (69.5, 69.5)  # the whole-number point (70, 70)
+        # (71, 68) is a corner of the anti-diagonal's sparse footprint, and the main diagonal's 4x4 leaves it empty.
+        _add(window, _ARCHER, [(71, 68)], player=2)
+        _start(window, (59, 59), cursor)
+        assert not _refused(window)
+        window.rotate_cw_coarse_action.trigger()
+        assert _refused(window)
+    finally:
+        _escape(window)
+        _close(window)
+
+
+def test_a_turn_at_one_delta_is_a_new_question_for_the_group_tint() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 60.5)
+        villager = _at(window, _VILLAGER, 66.5, 60.5)
+        # The delta is (0, +10); this is on the (1, 4) turn's low end, re-anchored on (58, 60).
+        _add(window, _ARCHER, [(58, 72)], player=2)
+        _select_units(window, gate, villager)
+        _start(window, (66, 60), (66, 70))
+        assert not _refused(window)
+        _cw(window, 2)
+        assert window.map_view._unit_ghost_item._refused_marks == [False, True], "the villager's, then the gate's"
+    finally:
+        _escape(window)
+        _close(window)
+
+
+def test_a_turned_gates_own_corner_pieces_never_block_it() -> None:
+    """The rule keeps the real unit, since gate_companions() finds it by identity."""
+    window = _window()
+    try:
+        gate = _at(window, _GATE_Y, 60.5, 60.0)
+        piece = _at(window, _CORNER_Y, 60.5, 58.5)
+        assert placement_rules.gate_companions(window.scenario, gate) == [piece]
+        point = window._resolve_placement_point(_scene_tile(window, (60, 58)), Qt.NoModifier, unit_const=_GATE)[0]
+        assert placement_rules.refused(window.scenario, _GATE, *point, exclude=[gate])
+        _select_units(window, gate)
+        _start(window, (60, 61), (60, 58))
+        _cw(window, 2)
+        assert not _refused(window)
+        _release(window, (60, 58))
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE, *point)
+    finally:
+        _close(window)
+
+
+def test_a_key_with_the_cursor_off_the_map_stays_pending() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        before = _fields(unit)
+        _start(window, (60, 60), (66, 66))
+        _move(window, (-6, 66))
+        assert view._unit_ghost_item is None
+        gen = window.scenario.unit_gen
+
+        _cw(window, 3)
+        assert view._unit_ghost_item is None, "off the map there is still nothing to draw"
+        assert _fields(unit) == before and window.scenario.unit_gen == gen
+
+        _move(window, (70, 66))
+        _release(window, (70, 66))
+        assert unit.rotation == pytest.approx(3 * _TURN / 16)
+    finally:
+        _close(window)
+
+
+def test_below_the_threshold_a_key_rotates_at_once() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        press = _viewport_pos(window, 60, 60)
+        _HELD["value"] = True
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press, Qt.LeftButton, Qt.LeftButton))
+        assert not view.unit_drag_live()
+        records = len(window.edit_history.records)
+
+        _cw(window)
+        assert unit.rotation == pytest.approx(_TURN / 16)
+        assert len(window.edit_history.records) == records + 1
+        assert _undo_label(window) == "Rotate unit"
+
+        _release(window, (60, 60))
+        assert (unit.x, unit.y) == (60.5, 60.5), "a click"
+    finally:
+        _close(window)
+
+
+def test_back_inside_the_threshold_a_key_stays_pending_and_the_release_writes_nothing() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        before = _fields(unit)
+        gen = window.scenario.unit_gen
+        _start(window, (60, 60), (66, 66))
+        _move(window, (60, 60))
+        assert window.map_view.unit_drag_live()
+        assert window.map_view._unit_ghost_item is None
+
+        _cw(window)
+        assert window.map_view._unit_ghost_item is None, "no replay of the point before it came back"
+        assert _fields(unit) == before
+        _release(window, (60, 60))
+        assert _fields(unit) == before and window.scenario.unit_gen == gen
+    finally:
+        _close(window)
+
+
+def test_a_turn_dropped_on_its_own_point_is_a_rotate_with_no_position_write(monkeypatch) -> None:
+    window = _zoomed(_window())
+    try:
+        ram = _at(window, _RAM, 60.5, 60.5)
+        rider = _at(window, _ARCHER, 60.5, 60.5, garrisoned_in_id=ram.reference_id)
+        _select_units(window, ram)
+        positions = _spy_positions(window, monkeypatch)
+        rider_before = _fields(rider)
+        records = len(window.edit_history.records)
+
+        _start(window, (59.7, 59.7), (60.3, 60.3))
+        _cw(window, 2)
+        _release(window, (60.3, 60.3))
+
+        assert positions == [], "nobody's position is rewritten, occupants included"
+        assert (ram.x, ram.y) == (60.5, 60.5)
+        assert _fields(rider) == rider_before
+        assert ram.rotation != 0.0
+        assert len(window.edit_history.records) == records + 1
+        assert _undo_label(window) == "Rotate unit"
+        assert _last_status(window).startswith("Rotated ")
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_onto_its_own_re_anchored_point_only_swaps_its_const(monkeypatch) -> None:
+    """Its own point here is the stand-in's: the sibling's anchor on the same low corner."""
+    window = _zoomed(_window())
+    try:
+        gate = _at(window, _GATE, 60.0, 60.5)
+        _select_units(window, gate)
+        positions = _spy_positions(window, monkeypatch)
+        _start(window, (59.5, 59.8), (59.5, 60.2))
+        _cw(window, 1)
+        (x, y) = (gate.x, gate.y)
+        assert (x, y) == (60.0, 60.5)
+        entry = window.map_view._unit_index.entry_for_key(window._selection[0])
+        stand_in = window._drag_stand_in(entry, False)
+        assert (stand_in.x, stand_in.y) == (60.0, 62.0)
+        # (60, 62) on the sparse diagonal is the tile the cursor lands the turned gate on.
+        _move(window, (59.2, 61.5))
+        _release(window, (59.2, 61.5))
+        assert positions == []
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_DIAGONAL, 60.0, 62.0)
+        assert _undo_label(window) == "Rotate unit"
+    finally:
+        _close(window)
+
+
+def test_a_garrison_drop_discards_the_turn_and_says_so() -> None:
+    window = _window()
+    try:
+        (tower,) = _add(window, _TOWER, [(66, 66)])
+        (archer,) = _add(window, _ARCHER, [(60, 60)])
+        rotation = archer.rotation
+        _start(window, (60, 60), (66, 66))
+        _cw(window, 3)
+        _release(window, (66, 66))
+        assert archer.garrisoned_in_id == tower.reference_id
+        assert archer.rotation == rotation
+        assert "the turn was dropped" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_second_drag_after_escape_gets_its_own_stand_in() -> None:
+    """Esc bumps no unit_gen. The first unit's stand-in would hand its rotation to the second."""
+    window = _window()
+    try:
+        first = _at(window, _ARCHER, 60.5, 60.5, rotation=1.0)
+        second = _at(window, _ARCHER, 80.5, 60.5, rotation=2.0)
+        _start(window, (60, 60), (66, 66))
+        _cw(window)
+        _escape(window)
+        _release(window, (66, 66))
+
+        _start(window, (80, 60), (86, 66))
+        _cw(window)
+        _release(window, (86, 66))
+        assert first.rotation == 1.0 and (first.x, first.y) == (60.5, 60.5)
+        assert second.rotation == unit_rotation.rotate_step(2.0, 16, 1)
+    finally:
+        _close(window)
+
+
+def test_a_second_drag_after_a_refused_drop_starts_at_no_turn() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        _add(window, _ARCHER, [(66, 66)], player=2)
+        _start(window, (60, 60), (66, 66))
+        _cw(window, 3)
+        _release(window, (66, 66))
+        assert unit.rotation == 0.0
+
+        _start(window, (60, 60), (70, 70))
+        _release(window, (70, 70))
+        assert (unit.x, unit.y) == (70.5, 70.5)
+        assert unit.rotation == 0.0, "each drag starts at zero"
+        assert _undo_label(window) == "Move unit"
+    finally:
+        _close(window)
+
+
+def test_a_group_drags_failed_fit_gate_does_not_carry_into_a_later_single_drag() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 119.5)
+        villager = _at(window, _VILLAGER, 70.5, 110.5)
+        _select_units(window, gate, villager)
+        _start(window, (70, 110), (70, 100))
+        _cw(window)
+        entry = window.map_view._unit_index.entry_for_key((1, gate.reference_id))
+        assert window._drag_stand_in(entry, True) is gate
+        _escape(window)
+        _release(window, (70, 100))
+
+        _select_units(window, gate)
+        _start(window, (60, 119), (60, 100))
+        _cw(window)
+        assert window._drag_stand_in(entry, False).unit_const == _GATE_DIAGONAL
+        _release(window, (60, 100))
+        assert gate.unit_const == _GATE_DIAGONAL, "a single drag's fit is its landing's"
+    finally:
+        _close(window)
+
+
+def test_a_single_drag_that_becomes_a_group_asks_the_fit_it_skipped() -> None:
+    """A Select All mid-drag widens the drag with no press and no unit edit, so
+    only `group` in the memo key tells the two answers apart."""
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 119.5)
+        villager = _at(window, _VILLAGER, 70.5, 110.5)
+        _select_units(window, gate)
+        _start(window, (60, 119), (60, 100))
+        _cw(window)
+        entry = window.map_view._unit_index.entry_for_key((1, gate.reference_id))
+        assert window._drag_stand_in(entry, False).unit_const == _GATE_DIAGONAL
+
+        _select_units(window, gate, villager)
+        _move(window, (60, 96))
+        assert window._drag_stand_in(entry, True) is gate
+        _release(window, (60, 96))
+        assert gate.unit_const == _GATE, "it doesn't fit at its source, so it keeps its const"
+        assert (gate.x, gate.y) == (60.0, 96.5)
+    finally:
+        _close(window)
+
+
+def test_a_group_turns_each_member_on_its_spot_in_one_record() -> None:
+    window = _window()
+    try:
+        low = _at(window, _ARCHER, 60.5, 60.5, rotation=1.0)
+        high = _at(window, _ARCHER, 62.5, 60.5, rotation=2.0)
+        oak = _at(window, _OAK, 64.5, 60.5, rotation=5.0)
+        wall = _at(window, _WALL, 66.5, 60.5)
+        gate = _at(window, _GATE, 60.0, 64.5)
+        members = (low, high, oak, wall, gate)
+        before = [_fields(u) for u in members]
+        _select_units(window, *members)
+        records = len(window.edit_history.records)
+
+        _start(window, (60, 60), (63, 70))
+        _cw(window)
+        assert _last_status(window) == "Move: turning 4 of 5 units; 1 skipped (no facing or variant to change)"
+        assert [_fields(u) for u in members] == before
+        _release(window, (63, 70))
+
+        assert (low.x, low.y, low.rotation) == (63.5, 70.5, unit_rotation.rotate_step(1.0, 16, 1))
+        assert (high.x, high.y, high.rotation) == (65.5, 70.5, unit_rotation.rotate_step(2.0, 16, 1))
+        assert (oak.x, oak.y, oak.rotation) == (67.5, 70.5, 6.0)
+        assert (wall.x, wall.y) == (69.5, 70.5)
+        # Rotate, then the delta: the diagonal's anchor on the (4, 1) low corner (58, 64).
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_DIAGONAL, 63.0, 76.0)
+        assert len(window.edit_history.records) == records + 1
+        assert _undo_label(window) == "Move and rotate 5 units"
+        assert ", turning 4" in _last_status(window)
+
+        window.undo()
+        assert [_fields(u) for u in members] == before
+    finally:
+        _close(window)
+
+
+def test_the_group_clamp_uses_a_turned_gates_span() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 110.5)
+        villager = _at(window, _VILLAGER, 60.5, 100.5)
+        _select_units(window, gate, villager)
+        _start(window, (60, 100), (60, 118))
+        unturned = window._group_delta(
+            window.map_view._unit_index.entry_for_key((1, villager.reference_id)),
+            _scene_tile(window, (60, 118)),
+            Qt.NoModifier,
+            commit=False,
+        )
+        assert unturned[2] == 9, "(4, 1) reaches row 119 from row 110"
+        _cw(window, 2)
+        _release(window, (60, 118))
+        # (1, 4) from the same low corner: rows 110..113, so 6 rows of room.
+        assert gate.unit_const == _GATE_Y
+        assert (gate.x, gate.y) == (58.5, 118.0)
+        assert (villager.x, villager.y) == (60.5, 106.5)
+        assert "stopped at the map edge" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_group_gate_that_does_not_fit_at_its_source_keeps_its_const_and_is_counted() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.0, 119.5)
+        archer = _at(window, _ARCHER, 70.5, 110.5)
+        _select_units(window, gate, archer)
+        _start(window, (70, 110), (70, 100))
+        _cw(window)
+        assert _last_status(window) == "Move: turning 1 of 2 units; 1 gate(s) skipped (would hang off the map edge)"
+        _release(window, (70, 100))
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE, 60.0, 109.5)
+        assert archer.rotation == pytest.approx(_TURN / 16)
+    finally:
+        _close(window)
+
+
+def test_a_whole_cycle_counts_no_gate_as_skipped_even_one_already_overhanging() -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 119.0, 60.5)
+        archer = _at(window, _ARCHER, 70.5, 110.5)
+        _select_units(window, gate, archer)
+        _start(window, (70, 110), (70, 100))
+        for _ in range(4):
+            _cw(window)
+        assert _last_status(window) == "Move: turning 1 of 2 units"
+    finally:
+        _close(window)
+
+
+def test_a_hidden_occupant_rides_a_group_drag_with_its_own_rotation_untouched() -> None:
+    window = _window()
+    try:
+        ram = _at(window, _RAM, 60.5, 60.5)
+        rider = _at(window, _ARCHER, 60.5, 60.5, rotation=1.0, garrisoned_in_id=ram.reference_id)
+        other = _at(window, _ARCHER, 64.5, 60.5)
+        _select_units(window, ram, other)
+        _start(window, (64, 60), (64, 70))
+        _cw(window)
+        _release(window, (64, 70))
+        assert (ram.y, other.y) == (70.5, 70.5)
+        assert ram.rotation != 0.0 and other.rotation != 0.0
+        assert (rider.x, rider.y, rider.rotation) == (60.5, 70.5, 1.0)
+    finally:
+        _close(window)
+
+
+def test_a_zero_delta_turn_writes_only_the_turned_members(monkeypatch) -> None:
+    window = _zoomed(_window())
+    try:
+        archer = _at(window, _ARCHER, 60.5, 60.5)
+        ram = _at(window, _RAM, 64.5, 60.5)
+        rider = _at(window, _ARCHER, 64.5, 60.5, rotation=1.0, garrisoned_in_id=ram.reference_id)
+        wall = _at(window, _WALL, 68.5, 60.5, rotation=3.0)
+        before = _fields(wall), _fields(rider)
+        _select_units(window, archer, ram, wall)
+        positions = _spy_positions(window, monkeypatch)
+        records = len(window.edit_history.records)
+
+        _start(window, (59.7, 59.7), (60.3, 60.3))
+        _cw(window)
+        _release(window, (60.3, 60.3))
+
+        assert positions == []
+        assert archer.rotation == pytest.approx(_TURN / 16) and ram.rotation != 0.0
+        assert (_fields(wall), _fields(rider)) == before
+        assert len(window.edit_history.records) == records + 1
+        assert _undo_label(window) == "Rotate 2 units"
+        assert _last_status(window).startswith("Rotated 2 units")
+    finally:
+        _close(window)
+
+
+def test_the_tint_and_the_drop_agree_on_a_gate_turned_in_place_onto_a_blocker() -> None:
+    window = _zoomed(_window())
+    try:
+        gate = _at(window, _GATE, 60.0, 60.5)
+        villager = _at(window, _VILLAGER, 66.5, 60.5)
+        _add(window, _ARCHER, [(58, 63)], player=2)  # on the (1, 4) turn's low end
+        before = _fields(gate), _fields(villager)
+        _select_units(window, gate, villager)
+
+        _start(window, (65.7, 59.7), (66.3, 60.3))
+        assert not _refused(window), "unturned, a zero delta is no-op"
+        _cw(window, 2)
+        assert _refused(window)
+        _release(window, (66.3, 60.3))
+        assert "can't go there" in _last_status(window)
+        assert (_fields(gate), _fields(villager)) == before
+    finally:
+        _close(window)
+
+
+def test_a_member_already_standing_refused_does_not_veto_a_facing_turn() -> None:
+    window = _zoomed(_window())
+    try:
+        _set_terrain(window, [(60, 60)], _WATER_DEEP)
+        drowned = _at(window, _ARCHER, 60.5, 60.5)
+        dry = _at(window, _ARCHER, 64.5, 60.5)
+        _select_units(window, drowned, dry)
+        _start(window, (63.7, 59.7), (64.3, 60.3))
+        _cw(window)
+        assert not _refused(window)
+        _release(window, (64.3, 60.3))
+        assert drowned.rotation == dry.rotation == pytest.approx(_TURN / 16)
+    finally:
+        _close(window)
+
+
+def test_a_single_unit_already_standing_refused_can_still_turn_in_place() -> None:
+    window = _zoomed(_window())
+    try:
+        _set_terrain(window, [(60, 60)], _WATER_DEEP)
+        drowned = _at(window, _ARCHER, 60.5, 60.5)
+        _start(window, (59.7, 59.7), (60.3, 60.3))
+        _cw(window)
+        assert not _refused(window)
+        _release(window, (60.3, 60.3))
+        assert drowned.rotation == pytest.approx(_TURN / 16)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("presses", [(1, 1), (4, 0)], ids=["there_and_back", "whole_cycle"])
+def test_a_turn_undone_in_the_drag_leaves_an_off_parity_gate_as_a_plain_move(presses) -> None:
+    window = _window()
+    try:
+        gate = _at(window, _GATE, 60.25, 60.5)
+        wall = _at(window, _WALL, 70.5, 60.5)
+        _select_units(window, gate, wall)
+        entries = [window.map_view._unit_index.entry_for_key(k) for k in window._selection]
+        _start(window, (70, 60), (70, 66))
+        anchor = entries[1]
+        delta = window._group_delta(anchor, _scene_tile(window, (70, 66)), Qt.NoModifier, commit=False)[1:3]
+
+        _cw(window, presses[0])
+        _ccw(window, presses[1])
+
+        assert window._drag_stand_in(entries[0], True) is gate
+        assert window._group_delta(anchor, _scene_tile(window, (70, 66)), Qt.NoModifier, commit=False)[1:3] == delta
+        _release(window, (70, 66))
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE, 60.25, 66.5), "no re-anchor"
+        assert _undo_label(window) == "Move 2 units"
+    finally:
+        _close(window)
+
+
+def test_a_key_after_a_keybound_switch_to_place_unit_turns_the_drag_not_the_place_ghost() -> None:
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        window.units_panel._set_pending_object(_VILLAGER)
+        window.units_panel.select_owner(1)
+        _start(window, (60, 60), (66, 66))
+        window.place_unit_action.setChecked(True)
+        assert window._current_tool == "place_unit"
+        assert window.map_view.unit_drag_live()
+        place = window._place_rotation
+
+        _cw(window, 2)
+        assert window._place_rotation == place
+        _release(window, (66, 66))
+        assert (unit.x, unit.y, unit.rotation) == (66.5, 66.5, pytest.approx(2 * _TURN / 16))
+    finally:
+        _close(window)
+
+
+def test_a_wall_says_it_has_nothing_to_turn_and_moves_as_it_would() -> None:
+    window = _window()
+    try:
+        wall = _at(window, _WALL, 60.5, 60.5, rotation=2.0)
+        _select_units(window, wall)
+        _start(window, (60, 60), (66, 66))
+        _cw(window)
+        assert _last_status(window) == "Move: Stone Wall has no facing or variant to rotate"
+        _release(window, (66, 66))
+        assert (wall.x, wall.y) == (66.5, 66.5)
+        assert _undo_label(window) == "Move unit"
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_mid_drag_names_its_sibling_and_the_status_keeps_it() -> None:
+    window = _window()
+    try:
+        _at(window, _GATE, 60.0, 60.5)
+        _start(window, (60, 60), (70, 70))
+        _cw(window, 2)
+        assert _last_status(window) == f"Move: {object_catalog.display_name(_GATE_Y)}"
+        _release(window, (70, 70))
+        assert f"now {object_catalog.display_name(_GATE_Y)}" in _last_status(window)
     finally:
         _close(window)

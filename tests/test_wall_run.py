@@ -1332,6 +1332,42 @@ def test_radian_flip_is_set_only_when_the_plan_overwrites_the_last_radian_wall_v
     assert integer.moved and not integer.radian_flip
 
 
+def test_a_turned_gates_plan_fills_the_line_it_left_and_clears_its_turned_footprint():
+    """GH #280. Unturned, a (4, 1) gate planned at a (1, 4) landing would clear the wrong tiles."""
+    crossing = [_wall_at(30, y) for y in range(20, 40)]
+    gate, walls, scenario = _gate_scenario(crossing)
+    x, y = 30.5, 30.0
+    assert _gate_tiles(_GATE_Y, 30, 28) == [(30, y) for y in range(28, 32)]
+
+    plan = wall_run.scenario_move_plan(scenario, 60, 60, [(gate, x, y)], gate_walls=True, consts={id(gate): _GATE_Y})
+
+    assert sorted(_tile(u) for _p, u in plan.removals) == [(30, y) for y in range(28, 32)]
+    assert _by_tile([(p, u, 0) for p, u in plan.removals]).keys() == {(30, y) for y in range(28, 32)}
+    assert _fills(plan) == {(x, 10): 0 for x in range(8, 12)}, "its OLD tiles are its stored footprint"
+    assert all(unit in walls or unit in crossing for _p, unit in plan.removals)
+
+    bare = wall_run.scenario_move_plan(scenario, 60, 60, [(gate, x, y)], gate_walls=True)
+    assert {_tile(u) for _p, u in bare.removals} == {(30, 30)}, "the answer with no `consts` is the stored const's"
+
+
+def test_a_turned_gate_lands_as_a_connector_on_its_turned_tiles():
+    """_moved_connector_tiles(): a wall beside the turned footprint but not the stored one reshapes."""
+    beside = _wall_at(29, 28, rotation=0.0)  # beside (30, 28), the turned top end; the stored span misses it
+    gate, _walls, scenario = _gate_scenario([beside])
+    plan = wall_run.scenario_move_plan(scenario, 60, 60, [(gate, 30.5, 30.0)], gate_walls=True, consts={id(gate): _GATE_Y})
+    bare = wall_run.scenario_move_plan(scenario, 60, 60, [(gate, 30.5, 30.0)], gate_walls=True)
+    assert id(beside) in {id(u) for _p, u, _v in plan.rewrites}
+    assert id(beside) not in {id(u) for _p, u, _v in bare.rewrites}
+
+
+def test_consts_for_a_gate_that_keeps_its_const_plan_as_no_consts_do():
+    gate, _walls, scenario = _gate_scenario()
+    moves = _shifted([gate], 5, 0)
+    plain = wall_run.scenario_move_plan(scenario, 60, 60, moves, gate_walls=True)
+    same = wall_run.scenario_move_plan(scenario, 60, 60, moves, gate_walls=True, consts={id(gate): GATE})
+    assert same == plain
+
+
 def test_scenario_move_plan_answers_none_without_a_scene_walk(monkeypatch):
     """A villager, a 0.1 wall nudge inside its tile, and a gate with the box off."""
     villager = _wall_at(40, 40, const=_VILLAGER)

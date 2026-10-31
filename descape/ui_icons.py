@@ -131,3 +131,5 @@ def apply_icons(window) -> None:
         window.clear_recent_action.setIcon(icon(CLEAR_RECENT_ICON))
     # The More Tools button wears the active tool's icon while that tool is in its menu.
     window._update_more_tools_button()
+    # Built per populate, so an open form's are in no table here.
+    window.trigger_panel.refresh_pick_icons()

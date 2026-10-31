@@ -60,8 +60,13 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   field also step cyclable members (trees, scenery) through their variants,
   but only via `UnitEditModel.set_variant()`, i.e. the *Cycle Variant*
   exception below with its scope unchanged; `set_rotation()` stays
-  ANGLE-only. On a just-pasted region (GH #197) the Rotate actions edit no
-  unit at all: they go through the *Region turn* exception below. On a
+  ANGLE-only. Move is a caller too (GH #280): a Rotate input during a live
+  drag only adds steps to a pending turn (`descape/move_turn.py`, the same
+  per-const rules), and the release writes it through these same setters,
+  in the move's one undo record. Esc, a refused drop and a garrison drop
+  write nothing, and a turn that nets a whole cycle for a const leaves its
+  stored value verbatim. On a just-pasted region (GH #197) the Rotate
+  actions edit no unit at all: they go through the *Region turn* exception below. On a
   committed Select region with no paste armed (TASK-256) they go through
   the *Selection transform* exception below instead.
 - *Region turn's unit images* (GH #197: Rotate, Edit > Flip Selection
@@ -143,6 +148,8 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   because the game re-derives their index from neighbours, so a written
   value would be overridden. It always writes a literal integer index: every
   corpus placement on a cyclable const stores one, never the radian form.
+  Its callers are Cycle Variant, the Rotate actions, the Rotation field and
+  Move's pending turn (GH #280, the *Rotate* bullet above).
 - *Wall shapes re-derived from neighbours*: Place Unit's wall-run
   junction rewrites, its rewrites of the walls
   beside a gate it places (GH #159, which also removes the walls under the
@@ -151,7 +158,9 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   also removes the walls under the new footprint and fills the line the
   gate left with new walls, `add_many()`ed with the same neighbour-derived
   literal integer index and frame 0; the gate itself only changes
-  position), and a move's rewrites (GH #266: a wall carried onto another
+  position, unless a turn pending on the drop (GH #280) also swaps its
+  const, when its old tiles are its stored footprint and its new tiles
+  the turned one), and a move's rewrites (GH #266: a wall carried onto another
   tile by a drag, group drag, arrow nudge, the Inspector's X or Y, or
   Scatter's move mode takes the shape its new neighbours give it, and a
   wall that stays takes the one its neighbours give it when a tile beside
@@ -312,10 +321,11 @@ for the square grid; that is draw-only, and no write path may use it.
   new const cannot hold or a host that cannot hold the new const.
 - `set_unit_const()` changes a gate's const only to one of the four
   orientation siblings `descape/gate_orientation.py` derives for it. Its
-  callers are Rotate and the Rotation field (a selected gate cycles), and
-  the *Selection transform* (TASK-256: a turned or flipped gate takes
-  `reorient_gate_const()`'s sibling, then its planned position), all
-  inside that same sibling-only scope. It
+  callers are Rotate and the Rotation field (a selected gate cycles), Move
+  (GH #280: a turn pending on a drag lands as the sibling, then the drop's
+  position), and the *Selection transform* (TASK-256: a turned or flipped
+  gate takes `reorient_gate_const()`'s sibling, then its planned position),
+  all inside that same sibling-only scope. It
   must re-anchor `x`/`y` by preserving the footprint's low corner
   (`span_low_corner()` forward, `render.span_anchor()` back), because the
   four orientations have four different spans and every corpus placement

@@ -385,6 +385,34 @@ def test_grid_rows_are_disabled_with_a_reason_when_the_diplomacy_gate_fails() ->
         _close(window)
 
 
+def test_only_the_allied_victory_checkbox_greys_out_when_its_mirror_fails() -> None:
+    """TASK-062: a broken player_data_3 copy takes out the allied-victory flag
+    alone, with its own reason; the stance rows and Teams group stay enabled."""
+    from descape.player_fields import aok_allied_victory_mirror_targets
+    from descape.viewer import ViewerWindow
+
+    window = _window()
+    try:
+        window.load_scenario(BLANK_FIXTURE)
+        target = aok_allied_victory_mirror_targets(window.scenario)[6]
+        body = bytearray(window.scenario.decompressed_body)
+        body[target.offset] ^= 0xFF
+        window.scenario.decompressed_body = bytes(body)
+
+        window.mode_combo.setCurrentText("Diplomacy")
+        panel = window.diplomacy_panel
+        allied = {fid: w for fid, w in panel._widgets.items() if fid.startswith("allied_victory:")}
+        others = {fid: w for fid, w in panel._widgets.items() if not fid.startswith("allied_victory:")}
+        assert allied and others, "this would pass vacuously"
+        for field_id, widget in allied.items():
+            assert not _row_enabled(widget), field_id
+            assert widget.toolTip() == ViewerWindow._ALLIED_VICTORY_MIRROR_REASON, field_id
+        for field_id, widget in others.items():
+            assert _row_enabled(widget), field_id
+    finally:
+        _close(window)
+
+
 def test_populating_the_panel_records_no_undo_step() -> None:
     """radio.setChecked(True) inside _build_stance_row fires toggled()
     during every populate -- without the panel's own `_populating` guard

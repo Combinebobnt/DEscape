@@ -132,10 +132,10 @@ its members, so the set is derived from the .dat instead.
 
 The basis is "the .dat has no standing graphic", NOT "missing from
 unit_graphic_map.json". Absence from the map also catches objects that have
-real art in the game but no map entry yet: FARM 50 (242 corpus placements),
-FLAME1-4, WFALL, SMOKE. Those are art gaps, not invisible objects, and none of
-them is in this set. (The butterflies were one until GH #20 drew them from
-their particle atlas.)
+real art in the game but no map entry yet: FARM 50 (242 corpus placements) and
+WFALL. Those are art gaps, not invisible objects, and none of them is in this
+set. (The butterflies were one until GH #20 drew them from their particle
+atlas, and Smoke and the Flames until GH #256 did the same.)
 
 Members that are not hidden in the editor: Invisible Object A-E (1291, 2551,
 2553, 2555, 2563, class 38), Map Revealer / Medium / Giant (837, 1774, 1775,

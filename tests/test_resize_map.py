@@ -26,9 +26,11 @@ pytestmark = [
 UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
 
-def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT"):
+def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT", accept: bool = True):
     """Replaces ResizeDialog.exec_ with one that sets the real dialog's own
-    widgets and accepts (size None: reject). Returns the list of dialogs shown."""
+    widgets and accepts (size None: reject untouched; accept False: set the
+    anchor, then reject). Returns the list of dialogs shown, each with
+    `opened` = (anchor, new_size) as it opened."""
     import descape.viewer as viewer_module
     from descape.resize_dialog import ResizeDialog
     from descape.scenario_resize import Anchor
@@ -37,6 +39,10 @@ def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT"):
 
     def exec_(self):
         shown.append(self)
+        self.opened = (self.anchor, self.new_size)
+        if not accept:
+            self.anchor_buttons[Anchor[anchor_name]].setChecked(True)
+            return viewer_module.QDialog.Rejected
         if size is None:
             return viewer_module.QDialog.Rejected
         self.width_spin.setValue(size)
@@ -224,5 +230,64 @@ def test_the_dialog_locks_square_and_refuses_the_current_size(window) -> None:
         assert ok.isEnabled()
         assert "6 objects will be deleted" in dialog.summary_label.text()
         assert "cannot be undone" in dialog.summary_label.text()
+    finally:
+        dialog.deleteLater()
+
+
+# --- TASK-514: the anchor is session-sticky -----------------------------------
+
+
+def test_the_anchor_is_remembered_and_a_cancel_leaves_it(window, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QMessageBox
+
+    from descape.scenario_resize import Anchor
+
+    first = _fake_dialog(monkeypatch, 100, "BOTTOM_RIGHT")
+    _questions(monkeypatch, QMessageBox.Yes)
+    window.resize_map()
+    assert first[0].opened == (Anchor.TOP_LEFT, (120, 120)), "nothing accepted yet: the default"
+    assert window.scenario.map_manager.map_width == 100
+
+    cancelled = _fake_dialog(monkeypatch, None, "CENTER", accept=False)
+    window.resize_map()
+    assert cancelled[0].opened == (Anchor.BOTTOM_RIGHT, (100, 100)), "the anchor stays, the size is the new map's"
+    assert cancelled[0].anchor is Anchor.CENTER
+
+    reopened = _fake_dialog(monkeypatch, None)
+    window.resize_map()
+    assert reopened[0].opened == (Anchor.BOTTOM_RIGHT, (100, 100)), "Cancel must not keep its anchor"
+
+
+def test_an_ok_whose_destructive_confirm_is_declined_still_keeps_its_anchor(window, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QMessageBox
+
+    from descape.scenario_resize import Anchor
+
+    _fake_dialog(monkeypatch, 100, "BOTTOM_RIGHT")
+    asked = _questions(monkeypatch, QMessageBox.Cancel)
+    window.resize_map()
+    assert len(asked) == 1 and window.scenario.map_manager.map_width == 120
+
+    reopened = _fake_dialog(monkeypatch, None)
+    window.resize_map()
+    assert reopened[0].opened == (Anchor.BOTTOM_RIGHT, (120, 120))
+
+
+def test_the_dialog_opens_on_the_last_anchor_and_plans_for_it(window) -> None:
+    from descape.resize_dialog import ResizeDialog
+    from descape.scenario_resize import Anchor
+
+    calls = []
+
+    def plan_for(width, height, anchor):
+        calls.append(anchor)
+        return window._resize_plan_for(width, height, anchor)
+
+    dialog = ResizeDialog(window, 120, 120, plan_for, last={"anchor": Anchor.CENTER})
+    try:
+        assert dialog.anchor_buttons[Anchor.CENTER].isChecked()
+        assert dialog.anchor is Anchor.CENTER
+        assert calls and set(calls) == {Anchor.CENTER}, "the opening plan must be the restored anchor's"
+        assert dialog.state() == {"anchor": Anchor.CENTER}
     finally:
         dialog.deleteLater()

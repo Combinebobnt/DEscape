@@ -757,6 +757,9 @@ _trigger_overlay: bool | None = None
 # View > Show Trigger-Created Units (GH #167): ON by default for the same
 # reason, independent of the overlay.
 _trigger_ghosts: bool | None = None
+# View > Show Instruction on Map (TASK-550): ON by default for the same reason,
+# and it applies in Triggers mode only.
+_instruction_overlay: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 _grid_major_every: int | None = None
@@ -1003,6 +1006,21 @@ def set_trigger_ghosts(enabled: bool) -> None:
     _trigger_ghosts = enabled
     config = _load_config()
     config["trigger_ghosts"] = enabled
+    _save_config(config)
+
+
+def get_instruction_overlay() -> bool:
+    global _instruction_overlay
+    if _instruction_overlay is None:
+        _instruction_overlay = bool(_load_config().get("instruction_overlay", True))
+    return _instruction_overlay
+
+
+def set_instruction_overlay(enabled: bool) -> None:
+    global _instruction_overlay
+    _instruction_overlay = enabled
+    config = _load_config()
+    config["instruction_overlay"] = enabled
     _save_config(config)
 
 
@@ -1734,6 +1752,30 @@ def set_units_catalog_mode(mode: str) -> None:
     _save_config(config)
 
 
+# GH #273: Browse's own view of the catalog. Off the Units key: the sidebar reads its mode once.
+BROWSE_CATALOG_MODE_DEFAULT = "icons"
+_browse_catalog_mode: str | None = None
+
+
+def get_browse_catalog_mode() -> str:
+    global _browse_catalog_mode
+    if _browse_catalog_mode is None:
+        value = _load_config().get("browse_catalog_mode", BROWSE_CATALOG_MODE_DEFAULT)
+        _browse_catalog_mode = value if value in UNITS_CATALOG_MODES else BROWSE_CATALOG_MODE_DEFAULT
+    return _browse_catalog_mode
+
+
+def set_browse_catalog_mode(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in UNITS_CATALOG_MODES."""
+    global _browse_catalog_mode
+    if mode not in UNITS_CATALOG_MODES:
+        raise ValueError(f"unknown browse catalog mode {mode!r}")
+    _browse_catalog_mode = mode
+    config = _load_config()
+    config["browse_catalog_mode"] = mode
+    _save_config(config)
+
+
 # Map view vs. system log, inside the right pane. Their own constants rather
 # than reusing MIN_SPLIT_PANE, which is a width -- one name for both axes
 # would lie.
@@ -2346,6 +2388,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_trigger_overlay", "Trigger Overlay", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_trigger_ghosts", "Trigger-Created Units", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_instruction_overlay", "Instruction on Map", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
     # below are generated from TOOLS, so the table stays single-source.
@@ -2813,13 +2857,13 @@ WHEEL_ACTION_LABELS: dict[str, str] = {
 WHEEL_ACTION_HINTS: dict[str, str] = {
     "zoom": "Zooms the map in or out.",
     "tool": (
-        "Whichever applies: turns Place Unit's preview, steps the size in tools with a Brush size box, "
-        "or turns a just-pasted region. Does nothing anywhere else."
+        "Whichever applies: turns a unit you're dragging with Move or Place Unit's preview, steps the "
+        "size in tools with a Brush size box, or turns a just-pasted region. Does nothing anywhere else."
     ),
     "brush_size": "Steps the size in tools with a Brush size box. Does nothing anywhere else.",
     "rotate": (
-        "Turns Place Unit's preview or a just-pasted region, even in a tool with a Brush size box. "
-        "Does nothing anywhere else."
+        "Turns a unit you're dragging with Move, Place Unit's preview or a just-pasted region, even "
+        "in a tool with a Brush size box. Does nothing anywhere else."
     ),
     "pan_vertical": "Scrolls the map up or down.",
     "pan_horizontal": "Scrolls the map left or right.",

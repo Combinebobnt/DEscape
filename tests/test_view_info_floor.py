@@ -31,8 +31,8 @@ def test_entering_view_from_a_narrow_pane_fits_the_info_page() -> None:
     window = conftest.shown_window(1500, 900)
     try:
         window.load_scenario(BLANK_FIXTURE)
-        # Not Units: its drag floor is the Units page's own width since TASK-362.
-        window.mode_combo.setCurrentText("Terrain")
+        # Not Units or Terrain: their drag floors are their pages' own widths (TASK-362, TASK-551).
+        window.mode_combo.setCurrentText("Players")
         total = sum(window.content_splitter.sizes())
         window.content_splitter.setSizes([_NARROW_PX, total - _NARROW_PX])
         QApplication.processEvents()

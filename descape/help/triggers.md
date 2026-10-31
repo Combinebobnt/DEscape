@@ -10,6 +10,8 @@ Type in **Filter triggers…** to show only the triggers whose names match. The 
 
 Click a trigger to edit it. Ctrl+click and Shift+click select several; the lower pane then shows only a count, and the buttons act on all of them. **Edit > Select All** selects every trigger the filter shows.
 
+Double-click a trigger to rename it right in the list. Enter or clicking away keeps the new name, Esc cancels, and each rename is one undo step. A section header with triggers under it keeps collapsing on a double-click; rename it from the **Sections** button.
+
 **Sections.** A trigger whose name starts and ends with a run of dashes or similar characters, such as `--- Setup ---`, is a section header. In Display order the triggers below it, up to the next header, sit under it and collapse with it. The **Sections** button adds a section header at the end of the current trigger's section, renames the selected one, moves the selected triggers into another section, collapses or expands every section and jumps to any of them. A collapsed header stands for its whole section: Copy, Cut, Duplicate and Delete take the section with it.
 
 **Tags.** A name that starts with a bracketed tag, such as `[P1] Spawn wave`, carries that tag, and `[P1][Wave] Spawn` carries both; `(tag)` and `<tag>` work too. Pick a tag in the tag box (it starts on **All tags**) to show only the triggers that carry it. The **Tags** button adds a tag to the selected triggers or removes one from them, and renames or removes the chosen tag on every trigger that carries it, hidden ones included. Each is one undo step.
@@ -23,15 +25,15 @@ The buttons under the list:
 - **Duplicate** copies the selected triggers in place. Their trigger links still point at the originals; use Copy and Paste to re-link a block.
 - ▲ and ▼ move the selected triggers one place in display order. Shift+click moves them five places, and Ctrl+click to the top or bottom of their section (of the list, if it has no sections). ⇈ and ⇊ move the selected trigger's whole section past the next one.
 
-Moving needs Display order and an empty filter and tag; a greyed button's tooltip says why. You can't drag rows to reorder them. In a file whose Map Options trigger execution order is Legacy, moving changes the list but not which trigger runs first, and the status log under the map says so on the first move.
+Moving needs Display order and an empty filter and tag; a greyed button's tooltip says why. You can't drag rows to reorder them. In a file whose Map Options trigger execution order is Legacy, moving changes the list but not which trigger runs first, and the status log under the map says so on the first move. To make such a file run in the listed order, arrange the list and then right-click and choose **Renumber IDs to Display Order**: every trigger gets the ID of its place in the list, so File order matches Display order, and trigger links (Activate Trigger, Deactivate Trigger and Trigger Active) follow their triggers. It is one undo step.
 
 In Triggers mode the Edit menu reads **Edit > Cut Triggers**, **Edit > Copy Triggers** and **Edit > Paste Triggers**, unless a text field or the condition and effect list has focus. In a text field its plain **Edit > Cut**, **Edit > Copy** and **Edit > Paste** act on the text. A cut trigger pasted back keeps its name and the links other triggers held to it. Copied triggers also paste into another scenario of the same version: copy, open the other file and paste. Links to triggers outside the block and placed-unit references are cleared then, since they name the first file's triggers and units.
 
-Right-click a trigger for Cut, Copy, Paste below it, the four moves, and **Select Section** or **Select Tag**. The Move Trigger/Condition/Effect commands make the same moves from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys.
+Right-click a trigger for Cut, Copy, Paste below it, the four moves, **Renumber IDs to Display Order**, and **Select Section** or **Select Tag**. The Move Trigger/Condition/Effect commands make the same moves from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys.
 
 ## Conditions and effects
 
-The lower pane lists a **Trigger** row, which holds the trigger's own fields (name, descriptions, enabled, looping and the objective settings), then its Conditions and Effects in display order.
+The lower pane lists a **Trigger** row, which holds the trigger's own fields (name, descriptions, enabled, looping and the objective settings), then its Conditions and Effects in display order. Drag the bar between this list and the buttons under it to give either more height.
 
 - **New** opens a list of every condition and effect type. Filter it, then double-click a type or press **Add**. With Conditions or Effects highlighted first, the other group starts collapsed.
 - **Type…** changes the selected condition or effect to another type. Fields the new type lacks are dropped, and the status log under the map names them.
@@ -40,21 +42,25 @@ The lower pane lists a **Trigger** row, which holds the trigger's own fields (na
 
 Select a row to edit its fields underneath. Select several and the form shows only the fields they share; one they disagree on reads "(differs)" and changes nothing until you set it. Each change is one undo step.
 
-Unit, building and technology fields take a typed name, or their "…" button browses the list. An unset number reads "(unset)". Descriptions, messages and scripts get a full-width box that applies your text when you leave it; while it has focus, **Edit > Undo** and **Edit > Redo** act on its text. Drag the strip along a box's bottom edge to change its height in whole lines, or double-click the strip to reset it. Each field remembers its height.
+Conditions and effects keep the fields they share in the same order, so a field sits in the same place from one type to the next, and Modify Attribute and its siblings start with their quantity rows.
+
+Unit, building and technology fields take a typed name, or their "…" button browses the list. An object field's list works like the Units catalog: category buttons, a class dropdown, a filter box, **Icons**, **Names** and **Grid**, and the object's portrait and stats underneath. The technology list stays a plain list. It leaves out placeholder and helper technologies (such as Blank Technology and the "requirement" techs) until you tick **Show internal techs**; a field that already holds one still shows it. An unset number reads "(unset)". Descriptions, messages and scripts get a full-width box that applies your text when you leave it or save; while it has focus, **Edit > Undo** and **Edit > Redo** act on its text. Drag the strip along a box's bottom edge to change its height in whole lines, or double-click the strip to reset it. Each field remembers its height.
 
 An object list field has an **object list type** row above it, as in the in-game editor: Units, Buildings, Heroes or Others. It narrows the field's suggestions and its "…" list to that kind and follows the field's value, but isn't saved in the scenario. A typed name of another kind still applies. Object Group and Object Type sit right under the object list, above the Set rows.
 
 Some types show extra help under their fields:
 
-- **Display Instructions** shows a mock game screen with the box at its position, the portrait, the coloured text and the display time. Sounds are named, not played.
+- **Display Instructions** draws its message on the map for as long as the effect is selected, sized and placed as the game draws it, with the portrait and the coloured text. The box stays put while you pan or zoom; **View > Show Instruction on Map** turns it off. Under the fields, the display time and sound stay listed. Sounds are named, not played.
 - **Create Object** and **Replace Object** show roughly which way the unit will face. That mapping isn't confirmed in the game yet.
 - **Change Train Location**, **Add Train Location** and **Change Research Location** show the building's command buttons under the button slot field, as they will look after the trigger fires; click a cell to pick that slot. The grid shows only what the effect player's civilization can have (all civilizations when it is random). It frames the effect's own button in green, or in red when it won't show or covers a technology; hover a cell for the details. Tick **Show all triggers' changes** to apply that player's other such effects too. The [Map Analysis](map-tools.md) "Train and research buttons" check warns when such a button won't show: a unit the civilization can't have, a technology the player's starting age already researched, one hidden by a lower-id unit, a covered technology, or a slot with no button.
 
 ## Picking on the map
 
-Location, area and object fields have **Set**, **Go to** and **Reset** buttons. For a location, press **Set** and click a tile; for an area, press **Set** and drag a rectangle. A single unit field has a **Pick** button: press it and click the unit. For a list of objects, press **Set** and click units to add or remove them. A repeat click on a stack picks the next unit down, and units hidden by Filters can't be picked. Right-click or Esc cancels, or finishes a list. **Go to** centres the map on the field, even on a read-only file, and **Reset** clears it.
+Location, area and object fields have **Set**, **Go to** and **Reset** buttons. For a location, press **Set** and click a tile; for an area, press **Set** and drag a rectangle. A single unit field has a **Pick** button: press it and click the unit. For a list of objects, press **Set** and click units to add or remove them. An object type field, such as Modify Attribute's source player unit, has an eyedropper button after its **…**: press it and click a unit on the map to copy that unit's type, with the player field left as it was. A repeat click on a stack picks the next unit down, and units hidden by Filters can't be picked. Right-click or Esc cancels, or finishes a list. **Go to** centres the map on the field, even on a read-only file, and **Reset** clears it.
 
 To move or resize an area on the map, keep **View > Show Trigger Overlay** on (the default), pick the Pan tool and tick **Edit Area** on the Tool Options row. Select one condition or effect with an area, then drag the area's middle to move it, or an edge or corner to resize it. **Move** and **Resize** choose which parts you can grab, and **Tile borders** lets you resize from the whole outer ring of tiles. Each drag is one undo step; right-click or Esc cancels it.
+
+With **Move** ticked, the same setup moves a location: select one condition or effect with a location and drag its mark. The mark sits on top of the area, so it wins where they overlap. While you drag, the line from the area or units and its distance follow the mark. A dimmed mark can't be dragged: the effect's location object is its real destination and the game ignores that location, so press **Set** on the Location row if you need to change it anyway.
 
 With a Create Object effect selected, the **Create Objects** tool on the toolbar adds one copy of that effect per tile under the brush, skipping tiles that already have one. Each click is one undo step.
 

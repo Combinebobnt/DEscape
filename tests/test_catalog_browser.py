@@ -361,3 +361,137 @@ def test_invisible_spawners_are_listed_under_other_like_the_editor() -> None:
     view = _view()
     view.category_buttons["Others"].click()
     assert set(spawners) <= set(_shown(view))
+
+
+# -- Browse's view: a given catalog (GH #273) ----------------------------------------
+
+
+def _given_view(rows, default_category="", mode_store=None):
+    from descape.catalog_thumbs import ThumbLoader
+
+    conftest.ensure_qapp()
+    return CatalogBrowserView(
+        ThumbLoader(executor=ManualExecutor()),
+        entries=rows,
+        default_category=default_category,
+        mode_store=mode_store or (lambda: "icons", lambda _mode: None),
+    )
+
+
+def _rows_in(*categories):
+    return [entry for entry in object_catalog.objects() if entry.category in categories]
+
+
+def test_given_entries_carry_no_random_row() -> None:
+    assert RANDOM_VILLAGER in _view()._by_id, "the sidebar keeps it, or this proves nothing"
+    view = _given_view(object_catalog.objects())
+    assert RANDOM_VILLAGER not in view._by_id
+    assert RANDOM_VILLAGER not in view._items
+
+
+@pytest.mark.parametrize("category", ["Buildings", "Others"])
+def test_a_one_category_catalog_opens_on_it_with_the_block_hidden(category) -> None:
+    view = _given_view(_rows_in(category), default_category="Units")
+    assert view.category_buttons[category].isChecked()
+    assert view.category_block.isHidden()
+    assert _shown(view)
+
+
+def test_a_catalog_lacking_categories_disables_their_buttons() -> None:
+    view = _given_view(_rows_in("Units", "Heroes"))
+    assert not view.category_block.isHidden()
+    assert {category for category, button in view.category_buttons.items() if button.isEnabled()} == {"Units", "Heroes"}
+    assert view.category_buttons["Units"].isChecked()
+
+
+def test_the_default_category_opens_when_it_has_rows() -> None:
+    view = _given_view(object_catalog.objects(), default_category="Buildings")
+    assert view.category_buttons["Buildings"].isChecked()
+    assert _CASTLE in _shown(view)
+
+
+def test_the_sidebar_keeps_every_category_live() -> None:
+    view = _view()
+    assert not view.category_block.isHidden()
+    assert all(button.isEnabled() for button in view.category_buttons.values())
+
+
+def test_a_pinned_hidden_row_shows_with_the_box_unticked_and_no_other_hidden_row() -> None:
+    view = _given_view(object_catalog.objects())
+    hidden = {entry.id for entry in object_catalog.objects() if entry.hidden}
+    assert _BUILDER in hidden
+    unpinned_count = view.category_buttons["Units"].text()
+    view.pin(_BUILDER)
+    view.select(_BUILDER)
+    assert view.current_value() == _BUILDER
+    assert not view.show_hidden_checkbox.isChecked()
+    assert hidden & set(_shown(view)) == {_BUILDER}
+    assert view.category_buttons["Units"].text() != unpinned_count
+    view.pin(None)
+    assert _BUILDER not in _shown(view)
+
+
+def test_select_still_ticks_the_box_for_a_hidden_row_nobody_pinned() -> None:
+    view = _given_view(object_catalog.objects())
+    view.select(_BUILDER)
+    assert view.show_hidden_checkbox.isChecked()
+
+
+def test_a_mode_store_writes_its_own_key_and_leaves_the_units_key_alone(fake_install, monkeypatch) -> None:
+    store = (settings.get_browse_catalog_mode, settings.set_browse_catalog_mode)
+    view = _given_view(_rows_in("Units"), mode_store=store)
+    view.display_buttons["grid"].click()
+    monkeypatch.setattr(settings, "_browse_catalog_mode", None)
+    monkeypatch.setattr(settings, "_units_catalog_mode", None)
+    assert settings.get_browse_catalog_mode() == "grid"
+    assert settings.get_units_catalog_mode() == settings.UNITS_CATALOG_MODE_DEFAULT
+    assert _given_view(_rows_in("Units"), mode_store=store).mode() == "grid"
+    assert _view().mode() == settings.UNITS_CATALOG_MODE_DEFAULT
+
+
+def test_focus_first_row_lands_on_the_first_visible_row() -> None:
+    view = _given_view(_rows_in("Units"))
+    view.filter_edit.setText("archer")
+    view.focus_first_row()
+    assert view.list.currentItem().data(Qt.UserRole) == _shown(view)[0]
+    assert view.focusWidget() is view.list
+    current = view.list.currentItem()
+    view.filter_edit.setText("no such object at all")
+    view.focus_first_row()
+    assert view.list.currentItem() is current, "no visible row is a no-op"
+
+
+def _ring(image, rect) -> list[int]:
+    """Every pixel one in from `rect`'s edge."""
+    inset = rect.adjusted(1, 1, -1, -1)
+    xs = range(inset.left(), inset.right() + 1)
+    ys = range(inset.top(), inset.bottom() + 1)
+    across = [image.pixel(x, y) for x in xs for y in (inset.top(), inset.bottom())]
+    return across + [image.pixel(x, y) for y in ys for x in (inset.left(), inset.right())]
+
+
+@pytest.mark.parametrize("sidebar", [True, False], ids=["sidebar", "browse"])
+def test_the_grid_frames_the_selected_cell_and_no_other(sidebar, fake_install) -> None:
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    view = _view() if sidebar else _given_view(_rows_in("Units"))
+    view.resize(420, 420)
+    view.show()
+    try:
+        view.display_buttons["grid"].click()
+        view.select(_ARCHER)
+        QApplication.processEvents()
+        image = view.list.viewport().grab().toImage()
+        highlight = view.list.palette().color(QPalette.Highlight).rgb()
+        area = view.list.viewport().rect()
+        selected = view.list.visualItemRect(view._items[_ARCHER])
+        assert area.contains(selected), "the selected cell must be on screen, or this proves nothing"
+        assert set(_ring(image, selected)) == {highlight}
+        others = [item for value, item in view._items.items() if value != _ARCHER and not item.isHidden()]
+        on_screen = [rect for rect in map(view.list.visualItemRect, others) if area.contains(rect)]
+        assert len(on_screen) > 1
+        assert not any(highlight in _ring(image, rect) for rect in on_screen)
+    finally:
+        view.close()
+

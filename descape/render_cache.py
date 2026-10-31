@@ -49,6 +49,8 @@ from descape.view_layers import DEFAULT_LAYERS, LayerState, render_key
 # Mod Art's art comes from mod_graphics' module state; the viewer's toggle replaces the whole
 # cache (refresh_map), so this entry only guards a future set_layers() caller.
 _BUILD_TIME_LAYER_FIELDS = ("farm_overlay", "small_trees", "hero_glow", "wall_alpha", "mod_art")
+# LayerState fields no chunk's pixels depend on: set_layers() stores them and evicts nothing.
+_DRAW_ONLY_LAYER_FIELDS = ("colour_mood",)
 
 # Default chunk size for IsoChunkCache -- measured, not guessed: benched
 # CHUNK_PX in {256, 512, 1024} via tools/verify_iso_chunks.py on this
@@ -2693,9 +2695,12 @@ class _ChunkCacheBase:
         layers are baked into cached chunk PIXELS, so storing the state
         alone leaves every already-composited chunk showing the old render.
 
-        The two kinds of field cost different things, so they are diffed
-        rather than both paying for the worse case:
+        The kinds of field cost different things, so they are diffed rather
+        than all paying for the worst case:
 
+        - A DRAW-ONLY field (_DRAW_ONLY_LAYER_FIELDS: colour_mood) is in no
+          chunk at all, since MapCanvasItem paints it over whatever a chunk
+          holds, so storing it is the whole update and nothing is evicted.
         - A PAINT-TIME field (terrain_textures, terrain_blend) is read straight off
           self.layers by _composite_rect, so eviction alone is the whole
           update.
@@ -2718,6 +2723,9 @@ class _ChunkCacheBase:
         resets it, so toggling one is the equal-state no-op (TASK-499)."""
         layers = render_key(layers)
         if layers == self.layers:
+            return
+        if layers == replace(self.layers, **{f: getattr(layers, f) for f in _DRAW_ONLY_LAYER_FIELDS}):
+            self.layers = layers
             return
         rebuild = any(
             getattr(layers, f) != getattr(self.layers, f) for f in _BUILD_TIME_LAYER_FIELDS

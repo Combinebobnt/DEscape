@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +63,28 @@ OBJECT_CATEGORIES = tuple(category for _dataset, category in _OBJECT_DATASETS)
 # asset_source.resource_string().
 _CATALOG_JSON_PATH = Path(__file__).resolve().parent / "object_catalog.json"
 
+# The trigger tech picker's internal rows, hidden there until "Show internal
+# techs" is ticked: placeholders and the .dat's own helper techs, which no
+# scenario has a reason to research. Matched on the .dat code name, never the
+# display label ("BLANK TECHNOLOGY 0", "Technology Placeholder 01"). A hand-
+# written list, not a .dat fact, so it lives here rather than in
+# tools/gen_object_catalog.py. Measured 2026-10-29: 74 of TechInfo's 587 rows.
+INTERNAL_TECH_FAMILIES: Mapping[str, re.Pattern[str]] = {
+    "Blank Technology": re.compile(r"^Blank Technology \d+$"),
+    "Placeholder": re.compile(r"^Placeholder \d+$"),
+    "C-Bonus": re.compile(r"^C-Bonus, "),
+    "(make avail)": re.compile(r" \(make avail\)$", re.IGNORECASE),
+    "Auto upgrade": re.compile(r"^Auto upgrade "),
+    "requirement": re.compile(r" requirement$"),
+    "Change TC constr time": re.compile(r"^Change TC constr time\d*$"),
+    "Static Bonuses": re.compile(r" Static Bonuses$"),
+}
+
+
+def internal_tech_family(code: str) -> str:
+    """The INTERNAL_TECH_FAMILIES key a tech's .dat code name falls in, or ""."""
+    return next((family for family, pattern in INTERNAL_TECH_FAMILIES.items() if pattern.search(code)), "")
+
 
 @game_dataset.cache(maxsize=1)
 def _dat_table() -> dict:
@@ -76,12 +99,12 @@ def _dat_table() -> dict:
 
 
 @functools.cache
-def _aoe2_dat_objects() -> dict:
-    """The AoE2 table's object rows whatever dataset is active (GH #67's shared hidden objects)."""
+def _aoe2_dat_table() -> dict:
+    """The AoE2 table whatever dataset is active (GH #67's shared rows), or an empty one like _dat_table()."""
     path = game_dataset.table_path(_CATALOG_JSON_PATH, game_dataset.AOE2)
     if not path.is_file():
-        return {}
-    return json.loads(path.read_text())["objects"]
+        return {"objects": {}, "techs": {}, "terrains": {}}
+    return json.loads(path.read_text())
 
 
 def _ror_shared_hidden() -> dict[int, str]:
@@ -91,7 +114,7 @@ def _ror_shared_hidden() -> dict[int, str]:
     tables (543 on 2026-10-17, the Castle among them). Listed as hidden, so
     "Show editor-hidden objects" offers them; an emptied RoR slot (WALL5 2678)
     or a reused one (93, Spearman there, Hoplite here) differs in code."""
-    aoe2 = _aoe2_dat_objects()
+    aoe2 = _aoe2_dat_table()["objects"]
     candidates: dict[int, str] = {}
     for dataset, category in _OBJECT_DATASETS:
         for member in dataset:
@@ -112,7 +135,7 @@ def _ror_shared_hidden() -> dict[int, str]:
 def same_object_in_aoe2(id_: int) -> bool:
     """Whether id_ is the same object in both games' tables: same .dat code and
     class (GH #67). A pick keeps only such a const across a dataset switch."""
-    old, new = _aoe2_dat_objects().get(str(id_)), _dat_table()["objects"].get(str(id_))
+    old, new = _aoe2_dat_table()["objects"].get(str(id_)), _dat_table()["objects"].get(str(id_))
     return bool(old and new) and (old.get("code"), old.get("class")) == (new.get("code"), new.get("class"))
 
 
@@ -205,18 +228,33 @@ def portrait_for(object_id: int) -> tuple[int | None, bool]:
     return icon_for(object_id), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
 
 
-def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None) -> str:
+def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str) -> bool:
+    # TASK-507: with no RoR strings file the install's strings are AoE2's, so they fit only a row AoE2 shares.
+    if not game_dataset.is_ror() or asset_source.has_ror_strings(lang):
+        return True
+    aoe2_row = _aoe2_dat_table()[section].get(str(id_))
+    if aoe2_row is None:
+        return False
+    return (aoe2_row.get("code"), aoe2_row.get("string_id")) == (dat_entry.get("code"), dat_entry.get("string_id"))
+
+
+def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None, *, section: str) -> str:
     """install string -> library enum name -> .dat short code -> "UNKNOWN_
     <id>", each step falling through to the next. Degrades to library_name
     alone with no install configured or no .dat entry for id_ at all --
     what keeps the default (install-free) test tier on the exact format
     resolve_reference()/the catalog always had before slice 4.
 
+    Under Return of Rome with no RoR strings file for lang, a row takes an
+    install string only if AoE2's `section` row has the same id, code and
+    string id.
+
     lang defaults to asset_source.get_language(), which parses config.yaml on
     every call; a bulk builder resolves it once and passes it in."""
     if dat_entry is not None:
+        lang = lang or asset_source.get_language()
         install_name = asset_source.resource_string(dat_entry["string_id"], lang)
-        if install_name:
+        if install_name and _takes_install_name(section, id_, dat_entry, lang):
             return install_name
     if library_name:
         return library_name
@@ -232,7 +270,7 @@ def clear_caches() -> None:
     _combined_object_names.cache_clear()
     objects.cache_clear()
     techs.cache_clear()
-    _aoe2_dat_objects.cache_clear()
+    _aoe2_dat_table.cache_clear()
 
 
 @game_dataset.cache(maxsize=1)
@@ -255,7 +293,7 @@ def _combined_object_names() -> dict[int, str]:
             if member.ID in names:
                 continue
             dat_entry = _dat_entry("objects", member.ID)
-            names[member.ID] = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
+            names[member.ID] = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang, section="objects")
     return names
 
 
@@ -298,6 +336,8 @@ class CatalogEntry:
     `class_id`/`hidden` come from object_catalog.json (techs carry neither --
     the plan's `category` note applies to objects only) -- None/False for
     every entry, and every tech entry, until that file is generated.
+    `internal` is a tech whose .dat code falls in INTERNAL_TECH_FAMILIES;
+    only a picker that asks for it hides such a row.
     """
 
     id: int
@@ -306,13 +346,14 @@ class CatalogEntry:
     class_id: int | None
     hidden: bool
     search_text: str
+    internal: bool = False
 
 
 # GH #58: what a picker row for a unit only the active data mod's .dat defines ends in.
 DATA_MOD_TAG = "(data mod)"
 
 
-def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None) -> CatalogEntry:
+def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None, internal: bool = False) -> CatalogEntry:
     return CatalogEntry(
         id=id_,
         name=name,
@@ -320,7 +361,13 @@ def _entry(id_: int, name: str, category: str, dat_entry: dict | None = None) ->
         class_id=dat_entry.get("class") if dat_entry else None,
         hidden=bool(dat_entry.get("hidden")) if dat_entry else False,
         search_text=f"{name.lower()} {id_}",
+        internal=internal,
     )
+
+
+def _internal_tech(dat_entry: dict | None) -> bool:
+    # Fail open: no committed row, no code, nothing hidden.
+    return bool(dat_entry) and bool(internal_tech_family(str(dat_entry.get("code") or "")))
 
 
 @game_dataset.cache(maxsize=1)
@@ -355,7 +402,7 @@ def objects() -> tuple[CatalogEntry, ...]:
             dat_entry = _dat_entry("objects", member.ID)
             if dat_entry is not None and member.ID in _EDITOR_UNLISTED:
                 dat_entry = {**dat_entry, "hidden": True}
-            name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
+            name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang, section="objects")
             entries.append(_entry(member.ID, name, category, dat_entry))
     for key, raw_entry in _dat_table()["objects"].items():
         id_ = int(key)
@@ -365,7 +412,7 @@ def objects() -> tuple[CatalogEntry, ...]:
         dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
         if not ror and id_ in _EDITOR_UNLISTED:
             dat_entry = {**dat_entry, "hidden": True}
-        name = resolve_name(id_, "", dat_entry, lang)
+        name = resolve_name(id_, "", dat_entry, lang, section="objects")
         if id_ in mod_only:
             name = f"{name} {DATA_MOD_TAG}"
         entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
@@ -374,7 +421,7 @@ def objects() -> tuple[CatalogEntry, ...]:
         for id_, category in _ror_shared_hidden().items():
             if id_ not in seen and id_ not in _ROR_EDITOR_UNLISTED:
                 dat_entry = _dat_entry("objects", id_)
-                entries.append(_entry(id_, resolve_name(id_, "", dat_entry, lang), category, dat_entry))
+                entries.append(_entry(id_, resolve_name(id_, "", dat_entry, lang, section="objects"), category, dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 
@@ -386,12 +433,13 @@ def techs() -> tuple[CatalogEntry, ...]:
     lang = asset_source.get_language()
     if game_dataset.is_ror():
         for key, dat_entry in _dat_table().get("techs", {}).items():
-            entries.append(_entry(int(key), resolve_name(int(key), "", dat_entry, lang), "Techs"))
+            name = resolve_name(int(key), "", dat_entry, lang, section="techs")
+            entries.append(_entry(int(key), name, "Techs", internal=_internal_tech(dat_entry)))
         return tuple(sorted(entries, key=lambda e: e.name))
     for member in TechInfo:
         dat_entry = _dat_entry("techs", member.ID)
-        name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang)
-        entries.append(_entry(member.ID, name, "Techs"))
+        name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang, section="techs")
+        entries.append(_entry(member.ID, name, "Techs", internal=_internal_tech(dat_entry)))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 
@@ -419,7 +467,7 @@ def object_name(id_: int, lang: str | None = None) -> str:
     otherwise supply. A caller naming many ids passes lang, as resolve_name()
     says.
     """
-    return resolve_name(id_, "", _dat_entry("objects", id_), lang)
+    return resolve_name(id_, "", _dat_entry("objects", id_), lang, section="objects")
 
 
 def tech_name(id_: int, lang: str | None = None) -> str:
@@ -433,7 +481,7 @@ def tech_name(id_: int, lang: str | None = None) -> str:
     `section` argument to object_name(): resolving a tech through the objects
     table would name it after an unrelated unit. lang as object_name().
     """
-    return resolve_name(id_, "", _dat_entry("techs", id_), lang)
+    return resolve_name(id_, "", _dat_entry("techs", id_), lang, section="techs")
 
 
 # -- document-scoped references: TriggerId, VariableId -----------------------

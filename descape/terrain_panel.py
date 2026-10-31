@@ -17,8 +17,16 @@ map.
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QLabel,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionViewItem,
+    QTreeWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from descape import terrain_catalog
 from descape.terrain_browser import SHARED_TEXTURE_NOTE, TerrainPickerView
@@ -30,6 +38,33 @@ def default_terrain_id() -> int:
     started on (TerrainId sorted by enum name, index 0), so an untouched
     Draw stroke paints what it always did."""
     return min(terrain_catalog.terrains(), key=lambda entry: entry.name).id
+
+
+def _tree_names_width(tree: QTreeWidget) -> int:
+    """The tree width that shows every heading and terrain name in full beside
+    the vertical scroll bar, from the style's own item size hint. Counts
+    collapsed groups and not yet decoded swatches too, so it never depends on
+    what the user has expanded."""
+    style = tree.style()
+    option = QStyleOptionViewItem()
+    option.initFrom(tree)
+    option.font = tree.font()
+    option.decorationSize = tree.iconSize()
+    option.decorationPosition = QStyleOptionViewItem.Left
+    option.displayAlignment = Qt.AlignLeft | Qt.AlignVCenter
+    widest = 0
+    for i in range(tree.topLevelItemCount()):
+        group = tree.topLevelItem(i)
+        # A root-decorated tree indents headings once and their terrain rows (with a swatch) twice.
+        rows = [(group, 1, False)] + [(group.child(c), 2, True) for c in range(group.childCount())]
+        for item, depth, swatch in rows:
+            option.text = item.text(0)
+            option.features = QStyleOptionViewItem.HasDisplay
+            if swatch:
+                option.features = QStyleOptionViewItem.HasDisplay | QStyleOptionViewItem.HasDecoration
+            width = style.sizeFromContents(QStyle.CT_ItemViewItem, option, QSize(), tree).width()
+            widest = max(widest, depth * tree.indentation() + width)
+    return widest + 2 * tree.frameWidth() + tree.verticalScrollBar().sizeHint().width()
 
 
 class TerrainPanel(QWidget):
@@ -70,6 +105,13 @@ class TerrainPanel(QWidget):
         self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.hover_label.setMinimumWidth(1)
         layout.addWidget(self.hover_label)
+
+    def drag_floor(self) -> int:
+        """Terrain mode's left-pane drag floor (GH #142, TASK-551): the page's
+        own minimum (the show-unused box, the List/Grid buttons) and every
+        terrain and heading name in full. Measured from the widgets, so it
+        grows with the font."""
+        return max(self.minimumSizeHint().width(), _tree_names_width(self.view.tree))
 
     # -- the chosen terrain --------------------------------------------------
 

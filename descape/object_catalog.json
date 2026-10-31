@@ -16246,7 +16246,7 @@
       "icon": 936,
       "obstruction": 5,
       "resources": {
-        "food": 340
+        "food": 400
       },
       "restriction": 7,
       "string_id": 21389,
@@ -49684,13 +49684,13 @@
       "civ": 60,
       "code": "Saxons",
       "icon": -1,
-      "string_id": -1
+      "string_id": 10330
     },
     "1459": {
       "civ": 61,
       "code": "Varangians",
       "icon": -1,
-      "string_id": -1
+      "string_id": 10331
     },
     "146": {
       "civ": -1,
@@ -49702,7 +49702,7 @@
       "civ": 62,
       "code": "Danes",
       "icon": -1,
-      "string_id": -1
+      "string_id": 10332
     },
     "1461": {
       "civ": 60,

@@ -6,7 +6,7 @@ In the game, Instructions, Hints and Scouts fill the matching tabs of the object
 
 ## Editing the text
 
-Type in a box; the text applies when you leave the box, as one undo step. While a box has focus, **Edit > Undo** and **Edit > Redo** act on its own text. Line breaks are written back the way that field already stored them.
+Type in a box; the text applies when you leave the box or save, and before DEscape asks about unsaved changes, as one undo step. While a box has focus, **Edit > Undo** and **Edit > Redo** act on its own text. Line breaks are written back the way that field already stored them.
 
 Drag the strip along a box's bottom edge to change its height in whole lines, or double-click the strip to reset it. Each box remembers its height between sessions.
 

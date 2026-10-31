@@ -362,6 +362,10 @@ trigger_overlay: true
 # Units. Independent of the overlay. Default: true.
 trigger_ghosts: true
 
+# The selected Display Instructions effect's message drawn over the map in
+# Triggers mode, View > Show Instruction on Map. Default: true.
+instruction_overlay: true
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -410,6 +414,11 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # it: icons (icon and name rows), names (text rows) or grid (icons only).
 # One of {_UNITS_CATALOG_MODES}. Default: {settings.UNITS_CATALOG_MODE_DEFAULT}.
 units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
+
+# The same three views for Browse, the object dialog behind a field's "...",
+# set by the same buttons in that dialog. Kept apart from the Units panel's.
+# One of {_UNITS_CATALOG_MODES}. Default: {settings.BROWSE_CATALOG_MODE_DEFAULT}.
+browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
 
 # Height in pixels of the system log, below the map view. Persisted
 # automatically when you drag the split -- not something you normally set by

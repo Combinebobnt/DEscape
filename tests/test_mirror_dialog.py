@@ -455,6 +455,37 @@ def test_mirroring_units_refuses_a_straddling_building() -> None:
         window.close()
 
 
+def test_the_refusal_names_the_spilling_building_and_its_tile_not_the_tree() -> None:
+    """TASK-043: under mode 5 an oak's copy lands on the one tile a castle
+    spills past the boundary. The refusal and the summary name the castle and
+    that tile; the oak, which also straddles, is not named."""
+    from descape.mirror_tools import plan_mirror_units
+    from descape.object_catalog import display_name
+
+    window = _mirror_window()
+    try:
+        mm = window.scenario.map_manager
+        n = mm.map_width
+        _place(window, 349, 21.3, n - 23 + 0.6, player=0)
+        _place(window, 82, n - 23.5, 20.5)
+        plan = plan_mirror(mm, 5, 0, do_terrain=True, do_elevation=False)
+        unit_plan = plan_mirror_units(mm, 5, 0, window.scenario.unit_manager.units, plan.source_indices)
+        assert len(unit_plan.straddling) == 2, "the oak no longer straddles, so this proves nothing"
+        before_log = window.status_log.toPlainText()
+        assert window.on_mirror(plan, unit_plan) is None
+        log = _log_since(window, before_log)
+        assert "1 unit(s) straddle the symmetry axis or a slice boundary" in log
+        assert f"(e.g. Castle at ({n - 24}, 20), tile ({n - 22}, 22))" in log
+        assert display_name(349) not in log
+
+        dialog = _units_dialog(window, 5)
+        assert "BLOCKED: 1 unit(s) straddle the symmetry axis or a slice boundary" in dialog.summary_label.text()
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_the_dialogs_own_units_path_previews_and_auto_undoes() -> None:
     """The dialog's own _compute_unit_plan(): a preview with Units ticked
     applies terrain and units as one composite, and changing an option undoes
@@ -535,9 +566,9 @@ def test_overlap_control_follows_the_units_box() -> None:
 
         combo.setCurrentIndex(combo.findData(OVERLAPS_PLACE))
         dialog.reject()
-        reopened = MirrorDialog(window)
-        assert reopened.overlaps_combo.currentData() == OVERLAPS_REFUSE, "the pick must not persist"
-        assert not reopened.overlaps_combo.isEnabled()
+        reopened = MirrorDialog(window, last=dialog.state())
+        assert reopened.overlaps_combo.currentData() == OVERLAPS_PLACE, "TASK-514: the pick is restored"
+        assert not reopened.overlaps_combo.isEnabled() and not reopened.overlaps_label.isEnabled()
         reopened.reject()
     finally:
         window.edit_history.mark_saved()
@@ -923,5 +954,230 @@ def test_mirroring_units_survives_an_unreadable_caption(error) -> None:
         assert len(_units(window)) == before_units
     finally:
         library_compat.depoison()
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- TASK-514: the options are session-sticky ---------------------------------
+
+
+def _off_default(dialog) -> None:
+    """Every option off its default: an angular mode, slice 3, Terrain off,
+    Elevation on, Units on with Skip them, ownership on at 3."""
+    from descape.mirror_tools import OVERLAPS_SKIP
+
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(11))
+    dialog.slice_combo.setCurrentIndex(3)
+    dialog.terrain_checkbox.setChecked(False)
+    dialog.elevation_checkbox.setChecked(True)
+    dialog.units_checkbox.setChecked(True)
+    dialog.overlaps_combo.setCurrentIndex(dialog.overlaps_combo.findData(OVERLAPS_SKIP))
+    dialog.ownership_checkbox.setChecked(True)
+    dialog.ownership_spin.setValue(3)
+
+
+def test_a_restored_dialog_shows_every_option_and_its_enabled_states() -> None:
+    from descape.mirror_tools import OVERLAPS_SKIP
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window)
+        _off_default(dialog)
+        state = dialog.state()
+        dialog.reject()
+        assert state == {
+            "mode_id": 11,
+            "slice": 3,
+            "terrain": False,
+            "elevation": True,
+            "units": True,
+            "overlaps": OVERLAPS_SKIP,
+            "rotate_ownership": True,
+            "ownership_steps": 3,
+        }
+
+        restored = MirrorDialog(window, last=state)
+        assert restored.mode_combo.currentData() == 11
+        assert restored.slice_combo.count() == 6 and restored.slice_combo.currentData() == 3
+        assert not restored.terrain_checkbox.isChecked()
+        assert restored.elevation_checkbox.isChecked()
+        assert restored.units_checkbox.isChecked()
+        assert restored.overlaps_combo.currentData() == OVERLAPS_SKIP
+        assert restored.overlaps_combo.isEnabled() and restored.overlaps_label.isEnabled()
+        assert restored.ownership_checkbox.isChecked() and restored.ownership_spin.value() == 3
+        assert restored.ownership_spin.isEnabled()
+        assert restored.state() == state
+        restored.mode_combo.setCurrentIndex(restored.mode_combo.findData(12))
+        assert restored.slice_combo.currentData() == 0, "a later mode change repopulates from 0"
+        restored.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_restored_slice_is_clamped_to_the_modes_count() -> None:
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window, last={"mode_id": 1, "slice": 5})
+        assert dialog.slice_combo.count() == 2 and dialog.slice_combo.currentData() == 1
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_restored_elevation_wins_over_the_mode_kinds_default() -> None:
+    """The trap: _elevation_default_kind starts at "lattice", so a restored
+    angular mode must not see a kind switch on the first _on_mode_changed()."""
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        dialog = MirrorDialog(window, last={"mode_id": 11, "elevation": True})
+        assert dialog.elevation_checkbox.isChecked(), "a restored angular mode's Elevation must stay on"
+        dialog.elevation_checkbox.setChecked(False)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(1))
+        assert dialog.elevation_checkbox.isChecked(), "a switch to lattice still re-defaults it on"
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(11))
+        assert not dialog.elevation_checkbox.isChecked(), "and back to angular re-defaults it off"
+        dialog.reject()
+
+        lattice = MirrorDialog(window, last={"mode_id": 7, "elevation": False})
+        assert not lattice.elevation_checkbox.isChecked()
+        lattice.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_full_restore_still_plans_once_per_open(monkeypatch) -> None:
+    import descape.viewer as viewer_module
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        donor = MirrorDialog(window)
+        _off_default(donor)
+        state = donor.state()
+        donor.reject()
+
+        calls = []
+        real = viewer_module.plan_mirror
+        monkeypatch.setattr(viewer_module, "plan_mirror", lambda *a, **k: calls.append(1) or real(*a, **k))
+        MirrorDialog(window).reject()
+        bare = len(calls)
+        calls.clear()
+        MirrorDialog(window, last=state).reject()
+        assert bare >= 1 and len(calls) == bare
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _arm_mirror(monkeypatch, configure=None, accept: bool = True) -> list:
+    """Replaces MirrorDialog.exec_: records the state each dialog opened with,
+    runs `configure`, then accepts or rejects through the dialog's own slots."""
+    from PyQt5.QtWidgets import QDialog
+
+    from descape.viewer import MirrorDialog
+
+    opened = []
+
+    def exec_(self):
+        opened.append(self.state())
+        if configure is not None:
+            configure(self)
+        if accept:
+            self.accept()
+            return QDialog.Accepted
+        self.reject()
+        return QDialog.Rejected
+
+    monkeypatch.setattr(MirrorDialog, "exec_", exec_)
+    return opened
+
+
+def _seven_way_two(dialog) -> None:
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(7))
+    dialog.slice_combo.setCurrentIndex(2)
+    dialog.units_checkbox.setChecked(True)
+    dialog.ownership_checkbox.setChecked(True)
+    dialog.ownership_spin.setValue(2)
+
+
+def test_an_applied_dialogs_options_open_next_time_even_after_another_file(monkeypatch, tmp_path) -> None:
+    import shutil
+    from pathlib import Path
+
+    from descape.viewer import MirrorDialog
+
+    other = tmp_path / "units.aoe2scenario"
+    shutil.copyfile(Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario", other)
+
+    window = _mirror_window()
+    try:
+        _arm_mirror(monkeypatch, _seven_way_two)
+        window._show_mirror_dialog()
+        applied = window._mirror_defaults
+        assert applied["mode_id"] == 7 and applied["slice"] == 2 and applied["ownership_steps"] == 2
+
+        opened = _arm_mirror(monkeypatch, accept=False)
+        window._show_mirror_dialog()
+        assert opened == [applied]
+
+        window.edit_history.mark_saved()
+        window.load_scenario(other)
+        assert window.scenario.path == other
+        window._show_mirror_dialog()
+        assert opened == [applied, applied], "another scenario keeps the remembered options"
+        assert MirrorDialog(window).state() != applied
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_cancelled_dialog_leaves_the_remembered_options(monkeypatch) -> None:
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        defaults = MirrorDialog(window)
+        default_state = defaults.state()
+        defaults.reject()
+
+        _arm_mirror(monkeypatch, _seven_way_two, accept=False)
+        window._show_mirror_dialog()
+        opened = _arm_mirror(monkeypatch, accept=False)
+        window._show_mirror_dialog()
+        assert opened == [default_state], "nothing applied yet: a cancel leaves the defaults"
+
+        _arm_mirror(monkeypatch, _seven_way_two)
+        window._show_mirror_dialog()
+        applied = window._mirror_defaults
+        _arm_mirror(monkeypatch, _off_default, accept=False)
+        window._show_mirror_dialog()
+        opened = _arm_mirror(monkeypatch, accept=False)
+        window._show_mirror_dialog()
+        assert opened == [applied], "the cancelled options must not be kept"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_read_only_units_untick_but_are_remembered(monkeypatch) -> None:
+    from descape.viewer import MirrorDialog
+
+    window = _mirror_window()
+    try:
+        monkeypatch.setattr(window, "_ensure_unit_edits", lambda: None)
+        dialog = MirrorDialog(window, last={"units": True})
+        assert not dialog.units_checkbox.isChecked()
+        assert not dialog.overlaps_combo.isEnabled()
+        assert dialog.state()["units"] is True, "the next writable file gets Units back"
+        dialog.reject()
+    finally:
         window.edit_history.mark_saved()
         window.close()

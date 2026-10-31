@@ -20,7 +20,9 @@ wall ART still belongs here and not in Filters, which decides membership
 rather than appearance. Fish Outlines (TASK-499) is the first overlay row
 (`LayerSpec.scene_overlay`): a MapView item drawn over the map, like View >
 Footprint Outlines, never chunk pixels, so render_key() keeps it out of
-every chunk cache's state.
+every chunk cache's state. Colour Mood (TASK-238) is the first draw-only row:
+MapCanvasItem grades the canvas at paint time, so a chunk cache stores the
+field but set_layers() evicts nothing for it.
 
 Every row persists across launches, by user decision (GH #182), stored by
 settings.get_view_layers()/set_view_layer() under the config key
@@ -53,17 +55,17 @@ WALL_OPACITY_DEFAULT_PCT = 50
 @dataclass(frozen=True)
 class LayerState:
     """An immutable "render these layers" state, whose defaults are each row's
-    own LayerSpec.default (on for the two visibility rows, Hero Glow and Mod Art, off
-    for Small Trees, Translucent Walls and Fish Outlines).
+    own LayerSpec.default (on for the two visibility rows, Hero Glow and Mod Art,
+    off for Small Trees, Translucent Walls, Fish Outlines and Colour Mood).
 
     Frozen for exactly the reason UnitFilter is: it is stored on a chunk
     cache and compared BY VALUE to decide whether a change needs the cache
     evicting, and a mutable state edited in place would silently skip that
-    eviction -- every field here except the scene-overlay rows' is composited
-    into cached chunk PIXELS, so the toggle would appear to do nothing until
-    the user scrolled somewhere uncached. The caches store and compare
-    render_key(state), which resets the scene-overlay fields, so toggling one
-    of those evicts nothing.
+    eviction -- every field here except the scene-overlay rows' and
+    colour_mood is composited into cached chunk PIXELS, so the toggle would
+    appear to do nothing until the user scrolled somewhere uncached. The caches
+    store and compare render_key(state), which resets the scene-overlay
+    fields, so toggling one of those evicts nothing.
 
     No `is_default` property, unlike UnitFilter: nothing here needs to
     collapse a combination of checkboxes into one canonical default-equal
@@ -80,6 +82,8 @@ class LayerState:
     mod_art: bool = True
     # A scene overlay (MapView's fish rings), never in chunk pixels: render_key() drops it.
     fish_outlines: bool = False
+    # Draw-only: a grade MapCanvasItem paints over the canvas, never in chunk pixels.
+    colour_mood: bool = False
     # Not a registry row: Settings > Appearance owns it, and the viewer fills it in.
     wall_opacity_pct: int = WALL_OPACITY_DEFAULT_PCT
 
@@ -272,6 +276,20 @@ LAYERS: tuple[LayerSpec, ...] = (
         requires_sprites=False,
         keybind_label="Mod Art Layer",
         requires_mod_art=True,
+    ),
+    LayerSpec(
+        layer_id="colour_mood",
+        label="&Colour Mood",
+        tooltip=(
+            "Tint the map with the scenario's colour mood, as the game does, "
+            "approximately. DEscape's own overlays keep their colours."
+        ),
+        # Off until TASK-557 brings its paint cost under budget.
+        default=False,
+        # A grade over whatever the canvas drew, in every style.
+        styles=None,
+        requires_sprites=False,
+        keybind_label="Colour Mood Layer",
     ),
 )
 

@@ -136,7 +136,7 @@ OPTIONS: tuple[ToolOption, ...] = (
         "eraser_targets", "Eraser targets", "eraser", SET, list(ERASER_DEFAULT_TARGETS), members=ERASER_TARGETS,
     ),
     ToolOption("area_edit", "Edit Area", "trigger_area", BOOL, False),
-    ToolOption("area_move", "Move areas", "trigger_area", BOOL, True),
+    ToolOption("area_move", "Move areas and locations", "trigger_area", BOOL, True),
     ToolOption("area_resize", "Resize areas", "trigger_area", BOOL, True),
     ToolOption("area_tile_borders", "Tile borders", "trigger_area", BOOL, False),
 )

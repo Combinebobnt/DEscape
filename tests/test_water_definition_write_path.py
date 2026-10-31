@@ -20,6 +20,7 @@ from test_map_strings import TRIGGER_FIXTURE, _item, _variant
 from descape import ai_scripts, disables_fields, map_strings, option_fields, player_fields, scenario_write
 from descape.messages_model import MessagesEditModel
 from descape.options_model import (
+    COLOUR_MOOD_FIELD_ID,
     SCRIPT_NAME_FIELD_ID,
     WATER_DEFINITION_FIELD_ID,
     OptionEditsUnavailableError,
@@ -63,7 +64,7 @@ def _original_file_bytes(loaded) -> bytes:
 
 def test_the_model_seeds_the_files_own_value() -> None:
     model = OptionsEditModel(load_map_and_units(TRIGGER_FIXTURE))
-    assert model.map_strings_supported
+    assert model.map_string_supported(WATER)
     assert model.original_value(WATER) == ""
     assert not model.has_map_string_edits
 
@@ -109,7 +110,7 @@ def test_any_storable_string_is_accepted_by_the_model() -> None:
 
 def test_a_failed_gate_leaves_the_row_unwritable_and_the_scalars_writable() -> None:
     model = OptionsEditModel(_variant(b"X\x00\x00"))
-    assert not model.map_strings_supported
+    assert not model.map_string_supported(WATER)
     with pytest.raises(KeyError):
         model.set_value(WATER, "Arctic")
     model.set_value("collide_and_correct", 1 - model.original_value("collide_and_correct"))
@@ -134,7 +135,7 @@ def test_empty_to_arctic_grows_the_body_by_six_at_the_span(tmp_path: Path) -> No
     assert _water(reloaded) == "Arctic"
     assert reloaded.terrain_write_supported and reloaded.units_write_supported
     assert parse_triggers(reloaded) is not None and reloaded.trigger_write_supported
-    assert map_strings_write_supported(reloaded)
+    assert map_strings_write_supported(reloaded, map_strings.WATER_DEFINITION)
     assert _terrain(reloaded) == _terrain(loaded)
 
 
@@ -193,6 +194,7 @@ def test_every_splice_in_one_save_reads_back(tmp_path: Path) -> None:
     messages = MessagesEditModel(loaded)
 
     options.set_value(WATER, "Red Tide")
+    options.set_value(COLOUR_MOOD_FIELD_ID, "Winter")
     options.set_value(SCRIPT_NAME_FIELD_ID, "ordering_probe")
     flag = 1 - options.original_value("collide_and_correct")
     options.set_value("collide_and_correct", flag)
@@ -214,6 +216,7 @@ def test_every_splice_in_one_save_reads_back(tmp_path: Path) -> None:
     parse_triggers(reloaded)
     after = OptionsEditModel(reloaded)
     assert _water(reloaded) == "Red Tide"
+    assert map_strings.current_value(reloaded, map_strings.COLOUR_MOOD) == "Winter"
     assert xs_attachment(reloaded) == ("ordering_probe", 0)
     assert after.original_value("collide_and_correct") == flag
     assert after.original_value(pop_field) == pop_after
@@ -224,7 +227,7 @@ def test_every_splice_in_one_save_reads_back(tmp_path: Path) -> None:
     got_new = next(u for u in reloaded.unit_manager.units[2] if u.reference_id == new_ref)
     assert (got_new.x, got_new.y, got_new.unit_const) == (15.5, 16.5, 83)
     assert _terrain(reloaded) == _terrain(loaded)
-    assert map_strings_write_supported(reloaded)
+    assert map_strings_write_supported(reloaded, map_strings.WATER_DEFINITION)
 
 
 def test_a_map_resize_carries_a_pending_water_edit_and_clamps_cameras(tmp_path: Path) -> None:
@@ -235,10 +238,12 @@ def test_a_map_resize_carries_a_pending_water_edit_and_clamps_cameras(tmp_path: 
     loaded = _with_camera(110)
     options = OptionsEditModel(loaded)
     options.set_value(WATER, "Arctic")
+    options.set_value(COLOUR_MOOD_FIELD_ID, "Night")
     result = resize_scenario(loaded, 100, 100, Anchor.TOP_LEFT, options=options)
     reloaded = _save(result.loaded, tmp_path / "resized.aoe2scenario", units=result.unit_edits, triggers=result.trigger_edits)
     assert (reloaded.map_manager.map_width, reloaded.map_manager.map_height) == (100, 100)
     assert _water(reloaded) == "Arctic"
+    assert map_strings.current_value(reloaded, map_strings.COLOUR_MOOD) == "Night"
     fields = player_fields.camera_fields(reloaded)
     pov_x = [f.value for f in fields if f.target.codec == "s32" and f.axis == "x"]
     assert pov_x[1] == 99
@@ -292,7 +297,7 @@ def _model_or_skip(loaded, path: Path) -> OptionsEditModel:
 @pytest.mark.corpus
 def test_the_gate_passes_on_every_corpus_file(scenario_path) -> None:
     loaded = _load_or_skip(scenario_path)
-    assert map_strings.write_supported(loaded), scenario_path.name
+    assert map_strings.write_supported(loaded, map_strings.WATER_DEFINITION), scenario_path.name
     spec = next(s for s in option_fields.specs_for(loaded) if s.field_id == WATER)
     model = _model_or_skip(loaded, scenario_path)
     assert option_fields.current_value(loaded, spec) == model.original_value(WATER)

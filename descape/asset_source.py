@@ -228,6 +228,7 @@ def clear_install_caches() -> None:
     get_terrain_mask_array.cache_clear()
     _sized_terrain_mask.cache_clear()
     _string_table.cache_clear()
+    _has_ror_strings.cache_clear()
     _ror_icon_files.cache_clear()
     get_unit_icon.cache_clear()
     get_tech_icon.cache_clear()
@@ -267,6 +268,22 @@ def _unescape_string_value(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
 
+def _ror_strings_path(install: Path, lang: str) -> Path:
+    return game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang)
+
+
+@lru_cache(maxsize=4)
+def _has_ror_strings(lang: str) -> bool:
+    install = get_install_path()
+    return install is not None and _ror_strings_path(install, lang).is_file()
+
+
+def has_ror_strings(lang: str | None = None) -> bool:
+    """Whether the configured install has Return of Rome's own strings file
+    for lang (default get_language()), whatever dataset is active."""
+    return _has_ror_strings(lang or get_language())
+
+
 @game_dataset.cache(maxsize=4)
 def _string_table(lang: str) -> dict[int, str]:
     """The install's strings for lang; under Return of Rome its own strings
@@ -277,7 +294,7 @@ def _string_table(lang: str) -> dict[int, str]:
         return {}
     paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
     if game_dataset.is_ror():
-        paths.append(game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
+        paths.append(_ror_strings_path(install, lang))
     mod = game_dataset.data_mod()
     if mod is not None:
         from descape import content_roots

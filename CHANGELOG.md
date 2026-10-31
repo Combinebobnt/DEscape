@@ -26,6 +26,56 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Rotate while moving** (GH #280): the Rotate commands and the wheel's rotate
+  binding turn a unit during a Move drag, and the turn lands with the drop as
+  one undo step. A gate lands in its new orientation, with "Moving a gate
+  updates walls" reading its turned footprint. Esc, a refused drop or a
+  garrison drop writes no turn.
+- **Drag a trigger's location mark on the map** (GH #41): with Edit Area and
+  Move ticked under Pan in Triggers mode, the selected condition or effect's
+  mark moves as one undo step, with its run line and distance following it. A
+  dimmed mark, which a location object overrides, stays put.
+- **Resize Map previews the new map before you commit** (GH #45): the dialog
+  shows the new bounds over the old map, following the current view. New
+  ground is pale, ground that goes is dark, and red points mark deleted player
+  objects and anything the new edge cuts through.
+- **Display Instructions on the map** (GH #140): selecting one Display
+  Instructions effect draws its message on the map, sized and placed from the
+  game's own panel layout, and it stays put while you pan or zoom. View > Show
+  Instruction on Map turns it off; it shows in Triggers mode only. This
+  replaces the mock screen under the form, where the display time and sound
+  stay listed.
+- **Unit Brush previews the picked object** (GH #270): a see-through copy on
+  the tile under the cursor, red where that tile refuses it, as Place Unit
+  does.
+- **Copy an object type from the map** (GH #276): trigger fields that take an
+  object type have an eyedropper button after "…". Press it and click a unit
+  on the map to copy its type; the player field stays as it was.
+- **Object Browse is now the Units catalog** (GH #273): the "…" on a trigger
+  object field, Find's Types… and References type…, Replace's fields and
+  Garrison's Add... show category buttons, the class dropdown, a filter,
+  Icons, Names and Grid, and the object's portrait and stats. Technology
+  fields keep their plain list. The Grid view now frames the selected cell,
+  in the Units panel too.
+- **Double-click a trigger to rename it** right in the list (GH #279): Enter
+  or clicking away keeps the name, Esc cancels, one undo step. A section
+  header with triggers under it still collapses.
+- **Resize bar in the trigger detail pane** (GH #274): drag the bar between
+  the condition and effect list and the buttons under it to give either more
+  height.
+- **Terrain Grid view: click a category heading to collapse it** (GH #161).
+- **See and set the map's colour mood**: Map Options > Map has a *Colour mood*
+  row with the game's 19 moods. An older, empty or localized stored value is
+  kept as its own entry until you pick another. **View > Layers > Colour
+  Mood**, off by default, tints the map to match, approximately (brightness
+  and tint only), and follows the row, so picking a mood previews it and Undo
+  brings the old one back.
+- **Renumber IDs to Display Order** (GH #2) on the trigger list's
+  right-click menu: a file that runs triggers by ID (Legacy) then runs them
+  in the listed order, and trigger links follow.
+- **A trigger technology field's "…" list leaves out placeholder and helper
+  techs** (Blank Technology, Placeholder, the "requirement" techs and
+  similar) until Show internal techs is ticked.
 - **View > Layers > Fish Outlines** rings every fish (shore fish, turtles,
   oysters, and deep-water fish, dolphins and whales round their whole
   footprint) in its own Settings > Appearance colour, independent of
@@ -153,6 +203,31 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **The compass turns units as you drag it** (GH #71), instead of on release:
+  the whole drag is still one undo step, and a drag back to where it started
+  leaves none.
+- **A step over a "(mixed)" Rotation turns every unit** and keeps each one's
+  own facing (GH #71), in the arrows, the wheel and the compass's wheel. A typed
+  value or a compass click still sets them all to one facing.
+- **One field order across trigger forms** (GH #278, GH #275): conditions and
+  effects keep the fields they share in the same place. Modify Attribute and
+  its siblings start with their quantity rows, Quantity Float sits directly
+  under Quantity, and a few other types moved.
+- **Trigger areas use the game's box layout** (GH #277): a condition or
+  effect's area shows X1 Y1 over X2 Y2, each caption above its box.
+- **Game data refreshed for the Oct 2026 game update.** Dark Age barracks,
+  docks and town centres fly their civ's own garrison flag, and elephant
+  archer HP, walrus food and komodo and snake attack match the patch. A
+  scenario saved by this update has not been tried yet, and Return of Rome
+  keeps its Sept 2026 data.
+- **Mirror Map no longer refuses over grass, plants, flowers** and other
+  objects units walk through: their copies are placed even where they share
+  a tile with an original.
+- **Mirror Map and Resize Map remember what you last applied until you
+  quit**: every Mirror option, and Resize's anchor.
+- **The Players selector greys players past Number of Players**: all eight
+  stay selectable and editable, and changing the count updates the marks in
+  place.
 - Terrain mode's List view drops the large swatch beside the terrain list;
   each row already shows its own (GH #258).
 - **One key can go on commands of different modes** (GH #267): a Terrain
@@ -273,6 +348,34 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **The wheel and compass work on a group mixing direction counts** (GH #71),
+  such as trebuchets and Long Swordsmen, which used to flip between two
+  facings and lose the compass pointer.
+- **Smoke and Flames 1-4 draw their fire and smoke** instead of a coloured
+  mark (GH #256).
+- **Editing a trigger no longer changes the stored quantity of its effects**:
+  every effect whose quantity you did not change keeps the numbers it had. A
+  value of 0 on an attribute such as Movement Speed is no longer saved as -1 or
+  a leftover number, and the trigger panel now shows that 0. Files already saved
+  keep the changed value.
+- Saving, closing, opening another map or starting a new one no longer drops
+  text or a number still being typed in a field; it applies first, and the
+  unsaved-changes question counts it.
+- Set Elevation, Elevate and Paste Region no longer leave a two-level step
+  beside a filled gap, which could crash the game on load.
+- **File > Data Mod loads a mod whose `.dat` breaks rules DEscape measured
+  on the game's own data**, such as Galactic Battlegrounds (GH #262): those
+  objects are drawn simplified or left out, and the status log lists them
+  once. File > New Map no longer crashes on a data mod's own terrains.
+  (contributed by @teslatankx, #269)
+- **Mirror Map's overlap refusal names the right unit**: the building or
+  cliff that spills across the symmetry axis or slice boundary, and the
+  tile it spills onto, instead of the trees whose copies land on it.
+- Terrain mode's side panel can no longer be dragged narrower than its
+  filter, show-unused box and terrain names (GH #142).
+- **Allied victory writes both stored copies of the flag** (Diplomacy's and
+  the Units section's), and is read-only on a file whose second copy can't
+  be verified.
 - **Sloped hills fold like the game's**: each tile's slope now creases
   along the diagonal AoE2:DE picks for it, so a unit on such a tile stands
   on the same spot of its tile as in the game.

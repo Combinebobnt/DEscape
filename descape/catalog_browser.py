@@ -1,4 +1,5 @@
-"""CatalogBrowserView: the Units panel's object picker (GH #68, GH #6).
+"""CatalogBrowserView: the Units panel's object picker (GH #68, GH #6), and
+Browse's (GH #273).
 
 Like the in-game editor's object menus: a 2x2 block of category buttons
 (Units, Buildings, Heroes, Other), a flat list of the active category, a
@@ -6,11 +7,12 @@ class combo that narrows it, a name-or-id filter and three display modes
 (icon and name rows, text rows, an icon-only grid). ValuePickerView stays the
 picker for every other consumer; this one reads object_catalog.objects()
 directly, since it needs each entry's class, plus place_random's pseudo rows
-(GH #164).
+(GH #164). Browse hands it `entries` instead, one field's catalog with no
+random rows, and a `mode_store` of its own.
 
 The API the panel and its tests use is ValuePickerView's: `activated(int)`,
 `current_changed(object)`, select(), current_value(), `filter_edit`,
-`show_hidden_checkbox`; plus `list`, `category_buttons`, `class_combo`,
+`show_hidden_checkbox`, pin(); plus `list`, `category_buttons`, `class_combo`,
 `display_buttons` and refresh_thumbnails().
 
 Rows of the active category stay in the list and are hidden by the filter,
@@ -23,10 +25,11 @@ requested for the rows in the viewport only.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable, Sequence
 
 from AoE2ScenarioParser.datasets.trigger_lists import ObjectClass
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -39,15 +42,19 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from descape import asset_source, catalog_thumbs, item_activation, object_catalog, place_random, settings
-from descape.constant_picker import HIDDEN_LABEL
+from descape.swatch_grid import FRAME_PX
 from descape.terrain_palette import PLAYER_COLORS
 
+HIDDEN_LABEL = "Show editor-hidden objects"
 # (object_catalog category, button label), in the in-game editor's order, two to a row.
 CATEGORIES = (("Units", "Units"), ("Buildings", "Buildings"), ("Heroes", "Heroes"), ("Others", "Other"))
 # Display mode -> (button label, tooltip).
@@ -137,18 +144,59 @@ class _CatalogList(QListWidget):
         self.viewport_changed.emit()
 
 
+class _GridFrameDelegate(QStyledItemDelegate):
+    """The Grid's selected cell: the same Highlight frame as swatch_grid's, not the style's faint tint."""
+
+    def paint(self, painter, option, index) -> None:
+        view = self.parent()
+        if view.viewMode() != QListView.IconMode or not option.state & QStyle.State_Selected:
+            super().paint(painter, option, index)
+            return
+        untinted = QStyleOptionViewItem(option)
+        untinted.state &= ~QStyle.State_Selected
+        super().paint(painter, untinted, index)
+        painter.save()
+        pen = QPen(view.palette().color(QPalette.Highlight))
+        pen.setWidth(FRAME_PX)
+        pen.setJoinStyle(Qt.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        half = FRAME_PX // 2
+        painter.drawRect(option.rect.adjusted(half, half, -half, -half))
+        painter.restore()
+
+
 class CatalogBrowserView(QWidget):
     activated = pyqtSignal(int)  # itemActivated: double-click and Enter, in every mode
     current_changed = pyqtSignal(object)  # int | None
 
-    def __init__(self, loader: catalog_thumbs.ThumbLoader | None = None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        loader: catalog_thumbs.ThumbLoader | None = None,
+        parent: QWidget | None = None,
+        *,
+        entries: Sequence[object_catalog.CatalogEntry] | None = None,
+        default_category: str = "",
+        mode_store: tuple[Callable[[], str], Callable[[str], None]] | None = None,
+    ):
+        """`entries`: those rows and no random ones, reload_entries() being the
+        sidebar's alone. `default_category` opens if it has rows, else the first
+        category that does. `mode_store`: (getter, setter) for the display mode,
+        by default the sidebar's own setting."""
         super().__init__(parent)
         self._loader = loader if loader is not None else catalog_thumbs.ThumbLoader(self)
         self._loader.ready.connect(self._on_thumb_ready)
-        self._entries, self._by_id = self._load_entries()
+        if entries is None:
+            self._entries, self._by_id = self._load_entries()
+        else:
+            self._entries = tuple(entries)
+            self._by_id = {entry.id: entry for entry in self._entries}
         self._items: dict[int, QListWidgetItem] = {}
-        self._category = CATEGORIES[0][0]
-        self._mode = settings.get_units_catalog_mode()
+        self._category = self._opening_category(default_category)
+        get_mode, self._save_mode = mode_store or (settings.get_units_catalog_mode, settings.set_units_catalog_mode)
+        self._mode = get_mode()
+        # pin()'s value: listed whatever the hidden box says.
+        self._pinned: int | None = None
         # Behind a portrait's player-colour region: the Owner combo's, pushed by set_team_color().
         self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
         # GH #32: consts set_excluded() hides, and the row values that hides.
@@ -161,7 +209,9 @@ class CatalogBrowserView(QWidget):
         self.category_buttons: dict[str, QPushButton] = {}
         self._category_group = QButtonGroup(self)
         self._category_group.setExclusive(True)
-        grid = QGridLayout()
+        # Its own widget so _limit_categories() can hide the block whole.
+        self.category_block = QWidget()
+        grid = QGridLayout(self.category_block)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(2)
         for index, (category, label) in enumerate(CATEGORIES):
@@ -174,7 +224,9 @@ class CatalogBrowserView(QWidget):
             self.category_buttons[category] = button
             grid.addWidget(button, index // 2, index % 2)
         self.category_buttons[self._category].setChecked(True)
-        layout.addLayout(grid)
+        layout.addWidget(self.category_block)
+        if entries is not None:
+            self._limit_categories()
 
         class_row = QHBoxLayout()
         class_row.setContentsMargins(0, 0, 0, 0)
@@ -219,6 +271,7 @@ class CatalogBrowserView(QWidget):
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.setTextElideMode(Qt.ElideNone)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list.setItemDelegate(_GridFrameDelegate(self.list))
         self.list.itemActivated.connect(self._on_activated)
         item_activation.install(self.list)
         self.list.currentItemChanged.connect(lambda *_: self.current_changed.emit(self.current_value()))
@@ -234,8 +287,9 @@ class CatalogBrowserView(QWidget):
 
     def select(self, value: int) -> None:
         """Makes `value`'s row current: switches to its category, drops a class
-        filter that excludes it, ticks show-hidden for a hidden row, and lands
-        on it even when the text filter hides it. Unknown value: no-op."""
+        filter that excludes it, ticks show-hidden for a hidden row (a pinned one
+        needs no tick), and lands on it even when the text filter hides it.
+        Unknown value: no-op."""
         entry = self._by_id.get(value)
         if entry is None:
             return
@@ -244,12 +298,27 @@ class CatalogBrowserView(QWidget):
         class_id = self.class_combo.currentData()
         if class_id is not None and class_id != entry.class_id:
             self.class_combo.setCurrentIndex(0)
-        if entry.hidden and not self.show_hidden_checkbox.isChecked():
+        if entry.hidden and value != self._pinned and not self.show_hidden_checkbox.isChecked():
             self.show_hidden_checkbox.setChecked(True)
         item = self._items.get(value)
         if item is not None:
             self.list.setCurrentItem(item)
             self.list.scrollToItem(item)
+
+    def pin(self, value: int | None) -> None:
+        """Keeps `value`'s row out of the hidden box's filter (None: no row), so a
+        field whose value is a hidden object can still open on it and keep it."""
+        self._pinned = value
+        self._on_hidden_toggled()
+
+    def focus_first_row(self) -> None:
+        """Makes the first visible row current and gives the list focus. No visible row: no-op."""
+        rows = (self.list.item(index) for index in range(self.list.count()))
+        first = next((item for item in rows if not item.isHidden()), None)
+        if first is None:
+            return
+        self.list.setCurrentItem(first)
+        self.list.setFocus()
 
     def clear_current(self) -> None:
         """No current row, and no current_changed: a row left current while
@@ -268,6 +337,19 @@ class CatalogBrowserView(QWidget):
     def mode(self) -> str:
         """The mode shown: the chosen one, or "names" while no install can supply thumbnails."""
         return self._mode if self._has_install() else "names"
+
+    def _opening_category(self, wanted: str) -> str:
+        names = [category for category, _label in CATEGORIES]
+        present = {entry.category for entry in self._entries}
+        return next((category for category in (wanted, *names) if category in present), names[0])
+
+    def _limit_categories(self) -> None:
+        """A given catalog can lack categories: their buttons go dead, and with
+        at most one category left the block goes."""
+        present = {entry.category for entry in self._entries}
+        for category, button in self.category_buttons.items():
+            button.setEnabled(category in present)
+        self.category_block.setVisible(len(present) > 1)
 
     @staticmethod
     def _load_entries() -> tuple[tuple, dict]:
@@ -331,7 +413,7 @@ class CatalogBrowserView(QWidget):
 
     def _listed(self, entry, show_hidden: bool) -> bool:
         """Whether a row passes the hidden box and set_excluded(), before any text or class filter."""
-        return (show_hidden or not entry.hidden) and entry.id not in self._excluded_rows
+        return (show_hidden or not entry.hidden or entry.id == self._pinned) and entry.id not in self._excluded_rows
 
     def _update_counts(self) -> None:
         """Each button counts the rows passing the text filter and the hidden
@@ -496,7 +578,7 @@ class CatalogBrowserView(QWidget):
     def _choose_mode(self, mode: str) -> None:
         if mode != self._mode:
             self._mode = mode
-            settings.set_units_catalog_mode(mode)
+            self._save_mode(mode)
         self._sync_mode_buttons()
         self._populate()
 

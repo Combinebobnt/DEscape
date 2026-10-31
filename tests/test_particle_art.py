@@ -1,4 +1,5 @@
-"""GH #20: units drawn from a particle effect's atlas (Butterflies 1608-1610; Seagulls 303 since GH #67).
+"""GH #20: units drawn from a particle effect's atlas (Butterflies 1608-1610; Seagulls 303
+since GH #67; Smoke 1308 and Flames 1333-1336 since GH #256).
 
 Two halves. The synthetic one builds a tiny TexturePacker atlas in tmp_path
 and pins what descape/particle_art.py reads out of it: which rect a frame is
@@ -137,6 +138,39 @@ def test_the_frame_index_counts_from_the_effects_own_first_image(particles):
     assert np.array_equal(particle_art.native_frame(BLOCK_EFFECT, 0)[0], BLOCK)
 
 
+def _flip_effect(folder, flip, image_first: int) -> str:
+    """One frame of the atlas as an effect carrying `FlipH: flip`."""
+    (folder / "fx_flip.json").write_text(json.dumps(
+        {"AtlasFile": ATLAS_FILE, "ImageFirst": image_first, "ImageCount": 1, "Scale": 0.5, "FlipH": flip}
+    ))
+    return "fx_flip"
+
+
+@pytest.mark.parametrize(
+    ("image_first", "frame"),
+    [(3, BLOCK), (2, TURNED)],
+    ids=["upright", "rotated-is-turned-back-first"],
+)
+def test_fliph_mirrors_the_frame_and_its_hotspot_about_the_pivot(particles, image_first, frame):
+    folder, _table = particles
+    plain = particle_art.native_frame(_flip_effect(folder, False, image_first), 0)
+    particle_art.clear_caches()
+    main, _playercolor, hx, hy = particle_art.native_frame(_flip_effect(folder, True, image_first), 0)
+    assert np.array_equal(plain[0], frame)
+    assert np.array_equal(main, np.fliplr(frame))
+    assert main.flags.c_contiguous, "unit_sprites and the kernel take a contiguous frame"
+    assert (hx, hy) == (frame.shape[1] - plain[2], plain[3])
+    assert hx != plain[2], "this frame's hotspot is centred, so it cannot show the mirror"
+
+
+@pytest.mark.parametrize("flip", ["true", 1, None])
+def test_only_a_real_bool_fliph_mirrors(particles, flip):
+    folder, _table = particles
+    main, _playercolor, hx, _hy = particle_art.native_frame(_flip_effect(folder, flip, 3), 0)
+    assert np.array_equal(main, BLOCK)
+    assert hx == 8
+
+
 def _hide(path) -> None:
     path.rename(path.with_name(path.name + ".hidden"))
 
@@ -254,8 +288,18 @@ def test_the_flat_icon_fits_its_footprint_whatever_the_art_scale(particles):
 # --- the real atlas -----------------------------------------------------------
 
 BUTTERFLIES = {1608: "butterflies_1_low", 1609: "butterflies_2_low", 1610: "butterflies_3_low"}
-# Every particle entry the committed tables carry: the butterflies plus the seagulls (GH #67).
-PARTICLE_STEMS = {**BUTTERFLIES, 303: "dock_seagulls"}
+SMOKE = 1308
+FLAME1, FLAME2, FLAME3, FLAME4 = 1333, 1334, 1335, 1336
+# GH #256. FLAME4 is FLAME3's frame run with FlipH.
+SMOKE_AND_FLAMES = {
+    SMOKE: "smoke_chimney",
+    FLAME1: "fire_small_left",
+    FLAME2: "fire_medium_left",
+    FLAME3: "fire_large_left",
+    FLAME4: "fire_large_right",
+}
+# Every particle entry the committed AoE2 table carries, so the seagulls (GH #67) too.
+PARTICLE_STEMS = {**BUTTERFLIES, **SMOKE_AND_FLAMES, 303: "dock_seagulls"}
 SOURCE = 400
 
 # Opaque px of each effect's first frame at native size, measured 2026-10-12.
@@ -363,21 +407,55 @@ def test_every_butterfly_draws_specks_near_its_anchor(unit_const):
     assert max(piece.draw.rgba.shape[:2]) <= 134, piece.draw.rgba.shape
 
 
-@pytest.mark.parametrize("unit_const", sorted(BUTTERFLIES))
-def test_butterflies_keep_ink_down_to_the_32_px_level(unit_const):
-    """One nearest-neighbour pass keeps roughly ink * scale^2 px. Measured
-    2026-10-12 at tile_px 128 / 64 / 32: 70 / 14 / 4, 214 / 61 / 11 and
-    125 / 36 / 6. At the 16 px floor level 0 / 4 / 1 remain: the specks are
-    gone there, which is accepted (a butterfly is under a pixel at that zoom)."""
+@pytest.mark.parametrize("unit_const", sorted(SMOKE_AND_FLAMES))
+def test_smoke_and_flames_draw_and_rise_from_their_anchor(unit_const):
+    """At the default zoom each is a sprite, not the coloured mark, with a real
+    share of its ink above the anchor. Measured 2026-10-31: 0.26 for FLAME1,
+    whose pivot sits near the frame's centre, and 0.68-0.73 for the others."""
     _require_install()
-    for tile_px in (128, 64, 32):
+    half_w, _half_h = iso_geometry.half_dims(render.SMALL_MAP_TILE_PIXELS)
+    pieces = unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)
+    assert len(pieces) == 1, f"{unit_const} falls back to the coloured mark"
+    (piece,) = pieces
+    ys, _xs = np.nonzero(piece.draw.rgba[..., 3] > 0)
+    above = int((ys < piece.draw.hotspot_y).sum())
+    assert above >= 0.2 * len(ys), (unit_const, above, len(ys))
+
+
+def test_flame4_is_flame3_mirrored_about_its_hotspot():
+    """FLAME3 and FLAME4 share frames 60-119, so this pins that FlipH is honoured
+    on real data. Whether the game mirrors about the pivot too is a watch step."""
+    _require_install()
+    for read in (particle_art.native_frame, unit_sprites._native_frame):
+        left, _pc, left_hx, left_hy = read(SMOKE_AND_FLAMES[FLAME3], 0)
+        right, _pc, right_hx, right_hy = read(SMOKE_AND_FLAMES[FLAME4], 0)
+        assert np.array_equal(right, np.fliplr(left)), read
+        assert (right_hx, right_hy) == (left.shape[1] - left_hx, left_hy), read
+        assert not np.array_equal(left, right), "a symmetric frame cannot show the flip"
+
+
+@pytest.mark.parametrize(
+    ("unit_const", "floor_tile_px"),
+    [*((const, 32) for const in sorted(BUTTERFLIES)),
+     (SMOKE, 16), (FLAME1, 16), (FLAME2, 16), (FLAME3, 16), (FLAME4, 16)],
+)
+def test_particle_art_keeps_ink_down_to_its_floor(unit_const, floor_tile_px):
+    """One nearest-neighbour pass keeps roughly ink * scale^2 px. Butterflies,
+    measured 2026-10-12 at tile_px 128 / 64 / 32: 70 / 14 / 4, 214 / 61 / 11 and
+    125 / 36 / 6. At the 16 px floor level 0 / 4 / 1 remain: the specks are
+    gone there, which is accepted (a butterfly is under a pixel at that zoom).
+    FLAME1, the smallest of GH #256's, measured 451 / 115 / 25 / 3 at 128 / 64 /
+    32 / 16 (2026-10-31, pre-registered 450 / 113 / 28 / 7), so it and the larger
+    ones hold to the 16 px floor."""
+    _require_install()
+    for tile_px in (tile_px for tile_px in (128, 64, 32, 16) if tile_px >= floor_tile_px):
         half_w, _half_h = iso_geometry.half_dims(tile_px)
         (piece,) = unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)
         assert int((piece.draw.rgba[..., 3] > 0).sum()) >= 1, (unit_const, tile_px)
 
 
-@pytest.mark.parametrize("unit_const", sorted(BUTTERFLIES))
-def test_every_butterfly_has_a_flat_icon(unit_const):
+@pytest.mark.parametrize("unit_const", sorted({*BUTTERFLIES, *SMOKE_AND_FLAMES}))
+def test_every_particle_unit_has_a_flat_icon(unit_const):
     _require_install()
     icon = unit_sprites.icon_for(unit_const, 0.0, 0, 64, 64)
     assert icon is not None and int((icon.rgba[..., 3] > 0).sum()) >= 10, unit_const

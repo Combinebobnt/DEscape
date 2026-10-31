@@ -96,7 +96,7 @@ def tables_for(mod: DataMod, key: str) -> game_dataset.DataModTables | None:
     entry = dat_cache.lookup(key)
     if entry is None:
         return None
-    return game_dataset.DataModTables(key, entry.path, mod.root, mod.title, entry.mod_only_ids)
+    return game_dataset.DataModTables(key, entry.path, mod.root, mod.title, entry.mod_only_ids, entry.warnings)
 
 
 def entry_dir(key: str) -> Path:

@@ -105,7 +105,7 @@ terrain_style: stepped
 # terrain_textures (Terrain Textures), terrain_blend (Terrain Blending),
 # farm_overlay (Farm Terrain Overlay), small_trees (Small Trees), hero_glow
 # (Hero Glow), fish_outlines (Fish Outlines), translucent_walls (Translucent
-# Walls), mod_art (Mod Art).
+# Walls), mod_art (Mod Art), colour_mood (Colour Mood).
 # An unknown row or a non-true/false value keeps that row's default, shown here.
 view_layers:
   terrain_textures: true
@@ -116,6 +116,7 @@ view_layers:
   fish_outlines: false
   translucent_walls: false
   mod_art: true
+  colour_mood: false
 
 # What each control on the Tool Options row starts at, set from Settings >
 # Tools. Holds only the values that differ from the default: a later version
@@ -275,6 +276,10 @@ trigger_overlay: true
 # Units. Independent of the overlay. Default: true.
 trigger_ghosts: true
 
+# The selected Display Instructions effect's message drawn over the map in
+# Triggers mode, View > Show Instruction on Map. Default: true.
+instruction_overlay: true
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -323,6 +328,11 @@ window_size: [1280, 720]
 # it: icons (icon and name rows), names (text rows) or grid (icons only).
 # One of icons, names, grid. Default: icons.
 units_catalog_mode: icons
+
+# The same three views for Browse, the object dialog behind a field's "...",
+# set by the same buttons in that dialog. Kept apart from the Units panel's.
+# One of icons, names, grid. Default: icons.
+browse_catalog_mode: icons
 
 # Height in pixels of the system log, below the map view. Persisted
 # automatically when you drag the split -- not something you normally set by
@@ -432,6 +442,7 @@ keybinds:
   view_player_cameras: ''
   view_trigger_overlay: ''
   view_trigger_ghosts: ''
+  view_instruction_overlay: ''
   view_layer_terrain_textures: ''
   view_layer_terrain_blend: ''
   view_layer_farm_overlay: ''
@@ -440,6 +451,7 @@ keybinds:
   view_layer_fish_outlines: ''
   view_layer_translucent_walls: ''
   view_layer_mod_art: ''
+  view_layer_colour_mood: ''
   view_pan_up: Up
   view_pan_down: Down
   view_pan_left: Left

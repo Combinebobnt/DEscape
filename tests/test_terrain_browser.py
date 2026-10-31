@@ -662,6 +662,114 @@ def test_a_grid_pick_in_a_collapsed_group_has_an_icon_back_in_list() -> None:
         panel.close()
 
 
+def _group_of(value: int) -> str:
+    return next(item.group for item in terrain_browser.items_for() if item.value == value)
+
+
+def _click_grid_heading(grid, group: str) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    heading = next(h for h in grid.heading_items() if h.text().startswith(f"{group} ("))
+    grid.scrollToItem(heading)
+    QTest.mouseClick(grid.viewport(), Qt.LeftButton, Qt.NoModifier, grid.visualItemRect(heading).center())
+
+
+def test_closing_a_grid_section_leaves_the_pick_and_the_tree_alone() -> None:
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        current = view.tree.currentItem()
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        _click_grid_heading(view.grid, _group_of(_GRASS_1))
+        assert not view.grid.section_open(_group_of(_GRASS_1))
+        assert panel.terrain_id() == _GRASS_1
+        assert view.tree.currentItem() is current
+        assert emitted == []
+    finally:
+        panel.close()
+
+
+def test_a_filter_opens_a_closed_section_it_matches_and_clearing_it_leaves_that_open() -> None:
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        water = _group_of(_WATER_DEEP)
+        view.grid.set_section_open(water, False)
+        view.filter_edit.setText("water")
+        assert view.grid.section_open(water)
+        assert not view.grid.cell_item(_WATER_DEEP).isHidden()
+        view.filter_edit.setText("")
+        assert view.grid.section_open(water)
+        assert not view.grid.cell_item(_WATER_DEEP).isHidden()
+    finally:
+        panel.close()
+
+
+def test_a_blank_filter_or_show_hidden_leaves_a_closed_section_closed() -> None:
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        water = _group_of(_WATER_DEEP)
+        view.grid.set_section_open(water, False)
+        view.filter_edit.setText("   ")  # the tree's rule: a blank needle filters nothing
+        assert not view.grid.section_open(water)
+        view.show_hidden_checkbox.setChecked(True)
+        assert not view.grid.section_open(water)
+    finally:
+        panel.close()
+
+
+def test_set_terrain_opens_the_closed_section_it_lands_in() -> None:
+    panel = _shown_panel("grid")
+    try:
+        grid = panel.view.grid
+        snow = _group_of(_SNOW_SOFT)
+        grid.set_section_open(snow, False)
+        assert panel.set_terrain(_SNOW_SOFT)
+        assert grid.section_open(snow)
+        assert grid.current_value() == _SNOW_SOFT
+        assert grid.currentItem() is grid.cell_item(_SNOW_SOFT)
+    finally:
+        panel.close()
+
+
+def test_set_terrain_on_the_armed_terrain_opens_its_closed_section() -> None:
+    """The tree's current item does not move, so nothing reaches the grid through currentItemChanged."""
+    panel = _shown_panel("grid")
+    try:
+        grid = panel.view.grid
+        group = _group_of(_GRASS_1)
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        grid.set_section_open(group, False)
+        assert grid.currentItem() is None
+        assert panel.set_terrain(_GRASS_1)
+        assert grid.section_open(group)
+        assert grid.currentItem() is grid.cell_item(_GRASS_1)
+        assert emitted == []
+    finally:
+        panel.close()
+
+
+def test_a_closed_section_survives_a_mode_round_trip_and_the_two_views_stay_separate() -> None:
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        tree = view.tree
+        expanded = [tree.topLevelItem(i).isExpanded() for i in range(tree.topLevelItemCount())]
+        water = _group_of(_WATER_DEEP)
+        _click_grid_heading(view.grid, water)
+        assert [tree.topLevelItem(i).isExpanded() for i in range(tree.topLevelItemCount())] == expanded
+        panel.set_display_mode("list")
+        panel.set_display_mode("grid")
+        assert not view.grid.section_open(water)
+        assert view.grid.cell_item(_WATER_DEEP).isHidden()
+    finally:
+        panel.close()
+
+
 def test_refresh_swatches_reaches_the_grid(monkeypatch) -> None:
     from PyQt5.QtGui import QColor, QPixmap
 

@@ -1,4 +1,5 @@
-"""TASK-333: descape/map_strings.py, the Map string front's gate and splice.
+"""TASK-333, TASK-238: descape/map_strings.py, the Map string front's gates
+and splice.
 
 Every shipped fixture stores an empty water_definition, so the other shapes
 are built by splicing raw bytes into a fixture's body and reloading it
@@ -30,23 +31,33 @@ def _item(loaded, name: str) -> map_strings.FrontItem:
     return next(item for item in found.items if item.name == name)
 
 
-def _variant_body(path: Path, prefix: int, payload: bytes):
+def _variant_body(path: Path, prefix: int, payload: bytes, name: str = map_strings.WATER_DEFINITION):
     donor = load_map_and_units(path)
-    water = _item(donor, map_strings.WATER_DEFINITION)
+    item = _item(donor, name)
     body = donor.decompressed_body
-    new = body[: water.offset] + struct.pack("<h", prefix) + payload + body[water.offset + water.length :]
+    new = body[: item.offset] + struct.pack("<h", prefix) + payload + body[item.offset + item.length :]
     return donor, new
 
 
-def _variant(payload: bytes, path: Path = TRIGGER_FIXTURE, prefix: int | None = None):
-    """`path` reloaded with water_definition's raw payload (and, optionally,
-    its raw length prefix) replaced."""
-    donor, body = _variant_body(path, len(payload) if prefix is None else prefix, payload)
+def _variant(
+    payload: bytes, path: Path = TRIGGER_FIXTURE, prefix: int | None = None, name: str = map_strings.WATER_DEFINITION
+):
+    """`path` reloaded with `name`'s raw payload (and, optionally, its raw
+    length prefix) replaced."""
+    donor, body = _variant_body(path, len(payload) if prefix is None else prefix, payload, name)
     return load_map_and_units_from_bytes(donor.header_bytes + _compress_bytes(body), path.name)
 
 
 def _scalars_ok(loaded) -> bool:
     return options_write_supported(loaded, option_fields.specs_for(loaded))
+
+
+def _water_ok(loaded) -> bool:
+    return map_strings.write_supported(loaded, map_strings.WATER_DEFINITION)
+
+
+def _mood_ok(loaded) -> bool:
+    return map_strings.write_supported(loaded, map_strings.COLOUR_MOOD)
 
 
 # -- the gate passes -------------------------------------------------------------
@@ -66,7 +77,7 @@ def test_the_gate_passes_on_the_shipped_files(path) -> None:
 @pytest.mark.parametrize("payload", [b"Default", b"FE1", b"Preset_Main\x00"], ids=["default", "fe1", "preset-main-nul"])
 def test_the_gate_passes_on_stored_names(payload) -> None:
     loaded = _variant(payload)
-    assert map_strings.write_supported(loaded)
+    assert _water_ok(loaded)
     assert _item(loaded, map_strings.WATER_DEFINITION).length == 2 + len(payload)
 
 
@@ -98,34 +109,61 @@ def test_a_wrong_marker_fails_the_gate_only() -> None:
     start = donor.options_section_end
     forged = body[:start] + b"\x61\x0a" + body[start + 2 :]
     loaded = load_map_and_units_from_bytes(donor.header_bytes + _compress_bytes(forged), "marker.aoe2scenario")
-    assert not map_strings.write_supported(loaded)
+    assert not _water_ok(loaded)
     assert _scalars_ok(loaded)
 
 
 def test_a_negative_length_fails_the_gate_only() -> None:
     loaded = _variant(b"", prefix=-1)
-    assert not map_strings.write_supported(loaded)
+    assert not _water_ok(loaded)
     assert _scalars_ok(loaded)
 
 
 def test_a_length_past_the_terrain_block_fails_the_gate_only() -> None:
     _donor, body = _variant_body(TRIGGER_FIXTURE, 30_000, b"")
     loaded = dataclasses.replace(load_map_and_units(TRIGGER_FIXTURE), decompressed_body=body)
-    assert not map_strings.write_supported(loaded)
+    assert not _water_ok(loaded)
     assert _scalars_ok(loaded)
 
 
 def test_a_nul_that_survives_the_strip_fails_the_gate_only() -> None:
     loaded = _variant(b"X\x00\x00")
     assert map_strings.current_value(loaded, map_strings.WATER_DEFINITION) == "X\x00"
-    assert not map_strings.write_supported(loaded)
+    assert not _water_ok(loaded)
     assert _scalars_ok(loaded)
+
+
+def test_a_bad_water_payload_fails_the_water_gate_only() -> None:
+    loaded = _variant(b"X\x00\x00")
+    assert map_strings.layout(loaded) is not None
+    assert not _water_ok(loaded)
+    assert _mood_ok(loaded)
+
+
+def test_a_bad_mood_payload_fails_the_mood_gate_only() -> None:
+    loaded = _variant(b"X\x00\x00", name=map_strings.COLOUR_MOOD)
+    assert map_strings.current_value(loaded, map_strings.COLOUR_MOOD) == "X\x00"
+    assert map_strings.layout(loaded) is not None
+    assert not _mood_ok(loaded)
+    assert _water_ok(loaded)
+    assert _scalars_ok(loaded)
+
+
+@pytest.mark.parametrize("payload", [b"", b"Empty", b"Default", "\u9ed8\u8ba4".encode(), b"Night\x00"])
+def test_the_mood_gate_passes_on_stored_names(payload) -> None:
+    assert _mood_ok(_variant(payload, name=map_strings.COLOUR_MOOD))
+
+
+def test_a_name_the_walk_lacks_fails_its_own_gate_only() -> None:
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    assert not map_strings.write_supported(loaded, "no_such_string")
+    assert _water_ok(loaded)
 
 
 def test_a_parsed_name_that_disagrees_with_its_bytes_fails_the_gate() -> None:
     loaded = load_map_and_units(TRIGGER_FIXTURE)
     loaded._scenario.sections["Map"].retriever_map["water_definition"].data = "Arctic"
-    assert not map_strings.write_supported(loaded)
+    assert not _water_ok(loaded)
 
 
 def test_an_untrusted_anchor_fails_the_gate() -> None:
@@ -190,5 +228,41 @@ def test_the_splice_refuses_a_string_it_does_not_own() -> None:
     loaded = load_map_and_units(TRIGGER_FIXTURE)
     with pytest.raises(KeyError):
         map_strings.splice(loaded, {"script_name": "probe"})
-    with pytest.raises(KeyError):
-        map_strings.splice(loaded, {"map_color_mood": "Winter"})
+
+
+def test_the_splice_substitutes_both_editable_strings() -> None:
+    loaded = _variant(b"Preset_Main\x00")
+    start, end, replacement = map_strings.splice(loaded, {"water_definition": "Noon", "map_color_mood": "Night"})
+    body = loaded.decompressed_body
+    water = _item(loaded, map_strings.WATER_DEFINITION)
+    mood = _item(loaded, map_strings.COLOUR_MOOD)
+    expected = (
+        body[start : water.offset]
+        + b"\x04\x00Noon"
+        + body[water.offset + water.length : mood.offset]
+        + b"\x05\x00Night"
+        + body[mood.offset + mood.length : end]
+    )
+    assert replacement == expected
+
+
+@pytest.mark.parametrize(
+    ("bad", "good", "edit"),
+    [
+        (map_strings.COLOUR_MOOD, map_strings.WATER_DEFINITION, "Noon"),
+        (map_strings.WATER_DEFINITION, map_strings.COLOUR_MOOD, "Night"),
+    ],
+    ids=["bad-mood", "bad-water"],
+)
+def test_the_splice_refuses_only_the_name_whose_gate_failed(bad, good, edit) -> None:
+    """The other name still splices, and the bad one's bytes are copied verbatim."""
+    loaded = _variant(b"X\x00\x00", name=bad)
+    with pytest.raises(ValueError):
+        map_strings.splice(loaded, {bad: "Arctic"})
+    with pytest.raises(ValueError):
+        map_strings.splice(loaded, {bad: "Arctic", good: edit})
+    start, end, replacement = map_strings.splice(loaded, {good: edit})
+    item = _item(loaded, bad)
+    body = loaded.decompressed_body
+    assert body[item.offset : item.offset + item.length] in replacement
+    assert replacement != body[start:end]

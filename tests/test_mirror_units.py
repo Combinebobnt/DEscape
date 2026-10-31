@@ -217,6 +217,92 @@ def test_a_straddling_building_is_refused_not_repaired():
     assert plan.images == []
 
 
+GRASS = 1358  # "Grass, Green": passable eye candy
+
+
+def test_passable_eye_candy_on_a_diagonal_axis_tile_is_mirrored_not_refused():
+    """TASK-042: grass at a sub-tile offset on mode 1's axis row maps into its
+    own tile. It has no collision, so its copy is placed; an oak there still refuses."""
+    from descape import unit_kind
+
+    assert GRASS in unit_kind.passable_eye_candy_consts() and OAK not in unit_kind.passable_eye_candy_consts()
+    x, y = 20.3, N - 20 - 1 + 0.6  # tile (20, 43): x + y == n - 1
+    grass = FakeUnit(GRASS, x, y, player=0)
+    plan = _plan([grass], mode_id=1)
+    assert not plan.blocked and plan.straddling == [] and plan.overlapping == []
+    (image,) = plan.images
+    assert (int(image.x), int(image.y)) == (20, 43) and (image.x, image.y) != (x, y)
+    oak = _plan([FakeUnit(OAK, x, y, player=0)], mode_id=1)
+    assert oak.blocked and oak.images == []
+
+
+@pytest.mark.parametrize("mode_id", [1, 2])
+def test_mirroring_on_axis_passable_eye_candy_again_adds_nothing(mode_id):
+    """TASK-042: the copy lands in the source slice, so a second mirror sees
+    original and copy as sources whose copies land on each other. Positions
+    go through float32, as a save stores them."""
+    import numpy as np
+
+    x = 20.3
+    y = (N - 20 - 1 + 0.6) if mode_id == 1 else 20.6  # tile (20, 43) on mode 1's axis, (20, 20) on mode 2's
+    units = [FakeUnit(GRASS, x, y, player=0)]
+    first = _plan(units, mode_id=mode_id)
+    assert len(first.images) == 1 and not first.blocked
+    units += [FakeUnit(i.unit_const, float(np.float32(i.x)), float(np.float32(i.y)), player=i.player) for i in first.images]
+    second = _plan(units, mode_id=mode_id)
+    assert second.images == [] and not second.blocked
+
+
+def _mode_5_spiller() -> FakeUnit:
+    """A castle in mode 5's source slice whose footprint spills into the
+    destination: its r2 copy lands on source tile (21, 41), never on itself."""
+    return FakeUnit(CASTLE, 40.5, 20.5)
+
+
+@pytest.mark.parametrize("const", [GRASS, OAK])
+def test_passable_eye_candy_is_neither_landed_on_nor_lands_on_a_building(const):
+    """TASK-042, both directions: the castle's copy lands on the 1x1, and the
+    1x1's copy lands inside the castle's spilled footprint. Only a collidable
+    1x1 (the oak) makes either count."""
+    castle = _mode_5_spiller()
+    small = FakeUnit(const, 21.3, 41.6, player=0)
+    plan = _plan([castle, small], mode_id=5)
+    image_tiles = render.occupied_tiles_for(CASTLE, *_image_position(CASTLE, castle.x, castle.y, N, "r2"), N, N)
+    assert (21, 41) in image_tiles
+    assert TRANSFORMS["r2"](21, 41, N) in render.unit_occupied_tiles(castle, N, N)
+    if const == GRASS:
+        assert not plan.blocked and plan.straddling == []
+        assert sorted(image.source is castle for image in plan.images) == [False, True]
+    else:
+        assert plan.blocked and plan.straddling == [small, castle]  # GAIA's list comes first
+
+
+def test_a_tree_landing_on_a_spilling_building_blames_the_building():
+    """TASK-043: the oak's copy lands on the castle's one tile past mode 5's
+    boundary (and the castle's copy on the oak). Both straddle, but the
+    refusal names the castle and that tile, never the oak."""
+    castle = _mode_5_spiller()
+    oak = FakeUnit(OAK, 21.3, 41.6, player=0)
+    plan = _plan([castle, oak], mode_id=5)
+    source = plan_mirror(FakeMapManager(), 5, 0, False, False).source_indices
+    spilled = [(x, y) for x, y in render.unit_occupied_tiles(castle, N, N) if y * N + x not in source]
+    assert spilled == [(42, 22)] == [TRANSFORMS["r2"](21, 41, N)]
+    assert plan.blocked and plan.straddling == [oak, castle]
+    assert plan.overlap_blockers == [(castle, (42, 22))]
+
+
+def test_a_unit_straddling_a_diagonal_axis_names_itself():
+    """Modes 1/2: the axis castle's own copy lands on it, so it is the one in the way."""
+    castle = _axis_castle()
+    plan = _plan([castle], mode_id=1)
+    ((blocker, tile),) = plan.overlap_blockers
+    source = plan_mirror(FakeMapManager(), 1, 0, False, False).source_indices
+    assert blocker is castle
+    assert tile in render.unit_occupied_tiles(castle, N, N) and tile[1] * N + tile[0] not in source
+    oak = FakeUnit(OAK, 20.3, N - 20 - 1 + 0.6)  # on the axis row, inside the source: nothing spills
+    assert _plan([oak], mode_id=1).overlap_blockers == [(oak, (20, 43))]
+
+
 BLOCKER_1X3 = 2423  # (1, 3) since GH #121
 BLOCKER_3X1 = 2424
 
@@ -945,6 +1031,18 @@ def test_a_unit_on_an_unreachable_tile_is_kept_not_removed():
     kept = FakeUnit(OAK, idx % N + 0.5, idx // N + 0.5)
     plan, _ = _angular_plan([kept])
     assert plan.removals == [] and plan.images == []
+
+
+@pytest.mark.parametrize("const", [GRASS, OAK])
+def test_a_kept_passable_unit_does_not_block_an_angular_copy(const):
+    """TASK-042 in the angular modes: the castle's 120-degree copy covers
+    unreachable tile (15, 59), where a unit is kept. Only a collidable one skips it."""
+    castle = FakeUnit(CASTLE, 62, 32)
+    kept = FakeUnit(const, 15.5, 59.5, player=0)
+    plan, tiles = _angular_plan([castle, kept], mode_id=10)
+    assert 59 * N + 15 in tiles.unreachable
+    skipped = {element for unit, element in plan.off_map if unit is castle}
+    assert (R[2] in skipped) == (const == OAK)
 
 
 def test_a_unit_at_a_fixed_point_produces_no_duplicate_images():

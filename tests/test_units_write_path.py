@@ -231,6 +231,7 @@ def test_a_patch_landing_inside_the_units_region_is_refused_not_dropped(tmp_path
     class _DirtyOptions:
         has_edits = True
         has_diplomacy_edits = False
+        has_allied_victory_edits = False
         has_player_edits = False
         has_player_count_edit = False
         has_disables_edits = False

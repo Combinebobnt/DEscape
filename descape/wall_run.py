@@ -481,28 +481,30 @@ def scenario_gate_moves(scenario, map_width: int, map_height: int, moves, *, rem
     )
 
 
-def _gate_moves(moves, map_width: int, map_height: int) -> list[GateMove]:
-    """A GateMove for every gate among `moves` whose tile set changes."""
+def _gate_moves(moves, map_width: int, map_height: int, consts=None) -> list[GateMove]:
+    """A GateMove for every gate among `moves` whose tile set changes.
+    `consts` is scenario_move_plan()'s."""
     gates = []
     for unit, x, y in moves:
         if not gate_orientation.is_gate(unit.unit_const):
             continue
+        const = unit.unit_const if consts is None else consts.get(id(unit), unit.unit_const)
         old = unit_occupied_tiles(unit, map_width, map_height)
-        new = occupied_tiles_for(unit.unit_const, x, y, map_width, map_height)
+        new = occupied_tiles_for(const, x, y, map_width, map_height)
         if old is not None and new is not None and set(old) != set(new):
             gates.append(GateMove(old_tiles=frozenset(old), new_tiles=frozenset(new)))
     return gates
 
 
-def _moved_connector_tiles(moves, map_width: int, map_height: int, blocked=None) -> set[tuple[int, int]]:
+def _moved_connector_tiles(moves, map_width: int, map_height: int, blocked=None, consts=None) -> set[tuple[int, int]]:
     """Every moved connector's new footprint. Given a `blocked` set, every
     other mover but passable eye candy adds its new tiles to it, so no fill
-    lands there (GH #194)."""
+    lands there (GH #194). `consts` is scenario_move_plan()'s."""
     connectors = unit_sprites.wall_connector_consts()
     passable = unit_kind.passable_eye_candy_consts()
     moved_tiles: set[tuple[int, int]] = set()
     for unit, x, y in moves:
-        const = unit.unit_const
+        const = unit.unit_const if consts is None else consts.get(id(unit), unit.unit_const)
         if const in connectors:
             moved_tiles.update(occupied_tiles_for(const, x, y, map_width, map_height) or ())
         elif blocked is not None and const not in passable:
@@ -602,7 +604,7 @@ class MovePlan:
 
 
 def scenario_move_plan(
-    scenario, map_width: int, map_height: int, moves, *, gate_walls: bool, removable=None
+    scenario, map_width: int, map_height: int, moves, *, gate_walls: bool, removable=None, consts=None
 ) -> MovePlan | None:
     """plan_wall_moves(), plus plan_gate_moves() when `gate_walls`, for
     `moves`, [(unit, new_x, new_y), ...] as scenario_gate_moves() takes them,
@@ -617,8 +619,12 @@ def scenario_move_plan(
     part's fills, and leaves the walls the gate part removes alone. Both
     parts derive against the same tiles with the same tower rule, so they
     agree on any wall both name.
+
+    `consts`, {id(unit): landing const}, names a gate a drag turns as it
+    moves (GH #280): its old tiles stay its stored footprint, its new tiles
+    are the landing const's. A wall's const never changes.
     """
-    gates = _gate_moves(moves, map_width, map_height) if gate_walls else []
+    gates = _gate_moves(moves, map_width, map_height, consts) if gate_walls else []
     carried = []
     for unit, x, y in moves:
         if not unit_sprites.rotation_variant_eligible(unit.unit_const):
@@ -633,7 +639,7 @@ def scenario_move_plan(
     census = SceneCensus()
     static_tiles, static_walls = wall_scene(scenario, map_width, map_height, exclude_ids=moved_ids, census=census)
     blocked = blocked_tiles(scenario, map_width, map_height, exclude_ids=moved_ids) if gates else None
-    moved_tiles = _moved_connector_tiles(moves, map_width, map_height, blocked)
+    moved_tiles = _moved_connector_tiles(moves, map_width, map_height, blocked, consts)
     gate_plan = GateMovePlan(removals=[], fills=[], rewrites=[])
     if gates:
         gate_plan = plan_gate_moves(

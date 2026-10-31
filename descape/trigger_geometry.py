@@ -265,30 +265,38 @@ def location_superseded(shapes: Iterable[TriggerShape]) -> bool:
     return any(s.shape == SHAPE_UNIT and s.fields == (LOCATION_OBJECT_FIELD,) for s in shapes)
 
 
-def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
-    """Origin to destination, for ONE entry's shapes, or None unless the
-    entry has both. Origin: the area centre, else the integer centroid of the
-    selected units' own tiles. Destination: the location object's own tile,
-    else the location. Not special-cased to Patrol: Attack Move, Task Object,
-    Teleport and the rest share the same shape."""
-    area = location = target = None
+def run_origin(shapes: Iterable[TriggerShape]) -> tuple[int, int] | None:
+    """Where ONE entry's run starts: the area centre, else the integer
+    centroid of the selected units' own tiles, else None."""
     selected: list[tuple[int, int]] = []
     for shape in shapes:
-        if shape.shape == SHAPE_AREA and area is None:
-            area = shape
-        elif shape.shape == SHAPE_LOCATION and location is None:
-            location = shape
-        elif shape.shape == SHAPE_UNIT and shape.anchor is not None:
-            if shape.fields == (LOCATION_OBJECT_FIELD,) and target is None:
-                target = shape.anchor
-            elif shape.fields == (SELECTED_OBJECTS_FIELD,):
-                selected.append(shape.anchor)
-    if area is not None:
-        origin = area_centre(area.coords)
-    elif selected:
-        origin = tile_centroid(selected)
-    else:
+        if shape.shape == SHAPE_AREA:
+            return area_centre(shape.coords)
+        if shape.shape == SHAPE_UNIT and shape.anchor is not None and shape.fields == (SELECTED_OBJECTS_FIELD,):
+            selected.append(shape.anchor)
+    return tile_centroid(selected)
+
+
+def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
+    """Origin to destination, for ONE entry's shapes, or None unless the
+    entry has both. Origin: run_origin(). Destination: the location object's
+    own tile, else the location. Not special-cased to Patrol: Attack Move,
+    Task Object, Teleport and the rest share the same shape."""
+    shapes = list(shapes)
+    origin = run_origin(shapes)
+    if origin is None:
         return None
+    location = target = None
+    for shape in shapes:
+        if shape.shape == SHAPE_LOCATION and location is None:
+            location = shape
+        elif (
+            shape.shape == SHAPE_UNIT
+            and shape.anchor is not None
+            and shape.fields == (LOCATION_OBJECT_FIELD,)
+            and target is None
+        ):
+            target = shape.anchor
     if target is not None:
         destination = target
     elif location is not None:
@@ -302,6 +310,8 @@ def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
 # side they grab in map axes (n/s the y-min/y-max side, w/e the x-min/x-max).
 ZONE_MOVE = "move"
 AREA_ZONES = (ZONE_MOVE, "n", "s", "w", "e", "nw", "ne", "sw", "se")
+# GH #41's location mark, dragged by the same machine. Not an area zone.
+ZONE_LOCATION = "location"
 
 
 def area_hit_zone(
@@ -327,6 +337,12 @@ def area_hit_zone(
     return ns + we or ZONE_MOVE
 
 
+def location_hit(tile: Sequence[int], point: tuple[float, float], reach: float) -> bool:
+    """Whether the fractional map point is within `reach` tiles of the tile's
+    centre on both axes."""
+    return abs(point[0] - tile[0] - 0.5) <= reach and abs(point[1] - tile[1] - 0.5) <= reach
+
+
 def _clamp(value: int, low: int, high: int) -> int:
     return min(max(value, low), high)
 
@@ -342,11 +358,11 @@ def dragged_area(
     """The min/max area a drag from start_tile to end_tile makes of `coords`.
     A move keeps the size and shifts the whole area no further than the map
     edge; a resize shifts the grabbed sides by the same delta, clamped to the
-    map, and may cross the opposite side."""
+    map, and may cross the opposite side. A location drags as a 1x1 rect."""
     x1, x2 = sorted((coords[0], coords[2]))
     y1, y2 = sorted((coords[1], coords[3]))
     dx, dy = end_tile[0] - start_tile[0], end_tile[1] - start_tile[1]
-    if zone == ZONE_MOVE:
+    if zone in (ZONE_MOVE, ZONE_LOCATION):
         dx = _clamp(dx, -x1, map_w - 1 - x2)
         dy = _clamp(dy, -y1, map_h - 1 - y2)
         return (x1 + dx, y1 + dy, x2 + dx, y2 + dy)

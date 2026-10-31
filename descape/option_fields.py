@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from descape import map_strings
+from descape import colour_mood, map_strings
 from descape.scenario_io import LoadedScenario, retriever_length
 
 CHECKBOX = "checkbox"
@@ -19,8 +19,8 @@ SPINBOX = "spinbox"
 # A free-text str16 row (script_name). Not byte-patched: options_model gives
 # it its own gate and splice, so field_offsets() skips this kind.
 TEXT = "text"
-# A str16 picked from a list (water_definition). Not byte-patched either: it
-# rides map_strings' gate and splice, so field_offsets() skips it too.
+# A str16 picked from a list (water_definition, map_color_mood). Not byte-patched
+# either: it rides map_strings' gate and splice, so field_offsets() skips it too.
 STRING_COMBO = "string_combo"
 
 # The in-game Terrain > Map > Water Definitions list, in its order: each name
@@ -30,6 +30,9 @@ WATER_DEFINITIONS = (
     "Evening", "Hurricane", "Moonlit Night", "Morning", "Murky", "Night", "Noon",
     "Ocean", "Red Tide", "Stormy", "Sunrise", "Sunset", "Swamp", "Tropical",
 )
+
+# The in-game Map > Colour Mood list, stored by English name as the official campaigns do.
+COLOUR_MOODS = tuple(colour_mood.MOOD_PARAMS)
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,18 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         choices=tuple((name, name) for name in WATER_DEFINITIONS),
     ),
     OptionFieldSpec(
+        "map_color_mood", "Colour mood", "Map",
+        "Map", map_strings.COLOUR_MOOD, STRING_COMBO,
+        tooltip=(
+            "The map-wide colour grading, the same list as the game's Map > "
+            "Colour Mood. Triggers can change it during play (Change Color "
+            "Mood). Turn on View > Layers > Colour Mood to preview it."
+        ),
+        # A stored name outside the list (Empty, empty, or a localized label) is
+        # kept as its own row by the panel, as for water.
+        choices=tuple((name, name) for name in COLOUR_MOODS),
+    ),
+    OptionFieldSpec(
         "script_name", "Script filename", "Map",
         "Map", "script_name", TEXT,
         tooltip=(
@@ -281,6 +296,11 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
         choices=((0, "Display order"), (1, "Legacy - trigger ID order")),
     ),
 )
+
+
+def label_for(field_id: str) -> str:
+    """The row's label, for a refusal naming it."""
+    return next(spec.label for spec in _SPECS if spec.field_id == field_id)
 
 
 def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:

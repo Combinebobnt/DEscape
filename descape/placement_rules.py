@@ -96,7 +96,7 @@ def _terrains() -> dict[int, dict]:
 def _terrain_name(terrain_id: int) -> str:
     """The game's own terrain name with an install, else the Terrain panel's label."""
     label = terrain_catalog.display_name(name_for_terrain_id(terrain_id))
-    return object_catalog.resolve_name(terrain_id, label, _terrains().get(terrain_id))
+    return object_catalog.resolve_name(terrain_id, label, _terrains().get(terrain_id), section="terrains")
 
 
 # --- terrain -------------------------------------------------------------------
@@ -431,14 +431,20 @@ def gate_companions(scenario, unit) -> list:
     ]
 
 
-def move_refusal(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None) -> str | None:
+def move_refusal(
+    scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, unit_const: int | None = None
+) -> str | None:
     """refusal() for an existing `unit` going to (x, y). A garrisoned unit
     skips both rules: it stands wherever its host does, and with Show
     Garrisoned on it can be dragged alone or inside a selection. A gate's
-    own corner pieces never block its move (gate_companions(), TASK-340)."""
+    own corner pieces never block its move (gate_companions(), TASK-340).
+
+    `unit_const` is the const it lands as, for a gate a drag turned (GH #280).
+    `unit` stays the real one: gate_companions() finds it by identity."""
     if unit.garrisoned_in_id != -1:
         return None
-    return refusal(scenario, unit.unit_const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
+    const = unit.unit_const if unit_const is None else unit_const
+    return refusal(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
 
 
 def refused(
@@ -461,8 +467,11 @@ def refused(
     return blocker(scenario, unit_const, x, y, exclude) is not None
 
 
-def move_refused(scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None) -> bool:
+def move_refused(
+    scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, unit_const: int | None = None
+) -> bool:
     """move_refusal() is not None, without building a message."""
     if unit.garrisoned_in_id != -1:
         return False
-    return refused(scenario, unit.unit_const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
+    const = unit.unit_const if unit_const is None else unit_const
+    return refused(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)

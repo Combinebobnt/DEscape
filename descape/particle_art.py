@@ -1,5 +1,6 @@
 """Frames of a particle effect, for the units whose standing graphic is one
-(GH #20: Butterflies 1608-1610; GH #67: Seagulls 303). None of them has an .sld at all.
+(GH #20: Butterflies 1608-1610; GH #67: Seagulls 303; GH #256: Smoke 1308 and
+Flames 1333-1336). None of them draws from an .sld.
 
 Leaf module like unit_sprites: numpy, Pillow and stdlib, no Qt. Pixels come
 from the user's own install at runtime and nothing is shipped.
@@ -10,6 +11,13 @@ inside that atlas, and a `Scale`. The Scale is NOT applied here. It rides on
 the graphic-map entry as `art_scale` and multiplies into the one resample
 unit_sprites already does, because a second nearest-neighbour pass over a
 frame of 1 px specks would drop ink.
+
+`FlipH: true` draws the frame run mirrored, so one atlas run serves two
+effects: FLAME4 1336 (`fire_large_right`) is FLAME3 1335's run flipped. The
+mirror is about the pivot, so the hotspot's distance from the frame's left edge
+becomes its distance from the right. Only a real bool counts, as with the
+generator's check. That the game mirrors about the pivot too is an inference,
+like the pivot itself below.
 
 An atlas frame is TexturePacker's "JSON array" record:
 
@@ -144,4 +152,7 @@ def native_frame(effect_name: str, index: int):
     if cut is None:
         return None
     rgba, hotspot_x, hotspot_y = cut
+    if effect.get("FlipH") is True:
+        rgba = np.ascontiguousarray(np.fliplr(rgba))
+        hotspot_x = rgba.shape[1] - hotspot_x
     return rgba, None, hotspot_x, hotspot_y

@@ -358,7 +358,7 @@ def test_the_combo_is_wide_enough_for_a_long_player_label() -> None:
 
 @pytest.mark.font_sensitive
 def test_at_the_view_floor_a_hidden_note_still_copies_and_map_size_reads_as_free_text() -> None:
-    """TASK-407. Pass conditions, View entered from a 150 px Terrain pane (TASK-362 floors Units): the Note
+    """TASK-407. Pass conditions, View entered from a 150 px Players pane (Units and Terrain have floors): the Note
     column is hidden; copying Player 1's "Other" units row gives its count and note; the File
     section's Map size is one free-text line, "Map size: 120 x 120"."""
     from PyQt5.QtWidgets import QApplication
@@ -366,7 +366,7 @@ def test_at_the_view_floor_a_hidden_note_still_copies_and_map_size_reads_as_free
     window = conftest.shown_window(1500, 900)
     try:
         window.load_scenario(UNITS_FIXTURE)
-        window.mode_combo.setCurrentText("Terrain")
+        window.mode_combo.setCurrentText("Players")
         total = sum(window.content_splitter.sizes())
         window.content_splitter.setSizes([150, total - 150])
         QApplication.processEvents()

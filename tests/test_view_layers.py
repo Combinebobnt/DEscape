@@ -872,6 +872,48 @@ def test_toggling_fish_outlines_evicts_no_chunk_and_rebuilds_no_unit_source(buil
     assert _unchanged_chunks(cache, chunks, stamps)
 
 
+COLOUR_MOOD = next(s for s in LAYERS if s.layer_id == "colour_mood")
+
+
+def test_colour_mood_is_a_default_off_row_in_every_style() -> None:
+    assert COLOUR_MOOD.default is False and DEFAULT_LAYERS.colour_mood is False
+    assert not COLOUR_MOOD.scene_overlay and not COLOUR_MOOD.requires_sprites and not COLOUR_MOOD.requires_textures
+    assert COLOUR_MOOD.styles is None
+    for style in ("flat", "stepped", "sloped"):
+        assert availability(COLOUR_MOOD, style=style, sprites_enabled=False, has_map=True)[0], style
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_toggling_colour_mood_alone_evicts_no_chunk_and_rebuilds_no_unit_source(builder, fake_trees, monkeypatch) -> None:
+    """The load-bearing early return: a draw-only row paints over the canvas,
+    so a flip keeps every chunk, and the cache's copy still follows the window's."""
+    cache = builder(_scenario(with_trees=True), sprites=True)
+    before = _whole_canvas(cache).copy()
+    chunks, stamps = dict(cache._cache), dict(cache._chunk_stamp)
+    assert chunks, "nothing cached, so no eviction could show"
+    rebuilds = []
+    real = cache._refresh_unit_sources
+    monkeypatch.setattr(cache, "_refresh_unit_sources", lambda: (rebuilds.append(1), real())[1])
+
+    for on in (True, False):
+        cache.set_layers(LayerState(colour_mood=on))
+        assert cache.layers.colour_mood is on
+        assert rebuilds == []
+        assert _unchanged_chunks(cache, chunks, stamps)
+    assert np.array_equal(before, _whole_canvas(cache))
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_a_flip_carried_with_a_pixel_row_still_evicts(builder, fake_trees) -> None:
+    """The early return is for a change confined to the draw-only row."""
+    cache = builder(_scenario(with_trees=True), sprites=True)
+    _whole_canvas(cache)
+    chunks, stamps = dict(cache._cache), dict(cache._chunk_stamp)
+    cache.set_layers(LayerState(colour_mood=True, terrain_textures=False))
+    assert cache.layers == LayerState(colour_mood=True, terrain_textures=False)
+    assert not _unchanged_chunks(cache, chunks, stamps)
+
+
 def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
     """TASK-378: on by default, in every style and with sprites off (it also
     swaps terrain textures), greyed only when no scanned mod ships art."""

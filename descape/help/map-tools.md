@@ -4,7 +4,9 @@ These commands work on the whole map, or on many objects at once, from any mode.
 
 ## Resize Map
 
-**Map > Resize Map…** grows or shrinks the open map, keeping any of nine anchors in place: a corner, the middle of an edge, or the centre. Terrain, elevation, objects, and trigger areas and locations move with the map. New ground is plain grass at the height of the old edge beside it, so no cliff-like jump appears.
+**Map > Resize Map…** grows or shrinks the open map, keeping any of nine anchors in place: a corner, the middle of an edge, or the centre. Terrain, elevation, objects, and trigger areas and locations move with the map. New ground is plain grass at the height of the old edge beside it, so no cliff-like jump appears. It opens on the anchor you last chose with Resize, until you quit DEscape.
+
+The dialog's preview shows how the new map will sit over the old one, and follows the current view: a diamond in an isometric view, a square in top-down Flat. The solid outline is the new map, the dashed one the old map, and the small ring marks the anchor. Pale ground is new. The dark area is cut off, along with everything on it. Red points are player objects that will be deleted, and anything the new edge cuts through. Trees and other GAIA objects in the dark area get no mark of their own, so the dialog's count can be larger than the number of red points.
 
 Objects that end up off the map, or that the new edge would cut through, are deleted together with anything garrisoned in them. The dialog says how many before you commit, and how many trigger references would then point at a deleted object. Trigger areas are shifted only in files whose triggers DEscape can write back; otherwise the dialog warns that they are left as they were.
 
@@ -16,9 +18,9 @@ In the in-game editor, this is the Map tab's Extend Map.
 
 **Map > Mirror Map…** copies one part of the map onto the rest by reflection or rotation, for a fair layout. Pick a Symmetry (two-way mirrors, a 180° turn, four-way and eight-way, and approximate three-way and six-way modes for three or six players) and the Source slice, which is shaded on the map. Tick what to copy: Terrain, Elevation and Units.
 
-With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
+With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. Grass, plants, flowers and other objects units can walk through never count as overlapping: their copies land anywhere, and other copies may land on them. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
 
-Preview applies the mirror and leaves the dialog open, so you can look at the result. Changing an option or pressing Cancel takes the preview back, and Apply keeps it. Mirror Map needs a square map. In the in-game editor, the closest thing is the Terrain tab's Map Copy.
+Preview applies the mirror and leaves the dialog open, so you can look at the result. Changing an option or pressing Cancel takes the preview back, and Apply keeps it. Until you quit DEscape, the dialog opens with the options you last applied; Cancel leaves them as they were. Mirror Map needs a square map. In the in-game editor, the closest thing is the Terrain tab's Map Copy.
 
 ## Disabled Objects
 
@@ -46,7 +48,7 @@ The Triggers tab searches and edits trigger text and types; see [Triggers](trigg
 
 ## Scatter Units in Region
 
-**Edit > Scatter Units in Region…** places random copies of the object picked in the Units panel, for the owner you choose. The area is a region drawn with the Select tool in Terrain mode, or the bounding box of the units selected in Units mode, grown by a few tiles. Restrict it to any tile, water only or one terrain, ask for a count or a density, and set the seed, jitter and minimum spacing. The live eligible-tile count is exactly what gets placed. GAIA-only objects always go to GAIA.
+**Edit > Scatter Units in Region…** places random copies of the object picked in the Units panel, for the owner you choose. The area is a region drawn with the Select tool in Terrain mode, or the bounding box of the units selected in Units mode, grown by a few tiles. Restrict it to any tile, water only or one terrain, ask for a count or a density, and set the seed, jitter and minimum spacing. The live eligible-tile count is exactly what gets placed. GAIA-only objects always go to GAIA. The dialog opens with your last scatter's settings, except the area and the terrain, until you quit DEscape.
 
 Its other mode, Move the selected units, moves each selected unit to a random tile of the area instead, keeping every other field.
 

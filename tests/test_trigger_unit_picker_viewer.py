@@ -17,6 +17,7 @@ pytestmark = [
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 PLAYER_ONE = 1
+TYPE_FIELD = "object_list_unit_id"
 
 
 def _gen():
@@ -251,10 +252,13 @@ def _escape(view):
     view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
 
 
+@pytest.mark.parametrize("pick", ["list", "type"])
 @pytest.mark.parametrize("how", ["escape", "right_click", "button", "mode", "entry", "trigger", "tool"])
-def test_each_cancel_disarms_without_writing(how) -> None:
+def test_each_cancel_disarms_without_writing(how, pick) -> None:
     from PyQt5.QtCore import QEvent, QPointF, Qt
     from PyQt5.QtGui import QMouseEvent
+
+    from descape.trigger_panel import PICK_TYPE
 
     gen = _gen()
     window = _window()
@@ -264,6 +268,9 @@ def test_each_cancel_disarms_without_writing(how) -> None:
         panel.select_entry("effect", effect)
         records = _records(window)
         target = _target(window, "effect", effect, "selected_object_ids", True)
+        if pick == "type":
+            target = (*_target(window, "effect", effect, TYPE_FIELD, False), PICK_TYPE)
+        held = _live(window, "effect", effect, TYPE_FIELD)
         panel._pick_buttons[target].click()
         assert window._unit_picker == target
         assert panel._pick_buttons[target].isChecked()
@@ -289,6 +296,7 @@ def test_each_cancel_disarms_without_writing(how) -> None:
         assert window._unit_picker is None and not view.unit_picker_active()
         assert _records(window) == records
         assert list(_live(window, "effect", effect, "selected_object_ids")) == list(gen.TASK_SELECTED_IDS)
+        assert _live(window, "effect", effect, TYPE_FIELD) == held
     finally:
         conftest.close_window(window)
 
@@ -496,3 +504,296 @@ def test_each_list_pick_through_the_objects_set_names_the_unit_in_the_status_log
         assert list(_live(window, "effect", effect, "selected_object_ids")) == [gen.REF_ARCHER_B, gen.REF_HOUSE]
     finally:
         conftest.close_window(window)
+
+
+# -- the eyedropper on object fields (GH #276) -----------------------------------------
+
+
+ARMOUR_TRIGGER = 1  # "Fixture: armour split": two Modify Attribute effects on Archers.
+EFFECT = 0
+OTHER_EFFECT = 1
+PLAYER_TWO = 2
+
+
+def _type_target(effect: int = EFFECT) -> tuple:
+    from descape.trigger_panel import PICK_TYPE
+
+    return (ARMOUR_TRIGGER, "effect", effect, TYPE_FIELD, False, PICK_TYPE)
+
+
+def _type_window():
+    window = _window()
+    window.trigger_panel.select_trigger(ARMOUR_TRIGGER)
+    window.trigger_panel.select_entry("effect", EFFECT)
+    return window
+
+
+def _effect_value(window, field, effect: int = EFFECT):
+    from descape.scenario_io import parse_triggers
+
+    manager = window.trigger_edits.manager() if window.trigger_edits else parse_triggers(window.scenario)
+    return getattr(manager.triggers[ARMOUR_TRIGGER].effects[effect], field)
+
+
+def _set_effect_field(panel, field, value) -> None:
+    spec = next(s for s, *_ in panel._rows if s.name == field)
+    panel._changed(spec, [("effect", EFFECT)], value)
+
+
+def _type_button(panel, field: str = TYPE_FIELD):
+    """The eyedropper on `field`'s row, or None."""
+    from PyQt5.QtWidgets import QToolButton
+
+    buttons = _row(panel, field).findChildren(QToolButton)
+    assert len(buttons) <= 1, field
+    return buttons[0] if buttons else None
+
+
+def _last_log_line(window) -> str:
+    return window.status_log.toPlainText().splitlines()[-1]
+
+
+def test_a_type_pick_writes_the_clicked_units_const_once_and_disarms() -> None:
+    from descape import object_catalog, trigger_fields
+
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+        records = _records(window)
+        button = _type_button(panel)
+        button.click()
+        assert window._unit_picker == _type_target() and button.isChecked()
+        assert trigger_fields.SOURCE_UNIT_CAPTION in _last_log_line(window), "the hint names the row's caption"
+        window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_HOUSE
+        assert _records(window) == records + 1
+        assert window._unit_picker is None and not window.map_view.unit_picker_active()
+        assert not button.isChecked()
+        name = _row(panel, TYPE_FIELD)._by_value(gen._UNIT_HOUSE).label
+        assert _row(panel, TYPE_FIELD).line_edit.text() == name
+        line = _last_log_line(window)
+        assert object_catalog.display_name(gen._UNIT_HOUSE) in line and str(gen.HOUSE_TILE) in line
+        assert window._selection == []
+        window.undo()
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_type_pick_turns_the_object_list_type_row() -> None:
+    """The reason the pick goes through commit_value(): _list_type_follows hears it as it hears Browse."""
+    from PyQt5.QtWidgets import QComboBox
+
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        row = _row(panel, TYPE_FIELD)
+        form = panel.property_form
+        combo = next(
+            widget
+            for widget in panel.findChildren(QComboBox)
+            if form.labelForField(widget) is not None and form.labelForField(widget).text() == panel.LIST_TYPE_CAPTION
+        )
+        assert combo.currentText() == "Units"
+        _type_button(panel).click()
+        window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert combo.currentText() == "Buildings"
+        assert row.group_of(gen._UNIT_HOUSE) == "Buildings"
+        assert panel._list_types[TYPE_FIELD] == "Buildings"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_type_pick_leaves_the_source_player_alone() -> None:
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        _set_effect_field(panel, "source_player", PLAYER_TWO)
+        _type_button(panel).click()
+        window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_HOUSE
+        assert _effect_value(window, "source_player") == PLAYER_TWO
+    finally:
+        conftest.close_window(window)
+
+
+def test_picking_the_type_the_field_holds_adds_no_record_and_disarms() -> None:
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        records = _records(window)
+        _type_button(panel).click()
+        window.map_view.on_unit_pick(_key(gen.REF_ARCHER_A))
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+        assert _records(window) == records
+        assert window._unit_picker is None and not window.map_view.unit_picker_active()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_synthesized_click_copies_the_type() -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    gen = _gen()
+    window = _type_window()
+    try:
+        _type_button(window.trigger_panel).click()
+        view = window.map_view
+        tile = gen.HOUSE_TILE
+        view.centerOn(view._tile_polygon(*tile).boundingRect().center())
+        pos = conftest.polygon_viewport_pos(view, *tile)
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_HOUSE
+        assert not view.unit_picker_active()
+        assert window._selection == []
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_stale_type_target_does_not_write() -> None:
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        records = _records(window)
+        assert panel.apply_picked_type(_type_target(OTHER_EFFECT), gen._UNIT_HOUSE) is False
+        assert _records(window) == records
+        assert _effect_value(window, TYPE_FIELD, OTHER_EFFECT) == gen._UNIT_ARCHER
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+        panel._editable = False
+        assert panel.apply_picked_type(_type_target(), gen._UNIT_HOUSE) is False
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("refused", ["vanished_unit", "refused_write"])
+def test_a_type_pick_that_cannot_write_disarms_and_says_nothing(refused) -> None:
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        records = _records(window)
+        _type_button(panel).click()
+        lines = window.status_log.toPlainText().count("\n")
+        if refused == "vanished_unit":
+            window.map_view.on_unit_pick((PLAYER_ONE, gen.DANGLING_REFERENCE_ID))
+        else:
+            panel._editable = False
+            window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert window._unit_picker is None
+        assert _records(window) == records
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+        assert window.status_log.toPlainText().count("\n") == lines
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_type_pick_on_a_locked_document_says_refused_and_leaves_the_row(monkeypatch) -> None:
+    """A game-data lock leaves `_editable` True, so only the funnel refuses it."""
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        records = _records(window)
+        row = panel._type_pick_rows[TYPE_FIELD].line_edit
+        shown = row.text()
+        _type_button(panel).click()
+        monkeypatch.setattr(window, "game_data_lock_reason", lambda: "Shown with the other game's data.")
+        window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
+        assert window._unit_picker is None
+        assert _records(window) == records
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_ARCHER
+        assert row.text() == shown
+        log = window.status_log.toPlainText()
+        assert "Edit refused." in log and "Picked" not in log
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_eyedropper_sits_after_browse_and_arms_a_unit_pick_not_a_tile_pick() -> None:
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        row, button = _row(panel, TYPE_FIELD), _type_button(panel)
+        assert button is panel._pick_buttons[_type_target()]
+        layout = row.layout()
+        assert layout.indexOf(button) > layout.indexOf(row.browse_button)
+        assert button.height() == row.browse_button.height()
+        assert not button.icon().isNull() and button.toolTip() and button.accessibleName()
+        button.click()
+        assert window._unit_picker == _type_target() and window._tile_picker is None
+        assert window.map_view.unit_picker_active()
+    finally:
+        conftest.close_window(window)
+
+
+def test_an_armed_eyedropper_survives_a_form_rebuild_checked_without_rearming() -> None:
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        _type_button(panel).click()
+        arms = []
+        panel.on_pick_unit = arms.append
+        panel.repopulate_form_if_current((("effect", EFFECT),))
+        assert _type_button(panel).isChecked()
+        assert arms == []
+    finally:
+        conftest.close_window(window)
+
+
+def test_no_eyedropper_on_a_tech_field_or_a_multi_entry_form() -> None:
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        assert _type_button(panel) is not None
+        panel.select_entries([("effect", EFFECT), ("effect", OTHER_EFFECT)])
+        assert _type_button(panel) is None
+        tech_effect = len(panel._manager().triggers[ARMOUR_TRIGGER].effects)
+        research = next(i for i, d in panel._vocabulary.effects.items() if d.name == "research_technology")
+        window.entry_structural_edit("new", ARMOUR_TRIGGER, "effect", -1, research)
+        panel.select_entry("effect", tech_effect)
+        assert _type_button(panel, "technology") is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_no_eyedropper_on_a_read_only_file() -> None:
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        window.scenario.trigger_write_supported = False
+        panel.show_scenario(window.scenario)
+        panel.select_trigger(ARMOUR_TRIGGER)
+        panel.select_entry("effect", EFFECT)
+        assert not panel._editable
+        assert _type_button(panel) is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_theme_switch_re_inks_an_open_forms_eyedropper() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer_dialogs import apply_theme
+
+    def ink() -> bytes:
+        image = _type_button(window.trigger_panel).icon().pixmap(16, 16).toImage()
+        return image.bits().asstring(image.sizeInBytes())
+
+    with conftest.restoring_app_theme() as app:
+        window = _type_window()
+        try:
+            apply_theme(app, "light", {})
+            QApplication.processEvents()
+            light = ink()
+            apply_theme(app, "dark", {})
+            QApplication.processEvents()
+            assert ink() != light
+        finally:
+            conftest.close_window(window)

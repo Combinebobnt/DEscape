@@ -274,25 +274,29 @@ sail belongs to one angle only". There is no offset dedupe, unlike gates:
 five of the Galleon's sails share (0, -25). Only the Gaia table is emitted
 for ships, so a civ with its own sail set (most of them) draws these.
 
-**Particle effects (GH #20).** Butterflies 1608-1610 and Seagulls 303 (GH #67)
-(`_PARTICLE_CONSTS`, an allowlist) have a standing graphic with file_name "None" and a
-particle_effect_name: the art is `resources/_common/particles/<name>.json`,
+**Particle effects (GH #20).** Butterflies 1608-1610, Seagulls 303 (GH #67),
+Smoke 1308 and Flames 1333-1336 (GH #256) (`_PARTICLE_CONSTS`, an allowlist)
+draw from a particle effect, not their standing graphic's file: butterflies and
+seagulls have file_name "None", Smoke and the Flames name a legacy .smp with no
+modern replacement. The art is `resources/_common/particles/<name>.json`,
 which names a TexturePacker atlas (`AtlasFile`), a frame run
-(`ImageFirst`/`ImageCount`) and a `Scale`. Their entry carries the effect
-name as file_name, `particle: true` and `art_scale` (the Scale), with
-angle_count and frame_count 1: a scenario editor draws the loop's first
-frame. The generator fails unless the effect has an AtlasFile and no
+(`ImageFirst`/`ImageCount`), a `Scale` and, on FLAME4, `FlipH`. Their entry
+carries the effect name as file_name, `particle: true` and `art_scale` (the
+Scale), with angle_count and frame_count 1: a scenario editor draws the loop's
+first frame. The generator fails unless the effect has an AtlasFile, no
 `ImageAngles` (per-angle frame runs, which the waterfalls use and
-descape.particle_art does not read). Every other particle-only const (FLAME,
-SMOKE, the waterfalls) is still skipped.
+descape.particle_art does not read), a real bool for any `FlipH`, and only keys
+in `_PARTICLE_EFFECT_KEYS`: drawn ones, or timing that cannot change a static
+first frame. An unknown key could change that frame, so it fails rather than
+draws wrong. The only particle consts still skipped are the waterfalls.
 
 **Garrison flags (GH #203).** A unit's `creatable.garrison_graphic` names the
 flag the game draws on it while it holds units: a legacy shell (never `_x1`,
 layer 20, angle_count 1) whose only content is one or two deltas, each at
 display_angle -1, pointing at one of 14 delta-free `b_<set>_garrison_flag_x1`
 graphics (misc, west, east, asia, medi, slav, ande, seas, nors, indi, orie,
-meso, ceas, afri). Measured 2026-10-12 over all 63 civ tables: 522 shells (366
-with one delta, 156 with two), no exception to that shape; 99 consts carry one,
+meso, ceas, afri). Measured 2026-10-30 over all 63 civ tables: 553 shells (387
+with one delta, 166 with two), no exception to that shape; 99 consts carry one,
 90 buildings plus rams 35, 422, 548, 1258, siege towers 885, 1105, 2444 and
 transport ships 545, 2148, and 75 of them vary by civ. Town Center 109's flag
 sits at (-31, -158), Watch Tower 79's at (-1, -179), Barracks 12 has two, at
@@ -943,11 +947,13 @@ def _resolve_pieces(
         }))
 
     if len(pieces) < 2:
-        raise SystemExit(
+        _game_root.refuse(
             f"_COMPOSITE_SCOPE includes {unit_const} but its annexes no longer "
             f"resolve to any modern piece -- re-verify against the .dat rather "
-            f"than silently dropping the composite"
+            f"than silently dropping the composite",
+            "drawn without its annexes",
         )
+        return None
     pieces.sort(key=lambda dp: dp[0])
     result = [p for _, p in pieces]
     # Keyed on scope membership, never on "has pieces": gates and walls carry
@@ -961,11 +967,13 @@ def _resolve_pieces(
         slots = _PIECE_SLOTS.get(unit_const)
         table = "_PIECE_SLOTS"
     if slots is None or len(slots) != len(result):
-        raise SystemExit(
+        _game_root.refuse(
             f"{table} has {'no' if slots is None else len(slots)} slot(s) for "
             f"{key!r} (_COMPOSITE_SCOPE const {unit_const}), which emits {len(result)} "
-            f"pieces -- re-run tools/measure_piece_slots.py and commit its table"
+            f"pieces -- re-run tools/measure_piece_slots.py and commit its table",
+            "drawn without its annexes",
         )
+        return None
     for piece, slot in zip(result, slots, strict=True):
         piece["slot"] = list(slot)
     return result
@@ -989,7 +997,7 @@ _ANNEX_TREE_PIECE_COUNT = 25
 
 def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
     """(parent_graphic, pieces) for an _ANNEX_TREE_SCOPE const, pieces
-    depth-sorted like _resolve_pieces().
+    depth-sorted like _resolve_pieces(), or None when a lenient guard fired.
 
     A DFS over building.annexes, summing misplacement down the tree: every
     node whose OWN standing_graphic resolves modern emits a piece at the summed
@@ -1019,16 +1027,20 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
 
     walk(unit_const, 0.0, 0.0, frozenset({unit_const}))
     if len(found) != _ANNEX_TREE_PIECE_COUNT:
-        raise SystemExit(
+        _game_root.refuse(
             f"_ANNEX_TREE_SCOPE const {unit_const} yields {len(found)} pieces, not "
-            f"{_ANNEX_TREE_PIECE_COUNT} -- re-verify its annex tree against the .dat"
+            f"{_ANNEX_TREE_PIECE_COUNT} -- re-verify its annex tree against the .dat",
+            "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
         )
+        return None
     parents = [f for f in found if f[0] == _ANNEX_TREE_PARENT_UNIT]
     if len(parents) != 1:
-        raise SystemExit(
+        _game_root.refuse(
             f"_ANNEX_TREE_SCOPE const {unit_const} has {len(parents)} "
-            f"{_ANNEX_TREE_PARENT_UNIT} hut pieces, expected exactly 1"
+            f"{_ANNEX_TREE_PARENT_UNIT} hut pieces, expected exactly 1",
+            "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
         )
+        return None
     pieces = []
     for uid, mx, my, graphic in found:
         dx, dy = _piece_screen_offset(mx, my, graphic)
@@ -1048,11 +1060,13 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
     result = [p for _, p in pieces]
     slots = _PIECE_SLOTS.get(unit_const)
     if slots is None or len(slots) != len(result):
-        raise SystemExit(
+        _game_root.refuse(
             f"_PIECE_SLOTS has {'no' if slots is None else len(slots)} slot(s) for "
             f"_ANNEX_TREE_SCOPE const {unit_const}, which emits {len(result)} pieces -- "
-            f"re-run tools/measure_piece_slots.py and commit its table"
+            f"re-run tools/measure_piece_slots.py and commit its table",
+            "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
         )
+        return None
     for piece, slot in zip(result, slots, strict=True):
         piece["slot"] = list(slot)
     return parents[0][3], result
@@ -1111,7 +1125,8 @@ _BODY_FRAME_OFFSETS: dict[str, int] = {"a_fish_marlin1_underwater_x1": 7}
 def _underwater_body(graphics: list, unit_const: int, splash):
     """(body graphic, dx, dy): the one `_underwater` delta of a fish's splash
     graphic and that delta's own offset, the body checked to keep the splash's
-    angle and frame layout so rotation and variants mean the same."""
+    angle and frame layout so rotation and variants mean the same. None when a
+    lenient guard fired."""
     deltas = [
         d for d in splash.deltas
         if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
@@ -1120,24 +1135,28 @@ def _underwater_body(graphics: list, unit_const: int, splash):
     ]
     bodies = [graphics[d.graphic_id] for d in deltas]
     if len(bodies) != 1:
-        raise SystemExit(
+        _game_root.refuse(
             f"fish {unit_const}'s splash {splash.file_name!r} has {len(bodies)} "
             f"{_UNDERWATER_SUFFIX} deltas, expected exactly 1 -- re-verify "
-            f"_UNDERWATER_BODY_CONSTS against the .dat"
+            f"_UNDERWATER_BODY_CONSTS against the .dat",
+            "not drawn: its standing graphic is only the surface splash",
         )
+        return None
     body = bodies[0]
     if (body.angle_count, body.frame_count) != (splash.angle_count, splash.frame_count):
-        raise SystemExit(
+        _game_root.refuse(
             f"fish {unit_const}'s body {body.file_name!r} has angle/frame counts "
             f"{(body.angle_count, body.frame_count)}, its splash "
-            f"{(splash.angle_count, splash.frame_count)} -- variant structure changed"
+            f"{(splash.angle_count, splash.frame_count)} -- variant structure changed",
+            "not drawn: its standing graphic is only the surface splash",
         )
+        return None
     return body, int(deltas[0].offset_x), int(deltas[0].offset_y)
 
 
 def _resolve_wall_pieces(
     graphics: list, unit_const: int, shell, body_id: int
-) -> list[dict[str, object]]:
+) -> list[dict[str, object]] | None:
     """The composite pieces for a _BODY_GRAPHIC_OVERRIDES const: every modern
     delta of the decoration shell in .dat list order at its own offset, with
     the shell itself (the flag) placed by its `graphic_id == -1` delta, the
@@ -1147,7 +1166,8 @@ def _resolve_wall_pieces(
 
     Not the gate helpers: their one-piece-per-offset dedupe would collapse
     the body pieces, which all sit at (0, 0). unit_id is unit_const on every
-    piece, so the parent is marked on the body explicitly."""
+    piece, so the parent is marked on the body explicitly. None when a lenient
+    guard fired: the body is then drawn alone."""
     shell_piece = {
         "unit_id": unit_const,
         "file_name": shell.file_name,
@@ -1156,10 +1176,12 @@ def _resolve_wall_pieces(
     }
     slots = [d for d in shell.deltas if d.graphic_id == -1]
     if len(slots) != 1:
-        raise SystemExit(
+        _game_root.refuse(
             f"decoration shell {shell.file_name!r} (unit_const {unit_const}) has "
-            f"{len(slots)} graphic_id -1 deltas, expected exactly 1 to place it by"
+            f"{len(slots)} graphic_id -1 deltas, expected exactly 1 to place it by",
+            "drawn as its body alone",
         )
+        return None
     pieces: list[dict[str, object]] = []
     for delta in shell.deltas:
         dg_id = delta.graphic_id
@@ -1184,11 +1206,13 @@ def _resolve_wall_pieces(
         # Same guard as the gate branch's angle_count == 1, inverted: a wall
         # piece that stops being a 5-shape variant graphic is a real .dat change.
         if piece["angle_count"] != 5:
-            raise SystemExit(
+            _game_root.refuse(
                 f"wall piece {piece['file_name']!r} (unit_const {unit_const}) has "
                 f"angle_count {piece['angle_count']}, not 5 -- re-verify "
-                f"_BODY_GRAPHIC_OVERRIDES against the .dat"
+                f"_BODY_GRAPHIC_OVERRIDES against the .dat",
+                "drawn as its body alone",
             )
+            return None
     return pieces
 
 
@@ -1204,6 +1228,7 @@ def _resolve_shell_delta_pieces(
     delta's own offset, or None for fewer. `hull` is the graphic
     `_resolve_modern_graphic` picked and the caller emits as the entry's
     top-level fields; it must be the first piece, which is marked parent.
+    Also None when a lenient guard fired: the hull is then drawn alone.
 
     No one-piece-per-offset dedupe, unlike the gate helper: five of the
     Galleon's sails share (0, -25). unit_id is unit_const on every piece, as
@@ -1217,27 +1242,33 @@ def _resolve_shell_delta_pieces(
     if len(deltas) < 2:
         return None
     if graphics[deltas[0].graphic_id] is not hull:
-        raise SystemExit(
+        _game_root.refuse(
             f"unit_const {unit_const}'s shell {shell.file_name!r} lists "
             f"{graphics[deltas[0].graphic_id].file_name!r} first, but its resolved "
-            f"graphic is {hull.file_name!r}. The parent piece must be the entry's own"
+            f"graphic is {hull.file_name!r}. The parent piece must be the entry's own",
+            f"drawn as {hull.file_name!r} alone",
         )
+        return None
     if unit_type != _CREATABLE_TYPE:
-        raise SystemExit(
+        _game_root.refuse(
             f"unit_const {unit_const} (type {unit_type}) has a multi-delta legacy "
             f"shell {shell.file_name!r} but is not type {_CREATABLE_TYPE}, so its pieces "
-            f"would not dispatch on a facing. Re-verify the ship-sail rule against the .dat"
+            f"would not dispatch on a facing. Re-verify the ship-sail rule against the .dat",
+            f"drawn as {hull.file_name!r} alone",
         )
+        return None
     pieces: list[dict[str, object]] = []
     for delta in deltas:
         dg = graphics[delta.graphic_id]
         if dg.layer != _SHELL_DELTA_LAYER or delta.display_angle != -1:
-            raise SystemExit(
+            _game_root.refuse(
                 f"shell delta {dg.file_name!r} (unit_const {unit_const}) is layer "
                 f"{dg.layer}, display_angle {delta.display_angle}, not layer "
                 f"{_SHELL_DELTA_LAYER} at every angle (-1). Re-verify the ship-sail "
-                f"rule against the .dat"
+                f"rule against the .dat",
+                f"drawn as {hull.file_name!r} alone",
             )
+            return None
         pieces.append({
             "unit_id": unit_const,
             "file_name": dg.file_name,
@@ -1250,33 +1281,50 @@ def _resolve_shell_delta_pieces(
     return pieces
 
 
-# Consts whose standing graphic is a particle effect and gets an entry: the
-# butterflies and the seagulls. An allowlist; see the module docstring's "Particle effects".
-_PARTICLE_CONSTS: frozenset[int] = frozenset({303, 1608, 1609, 1610})
+# Consts whose standing graphic is a particle effect and gets an entry: the butterflies,
+# the seagulls, Smoke and the Flames. An allowlist; see the module docstring's "Particle effects".
+_PARTICLE_CONSTS: frozenset[int] = frozenset({303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610})
+
+# Every effect key a _PARTICLE_CONSTS effect may carry: drawn by descape.particle_art,
+# or timing only, which a static first frame cannot show.
+_PARTICLE_EFFECT_KEYS: frozenset[str] = frozenset({
+    "AtlasFile", "ImageFirst", "ImageCount", "Scale", "FlipH",
+    "Type", "Timer", "Duration", "Duration1", "Duration2", "StartMode", "StartDuration",
+    "StopMode", "StopDuration", "StartDelay1", "StartDelay2", "IsPersistent", "DisplayInFog",
+    "IsFire",
+})
 
 
-def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, object]:
+def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, object] | None:
     """The entry for a _PARTICLE_CONSTS const: its effect's stem as file_name
     and the effect's Scale as art_scale. Fails rather than skips, since the
-    allowlist is a promise that descape.particle_art can draw the effect."""
+    allowlist is a promise that descape.particle_art can draw the effect;
+    None (skipped) only when lenient."""
     name = graphic.particle_effect_name
     path = particles_dir / f"{name}.json"
     try:
         effect = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
-        raise SystemExit(
-            f"particle const {unit_const}'s effect {name!r} is unreadable at {path}: {exc}"
-        ) from exc
+        _game_root.refuse(
+            f"particle const {unit_const}'s effect {name!r} is unreadable at {path}: {exc}",
+            "not drawn",
+        )
+        return None
     scale = effect.get("Scale")
+    unknown = sorted(set(effect) - _PARTICLE_EFFECT_KEYS)
     if (
         not name or not effect.get("AtlasFile") or "ImageAngles" in effect
         or isinstance(scale, bool) or not isinstance(scale, (int, float)) or scale <= 0
+        or not isinstance(effect.get("FlipH", False), bool) or unknown
     ):
-        raise SystemExit(
+        _game_root.refuse(
             f"particle const {unit_const}'s effect {name!r} needs an AtlasFile, a "
-            f"positive Scale and no ImageAngles to be drawn; it has {sorted(effect)}. "
-            f"Re-verify _PARTICLE_CONSTS"
+            f"positive Scale, no ImageAngles, a bool FlipH and only known keys to be "
+            f"drawn; it has {sorted(effect)}, unknown {unknown}. "
+            f"Re-verify _PARTICLE_CONSTS",
+            "not drawn",
         )
+        return None
     return {
         "graphic_id": graphic.id,
         "file_name": name,
@@ -1301,20 +1349,24 @@ def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
         shell = graphics[standing[0]] if 0 <= standing[0] < len(graphics) else None
         body = graphics[override_id] if 0 <= override_id < len(graphics) else None
         if body is None or not body.file_name:
-            raise SystemExit(
+            _game_root.refuse(
                 f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} does not "
                 f"resolve to a named graphic in this .dat -- re-verify it rather "
-                f"than dropping it silently"
+                f"than dropping it silently",
+                "not drawn: its standing graphic is only a decoration over that body",
             )
+            continue
         # Loud on purpose: a shell that stops being a decoration is a real
         # change in the .dat, not something to absorb quietly.
         ids = [] if shell is None else [d.graphic_id for d in shell.deltas]
         if ids.count(override_id) != 1:
-            raise SystemExit(
+            _game_root.refuse(
                 f"_BODY_GRAPHIC_OVERRIDES[{unit_const}] = {override_id} is no longer "
                 f"exactly one delta of standing graphic {standing[0]} -- "
-                f"re-verify against the .dat"
+                f"re-verify against the .dat",
+                "not drawn: its standing graphic is only a decoration over that body",
             )
+            continue
         positions[unit_const] = ids.index(override_id)
     return positions
 
@@ -1330,10 +1382,12 @@ def _garrison_flags(unit, graphics: list, unit_const: int) -> list[dict[str, obj
         return []
     shell = graphics[shell_id] if shell_id < len(graphics) else None
     if shell is None or _looks_modern(shell.file_name) or not 1 <= len(shell.deltas) <= 2:
-        raise SystemExit(
+        _game_root.refuse(
             f"unit_const {unit_const}'s garrison graphic {shell_id} is not a legacy shell with "
-            f"1 or 2 deltas -- re-verify the garrison flag rule against the .dat"
+            f"1 or 2 deltas -- re-verify the garrison flag rule against the .dat",
+            "drawn without garrison flags",
         )
+        return []
     flags: list[dict[str, object]] = []
     for delta in shell.deltas:
         dg_id = delta.graphic_id
@@ -1342,11 +1396,13 @@ def _garrison_flags(unit, graphics: list, unit_const: int) -> list[dict[str, obj
             delta.display_angle != -1 or flag is None or not _looks_modern(flag.file_name)
             or flag.deltas or flag.angle_count != 1
         ):
-            raise SystemExit(
+            _game_root.refuse(
                 f"unit_const {unit_const}'s garrison shell {shell_id} has a delta to {dg_id} at "
                 f"display_angle {delta.display_angle}, not a delta-free one-angle modern graphic "
-                f"at every angle (-1) -- re-verify the garrison flag rule against the .dat"
+                f"at every angle (-1) -- re-verify the garrison flag rule against the .dat",
+                "drawn without garrison flags",
             )
+            return []
         flags.append({
             "unit_id": unit_const,
             "file_name": flag.file_name,
@@ -1402,13 +1458,15 @@ def _graphic_entry_for(
             return None, "gate_no_modern_replacement"
         for _, piece_graphic, _, _ in gate_pieces:
             if piece_graphic.angle_count != 1:
-                raise SystemExit(
+                _game_root.refuse(
                     f"class-39 piece {piece_graphic.file_name!r} (unit_const "
                     f"{unit_const}) has angle_count {piece_graphic.angle_count}, "
                     f"not 1 -- gate pieces are assumed non-rotating; re-verify "
                     f"tools/gen_unit_graphic_map.py's gate section against the "
-                    f".dat before shipping this"
+                    f".dat before shipping this",
+                    "not drawn",
                 )
+                return None, "gate_no_modern_replacement"
         # The parent is pieces[0] because it supplies the entry's top-level
         # fields. For an X-state gate (e.g. 487) that is a corner pillar, not
         # the middle span; retargeting the top-level fields changes which
@@ -1434,8 +1492,9 @@ def _graphic_entry_for(
             ],
         }, "gate"
 
-    if unit_const in _ANNEX_TREE_SCOPE:
-        hut, tree_pieces = _resolve_annex_tree(units, graphics, unit_const)
+    tree = _resolve_annex_tree(units, graphics, unit_const) if unit_const in _ANNEX_TREE_SCOPE else None
+    if tree is not None:
+        hut, tree_pieces = tree
         return {
             "graphic_id": hut.id,
             "file_name": hut.file_name,
@@ -1451,27 +1510,39 @@ def _graphic_entry_for(
     if graphic is None or not graphic.file_name:
         return None, "no_file_name"
     position = body_positions.get(unit_const)
+    if position is None and unit_const in _BODY_GRAPHIC_OVERRIDES and _game_root.lenient():
+        # _body_delta_positions() warned: the standing graphic alone is the pennant.
+        return None, "body_override_missing"
     wall_pieces = None
     shell_pieces = None
+    underwater = None
     body_offset = (0, 0)
     if position is not None:
         body_id = graphic.deltas[position].graphic_id if position < len(graphic.deltas) else -1
         body = graphics[body_id] if 0 <= body_id < len(graphics) else None
         if body is None or not _looks_modern(body.file_name):
-            raise SystemExit(
+            _game_root.refuse(
                 f"unit_const {unit_const}'s shell {graphic.file_name!r} has no modern "
-                f"body at delta position {position} -- re-verify _BODY_GRAPHIC_OVERRIDES"
+                f"body at delta position {position} -- re-verify _BODY_GRAPHIC_OVERRIDES",
+                "not drawn: its standing graphic is only a decoration over that body",
             )
+            return None, "body_override_missing"
+    if position is not None:
         wall_pieces = _resolve_wall_pieces(graphics, unit_const, graphic, body_id)
         graphic = body
     elif unit_const in _UNDERWATER_BODY_CONSTS:
-        graphic, body_dx, body_dy = _underwater_body(graphics, unit_const, graphic)
+        underwater = _underwater_body(graphics, unit_const, graphic)
+        if underwater is None:
+            return None, "underwater_body_missing"
+        graphic, body_dx, body_dy = underwater
         body_offset = (body_dx, body_dy)
     elif not _looks_modern(graphic.file_name):
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
             if unit_const in _PARTICLE_CONSTS and particles_dir is not None:
-                return _particle_entry(unit_const, graphic, particles_dir), "particle"
+                particle = _particle_entry(unit_const, graphic, particles_dir)
+                if particle is not None:
+                    return particle, "particle"
             return None, "legacy_no_modern_replacement"
         shell_pieces = _resolve_shell_delta_pieces(
             graphics, unit_const, unit.type, graphic, resolved
@@ -1491,7 +1562,7 @@ def _graphic_entry_for(
         frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
         if frames is not None and graphic.frame_count > 0:
             entry["variant_count"] = frames // graphic.frame_count
-    if unit_const in _UNDERWATER_BODY_CONSTS:
+    if underwater is not None:
         offset = _BODY_FRAME_OFFSETS.get(graphic.file_name)
         if offset is not None:
             entry["frame_offset"] = offset
@@ -1614,7 +1685,10 @@ def _annex_upgrades(ages: dict[int, dict[int, int]]) -> dict[int, dict[int, int]
     for by_age in ages.values():
         for age, target in by_age.items():
             if age_of.setdefault(target, age) != age:
-                raise SystemExit(f"const {target} is an age target at two ages -- re-verify")
+                _game_root.refuse(
+                    f"const {target} is an age target at two ages -- re-verify",
+                    f"its annexes follow age {age_of[target]}",
+                )
     return {
         target: {base: by_age[age] for base, by_age in ages.items() if age in by_age}
         for target, age in age_of.items()
@@ -1628,20 +1702,40 @@ def _building_art(
     ages: dict[int, dict[int, int]], annex_upgrades: dict[int, dict[int, int]],
 ) -> dict[str, object]:
     """descape/building_art_map.json's content (GH #48): the age table, every
-    civ's building entries that differ from Gaia's, and the civ names."""
+    civ's building entries that differ from Gaia's, and the civ names.
+
+    Lenient (GH #262), each violation is handled where it is found instead of
+    failing: a civ's const entry is held out on Gaia art, and a bad age pair
+    is dropped from the shared age table for every civ once all civs are read.
+    `annex_upgrades` was built from the full table, so a dropped pair can leave
+    a composite's annexes at the upgraded age's art."""
     gaia_units = data.civs[0].units
+    lenient = _game_root.lenient()
 
     civ_art: dict[str, dict[str, dict[str, object]]] = {}
     no_gaia_entry: set[int] = set()
     violations: list[str] = []
     held_out: set[int] = set()
+    lenient_held_out: set[int] = set()
+    bad_ages: set[tuple[int, int]] = set()
+
+    def age_fallback(base: int) -> str:
+        # annex_upgrades was built from the full table, before the pair was dropped.
+        annexed = any(base in upgrades for upgrades in annex_upgrades.values())
+        note = "; its annexes may still show the upgraded age's art" if annexed else ""
+        return f"dropped from the age table for every civ{note}"
+
     # Gates carry no age art: their orientation siblings are keyed on the const.
-    violations += [
-        f"age table: gate const {c} is upgraded by an age tech"
-        for base, by_age in ages.items()
-        for c in (base, *by_age.values())
-        if gaia_units[c].class_ == _GATE_CLASS
-    ]
+    for base, by_age in ages.items():
+        for c in (base, *by_age.values()):
+            if gaia_units[c].class_ != _GATE_CLASS:
+                continue
+            message = f"age table: gate const {c} is upgraded by an age tech"
+            if not lenient:
+                violations.append(message)
+                continue
+            _game_root.refuse(message, age_fallback(base))
+            bad_ages |= {(base, age) for age, target in by_age.items() if c in (base, target)}
     for civ_index, civ in enumerate(data.civs):
         units = civ.units
         art: dict[str, dict[str, object]] = {}
@@ -1650,55 +1744,80 @@ def _building_art(
                 units, graphics, graphics_dir, const, body_positions, annex_upgrades
             )
             gaia_entry = gaia_entries.get(str(const))
-            violations += _structure_violations(
-                f"civ {civ_index} const {const}", entry, units[const], gaia_entry, gaia_units[const]
-            )
-            if entry is None:
-                continue
-            if gaia_entry is None:
+            what = f"civ {civ_index} const {const}"
+            problems = _structure_violations(what, entry, units[const], gaia_entry, gaia_units[const])
+            keep = entry is not None
+            if keep and gaia_entry is None:
                 # Const 183: no Gaia graphic to fall back from or check against.
                 no_gaia_entry.add(const)
+                keep = False
+            if keep:
+                found = _art_invariant_violations(what, entry, units[const], gaia_entry, gaia_units[const])
+                if found and const in _ART_INVARIANT_HOLDOUTS:
+                    # Only this civ's art is held back; the rest of the const's civs keep theirs.
+                    held_out.add(const)
+                    keep = False
+                else:
+                    problems += found
+            if problems and lenient:
+                for problem in problems:
+                    _game_root.refuse(problem, "drawn with Gaia's art")
+                lenient_held_out.add(const)
                 continue
-            found = _art_invariant_violations(
-                f"civ {civ_index} const {const}", entry, units[const],
-                gaia_entry, gaia_units[const],
-            )
-            if found and const in _ART_INVARIANT_HOLDOUTS:
-                # Only this civ's art is held back; the rest of the const's civs keep theirs.
-                held_out.add(const)
-                continue
-            violations += found
-            if civ_index and entry != gaia_entry:
+            violations += problems
+            if keep and civ_index and entry != gaia_entry:
                 art[str(const)] = entry
         for base, by_age in ages.items():
             base_entry = art.get(str(base)) or gaia_entries.get(str(base))
             for age, target in by_age.items():
+                if (base, age) in bad_ages:
+                    continue
                 target_entry = art.get(str(target)) or gaia_entries.get(str(target))
-                if base_entry is None or target_entry is None:
-                    raise SystemExit(
+                if base_entry is None or target_entry is None or units[base] is None or units[target] is None:
+                    _game_root.refuse(
                         f"civ {civ_index}: age {age} upgrade {base} -> {target} has no "
-                        f"entry on one side -- re-verify the age techs against the .dat"
+                        f"entry on one side -- re-verify the age techs against the .dat",
+                        age_fallback(base),
                     )
-                violations += _art_invariant_violations(
+                    bad_ages.add((base, age))
+                    continue
+                found = _art_invariant_violations(
                     f"civ {civ_index} age {age} {base} -> {target}", target_entry,
                     units[target], base_entry, units[base],
                 )
+                if found and lenient:
+                    for problem in found:
+                        _game_root.refuse(problem, age_fallback(base))
+                    bad_ages.add((base, age))
+                    continue
+                violations += found
         if art:
             civ_art[str(civ_index)] = art
+    if bad_ages:
+        ages = {
+            base: kept
+            for base, by_age in ages.items()
+            if (kept := {age: target for age, target in by_age.items() if (base, age) not in bad_ages})
+        }
     # A data mod's .dat may lack the civ a holdout was listed for (155's Greek civs).
     unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS)
     if _DATA_MOD_DAT:
         unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS)
     if violations or unexplained:
-        raise SystemExit(
+        _game_root.refuse(
             "per-civ/per-age building art breaks the placed const's own logic -- "
             "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
-            + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}"
+            + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}",
+            "written as measured",
         )
     print(f"  building consts: {len(building_consts)}; age-upgraded bases: {len(ages)}")
     differing = {c for art in civ_art.values() for c in art}
     print(f"  building consts whose art differs by civ: {len(differing)}")
     print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
+    if lenient_held_out:
+        print(f"    held out on Gaia art (lenient): {sorted(lenient_held_out)}")
+    if bad_ages:
+        print(f"    age pairs dropped (lenient): {sorted(bad_ages)}")
     if no_gaia_entry:
         print(f"    skipped, no Gaia entry to fall back from: {sorted(no_gaia_entry)}")
     # Civs sharing an art set share entries, so each distinct one is stored once.
@@ -1745,10 +1864,11 @@ _ROR_VALUES: dict[str, object] = {
     # Same _underwater deltas, except Whale 2625, whose delta is empty there.
     "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
     "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
+    # Smoke and Flames unmeasured on the RoR .dat (absent 2026-10-28). The rest match AoE2's (2026-10-17).
+    "_PARTICLE_CONSTS": frozenset({303, 1608, 1609, 1610}),
 }
 # Measured on the RoR .dat (2026-10-16): _AGE_TECHS' 101/102/103 are its Tool,
 # Bronze and Iron Ages, so they stay; the holdout is the same hidden PORT as AoE2's.
-# _PARTICLE_CONSTS stays too (2026-10-17): 303 and 1608-1610 have the same graphics and effects.
 _ROR_ART_INVARIANT_HOLDOUTS: dict[int, str] = {
     446: "PORT, hidden in the editor: a projectile graphic, angle_count 32 vs 1 (civs 2, 5, 7)",
 }
@@ -1779,7 +1899,9 @@ def _defines(units: list, unit_const: int) -> bool:
 
 def _narrow_to_dat(units: list, graphics: list) -> None:
     """GH #58: drops each hand-measured const the data mod's .dat lacks, so the
-    guards still raise on a const it has but changed, never on one it lacks."""
+    guards still raise on a const it has but changed, never on one it lacks.
+    This narrowing comes first; a const the mod has but changed then trips its
+    guard, which derive()'s lenient run (GH #262) turns into a warning."""
     global _EXTRA_ANGLE_CONSTS, _COMPOSITE_SCOPE, _PIECE_SLOTS, _TOWN_CENTRE_SCOPE
     global _ANNEX_TREE_SCOPE, _BODY_GRAPHIC_OVERRIDES, _UNDERWATER_BODY_CONSTS
     global _BODY_FRAME_OFFSETS, _PARTICLE_CONSTS, _ART_INVARIANT_HOLDOUTS, _DATA_MOD_DAT
@@ -1821,6 +1943,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
     _select_dataset(args.dataset)
 
     from genieutils.datfile import DatFile
@@ -1883,31 +2006,37 @@ def main() -> None:
             particles[unit_const] = str(entry["file_name"])
 
     if set(particles) != _PARTICLE_CONSTS:
-        raise SystemExit(
+        _game_root.refuse(
             f"particle consts emitted {sorted(particles)}, listed {sorted(_PARTICLE_CONSTS)}. "
-            f"Re-verify _PARTICLE_CONSTS against the .dat"
+            f"Re-verify _PARTICLE_CONSTS against the .dat",
+            "the others are not drawn",
         )
 
     missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
     unused_offsets = sorted(set(_BODY_FRAME_OFFSETS) - set(fish_bodies.values()))
     if missing_fish or unused_offsets:
-        raise SystemExit(
+        _game_root.refuse(
             f"fish body overrides not applied: consts {missing_fish}, frame offsets "
-            f"{unused_offsets} -- re-verify against the .dat"
+            f"{unused_offsets} -- re-verify against the .dat",
+            "those fish are not drawn",
         )
 
     for unit_const, entry in entries.items():
         if "dx" in entry and "pieces" in entry:
-            raise SystemExit(
+            _game_root.refuse(
                 f"unit_const {unit_const} has a top-level dx/dy beside pieces -- "
-                f"sprite_pieces_for() would draw the pieces and drop the offset"
+                f"sprite_pieces_for() would draw the pieces and drop the offset",
+                "drawn without its pieces",
             )
+            del entry["pieces"]
         parents = sum(1 for piece in entry.get("pieces", ()) if piece.get("parent"))
         if "pieces" in entry and parents != 1:
-            raise SystemExit(
+            _game_root.refuse(
                 f"unit_const {unit_const} emitted {parents} parent pieces, not exactly 1 -- "
-                f"sprite_pieces_for() bails on the parent, so this must be unambiguous"
+                f"sprite_pieces_for() bails on the parent, so this must be unambiguous",
+                "drawn without its pieces",
             )
+            del entry["pieces"]
 
     building_art = _building_art(
         data, graphics, graphics_dir, body_positions, entries, building_consts, ages, annex_upgrades
@@ -1941,7 +2070,7 @@ def main() -> None:
         entry = entries[str(const)]
         shift = f" at ({entry['dx']}, {entry['dy']})" if "dx" in entry else ""
         print(f"    {const}: {body}{shift}")
-    sail_piece_counts = Counter(len(entries[str(c)]["pieces"]) for c in shell_composited)
+    sail_piece_counts = Counter(len(entries[str(c)].get("pieces", ())) for c in shell_composited)
     print(f"  shell-delta (ship sail) entries: {len(shell_composited)}: {sorted(shell_composited)}")
     print(f"    piece-count histogram: {dict(sorted(sail_piece_counts.items()))}")
     print(f"  particle entries: {len(particles)}/{len(_PARTICLE_CONSTS)}")
@@ -1957,7 +2086,7 @@ def main() -> None:
     if not_composited:
         print(f"    in scope but no entry (expected -- legacy shell): {not_composited}")
     print(f"  annex-tree entries: {sorted(tree_composited)}")
-    gate_piece_counts = Counter(len(entries[str(c)]["pieces"]) for c in gate_composited)
+    gate_piece_counts = Counter(len(entries[str(c)].get("pieces", ())) for c in gate_composited)
     print(f"  gate (class {_GATE_CLASS}) composite entries: {len(gate_composited)}")
     print(f"    piece-count histogram: {dict(sorted(gate_piece_counts.items()))}")
 

@@ -26,6 +26,8 @@ textures, so it needs both; shadow_band needs neither. So does sloped_mip
 (TASK-031.60's Sloped mip ladder), which stitches its frames from
 SlopedChunkCache.render_rect() at the coarser levels, sprites included. So does
 ground_borders (TASK-143's terrain blending), over two examples/ maps.
+particle_doodads (TASK-454's Smoke and Flames) needs only the install: a synthetic
+flat scene, written to an `objects/` directory so its paths stay neutral.
 
 Off-engine throughout (descape.render.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
@@ -3248,6 +3250,461 @@ def _check_garrison_flags() -> None:
     )
 
 
+# ---------------------------------------------------------- particle_doodads
+#
+# TASK-454 (GH #256): Smoke and Flames 1-4 draw their particle effects, with
+# Butterfly and Seagulls as the untouched controls. A synthetic flat scene, not
+# old-allies-final-v2: most of that map's placements sit inside ruined buildings,
+# so a real-map crop hides the very base and silhouette the checks ask about
+# (measured 2026-10-31: its two Smokes keep 43% and 5% of their ink visible).
+# Every object stands on one sand tile in plain grass, so the tile is the
+# reference a base check needs. A fresh Stepped IsoChunkCache at 64 px tiles.
+
+_PARTICLE_SMOKE = 1308
+_PARTICLE_FIRES = (1333, 1334, 1335, 1336)  # small, medium, large, large mirrored
+_PARTICLE_CONTROLS = (1609, 303)  # a butterfly and the seagulls
+_PARTICLE_TILE_PX = 64
+_PARTICLE_GRASS, _PARTICLE_SAND = 0, 14  # GRASS_1, DESERT_SAND
+_FIRE_BOX = (-48, -116, 48, 36)  # 1:1 px around the first spot's anchor, room for `raised`
+# frame id -> (spots left to right, 2 tiles apart, None for bare sand; crop around the first).
+# spot_1's left spot is the empty ruler tile; its crop has room for `double-plume`.
+_PARTICLE_FRAMES = {
+    "spot_1": ((None, _PARTICLE_SMOKE), (-48, -136, 224, 96)),
+    "spot_2": ((1333,), (-48, -76, 48, 36)),  # tighter: the small fire needs the enlargement
+    "spot_3": ((1334,), _FIRE_BOX),
+    "spot_4": ((1335,), _FIRE_BOX),
+    "spot_5": ((1336,), _FIRE_BOX),
+    "row_1": ((1333, 1334, 1335), (-48, -116, 304, 36)),
+    "row_2": ((1335, 1336), (-48, -116, 176, 36)),
+    "spot_6": ((_PARTICLE_CONTROLS[0],), (-96, -64, 96, 64)),
+    "spot_7": ((_PARTICLE_CONTROLS[1],), (-96, -64, 96, 64)),
+    "spot_8": ((None,), _FIRE_BOX),
+}
+_PARTICLE_SPECIFICITY = "spot_8"
+_PARTICLE_SCENE: dict[str, object] = {}
+# Canvas px up the screen: a fire's foot clears the tile's upper tip, Smoke's comes back inside the tile.
+PARTICLE_FIRE_RAISE_PX, PARTICLE_SMOKE_RAISE_PX = 48, 32
+
+
+def _doubled_plume(table: dict) -> None:
+    """COARSE. Smoke at twice its own art_scale."""
+    table[_PARTICLE_SMOKE] = {**table[_PARTICLE_SMOKE], "art_scale": 2 * table[_PARTICLE_SMOKE]["art_scale"]}
+
+
+def _drawn_as_marks(table: dict) -> None:
+    """COARSE. All seven consts back to no table entry: the render before GH #256 for the five, marks for the controls too."""
+    for const in (_PARTICLE_SMOKE, *_PARTICLE_FIRES, *_PARTICLE_CONTROLS):
+        del table[const]
+
+
+def _swapped_sizes(table: dict) -> None:
+    """The small and medium fires trade art, so the size order breaks and the large pair stays."""
+    table[1333], table[1334] = table[1334], table[1333]
+
+
+def _raised(table: dict) -> None:
+    """Smoke and all four fires lifted up the screen: a body offset, which is native px into the hotspot."""
+    from descape import unit_sprites
+
+    for const in (_PARTICLE_SMOKE, *_PARTICLE_FIRES):
+        lift = PARTICLE_SMOKE_RAISE_PX if const == _PARTICLE_SMOKE else PARTICLE_FIRE_RAISE_PX
+        scale = unit_sprites.sprite_scale(_PARTICLE_TILE_PX // 2) * table[const]["art_scale"]
+        table[const] = {**table[const], "dy": -round(lift / scale)}
+
+
+def _no_table_change(_table: dict) -> None:
+    pass
+
+
+PARTICLE_INJECTS = {
+    "unflipped": _no_table_change,  # LOCALIZED: FLAME4 alone drops FlipH, see _particle_patched()
+    "double-plume": _doubled_plume,
+    "marks": _drawn_as_marks,
+    "swapped-sizes": _swapped_sizes,
+    "raised": _raised,
+}
+PARTICLE_COARSE_INJECT = "double-plume"
+# The frames each inject must reach, no more and no fewer.
+PARTICLE_REACH = {
+    "unflipped": {"spot_5", "row_2"},
+    "double-plume": {"spot_1"},
+    "marks": set(_PARTICLE_FRAMES) - {_PARTICLE_SPECIFICITY},
+    "swapped-sizes": {"spot_2", "spot_3", "row_1"},
+    "raised": set(_PARTICLE_FRAMES) - {_PARTICLE_SPECIFICITY, "spot_6", "spot_7"},
+}
+# Measured 2026-10-31: unflipped changes 734 px of spot_5 and row_2, 723 in its largest component.
+PARTICLE_LOCALIZED_BOUND = rp.LocalizedBound(max_changed_fraction=0.08, max_component_px=800)
+
+
+@contextmanager
+def _particle_patched(inject: str | None):
+    """The run's table and FLAME4 flip, with every sprite cache dropped on both sides."""
+    from descape import particle_art, unit_sprites
+
+    real_table, real_frame = unit_sprites.graphic_map, particle_art.native_frame
+    if inject is not None:
+        table = dict(real_table())
+        PARTICLE_INJECTS[inject](table)
+        unit_sprites.graphic_map = lambda: table
+    if inject == "unflipped":
+        def unflipped(effect_name: str, index: int):
+            frame = real_frame(effect_name, index)
+            if effect_name != "fire_large_right" or frame is None:
+                return frame
+            rgba, player, hotspot_x, hotspot_y = frame
+            return np.ascontiguousarray(np.fliplr(rgba)), player, rgba.shape[1] - hotspot_x, hotspot_y
+
+        particle_art.native_frame = unflipped
+    unit_sprites.clear_caches()
+    try:
+        yield
+    finally:
+        unit_sprites.graphic_map, particle_art.native_frame = real_table, real_frame
+        unit_sprites.clear_caches()
+
+
+def _particle_scene() -> dict[str, object]:
+    """{loaded, elevations, proj, anchors}: the flat scene once per process. anchors maps a frame id
+    to the canvas px of each spot's tile centre, left to right."""
+    if _PARTICLE_SCENE:
+        return _PARTICLE_SCENE
+    from descape.unit_model import UnitEditModel
+
+    loaded = load_map_and_units(str(BLANK_TEMPLATE_PATH))
+    spots: dict[str, list[tuple[object, int, int]]] = {}
+    for index, (frame_id, (consts, _box)) in enumerate(_PARTICLE_FRAMES.items()):
+        # A grid of bases: one step in x+y is 32 px across, one in y-x is 16 px down the screen.
+        across, down = 60 + 24 * (index % 4), -36 + 24 * (index // 4)
+        x, y = (across - down) // 2, (across + down) // 2
+        spots[frame_id] = [(const, x + 2 * k, y + 2 * k) for k, const in enumerate(consts)]
+    sand = {(x, y) for spot in spots.values() for _const, x, y in spot}
+    for tile in loaded.map_manager.terrain:
+        tile.elevation = 0
+        tile.terrain_id = _PARTICLE_SAND if (tile.x, tile.y) in sand else _PARTICLE_GRASS
+    model = UnitEditModel(loaded)
+    for spot in spots.values():
+        for const, x, y in spot:
+            if const is not None:
+                model.add(0, const, x + 0.5, y + 0.5)
+    elevations, proj = render.elevations_and_proj(loaded)
+    anchors = {}
+    for frame_id, spot in spots.items():
+        origins = [ig.tile_screen_origin(x, y, 0, proj) for _const, x, y in spot]
+        anchors[frame_id] = [(sx + proj.half_w, sy + proj.half_h) for sx, sy in origins]
+    _PARTICLE_SCENE.update(loaded=loaded, elevations=elevations, proj=proj, anchors=anchors, spots=spots)
+    return _PARTICLE_SCENE
+
+
+def _particle_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    from descape.render_cache import IsoChunkCache
+    from descape.unit_filter import UnitFilter
+
+    scene = _particle_scene()
+    with _particle_patched(inject):
+        cache = IsoChunkCache(
+            scene["loaded"], scene["elevations"], scene["proj"], _PARTICLE_TILE_PX,
+            unit_filter=UnitFilter(show_garrisoned=False), sprites=True,
+        )
+        images = {}
+        for frame_id, (_consts, (x0, y0, x1, y1)) in _PARTICLE_FRAMES.items():
+            ax, ay = scene["anchors"][frame_id][0]
+            images[frame_id] = cache.render_rect(ax + x0, ay + y0, ax + x1, ay + y1, mip=0).copy()
+    return images
+
+
+def _particle_extent(const: int, inject: str | None = None, floor: int = 96) -> dict[str, float]:
+    """One const's drawn art against its tile centre, in canvas px at this pack's zoom: rows top and
+    bottom (negative is above the anchor), width, ink and the share of it below the anchor, plus
+    lean (the top third's ink centroid against the bottom third's, + is to the right). Ink is alpha
+    of at least `floor`, what still reads against the grass; a tile's half height is 16 px."""
+    from descape import unit_sprites
+
+    with _particle_patched(inject):
+        pieces = unit_sprites.sprite_pieces_for(const, 0.0, 0, _PARTICLE_TILE_PX // 2)
+    if len(pieces) != 1:
+        raise SystemExit(f"particle_doodads: const {const} drew {len(pieces)} pieces, not one")
+    draw = pieces[0].draw
+    ink = draw.rgba[..., 3] >= floor
+    rows = np.nonzero(ink.any(axis=1))[0]
+    cols = np.nonzero(ink.any(axis=0))[0]
+    top, bottom = int(rows[0]), int(rows[-1]) + 1
+    third = (bottom - top) // 3
+    upper = np.nonzero(ink[top : top + third])[1]
+    lower = np.nonzero(ink[bottom - third : bottom])[1]
+    return {
+        "top": top - draw.hotspot_y, "bottom": bottom - draw.hotspot_y, "width": int(cols[-1] - cols[0] + 1),
+        "ink": int(ink.sum()), "below": float(ink[draw.hotspot_y :].sum() / ink.sum()),
+        "lean": float(upper.mean() - lower.mean()),
+    }
+
+
+def _sand_reach(frame: np.ndarray, ax: int, ay: int) -> tuple[int, int, int]:
+    """How the sand diamond at (ax, ay) reads: px from its centre to its left and right corners and to
+    its lower tip, walking out while red still beats green. Its blended rim leaves it well short of
+    the tile's +-32 by +-16, and a question's unit has to be what a reviewer can see."""
+    sand = frame[..., 0].astype(int) > frame[..., 1].astype(int) + 6
+
+    def reach(line: np.ndarray, start: int, step: int) -> int:
+        at = start
+        while 0 <= at + step < line.size and (line[at + step] or (0 <= at + 2 * step < line.size and line[at + 2 * step])):
+            at += step
+        return abs(at - start)
+
+    return reach(sand[ay], ax, -1), reach(sand[ay], ax, 1), reach(sand[:, ax], ay, 1)
+
+
+def _particle_doodads_spec() -> rp.PackSpec:
+    """TASK-454's Smoke and Flames (GH #256). `foot_b` is the small fire's alone: its pivot sits near
+    its frame's centre, so most of its ink falls below the tile centre, unlike the others'."""
+    caption_one = "One sand diamond on grass."
+    frames = (
+        rp.Frame("spot_1", "spot_1.png", "raw", caption="Two sand diamonds on grass, side by side."),
+        *(rp.Frame(f"spot_{n}", f"spot_{n}.png", "raw", caption=caption_one) for n in (2, 3, 4, 5)),
+        rp.Frame("row_1", "row_1.png", "raw", caption="Three sand diamonds on grass, in a row."),
+        rp.Frame("row_2", "row_2.png", "raw", caption="Two sand diamonds on grass, in a row."),
+        *(rp.Frame(f"spot_{n}", f"spot_{n}.png", "raw", caption=caption_one) for n in (6, 7, 8)),
+    )
+
+    def foot(check_id: str, subject: str, frame_ids: tuple[str, ...]) -> rp.Check:
+        return rp.Check(
+            id=check_id,
+            question=(
+                f"{subject} First, in your own words, describe the lowest visible part of what is drawn there, and "
+                "where that part sits against the sand diamond under it.\n\n"
+                "Then the closed question. Take the lowest row of what is drawn, dark smudges included, and compare "
+                "it with the diamond's upper tip (its top corner) and lower tip (its bottom corner). ON if that "
+                "lowest row is between the two tips, inside the diamond or within its soft rim; ABOVE if it is "
+                "clearly higher than the upper tip, so that bare sand or grass shows underneath; BELOW if it is "
+                "clearly lower than the lower tip, out on the grass past the diamond. NONE if nothing is drawn there."
+                + (" If the frames differ, answer for the one farthest from ON." if len(frame_ids) > 1 else "")
+            ),
+            frames=frame_ids,
+            answers=("ON", "ABOVE", "BELOW", "NONE", "CANNOT-TELL"),
+        )
+
+    checks = (
+        rp.Check(
+            id="column",
+            question=(
+                "Frame spot_1 shows two sand diamonds side by side. The left one is empty and is there for scale. "
+                "First, in your own words, describe what is drawn on or over the right diamond: its shape, its "
+                "colours, and how soft or hard its edges are.\n\n"
+                "Then the closed question. Which describes it best? PLUME: a soft grey or smoky column going up the "
+                "frame over the diamond, drifting and thinning towards its top. MARK: a flat shape of solid colour "
+                "lying on the ground, such as a coloured diamond, square or dot, with no rising column. NOTHING: "
+                "only the ground. OTHER: anything else, and say what. A darker smudge at the foot of a soft column "
+                "is still PLUME."
+            ),
+            frames=("spot_1",),
+            answers=("PLUME", "MARK", "NOTHING", "OTHER", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="column_height",
+            question=(
+                "Frame spot_1 again. Use the empty left diamond's left-to-right width, corner to corner, as your "
+                "unit. First, say how wide that is in the frame, then how tall the soft column over the right "
+                "diamond is, from its highest visible wisp to its lowest visible smudge.\n\n"
+                "Then the closed question. Is the column under three diamond widths tall (UNDER), or over that "
+                "(OVER)? NONE if there is no such column. Not counted: the width of the column, and any colour "
+                "variation in the grass."
+            ),
+            frames=("spot_1",),
+            answers=("UNDER", "OVER", "NONE", "CANNOT-TELL"),
+        ),
+        foot("column_foot", "Frame spot_1 again, the right diamond and the soft column over it.", ("spot_1",)),
+        rp.Check(
+            id="burning",
+            question=(
+                "Frames spot_2, spot_3, spot_4 and spot_5 each show one sand diamond with something drawn on it. "
+                "First, in your own words, describe what is drawn in each frame: shape, colours, hard or soft "
+                "edges.\n\n"
+                "Then the closed question. Is what is drawn in every one of the four frames a fire, with orange or "
+                "yellow tongues, with or without dark smoke above them (ALL-FIRE)? Or is at least one of them "
+                "something else, such as a flat coloured mark on the ground, or nothing at all (SOME-NOT-FIRE)? "
+                "Small size alone does not make a fire something else."
+            ),
+            frames=("spot_2", "spot_3", "spot_4", "spot_5"),
+            answers=("ALL-FIRE", "SOME-NOT-FIRE", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="ranking",
+            question=(
+                "Frame row_1 shows three sand diamonds in a row, each with something drawn on it. First, in your own "
+                "words, describe the height and width of what stands on each, left, middle and right.\n\n"
+                "Then the closed question. GROWING if the left one is clearly the smallest, the middle one clearly "
+                "bigger, and the right one clearly the biggest. OTHER for any other order, or if two of them are "
+                "about the same size. NONE if the frame does not show three such objects. Count only the drawn "
+                "object itself, including any dark smoke that is part of it."
+            ),
+            frames=("row_1",),
+            answers=("GROWING", "OTHER", "NONE", "CANNOT-TELL"),
+        ),
+        foot("foot_a", "Frames spot_3, spot_4 and spot_5 each show one sand diamond with a fire on it.", ("spot_3", "spot_4", "spot_5")),
+        foot("foot_b", "Frame spot_2 shows one sand diamond with a small fire on it.", ("spot_2",)),
+        rp.Check(
+            id="pairing",
+            question=(
+                "Frame row_2 shows two sand diamonds with a fire on each. First, in your own words, describe each "
+                "fire's outline: which side its tallest tips are on and which way it leans.\n\n"
+                "Then the closed question. MIRRORED if the right fire is the left fire's mirror image, flipped left "
+                "to right, so that the two lean opposite ways. SAME if they are the same drawing, leaning the same "
+                "way. Not counted: the small difference in where each sits on its own diamond."
+            ),
+            frames=("row_2",),
+            answers=("MIRRORED", "SAME", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="scatter",
+            question=(
+                "Frames spot_6 and spot_7 each show a sand diamond with small things drawn around it. First, in your "
+                "own words, describe what you see in each frame and where it sits.\n\n"
+                "Then the closed question. For both frames together: SCATTERED if each frame shows small separate "
+                "specks or small winged creatures dotted around the grass; MARK if either shows a single solid "
+                "coloured shape on the diamond instead; FIRE-OR-SMOKE if either shows fire or a smoke column; NOTHING "
+                "if either shows only the ground."
+            ),
+            frames=("spot_6", "spot_7"),
+            answers=("SCATTERED", "MARK", "FIRE-OR-SMOKE", "NOTHING", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="spot_contents",
+            question=(
+                "First, in your own words, describe everything drawn in frame spot_8.\n\n"
+                "Then the closed question. Is anything standing on or over the sand diamond (OBJECTS-PRESENT), or "
+                "is there only the ground (GROUND-ONLY)? Not counted: blotches of colour in the grass, and the "
+                "blurred rim of the sand."
+            ),
+            frames=("spot_8",),
+            answers=("OBJECTS-PRESENT", "GROUND-ONLY", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="particle_doodads",
+        title="Map objects review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders from a map editor for an isometric strategy game. Each frame is a crop of open "
+            "grass, enlarged by a whole-number factor with no smoothing, so one original pixel appears as a square block "
+            "of pixels. Each pale sand diamond is exactly one flat map tile, and its soft rim is the ground blending "
+            "into the grass. Judge only what you can actually see."
+        ),
+        injects=tuple(PARTICLE_INJECTS),
+    )
+
+
+def _particle_prerequisites() -> str | None:
+    if asset_source.get_install_path() is None:
+        return "no AoE2:DE install visible (set AOE2DE_INSTALL_PATH)"
+    return None
+
+
+def _check_particle_doodads() -> None:
+    """--check for particle_doodads: spec coupling, frame band, reviewer text free of leaks; a second
+    clean render identical; each inject reaches exactly its PARTICLE_REACH frames, the specificity frame
+    in none of them, unflipped inside its bound and under the coarse inject; then what the answers rest
+    on, per run: the fires' feet inside their tile clean and past its upper tip when raised, Smoke's foot
+    below the tile clean and inside it when raised, the size order, the height in tile widths, the lean."""
+    if reason := _particle_prerequisites():
+        raise SystemExit(f"particle_doodads: {reason}")
+    failures: list[str] = []
+    spec = PACKS["particle_doodads"]()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+    failures += [f"leak: {leak}" for leak in rp.leaks(spec)]
+
+    clean = _particle_frame_images(None)
+    again = _particle_frame_images(None)
+    for frame in spec.frames:
+        if rp.changed_pixels(clean[frame.id], again[frame.id]).any():
+            failures.append(f"{frame.id}: two clean renders differ")
+        try:
+            scaled, factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+            print(f"frame: {frame.id} {clean[frame.id].shape[1]}x{clean[frame.id].shape[0]} x{factor}")
+        except rp.PackError as exc:
+            failures.append(str(exc))
+
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name in PARTICLE_INJECTS:
+        injected = _particle_frame_images(name)
+        touched: dict[str, tuple[int, int]] = {}
+        for frame_id in _PARTICLE_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            if mask.any():
+                touched[frame_id] = (int(np.count_nonzero(mask)), rp.largest_component_px(mask))
+                if name == "unflipped":
+                    failures += PARTICLE_LOCALIZED_BOUND.failures(mask, f"inject unflipped on {frame_id}")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+        if set(touched) != PARTICLE_REACH[name]:
+            failures.append(f"inject {name} reaches {sorted(touched)}, not {sorted(PARTICLE_REACH[name])}")
+    # The two share no frame, so the size gap is checked on each one's largest delta anywhere.
+    localized = max(comp for _px, comp in reach["unflipped"].values())
+    coarse = max(comp for _px, comp in reach[PARTICLE_COARSE_INJECT].values())
+    if localized >= coarse:
+        failures.append(f"unflipped's largest delta {localized} px is not under {PARTICLE_COARSE_INJECT}'s {coarse} px")
+
+    half_h = _PARTICLE_TILE_PX // 4
+    extent = {const: _particle_extent(const) for const in (_PARTICLE_SMOKE, *_PARTICLE_FIRES)}
+    raised = {const: _particle_extent(const, "raised") for const in extent}
+    for const, shape in extent.items():
+        print(
+            f"extent: {const} rows {shape['top']}..{shape['bottom']} width {shape['width']} ink {shape['ink']} "
+            f"below the tile centre {shape['below']:.0%} lean {shape['lean']:+.1f}; raised rows "
+            f"{raised[const]['top']}..{raised[const]['bottom']}"
+        )
+    for const in _PARTICLE_FIRES:
+        if not -half_h <= extent[const]["bottom"] <= half_h:
+            failures.append(f"{const}: clean foot at {extent[const]['bottom']}, outside the tile's +-{half_h}")
+        if raised[const]["bottom"] >= -half_h:
+            failures.append(f"{const}: raised foot at {raised[const]['bottom']}, not past the tile's upper tip")
+    if extent[_PARTICLE_SMOKE]["bottom"] <= half_h:
+        failures.append(f"Smoke's clean foot at {extent[_PARTICLE_SMOKE]['bottom']} no longer reaches past the tile")
+    if abs(raised[_PARTICLE_SMOKE]["bottom"]) > half_h:
+        failures.append(f"Smoke's raised foot at {raised[_PARTICLE_SMOKE]['bottom']}, not inside the tile")
+    small, medium, large = (extent[const]["ink"] for const in _PARTICLE_FIRES[:3])
+    if not small < medium < large:
+        failures.append(f"fire ink is not small < medium < large: {small} {medium} {large}")
+    swapped_small = _particle_extent(1333, "swapped-sizes")["ink"]
+    if swapped_small != medium:
+        failures.append(f"swapped-sizes leaves the first fire at {swapped_small} ink, not the medium's {medium}")
+    left, right, lower = _sand_reach(clean["spot_1"], 48, 136)  # the empty ruler tile, the crop's origin + its box
+    width = left + right
+    print(f"sand: the ruler reads {width} px wide, its lower tip {lower} px below the centre (tile: 64, 16)")
+    spans = {}
+    for name in (None, "double-plume"):
+        for floor in (96, 1):
+            shape = _particle_extent(_PARTICLE_SMOKE, name, floor)
+            spans[name, floor] = (shape["bottom"] - shape["top"]) / width
+    print(
+        f"column: {spans[None, 96]:.2f}-{spans[None, 1]:.2f} sand widths tall clean, "
+        f"{spans['double-plume', 96]:.2f}-{spans['double-plume', 1]:.2f} doubled (alpha 96 up, any alpha)"
+    )
+    if not max(spans[None, 96], spans[None, 1]) < 3 < min(spans["double-plume", 96], spans["double-plume", 1]):
+        failures.append(f"column height no longer straddles 3 sand widths: {spans}")
+    if extent[_PARTICLE_SMOKE]["bottom"] - lower < 2 * half_h // 3:
+        failures.append("Smoke's foot is no longer clearly past the sand's lower tip")
+    lean3, lean4 = extent[1335]["lean"], extent[1336]["lean"]
+    unflipped_lean = _particle_extent(1336, "unflipped")["lean"]
+    print(f"lean: left {lean3:+.1f}, right {lean4:+.1f}, right unflipped {unflipped_lean:+.1f}")
+    if lean3 * lean4 >= 0 or unflipped_lean != lean3:
+        failures.append(f"the pair's lean no longer separates the runs: {lean3} {lean4} {unflipped_lean}")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: particle_doodads frames couple to its checks and land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px, its text "
+        f"leaks nothing, clean renders agree, every inject reaches exactly its frames and none reaches "
+        f"{_PARTICLE_SPECIFICITY}, unflipped stays localized, and each check's discriminator measures as registered"
+    )
+
+
 PACKS = {
     "sprite_shrink": _sprite_shrink_spec,
     "shadow_band": _shadow_band_spec,
@@ -3256,7 +3713,10 @@ PACKS = {
     "sloped_fine": _sloped_fine_spec,
     "ground_borders": _ground_borders_spec,
     "garrison_flags": _garrison_flags_spec,
+    "particle_doodads": _particle_doodads_spec,
 }
+# The directory a pack's runs land in, where its id alone would name the subject in REVIEW.md's paths.
+_PACK_DIRS = {"particle_doodads": "objects"}
 
 
 # ---------------------------------------------------------------- rendering
@@ -3360,6 +3820,7 @@ def _pack_injects(pack_id: str) -> dict:
         "ground_texture": GROUND_INJECTS, "sloped_mip": SLOPED_INJECTS, "sloped_fine": FINE_INJECTS,
         "ground_borders": BORDER_INJECTS,
         "garrison_flags": GARRISON_INJECTS,
+        "particle_doodads": PARTICLE_INJECTS,
     }.get(pack_id, INJECTS)
 
 
@@ -3376,6 +3837,8 @@ def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
         return _border_frame_images(inject)
     if pack_id == "garrison_flags":
         return _garrison_frame_images(inject)
+    if pack_id == "particle_doodads":
+        return _particle_frame_images(inject)
     return _frame_images(inject)
 
 
@@ -3391,6 +3854,8 @@ def _frame_tile_px(pack_id: str, frame_id: str) -> int:
         return BORDER_TILE_PX
     if pack_id == "garrison_flags":
         return GARRISON_TILE_PX
+    if pack_id == "particle_doodads":
+        return _PARTICLE_TILE_PX
     return TILE_PX
 
 
@@ -3410,8 +3875,11 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
         raise SystemExit(f"ground_borders: {reason}")
     if pack_id == "garrison_flags" and (reason := _garrison_prerequisites()):
         raise SystemExit(f"garrison_flags: {reason}")
+    if pack_id == "particle_doodads" and (reason := _particle_prerequisites()):
+        raise SystemExit(f"particle_doodads: {reason}")
 
-    pack_dir = out_dir / pack_id / _run_token(pack_id, inject, replica)
+    pack_name = _PACK_DIRS.get(pack_id, pack_id)
+    pack_dir = out_dir / pack_name / _run_token(pack_id, inject, replica)
     pack_dir.mkdir(parents=True, exist_ok=True)
 
     images = _pack_images(pack_id, inject)
@@ -3433,7 +3901,7 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
     # here would defeat the opaque directory name above. The operator gets it
     # on stdout instead.
     manifest = {
-        "pack": spec.id,
+        "pack": pack_name,
         "frames": [
             {
                 "id": f.id,
@@ -3479,6 +3947,8 @@ def check(pack_id: str = "shadow_band") -> None:
         _check_ground_borders()
     elif pack_id == "garrison_flags":
         _check_garrison_flags()
+    elif pack_id == "particle_doodads":
+        _check_particle_doodads()
     else:
         _check_shadow_band()
 
@@ -3584,7 +4054,7 @@ def main() -> None:
         "--inject",
         choices=sorted({
             *INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *FINE_INJECTS, *BORDER_INJECTS, *SHRINK_INJECTS,
-            *GARRISON_INJECTS,
+            *GARRISON_INJECTS, *PARTICLE_INJECTS,
         }),
         help="Render the pack with one known defect applied",
     )

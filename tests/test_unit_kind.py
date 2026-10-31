@@ -185,7 +185,7 @@ INVISIBLE_OBJECTS = {1291, 2551, 2553, 2555, 2563}  # Invisible Object A-E, clas
 MAP_REVEALERS = {837, 1774, 1775}  # Map Revealer / Medium / Giant, class 30
 BLOCKERS = {1776, 2423, 2424}  # Blocker, Blocker 1x3, Blocker 3x1, class 14
 FARM = 50  # no unit_graphic_map.json entry, but real art in the game
-FLAME4 = 1336
+WFALL = 1635  # a particle effect with ImageAngles, which particle_art does not read
 FLARE4 = 697  # BLANK graphic, so invisible since 2026-09-26
 
 
@@ -196,14 +196,14 @@ def test_invisible_consts_holds_the_objects_revealers_and_blockers() -> None:
 
 
 def test_invisible_consts_is_no_dat_graphic_not_no_map_entry() -> None:
-    """FARM and FLAME4 have no unit_graphic_map.json entry, but the .dat gives
+    """FARM and WFALL have no unit_graphic_map.json entry, but the .dat gives
     each a real standing graphic: they are art gaps, not invisible."""
     import json
     from pathlib import Path
 
     graphics = json.loads((Path(unit_kind.__file__).parent / "unit_graphic_map.json").read_text())["graphics"]
     invisible = unit_kind.invisible_consts()
-    for const in (FARM, FLAME4):
+    for const in (FARM, WFALL):
         assert str(const) not in graphics, f"{const} gained a map entry; pick another counterexample"
         assert const not in invisible
 

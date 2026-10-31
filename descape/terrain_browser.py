@@ -1,11 +1,11 @@
 """The visual terrain picker: a category-grouped tree of terrain swatches,
 living in the Terrain-mode sidebar page (descape/terrain_panel.py).
 
-A thin adapter over descape/value_picker.py, the same shape
-constant_picker.py's CatalogBrowseDialog is. (The plan for this called for a
-hand-written sibling instead, because CatalogBrowseDialog was hard-wired to
-object_catalog/unit_sprites at the time -- the value_picker extraction has
-since lifted exactly that coupling out, so there is nothing left to copy.)
+A thin adapter over descape/value_picker.py, the same shape constant_picker.py's
+CatalogLineEdit is. (The plan for this called for a hand-written sibling of
+the object Browse dialog instead, because that dialog was hard-wired to
+object_catalog/unit_sprites at the time -- the value_picker extraction
+lifted exactly that coupling out, so there was nothing left to copy.)
 
 What this module adds on top is the one piece of domain knowledge
 value_picker.py has none of: a terrain swatch, as a per-row icon and the
@@ -235,6 +235,11 @@ class TerrainPickerView(ValuePickerView):
         if value is not None:
             self.grid.set_current_value(value)
 
+    def select(self, value: int) -> None:
+        super().select(value)
+        # The eyedropper on the armed terrain moves no current item, and its grid section may be closed.
+        self._mirror_to_grid()
+
     def _apply_filter(self, text: str) -> None:
         super()._apply_filter(text)
         if not hasattr(self, "grid"):
@@ -248,7 +253,8 @@ class TerrainPickerView(ValuePickerView):
                 child = group.child(c)
                 if not child.isHidden():
                     shown.add(child.data(0, Qt.UserRole))
-        self.grid.set_visible_values(shown)
+        # A filter opens the sections it matches, as the tree's own filter does its groups.
+        self.grid.set_visible_values(shown, reveal=bool(text.strip()))
 
     def refresh_swatches(self) -> None:
         """Drop every row icon and redecode the expanded groups.

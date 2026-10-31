@@ -159,10 +159,12 @@ _COMBINED_OBJECT_PRESENTATIONS = frozenset({"UnitInfo", "BuildingInfo"})
 @dataclass(frozen=True)
 class CatalogPresentation:
     """Which object_catalog.py catalog a REFERENCE presentation picks from,
-    and which category its CatalogBrowseDialog should open on."""
+    which category its CatalogBrowseDialog should open on, and whether its
+    Browse hides internal techs until asked."""
 
     catalog: Callable[[], tuple]
     default_category: str = ""
+    hide_internal: bool = False
 
 
 # Every presentation CatalogLineEdit picks from, keyed only on names already
@@ -171,7 +173,7 @@ class CatalogPresentation:
 CATALOG_PRESENTATIONS: Mapping[str, CatalogPresentation] = {
     "UnitInfo": CatalogPresentation(object_catalog.objects, "Units"),
     "BuildingInfo": CatalogPresentation(object_catalog.objects, "Buildings"),
-    "TechInfo": CatalogPresentation(object_catalog.techs),
+    "TechInfo": CatalogPresentation(object_catalog.techs, hide_internal=True),
 }
 
 # Reference presentations resolved against the open document's own trigger or
@@ -538,29 +540,64 @@ def field_specs(
 
 # -- the property form's order and object list type row (GH #41) --------------
 
-# The object list fields object_group and object_type filter alongside.
-OBJECT_LIST_FIELDS = ("object_list", "object_list_unit_id")
-_OBJECT_FILTER_FIELDS = ("object_group", "object_type")
+# One order for every condition and effect form, so a field two types share
+# sits in the same place in both (GH #41 object filters, GH #278).
+_FORM_ORDER = (
+    # what the entry refers to
+    "ai_script_goal", "ai_signal", "ai_signal_value", "diplomacy", "trigger_id", "timer_id",
+    "xs_function", "decision_id",
+    # amounts (GH #278: values at the top; GH #275: float above the armour pair)
+    "quantity", "quantity_float", "armour_attack_quantity", "armour_attack_class", "tribute_list",
+    "attribute",
+    # the objects it applies to
+    "unit_object", "next_object", "object_list", "object_list_unit_id", "object_group", "object_type",
+    "object_group2", "object_type2",
+    # players
+    "source_player", "target_player", "mutual_diplomacy",
+    # technologies and costs
+    "technology", "local_technology", "force_research_technology",
+    "food", "wood", "stone", "gold",
+    "resource_1", "resource_1_quantity", "resource_2", "resource_2_quantity", "resource_3",
+    "resource_3_quantity",
+    # text ids and on-screen timing
+    "string_id", "display_time", "instruction_panel_position", "play_sound", "time_unit", "timer",
+    "reset_timer",
+    # places
+    "location_x", "location_y", "location_object_reference",
+    "area_x1", "area_y1", "area_x2", "area_y2", "wall_x1", "wall_y1", "wall_x2", "wall_y2",
+    # orders and second objects
+    "action_type", "attack_stance",
+    "object_list_unit_id_2", "building_list", "button_location", "train_time", "hotkey",
+    # what changes, and how
+    "enabled", "item_id", "facet", "facet2", "operation", "object_attributes",
+    "allow_in_fog", "inverted",
+    "variable", "comparison", "variable2", "decision_option",
+    # text
+    "message", "string_id_option1", "message_option1", "string_id_option2", "message_option2",
+    "global_sound", "sound_name",
+    # remaining settings
+    "flash_object", "scroll", "object_state", "unit_ai_action",
+    "include_changeable_weapon_objects", "victory_timer_type",
+    "color_mood", "player_color", "visibility_state",
+    # scope
+    "selected_object_ids", "disable_garrison_unload_sound", "max_units_affected", "disable_sound",
+    "issue_group_command", "queue_action", "object_filter",
+    "use_tag_color_for_icon",
+)
+_FORM_RANK = {name: rank for rank, name in enumerate(_FORM_ORDER)}
+
+
+def form_rank(attribute: str) -> int:
+    """`attribute`'s place in the property form. A field _FORM_ORDER doesn't
+    list ranks after every listed one, so a future version's field still shows."""
+    return _FORM_RANK.get(attribute, len(_FORM_RANK))
 
 
 def form_order(specs: Sequence[FieldSpec]) -> tuple[FieldSpec, ...]:
-    """`specs` in the property form's order: object_group then object_type
-    (those present) directly after the first OBJECT_LIST_FIELDS field, so the
-    object filters sit above every Set row. Without one, unchanged. Always a
-    permutation, and the panel's alone: other field_specs() callers keep
-    vocabulary order."""
-    anchor = next((spec.name for spec in specs if spec.name in OBJECT_LIST_FIELDS), None)
-    if anchor is None:
-        return tuple(specs)
-    moved = sorted((s for s in specs if s.name in _OBJECT_FILTER_FIELDS), key=lambda s: _OBJECT_FILTER_FIELDS.index(s.name))
-    ordered: list[FieldSpec] = []
-    for spec in specs:
-        if spec.name in _OBJECT_FILTER_FIELDS:
-            continue
-        ordered.append(spec)
-        if spec.name == anchor:
-            ordered.extend(moved)
-    return tuple(ordered)
+    """`specs` in the property form's order: by form_rank(), an unranked field
+    sorting last in vocabulary order. Always a permutation, and the panel's
+    alone: other field_specs() callers keep vocabulary order."""
+    return tuple(sorted(specs, key=lambda spec: form_rank(spec.name)))
 
 
 def has_list_type(spec: FieldSpec) -> bool:

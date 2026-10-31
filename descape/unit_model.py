@@ -369,6 +369,14 @@ def span_low_corner(unit: Unit) -> tuple[int, int]:
     return render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
 
 
+def reanchored(unit: Unit, new_const: int) -> tuple[float, float]:
+    """(x, y) of `unit` as `new_const`, with the footprint's low corner kept:
+    set_unit_const()'s re-anchor, shared with a Move drag's pending turn so a
+    stand-in and the real swap cannot drift."""
+    low_x, low_y = span_low_corner(unit)
+    return render.span_anchor(low_x, low_y, *terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN))
+
+
 BATCH_CONFLICT = "garrison conflict with another object in this Replace"
 
 
@@ -588,6 +596,21 @@ class UnitFieldSnapshot:
 
     entries: dict[int, UnitFieldRecord] = field(default_factory=dict)
     dirty: bool = False
+
+
+def merged_field_record(older: UnitDiffRecord, newer: UnitDiffRecord) -> UnitDiffRecord:
+    """One fields_only record covering two consecutive ones: the first state
+    each unit was seen in, and the last, with `newer`'s label. A unit only one
+    of them touched keeps that side's entries on both sides, and key order
+    matches, so a compass drag whose spokes each turn a different subset of a
+    group folds into one undo step (TASK-548)."""
+    before = dict(older.before.entries)
+    for key, entry in newer.before.entries.items():
+        before.setdefault(key, entry)
+    after = older.after.entries | newer.after.entries
+    return UnitDiffRecord(
+        newer.label, UnitFieldSnapshot(before, older.before.dirty), UnitFieldSnapshot(after, newer.after.dirty)
+    )
 
 
 class UnitEditModel:
@@ -1088,10 +1111,8 @@ class UnitEditModel:
             )
         player, index = self._locate(unit)
         self._maybe_capture_field_delta(player, index, unit)
-        low_x, low_y = span_low_corner(unit)
-        new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
+        unit.x, unit.y = reanchored(unit, new_const)
         unit.unit_const = new_const
-        unit.x, unit.y = render.span_anchor(low_x, low_y, *new_span)
         self._blobs[player][index] = None
         self._dirty = True
         self._bump_unit_gen()
@@ -1720,7 +1741,9 @@ class UnitEditModel:
         with a trigger record). That
         caller must push the composite itself (via push_composite_record()) --
         passing push=False and then never pushing anything is the
-        single-history contract's hole reopened.
+        single-history contract's hole reopened. A compass drag (TASK-548) is
+        the other caller: it folds the record into the newest one through
+        merged_field_record() and EditHistory.replace_top(), or pushes it.
         """
         if self._pending is None:
             raise RuntimeError("commit_unit_edit() called with no edit in progress")

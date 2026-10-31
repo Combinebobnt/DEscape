@@ -18,6 +18,7 @@ template, block and paste.
 from __future__ import annotations
 
 import pytest
+import test_unit_drag_preview as drag_preview
 from test_region_rotate import _add, _close, _live, _paste, _setup, _tiles, _units
 from test_region_select import _select_window
 from test_wheel_zoom import _PLACE_CONST, _facing, _gesture, _place_window, _scale
@@ -848,3 +849,105 @@ def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
     finally:
         dialog.close()
         conftest.close_window(window)
+
+
+# --- GH #280: the wheel's rotate binding turns a live Move drag ----------------
+
+
+def _live_drag():
+    """(window, unit): an Archer on open ground, dragged past the threshold, button held."""
+    window = drag_preview._window()
+    (unit,) = drag_preview._add(window, drag_preview._ARCHER, [(60, 60)])
+    drag_preview._start(window, (60, 60), (66, 66))
+    assert window.map_view.unit_drag_live()
+    return window, unit
+
+
+@pytest.mark.parametrize("action", ["rotate", "tool"])
+def test_a_rotate_or_tool_slot_turns_a_live_drag_and_spends_no_zoom_state(action) -> None:
+    window, unit = _live_drag()
+    try:
+        view = window.map_view
+        _bind(window, ctrl=action)
+        scale, gesture = _scale(view), _gesture(view)
+        event = _wheel_xy(view, (0, 120), _mods("ControlModifier"))
+        assert event.isAccepted()
+        assert window._drag_turn.facing == 1, "scroll up is clockwise, as under Place Unit"
+        assert unit.rotation == 0.0, "pending, as a key"
+        assert (_scale(view), _gesture(view)) == (scale, gesture)
+        drag_preview._release(window, (66, 66))
+        assert unit.rotation == pytest.approx(drag_preview._TURN / 16)
+    finally:
+        _close(window)
+
+
+def test_a_half_notch_accumulates_on_a_live_drag() -> None:
+    window, _unit = _live_drag()
+    try:
+        _bind(window, plain="rotate")
+        _wheel_xy(window.map_view, (0, 60))
+        assert not window._drag_turn
+        _wheel_xy(window.map_view, (0, 60))
+        assert window._drag_turn.facing == 1
+    finally:
+        drag_preview._escape(window)
+        _close(window)
+
+
+def test_a_notch_mid_drag_goes_through_on_unit_rotate(monkeypatch) -> None:
+    """The hard rule: one router for the keys and the wheel, and it writes nothing itself."""
+    window, _unit = _live_drag()
+    try:
+        turns: list = []
+        monkeypatch.setattr(window, "_turn_unit_drag", turns.append)
+        _bind(window, plain="rotate")
+        _wheel_xy(window.map_view, (0, 120))
+        _wheel_xy(window.map_view, (0, -240))
+        assert [turn.facing for turn in turns] == [1, -2]
+    finally:
+        drag_preview._escape(window)
+        _close(window)
+
+
+def test_plain_wheel_still_zooms_mid_drag_and_a_turn_after_it_rereads_the_cursor() -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    from descape import render
+
+    window, unit = _live_drag()
+    try:
+        view = window.map_view
+        scale = _scale(view)
+        pixel = view._unit_drag_hover[0]
+        _wheel_xy(view, (0, 120))
+        assert _scale(view) > scale
+        assert not window._drag_turn
+
+        drag_preview._cw(window)
+        ghost = view._unit_ghost_item.sceneBoundingRect()
+        # The release reads the same viewport pixel through the new transform.
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pixel, Qt.LeftButton, Qt.NoButton))
+        mm = window.scenario.map_manager
+        x0, _x1, y0, _y1 = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+        tp = view._tile_pixels
+        assert (ghost.x(), ghost.y()) == (x0 * tp, y0 * tp)
+    finally:
+        _close(window)
+
+
+def test_a_rotate_slot_under_move_with_no_live_drag_stays_none() -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    window = drag_preview._window()
+    try:
+        view = window.map_view
+        _bind(window, ctrl="rotate")
+        drag_preview._add(window, drag_preview._ARCHER, [(60, 60)])
+        ctrl = _mods("ControlModifier")
+        assert view._wheel_action(ctrl) == "none"
+        press = drag_preview._viewport_pos(window, 60, 60)
+        view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press, Qt.LeftButton, Qt.LeftButton))
+        assert view._wheel_action(ctrl) == "none", "a held press that never moved is not a move"
+        view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, press, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _close(window)

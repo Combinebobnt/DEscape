@@ -8,6 +8,8 @@ One QListWidget in IconMode with no grid size. A grid size would clip each
 heading to one cell; without it a heading's size hint can span the viewport,
 so it takes a whole row and the cells after it start a new one. Headings carry
 Qt.NoItemFlags, which keeps arrow keys and clicks from ever making one current.
+Clicking a heading collapses or opens its section, which only hides or shows
+the section's cells; which sections are closed is stored here.
 
 The armed value is stored here, not read from Qt's selection, which can go
 empty while a value is armed (a Ctrl+click on the selected cell, a press
@@ -32,7 +34,9 @@ from PyQt5.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOption,
     QWidget,
 )
 
@@ -41,6 +45,7 @@ from descape.value_picker import PickerItem
 
 _HEADING_ROLE = Qt.UserRole + 1
 _FILLED_ROLE = Qt.UserRole + 2
+_GROUP_ROLE = Qt.UserRole + 3  # a heading's group name: "" is a legal group, so not _HEADING_ROLE's truth value
 
 PAD = 4  # inside a cell, around the swatch and the caption
 GAP = 2  # between the swatch and its caption
@@ -71,9 +76,17 @@ class _GridDelegate(QStyledItemDelegate):
         palette = view.palette()
         painter.save()
         if index.data(_HEADING_ROLE):
+            arrow = QStyleOption()
+            arrow.initFrom(view)
+            arrow.rect = view.arrow_rect(rect)
+            arrow.state = QStyle.State_Children | QStyle.State_Enabled
+            if view.section_open(index.data(_GROUP_ROLE)):
+                arrow.state |= QStyle.State_Open
+            view.style().drawPrimitive(QStyle.PE_IndicatorBranch, arrow, painter, view)
             painter.setFont(view.heading_font())
             painter.setPen(palette.color(QPalette.WindowText))
-            painter.drawText(rect.adjusted(PAD, 0, -PAD, 0), Qt.AlignLeft | Qt.AlignVCenter, index.data(Qt.DisplayRole))
+            text_rect = rect.adjusted(arrow.rect.width() + 2 * PAD, 0, -PAD, 0)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, index.data(Qt.DisplayRole))
             painter.restore()
             return
         swatch = view.swatch_rect(rect)
@@ -119,7 +132,9 @@ class SwatchGridView(QListWidget):
         self._armed: int | None = None
         self._syncing = False
         self._cells: dict[int, QListWidgetItem] = {}
-        self._sections: list[tuple[QListWidgetItem, list[QListWidgetItem]]] = []
+        self._sections: list[tuple[str, QListWidgetItem, list[QListWidgetItem]]] = []
+        self._closed: set[str] = set()
+        self._wanted: set[int] | None = None  # None: every value
         self._cell_w = 0
 
         self.setViewMode(QListView.IconMode)
@@ -165,6 +180,10 @@ class SwatchGridView(QListWidget):
     def heading_height(self) -> int:
         return QFontMetrics(self.heading_font()).height() + 2 * PAD
 
+    def arrow_rect(self, heading: QRect) -> QRect:
+        side = QFontMetrics(self.heading_font()).height()
+        return QRect(heading.left() + PAD, heading.top() + (heading.height() - side) // 2, side, side)
+
     def cell_width(self) -> int:
         return self._cell_w
 
@@ -204,12 +223,15 @@ class SwatchGridView(QListWidget):
         self.clear()
         self._cells = {}
         self._sections = []
+        self._closed = set()
+        self._wanted = None
         by_group: dict[str, list[PickerItem]] = {}
         for item in items:
             by_group.setdefault(item.group, []).append(item)
         for group, members in by_group.items():
             heading = QListWidgetItem(f"{group} ({len(members)})")
             heading.setData(_HEADING_ROLE, True)
+            heading.setData(_GROUP_ROLE, group)
             heading.setFlags(Qt.NoItemFlags)
             self.addItem(heading)
             cells = []
@@ -221,7 +243,7 @@ class SwatchGridView(QListWidget):
                 self.addItem(cell)
                 self._cells[member.value] = cell
                 cells.append(cell)
-            self._sections.append((heading, cells))
+            self._sections.append((group, heading, cells))
         self._relayout()
         self._sync_current()
         self._arm()
@@ -233,20 +255,42 @@ class SwatchGridView(QListWidget):
         return self._cells.get(value)
 
     def heading_items(self) -> list[QListWidgetItem]:
-        return [heading for heading, _cells in self._sections]
+        return [heading for _group, heading, _cells in self._sections]
 
-    def set_visible_values(self, values: Iterable[int]) -> None:
-        """Shows exactly these values' cells, hides a heading left with none,
-        then puts Qt's current item back on the armed value when it is shown."""
-        wanted = set(values)
-        for heading, cells in self._sections:
+    def set_visible_values(self, values: Iterable[int], *, reveal: bool = False) -> None:
+        """Shows these values' cells in the open sections and hides a heading
+        with none of them, then puts Qt's current item back on the armed value
+        when it is shown. With reveal, every section holding one opens first."""
+        self._wanted = set(values)
+        if reveal:
+            for group, _heading, cells in self._sections:
+                if any(cell.data(Qt.UserRole) in self._wanted for cell in cells):
+                    self._closed.discard(group)
+        self._apply_visibility(follow_armed=True)
+
+    def section_open(self, group: str) -> bool:
+        return group not in self._closed
+
+    def set_section_open(self, group: str, is_open: bool) -> None:
+        if is_open == self.section_open(group):
+            return
+        if is_open:
+            self._closed.discard(group)
+        else:
+            self._closed.add(group)
+        self._apply_visibility(follow_armed=False)
+
+    def _apply_visibility(self, *, follow_armed: bool) -> None:
+        """A cell is hidden when unwanted or in a closed section; a closed section keeps its heading."""
+        for group, heading, cells in self._sections:
+            closed = group in self._closed
             shown = 0
             for cell in cells:
-                hidden = cell.data(Qt.UserRole) not in wanted
-                cell.setHidden(hidden)
-                shown += not hidden
+                wanted = self._wanted is None or cell.data(Qt.UserRole) in self._wanted
+                cell.setHidden(closed or not wanted)
+                shown += wanted
             heading.setHidden(shown == 0)
-        self._sync_current()
+        self._sync_current(follow=follow_armed)
         self._arm()
 
     # -- the armed value ----------------------------------------------------
@@ -255,8 +299,12 @@ class SwatchGridView(QListWidget):
         return self._armed
 
     def set_current_value(self, value: int | None) -> None:
-        """Arms `value` without emitting picked; makes its cell current and scrolls to it if shown."""
+        """Arms `value` without emitting picked and opens its section; makes its
+        cell current and scrolls to it if shown."""
         self._armed = value
+        cell = self._cells.get(value) if value is not None else None
+        if cell is not None:
+            self.set_section_open(next(group for group, _heading, cells in self._sections if cell in cells), True)
         self._sync_current()
         self.scroll_to_value(value)
         self.viewport().update()
@@ -267,16 +315,18 @@ class SwatchGridView(QListWidget):
         if cell is None or cell.isHidden():
             return
         self.scrollToItem(cell)
-        for heading, cells in self._sections:
+        for _group, heading, cells in self._sections:
             if cell in cells:
                 first = next(c for c in cells if not c.isHidden())
                 if self.visualItemRect(first).top() == self.visualItemRect(cell).top():
                     self.scrollToItem(heading)
                 break
 
-    def _sync_current(self) -> None:
+    def _sync_current(self, *, follow: bool = True) -> None:
         cell = self._cells.get(self._armed) if self._armed is not None else None
         self._syncing = True
+        # setCurrentItem() auto-scrolls to the cell, which would pull a just-opened heading from under the cursor.
+        self.setAutoScroll(follow)
         try:
             if cell is not None and not cell.isHidden():
                 self.setCurrentItem(cell)
@@ -284,6 +334,7 @@ class SwatchGridView(QListWidget):
                 # Nothing armed is shown, so the next click on any cell changes the current item.
                 self.setCurrentItem(None)
         finally:
+            self.setAutoScroll(True)
             self._syncing = False
 
     def _pick(self, item: QListWidgetItem | None) -> None:
@@ -301,6 +352,10 @@ class SwatchGridView(QListWidget):
             self._pick(current)
 
     def _on_item_clicked(self, item) -> None:
+        if item.data(_HEADING_ROLE):
+            group = item.data(_GROUP_ROLE)
+            self.set_section_open(group, not self.section_open(group))
+            return
         # A click on the cell that is already current changes no current item.
         self._pick(item)
 

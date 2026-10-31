@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from test_gh142_panel_widths import _NARROW_PX, _blank_window, _enter
+from test_gh142_panel_widths import _NARROW_PX, _blank_window, _enter, check_terrain_fits_its_drag_floor
 from test_unit_edit_viewer import _no_install_env  # noqa: F401 -- autouse fixture
 
 from descape import settings
@@ -92,6 +92,32 @@ def test_raising_the_ui_font_to_max_widens_the_panel_pane_to_the_scaled_floor(mo
         QApplication.processEvents()
         assert base_px == panel_cls.MIN_USEFUL_WIDTH
         assert _enter(window, mode, from_px=widened) == widened
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_raising_the_ui_font_to_max_raises_terrains_drag_floor_and_it_still_fits() -> None:
+    """TASK-551. Pass conditions, after the Appearance spin box is set to UI_FONT_SIZE_MAX and
+    applied while in Terrain mode, with no mode switch: Terrain's drag floor is wider than at the pinned test font, and at it
+    test_gh142_panel_widths.check_terrain_fits_its_drag_floor's conditions all hold."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer import SettingsDialog
+
+    window = _blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        window.mode_combo.setCurrentText("Terrain")  # already there: the font change alone must re-measure
+        base_floor = window.terrain_panel.drag_floor()
+        dialog.ui_font_size_spin.setValue(settings.UI_FONT_SIZE_MAX)
+        dialog._ui_font_apply_timer.stop()
+        dialog._apply_ui_font()
+        QApplication.processEvents()
+        assert QApplication.font().pointSize() == settings.UI_FONT_SIZE_MAX
+
+        floor = check_terrain_fits_its_drag_floor(window)
+        assert floor > base_floor, f"the bigger font left the floor at {floor} px (was {base_floor} px)"
     finally:
         dialog.close()
         conftest.close_window(window)

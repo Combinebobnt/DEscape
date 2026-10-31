@@ -1,11 +1,11 @@
 {
   "_comment": "What the committed descape/*.json game-data tables were generated from, and each table's sha256 (CRLF folded to LF). `refreshed` is the day a full regeneration first recorded this .dat and build id. Written by tools/regen_game_data.py: regenerate, never edit by hand.",
   "dat": {
-    "sha256": "4aa2f0a719e88e5f1502517eddb27c669aeb40c2fe9d8c4f3eec7751c01e7baa",
-    "size": 12023754
+    "sha256": "d0aefd92428e2215d6f4d9b1d544901e6f171e19183f9e0b88218de5153a337f",
+    "size": 11963833
   },
   "genieutils": "0.1.2",
-  "refreshed": "2026-10-13",
+  "refreshed": "2026-10-30",
   "ror": {
     "dat": {
       "sha256": "fe4d566b98b0e40b05af749fc61c48b3317194d5cefd2ed5d40b80cefbd4b00d",
@@ -28,18 +28,18 @@
       "unit_stats.json": "e4c739e4b22208d894f42d545b94f4c446cbf000fa31f413467dc3f02e454a32"
     }
   },
-  "steam_buildid": "25464371",
+  "steam_buildid": "26249352",
   "tables": {
-    "building_art_map.json": "193f46f886f4d030dc0000ed250157bc0512f9cf41db9ffbae0346013a87a2d3",
+    "building_art_map.json": "fd6f307e73542cc8345de30548749ca444e5d980978a18506fb05d276c35dbca",
     "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
-    "object_catalog.json": "30c32064184abaa249048154add388dbdf0db1d23d1dad6104d8a9a418db7a6f",
+    "object_catalog.json": "0740a67aaaf9fc9fc25f9174edac7e242be3bb4b4b89d8a27ae94015bb2c33e1",
     "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",
     "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
     "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",
     "terrain_unit_map.json": "cfd8f0e22539f96f543dd754f76a27710d3f48c392fc2492d9079eeed584d9fb",
     "tree_unit_ids.json": "7f67ea779b0e96b886b161c0165f3db079ea13be10ac9347851fc195eae34bfa",
-    "unit_graphic_map.json": "74c4e5aa366c5cc36ff8f84ea3ac398581967005b748fb0ad8375da193a1e5b0",
+    "unit_graphic_map.json": "b20751efbedb8637379b705db0df67ab8d3c97e7e0182e0f7dcefc503084ea4d",
     "unit_render_data.json": "74369d9a623ff7bb4471bb98d2c99f452abc08f9dbd294ea4b649d212f6c217a",
-    "unit_stats.json": "259e13a418ef438016a18d39838c657538733688a72bb8da6017852e371e5cf6"
+    "unit_stats.json": "540b5b3cb935898d23370a57e0b60ae60247a5a8565ff6f79236bb81cdb3378f"
   }
 }

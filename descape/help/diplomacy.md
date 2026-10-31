@@ -8,7 +8,7 @@ The selector at the top picks a player. It lists only the players the scenario d
 
 Each **Toward Player N** row sets the selected player's stance toward that player: **Ally**, **Neutral** or **Enemy**. A stance runs one way only. Player 2's stance back toward Player 1 is set on Player 2's page, and the two can differ.
 
-**Allied victory** lets the selected player win together with its allies.
+**Allied victory** lets the selected player win together with its allies. The file stores this flag in two places, and DEscape writes both. On a file where it can't find the second copy, the checkbox is greyed rather than writing only one.
 
 A stance the file stores as something other than Ally, Neutral or Enemy shows as "stored value" and its number, and is kept as it is rather than snapped to one of the three. A player's stance toward itself isn't a real setting and has no row, but if the file stores an unusual one, the line at the top says so and DEscape keeps it.
 

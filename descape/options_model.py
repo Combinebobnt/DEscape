@@ -43,8 +43,9 @@ and serialize_ai_library_resize() (the Files AI script library). The XS
 script name (GH #216) rides two splices of its own:
 serialize_script_name_resize() (Map.script_name) and
 serialize_script_path_resize() (Files.script_file_path). The water
-definition (TASK-333) rides serialize_map_strings_resize(), the Map string
-front ahead of script_name (descape/map_strings.py).
+definition (TASK-333) and the colour mood (TASK-238) ride
+serialize_map_strings_resize(), the Map string front ahead of script_name
+(descape/map_strings.py).
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ from descape import ai_scripts, disables_fields, map_strings, player_fields
 from descape.ai_scripts import AiChoice
 from descape.diplomacy_fields import (
     allied_victory_offsets,
+    parse_cell_id,
     stance_offsets,
     verify_diplomacy_block,
 )
@@ -126,9 +128,9 @@ def field_offsets(
     Specs whose section is "Triggers" (legacy_exec_order) are silently
     skipped: that field's offset is trigger_model.py's concern, not this
     module's. So are TEXT specs (script_name), which are not byte-patched:
-    see script_name_layout(). So are STRING_COMBO specs (water_definition):
-    a backward walk across that field lands one byte off on a file storing a
-    trailing NUL (see descape/map_strings.py), and skipping it keeps the
+    see script_name_layout(). So are STRING_COMBO specs (water_definition,
+    map_color_mood): a backward walk across such a field lands one byte off on
+    a file storing a trailing NUL (see descape/map_strings.py), and skipping it keeps the
     scalar gate, `specs` and write_scenario()'s re-gate blind to it.
     """
     by_section: dict[str, list[OptionFieldSpec]] = {}
@@ -266,6 +268,15 @@ def diplomacy_write_supported(loaded: LoadedScenario) -> bool:
     both the anchor and the section's measured length.
     """
     return verify_diplomacy_block(loaded)
+
+
+def allied_victory_write_supported(loaded: LoadedScenario) -> bool:
+    """Whether the eight allied-victory flags can be written back: the
+    Diplomacy grid's gate plus their structural second copy in
+    Units.player_data_3 (player_fields.aok_allied_victory_mirror_targets()).
+    A mirror failure takes only these eight cells out; the stance grid and
+    the Teams rows keep diplomacy_write_supported() alone."""
+    return diplomacy_write_supported(loaded) and player_fields.aok_allied_victory_mirror_targets(loaded) is not None
 
 
 def players_write_supported(loaded: LoadedScenario) -> bool:
@@ -416,12 +427,18 @@ def script_path_for(name: str) -> str:
 
 
 WATER_DEFINITION_FIELD_ID = "water_definition"
+COLOUR_MOOD_FIELD_ID = "map_color_mood"
+# field_id -> its Map retriever, for every row riding map_strings' splice.
+MAP_STRING_FIELDS = {
+    WATER_DEFINITION_FIELD_ID: map_strings.WATER_DEFINITION,
+    COLOUR_MOOD_FIELD_ID: map_strings.COLOUR_MOOD,
+}
 
 
-def map_strings_write_supported(loaded: LoadedScenario) -> bool:
-    """Whether the Water definition row can be written back (TASK-333): a
-    gate of its own, so a failure greys that one row only."""
-    return map_strings.write_supported(loaded)
+def map_strings_write_supported(loaded: LoadedScenario, name: str) -> bool:
+    """Whether the Map string `name` can be written back (TASK-333, TASK-238):
+    a gate of its own, so a failure greys that one row only."""
+    return map_strings.write_supported(loaded, name)
 
 
 class OptionsEditModel:
@@ -481,16 +498,30 @@ class OptionsEditModel:
         # field_id this model was never given an offset for. Every cell is a
         # raw u32 (diplomacy_fields.py's module docstring), so the packer is
         # fixed rather than looked up per retriever.
+        #
+        # The allied-victory cells are the exception: each has a second
+        # stored copy (Units.player_data_3's u8 aok_allied_victory), so they
+        # ride _diplomacy_targets (primary, mirror) like a mirrored Players
+        # field, and are left out entirely when the mirror does not resolve
+        # (allied_victory_write_supported()) rather than half-written.
         self._diplomacy_field_ids: frozenset[str] = frozenset()
+        self._diplomacy_targets: dict[str, tuple[player_fields.PlayerWriteTarget, ...]] = {}
         if diplomacy_write_supported(loaded):
             cell_packer = _PACK_STRUCT["u32"]
-            diplomacy_offsets = {**stance_offsets(loaded), **allied_victory_offsets(loaded)}
+            stances = stance_offsets(loaded)
             body = loaded.decompressed_body
-            for field_id, fo in diplomacy_offsets.items():
+            for field_id, fo in stances.items():
                 self._offsets[field_id] = FieldOffset(fo.offset, fo.length)
                 self._packers[field_id] = cell_packer
                 (self._original[field_id],) = cell_packer.unpack_from(body, fo.offset)
-            self._diplomacy_field_ids = frozenset(diplomacy_offsets)
+            mirrors = player_fields.aok_allied_victory_mirror_targets(loaded)
+            if mirrors is not None:
+                for field_id, fo in allied_victory_offsets(loaded).items():
+                    player_id = parse_cell_id(field_id)[1]
+                    primary = player_fields.PlayerWriteTarget(fo.offset, fo.length, "u32")
+                    self._diplomacy_targets[field_id] = (primary, mirrors[player_id])
+                    (self._original[field_id],) = cell_packer.unpack_from(body, fo.offset)
+            self._diplomacy_field_ids = frozenset(stances) | frozenset(self._diplomacy_targets)
 
         # Players mode fields: an additive entry set under synthetic ids
         # ("player:food:3"), gated by players_write_supported() rather than
@@ -581,12 +612,12 @@ class OptionsEditModel:
         if map_name is not None and isinstance(map_name.data, str):
             self._original[SCRIPT_NAME_FIELD_ID] = map_name.data
 
-        # TASK-333 water definition: an eighth additive entry, gated by
-        # map_strings.write_supported(). No _offsets/_packers entry, like the
+        # The Map strings (TASK-333, TASK-238): additive entries, each under its
+        # own map_strings.write_supported(). No _offsets/_packers entry, like the
         # disable lists: an edit can change the Map section's length.
-        self._map_strings_supported = map_strings.write_supported(loaded)
-        if self._map_strings_supported:
-            self._original[WATER_DEFINITION_FIELD_ID] = map_strings.current_value(loaded, map_strings.WATER_DEFINITION)
+        for field_id, name in MAP_STRING_FIELDS.items():
+            if map_strings.write_supported(loaded, name):
+                self._original[field_id] = map_strings.current_value(loaded, name)
 
         # field_id -> the value the user set, present only while it differs
         # from what the file holds. Setting a field back to its original value
@@ -615,6 +646,14 @@ class OptionsEditModel:
         -- options_write_supported()'s re-gate does not cover these, since
         they carry no OptionFieldSpec (see the `specs` property)."""
         return any(field_id in self._diplomacy_field_ids for field_id in self._pending)
+
+    @property
+    def has_allied_victory_edits(self) -> bool:
+        """Whether any pending edit is an allied-victory flag, the signal
+        scenario_write.py re-gates the player_data_3 mirror on: neither
+        has_diplomacy_edits' Diplomacy-section re-check nor has_player_edits'
+        covers the Units-side copy these also patch."""
+        return any(field_id in self._diplomacy_targets for field_id in self._pending)
 
     @property
     def has_player_edits(self) -> bool:
@@ -684,15 +723,14 @@ class OptionsEditModel:
         """The signal scenario_write.py re-gates script_name_write_supported() on."""
         return SCRIPT_NAME_FIELD_ID in self._pending
 
-    @property
-    def map_strings_supported(self) -> bool:
-        """Whether this model was seeded with the water definition entry."""
-        return self._map_strings_supported
+    def map_string_supported(self, field_id: str) -> bool:
+        """Whether this model was seeded with that Map string row."""
+        return field_id in MAP_STRING_FIELDS and field_id in self._original
 
     @property
     def has_map_string_edits(self) -> bool:
         """The signal scenario_write.py re-gates map_strings_write_supported() on."""
-        return WATER_DEFINITION_FIELD_ID in self._pending
+        return not self._pending.keys().isdisjoint(MAP_STRING_FIELDS)
 
     def original_personality(self, player_id: int) -> AiChoice:
         return self._personality_choices[self._original[player_fields.personality_field_id(player_id)]]
@@ -740,6 +778,11 @@ class OptionsEditModel:
             or field_id in self._personality_field_ids
         )
 
+    def _targets_for(self, field_id: str) -> tuple[player_fields.PlayerWriteTarget, ...] | None:
+        """The (primary, *mirrors) targets of a Players field or an allied-victory flag, else None."""
+        targets = self._player_targets.get(field_id)
+        return targets if targets is not None else self._diplomacy_targets.get(field_id)
+
     def set_value(self, field_id: str, value: OptionValue) -> None:
         """Record `field_id` as set to raw `value`. Must be wrapped in an undo
         record by the caller -- a model that is dirty while the history is not
@@ -782,9 +825,9 @@ class OptionsEditModel:
                 self._pending[field_id] = ids
             return
 
-        if field_id == WATER_DEFINITION_FIELD_ID:
-            if not self._map_strings_supported:
-                raise KeyError("Water definition is not writable on this file")
+        if field_id in MAP_STRING_FIELDS:
+            if not self.map_string_supported(field_id):
+                raise KeyError(f"{field_id} is not writable on this file")
             # The file's own value first: it keeps its stored bytes (a trailing
             # NUL included), and an undo back to it can never raise.
             if value == self._original[field_id]:
@@ -820,8 +863,9 @@ class OptionsEditModel:
                 self._pending[field_id] = value
             return
 
-        if field_id in self._player_targets:
-            for target in self._player_targets[field_id]:
+        targets = self._targets_for(field_id)
+        if targets is not None:
+            for target in targets:
                 try:
                     player_fields.encode_target(target, value)
                 except ValueError as e:
@@ -851,6 +895,7 @@ class OptionsEditModel:
         pending edit, in ascending offset order. Empty for a clean model, which
         is what keeps a browse-only save byte-identical. A Players mode field
         emits one patch per target -- two or three for a mirrored field --
+        and an allied-victory flag two (Diplomacy's u32, player_data_3's u8),
         rather than the single patch every other field here produces.
 
         A str16-coded Players mode field (civilization/architecture on a
@@ -871,7 +916,7 @@ class OptionsEditModel:
             if field_id == SCRIPT_NAME_FIELD_ID:
                 # Variable-length: rides the two script splices instead.
                 continue
-            if field_id == WATER_DEFINITION_FIELD_ID:
+            if field_id in MAP_STRING_FIELDS:
                 # Variable-length: rides serialize_map_strings_resize() instead.
                 continue
             if field_id in self._personality_field_ids:
@@ -892,8 +937,7 @@ class OptionsEditModel:
                         strict=True,
                     )
                 )
-            elif field_id in self._player_targets:
-                targets = self._player_targets[field_id]
+            elif (targets := self._targets_for(field_id)) is not None:
                 if targets[0].codec == "str16":
                     continue
                 patches.extend(
@@ -1028,12 +1072,12 @@ class OptionsEditModel:
 
     def serialize_map_strings_resize(self) -> tuple[int, int, bytes] | None:
         """(start, end, replacement) in load-time offsets for the Map string
-        front up to map_color_mood, or None with no pending water definition.
-        No `body` argument: nothing else patches inside that region, and
-        scenario_write._patch_map_strings() asserts it."""
+        front up to map_color_mood, or None with no pending Map string, every
+        pending one in the one splice. No `body` argument: nothing else patches
+        inside that region, and scenario_write._patch_map_strings() asserts it."""
         if not self.has_map_string_edits:
             return None
-        edits = {map_strings.WATER_DEFINITION: self._pending[WATER_DEFINITION_FIELD_ID]}
+        edits = {name: self._pending[field_id] for field_id, name in MAP_STRING_FIELDS.items() if field_id in self._pending}
         return map_strings.splice(self.loaded, edits)
 
     def serialize_script_path_resize(self) -> tuple[int, int, bytes] | None:

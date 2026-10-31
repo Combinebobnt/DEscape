@@ -5,9 +5,14 @@ projection: the iso 2:1 squash whenever the map renders isometric, a plain
 circle in Flat. An all-gate selection gets four orientation axes instead.
 
 The dial never writes anything itself. The spinbox beside it stays the value
-holder and the only emitter: a click or drag commits once through
-`on_commit` (the spinbox's setValue) and the wheel goes through `on_step`
-(its stepBy), so every edit takes the spinbox's existing path to the model.
+holder and the only emitter: a spoke commits through `on_commit` (the
+spinbox's setValue) and the wheel goes through `on_step` (its stepBy), so
+every edit takes the spinbox's existing path to the model.
+
+Facings are live (TASK-548): a drag commits each spoke it crosses, and
+`on_drag` brackets the press and release so the viewer can fold the spokes
+into one undo step. A gate's axis swaps its const and moves its footprint, so
+gate mode previews on the dial and commits once, on release.
 
 The geometry functions at the top are Qt-free so they test on their own.
 """
@@ -97,7 +102,15 @@ def tick_rotations(count: int) -> list[float]:
 
 
 class FacingDial(QWidget):
-    """The dial widget. `on_commit(value)` once per click or drag, `on_step(+-1)` per wheel notch."""
+    """The dial widget. `on_commit(value)` per spoke a facing drag crosses, or once
+    per gate click or drag, and `on_step(+-1)` per wheel notch.
+
+    `on_drag(True)` opens a facing drag at the press, and False means it was
+    refused and the viewer has said why. `on_drag(False)` closes it at the
+    release, or `on_drag(False, hidden=True)` when the dial hid first, since a
+    hidden widget never gets its release. `_drag_open` decides what a move or
+    release does, not `mode`: a re-populate can change that mid-drag. Changing
+    to gates closes it the same way, and the rest of that press does nothing."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,9 +124,12 @@ class FacingDial(QWidget):
         self.value: int | None = 0
         self.flat = False
         self._drag_value: int | None = None
+        self._drag_open = False
+        self._press_mode = FACING
         self._wheel_accum = 0
         self.on_commit = lambda _value: None
         self.on_step = lambda _steps: None
+        self.on_drag = lambda _active, hidden=False: True
 
     def sizeHint(self) -> QSize:
         return QSize(DIAL_WIDTH, DIAL_HEIGHT)
@@ -123,6 +139,10 @@ class FacingDial(QWidget):
     def set_mode(self, mode: str, count: int) -> None:
         if mode not in (FACING, GATE):
             raise ValueError(f"unknown dial mode {mode!r}")
+        if mode != FACING and self._drag_open:
+            self._drag_open = False
+            self._drag_value = None
+            self.on_drag(False, hidden=True)
         self.mode = mode
         self.count = GATE_AXES if mode == GATE else count
         self.update()
@@ -178,37 +198,72 @@ class FacingDial(QWidget):
 
     # -- input ---------------------------------------------------------------
 
+    def _commit_spoke(self, value: int | None) -> None:
+        """A live drag reaching `value`; a spoke it already committed writes nothing, so
+        a Ctrl+Z or Rotate key during the drag is not overwritten by the release."""
+        if value is None or value == self._drag_value:
+            return
+        self._drag_value = value
+        self.update()
+        self.on_commit(value)
+
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
             event.ignore()
             return
-        self._drag_value = self.value_at(event.x(), event.y())
-        self.update()
         event.accept()
+        value = self.value_at(event.x(), event.y())
+        self._press_mode = self.mode
+        # A release lost to a modal leaves both behind, so this press starts afresh.
+        self._drag_open = False
+        self._drag_value = None if self.mode == FACING else value
+        self.update()
+        if self.mode == FACING:
+            self._drag_open = self.on_drag(True)
+            if self._drag_open:
+                self._commit_spoke(value)
 
     def mouseMoveEvent(self, event) -> None:
         if not event.buttons() & Qt.LeftButton:
             event.ignore()
             return
+        event.accept()
         value = self.value_at(event.x(), event.y())
-        if value is not None:
+        if self._drag_open:
+            self._commit_spoke(value)
+        elif self.mode != FACING and self._press_mode != FACING and value is not None:
             self._drag_value = value
             self.update()
-        event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
             event.ignore()
             return
+        event.accept()
         value = self.value_at(event.x(), event.y())
+        if self._drag_open:
+            self._commit_spoke(value)
+            self._drag_value = None
+            self.update()
+            self._drag_open = False
+            self.on_drag(False)
+            return
+        if FACING in (self.mode, self._press_mode):
+            return  # a refused press, or a late release after a hide or mode change closed the drag
         if value is None:
             value = self._drag_value
         self._drag_value = None
         self.update()
-        event.accept()
         if value is not None:
-            # One commit per press-release, so a drag is one undo step.
+            # One commit per press-release, so a gate turn is one undo step.
             self.on_commit(value)
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._drag_value = None
+        if self._drag_open:
+            self._drag_open = False
+            self.on_drag(False, hidden=True)
 
     def wheelEvent(self, event) -> None:
         # Through the spinbox's own stepBy: wrap, "(mixed)" and undo match it exactly.

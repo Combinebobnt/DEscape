@@ -7,9 +7,10 @@ import contextlib
 import dataclasses
 from typing import ClassVar
 
-from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, Qt, QTimer
+from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -17,6 +18,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -30,6 +32,7 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -48,6 +51,7 @@ from descape import (
     trigger_geometry,
     trigger_organize,
     trigger_status,
+    ui_icons,
     unit_references,
 )
 from descape.button_grid import ButtonGrid
@@ -68,6 +72,7 @@ from descape.trigger_model import (
     MOVE_FAR_STEPS,
     entry_display_order,
     exec_order_value,
+    ids_follow_display_order,
     resolve_exec_mode,
     section_edge_refusal,
     would_move_entries,
@@ -75,6 +80,7 @@ from descape.trigger_model import (
 from descape.trigger_status import EntryStatus, Status
 from descape.value_picker import PickerItem, ValueLineEdit, _HScrollStableTreeWidget
 from descape.viewer_common import (
+    TOOL_EYEDROPPER,
     FontScaledWidth,
     IndeterminateDoubleSpinBox,
     LabelFitButton,
@@ -97,6 +103,9 @@ _GROUP_AFTER_FIELD = {
 }
 # The map pick a tile group's Set arms: a target tuple's sixth slot.
 PICK_POINT, PICK_RECT = "point", "rect"
+# An object field's eyedropper, same slot: a unit pick that copies the clicked unit's type (GH #276).
+PICK_TYPE = "type"
+_TYPE_PICK_TIP = "Click a unit on the map to copy its type here; Esc to cancel"
 _GROUP_TEXT = {
     # caption, Set tooltip, Go to tooltip, Reset tooltip
     GROUP_LOCATION: (
@@ -351,12 +360,49 @@ class _TriggerTree(_HScrollStableTreeWidget):
     selectAll() before the window's Select All shortcut sees the key, and
     Qt's version skips collapsed sections, so it routes to the panel's."""
 
+    editor_closed = pyqtSignal()
+
     def __init__(self, select_all) -> None:
         super().__init__()
         self._select_all = select_all
 
     def selectAll(self) -> None:
         self._select_all()
+
+    def closeEditor(self, editor, hint) -> None:
+        # A current-row change lands here directly, past the delegate's closeEditor signal.
+        super().closeEditor(editor, hint)
+        self.editor_closed.emit()
+
+
+class _TriggerNameDelegate(QStyledItemDelegate):
+    """The trigger list's inline rename (GH #279). A row shows a label, not the
+    name, so the editor seeds from `name_of(trigger index)`. Nothing writes the
+    model: setModelData() stashes `pending` and the panel applies it on
+    closeEditor, once a repartition's tree.clear() can't reach a live editor."""
+
+    def __init__(self, name_of, role_column: int, parent) -> None:
+        super().__init__(parent)
+        self._name_of = name_of
+        self._role_column = role_column
+        self.pending: tuple[int, str] | None = None
+
+    def _trigger_index(self, index) -> int:
+        return index.sibling(index.row(), self._role_column).data(Qt.UserRole)
+
+    def setEditorData(self, editor, index) -> None:
+        editor.setText(self._name_of(self._trigger_index(index)))
+
+    def setModelData(self, editor, model, index) -> None:
+        self.pending = (self._trigger_index(index), editor.text())
+
+    def eventFilter(self, editor, event) -> bool:
+        # Commit and stay: unhandled, these keys move the current row, and Tab opens an editor there.
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Up, Qt.Key_Down):
+            self.commitData.emit(editor)
+            self.closeEditor.emit(editor, QAbstractItemDelegate.NoHint)
+            return True
+        return super().eventFilter(editor, event)
 
 
 class _MoveButton(QToolButton):
@@ -392,7 +438,8 @@ class TriggerPanel(QWidget):
     divider-derived sections when the corpus's own `--- Section ---`
     convention is present (Display order only -- see show_scenario()). The
     bottom is the selected trigger's conditions and effects, plus a property
-    form for whichever of them is selected.
+    form for whichever of them is selected, with a second bar between the
+    two (detail_splitter, GH #274).
 
     Condition and effect names come from library_compat.load_vocabulary(),
     which reads the library's own per-version JSON rather than its module-level
@@ -413,7 +460,7 @@ class TriggerPanel(QWidget):
     # off the right edge, which is what its old fixed width was working around.
     _MIN_DETAIL_WIDTH = 120
 
-    # Each pane's starting weight in the vertical split. Only the ratio counts, but
+    # Each pane's starting weight in both vertical splits. Only the ratio counts, but
     # QSplitter.setSizes() raises a value below a pane's minimum to it, which would skew it.
     _SPLIT_WEIGHT = 10_000
 
@@ -562,6 +609,8 @@ class TriggerPanel(QWidget):
         self._on_tag_remove_selected = on_tag_remove_selected or (lambda *args: None)
         # GH #41: fired after each entry-form sync, which a trigger change reaches too. Assigned by the window.
         self.on_focus_changed = lambda: None
+        # TASK-550: the selected Display Instructions effect's InstructionView, or None. Assigned by the window.
+        self.on_instruction_view = lambda view: None
         # Unit/Unit[] fields: placed-unit id -> label text, and Pick from map's
         # arm (a target tuple) or disarm (None) request. Assigned by the window.
         self.describe_unit_reference = lambda ref_id: ""
@@ -597,6 +646,8 @@ class TriggerPanel(QWidget):
         # Per populate: field -> (spec, refs, editor, refresh) and target -> Pick button.
         self._unit_ref_rows: dict[str, tuple] = {}
         self._pick_buttons: dict[tuple, QToolButton] = {}
+        # GH #276, per populate: field -> the object row an eyedropper writes through.
+        self._type_pick_rows: dict[str, ValueLineEdit] = {}
         # GH #138, per populate: group -> its Set / Go to / Reset row. Never in _rows, whose shape others read.
         self._group_rows: dict[str, _GroupRow] = {}
         # Whether the window holds a pasteable trigger clipboard. Pushed in
@@ -843,6 +894,16 @@ class TriggerPanel(QWidget):
         # Select Section / Select Tag: pure selection expanders, no model state.
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_trigger_context_menu)
+        # GH #279. NoEditTriggers, or the rows' editable flag makes any typed key open an
+        # editor and loses keyboard search; only request_trigger_rename() opens one.
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._name_delegate = _TriggerNameDelegate(self._trigger_name, self._ROLE_COL, self.tree)
+        self.tree.setItemDelegateForColumn(self._COL_NAME, self._name_delegate)
+        # After the line above, so the view's own closeEditor slot has dropped the editor first.
+        self._name_delegate.closeEditor.connect(self._apply_trigger_rename)
+        # Queued: a repartition's tree.clear() can't run inside the view's currentChanged().
+        self.tree.editor_closed.connect(self._apply_trigger_rename, Qt.QueuedConnection)
+        self.tree.itemDoubleClicked.connect(self.request_trigger_rename)
         pane_layout.addWidget(self.tree, stretch=1)
 
         self.trigger_buttons = self._build_button_row(
@@ -913,10 +974,6 @@ class TriggerPanel(QWidget):
             self.select_trigger(selected)
 
     def _build_detail_pane(self) -> QWidget:
-        pane = QWidget()
-        pane_layout = QVBoxLayout(pane)
-        pane_layout.setContentsMargins(0, 0, 0, 0)
-
         self.entry_tree = _HScrollStableTreeWidget()
         self.entry_tree.setHeaderLabels(["Item", "Detail"])
         self.entry_tree.setColumnCount(2)
@@ -929,7 +986,16 @@ class TriggerPanel(QWidget):
         self.entry_tree.itemSelectionChanged.connect(self._on_entry_selection_changed)
         self.entry_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.entry_tree.customContextMenuRequested.connect(self._show_entry_context_menu)
-        pane_layout.addWidget(self.entry_tree, stretch=1)
+
+        # GH #274: nested, so self.splitter stays a two-pane split and its drag keeps this ratio.
+        self.detail_splitter = QSplitter(Qt.Vertical)
+        # A pane collapsed to zero height still passes every isVisibleTo() check (units_panel.py).
+        self.detail_splitter.setChildrenCollapsible(False)
+        self.detail_splitter.addWidget(self.entry_tree)
+
+        pane = QWidget()
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
 
         self.entry_buttons = self._build_button_row(
             [
@@ -984,7 +1050,12 @@ class TriggerPanel(QWidget):
         self.multi_label.setAlignment(Qt.AlignCenter)
         self.detail_stack.addWidget(self.multi_label)  # _DETAIL_MULTI
         pane_layout.addWidget(self.detail_stack, stretch=1)
-        return pane
+
+        self.detail_splitter.addWidget(pane)
+        self.detail_splitter.setStretchFactor(0, 1)
+        self.detail_splitter.setStretchFactor(1, 1)
+        self.detail_splitter.setSizes([self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
+        return self.detail_splitter
 
     def _build_button_row(self, buttons, slot_for, ops, button_class=QPushButton) -> QHBoxLayout:
         """One row of equally-weighted push buttons, stored on self by name."""
@@ -1475,6 +1546,7 @@ class TriggerPanel(QWidget):
         columns[self._COL_ID] = str(index)
         columns[self._COL_NAME] = self._trigger_label(trigger)
         item = QTreeWidgetItem(columns)
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
         item.setData(self._ROLE_COL, Qt.UserRole, index)
         self._stash_tags(item, self._read(trigger, "name") or "")
         self._style_trigger_item(item, index)
@@ -1733,14 +1805,48 @@ class TriggerPanel(QWidget):
         if reason:
             QMessageBox.warning(self, "Cannot use that section title", f'"{title}": {reason}.')
             return
+        self.rename_trigger(index, value)
+
+    def rename_trigger(self, index: int, value: str) -> None:
+        """Name the trigger at `index`, `value` verbatim as the Name field
+        writes it: one undo step, and nothing recorded if it already reads so."""
+        manager = self._manager()
+        if manager is None or not 0 <= index < len(manager.triggers):
+            return
+        name = self._read(manager.triggers[index], "name") or ""
         if value == name:
             return
+        # As in _changed(): crossing the divider predicate changes the sections.
+        repartitions = trigger_organize.is_divider(name) != trigger_organize.is_divider(value)
         spec = next(s for s in trigger_fields.TRIGGER_FIELDS if s.name == "name")
         self._on_trigger_field(index, spec, value)
-        self._refresh_labels(index)
+        if repartitions:
+            self.show_scenario(self._loaded, self._pending_exec_order)
+            self.select_trigger(index)
+        else:
+            self._refresh_labels(index)
         current = self._current_entry()
         if current is not None and current[0] == "trigger":
             self._populate_property_form()
+
+    def _trigger_name(self, index: int) -> str:
+        return self._read(self._manager().triggers[index], "name") or ""
+
+    def request_trigger_rename(self, item) -> None:
+        """GH #279: the double-clicked row's inline editor, for one selected
+        trigger on an editable document. A section header with members keeps
+        double-click for collapse, and has Rename Section… for its title."""
+        index = item.data(self._ROLE_COL, Qt.UserRole)
+        if index is None or item.childCount() or not self._can_edit_now():
+            return
+        if self.selected_trigger_indices() != [index]:
+            return
+        self.tree.editItem(item, self._COL_NAME)
+
+    def _apply_trigger_rename(self, *_closed) -> None:
+        pending, self._name_delegate.pending = self._name_delegate.pending, None
+        if pending is not None:
+            self.rename_trigger(*pending)
 
     def request_move_to_section(self, header_index: int | None) -> None:
         if not self._editable or self._section_view_reason() or self._move_blocker():
@@ -2100,7 +2206,7 @@ class TriggerPanel(QWidget):
             return (f"{kind} type {self._read(entry, type_attribute)}", "")
 
         details = []
-        for attribute in definition.attributes:
+        for attribute in sorted(definition.attributes, key=trigger_fields.form_rank):
             if attribute == type_attribute or attribute in trigger_fields.HIDDEN_FIELDS:
                 continue
             value = self._read(entry, attribute)
@@ -2378,9 +2484,12 @@ class TriggerPanel(QWidget):
         self._form_refs = None
         self._unit_ref_rows = {}
         self._pick_buttons = {}
+        self._type_pick_rows = {}
         self._group_rows = {}
         if self._instruction_preview is not None:
             self._instruction_preview.detach()
+            # A rebuild sends the new view in this same event, so nothing paints between them.
+            self.on_instruction_view(None)
         self._instruction_preview = None
         if self._facet_preview is not None:
             self._facet_preview.detach()
@@ -2532,7 +2641,7 @@ class TriggerPanel(QWidget):
             # Which cluster slot is authoritative is a runtime decision, and
             # writing an inert one can corrupt the live one.
             specs = trigger_fields.apply_quantity_cluster_rule(specs, entry)
-        # GH #41: the object filters under the object list, above every Set row.
+        # One field order across every form (GH #41, GH #278).
         return trigger_fields.form_order(specs)
 
     def _populate_property_form(self) -> None:
@@ -2565,6 +2674,9 @@ class TriggerPanel(QWidget):
                 hint.setToolTip(self._CREATE_OBJECTS_HINT_TIP)
                 hint.setWordWrap(True)
                 self.property_form.addRow(hint)
+            names = {s.name for s in specs}
+            area_grid = all(f in names for f in trigger_geometry.AREA_FIELDS)
+            area_cells = []
             for spec in specs:
                 # Compared as shown, so a sentinel BOOL's -1 and 0 share one unticked box.
                 value = trigger_fields.shared_value(
@@ -2573,7 +2685,17 @@ class TriggerPanel(QWidget):
                 widget = self._build_widget(spec, refs, value)
                 if trigger_fields.has_list_type(spec) and isinstance(widget, ValueLineEdit):
                     self._add_list_type_row(spec, widget, value)
-                if spec.kind == trigger_fields.STR and spec.multiline:
+                    self._add_type_pick_button(widget, spec, refs)
+                if area_grid and spec.name in trigger_geometry.AREA_FIELDS:
+                    # GH #277: the game's boxes. The tooltip keeps the field's name, X1 alone doesn't say area.
+                    label = QLabel(spec.name.rpartition("_")[2].upper())
+                    label.setBuddy(widget)
+                    label.setToolTip(spec.label)
+                    widget.setToolTip(spec.label)
+                    area_cells.append((label, widget))
+                    if spec.name == trigger_geometry.AREA_FIELDS[-1]:
+                        self.property_form.addRow(self._area_grid(area_cells))
+                elif spec.kind == trigger_fields.STR and spec.multiline:
                     # GH #38/#139: caption on its own row, the box (or a locked field's text) full width below.
                     label = QLabel(spec.label)
                     label.setBuddy(widget)
@@ -2661,8 +2783,14 @@ class TriggerPanel(QWidget):
         manager = self._manager()
         names = [] if manager is None else [label for label, _id in object_catalog.variable_choices(manager)]
         fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
-        preview.bind(fields, entry, self._read, names, self._player_colors, self._fit_property_height)
+        preview.bind(
+            fields, entry, self._read, names, self._player_colors, self._fit_property_height, self._emit_instruction_view
+        )
         self._instruction_preview = preview
+
+    def _emit_instruction_view(self, view) -> None:
+        self.on_instruction_view(view)
+
     # One line at 340 px: a wrapped row is squeezed when the form is populated before it shows.
     _CREATE_OBJECTS_HINT = "Tip: stamp it with Create Objects."
     _CREATE_OBJECTS_HINT_TIP = (
@@ -2933,14 +3061,20 @@ class TriggerPanel(QWidget):
             self._add_pick_button(row, spec, refs, editable)
         return host
 
+    def _pick_entry(self, refs, editable: bool) -> tuple[int, str, int] | None:
+        """(trigger, entry kind, entry index) for a map pick, which names one editable entry only."""
+        trigger_index = self.current_trigger_index()
+        if not editable or len(refs) != 1 or refs[0][0] == "trigger" or trigger_index is None:
+            return None
+        return (trigger_index, *refs[0])
+
     def _add_pick_button(self, row, spec, refs, editable: bool) -> None:
         """Pick from map, for one editable entry's field only: the window
         arms a map picker whose clicks come back through apply_picked_reference()."""
-        trigger_index = self.current_trigger_index()
-        if not editable or len(refs) != 1 or refs[0][0] == "trigger" or trigger_index is None:
+        entry = self._pick_entry(refs, editable)
+        if entry is None:
             return
-        kind, entry_index = refs[0]
-        target = (trigger_index, kind, entry_index, spec.name, spec.presentation == unit_references.LIST_PRESENTATION)
+        target = (*entry, spec.name, spec.presentation == unit_references.LIST_PRESENTATION)
         button = QToolButton()
         button.setText("Pick")
         button.setCheckable(True)
@@ -2953,6 +3087,49 @@ class TriggerPanel(QWidget):
         button.toggled.connect(lambda checked, t=target: self.on_pick_unit(t if checked else None))
         self._pick_buttons[target] = button
         row.addWidget(button)
+
+    def _add_type_pick_button(self, widget: ValueLineEdit, spec, refs) -> None:
+        """GH #276: the eyedropper after an object field's "…". It arms the unit
+        picker, and the click comes back through apply_picked_type()."""
+        entry = self._pick_entry(refs, self._editable)
+        if entry is None:
+            return
+        target = (*entry, spec.name, False, PICK_TYPE)
+        button = QToolButton()
+        button.setIcon(ui_icons.tool_icon(TOOL_EYEDROPPER))
+        button.setCheckable(True)
+        button.setToolTip(_TYPE_PICK_TIP)
+        button.setAccessibleName("Copy type from map")
+        button.setFixedHeight(widget.browse_button.sizeHint().height())
+        # Checked before connecting: a populate must not re-fire the arm request.
+        button.setChecked(target == self._armed_pick)
+        button.toggled.connect(lambda checked, t=target: self.on_pick_unit(t if checked else None))
+        self._pick_buttons[target] = button
+        self._type_pick_rows[spec.name] = widget
+        widget.layout().addWidget(button)
+
+    def refresh_pick_icons(self) -> None:
+        """Re-ink the form's eyedroppers after a theme change: built per populate, apply_icons() can't name them."""
+        for target, button in self._pick_buttons.items():
+            if target[5:] == (PICK_TYPE,):
+                button.setIcon(ui_icons.tool_icon(TOOL_EYEDROPPER))
+
+    @staticmethod
+    def _area_grid(cells) -> QWidget:
+        """GH #277: (caption, box) cells two to a row, each caption above its
+        box. Added in field order, which is also the Tab order."""
+        host = QWidget()
+        grid = QGridLayout(host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        for position, (label, widget) in enumerate(cells):
+            row, column = divmod(position, 2)
+            # A spinbox's minimum hint is sized for 2^31, which overflows the pane at larger fonts.
+            widget.setMinimumWidth(1)
+            grid.addWidget(label, row * 2, column)
+            grid.addWidget(widget, row * 2 + 1, column)
+        return host
 
     def _add_group_row(self, spec, specs, refs) -> None:
         """GH #138: the Set / Go to / Reset row after a group's last field, for
@@ -3098,6 +3275,20 @@ class TriggerPanel(QWidget):
         self._update_group_rows()
         return True
 
+    def apply_picked_type(self, target: tuple, const: int) -> bool:
+        """GH #276: a clicked unit's type into an object row, through commit_value()
+        so the row's listeners hear it as they hear Browse. Returns whether the
+        target was still live; a stale one writes nothing."""
+        row = self._type_pick_rows.get(target[3])
+        if row is None or not self._editable or not self._pick_target_is_current(target):
+            return False
+        row.commit_value(const)
+        return True
+
+    def type_pick_caption(self, target: tuple) -> str:
+        """The row's own caption, for the armed hint: "source player unit", not the field name."""
+        return next((spec.label for spec, *_ in self._rows if spec.name == target[3]), target[3].replace("_", " "))
+
     def refresh_unit_reference_labels(self, recompute_status: bool = True) -> None:
         """Re-describe every Unit/Unit[] label, after units moved or changed hands.
 
@@ -3176,6 +3367,7 @@ class TriggerPanel(QWidget):
             presentation.catalog(),
             presentation.default_category,
             placeholder=self._DIFFERS if indeterminate else "(unset)",
+            hide_internal=presentation.hide_internal,
         )
         initial = value if isinstance(value, int) and not isinstance(value, bool) else None
         widget.set_value(None if initial == trigger_fields.UNSET else initial)
@@ -3587,6 +3779,12 @@ class TriggerPanel(QWidget):
             move.setToolTip(tip + reason)
             move.setEnabled(can_edit and not reason)
             move.triggered.connect(lambda _=False, d=direction, e=edge: self._request_move(False, d, edge=e))
+        # GH #2: on the whole list, so no sort, filter, tag or selection gate.
+        renumber_reason = self._renumber_reason()
+        renumber = menu.addAction("Renumber IDs to Display Order")
+        renumber.setToolTip(self._RENUMBER_TIP + renumber_reason)
+        renumber.setEnabled(not renumber_reason)
+        renumber.triggered.connect(lambda _=False: self._request_trigger_op("renumber"))
         menu.addSeparator()
         section = menu.addAction("Select Section")
         section.setToolTip("Select this section's divider and every trigger in it")
@@ -3961,6 +4159,11 @@ class TriggerPanel(QWidget):
             return
         if op == "new":
             self._on_trigger_structural(op, ())
+            return
+        if op == "renumber":
+            # Re-checked: a menu built before an undo can be stale.
+            if not self._renumber_reason():
+                self._on_trigger_structural(op, self.selected_trigger_indices())
             return
         if op == "clipboard_copy":
             # Records nothing: the window reads the selection itself.
@@ -4350,9 +4553,29 @@ class TriggerPanel(QWidget):
           look like nothing happened.
         """
         if self._sort_mode != "display":
-            return " (switch to Display order to reorder)"
+            return (
+                " (switch to Display order to reorder; Renumber IDs to Display Order"
+                " on the right-click menu then makes the IDs follow)"
+            )
         if self.filter_edit.text().strip() or self.tag_combo.currentData() is not None:
             return " (clear the filter or tag to reorder)"
+        return ""
+
+    _RENUMBER_TIP = (
+        "Give every trigger a new ID in display order, so File order matches the list. "
+        "A file that runs triggers by ID (Legacy) then runs them in the listed order. Trigger links follow."
+    )
+
+    def _renumber_reason(self) -> str:
+        """Why Renumber IDs to Display Order is off, "" when on (GH #2): the
+        edit gate, then a display order that is not already identity. Reads
+        `_display_slots`, which a one-row move keeps current."""
+        if not self._editable or self._loaded is None:
+            return " (this file's triggers cannot be edited)"
+        if self.detail_stack.currentIndex() == self._DETAIL_PICKER:
+            return " (close the type picker first)"
+        if ids_follow_display_order(self._display_slots):
+            return " (IDs already follow display order)"
         return ""
 
     def _trigger_move_reasons(self) -> tuple[str, str]:

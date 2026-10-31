@@ -9,6 +9,7 @@ data rather than to the judgement of the session that wrote it.
 from __future__ import annotations
 
 import math
+from itertools import combinations_with_replacement, product
 from pathlib import Path
 
 import pytest
@@ -149,6 +150,73 @@ def test_snap_facing_maps_a_fine_grid_facing_onto_a_coarser_one():
     assert unit_rotation.snap_facing(9, 32, 16) == 5  # the half-frame tie rounds up
     assert unit_rotation.snap_facing(4, 16, 16) == 4
     assert unit_rotation.snap_facing(4, 16, 6) == 2  # pi/2 = 1.5 frames at 6
+
+
+# Every direction count an ANGLE const has in the catalog (TASK-548's census).
+_CENSUS_COUNTS = (2, 4, 6, 7, 8, 9, 16, 32)
+
+
+@pytest.mark.parametrize(("fine", "coarse"), [(32, 16), (16, 8), (32, 8)])
+def test_snap_facing_ties_always_round_up(fine: int, coarse: int) -> None:
+    """Through radians, odd facings 1 to 15 of 32 snapped to 1, 2, 3, 4, 5, 5, 7, 7 of 16."""
+    ratio = fine // coarse
+    for frame in range(coarse):
+        assert unit_rotation.snap_facing(frame * ratio + ratio // 2, fine, coarse) == (frame + 1) % coarse
+
+
+def test_snap_facing_only_differs_from_the_radian_path_on_an_exact_tie() -> None:
+    for fine, coarse in product(_CENSUS_COUNTS, repeat=2):
+        for facing in range(fine):
+            exact = 2 * facing * coarse % (2 * fine) == fine
+            old = unit_rotation.rotation_to_facing(unit_rotation.facing_to_rotation(facing, fine), coarse)
+            assert exact or unit_rotation.snap_facing(facing, fine, coarse) == old, (facing, fine, coarse)
+
+
+@pytest.mark.parametrize(("coarse", "fine"), combinations_with_replacement(_CENSUS_COUNTS, 2))
+def test_a_group_written_to_a_facing_reads_back_as_it(coarse: int, fine: int) -> None:
+    for facing in range(fine):
+        members = [
+            (unit_rotation.facing_to_rotation(facing, fine), fine),
+            (unit_rotation.facing_to_rotation(unit_rotation.snap_facing(facing, fine, coarse), coarse), coarse),
+        ]
+        assert unit_rotation.common_facing(members) == facing
+        # One frame off on the second member, always a frame the facing does not put it on.
+        off = (unit_rotation.snap_facing(facing, fine, coarse) + 1) % coarse
+        members[1] = (unit_rotation.facing_to_rotation(off, coarse), coarse)
+        assert unit_rotation.common_facing(members) is None, (facing, fine, coarse)
+
+
+def test_one_member_reads_as_its_own_facing() -> None:
+    assert unit_rotation.common_facing([(7.0, 16)]) == unit_rotation.rotation_to_facing(7.0, 16)
+
+
+@pytest.mark.parametrize(("coarse", "fine"), combinations_with_replacement(_CENSUS_COUNTS, 2))
+def test_member_steps_over_a_full_turn_match_the_absolute_snap(coarse: int, fine: int) -> None:
+    for start in range(fine):
+        frame = unit_rotation.snap_facing(start, fine, coarse)
+        for notch in range(fine):
+            frame = (frame + unit_rotation.member_steps(start + notch, fine, coarse, 1)) % coarse
+            assert frame == unit_rotation.snap_facing(start + notch + 1, fine, coarse)
+
+
+@pytest.mark.parametrize(("coarse", "fine"), combinations_with_replacement(_CENSUS_COUNTS, 2))
+def test_notches_up_then_down_restore_an_unaligned_member(coarse: int, fine: int) -> None:
+    """Started at the top of the grid, so the run crosses the wrap both ways."""
+    offset = coarse // 2
+    for notches in (1, 3, fine, fine + 1):
+        frame, lead = offset, fine - 1
+        for _ in range(notches):
+            frame += unit_rotation.member_steps(lead, fine, coarse, 1)
+            lead = (lead + 1) % fine
+        for _ in range(notches):
+            frame += unit_rotation.member_steps(lead, fine, coarse, -1)
+            lead = (lead - 1) % fine
+        assert (lead, frame % coarse) == (fine - 1, offset), (notches, fine, coarse)
+
+
+def test_a_finest_grid_member_turns_exactly_the_step() -> None:
+    for lead in range(32):
+        assert unit_rotation.member_steps(lead, 32, 32, 1) % 32 == 1
 
 
 @pytest.mark.parametrize("angle_count", [0, 1])

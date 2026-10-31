@@ -22,6 +22,7 @@ Frame no Check names, is a validation failure rather than a silent pass.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -36,6 +37,9 @@ MAX_LONG_EDGE = 1500
 FRAME_KINDS = ("raw", "control", "diff")
 
 VERDICTS = ("PASS", "FAIL", "CANNOT-TELL")
+
+# Words no reviewer-facing string may carry: a run, a defect or the work behind it.
+LEAK_WORDS = ("flame", "fix", "inject", "task", "control", "defect", "bug", "regression")
 
 
 class PackError(ValueError):
@@ -128,6 +132,23 @@ def validate_spec(spec: PackSpec) -> None:
     orphans = sorted(set(frame_ids) - named)
     if orphans:
         raise PackError(f"pack {spec.id!r}: frames no check asks about: {', '.join(orphans)}")
+
+
+def leaks(spec: PackSpec, words: tuple[str, ...] = LEAK_WORDS) -> list[str]:
+    """What in a spec's reviewer-facing text names a run: a listed word, case-blind, or a
+    number of three or more digits (a task id). Empty when clean. Counts every string
+    REVIEW.md shows, ids and file names included."""
+    texts = [("title", spec.title), ("preamble", spec.preamble)]
+    for frame in spec.frames:
+        texts += [(f"frame {frame.id}", text) for text in (frame.id, frame.filename, frame.caption)]
+    for check in spec.checks:
+        texts += [(f"check {check.id}", text) for text in (check.id, check.question, *check.answers)]
+    found = []
+    for where, text in texts:
+        lowered = text.lower()
+        found += [f"{where}: {word!r}" for word in words if word in lowered]
+        found += [f"{where}: number {number}" for number in re.findall(r"\d{3,}", text)]
+    return found
 
 
 def nn_upscale(img: np.ndarray, factor: int) -> np.ndarray:

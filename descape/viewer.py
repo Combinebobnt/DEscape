@@ -102,6 +102,7 @@ from descape import (
     cliff_catalog,
     cliff_chain,
     clipboard_history,
+    colour_mood,
     composite_backend,
     content_roots,
     crash_report,
@@ -126,6 +127,7 @@ from descape import (
     map_analysis,
     margin_warm,
     mod_graphics,
+    move_turn,
     object_catalog,
     option_fields,
     perf_trace,
@@ -213,8 +215,11 @@ from descape.mirror_tools import (
 )
 from descape.new_map_dialog import NewMapChoice, NewMapDialog
 from descape.options_model import (
+    COLOUR_MOOD_FIELD_ID,
+    MAP_STRING_FIELDS,
     OptionEditsUnavailableError,
     OptionsEditModel,
+    allied_victory_write_supported,
     diplomacy_write_supported,
     disables_write_supported,
     map_strings_write_supported,
@@ -255,6 +260,7 @@ from descape.render_cache import (
     UnitSplice,
 )
 from descape.resize_dialog import ResizeDialog
+from descape.resize_preview import preview_source
 from descape.scatter_dialog import ScatterDialog, units_region
 from descape.scenario_io import (
     BLANK_TEMPLATE_TILES,
@@ -290,7 +296,9 @@ from descape.text_edits import _MultiLineEdit
 from descape.tool_defaults_page import ToolDefaultsPage
 from descape.toolbar_overflow import partition
 from descape.trigger_model import (
+    EXEC_MODE_DISPLAY,
     EXEC_MODE_LEGACY,
+    EXEC_MODE_UNKNOWN,
     TriggerEditModel,
     TriggerEditsUnavailableError,
     block_room,
@@ -305,17 +313,21 @@ from descape.trigger_model import (
     moved_to_section_edge,
     paste_anchor,
     remove_entries,
+    renumber_refusal,
+    renumber_to_display_order,
     resolve_exec_mode,
     section_edge_refusal,
     would_move_entries,
 )
-from descape.trigger_panel import GROUP_AREA, GROUP_OBJECTS, PICK_POINT, PICK_RECT, StatusStyle, TriggerPanel
+from descape.trigger_panel import GROUP_AREA, GROUP_OBJECTS, PICK_POINT, PICK_RECT, PICK_TYPE, StatusStyle, TriggerPanel
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID, UnitFilter
 from descape.unit_model import (
     UnitEditModel,
     UnitEditsUnavailableError,
     capture_flag_of,
+    merged_field_record,
     new_unit,
+    reanchored,
     replaced_position,
     span_low_corner,
 )
@@ -476,7 +488,16 @@ OFF_GRID_FALLBACK_MESSAGE = (
 # TASK-053.02: said once per document, on the first display-order move in a legacy file.
 LEGACY_REORDER_MESSAGE = (
     "This file runs triggers in ID order (legacy), so moving them in the list does not change "
-    "which runs first. Map Options' Trigger execution order sets that."
+    "which runs first. Renumber IDs to Display Order, on the trigger list's right-click menu, "
+    "makes them run in the listed order; Map Options' Trigger execution order switches the file "
+    "to display order instead."
+)
+# GH #2: the status line after Renumber IDs to Display Order, one per execution mode.
+LEGACY_RENUMBER_MESSAGE = "This file runs triggers in ID order (legacy), so they now run in the listed order."
+DISPLAY_RENUMBER_MESSAGE = "This file runs triggers in display order, so which trigger runs first is unchanged."
+UNKNOWN_RENUMBER_MESSAGE = (
+    "This file stores no execution order setting; if the game runs it by ID, "
+    "which trigger runs first may have changed."
 )
 
 # Which left-panel page each mode shows. The panel swaps rather than growing
@@ -533,7 +554,6 @@ PLACEHOLDER_STUCK_MS = 1500
 _EXEC_ORDER_FIELD = "legacy_exec_order"
 _EXEC_ORDER_SECTION = "Triggers"
 _SCRIPT_NAME_FIELD = "script_name"
-_WATER_DEFINITION_FIELD = "water_definition"
 
 # GH #168: the most shapes a several-trigger overlay draws. Every unit edit re-derives
 # the union, and 300 is what fits a 25 ms refresh on the corpus file with the most shapes.
@@ -742,6 +762,22 @@ class _UnitEditBlock:
     splices: list
     before: tuple[int, int, int, int] | None = None
     after: tuple[int, int, int, int] | None = None
+
+
+@dataclasses.dataclass
+class _RotationDrag:
+    """A compass drag in progress (ViewerWindow._on_rotation_drag(), TASK-548):
+    `start` is the dial's value at press, None for "(mixed)", and `record` the
+    newest record the drag owns, into which _unit_edit folds each new spoke.
+
+    `pushes` counts records rather than comparing cursors, which stay flat at
+    the history's cap. `skipped` holds the members a spoke left alone, for the
+    drag's one status line."""
+
+    start: int | None
+    record: UnitDiffRecord | None = None
+    pushes: int = 0
+    skipped: int = 0
 
 
 # Help > About's library credit (GH #113). Static: the frozen build ships no dist-info, and
@@ -2441,6 +2477,7 @@ class SettingsDialog(QDialog):
         size = settings.get_ui_font_size()
         apply_ui_font(QApplication.instance(), family, size)
         self._window._update_log_min_height()
+        self._window._apply_left_pane_floor()  # Units and Terrain floors are font-measured
         shown_family = family or "platform default"
         shown_size = f"{size} pt" if size is not None else "default size"
         self._window._log_status(f"UI font: {shown_family}, {shown_size}")
@@ -3331,11 +3368,15 @@ class MirrorDialog(QDialog):
     was previewed under the current options, applies now) and closes.
     """
 
-    def __init__(self, parent: ViewerWindow):
+    def __init__(self, parent: ViewerWindow, last: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Mirror Map")
         self.resize(460, 460)
         self._window = parent
+        # The restored slice, picked by the first _on_mode_changed() only.
+        self._restore_slice: int | None = None
+        # TASK-514: set when a read-only file forced Units off, so state() keeps the opened value.
+        self._units_read_only = False
         # The DiffRecord Preview last pushed, or None if no preview is
         # currently applied under the CURRENTLY selected options (an option
         # change or Cancel undoes it and resets this to None -- see
@@ -3465,6 +3506,10 @@ class MirrorDialog(QDialog):
         btn_row.addWidget(self.cancel_button)
         layout.addLayout(btn_row)
 
+        if last:
+            self._restore(last)  # before the connections, so the open still plans once
+        self._opened_units = self.units_checkbox.isChecked()
+
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.slice_combo.currentIndexChanged.connect(self._on_option_changed)
         self.terrain_checkbox.toggled.connect(self._on_option_changed)
@@ -3483,6 +3528,41 @@ class MirrorDialog(QDialog):
 
         self._on_mode_changed()  # populates slice_combo and the initial overlay/summary
 
+    def state(self) -> dict:
+        """Session-sticky values, restored by the next dialog. Nothing here
+        is persisted to settings, so there is no MEMOIZED_GLOBALS key."""
+        return {
+            "mode_id": self.mode_combo.currentData(),
+            "slice": self.slice_combo.currentData(),
+            "terrain": self.terrain_checkbox.isChecked(),
+            "elevation": self.elevation_checkbox.isChecked(),
+            "units": self._opened_units if self._units_read_only else self.units_checkbox.isChecked(),
+            "overlaps": self.overlaps_combo.currentData(),
+            "rotate_ownership": self.ownership_checkbox.isChecked(),
+            "ownership_steps": self.ownership_spin.value(),
+        }
+
+    def _restore(self, last: dict) -> None:
+        index = self.mode_combo.findData(last.get("mode_id")) if last.get("mode_id") is not None else -1
+        if index >= 0:
+            self.mode_combo.setCurrentIndex(index)
+        kind = self._current_mode().kind
+        # Else the first _on_mode_changed() sees a kind switch and overwrites the restored Elevation.
+        self._elevation_default_kind = kind
+        self.terrain_checkbox.setChecked(bool(last.get("terrain", True)))
+        self.elevation_checkbox.setChecked(bool(last.get("elevation", kind == "lattice")))
+        self.units_checkbox.setChecked(bool(last.get("units", False)))
+        index = self.overlaps_combo.findData(last.get("overlaps", OVERLAPS_REFUSE))
+        if index >= 0:
+            self.overlaps_combo.setCurrentIndex(index)
+        self.ownership_checkbox.setChecked(bool(last.get("rotate_ownership", False)))
+        self.ownership_spin.setValue(last.get("ownership_steps", 1))
+        # The toggled signals are not connected yet, so the enabled states are settled here.
+        for widget in (self.overlaps_label, self.overlaps_combo):
+            widget.setEnabled(self.units_checkbox.isChecked())
+        self.ownership_spin.setEnabled(self.ownership_checkbox.isChecked())
+        self._restore_slice = last.get("slice")
+
     def _current_mode(self):
         return MODE_BY_ID[self.mode_combo.currentData()]
 
@@ -3500,6 +3580,9 @@ class MirrorDialog(QDialog):
         self.slice_combo.clear()
         for index, label in enumerate(mode.slice_labels):
             self.slice_combo.addItem(label, index)
+        if self._restore_slice is not None:
+            self.slice_combo.setCurrentIndex(max(0, min(self._restore_slice, self.slice_combo.count() - 1)))
+            self._restore_slice = None
         self.slice_combo.blockSignals(False)
         self._on_option_changed()
 
@@ -3532,6 +3615,7 @@ class MirrorDialog(QDialog):
             # Read-only units: untick rather than just returning None, or
             # _ensure_unit_edits()' warning box reappears on every option
             # change for the rest of the dialog's life.
+            self._units_read_only = True
             self.units_checkbox.setChecked(False)
             return None
         mode = self._current_mode()
@@ -3570,8 +3654,8 @@ class MirrorDialog(QDialog):
         if unit_plan is not None:
             if unit_plan.overlap_blocked:
                 blockers.append(
-                    f"{len(unit_plan.straddling)} unit(s) straddle the symmetry axis "
-                    f"(their image would overlap the original)"
+                    f"{len(unit_plan.overlap_blockers)} unit(s) straddle the symmetry axis or a "
+                    f"slice boundary (copies would land on them)"
                 )
             if unit_plan.garrisoned_blockers:
                 blockers.append(
@@ -3917,6 +4001,8 @@ class ViewerWindow(QMainWindow):
         # reassign), so a document whose units were only browsed/selected
         # still saves byte-identically.
         self.unit_edits: UnitEditModel | None = None
+        # TASK-548: None outside a compass drag.
+        self._rotation_drag: _RotationDrag | None = None
         # Messages mode's write model, on the same lazy terms as the three
         # above -- built on the first real edit to Instructions/Hints/Victory/
         # Loss/History/Scouts or a string-table id, so a document whose
@@ -3966,6 +4052,9 @@ class ViewerWindow(QMainWindow):
         # Last-accepted ScatterDialog state, sticky for this session only.
         # Nothing here is persisted, so there is no new settings key.
         self._scatter_defaults: dict = {}
+        # Last-applied MirrorDialog and ResizeDialog state, sticky the same way (TASK-514).
+        self._mirror_defaults: dict = {}
+        self._resize_defaults: dict = {}
         # Updated on every mouse move by on_hover() regardless of whether a
         # scenario is loaded -- copy/paste fire from a keyboard shortcut, not
         # a mouse click, so they need "what tile is under the mouse right
@@ -3993,17 +4082,22 @@ class ViewerWindow(QMainWindow):
         # GH #115: ((drag key, host key, unit_gen), refusal) for the drag preview's host outline.
         self._drop_preview_cache: tuple | None = None
         # TASK-327, reset per press, load and close (_reset_drag_rule_memos()): a single drag's rule
-        # answer, ((key, point, unit_gen), refused); a group's refused member ids, (selection, dx, dy,
-        # unit_gen, gate-walls box, ids); and its BlockerGrid, (selection, unit_gen, grid). `selection` is
-        # compared with `is`.
+        # answer, ((key, point, const, unit_gen), refused); a group's refused member ids, (selection, dx,
+        # dy, unit_gen, gate-walls box, turn, ids); and its BlockerGrid, (selection, unit_gen, grid).
+        # `selection` is compared with `is`.
         self._drag_rule_memo: tuple | None = None
         self._group_flags_memo: tuple | None = None
         self._group_grid_memo: tuple | None = None
+        # GH #280: the Rotate inputs a live Move drag holds until its release, zeroed at the next press,
+        # and each member's stand-in under it, (turn, unit_gen, id(unit), group) -> unit or stand-in.
+        self._drag_turn = move_turn.MoveTurn()
+        self._drag_stand_in_memo: dict[tuple, object] = {}
         # Convert brush: the model whose edit is open for the current drag
         # (None outside a stroke), and the timer coalescing its live repaint.
         self._convert_model: UnitEditModel | None = None
         # Trigger Pick from map's target, (trigger, entry kind, entry index,
         # field, is_list), or None when disarmed. Read by _needs_unit_index().
+        # An eyedropper's adds a sixth slot, PICK_TYPE (GH #276).
         self._unit_picker: tuple | None = None
         # GH #115: the Garrison block's Pick from map host key, or None; never armed with _unit_picker.
         self._garrison_picker: tuple[int, int] | None = None
@@ -4117,6 +4211,7 @@ class ViewerWindow(QMainWindow):
             on_entry_field_group=self.set_entry_field_group,
         )
         self.trigger_panel.on_focus_changed = self._on_trigger_focus_changed
+        self.trigger_panel.on_instruction_view = self._on_instruction_view
         self.trigger_panel.describe_unit_reference = self._describe_unit_reference
         self.trigger_panel.on_pick_unit = self._on_pick_unit_requested
         self.trigger_panel.unit_reference_tile = self._unit_reference_tile
@@ -4131,12 +4226,16 @@ class ViewerWindow(QMainWindow):
         # or None. Held here, not read off the panel, so an undo in View mode can
         # re-derive it while the panel sits unrefreshed.
         self._trigger_overlay_ref: tuple[tuple[int, ...], frozenset[tuple[str, int]]] | None = None
+        # TASK-550: the panel's last InstructionView, kept across modes so the box can come back.
+        self._instruction_view = None
         # The shapes the overlay last drew, and GH #229's Edit Area target in them:
         # (trigger index, entry kind, entry index, area coords), or None.
         self._trigger_overlay_shapes: list[trigger_geometry.TriggerShape] = []
         # GH #167: the last ghost-cap status key, so a re-derive does not repeat its line.
         self._trigger_ghost_cap_logged: tuple | None = None
         self._area_edit_target: tuple | None = None
+        # GH #41's: (trigger index, entry kind, entry index, location tile), or None.
+        self._location_edit_target: tuple | None = None
         # Edit Area's own enable gate, Create Objects' trigger_editable.
         self._area_edit_editable = False
         self.map_options_panel = MapOptionsPanel(on_option_field=self.set_option_field)
@@ -4160,6 +4259,7 @@ class ViewerWindow(QMainWindow):
         self.units_panel = UnitsPanel(
             on_unit_field=self._on_unit_field_changed,
             on_unit_field_step=self._on_unit_field_stepped,
+            on_rotation_drag=self._on_rotation_drag,
             on_place_requested=self._on_units_panel_place_requested,
             on_pending_changed=self._refresh_place_ghost,
             on_garrison_add=self._on_garrison_add,
@@ -4230,9 +4330,10 @@ class ViewerWindow(QMainWindow):
         self.map_view.resolve_trigger_ghost = self._resolve_trigger_ghost
         # A lambda, not the function: read at call time, as new_unit() reads it.
         self.map_view.prepare_trigger_ghost_resolve = lambda: library_compat.depoison()  # noqa: PLW0108
-        # GH #172: the wheel's rotate binding (Ctrl+wheel by default) turns that ghost while it shows.
+        # GH #172: the wheel's rotate binding (Ctrl+wheel by default) turns that ghost while it shows,
+        # and a live Move drag (GH #280), through the router the Rotate keys take.
         self.map_view.set_place_ghost_query(self._place_ghost_active)
-        self.map_view.set_place_rotate(lambda steps: self.rotate_place_ghost(steps=steps))
+        self.map_view.set_place_rotate(self.on_unit_rotate)
         # GH #210: the wheel's brush-size binding. Lambdas, since _build_toolbar() makes the spinbox later.
         self.map_view.set_wheel_brush_hooks(
             lambda: self.brush_size_spin.isEnabled(),  # noqa: PLW0108
@@ -4337,6 +4438,7 @@ class ViewerWindow(QMainWindow):
         self.map_view.on_tile_pick = self._on_tile_picked
         self.map_view.on_rect_pick = self._on_rect_picked
         self.map_view.on_area_edit = self._on_area_edited
+        self.map_view.on_location_edit = self._on_location_edited
         self.map_view.on_tile_picker_cancel = self.disarm_unit_picker
         self.map_view.on_unit_eyedrop = self.pick_unit_value
         self._tool_base_tips: dict[str, str] = {}
@@ -4542,7 +4644,8 @@ class ViewerWindow(QMainWindow):
                 "orientations instead, since a gate stores its facing in its object type, "
                 "and trees and scenery step through their graphic variants. Walls, cliffs "
                 "and single-frame objects are skipped. While placing, with the cursor over "
-                "the map, turns the placement preview instead"
+                "the map, turns the placement preview instead, and while dragging with Move, "
+                "turns the drag, landing with the drop"
             )
             action.setToolTip(
                 self._rotate_units_tip + ". With no unit selected and a region just pasted, "
@@ -4707,7 +4810,7 @@ class ViewerWindow(QMainWindow):
         # preview -- see _ghost_rotation_override() for why it is keyed on the
         # dict object itself rather than on a generation number.
         self._ghost_rotation: tuple[dict, dict[tuple[int, int], float | None]] | None = None
-        # (key, ghost item) of Place Unit's last hover ghost; see on_place_preview().
+        # (key, ghost item) of the last hover ghost; see on_place_preview().
         self._place_ghost_memo: tuple[tuple, object] | None = None
         # GH #172: the facing or variant Place Unit's ghost and next click use.
         self._place_rotation = place_rotation.PlaceRotation()
@@ -4783,6 +4886,16 @@ class ViewerWindow(QMainWindow):
             + ("" if facet_preview.GHOST_FACING_MEASURED else " Facing is not shown yet.")
         )
         view_menu.addAction(self.trigger_ghosts_action)
+        # TASK-550. Persisted, ON by default for the overlay's reason, but Triggers mode only:
+        # it covers the map's top centre, which is working space in Terrain or Units.
+        self.instruction_overlay_action = QAction(
+            "Show Instruction on &Map", self, checkable=True, checked=settings.get_instruction_overlay()
+        )
+        self.instruction_overlay_action.setToolTip(
+            "In Triggers mode, the selected Display Instructions effect's message drawn over the map, "
+            "sized and placed as the game draws it."
+        )
+        view_menu.addAction(self.instruction_overlay_action)
 
         # GH #49. Persisted passive chrome, but off by default: it draws over
         # the sprites, so it is opt-in.
@@ -4891,6 +5004,7 @@ class ViewerWindow(QMainWindow):
         self.player_cameras_action.toggled.connect(self._on_player_cameras_toggled)
         self.trigger_overlay_action.toggled.connect(self._on_trigger_overlay_toggled)
         self.trigger_ghosts_action.toggled.connect(self._on_trigger_ghosts_toggled)
+        self.instruction_overlay_action.toggled.connect(self._on_instruction_overlay_toggled)
         for tiles, action in self.distance_tick_interval_actions.items():
             # `on` must lead: toggled passes checked as the first positional
             # arg, so a lambda with only `tiles=tiles` gets it bound into
@@ -5139,7 +5253,8 @@ class ViewerWindow(QMainWindow):
         orientation (GH #61). Unit State and Capture Flag (GH #186) set every
         member to the picked raw value. A one-unit selection is a group of one, so
         both cases share this path, and each edit is one undo record. A group's
-        X/Y/Z step goes through _on_unit_field_stepped instead (GH #154).
+        X/Y/Z step, and a step on a "(mixed)" Rotation, go through
+        _on_unit_field_stepped instead (GH #154, TASK-548).
 
         UnitsPanel itself suppresses this during a programmatic populate (its
         own `_populating` guard, mirroring PlayersPanel._changed()'s), so
@@ -5220,23 +5335,18 @@ class ViewerWindow(QMainWindow):
                     changes.append((entry, rotation))
             if not changes:
                 return
-            label = "Set unit Rotation" if single else f"Set rotation on {len(changes)} units"
-            # Splice-eligible (Batch D's D5): rotation never moves the
-            # footprint, so old/new own_tile and old/new tiles are identical
-            # -- the splice still exists so the cache re-resolves this
-            # unit's now-different sprite frame, and the pick index is left
-            # untouched (nothing pickable moved).
+            # A typed value stands alone even if a drag was left open.
+            drag = self._rotation_drag if self.units_panel.dial_committing else None
+            # In a drag one spoke may turn only the trebuchets, so count the group.
+            turning = len(changes) if drag is None else len(angle_entries)
+            label = "Set unit Rotation" if single else f"Set rotation on {turning} units"
             players = sorted({e.player_id for e, _ in changes})
             splices: list[UnitSplice] = []
-            with self._unit_edit(model, label, players, splices, fields_only=True):
-                for entry, rotation in changes:
-                    unit = entry.unit
-                    old_own, old_tiles = self._unit_footprint(unit)
-                    idx = self._unit_list_index(entry.player_id, unit)
-                    model.set_rotation(unit, rotation)
-                    new_own, new_tiles = self._unit_footprint(unit)
-                    splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-            if skipped:
+            with self._unit_edit(model, label, players, splices, fields_only=True, drag=drag):
+                self._write_facings(model, changes, splices)
+            if drag is not None:
+                drag.skipped = skipped
+            elif skipped:
                 self._log_status(f"{label} ({skipped} skipped: not rotatable)")
             return
 
@@ -5318,7 +5428,9 @@ class ViewerWindow(QMainWindow):
 
     def _on_unit_field_stepped(self, spec: unit_fields.UnitFieldSpec, delta: float) -> None:
         """A group's X, Y or Z step (GH #154): every selected unit moves by
-        `delta` and the formation holds, where a typed value replaces.
+        `delta` and the formation holds, where a typed value replaces. A step
+        on a "(mixed)" Rotation turns every member the same way
+        (_step_rotation_field, TASK-548).
 
         A nudge, not a typed set: it goes through _move_units, so a host's
         garrison rides along (GH #42) and "Moving a gate updates walls" (GH
@@ -5337,6 +5449,9 @@ class ViewerWindow(QMainWindow):
             return
         entries = [e for e in (index.entry_for_key(k) for k in self._selection) if e is not None]
         if not entries:
+            return
+        if spec.field_id == "rotation":
+            self._step_rotation_field(model, entries, int(delta))
             return
         mm = self.scenario.map_manager
         units = [e.unit for e in entries]
@@ -5359,6 +5474,102 @@ class ViewerWindow(QMainWindow):
         if clamped:
             status += f", stopped {limit}"
         self._log_status(status + self._gate_move_clauses(gate_plan, units))
+
+    def _on_rotation_drag(self, active: bool, hidden: bool = False) -> bool:
+        """The compass's press and release (TASK-548): each spoke between them
+        is a finished edit that _unit_edit folds into the drag's record, so a
+        drag is one undo step (TASK-023) with nothing held open across mouse
+        events. Any other edit during it stands alone; the next spoke then
+        finds replace_top() refusing and pushes a fresh record for the drag to
+        follow.
+
+        A press returns False when the edit is refused, which
+        _ensure_unit_edits() has already explained. `hidden` is the dial hiding
+        before its release: that runs inside _apply_conditional_fields, where a
+        history move would nest, so the record simply stands.
+
+        Back on the start with one record, the drag leaves no record. A real
+        undo, not a value write, so an off-grid start returns verbatim. A redo
+        tail from before the drag stays gone: its first spoke was an edit.
+        """
+        if active:
+            if self._ensure_unit_edits() is None:
+                return False
+            self._rotation_drag = _RotationDrag(self.units_panel.unit_rotation_dial.value)
+            return True
+        drag, self._rotation_drag = self._rotation_drag, None
+        if drag is None or drag.record is None or drag.record is not self.edit_history.peek_undo() or hidden:
+            return True
+        dial_value = self.units_panel.unit_rotation_dial.value
+        if drag.start is not None and dial_value == drag.start and drag.pushes == 1:
+            self._move_history(drag.record, self.edit_history.undo, "Undo", quiet=True)
+            self.edit_history.drop_redo()
+            self._update_edit_actions()
+            return True
+        suffix = f" ({drag.skipped} skipped: not rotatable)" if drag.skipped else ""
+        self._log_status(drag.record.label + suffix)
+        return True
+
+    def _step_rotation_field(self, model, entries, steps: int) -> None:
+        """A step over a "(mixed)" Rotation (TASK-548): every member turns and
+        keeps its offset from the others, in whichever mode the field is in,
+        where a typed value aligns them. The writers and their scopes are
+        Rotate's and Cycle Variant's, and an off-grid facing moves along as
+        Rotate moves it. One undo record per notch.
+
+        A member whose turn lands on its own frame is dropped, and with none
+        left there is no record: Ctrl+wheel and PageUp arrive as +-10, a whole
+        cycle for a 2-direction unit or a tree with 2, 5 or 10 variants."""
+        mode = unit_variant.rotation_field_mode(e.unit.unit_const for e in entries)
+        blocked = 0
+        if mode == "facing":
+            writable = [e for e in entries if unit_rotation.rotation_is_angle(e.unit.unit_const)]
+            scale = unit_rotation.facing_scale(e.unit.unit_const for e in writable)
+            lead = next(e.unit for e in writable if unit_rotation.angle_count_for(e.unit.unit_const) == scale)
+            lead_facing = unit_rotation.rotation_to_facing(lead.rotation, scale)
+            changes = []
+            for entry in writable:
+                count = unit_rotation.angle_count_for(entry.unit.unit_const)
+                turn = unit_rotation.member_steps(lead_facing, scale, count, steps)
+                if turn % count:
+                    changes.append((entry, unit_rotation.rotate_step(entry.unit.rotation, count, turn)))
+            turned = [entry for entry, _rotation in changes]
+
+            def write(splices) -> None:
+                self._write_facings(model, changes, splices)
+        elif mode == "variant":
+            writable = [e for e in entries if unit_variant.is_cyclable(e.unit.unit_const)]
+            turned = [e for e in writable if steps % unit_variant.variant_count_for(e.unit.unit_const)]
+
+            def next_variant(unit) -> float:
+                angle_count = unit_rotation.angle_count_for(unit.unit_const)
+                return unit_variant.cycle_step(unit.rotation, angle_count, unit_variant.variant_count_for(unit.unit_const), steps)
+
+            def write(splices) -> None:
+                self._write_variants(model, turned, next_variant, splices)
+        elif mode == "gate":
+            writable = entries
+            changing = [e for e in writable if steps % len(gate_orientation.orientation_siblings(e.unit.unit_const))]
+            turned = [e for e in changing if self._gate_cycle_fits(e.unit, steps)]
+            blocked = len(changing) - len(turned)
+
+            def write(splices) -> None:
+                self._write_gate_consts(model, turned, lambda _unit: steps, splices)
+        else:
+            return
+        if turned:
+            units = f"{len(turned)} unit{'' if len(turned) == 1 else 's'}"
+            label = f"Turn {units}"
+            status = f"Turned {units} by {steps:+d}"
+            splices: list[UnitSplice] = []
+            with self._unit_edit(model, label, sorted({e.player_id for e in turned}), splices, fields_only=True):
+                write(splices)
+            skipped = len(entries) - len(writable)
+            self._log_status(f"{status} ({skipped} skipped: not rotatable)" if skipped else status)
+        if blocked:
+            self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)")
+            # A blocked notch writes nothing, so nothing else repaints the field.
+            self._update_unit_inspector_from_selection()
 
     def _set_variant_field(self, model, entries, variant: int, single: bool) -> None:
         """The Rotation field's variant mode: every cyclable member takes
@@ -6275,6 +6486,7 @@ class ViewerWindow(QMainWindow):
         units, so a terrain edit keeps it (`grid=False`)."""
         self._drag_rule_memo = None
         self._group_flags_memo = None
+        self._drag_stand_in_memo.clear()
         if grid:
             self._group_grid_memo = None
 
@@ -6290,6 +6502,7 @@ class ViewerWindow(QMainWindow):
         returned is always in the selection, which _is_group_key() and
         _drag_entries() rely on. Empty ground leaves the selection alone.
         """
+        self._drag_turn = move_turn.MoveTurn()
         found = self._press_pick(pos)
         self.on_lift_finalize()  # TASK-256: any click ends a flip or turn
         if found is None:
@@ -6628,7 +6841,7 @@ class ViewerWindow(QMainWindow):
         _tiles, existing_walls = self._gate_wall_scene()
         return [unit for _player_id, unit in wall_run.walls_under(gate_tiles, existing_walls)]
 
-    def _move_plan(self, model, moves, *, gate_walls: bool) -> wall_run.MovePlan | None:
+    def _move_plan(self, model, moves, *, gate_walls: bool, consts=None) -> wall_run.MovePlan | None:
         """What moving `moves`, [(entry, new_x, new_y), ...], changes in the
         walls (wall_run.scenario_move_plan()): each wall carried onto another
         tile takes its new place's shape and the walls beside where it left
@@ -6636,7 +6849,7 @@ class ViewerWindow(QMainWindow):
         updates walls" ticked, a gate's move swaps walls too (GH #194). None
         with neither a wall nor such a gate among them, or none changing
         tiles. The box is read even while hidden, as Free placement is for a
-        drag.
+        drag. `consts` is scenario_move_plan()'s, for a gate a drag turns.
 
         A falsy plan can still carry `blocked` for the status line."""
         gate_walls = gate_walls and self.gate_walls_check.isChecked()
@@ -6655,6 +6868,7 @@ class ViewerWindow(QMainWindow):
             [(entry.unit, x, y) for entry, x, y in moves],
             gate_walls=gate_walls,
             removable=lambda unit: not model.referencing(unit),
+            consts=consts,
         )
 
     def _apply_wall_reshapes(self, model, plan: wall_run.MovePlan, splices: list) -> None:
@@ -6703,14 +6917,17 @@ class ViewerWindow(QMainWindow):
         return text
 
     def on_place_preview(self, pos, modifiers) -> None:
-        """MapView's place-preview hook (GH #128): Place Unit's hover ghost, a
-        translucent copy of the picked object where a click would put it.
+        """MapView's place-preview hook (GH #128): the hover ghost, a
+        translucent copy of the picked object where a click would put it, for
+        Place Unit and the Unit Brush (GH #270).
 
         Resolved through on_unit_place's own resolver and new_unit(), the
         constructor add() uses, so point and look cannot drift from the click.
+        The Unit Brush resolves its point through _unit_brush_hover_point()
+        instead, and shows one sample of what a dab places.
         Never builds the lazy unit model: hovering must not pay for it. A
         filtered-out object still ghosts; the click's status line says why it
-        then vanishes. Walls never get here (Place Unit drags them).
+        then vanishes. Place Unit's walls never get here (it drags them).
 
         Drawn refused where the click would refuse it (TASK-327), through
         placement_rules.refused(), which builds no message."""
@@ -6718,7 +6935,10 @@ class ViewerWindow(QMainWindow):
         const = None if self.scenario is None else self.units_panel.selected_object_const()
         point = None
         if const is not None:
-            point, _fell_back = self._resolve_placement_point(pos, modifiers, unit_const=const)
+            if self._current_tool == "unit_brush":
+                point = self._unit_brush_hover_point(pos, const)
+            else:
+                point, _fell_back = self._resolve_placement_point(pos, modifiers, unit_const=const)
         if point is None:
             self._place_ghost_memo = None
             view.set_unit_ghost()
@@ -6762,8 +6982,23 @@ class ViewerWindow(QMainWindow):
         item = view._unit_ghost_item
         self._place_ghost_memo = None if item is None else (key, item)
 
+    def _unit_brush_hover_point(self, pos, const: int) -> tuple[float, float] | None:
+        """Where a dab on the cursor tile stands `const`, or None where a press
+        paints nothing whatever the boxes say: a refused pick or a footprint
+        past the map edge. The whole pick counts, as _begin_unit_brush_stroke()'s
+        refusal does, not just the const rolled to stand for it."""
+        choices = self.units_panel.selected_object_choices() or ()
+        if any(unit_brush.is_refused_const(choice) for choice in choices):
+            return None
+        tile = self.map_view._pick_tile(pos)
+        if tile is None:
+            return None
+        mm = self.scenario.map_manager
+        return unit_brush.hover_anchor(const, tile, mm.map_width, mm.map_height)
+
     def _refresh_place_ghost(self, *_args) -> None:
-        """A catalog pick, owner, Off-grid or Free placement change with no mouse move."""
+        """A catalog pick, owner, Off-grid or Free placement change with no
+        mouse move, for Place Unit's or the Unit Brush's ghost."""
         # GH #172: a half notch turned for the old pick must not fire on the new one.
         self.map_view.reset_place_wheel()
         self._update_rotate_enabled()
@@ -7525,7 +7760,22 @@ class ViewerWindow(QMainWindow):
         walls beside the tile it left and the one it reached reshape, in the
         same record (GH #266, _move_plan()). That stays a fields-only splice
         edit unless the plan is `wholesale`.
+
+        A turn the drag holds (GH #280, _turn_unit_drag()) lands in the same
+        record: its `rotation` or const goes through the setter Rotate uses,
+        taken from the drag's stand-in, so the drop is the ghost. A gate turned
+        lands by its new span, and "Moving a gate updates walls" reads that
+        span for the tiles it reaches and its stored one for those it left.
+        Back on its own point the drop is a turn in place: nothing's position
+        is written, and it reads as a Rotate. A garrison drop drops the turn.
         """
+        try:
+            self._commit_unit_drag(key, pos, modifiers)
+        finally:
+            self._drag_turn = move_turn.MoveTurn()
+
+    def _commit_unit_drag(self, key, pos, modifiers) -> None:
+        """on_unit_move's body, whichever way it ends."""
         if self.scenario is None:
             return
         index = self.map_view._unit_index
@@ -7533,78 +7783,217 @@ class ViewerWindow(QMainWindow):
         if entry is None:
             return
         entries = self._drag_entries(key, entry)
+        group = self._is_group_key(key)
         drop = self._garrison_drop(entries, pos, modifiers)
         if drop is not None:
             host_entry, message = drop
             if message is not None:
                 self._log_status(message)
                 return
-            self._garrison_units(host_entry, entries)
+            turned = any(self._drag_stand_in(e, group) is not e.unit for e in entries)
+            if self._garrison_units(host_entry, entries) and turned:
+                self._log_status("Move: the turn was dropped, since a garrisoned unit keeps its facing")
             return
-        if self._is_group_key(key):
+        if group:
             self._move_group(entry, pos, modifiers)
             return
-        point = self._placement_point(pos, modifiers, unit_const=entry.unit.unit_const)
+        unit = entry.unit
+        stand_in = self._drag_stand_in(entry, False)
+        point = self._placement_point(pos, modifiers, unit_const=stand_in.unit_const)
         if point is None:
             return
         model = self._ensure_unit_edits()
         if model is None:
             return
         x, y = point
-        unit = entry.unit
+        turning = stand_in is not unit
         # Effectively never fires off-grid (two float coordinates rarely
         # land on the same bits twice), and still correct for the snapped
-        # path, which is the only reason it is still here.
-        if (x, y) == (unit.x, unit.y):
+        # path, which is the only reason it is still here. The stand-in's
+        # point differs from the unit's only by a turned gate's re-anchor.
+        in_place = (x, y) == (stand_in.x, stand_in.y)
+        if in_place and not turning:
             return
+        new_const = stand_in.unit_const
         # The garrison rides along, onto the host's new point (GH #42).
-        occupants = self._garrison_occupant_entries(model, [entry])
+        occupants = [] if in_place else self._garrison_occupant_entries(model, [entry])
         # Planned before the refusal, and only read by it: a refused move changes nothing.
-        gate_plan = self._move_plan(model, [(e, x, y) for e in (entry, *occupants)], gate_walls=True)
-        if not self._restrictions_lifted():
+        gate_plan = self._move_plan(
+            model, [(e, x, y) for e in (entry, *occupants)], gate_walls=True, consts={id(unit): new_const}
+        )
+        # A facing never changes a footprint, so a unit already refused where it stands can still turn.
+        if not self._restrictions_lifted() and (not in_place or new_const != unit.unit_const):
             # GH #176. The mover never blocks itself; its occupants are garrisoned, so they never block.
             # GH #194: nor do the walls a moved gate replaces, as on_unit_place's gate_walls.
             exclude = [unit, *self._gate_move_replaced(gate_plan)]
-            reason = placement_rules.move_refusal(self.scenario, unit, x, y, exclude=exclude)
+            reason = placement_rules.move_refusal(self.scenario, unit, x, y, exclude=exclude, unit_const=new_const)
             if reason is not None:
                 self._log_status(f"Move: {reason}. Tick Free placement to move it anyway.")
                 return
         mm = self.scenario.map_manager
-        status = f"Moved {_unit_name(unit.unit_const)} to ({x:g}, {y:g}){self._gate_move_clauses(gate_plan, [unit])}"
+        clauses = self._gate_move_clauses(gate_plan, [unit])
+        moved = f"Moved {_unit_name(unit.unit_const)} to ({x:g}, {y:g})"
+        if turning:
+            moved += f", {self._turn_clause(unit, stand_in)}"
+        label = "Rotate unit" if in_place else "Move and rotate unit" if turning else "Move unit"
+
+        def report() -> None:
+            done = self._rotate_status(*self._turn_classes([entry]), 0, 0) if in_place else moved
+            self._log_status(done + clauses)
+
         owners = {entry.player_id} | {e.player_id for e in occupants}
         if gate_plan:
             owners |= wall_run.move_plan_players(gate_plan)
         if gate_plan is not None and gate_plan.wholesale:
             # GH #194: removals and fills shift list indices, so no splice; one wholesale record.
-            with self._unit_edit(model, "Move unit", sorted(owners)):
+            with self._unit_edit(model, label, sorted(owners)):
                 # First: the only call that can refuse, so a refusal leaves nothing moved.
                 model.remove_many([wall for _player_id, wall in gate_plan.removals])
-                model.set_position(unit, x, y, unit.z)
+                if turning:
+                    self._apply_drag_turn(model, stand_in, unit)
+                if not in_place:
+                    model.set_position(unit, x, y, unit.z)
                 for occupant in occupants:
                     model.set_position(occupant.unit, x, y, occupant.unit.z)
                 wall_run.apply_move_plan(model, gate_plan)
-            self._log_status(status)
+            report()
             return
         old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
         old_own, old_tiles = self._unit_footprint(unit)
         idx = self._unit_list_index(entry.player_id, unit)
         splices: list[UnitSplice] = []
-        with self._unit_edit(model, "Move unit", sorted(owners), splices, fields_only=True):
-            model.set_position(unit, x, y, unit.z)
+        with self._unit_edit(model, label, sorted(owners), splices, fields_only=True):
+            # After the captures: a splice's old tiles are the stored footprint.
+            swapped = turning and self._apply_drag_turn(model, stand_in, unit)
+            if not in_place:
+                model.set_position(unit, x, y, unit.z)
             new_own, new_tiles = self._unit_footprint(unit)
             splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-            self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+            # Not scoped to a span change, so a swapped const rebuilds below instead.
+            if not swapped and not in_place:
+                self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
             for occupant in occupants:
                 self._move_occupant_to(model, occupant, x, y, splices)
             if gate_plan:
                 self._apply_wall_reshapes(model, gate_plan, splices)
-        self._log_status(status)
+            if swapped:
+                self._rebuild_unit_index()
+        report()
+
+    def _drag_stand_in(self, entry, group: bool):
+        """`entry`'s unit as the drag's turn leaves it at its source, for the
+        preview and the drop to read, or the real unit itself when the turn
+        changes nothing for it: that member takes no re-anchor and no write.
+        Never a write target (render.unit_at()).
+
+        `group` is Rotate's map-edge rule. A group member turns on its own spot,
+        so a gate that would hang off the map there keeps its const: the clamp
+        doesn't pull an overhanging footprint in. A single drag doesn't ask,
+        since its fit is the landing's and the resolver answers that.
+
+        Memoized per unit and input: Esc or a refused drop bumps no unit_gen,
+        so the key has to name the unit and `group`, not just the turn."""
+        turn = self._drag_turn
+        unit = entry.unit
+        if not turn:
+            return unit
+        memo_key = (turn, self.scenario.unit_gen, id(unit), group)
+        memo = self._drag_stand_in_memo
+        if memo_key in memo:
+            return memo[memo_key]
+        const, rotation = move_turn.turned(turn, unit.unit_const, unit.rotation)
+        swapped = const != unit.unit_const
+        if (const, rotation) == (unit.unit_const, unit.rotation) or (
+            group and swapped and not self._gate_cycle_fits(unit, turn.gate)
+        ):
+            stand_in = unit
+        else:
+            stand_in = unit_at(unit, *(reanchored(unit, const) if swapped else (unit.x, unit.y)))
+            stand_in.unit_const, stand_in.rotation = const, rotation
+        memo[memo_key] = stand_in
+        return stand_in
+
+    def _apply_drag_turn(self, model, stand_in, unit) -> bool:
+        """Writes the turn `stand_in` holds through `unit`'s one setter, both
+        values taken from it, so the preview and the drop share one answer.
+        Inside an open _unit_edit, after the footprint captures and before
+        set_position(). Returns whether the const changed."""
+        if stand_in.unit_const != unit.unit_const:
+            model.set_unit_const(unit, stand_in.unit_const)
+            return True
+        if unit_rotation.rotation_is_angle(unit.unit_const):
+            model.set_rotation(unit, stand_in.rotation)
+        else:
+            model.set_variant(unit, stand_in.rotation)
+        return False
+
+    def _turn_clause(self, unit, stand_in) -> str:
+        """What a turn makes of `unit`: "facing 6/16", "variant 5/42", or a gate's sibling."""
+        if stand_in.unit_const != unit.unit_const:
+            return f"now {_unit_name(stand_in.unit_const)}"
+        return self._placement_rotation_text(unit.unit_const, stand_in.rotation)
+
+    @staticmethod
+    def _turn_classes(entries) -> tuple[list, list, list]:
+        """(rotatable, gates, variants) among `entries`, as on_unit_rotate picks them."""
+        return (
+            [e for e in entries if unit_rotation.rotation_is_angle(e.unit.unit_const)],
+            [e for e in entries if gate_orientation.is_gate(e.unit.unit_const)],
+            [e for e in entries if unit_variant.is_cyclable(e.unit.unit_const)],
+        )
+
+    def _turn_skips(self, entries) -> tuple[int, int]:
+        """(gates that won't fit, members that can't turn) of a group under the
+        drag's turn, Rotate's two skip counts."""
+        rotatable, gates, variants = self._turn_classes(entries)
+        steps = self._drag_turn.gate
+        blocked = sum(
+            gate_orientation.cycle_const(e.unit.unit_const, steps) != e.unit.unit_const
+            and not self._gate_cycle_fits(e.unit, steps)
+            for e in gates
+        )
+        return blocked, len(entries) - len(rotatable) - len(gates) - len(variants)
+
+    def _turn_unit_drag(self, turn: move_turn.MoveTurn) -> None:
+        """A Rotate input on a live Move drag (GH #280). Nothing is written and
+        no cache touched until the release: the turn goes on the ghost and into
+        the status line, and on_unit_move lands it with the move, so Esc or a
+        refused drop leaves the unit as it stands. Turned in place by Rotate's
+        rules, per const (move_turn.turned()); only the group member's map-edge
+        rule depends on the drag (_drag_stand_in())."""
+        self._drag_turn = turn
+        self.map_view.refresh_unit_drag_ghost()
+        key = self.map_view._unit_drag_key
+        index = self.map_view._unit_index
+        entry = index.entry_for_key(key) if index is not None else None
+        if entry is None:
+            return
+        if self._is_group_key(key):
+            entries = self._drag_entries(key, entry)
+            turning = sum(self._drag_stand_in(e, True) is not e.unit for e in entries)
+            blocked, skipped = self._turn_skips(entries)
+            status = f"Move: turning {turning} of {len(entries)} units"
+            if blocked:
+                status += f"; {blocked} gate(s) skipped (would hang off the map edge)"
+            if skipped:
+                status += f"; {skipped} skipped (no facing or variant to change)"
+            self._log_status(status)
+            return
+        const = entry.unit.unit_const
+        stand_in = self._drag_stand_in(entry, False)
+        if gate_orientation.is_gate(const):
+            self._log_status(f"Move: {_unit_name(stand_in.unit_const)}")
+        elif unit_variant.is_rotation_editable(const):
+            self._log_status(f"Move: {_unit_name(const)} {self._placement_rotation_text(const, stand_in.rotation)}")
+        else:
+            self._log_status(f"Move: {_unit_name(const)} has no facing or variant to rotate")
 
     def _group_delta(self, anchor, pos, modifiers, commit: bool):
         """(entries, dx, dy, clamped) for a group drag grabbing `anchor`, or
         None. Snapped moves by whole tiles from the press's cover tile, so
         every member keeps its parity; off-grid moves the anchor onto the point,
-        as a single off-grid move does."""
+        as a single off-grid move does. Both measure each member as the
+        drag's turn leaves it (_drag_stand_in()), a gate's new span included."""
         index = self.map_view._unit_index
         if index is None:
             return None
@@ -7622,7 +8011,7 @@ class ViewerWindow(QMainWindow):
             if ground is None:
                 return None
             point = ground if off_grid else (math.floor(ground[0]) + 0.5, math.floor(ground[1]) + 0.5)
-        unit = anchor.unit
+        unit = self._drag_stand_in(anchor, True)
         if off_grid:
             dx, dy = point[0] - unit.x, point[1] - unit.y
         else:
@@ -7630,65 +8019,111 @@ class ViewerWindow(QMainWindow):
             dx, dy = math.floor(point[0]) - grab[0], math.floor(point[1]) - grab[1]
         mm = self.scenario.map_manager
         dx, dy, clamped = clamp_group_delta(
-            [e.unit for e in entries], dx, dy, mm.map_width, mm.map_height, whole_tiles=not off_grid
+            [self._drag_stand_in(e, True) for e in entries], dx, dy, mm.map_width, mm.map_height, whole_tiles=not off_grid
         )
         return entries, dx, dy, clamped
 
     def _move_group(self, anchor, pos, modifiers) -> None:
         """on_unit_move for a key in a 2+ selection: every member moves by the
-        same clamped delta, in one undo record (GH #75)."""
+        same clamped delta, in one undo record (GH #75).
+
+        A turn the drag holds lands on each member at its own spot, then the
+        delta (GH #280). With a zero delta that is a turn in place: only the
+        turned members are written, nobody's position is, occupants stay out
+        of it, and only a member whose const changed is judged by the rules."""
         resolved = self._group_delta(anchor, pos, modifiers, commit=True)
         if resolved is None:
             return
         entries, dx, dy, clamped = resolved
-        if (dx, dy) == (0, 0):
+        stand_ins = {id(e.unit): s for e in entries if (s := self._drag_stand_in(e, True)) is not e.unit}
+        in_place = (dx, dy) == (0, 0)
+        if in_place and not stand_ins:
             if clamped:
                 self._log_status(f"{len(entries)} units already at the map edge; nothing moved")
             return
         model = self._ensure_unit_edits()
         if model is None:
             return
-        label = f"Move {len(entries)} units"
+        selected, judged = entries, entries
+        blocked = skipped = 0
+        if in_place:
+            blocked, skipped = self._turn_skips(selected)
+            entries = [e for e in entries if id(e.unit) in stand_ins]
+            judged = [e for e in entries if stand_ins[id(e.unit)].unit_const != e.unit.unit_const]
+            label = "Rotate unit" if len(entries) == 1 else f"Rotate {len(entries)} units"
+        elif stand_ins:
+            label = f"Move and rotate {len(entries)} units"
+        else:
+            label = f"Move {len(entries)} units"
         # One op: _move_units' own same-label op is transparent inside it.
         with perf_trace.op(label):
-            planned = None
+            # GH #194: one plan for the refusal and the move (TASK-352); only its removals unblock.
+            planned = self._plan_unit_move(model, entries, dx, dy, stand_ins, occupants=not in_place)
             if not self._restrictions_lifted():
-                # GH #194: one plan for the refusal and the move (TASK-352); only its removals unblock.
-                planned = self._plan_unit_move(model, entries, dx, dy)
-                refused = self._group_move_refusal(entries, dx, dy, self._gate_move_replaced(planned[1]))
+                replaced = self._gate_move_replaced(planned[1])
+                refused = self._group_move_refusal(selected, dx, dy, replaced, stand_ins, judged)
                 if refused is not None:
                     self._log_status(refused)
                     return
-            gate_plan = self._move_units(model, entries, dx, dy, label, planned)
+            gate_plan = self._move_units(model, entries, dx, dy, label, planned, stand_ins=stand_ins)
+        clauses = self._gate_move_clauses(gate_plan, [e.unit for e in entries])
+        if in_place:
+            self._log_status(self._rotate_status(*self._turn_classes(entries), blocked, skipped) + clauses)
+            return
         status = f"Moved {len(entries)} units by ({dx:g}, {dy:g})"
+        if stand_ins:
+            status += f", turning {len(stand_ins)}"
         if clamped:
             status += ", stopped at the map edge"
-        self._log_status(status + self._gate_move_clauses(gate_plan, [e.unit for e in entries]))
+        self._log_status(status + clauses)
 
-    def _group_move_refusal(self, entries, dx: float, dy: float, replaced=()) -> str | None:
+    def _group_move_refusal(
+        self, entries, dx: float, dy: float, replaced=(), stand_ins=None, judged=None
+    ) -> str | None:
         """Why placement_rules refuses moving every entry by (dx, dy), as a
         status line, or None (GH #176). All or nothing, so a formation never
         tears. The members never block each other: they keep their spacing.
         `replaced` is the walls a moved gate's plan removes (GH #194), which
         do not block either.
 
+        `stand_ins`, {id(unit): stand-in}, are the members a drag turns, read
+        for their position and const (GH #280), and `judged` narrows who is
+        asked; `entries` stays the whole selection, for the shared grid.
+
         Counted with move_refused() through the preview's own grid; only the
         first refused member's message is built (TASK-327), since a terrain
         message costs a language-file parse."""
         grid = self._group_grid(entries)
+        judged = entries if judged is None else judged
+        turned = stand_ins or {}
+
+        def landing(unit):
+            source = turned.get(id(unit), unit)
+            return source.x + dx, source.y + dy
+
+        def landing_const(unit) -> int:
+            return turned.get(id(unit), unit).unit_const
+
         refused = [
             entry.unit
-            for entry in entries
+            for entry in judged
             if placement_rules.move_refused(
-                self.scenario, entry.unit, entry.unit.x + dx, entry.unit.y + dy, exclude=replaced, grid=grid
+                self.scenario,
+                entry.unit,
+                *landing(entry.unit),
+                exclude=replaced,
+                grid=grid,
+                unit_const=landing_const(entry.unit),
             )
         ]
         if not refused:
             return None
         first = refused[0]
-        reason = placement_rules.move_refusal(self.scenario, first, first.x + dx, first.y + dy, exclude=replaced, grid=grid)
+        reason = placement_rules.move_refusal(
+            self.scenario, first, *landing(first), exclude=replaced, grid=grid, unit_const=landing_const(first)
+        )
         return (
-            f"Move: {len(refused)} of {len(entries)} units can't go there (first: {reason}). "
+            f"Move: {len(refused)} of {len(judged)} units can't go there (first: {reason}). "
             "Tick Free placement to move them anyway."
         )
 
@@ -7746,33 +8181,55 @@ class ViewerWindow(QMainWindow):
             rows.append(entry or unit_pick.UnitEntry(player_id, unit, int(unit.x), int(unit.y), -1))
         return rows
 
-    def _plan_unit_move(self, model, entries, dx: float, dy: float) -> tuple[list, wall_run.MovePlan | None]:
+    def _plan_unit_move(
+        self, model, entries, dx: float, dy: float, stand_ins=None, occupants: bool = True
+    ) -> tuple[list, wall_run.MovePlan | None]:
         """(entries plus their garrison occupants, _move_plan() for moving
-        them all by (dx, dy)): what _move_units() moves and applies."""
-        with perf_trace.phase("move_garrison"):
-            entries = list(entries) + self._garrison_occupant_entries(model, entries)
-        return entries, self._move_plan(model, [(e, e.unit.x + dx, e.unit.y + dy) for e in entries], gate_walls=True)
+        them all by (dx, dy)): what _move_units() moves and applies.
+        `stand_ins` is _move_units()'s; `occupants` False is a turn in place,
+        which carries nobody."""
+        if occupants:
+            with perf_trace.phase("move_garrison"):
+                entries = list(entries) + self._garrison_occupant_entries(model, entries)
+        turned = stand_ins or {}
+        sources = [(e, turned.get(id(e.unit), e.unit)) for e in entries]
+        return entries, self._move_plan(
+            model,
+            [(e, source.x + dx, source.y + dy) for e, source in sources],
+            gate_walls=True,
+            consts={id(e.unit): source.unit_const for e, source in sources if source is not e.unit},
+        )
 
     def _move_units(
-        self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0
+        self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0, stand_ins=None
     ) -> wall_run.MovePlan | None:
         """Moves every entry by (dx, dy) in ONE undo record, splicing each
         unit's footprint. `rotation` passes through verbatim, except a wall's
-        shape index the move re-derives (GH #266), and so does `z` unless a
-        group Z step (GH #154) passes a non-zero `dz`.
+        shape index the move re-derives (GH #266) and a turn in `stand_ins`,
+        and so does `z` unless a group Z step (GH #154) passes a non-zero `dz`.
 
         A host's garrison rides along (GH #42): its occupants sit at its own
         point and cannot be selected while hidden, so the same delta applies
         to them in the same undo record.
+
+        `stand_ins`, {id(unit): stand-in}, are the members a Move drag turned
+        (GH #280; never a hidden occupant, an arrow nudge or Scatter). Each
+        takes its turn first, then the delta. With a zero delta they take the
+        turn only, and no position is rewritten.
 
         Returns _move_plan()'s answer for the caller's status line (GH #194,
         GH #266), applied here: a `wholesale` one as one wholesale record,
         any other truthy one inside the splice edit (_apply_wall_reshapes()).
         `planned` is _plan_unit_move()'s answer for these same arguments, when
         the caller already has it (TASK-352); None plans here."""
+        turned = stand_ins or {}
+        # A turn in place is the only call with a zero delta and a member to skip.
+        moves = bool(dx or dy or dz)
         # Opened here so the garrison walk lands in the op; _unit_edit's same-label op is transparent.
         with perf_trace.op(label):
-            entries, gate_plan = planned if planned is not None else self._plan_unit_move(model, entries, dx, dy)
+            if planned is None:
+                planned = self._plan_unit_move(model, entries, dx, dy, turned)
+            entries, gate_plan = planned
             players = sorted({e.player_id for e in entries} | (wall_run.move_plan_players(gate_plan) if gate_plan else set()))
             if gate_plan is not None and gate_plan.wholesale:
                 # GH #194: removals and fills shift list indices, so no splices; see on_unit_move.
@@ -7780,12 +8237,17 @@ class ViewerWindow(QMainWindow):
                     model.remove_many([wall for _player_id, wall in gate_plan.removals])
                     for entry in entries:
                         unit = entry.unit
-                        # Guarded: unit.z + 0.0 would turn a stored -0.0 into 0.0.
-                        model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
+                        stand_in = turned.get(id(unit))
+                        if stand_in is not None:
+                            self._apply_drag_turn(model, stand_in, unit)
+                        if stand_in is None or moves:
+                            # Guarded: unit.z + 0.0 would turn a stored -0.0 into 0.0.
+                            model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
                     wall_run.apply_move_plan(model, gate_plan)
                 return gate_plan
             mm = self.scenario.map_manager
             splices: list[UnitSplice] = []
+            rebuild = False
             with self._unit_edit(model, label, players, splices, fields_only=True):
                 for entry in entries:
                     unit = entry.unit
@@ -7793,13 +8255,23 @@ class ViewerWindow(QMainWindow):
                     old_own, old_tiles = self._unit_footprint(unit)
                     with perf_trace.phase("move_list_index"):
                         idx = self._unit_list_index(entry.player_id, unit)
-                    model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
+                    # After the captures: a splice's old tiles are the stored footprint.
+                    stand_in = turned.get(id(unit))
+                    swapped = stand_in is not None and self._apply_drag_turn(model, stand_in, unit)
+                    rebuild = rebuild or swapped
+                    position = stand_in is None or moves
+                    if position:
+                        model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
                     new_own, new_tiles = self._unit_footprint(unit)
                     splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-                    with perf_trace.phase("move_pick_patch"):
-                        self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+                    # Not scoped to a span change, so a swapped const rebuilds below instead.
+                    if position and not swapped:
+                        with perf_trace.phase("move_pick_patch"):
+                            self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
                 if gate_plan:
                     self._apply_wall_reshapes(model, gate_plan, splices)
+                if rebuild:
+                    self._rebuild_unit_index()
         return gate_plan
 
     def on_unit_drag_preview(self, key: tuple[int, int], pos, modifiers) -> None:
@@ -7846,12 +8318,13 @@ class ViewerWindow(QMainWindow):
         # cannot lie about where the unit lands -- including under the
         # Off-grid checkbox and its held-Alt one-off. Its fallback status
         # line is deliberately dropped here; see _resolve_placement_point.
-        point, _fell_back = self._resolve_placement_point(pos, modifiers, unit_const=entry.unit.unit_const)
+        stand_in = self._drag_stand_in(entry, False)
+        point, _fell_back = self._resolve_placement_point(pos, modifiers, unit_const=stand_in.unit_const)
         if point is None:
             self.map_view.set_unit_ghost()
             return
-        ghost = unit_at(entry.unit, *point)
-        refused = self._single_drag_refused(key, entry, point, drop)
+        ghost = unit_at(stand_in, *point)
+        refused = self._single_drag_refused(key, entry, stand_in, point, drop)
         draws = self._drag_ghost_sprite_draws(entry, ghost)
         if draws:
             self.map_view.set_unit_ghost(draws=draws, refused=refused)
@@ -7859,22 +8332,25 @@ class ViewerWindow(QMainWindow):
         polygons, color = self._ghost_mark(entry.player_id, ghost)
         self.map_view.set_unit_ghost(polygons=polygons, color=color, refused=refused)
 
-    def _single_drag_refused(self, key, entry, point: tuple[float, float], drop) -> bool:
+    def _single_drag_refused(self, key, entry, stand_in, point: tuple[float, float], drop) -> bool:
         """Whether on_unit_move would refuse dropping `entry` at `point`, in
         its order: a host that takes it never refuses and one that does not
-        always does, Free placement or not; a drop back on its own point is a
-        no-op; Free placement lifts the rule. The rule's answer alone is
-        memoized, per tile crossing on a snapped drag."""
+        always does, Free placement or not; a drop back on its own point with
+        its const unchanged has no footprint to judge; Free placement lifts
+        the rule. `stand_in` is the drag's turn (_drag_stand_in()). The rule's
+        answer alone is memoized, per tile crossing on a snapped drag."""
         if drop is not None:
             return drop[1] is not None
         unit = entry.unit
-        if point == (unit.x, unit.y) or self._restrictions_lifted() or self._moves_gate_walls([entry]):
+        const = stand_in.unit_const
+        own_point = point == (stand_in.x, stand_in.y) and const == unit.unit_const
+        if own_point or self._restrictions_lifted() or self._moves_gate_walls([entry]):
             return False
-        memo_key = (key, point, self.scenario.unit_gen)
+        memo_key = (key, point, const, self.scenario.unit_gen)
         memo = self._drag_rule_memo
         if memo is not None and memo[0] == memo_key:
             return memo[1]
-        refused = placement_rules.move_refused(self.scenario, unit, *point, exclude=[unit])
+        refused = placement_rules.move_refused(self.scenario, unit, *point, exclude=[unit], unit_const=const)
         self._drag_rule_memo = (memo_key, refused)
         return refused
 
@@ -7923,7 +8399,8 @@ class ViewerWindow(QMainWindow):
         refused_draws: list = []
         refused_marks: list = []
         for entry in members:
-            ghost = unit_at(entry.unit, entry.unit.x + dx, entry.unit.y + dy)
+            stand_in = self._drag_stand_in(entry, True)
+            ghost = unit_at(stand_in, stand_in.x + dx, stand_in.y + dy)
             # A member nudged off-map stays off-map, and has nothing to draw.
             if unit_tile_bounds(ghost, mm.map_width, mm.map_height) is None:
                 continue
@@ -7939,33 +8416,46 @@ class ViewerWindow(QMainWindow):
         """id(unit) of every member _move_group() would refuse at (dx, dy), in
         on_unit_move's branch order: a host's answer first (every member when
         it refuses, Free placement or not; none when it takes them), then a
-        zero delta (a no-op) and Free placement (none). Up to GROUP_GHOST_CAP
-        members are checked, the grabbed one first; the release checks all.
-        Empty for a drag that may replace walls (_moves_gate_walls()).
+        zero delta and Free placement (none). With a turn, a zero delta still
+        judges the members whose const changed, as _move_group() does. Up to
+        GROUP_GHOST_CAP members are checked, the grabbed one first; the release
+        checks all. Empty for a drag that may replace walls (_moves_gate_walls()).
 
-        The answer is memoized per delta through one BlockerGrid per drag
-        (_group_grid()), so a snapped drag asks once per tile crossing."""
+        The answer is memoized per delta and turn through one BlockerGrid per
+        drag (_group_grid()), so a snapped drag asks once per tile crossing."""
         if drop is not None:
             return {id(e.unit) for e in entries} if drop[1] is not None else set()
-        if (dx, dy) == (0, 0) or self._restrictions_lifted():
+        turn = self._drag_turn
+        in_place = (dx, dy) == (0, 0)
+        if (in_place and not turn) or self._restrictions_lifted():
             return set()
         gen, box = self.scenario.unit_gen, self.gate_walls_check.isChecked()
         memo = self._group_flags_memo
-        if memo is not None and memo[0] is self._selection and memo[1:5] == (dx, dy, gen, box):
-            return memo[5]
+        if memo is not None and memo[0] is self._selection and memo[1:6] == (dx, dy, gen, box, turn):
+            return memo[6]
         ids: set[int] = set()
         # Inside the memo: the scan for a gate runs once per delta, not per mouse move.
         if not self._moves_gate_walls(entries):
-            checked = entries
-            if len(entries) > GROUP_GHOST_CAP:
-                checked = [anchor, *(e for e in entries if e.unit is not anchor.unit)][:GROUP_GHOST_CAP]
+            pairs = [(e, self._drag_stand_in(e, True)) for e in entries]
+            if in_place:
+                pairs = [(e, stand_in) for e, stand_in in pairs if stand_in.unit_const != e.unit.unit_const]
+            if len(pairs) > GROUP_GHOST_CAP:
+                # Stable, so the grabbed member leads and the rest keep their order.
+                pairs = sorted(pairs, key=lambda pair: pair[0].unit is not anchor.unit)[:GROUP_GHOST_CAP]
             grid = self._group_grid(entries)
             ids = {
                 id(e.unit)
-                for e in checked
-                if placement_rules.move_refused(self.scenario, e.unit, e.unit.x + dx, e.unit.y + dy, grid=grid)
+                for e, stand_in in pairs
+                if placement_rules.move_refused(
+                    self.scenario,
+                    e.unit,
+                    stand_in.x + dx,
+                    stand_in.y + dy,
+                    grid=grid,
+                    unit_const=stand_in.unit_const,
+                )
             }
-        self._group_flags_memo = (self._selection, dx, dy, gen, box, ids)
+        self._group_flags_memo = (self._selection, dx, dy, gen, box, turn, ids)
         return ids
 
     def _group_grid(self, entries) -> placement_rules.BlockerGrid:
@@ -8161,7 +8651,14 @@ class ViewerWindow(QMainWindow):
         TASK-256: with no paste armed, the same holds for a committed Select
         region, which turns a quarter turn in place (_transform_region()),
         editing the units on it and keeping their identity.
+
+        GH #280: during a live Move drag, Rotate turns the drag instead
+        (_turn_unit_drag()) and writes nothing until the release. Past the
+        threshold only: a held press that never moved is not a move.
         """
+        if self.map_view.unit_drag_live():
+            self._turn_unit_drag(move_turn.fine(self._drag_turn, steps))
+            return
         if self._place_ghost_active():
             self.rotate_place_ghost(steps=steps)
             return
@@ -8208,14 +8705,11 @@ class ViewerWindow(QMainWindow):
         label = "Rotate unit" if len(touched) == 1 else f"Rotate {len(touched)} units"
         splices: list[UnitSplice] = []
         with self._unit_edit(model, label, sorted({e.player_id for e in touched}), splices, fields_only=True):
+            facings = []
             for entry in rotatable:
-                unit = entry.unit
-                old_own, old_tiles = self._unit_footprint(unit)
-                idx = self._unit_list_index(entry.player_id, unit)
-                angle_count = unit_rotation.angle_count_for(unit.unit_const)
-                model.set_rotation(unit, unit_rotation.rotate_step(unit.rotation, angle_count, steps))
-                new_own, new_tiles = self._unit_footprint(unit)
-                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+                angle_count = unit_rotation.angle_count_for(entry.unit.unit_const)
+                facings.append((entry, unit_rotation.rotate_step(entry.unit.rotation, angle_count, steps)))
+            self._write_facings(model, facings, splices)
 
             def next_variant(unit) -> float:
                 angle_count = unit_rotation.angle_count_for(unit.unit_const)
@@ -8225,6 +8719,23 @@ class ViewerWindow(QMainWindow):
             self._write_variants(model, variants, next_variant, splices)
             self._write_gate_consts(model, turned_gates, lambda _unit: gate_steps, splices)
         self._log_status(self._rotate_status(rotatable, turned_gates, variants, blocked, skipped))
+
+    def _write_facings(self, model, changes, splices: list[UnitSplice]) -> None:
+        """set_rotation() on each (entry, rotation) pair, recording its splice.
+        Shared by Rotate and the Rotation field, typed or stepped. Caller holds _unit_edit.
+
+        Splice-eligible (Batch D's D5): rotation never moves the footprint, so
+        old/new own_tile and old/new tiles are identical. The splice still
+        exists so the cache re-resolves this unit's now-different sprite frame,
+        and the pick index is left untouched (nothing pickable moved).
+        """
+        for entry, rotation in changes:
+            unit = entry.unit
+            old_own, old_tiles = self._unit_footprint(unit)
+            idx = self._unit_list_index(entry.player_id, unit)
+            model.set_rotation(unit, rotation)
+            new_own, new_tiles = self._unit_footprint(unit)
+            splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
 
     def _write_gate_consts(self, model, entries, steps_for, splices: list[UnitSplice]) -> None:
         """set_unit_const() to each gate's sibling `steps_for(unit)` along, recording
@@ -8375,6 +8886,12 @@ class ViewerWindow(QMainWindow):
         first rotatable unit has. A tree or scenery object steps a quarter of
         its own variant count (GH #123): oak 42 -> 11, pine 27 -> 7.
         """
+        if self.map_view.unit_drag_live():  # GH #280, as on_unit_rotate
+            entry = self._first_rotatable_entry()
+            count = None if entry is None else unit_rotation.angle_count_for(entry.unit.unit_const)
+            frames = 1 if count is None else unit_rotation.quarter_turn_steps(count)
+            self._turn_unit_drag(move_turn.coarse(self._drag_turn, direction, frames))
+            return
         if self._place_ghost_active():
             self.rotate_place_ghost(coarse_direction=direction)
             return
@@ -8974,6 +9491,13 @@ class ViewerWindow(QMainWindow):
         if layer_id == "mod_art":
             self._apply_mod_art_change(f"{label}: {'on' if on else 'off'}")
             return
+        if layer_id == "colour_mood":
+            # Draw-only: no wait cursor and no eviction, and the cache's copy keeps up.
+            if self._cache is not None:
+                self._cache.set_layers(self._layers)
+            self._refresh_colour_mood_preview()
+            self._log_status(f"{label}: {'on' if on else 'off'}")
+            return
         if spec.scene_overlay:
             self._apply_scene_overlay_layers(f"{label}: {'on' if on else 'off'}")
             return
@@ -8981,6 +9505,21 @@ class ViewerWindow(QMainWindow):
         if layer_id in ("terrain_textures", "terrain_blend"):
             # Terrain Blending greys with Terrain Textures; the Target tooltip names both.
             self._update_tool_enabled()
+
+    def _colour_mood_value(self) -> str | None:
+        """The effective stored mood the preview follows: the pending edit,
+        else the file's own. None with the layer off, no document or no field."""
+        if self.scenario is None or not self._layers.colour_mood:
+            return None
+        spec = next((s for s in option_fields.specs_for(self.scenario) if s.field_id == COLOUR_MOOD_FIELD_ID), None)
+        if spec is None:
+            return None
+        pending = {} if self.option_edits is None else self.option_edits.pending_values()
+        return pending.get(COLOUR_MOOD_FIELD_ID, option_fields.current_value(self.scenario, spec))
+
+    def _refresh_colour_mood_preview(self) -> None:
+        value = self._colour_mood_value()
+        self.map_view.set_colour_grade(None if value is None else colour_mood.grade_for(value))
 
     def _apply_scene_overlay_layers(self, status: str) -> None:
         """Pushes self._layers' scene-overlay rows (Fish Outlines, TASK-499) to
@@ -9440,7 +9979,8 @@ class ViewerWindow(QMainWindow):
         self.move_action.setToolTip(
             "Drag a unit to move it (Units mode), or drag a selected unit to move the whole "
             "selection. A press on a stack drags its selected unit, so pick a lower one with "
-            "Select first. Drop on a building to garrison; Shift keeps it a move"
+            "Select first. Rotate turns it during the drag. Drop on a building to garrison; "
+            "Shift keeps it a move"
         )
         self.move_action.toggled.connect(lambda on: on and self._on_tool_selected("move"))
         tool_group.addAction(self.move_action)
@@ -9966,12 +10506,12 @@ class ViewerWindow(QMainWindow):
         self.gate_walls_param_action = param_toolbar.addWidget(self.gate_walls_check)
 
         # GH #229, under Pan in Triggers mode: Edit Area lets Pan drag the shown entry's
-        # area; Move and Resize pick which parts grab, and Tile borders widens the resize
-        # border. The last three grey out while it is off.
+        # area and location mark; Move and Resize pick which parts grab, and Tile borders
+        # widens the resize border. The last three grey out while it is off.
         self.area_edit_check = QCheckBox("Edit Area")
         self.area_edit_check.setToolTip(
-            "Drag the selected trigger area's middle to move it, or its edges and corners to "
-            "resize it -- one undo step per drag"
+            "Drag the selected trigger area's middle to move it, its edges and corners to "
+            "resize it, or its location mark to move the location. One undo step per drag"
         )
         self.area_edit_check.setChecked(tool_options.default("area_edit"))
         self.area_edit_check.setEnabled(False)  # re-gated by _update_tool_enabled()
@@ -9979,7 +10519,7 @@ class ViewerWindow(QMainWindow):
         self._area_option_params = [(param_toolbar.addWidget(self.area_edit_check), self.area_edit_check)]
         self._area_option_params.append((param_toolbar.addSeparator(), None))
         self.area_move_check = QCheckBox("Move")
-        self.area_move_check.setToolTip("Drag the middle of the area to move it")
+        self.area_move_check.setToolTip("Drag the middle of the area, or the location mark, to move it")
         self.area_move_check.setChecked(tool_options.default("area_move"))
         self.area_resize_check = QCheckBox("Resize")
         self.area_resize_check.setToolTip("Drag an edge or corner of the area to resize it")
@@ -10035,11 +10575,14 @@ class ViewerWindow(QMainWindow):
     def _apply_left_pane_floor(self) -> None:
         """The left pane's drag floor: in Units mode the Units page's own
         minimumSizeHint width, read on each entry so it follows the content
-        (TASK-362, user decision 2026-10-14); MIN_SPLIT_PANE in every other
+        (TASK-362, user decision 2026-10-14); in Terrain mode
+        TerrainPanel.drag_floor() (TASK-551); MIN_SPLIT_PANE in every other
         mode. Below the page's hint its placing card and category buttons clip."""
         floor = settings.MIN_SPLIT_PANE
         if self.mode == "units":
             floor = max(floor, self.units_panel.minimumSizeHint().width())
+        elif self.mode == "terrain":
+            floor = max(floor, self.terrain_panel.drag_floor())
         self.left_stack.setMinimumWidth(floor)
 
     def _widen_left_column(self, min_width: int) -> None:
@@ -10257,6 +10800,7 @@ class ViewerWindow(QMainWindow):
             "view_player_cameras": self.player_cameras_action,
             "view_trigger_overlay": self.trigger_overlay_action,
             "view_trigger_ghosts": self.trigger_ghosts_action,
+            "view_instruction_overlay": self.instruction_overlay_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
             "view_pan_up": self.view_pan_up_action,
             "view_pan_down": self.view_pan_down_action,
@@ -10487,10 +11031,29 @@ class ViewerWindow(QMainWindow):
                 # A union is not derived while both are off, and a cap's line comes only from a derive.
                 self._refresh_trigger_overlay()
 
+    def _on_instruction_overlay_toggled(self, checked: bool) -> None:
+        settings.set_instruction_overlay(checked)
+        self._push_instruction_overlay()
+
+    def _on_instruction_view(self, view) -> None:
+        self._instruction_view = view
+        self._push_instruction_overlay()
+
+    def _push_instruction_overlay(self) -> None:
+        """TASK-550: the one funnel to the map's instruction box. Every site that
+        changes the mode or the document calls it, so a stale box cannot survive one."""
+        shown = self.scenario is not None and self.mode == "triggers" and self.instruction_overlay_action.isChecked()
+        self.map_view.show_instruction(self._instruction_view if shown else None)
+
     def _on_area_edit_toggled(self, checked: bool) -> None:
         self._update_tool_enabled()
-        if checked and self.mode == "triggers" and self._area_edit_target is None:
-            self._log_status("Select one condition or effect with an area to move or resize it")
+        if (
+            checked
+            and self.mode == "triggers"
+            and self._area_edit_target is None
+            and self._location_edit_target is None
+        ):
+            self._log_status("Select one condition or effect with an area or location to edit it on the map")
 
     def _area_options_shown(self) -> bool:
         """Edit Area's four checkboxes: under Pan in Triggers mode."""
@@ -10514,11 +11077,12 @@ class ViewerWindow(QMainWindow):
         )
 
     def _push_area_edit_target(self) -> None:
-        """GH #229: hands the map view the one area Edit Area may drag, or None.
-        Live only with the box ticked, in Triggers mode with the overlay shown and
-        Pan active, and for the form's one entry whose area is set and on the map.
-        The map view itself stands down while a pick is armed."""
-        target = None
+        """GH #229: hands the map view the one area and location Edit Area may
+        drag, each or None. Live only with the box ticked, in Triggers mode with the
+        overlay shown and Pan active, and for the form's one entry where that group
+        is set and on the map. A location its location object overrides gets no
+        handle, as the game ignores it. The map view stands down while a pick is armed."""
+        target = location = origin = None
         ref = self._trigger_overlay_ref
         loaded = self.scenario
         if (
@@ -10533,22 +11097,29 @@ class ViewerWindow(QMainWindow):
         ):
             (index,), (entry_ref,) = ref[0], tuple(ref[1])
             mm = loaded.map_manager
-            for shape in self._trigger_overlay_shapes:
-                if (
-                    shape.trigger_index == index
-                    and shape.entry_ref == entry_ref
-                    and shape.fields == trigger_geometry.AREA_FIELDS
-                ):
+            entry_shapes = [
+                s for s in self._trigger_overlay_shapes if s.trigger_index == index and s.entry_ref == entry_ref
+            ]
+            for shape in entry_shapes:
+                if shape.fields == trigger_geometry.AREA_FIELDS:
                     x1, y1, x2, y2 = shape.coords
                     if 0 <= x1 <= x2 < mm.map_width and 0 <= y1 <= y2 < mm.map_height:
                         target = (index, *entry_ref, shape.coords)
-                    break
-        previous = self._area_edit_target
-        self._area_edit_target = target
-        if previous is not None and target is not None and previous[:3] != target[:3]:
-            # Another entry with the same area: a live drag belongs to the old one.
+                elif shape.fields == trigger_geometry.LOCATION_FIELDS:
+                    x, y = shape.coords
+                    on_map = 0 <= x < mm.map_width and 0 <= y < mm.map_height
+                    if on_map and not trigger_geometry.location_superseded(entry_shapes):
+                        location = (index, *entry_ref, shape.coords)
+                        origin = trigger_geometry.run_origin(entry_shapes)
+        previous = self._area_edit_target or self._location_edit_target
+        current = target or location
+        self._area_edit_target, self._location_edit_target = target, location
+        if previous is not None and current is not None and previous[:3] != current[:3]:
+            # Another entry with the same coords: a live drag belongs to the old one.
             self.map_view.set_area_edit(None)
+            self.map_view.set_location_edit(None)
         self.map_view.set_area_edit(None if target is None else target[3])
+        self.map_view.set_location_edit(None if location is None else location[3], origin)
 
     def _on_area_edited(self, x1: int, y1: int, x2: int, y2: int) -> None:
         """GH #229's release: one "Move Area" or "Resize Area" record, through GH #138's funnel."""
@@ -10559,6 +11130,14 @@ class ViewerWindow(QMainWindow):
         moved = (x2 - x1, y2 - y1) == (old[2] - old[0], old[3] - old[1])
         values = dict(zip(trigger_geometry.AREA_FIELDS, (x1, y1, x2, y2), strict=True))
         self.set_entry_field_group(target[0], (target[1], target[2]), values, "Move Area" if moved else "Resize Area")
+
+    def _on_location_edited(self, x: int, y: int) -> None:
+        """GH #41's release: one "Move Location" record, through GH #138's funnel."""
+        target = self._location_edit_target
+        if target is None or not self.trigger_panel.is_pick_target_current(target):
+            return
+        values = dict(zip(trigger_geometry.LOCATION_FIELDS, (x, y), strict=True))
+        self.set_entry_field_group(target[0], (target[1], target[2]), values, "Move Location")
 
     def _on_trigger_selection_changed(self) -> None:
         """The panel's selection-set callback: Copy gating, and the overlay,
@@ -10645,11 +11224,12 @@ class ViewerWindow(QMainWindow):
         self._refresh_trigger_overlay()
 
     def _on_pick_unit_requested(self, target) -> None:
-        """The panel's Pick and Set buttons: a target arms, None disarms. A
-        sixth slot is a tile pick's kind (GH #138)."""
+        """The panel's Pick, Set and eyedropper buttons: a target arms, None
+        disarms. A sixth slot is a tile pick's kind (GH #138) or PICK_TYPE, which
+        picks a unit (GH #276)."""
         if target is None:
             self.disarm_unit_picker()
-        elif len(target) > 5:
+        elif target[5:] in ((PICK_POINT,), (PICK_RECT,)):
             self.arm_tile_picker(target)
         else:
             self.arm_unit_picker(target)
@@ -10772,8 +11352,11 @@ class ViewerWindow(QMainWindow):
         self.trigger_panel.set_pick_armed(target)
         self._refresh_picker_highlight()
         self.map_view.setFocus()
-        verb = "add or remove units in" if target[4] else "set"
-        hint = f"Click a unit to {verb} {target[3].replace('_', ' ')}; Esc to finish"
+        if target[5:] == (PICK_TYPE,):
+            hint = f"Click a unit to copy its type into {self.trigger_panel.type_pick_caption(target)}; Esc to cancel"
+        else:
+            verb = "add or remove units in" if target[4] else "set"
+            hint = f"Click a unit to {verb} {target[3].replace('_', ' ')}; Esc to finish"
         if self._unit_filter != UnitFilter():
             hint += " (units hidden by Filters can't be picked)"
         self._log_status(hint)
@@ -10813,6 +11396,9 @@ class ViewerWindow(QMainWindow):
         target = self._unit_picker
         if target is None:
             return
+        if target[5:] == (PICK_TYPE,):
+            self._on_unit_type_picked(target, key)
+            return
         ref_id = key[1]
         stays_armed = self.trigger_panel.apply_picked_reference(target, ref_id)
         if self._unit_picker is None:
@@ -10822,6 +11408,22 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Picked {self._describe_unit_reference(ref_id)}")
         else:
             self.disarm_unit_picker()
+
+    def _on_unit_type_picked(self, target: tuple, key: tuple[int, int]) -> None:
+        """GH #276's eyedropper, one-shot: the clicked unit's const, read before
+        the disarm can drop the index. The unit itself is not touched."""
+        index = self.map_view._unit_index
+        entry = None if index is None else index.entry_for_key(key)
+        if entry is None:
+            self.disarm_unit_picker()
+            return
+        const = entry.unit.unit_const
+        written = not self._refuse_locked_edit() and self.trigger_panel.apply_picked_type(target, const)
+        if self._unit_picker is None:
+            return
+        self.disarm_unit_picker()
+        if written:
+            self._log_status(f"Picked {_unit_name(const)} from ({entry.own_x}, {entry.own_y})")
 
     def _rederive_trigger_overlay(self) -> None:
         """After a trigger edit or undo: the snapshot is plain ints, so it is
@@ -11061,6 +11663,8 @@ class ViewerWindow(QMainWindow):
         self._update_tool_enabled()
         with perf_trace.phase("mode_status"):
             self._update_mode_status()
+        # Last: a file loaded in another mode left a stale form until _show_triggers() above.
+        self._push_instruction_overlay()
         # The combo's own text, not mode_text: _update_tool_enabled() above
         # can have forced the mode back (selecting Units while already in
         # Sloped), and reporting the mode the user asked for rather than the
@@ -11164,18 +11768,18 @@ class ViewerWindow(QMainWindow):
             editable.update(
                 spec.field_id
                 for spec in specs
-                if spec.field_id not in (_EXEC_ORDER_FIELD, _SCRIPT_NAME_FIELD, _WATER_DEFINITION_FIELD)
+                if spec.field_id not in (_EXEC_ORDER_FIELD, _SCRIPT_NAME_FIELD, *MAP_STRING_FIELDS)
             )
             # Its own gate (the Files walk); listed only on a 1.40+ file.
             if any(spec.field_id == _SCRIPT_NAME_FIELD for spec in specs) and script_name_write_supported(
                 self.scenario
             ):
                 editable.add(_SCRIPT_NAME_FIELD)
-            # Its own gate too (the Map string walk); the model needs the scalar one to exist at all.
-            if any(spec.field_id == _WATER_DEFINITION_FIELD for spec in specs) and map_strings_write_supported(
-                self.scenario
-            ):
-                editable.add(_WATER_DEFINITION_FIELD)
+            # Each its own gate too (the Map string walk); the model needs the scalar one to exist at all.
+            listed = {spec.field_id for spec in specs}
+            for field_id, name in MAP_STRING_FIELDS.items():
+                if field_id in listed and map_strings_write_supported(self.scenario, name):
+                    editable.add(field_id)
         if self._exec_order_writable():
             editable.add(_EXEC_ORDER_FIELD)
         return frozenset(editable)
@@ -11205,7 +11809,7 @@ class ViewerWindow(QMainWindow):
         "name would leave that text under it."
     )
 
-    _WATER_DEFINITION_READ_ONLY = (
+    _MAP_STRING_READ_ONLY = (
         "Read-only for this file: its Map section's leading strings failed "
         "verification, so this setting cannot be written back."
     )
@@ -11240,10 +11844,10 @@ class ViewerWindow(QMainWindow):
                     if xs_attachment(self.scenario)[1]
                     else self._SCRIPT_NAME_READ_ONLY
                 )
-            elif spec.field_id == _WATER_DEFINITION_FIELD and options_write_supported(
+            elif spec.field_id in MAP_STRING_FIELDS and options_write_supported(
                 self.scenario, option_fields.specs_for(self.scenario)
             ):
-                reasons[spec.field_id] = self._WATER_DEFINITION_READ_ONLY
+                reasons[spec.field_id] = self._MAP_STRING_READ_ONLY
             else:
                 reasons[spec.field_id] = self._SCALARS_READ_ONLY
         return reasons
@@ -11320,6 +11924,7 @@ class ViewerWindow(QMainWindow):
         self._update_title()
         self._update_edit_actions()
         self._log_status(label)
+        self._refresh_colour_mood_preview()
 
     def _set_option_scalar(self, spec, value: int | str) -> None:
         """Every other Map Options row: one in-place byte patch, one
@@ -11477,6 +12082,7 @@ class ViewerWindow(QMainWindow):
             disables_carrier_ok=self._options_carrier_ok(),
             personality=self._personality_options(),
             swap_editable=self._swap_editable(),
+            active_players=self._current_active_players(),
         )
 
     # -- AI personality (GH #126) ------------------------------------------
@@ -11745,6 +12351,9 @@ class ViewerWindow(QMainWindow):
         grid off the pending count. It is here for the same reason
         _move_history() calls both: a second entry point for this edit
         would otherwise leave a live grid stale.
+
+        _repopulate_players() re-marks the Players selector's rows past the
+        new count (TASK-063); the selection itself stays where it was.
         """
         model = self._ensure_option_edits()
         if model is None:
@@ -11759,6 +12368,7 @@ class ViewerWindow(QMainWindow):
             self._log_status(f"Number of players not set: {e}")
             self._repopulate_players()
             return
+        self._repopulate_players()
         self._repopulate_diplomacy()
         self._repopulate_stats_players()
         # Lowering the count drops the markers of the players it deactivated.
@@ -12362,7 +12972,10 @@ class ViewerWindow(QMainWindow):
             return frozenset()
         if not diplomacy_write_supported(self.scenario):
             return frozenset()
-        return frozenset(_all_diplomacy_cell_ids(self.scenario))
+        cells = _all_diplomacy_cell_ids(self.scenario)
+        if not allied_victory_write_supported(self.scenario):
+            cells -= frozenset(diplomacy_fields.allied_victory_offsets(self.scenario))
+        return cells
 
     _DIPLOMACY_CARRIER_GATE_REASON = (
         "Read-only for this file: its map-option block failed verification, "
@@ -12372,6 +12985,11 @@ class ViewerWindow(QMainWindow):
         "Read-only for this file: its Diplomacy section failed verification, so "
         "patching this cell would land at an offset that cannot be trusted."
     )
+    _ALLIED_VICTORY_MIRROR_REASON = (
+        "Read-only for this file: the flag's second stored copy (in the Units "
+        "section) could not be located and verified, and writing only one copy "
+        "would leave the two disagreeing."
+    )
 
     def _diplomacy_read_only_reasons(self) -> dict[str, str]:
         """Per-cell tooltip text for every cell that is not editable -- same
@@ -12380,13 +12998,21 @@ class ViewerWindow(QMainWindow):
             return {}
         editable = self._editable_diplomacy_fields()
         carrier_ok = options_write_supported(self.scenario, option_fields.specs_for(self.scenario))
+        mirror_only = (
+            carrier_ok
+            and diplomacy_write_supported(self.scenario)
+            and not allied_victory_write_supported(self.scenario)
+        )
         reasons = {}
         for cell_id in _all_diplomacy_cell_ids(self.scenario):
             if cell_id in editable:
                 continue
-            reasons[cell_id] = (
-                self._DIPLOMACY_CARRIER_GATE_REASON if not carrier_ok else self._DIPLOMACY_GATE_REASON
-            )
+            if not carrier_ok:
+                reasons[cell_id] = self._DIPLOMACY_CARRIER_GATE_REASON
+            elif mirror_only and cell_id.startswith("allied_victory:"):
+                reasons[cell_id] = self._ALLIED_VICTORY_MIRROR_REASON
+            else:
+                reasons[cell_id] = self._DIPLOMACY_GATE_REASON
         return reasons
 
     def _pending_diplomacy_values(self) -> dict[str, int]:
@@ -12548,6 +13174,7 @@ class ViewerWindow(QMainWindow):
         # Same reason as on_mode_changed's own call: this leaves Players mode
         # too, and the emphasis has to go with it.
         self._refresh_camera_markers()
+        self._push_instruction_overlay()
         self._log_status(f"Mode forced to {mode_text} -- Sloped has no unit selection yet")
 
     def _update_rotate_enabled(self) -> None:
@@ -15992,10 +16619,14 @@ class ViewerWindow(QMainWindow):
         same shape on_mirror's elevation-seam message uses."""
         reasons = []
         if unit_plan.overlap_blocked:
-            sample = ", ".join(f"({int(u.x)}, {int(u.y)})" for u in unit_plan.straddling[:5])
+            # The unit in the way and the tile it spills onto, not the unit whose copy moved (TASK-043).
+            sample = "; ".join(
+                f"{_unit_name(u.unit_const)} at ({int(u.x)}, {int(u.y)}), tile ({tx}, {ty})"
+                for u, (tx, ty) in unit_plan.overlap_blockers[:5]
+            )
             reasons.append(
-                f"{len(unit_plan.straddling)} unit(s) straddle the symmetry axis, so their "
-                f"image would overlap the original (e.g. {sample})"
+                f"{len(unit_plan.overlap_blockers)} unit(s) straddle the symmetry axis or a slice "
+                f"boundary, so copies would land on them (e.g. {sample})"
             )
         if unit_plan.garrisoned_blockers:
             sample = ", ".join(f"({int(u.x)}, {int(u.y)})" for u in unit_plan.garrisoned_blockers[:5])
@@ -17083,14 +17714,18 @@ class ViewerWindow(QMainWindow):
             return f"No trigger vocabulary for scenario {here}, so unit references cannot be cleared."
         return ""
 
-    def _legacy_exec_order(self) -> bool:
-        """Whether this file runs its triggers in ID order, a pending Map
-        Options change included (resolve_exec_mode(), as the status line reads it)."""
+    def _exec_mode(self) -> str:
+        """Which axis this file runs its triggers by, a pending Map Options
+        change included (resolve_exec_mode(), as the status line reads it)."""
         if self.scenario is None:
-            return False
+            return EXEC_MODE_UNKNOWN
         model = self.trigger_edits
         pending = model.exec_order if model is not None and model.exec_order_supported else None
-        return resolve_exec_mode(exec_order_value(self.scenario), pending)[0] == EXEC_MODE_LEGACY
+        return resolve_exec_mode(exec_order_value(self.scenario), pending)[0]
+
+    def _legacy_exec_order(self) -> bool:
+        """Whether this file runs its triggers in ID order (_exec_mode())."""
+        return self._exec_mode() == EXEC_MODE_LEGACY
 
     def _warn_legacy_reorder(self, before_order: list[int]) -> None:
         """LEGACY_REORDER_MESSAGE, once per document, after a display-order
@@ -17230,6 +17865,14 @@ class ViewerWindow(QMainWindow):
         `indices` at the top or the bottom of their own section
         (_move_to_section_edge()): one permutation, so one record.
 
+        "renumber" (GH #2) is the one op that does renumber: every trigger
+        takes the ID of its display position (renumber_to_display_order()), so
+        a legacy file runs in the listed order and File order view matches
+        Display order. `indices` is only the selection to keep; it may be
+        empty. renumber_refusal() is checked before the bracket opens, so a
+        refusal records nothing, and one status line then says what changed
+        for this file's execution mode.
+
         Section management carries its payload in `arg`: "new_section" takes
         the title and lands a divider at the end of `indices[0]`'s section (or
         of display order), "move_to_section" takes the target section's
@@ -17258,8 +17901,13 @@ class ViewerWindow(QMainWindow):
         indices = list(dict.fromkeys(indices))
         if not all(0 <= i < len(manager.triggers) for i in indices):
             return
-        if op not in ("new", "paste") and not indices:
+        if op not in ("new", "paste", "renumber") and not indices:
             return
+        if op == "renumber":
+            reason = renumber_refusal(manager)
+            if reason:
+                self._log_status(f"Cannot renumber trigger IDs: {reason}")
+                return
         # move_up/move_down's signed display slots; 0 for every other op.
         move = 0
         if op in ("move_up", "move_down"):
@@ -17332,12 +17980,16 @@ class ViewerWindow(QMainWindow):
                 landing = paste_anchor(before_names, before_order, anchor, has_divider)
                 m.trigger_display_order = display_order_with_block_inserted(before_order, new_indices, landing)
                 return None
+            if op == "renumber":
+                return renumber_to_display_order(m)
             return m.remove_triggers(sorted(indices))
 
         count = len(indices)
         noun = f"trigger {indices[0]}" if count == 1 else f"{count} triggers"
         if op == "new":
             label, refresh, refresh_arg = "New trigger", "panel", None
+        elif op == "renumber":
+            label, refresh, refresh_arg = "Renumber trigger IDs to display order", "panel", None
         elif op == "paste":
             label, refresh, refresh_arg = f"Paste {block.label}", "panel", None
         elif op == "copy":
@@ -17354,12 +18006,25 @@ class ViewerWindow(QMainWindow):
             label, refresh, refresh_arg = f"Delete {noun}", "panel", None
 
         display_before = list(manager.trigger_display_order)
+        # Stays empty on a raise: _trigger_edit reports a raised body rather than re-raising it.
+        succeeded: list[bool] = []
         with self._trigger_edit(model, label, refresh=refresh, refresh_arg=refresh_arg) as m:
             m.structural_edit(mutate)
+            succeeded.append(True)
         if move:
             self._warn_legacy_reorder(display_before)
 
         live = model.manager().triggers
+        if op == "renumber":
+            if succeeded:
+                self._log_status({
+                    EXEC_MODE_LEGACY: LEGACY_RENUMBER_MESSAGE,
+                    EXEC_MODE_DISPLAY: DISPLAY_RENUMBER_MESSAGE,
+                }.get(self._exec_mode(), UNKNOWN_RENUMBER_MESSAGE))
+            # By an id set: Select All then renumber on 18k triggers would make a nested scan ~3e8 steps.
+            wanted = {id(source) for source in sources}
+            self.trigger_panel.select_triggers([i for i, t in enumerate(live) if id(t) in wanted])
+            return
         if cut_block is not None and len(live) == before_len - count:
             # Only once the removal really happened: _trigger_edit reports a raise, it does not re-raise.
             self._trigger_clipboard = cut_block
@@ -17970,6 +18635,7 @@ class ViewerWindow(QMainWindow):
         players: Sequence[int],
         splices: list | None = None,
         fields_only: bool = False,
+        drag: _RotationDrag | None = None,
     ):
         """Open one recorded unit edit, and close it whatever happens.
 
@@ -18005,6 +18671,10 @@ class ViewerWindow(QMainWindow):
         (Move/Nudge/Rotate/Set field/gate orientation, and a move's wall
         reshapes, GH #266) may pass it.
 
+        drag (TASK-548): a compass spoke, a fields_only edit folded into the
+        drag's record (_fold_drag_record) rather than pushed on its own, with
+        no status line of its own: the drag logs one at its release.
+
         terrain_current: no caller of this method writes a tile, so the tail
         is told the terrain mirrors are current (_after_unit_mutation()),
         except inside an open Erase stroke, whose Terrain Overlay writes are
@@ -18020,14 +18690,30 @@ class ViewerWindow(QMainWindow):
                 self._stack_cycle = None
                 self.map_view.set_unit_index(None)
                 raise
-            model.commit_unit_edit(label, self.edit_history)
+            if drag is None:
+                model.commit_unit_edit(label, self.edit_history)
+            else:
+                self._fold_drag_record(drag, model.commit_unit_edit(label, self.edit_history, push=False))
             if splices is not None:
                 assert splices, "a splice-tracking _unit_edit exited with no UnitSplice recorded"
             # An open Erase stroke's Terrain Overlay writes are not in the terrain mirrors yet.
             self._after_unit_mutation(splices, terrain_current=self._erase is None)
             self._update_title()
             self._update_edit_actions()
-            self._log_status(label)
+            if drag is None:
+                self._log_status(label)
+
+    def _fold_drag_record(self, drag: _RotationDrag, record: UnitDiffRecord) -> None:
+        """A compass spoke's unpushed record: folded into the drag's own if that
+        is still the newest one, else pushed for the drag to follow from here."""
+        if drag.record is not None:
+            merged = merged_field_record(drag.record, record)
+            if self.edit_history.replace_top(drag.record, merged):
+                drag.record = merged
+                return
+        self.edit_history.push_unit_record(record)
+        drag.pushes += 1
+        drag.record = record
 
     def _unit_footprint(self, unit) -> tuple[tuple[int, int], tuple[tuple[int, int], ...]]:
         """(own_tile, occupied_tiles) for `unit` at its CURRENT x/y/unit_const
@@ -19153,6 +19839,7 @@ class ViewerWindow(QMainWindow):
             self._repopulate_stats_players()
             self._regate_swap()
             self._update_technical_info()
+            self._refresh_colour_mood_preview()
         elif "trigger" in kinds:
             self._update_player_stats()
         if "messages" in kinds:
@@ -19286,7 +19973,9 @@ class ViewerWindow(QMainWindow):
     def _confirm_discard_changes(self) -> bool:
         """True if it's OK to proceed: no scenario loaded, no unsaved edits,
         or the user explicitly chose to discard them. Call before anything
-        that would drop the current scenario -- open, close, or window close."""
+        that would drop the current scenario -- open, close, or window close.
+        A focused field's typed value commits first, so the prompt counts it."""
+        self._commit_focused_field()
         if self.scenario is None or not self.edit_history.is_dirty:
             return True
         reply = QMessageBox.question(
@@ -19399,6 +20088,11 @@ class ViewerWindow(QMainWindow):
         without a prompt and lose the work. It calls write_scenario()
         directly rather than save() for the same class of reason: save()
         routes an untitled document into a modal Save As dialog.
+
+        Never commits a focused field's typed value, unlike save(): a timer
+        that did would split one typed edit into undo steps the user never
+        chose and could rebuild the trigger form under the cursor. A slot
+        goes without the half-typed value.
         """
         if self.scenario is None or not settings.get_autosave_enabled():
             return
@@ -19460,6 +20154,7 @@ class ViewerWindow(QMainWindow):
     def save(self) -> None:
         if self.scenario is None or self._refuse_locked_save():
             return
+        self._commit_focused_field()
         if self._untitled:
             # No path to write back to yet -- same first-save-needs-a-name
             # case Save As already handles.
@@ -19499,6 +20194,7 @@ class ViewerWindow(QMainWindow):
     def save_as(self) -> None:
         if self.scenario is None or self._refuse_locked_save():
             return
+        self._commit_focused_field()
         path, _ = QFileDialog.getSaveFileName(
             self, "Save scenario as", self._save_as_start_path(), "AoE2 Scenario (*.aoe2scenario)"
         )
@@ -19646,8 +20342,9 @@ class ViewerWindow(QMainWindow):
     def _show_mirror_dialog(self) -> None:
         if self.scenario is None:
             return
-        dialog = MirrorDialog(self)
-        dialog.exec_()
+        dialog = MirrorDialog(self, last=self._mirror_defaults)
+        if dialog.exec_() == QDialog.Accepted:
+            self._mirror_defaults = dialog.state()
 
     def _show_analysis(self) -> None:
         """Tools > Map Analysis: a read-only pass, then the modeless results
@@ -19872,17 +20569,23 @@ class ViewerWindow(QMainWindow):
             return []
         return find_triggers.find_triggers(self.scenario, criteria)
 
-    def _commit_focused_trigger_field(self) -> None:
-        """A half-typed trigger panel field does not commit on a window switch
-        (text_edits.py), so a Find op commits it first, as a focus-out would."""
+    def _commit_focused_field(self) -> None:
+        """Commit the focused field's typed value as leaving it would: a shortcut, a window close
+        or another window's op leaves no field, and a multi-line box ignores a menu or window switch."""
         widget = self.focusWidget()
-        if widget is not None and self.trigger_panel.isAncestorOf(widget) and hasattr(widget, "editingFinished"):
+        # A locked document refuses the edit, but the field would count it as committed.
+        if widget is None or not self.isAncestorOf(widget) or self.game_data_lock_reason():
+            return
+        if isinstance(widget, QAbstractSpinBox):
+            widget.interpretText()
+            widget.editingFinished.emit()
+        elif isinstance(widget, _MultiLineEdit) or (isinstance(widget, QLineEdit) and widget.hasAcceptableInput()):
             widget.editingFinished.emit()
 
     def _find_trigger_op_model(self) -> TriggerEditModel | None:
         if self._find_op_refused():
             return None
-        self._commit_focused_trigger_field()
+        self._commit_focused_field()
         if parse_triggers(self.scenario) is None or not self.scenario.trigger_write_supported:
             self._log_status("Find and Replace: this file's triggers are read-only")
             return None
@@ -20015,7 +20718,7 @@ class ViewerWindow(QMainWindow):
             return None, "Trigger type filters are not followed: this file's triggers can't be read."
         if not writable:
             return None, "Trigger type filters are not followed: triggers are read-only for this file."
-        self._commit_focused_trigger_field()
+        self._commit_focused_field()
         if self._ensure_trigger_edits() is None:
             return None, "Trigger type filters are not followed: triggers are read-only for this file."
         candidates, _refused = self._replace_preflight(model, self._find_entries(keys), new_const)
@@ -20837,6 +21540,8 @@ class ViewerWindow(QMainWindow):
                 asset_source.prefetch_terrain_textures(self._texture_prefetch_ids())
             mm = self.scenario.map_manager
             tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+            # Before set_source(): the new item's first paint can fire inside it.
+            self._refresh_colour_mood_preview()
             if self._render_style == "stepped":
                 elevations, proj = elevations_and_proj(self.scenario)
                 # Flat + Isometric View (Flat+Isometric plan): force every
@@ -21229,7 +21934,9 @@ class ViewerWindow(QMainWindow):
         """True to go on with a resize. Unlike _confirm_discard_changes(),
         nothing is discarded: the resize carries every unsaved edit into the
         resized map (scenario_write.build_patched_body()), but the undo
-        history goes, so a dirty document still asks once."""
+        history goes, so a dirty document still asks once. A focused field's
+        typed value commits first, so the prompt counts it."""
+        self._commit_focused_field()
         if not self.edit_history.is_dirty:
             return True
         reply = QMessageBox.question(
@@ -21255,9 +21962,18 @@ class ViewerWindow(QMainWindow):
         if not self._confirm_resize_unsaved():
             return
         mm = self.scenario.map_manager
-        dialog = ResizeDialog(self, mm.map_width, mm.map_height, self._resize_plan_for)
+        isometric = self._terrain_style != "flat" or self.iso_action.isChecked()
+        dialog = ResizeDialog(
+            self,
+            mm.map_width,
+            mm.map_height,
+            self._resize_plan_for,
+            last=self._resize_defaults,
+            preview=preview_source(self.scenario, isometric=isometric),
+        )
         if dialog.exec_() != QDialog.Accepted:
             return
+        self._resize_defaults = dialog.state()  # the dialog's own OK keeps it, even if the confirm is declined
         (width, height), anchor, plan = dialog.new_size, dialog.anchor, dialog.plan
         if plan is None or plan.refusal is not None:
             return
@@ -21539,6 +22255,8 @@ class ViewerWindow(QMainWindow):
             )
             if mod_line := self._mod_art_status():
                 self._log_status(mod_line)
+            if (grade := self.map_view.colour_grade) is not None:
+                self._log_status(f"Colour mood: {grade.name}, previewed (View > Layers > Colour Mood)")
             # Walks every active mod file once per mod-art change (cached after): here, not in the first edit.
             unit_sprites.sprite_reach()
             # Only now, with that line printed, may the follow-up drain. No
@@ -21614,6 +22332,7 @@ class ViewerWindow(QMainWindow):
         self.disarm_unit_picker()
         self._unit_ref_index = None
         self.map_view.clear_image()
+        self._refresh_colour_mood_preview()
         # No edit tool has anything to act on with no map open; forcing Pan
         # (rather than just disabling the edit tools) keeps MapView's own
         # tool state in sync too -- same mechanism on_mode_changed already
@@ -21628,6 +22347,7 @@ class ViewerWindow(QMainWindow):
         self.players_panel.clear_document()
         self.diplomacy_panel.clear_document()
         self.messages_panel.clear_document()
+        self._push_instruction_overlay()
         self._show_game_data_status()
         self._set_hover_text(HOVER_IDLE_TEXT)
         # A stale (x, y) from the just-closed map must not outlive it -- the

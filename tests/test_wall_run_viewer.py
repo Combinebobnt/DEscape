@@ -2222,3 +2222,122 @@ def test_the_status_counts_no_rewrite_of_a_wall_the_user_moved():
     plan = wall_run.MovePlan(removals=[], fills=[], rewrites=[(1, mover, 2), (1, other, 2)], moved=[(1, object(), 2)])
     assert ViewerWindow._gate_move_clauses(plan, [mover]) == ", reshaping 1 adjacent"
     assert ViewerWindow._gate_move_clauses(plan) == ", reshaping 2 adjacent"
+
+
+# --- GH #280: a gate turned during its drag ---------------------------------------------
+
+
+def _turn_drag(window, a, b, cw: int = 0, ccw: int = 0) -> None:
+    """_drag_point(), with the Rotate actions fired while the button is down."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view = window.map_view
+    start, end = _point_pos(window, *a), _point_pos(window, *b)
+    _HELD["value"] = True
+    try:
+        view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+        for _ in range(cw):
+            window.rotate_cw_action.trigger()
+        for _ in range(ccw):
+            window.rotate_ccw_action.trigger()
+        view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _HELD["value"] = False
+
+
+_GATE_Y = 88  # the (1, 4) sibling of GATE, two steps along
+
+
+def _player_gate(window):
+    return next(u for u in window.scenario.unit_manager.units[PLAYER] if u.unit_const in (GATE, _GATE_Y))
+
+
+def test_a_gate_turned_then_moved_out_of_its_run_fills_the_gap_and_undo_restores_it_all():
+    """GH #280's reported case: read after a turn at the source, the gap reads as a line across the wall."""
+    window, gate = _gate_window()
+    try:
+        before = (_unit_count(window), gate.x, gate.y)
+        records = len(window.edit_history.records)
+
+        _turn_drag(window, _GRAB, (50.5, _ROW + 10.1), cw=2)
+
+        assert gate.unit_const == _GATE_Y
+        assert (gate.x, gate.y) == (50.5, _ROW + 10.0)
+        filled = _walls_on(window, _OLD)
+        assert sorted(int(u.x) for u in filled) == [25, 26, 27, 28]
+        assert all(u.unit_const == WALL for u in filled)
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert window.edit_history.peek_undo().label == "Move and rotate unit"
+        assert "filling 4" in _last_status(window)
+
+        window.undo()
+        restored = _player_gate(window)
+        assert (_unit_count(window), restored.x, restored.y) == before
+        assert restored.unit_const == GATE
+        assert _walls_on(window, _OLD) == []
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_onto_a_run_replaces_the_walls_under_its_turned_footprint_only():
+    window, gate = _gate_window()
+    try:
+        _turn_drag(window, _GRAB, (36.5, _ROW + 0.1), cw=2)
+        assert gate.unit_const == _GATE_Y
+        assert (gate.x, gate.y) == (36.5, float(_ROW))
+        assert _walls_on(window, {(36, _ROW)}) == []
+        assert len(_walls_on(window, {(35, _ROW), (37, _ROW)})) == 2, "a (4, 1) footprint would take them"
+        assert "replacing 1 wall," in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_back_in_the_drag_plans_as_an_unturned_move():
+    window, gate = _gate_window()
+    try:
+        _turn_drag(window, _GRAB, (_GRAB[0] + 5, _GRAB[1]), cw=1, ccw=1)
+        assert (gate.unit_const, gate.x, gate.y) == (GATE, 32.0, _ROW + 0.5)
+        assert _walls_on(window, _NEW) == []
+        assert len(_walls_on(window, _OLD)) == 4
+        assert window.edit_history.peek_undo().label == "Move unit"
+        assert _moved_gate_status(window) == f"to (32, {_ROW + 0.5:g}), replacing 4 walls, filling 4"
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_on_its_own_low_corner_plans_with_the_box_as_a_rotate():
+    """Its in-place drop still reads the plan: the rest of the line fills, wholesale, with no position write."""
+    window, gate = _gate_window()
+    try:
+        # The (1, 4) sibling's anchor on the low corner (25, _ROW), and off the tie on the even axis.
+        _turn_drag(window, _GRAB, (25.5, _ROW + 2.1), cw=2)
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_Y, 25.5, _ROW + 2.0)
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [26, 27, 28]
+        assert window.edit_history.peek_undo().label == "Rotate unit"
+    finally:
+        _close(window)
+
+
+def test_a_group_holding_a_turned_gate_plans_it_once_by_its_turned_span(monkeypatch):
+    from descape import wall_run
+
+    window, gate = _gate_window()
+    try:
+        villager = _add_unit(window, VILLAGER, 27.5, _ROW + 6.5)
+        _select_units(window, [gate, villager])
+        plans: list = []
+        real = wall_run.scenario_move_plan
+        monkeypatch.setattr(
+            wall_run, "scenario_move_plan", lambda *a, **k: (plans.append(k.get("consts")), real(*a, **k))[1]
+        )
+        _turn_drag(window, _GRAB, (_GRAB[0] + 24, _GRAB[1] + 10), cw=2)
+        assert len(plans) == 1
+        assert plans[0][id(gate)] == _GATE_Y
+        assert gate.unit_const == _GATE_Y
+        # Rotate, then the delta: (1, 4) on the low corner (25, _ROW) is (25.5, _ROW + 2).
+        assert (gate.x, gate.y) == (49.5, _ROW + 12.0)
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [25, 26, 27, 28]
+    finally:
+        _close(window)

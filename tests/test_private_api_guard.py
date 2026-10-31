@@ -272,6 +272,24 @@ def test_the_quantity_cluster_gates_and_raw_fields_exist() -> None:
     assert _is_float_quantity_effect(51, 13) and not _is_float_quantity_effect(51, 0)
 
 
+def test_the_stored_quantity_pair_has_the_names_effect_quantity_reads() -> None:
+    """descape/effect_quantity.py reads and rewrites these two retrievers by
+    name, and heals a stored 0.0 through the public setter, which must keep
+    the float it is given on a float attribute."""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    loaded = load_map_and_units(fixture)
+    manager = parse_triggers(loaded)
+    assert manager is not None
+    trigger_data = loaded._scenario.sections["Triggers"].retriever_map["trigger_data"].data
+    entry = trigger_data[1].retriever_map["effect_data"].data[1]
+    assert {"quantity", "quantity_float"} <= entry.retriever_map.keys()
+
+    effect = manager.triggers[1].effects[1]
+    effect.object_attributes = 13  # WORK_RATE
+    effect.quantity = 0.0
+    assert effect.quantity == 0.0 and isinstance(effect.quantity, float)
+
+
 def test_triggers_keep_uuid_stamped_inner_lists_the_clipboard_restamps() -> None:
     """trigger_clipboard.paste_into() restamps each pasted trigger's inner
     effect/condition UuidList `_uuid` to the destination manager's, since the

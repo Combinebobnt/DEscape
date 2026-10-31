@@ -43,7 +43,11 @@ both):
    whole thing.
 2. Panning composites proportionally to the viewport, not the map --
    zooming in and panning through the scrollbars touches only a fraction of
-   the chunk grid, not every chunk on the map.
+   the chunk grid, not every chunk on the map. It counts the chunks of
+   whichever level and reduction paint drew, each against that level's own
+   grid. On the biggest maps 6x past fit still lands in the coarsest level's
+   reduced path (TASK-031.70), whose hits never reach get_chunk(), so
+   render_reduced_rect() is spied too.
 3. Byte identity -- a scene render over a fixed rect matches the
    corresponding crop of an independent full render_terrain_iso() call.
 """
@@ -170,42 +174,88 @@ def _check_panning_proportional(path: Path) -> tuple[bool, str]:
         if item is None:
             return False, "Stepped mode produced no MapCanvasItem"
         cache = item._cache  # descape.render_cache.IsoChunkCache
-        canvas_w, canvas_h = cache.canvas_dims()
         chunk_px = cache.chunk_px
-        total_grid_chunks = math.ceil(canvas_w / chunk_px) * math.ceil(canvas_h / chunk_px)
-        if total_grid_chunks < 4:
-            return None, f"{path.name}: canvas too small ({total_grid_chunks} chunks) for a meaningful pan probe"
 
-        requested = set()
+        def grid_chunks(mip, k):
+            w, h = cache.reduced_dims(mip, k) if k else cache.canvas_dims(mip)
+            return math.ceil(w / chunk_px) * math.ceil(h / chunk_px)
+
+        # A past-fit zoom paints the coarsest level on every corpus file, so that is the grid to size-check.
+        coarsest_chunks = grid_chunks(cache.mip_levels()[0], 0)
+        if coarsest_chunks < 4:
+            return None, f"{path.name}: canvas too small ({coarsest_chunks} chunks) for a meaningful pan probe"
+
+        # Chunk keys per (mip, k): real chunks at k=0, reduced ones (TASK-031.70) at k>=1.
+        requested: dict[tuple[int, int], set] = {}
+        painted_levels = set()
         original_get_chunk = cache.get_chunk
         original_install = cache.install_chunk
+        original_reduced = cache.render_reduced_rect
+        original_blocks = item._level_blocks
 
         def spy_get_chunk(mip, cx, cy):
-            requested.add((mip, cx, cy))
+            requested.setdefault((mip, 0), set()).add((cx, cy))
             return original_get_chunk(mip, cx, cy)
 
         # A pooled paint's misses (TASK-031.64) land through install_chunk(), never get_chunk().
         def spy_install(job, painted):
             landed = original_install(job, painted)
             if landed:
-                requested.add(job.key)
+                mip, cx, cy = job.key
+                requested.setdefault((mip, 0), set()).add((cx, cy))
             return landed
+
+        # A reduced hit never reaches get_chunk()/install_chunk(), so key the reduced chunks its own loop walks.
+        # Outermost call only: building a k>=2 reduction reads k-1 through this same method.
+        depth = [0]
+
+        def spy_reduced(x0, y0, x1, y1, mip, k):
+            rw, rh = cache.reduced_dims(mip, k)
+            rx0, ry0, rx1, ry1 = max(0, x0), max(0, y0), min(rw, x1), min(rh, y1)
+            if not depth[0] and rx1 > rx0 and ry1 > ry0:
+                keys = requested.setdefault((mip, k), set())
+                for cy in range(ry0 // chunk_px, (ry1 - 1) // chunk_px + 1):
+                    for cx in range(rx0 // chunk_px, (rx1 - 1) // chunk_px + 1):
+                        keys.add((cx, cy))
+            depth[0] += 1
+            try:
+                return original_reduced(x0, y0, x1, y1, mip, k)
+            finally:
+                depth[0] -= 1
+
+        # Records a level only once it yields a block, i.e. once paint really fetched at it.
+        def spy_blocks(device, mip, rect, k):
+            for draw in original_blocks(device, mip, rect, k):
+                painted_levels.add((mip, k))
+                yield draw
 
         # Installed only now, for the same reason _check_exposed_rect_
         # smaller's paint spy is: the fit-to-view paint stepped_window()
         # already settled would otherwise count as pan traffic.
         cache.get_chunk = spy_get_chunk
         cache.install_chunk = spy_install
+        cache.render_reduced_rect = spy_reduced
+        item._level_blocks = spy_blocks
         _zoom_and_pan(window.map_view)
 
+        # Before the empty check, so a fetch path that bypasses the spies names its level.
+        unseen = sorted(level for level in painted_levels if not requested.get(level))
+        if unseen:
+            named = ", ".join(f"mip {mip} k={k}" for mip, k in unseen)
+            return False, f"paint fetched blocks at {named} but no chunk spy saw a fetch there: a path bypasses the spies"
         if not requested:
             return False, "zoom+pan sequence never requested a single chunk"
-        if len(requested) >= total_grid_chunks:
-            return False, (
-                f"zoom+pan sequence touched all {len(requested)}/{total_grid_chunks} chunks in the "
-                f"grid -- looks like a full-canvas composite, not a lazy one"
-            )
-        return True, f"OK ({len(requested)}/{total_grid_chunks} chunks touched by zoom+{PAN_STEPS}-step pan)"
+        for (mip, k), keys in sorted(requested.items()):
+            total = grid_chunks(mip, k)
+            if len(keys) >= total:
+                return False, (
+                    f"zoom+pan sequence touched all {len(keys)}/{total} chunks of mip {mip} k={k}: "
+                    f"looks like a full-canvas composite, not a lazy one"
+                )
+        touched = ", ".join(
+            f"mip {mip} k={k}: {len(keys)}/{grid_chunks(mip, k)}" for (mip, k), keys in sorted(requested.items())
+        )
+        return True, f"OK ({touched} chunks touched by zoom+{PAN_STEPS}-step pan)"
     finally:
         window.edit_history.mark_saved()
         window.close()

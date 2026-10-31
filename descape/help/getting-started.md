@@ -32,9 +32,9 @@ Snapshots go in an `autosave` folder beside DEscape's `config.yaml`, or a folder
 
 ## Return of Rome and data mods
 
-A Return of Rome scenario opens with Return of Rome's own units, names, art, civilizations and terrain, and the window title says `[Return of Rome]`. **Settings > Advanced** can show a file with the other game's data instead. A file shown that way is read-only, and the status bar says why. Set Game data back to Auto to edit it.
+A Return of Rome scenario opens with Return of Rome's own units, names, art, civilizations and terrain, and the window title says `[Return of Rome]`. Without the Return of Rome DLC installed, a name the two games share shows Age of Empires II's, and the rest show the name in Return of Rome's game data. **Settings > Advanced** can show a file with the other game's data instead. A file shown that way is read-only, and the status bar says why. Set Game data back to Auto to edit it.
 
-**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. DEscape remembers the choice for each saved scenario.
+**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. DEscape remembers the choice for each saved scenario. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them.
 
 ## Move around the map
 

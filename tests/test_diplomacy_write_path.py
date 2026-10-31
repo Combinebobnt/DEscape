@@ -18,6 +18,9 @@ The claims, in the order this feature's acceptance gates list them:
 5. **Directionality.** Editing stance[i][j] leaves stance[j][i] untouched.
 6. **The gates.** diplomacy_write_supported() is independent of
    options_write_supported() -- corrupting one must not flip the other.
+7. **The allied-victory mirror (TASK-062).** An allied-victory edit writes
+   Units.player_data_3's u8 copy too; a mirror failure takes out only those
+   eight cells, and the save re-gates it.
 """
 
 from __future__ import annotations
@@ -32,15 +35,19 @@ from descape import option_fields
 from descape.diplomacy_fields import (
     allied_victory_cell_id,
     allied_victory_offsets,
+    allied_victory_value,
     stance_cell_id,
     stance_offsets,
     verify_diplomacy_block,
 )
 from descape.options_model import (
     OptionsEditModel,
+    allied_victory_write_supported,
     diplomacy_write_supported,
     options_write_supported,
+    players_write_supported,
 )
+from descape.player_fields import aok_allied_victory_mirror_targets
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
 
@@ -179,14 +186,17 @@ def test_one_stance_edit_changes_only_bytes_within_that_cells_own_span(
         )
 
 
-def test_one_allied_victory_edit_changes_only_bytes_within_that_cells_own_span(
+def test_one_allied_victory_edit_changes_both_stored_copies_and_nothing_else(
     tmp_path: Path,
 ) -> None:
-    """{0, 1} flags are < 256 too -- same containment reasoning as the stance
-    test above."""
+    """TASK-062: the flag has two stored copies, Diplomacy's u32 and
+    Units.player_data_3's u8 aok_allied_victory, and an edit writes both.
+    {0, 1} flags are < 256, so each copy moves only its low byte. Every other
+    player's copies and the whole stance grid stay byte-identical, since
+    every changed range must sit inside one of the two spans."""
     loaded = _loaded()
-    offsets = allied_victory_offsets(loaded)
-    target = offsets[allied_victory_cell_id(4)]
+    primary = allied_victory_offsets(loaded)[allied_victory_cell_id(4)]
+    mirror = aok_allied_victory_mirror_targets(loaded)[4]
 
     base = tmp_path / "base.aoe2scenario"
     write_scenario(loaded, base)
@@ -197,13 +207,46 @@ def test_one_allied_victory_edit_changes_only_bytes_within_that_cells_own_span(
     edited = tmp_path / "edited.aoe2scenario"
     write_scenario(loaded, edited, options=model)
 
+    spans = [(primary.offset, primary.offset + primary.length), (mirror.offset, mirror.offset + mirror.length)]
     ranges = _differing_ranges(_written_body(base), _written_body(edited))
-    assert ranges, "no bytes changed"
+    assert len(ranges) == 2, f"expected one changed range per stored copy, got {ranges}"
     for start, end in ranges:
-        assert target.offset <= start and end <= target.offset + target.length, (
-            f"changed range ({start}, {end}) escapes the cell's own span "
-            f"({target.offset}, {target.offset + target.length})"
+        assert any(lo <= start and end <= hi for lo, hi in spans), (
+            f"changed range ({start}, {end}) escapes both copies' spans {spans}"
         )
+
+
+def test_an_allied_victory_edit_emits_one_patch_per_stored_copy() -> None:
+    loaded = _loaded()
+    primary = allied_victory_offsets(loaded)[allied_victory_cell_id(3)]
+    mirror = aok_allied_victory_mirror_targets(loaded)[3]
+    assert (primary.length, mirror.length, mirror.codec) == (4, 1, "u8")
+
+    model = OptionsEditModel(loaded)
+    stored = model.original_value(allied_victory_cell_id(3))
+    model.set_value(allied_victory_cell_id(3), 1 - stored)
+    assert model.has_allied_victory_edits and model.has_diplomacy_edits
+    assert not model.has_player_edits, "the mirror is not a Players field"
+    assert sorted(model.serialize_patches()) == sorted(
+        [(primary.offset, struct.pack("<I", 1 - stored)), (mirror.offset, bytes([1 - stored]))]
+    )
+
+
+def test_a_stance_edit_is_not_an_allied_victory_edit() -> None:
+    model = OptionsEditModel(_loaded())
+    stored = model.original_value(stance_cell_id(1, 2))
+    model.set_value(stance_cell_id(1, 2), next(v for v in (0, 1, 3) if v != stored))
+    assert model.has_diplomacy_edits
+    assert not model.has_allied_victory_edits
+
+
+def test_an_allied_victory_value_the_u8_copy_cannot_hold_is_refused() -> None:
+    """The Diplomacy copy is a u32, but the player_data_3 copy is one byte, so
+    256 must be refused at set time rather than desync the pair."""
+    model = OptionsEditModel(_loaded())
+    with pytest.raises(ValueError):
+        model.set_value(allied_victory_cell_id(2), 256)
+    assert not model.has_edits
 
 
 def test_a_stance_edit_leaves_every_other_stance_and_allied_cell_untouched(
@@ -266,6 +309,11 @@ def test_an_allied_victory_edit_reads_back_after_a_reload(tmp_path: Path) -> Non
         reloaded.decompressed_body, allied_victory_offsets(reloaded)[allied_victory_cell_id(2)].offset
     )
     assert value == 1 - stored
+    pd3 = reloaded._scenario.sections["Units"].retriever_map["player_data_3"].data
+    assert [e.retriever_map["aok_allied_victory"].data for e in pd3] == [
+        allied_victory_value(reloaded, p) for p in range(1, 9)
+    ], "the player_data_3 copy reads back in sync with the Diplomacy copy"
+    assert allied_victory_write_supported(reloaded)
 
 
 # -- 5. directionality --------------------------------------------------------
@@ -356,7 +404,80 @@ def test_a_diplomacy_only_failure_does_not_block_an_unrelated_scalar_save(
     assert option_fields.current_value(reloaded, spec) == 1 - stored
 
 
+def _corrupt_mirror(loaded, player: int) -> None:
+    target = aok_allied_victory_mirror_targets(loaded)[player]
+    body = bytearray(loaded.decompressed_body)
+    body[target.offset] ^= 0xFF
+    loaded.decompressed_body = bytes(body)
+
+
+def test_a_mirror_failure_takes_out_only_the_allied_victory_cells() -> None:
+    """Gate independence (TASK-062): every corpus file passes all three gates,
+    so a broken player_data_3 copy is manufactured by corrupting one stored
+    mirror byte. The allied-victory ids drop out of the model; the stance grid
+    and the Teams scalars stay writable."""
+    loaded = _loaded()
+    _corrupt_mirror(loaded, 6)
+    assert aok_allied_victory_mirror_targets(loaded) is None
+    assert diplomacy_write_supported(loaded)
+    assert not allied_victory_write_supported(loaded)
+
+    model = OptionsEditModel(loaded)
+    for player in range(1, 9):
+        assert not model.can_set(allied_victory_cell_id(player))
+        with pytest.raises(KeyError):
+            model.set_value(allied_victory_cell_id(player), 1)
+    stored = model.original_value(stance_cell_id(1, 2))
+    model.set_value(stance_cell_id(1, 2), next(v for v in (0, 1, 3) if v != stored))
+    model.set_value("lock_teams", 1 - model.original_value("lock_teams"))
+    assert model.has_diplomacy_edits and not model.has_allied_victory_edits
+
+
+def test_the_write_path_re_gates_the_allied_victory_mirror(tmp_path: Path) -> None:
+    """has_diplomacy_edits re-verifies only the Diplomacy section the primary
+    lives in, so a mirror that stops verifying after construction must be
+    caught by its own re-gate. Corrupts a different player's mirror byte, so
+    diplomacy_write_supported() still passes and only the new check can fire."""
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    model.set_value(allied_victory_cell_id(3), 1 - model.original_value(allied_victory_cell_id(3)))
+    _corrupt_mirror(loaded, 6)
+    assert diplomacy_write_supported(loaded)
+    assert players_write_supported(loaded), "the mirror is not part of the Players gate"
+
+    with pytest.raises(WriteBlockedError, match="allied-victory"):
+        write_scenario(loaded, tmp_path / "out.aoe2scenario", options=model)
+
+
+def test_a_broken_mirror_does_not_block_a_stance_only_save(tmp_path: Path) -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    stored = model.original_value(stance_cell_id(1, 2))
+    other = next(v for v in (0, 1, 3) if v != stored)
+    model.set_value(stance_cell_id(1, 2), other)
+    _corrupt_mirror(loaded, 6)
+
+    out = tmp_path / "out.aoe2scenario"
+    write_scenario(loaded, out, options=model)
+    reloaded = load_map_and_units(out)
+    (value,) = _CELL.unpack_from(reloaded.decompressed_body, stance_offsets(reloaded)[stance_cell_id(1, 2)].offset)
+    assert value == other
+
+
 # -- 7. corpus ----------------------------------------------------------------
+
+
+def test_the_allied_victory_copies_agree_across_the_corpus(scenario_path) -> None:
+    """TASK-062's Stage 0 (20/20 in sync, 2026-09-02) recorded in code. The
+    copies differ in width (u32 and u8), so compare decoded ints."""
+    loaded = load_map_and_units(scenario_path)
+    if not loaded.units_write_supported:
+        pytest.skip("Units block fails closed on this file, so there is no mirror to reach")
+    targets = aok_allied_victory_mirror_targets(loaded)
+    assert targets is not None
+    body = loaded.decompressed_body
+    for player, target in targets.items():
+        assert body[target.offset] == allied_victory_value(loaded, player), player
 
 
 def test_a_browsed_diplomacy_model_saves_byte_identically_across_the_corpus(

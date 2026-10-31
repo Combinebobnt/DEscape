@@ -438,6 +438,20 @@ def test_file_gates_takes_the_callers_custom_ai_gate_without_computing_it(before
     assert file_gates(loaded, personality_custom=False) == dataclasses.replace(gates, personality_custom=False)
 
 
+def test_the_diplomacy_swap_gate_needs_the_allied_victory_mirror(before_path) -> None:
+    """TASK-062: a swap permutes the allied-victory flags, which a broken
+    player_data_3 copy makes unwritable, so the gate closes rather than the
+    apply step asserting on an id the model refused."""
+    loaded = batch_api.load(before_path)
+    assert file_gates(loaded).diplomacy
+    target = player_fields.aok_allied_victory_mirror_targets(loaded)[6]
+    body = bytearray(loaded.decompressed_body)
+    body[target.offset] ^= 0xFF
+    loaded.decompressed_body = bytes(body)
+    assert options_model.diplomacy_write_supported(loaded)
+    assert not file_gates(loaded).diplomacy
+
+
 def test_can_set_names_the_ids_set_value_accepts(before_path) -> None:
     model = OptionsEditModel(batch_api.load(before_path))
     for field_id in ("player:food:1", "stance:1:2", "allied_victory:3", "disabled:techs:2", "personality:4"):

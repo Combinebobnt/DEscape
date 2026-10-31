@@ -773,7 +773,8 @@ def _capture_multi_entry_states(out_dir: Path) -> list[Path]:
 
 
 def _capture_instruction_preview_states(out_dir: Path) -> list[Path]:
-    """GH #140: the Display Instructions preview, wide and at MIN_USEFUL_WIDTH.
+    """GH #140: the Display Instructions note and footer rows, wide and at MIN_USEFUL_WIDTH.
+    The box itself is on the map (TASK-550), outside these panel grabs.
     Set AOE2DE_INSTALL_PATH for the unit icon; without it the icon falls back."""
     from PyQt5.QtWidgets import QApplication
 
@@ -813,7 +814,7 @@ def _capture_instruction_preview_states(out_dir: Path) -> list[Path]:
                 alone = out_dir / f"instruction_preview_{name}{suffix}_alone.png"
                 preview.grab().save(str(alone))
                 written += [path, alone]
-            print(f"instruction preview {name}: icon {preview.icon_source}, tint {preview.tint}, "
+            print(f"instruction preview {name}: icon {preview.icon_source}, tint {preview.view.tint}, "
                   f"footer {preview.footer_label.text()!r}, note {preview.note_label.text()!r}")
     finally:
         window.edit_history.mark_saved()

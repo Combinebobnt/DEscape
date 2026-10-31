@@ -104,27 +104,27 @@ def test_resolve_name_prefers_the_install_string(tmp_path) -> None:
     try:
         dat_entry = object_catalog._dat_entry("objects", 109)
         assert dat_entry is not None, "object_catalog.json must carry 109"
-        assert object_catalog.resolve_name(109, "TOWN CENTER", dat_entry) == "Town Center"
+        assert object_catalog.resolve_name(109, "TOWN CENTER", dat_entry, section="objects") == "Town Center"
     finally:
         asset_source.set_install_path_override(None)
 
 
 def test_resolve_name_falls_back_to_the_library_name_with_no_install() -> None:
     dat_entry = object_catalog._dat_entry("objects", 109)
-    assert object_catalog.resolve_name(109, "TOWN CENTER", dat_entry) == "TOWN CENTER"
+    assert object_catalog.resolve_name(109, "TOWN CENTER", dat_entry, section="objects") == "TOWN CENTER"
 
 
 def test_resolve_name_falls_back_to_the_dat_code_with_no_library_name(tmp_path) -> None:
     install = _install_with_town_center_string(tmp_path)  # has no entry for key 1
     asset_source.set_install_path_override(install)
     try:
-        assert object_catalog.resolve_name(109, "", {"string_id": 1, "code": "RTWC"}) == "RTWC"
+        assert object_catalog.resolve_name(109, "", {"string_id": 1, "code": "RTWC"}, section="objects") == "RTWC"
     finally:
         asset_source.set_install_path_override(None)
 
 
 def test_resolve_name_falls_back_to_unknown_with_nothing_at_all() -> None:
-    assert object_catalog.resolve_name(999999, "", None) == "UNKNOWN_999999"
+    assert object_catalog.resolve_name(999999, "", None, section="objects") == "UNKNOWN_999999"
 
 
 def test_combined_object_name_resolves_through_the_install_once_configured(tmp_path) -> None:
@@ -542,3 +542,31 @@ def test_a_team_bonus_that_zeroes_a_shadow_techs_cost_counts() -> None:
     """Fortified Outpost needs Macedonian Team Bonus 1269, whose cost only the Macedonians' (54) team bonus zeroes."""
     assert object_catalog.dat_objects()[2415]["civs"] == [54]
     assert object_catalog.dat_techs()[1270]["civs"] == [54]
+
+
+# The park plan's per-family counts (2026-09-02), re-measured on .dat code names 2026-10-29.
+_INTERNAL_TECH_COUNTS = {
+    "Blank Technology": 40,
+    "Placeholder": 10,
+    "C-Bonus": 3,
+    "(make avail)": 4,
+    "Auto upgrade": 1,
+    "requirement": 11,
+    "Change TC constr time": 2,
+    "Static Bonuses": 3,
+}
+
+
+def test_the_internal_tech_families_mark_the_measured_rows() -> None:
+    """Each family of the source list matches the plan's count of TechInfo
+    rows by .dat code name, and exactly those rows carry `internal`."""
+    from collections import Counter
+
+    codes = object_catalog.dat_techs()
+    catalog = object_catalog.techs()
+    families = {e.id: object_catalog.internal_tech_family(str(codes.get(e.id, {}).get("code") or "")) for e in catalog}
+    counts = Counter(families[e.id] for e in catalog)
+    assert {family: counts[family] for family in object_catalog.INTERNAL_TECH_FAMILIES} == _INTERNAL_TECH_COUNTS
+    assert sum(e.internal for e in catalog) == sum(_INTERNAL_TECH_COUNTS.values()) == 74
+    assert all(e.internal == bool(families[e.id]) for e in catalog)
+    assert not any(e.internal for e in object_catalog.objects()), "objects never carry it"

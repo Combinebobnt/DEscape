@@ -1,6 +1,7 @@
 """TASK-362: in Units mode the left pane cannot be dragged below the Units
 page's own minimumSizeHint width (user decision 2026-10-14); every other mode
-keeps settings.MIN_SPLIT_PANE as its drag floor.
+but Terrain keeps settings.MIN_SPLIT_PANE as its drag floor. Terrain's own
+floor (TASK-551) is tests/test_gh142_panel_widths.py's.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ def test_units_mode_floors_the_left_pane_at_the_units_page_and_leaving_restores_
 
         assert _drag_left_to(window, settings.MIN_SPLIT_PANE) >= needed
 
-        for mode in ("View", "Terrain", "Triggers"):
+        for mode in ("View", "Triggers", "Players"):
             window.mode_combo.setCurrentText(mode)
             QApplication.processEvents()
             assert _drag_left_to(window, settings.MIN_SPLIT_PANE) == settings.MIN_SPLIT_PANE, mode

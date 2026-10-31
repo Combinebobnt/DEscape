@@ -451,6 +451,33 @@ def test_the_stack_badge_position_round_trips(tmp_path: Path, monkeypatch, posit
     assert settings.get_stack_badge_position() == position
 
 
+# --- GH #273: Browse's catalog view ----------------------------------------
+
+
+def test_the_browse_catalog_mode_defaults_to_its_constant(tmp_path: Path) -> None:
+    assert settings.get_browse_catalog_mode() == settings.BROWSE_CATALOG_MODE_DEFAULT
+    assert settings.BROWSE_CATALOG_MODE_DEFAULT in settings.UNITS_CATALOG_MODES
+
+
+@pytest.mark.parametrize("raw", ["list", "'GRID'", "0", "true", "[grid]"])
+def test_an_off_list_browse_catalog_mode_falls_back(tmp_path: Path, raw: str) -> None:
+    _write_config(tmp_path, f"browse_catalog_mode: {raw}\n")
+    assert settings.get_browse_catalog_mode() == settings.BROWSE_CATALOG_MODE_DEFAULT
+
+
+def test_setting_an_unknown_browse_catalog_mode_raises_and_writes_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings.set_browse_catalog_mode("list")
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("mode", settings.UNITS_CATALOG_MODES)
+def test_the_browse_catalog_mode_round_trips(tmp_path: Path, monkeypatch, mode: str) -> None:
+    settings.set_browse_catalog_mode(mode)
+    monkeypatch.setattr(settings, "_browse_catalog_mode", None)
+    assert settings.get_browse_catalog_mode() == mode
+
+
 # --- GH #161: terrain picker mode and grid swatch size --------------------
 
 
