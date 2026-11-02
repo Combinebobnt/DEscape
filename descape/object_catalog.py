@@ -335,13 +335,14 @@ def objects() -> tuple[CatalogEntry, ...]:
     Rome), listed as not hidden under the official editor's category (GH #208).
     Under Return of Rome, also _ror_shared_hidden(), as hidden. A dat-only id
     the active data mod adds (GH #58) keeps its derived_category(), the tab the
-    game's editor lists it under, and its row name ends in DATA_MOD_TAG."""
-    from descape import data_mods
+    game's editor lists it under, and its row name ends in DATA_MOD_TAG while
+    Settings > Mods shows that label (GH #265)."""
+    from descape import data_mods, settings
 
     seen: set[int] = set()
     entries = []
     lang = asset_source.get_language()
-    mod_only = data_mods.mod_only_ids()
+    mod_only = data_mods.mod_only_ids() if settings.get_data_mod_label_shown() else frozenset()
     # Under Return of Rome the AoE2 enums and the AoE2 Gunpowder Keg id do not apply (GH #67).
     ror = game_dataset.is_ror()
     editor_listed = _ROR_EDITOR_LISTED_DAT_ONLY if ror else _EDITOR_LISTED_DAT_ONLY

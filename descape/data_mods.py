@@ -20,6 +20,7 @@ the profile, like content_roots.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,15 @@ DAT_NAME = "empires2_x2_p1.dat"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # The frozen exe's argument for the derive subprocess (packaging/entry_frozen.py).
 FROZEN_DERIVE_FLAG = "--derive-dat"
+# GH #265: the table sections unchanged_ids() compares per object, each with the
+# top-level fields it ignores: civ ids name the mod's own civs, and a graphic
+# id shifts when a mod adds graphics while the art itself stays the same.
+UNCHANGED_COMPARED = (
+    ("object_catalog.json", "objects", frozenset({"civs"})),
+    ("unit_stats.json", "stats", frozenset()),
+    ("unit_stats.json", "line_of_sight", frozenset()),
+    ("unit_graphic_map.json", "graphics", frozenset({"graphic_id"})),
+)
 
 
 @dataclass(frozen=True)
@@ -115,3 +125,32 @@ def mod_only_ids() -> frozenset[int]:
     """The active data mod's unit consts the install's .dat lacks; empty with no mod."""
     mod = game_dataset.data_mod()
     return frozenset() if mod is None else mod.mod_only_ids
+
+
+def _section(name: str, key: str, dataset: str | None = None) -> dict:
+    path = game_dataset.table_path(name, dataset)
+    return json.loads(path.read_text()).get(key, {}) if path.is_file() else {}
+
+
+def _without(entry, ignored: frozenset[str]):
+    return {k: v for k, v in entry.items() if k not in ignored} if isinstance(entry, dict) else entry
+
+
+@game_dataset.cache(maxsize=1)
+def unchanged_ids() -> frozenset[int]:
+    """The active data mod's unit consts that are AoE2's own object, untouched
+    (GH #265): object_catalog.same_object_in_aoe2(), and each UNCHANGED_COMPARED
+    entry equal to the committed AoE2 table's but for its ignored fields, and
+    a name string the mod's strings files do not define. Empty with no mod."""
+    mod = game_dataset.data_mod()
+    if mod is None:
+        return frozenset()
+    from descape import asset_source, object_catalog
+
+    objects = _section("object_catalog.json", "objects")
+    keys = {key for key in objects if int(key) not in mod.mod_only_ids and object_catalog.same_object_in_aoe2(int(key))}
+    for name, section, ignored in UNCHANGED_COMPARED:
+        ours, aoe2 = _section(name, section), _section(name, section, game_dataset.AOE2)
+        keys = {key for key in keys if _without(ours.get(key), ignored) == _without(aoe2.get(key), ignored)}
+    renamed = asset_source.data_mod_string_ids()
+    return frozenset(int(key) for key in keys if objects[key].get("string_id") not in renamed)

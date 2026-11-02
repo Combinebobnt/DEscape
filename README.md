@@ -406,7 +406,10 @@ background (about 10-25 s, "Parsing …" in the status bar) and caches the
 result in DEscape's own cache folder, so later picks are instant. An older
 mod whose `.dat` genieutils-py cannot read logs why when picked, and stays
 greyed out with the reason until DEscape restarts. Data mods apply to Age
-of Empires II data only, not Return of Rome.
+of Empires II data only, not Return of Rome. Settings > Mods can hide from
+the Units catalog every object the mod did not change (new, repurposed,
+renamed, or with other art or stats than AoE2's own stay listed), and can
+drop the "(data mod)" label.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`

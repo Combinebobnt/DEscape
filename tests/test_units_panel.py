@@ -2503,6 +2503,97 @@ def test_a_switch_to_return_of_rome_hides_its_own_gaia_only_set() -> None:
     assert {lion, gazelle} <= _listed(panel)
 
 
+
+# --- GH #265: Settings > Mods hides a data mod's unchanged objects -------------
+
+
+@pytest.fixture
+def data_mod(tmp_path):
+    from descape import game_dataset
+    from testkit import data_mod_fixture
+
+    mod = data_mod_fixture.mod_tables(tmp_path)
+    game_dataset.set_data_mod(mod)
+    return mod
+
+
+def _hide_unchanged(on: bool = True) -> None:
+    from descape import settings
+
+    settings.set_data_mod_hide_unchanged(on)
+
+
+def test_hide_unchanged_lists_only_what_the_data_mod_changed(data_mod) -> None:
+    from descape import data_mods, object_catalog
+    from testkit.data_mod_fixture import NEW_UNIT, SPEARMAN
+
+    _hide_unchanged()
+    panel = _panel()
+    listed = _listed(panel)
+    assert _ARCHER_CONST not in listed and {NEW_UNIT, SPEARMAN} <= listed
+    hidden = sum(1 for entry in object_catalog.objects() if not entry.hidden and entry.id in data_mods.unchanged_ids())
+    assert hidden > 0 and not panel.unchanged_note.isHidden()
+    assert panel.unchanged_note.text() == f"{hidden} unchanged objects hidden (Settings > Mods)"
+
+
+def test_hide_unchanged_does_nothing_without_a_data_mod() -> None:
+    _hide_unchanged()
+    panel = _panel()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+
+
+def test_hide_unchanged_takes_effect_on_refresh_owner_filter(data_mod) -> None:
+    panel = _panel()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert _ARCHER_CONST not in _listed(panel) and not panel.unchanged_note.isHidden()
+    _hide_unchanged(False)
+    panel.refresh_owner_filter()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+
+
+def test_an_unchanged_pick_is_listed_until_something_else_is_picked(data_mod) -> None:
+    from testkit.data_mod_fixture import SPEARMAN
+
+    _hide_unchanged()
+    panel = _panel()
+    assert panel.pick_object(_ARCHER_CONST), "the eyedropper lands on a hidden unchanged object"
+    assert panel.selected_object_const() == _ARCHER_CONST and _ARCHER_CONST in _listed(panel)
+    panel.select_owner(2)
+    assert panel.selected_object_const() == _ARCHER_CONST, "a refresh with the same set keeps it"
+    panel.catalog_view.select(SPEARMAN)
+    assert panel.selected_object_const() == SPEARMAN
+    assert _ARCHER_CONST not in _listed(panel)
+
+
+def test_ticking_the_option_drops_an_unchanged_pick_and_keeps_a_changed_one(data_mod) -> None:
+    """User decision 2026-10-29: like a GAIA-only pick when Owner turns to a player."""
+    from testkit.data_mod_fixture import SPEARMAN
+
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert panel.selected_object_const() is None and "(none)" in panel.placing_label.text()
+    assert _ARCHER_CONST not in _listed(panel) and panel.catalog_view.current_value() is None
+    _hide_unchanged(False)
+    panel.refresh_owner_filter()
+    panel.select_object(SPEARMAN)
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert panel.selected_object_const() == SPEARMAN
+
+
+def test_a_gaia_only_pick_still_drops_for_a_player_while_unchanged_objects_hide(data_mod) -> None:
+    _hide_unchanged()
+    panel = _panel()
+    assert panel.pick_object(_MACAW) and panel.owner_id() == GAIA_PLAYER_ID
+    assert _MACAW in _listed(panel)
+    panel.select_owner(1)
+    assert panel.selected_object_const() is None and _MACAW not in _listed(panel)
+
+
 def _player_rows_offered(combo) -> dict[int, bool]:
     """player_id -> shown in the popup and selectable."""
     model, view = combo.model(), combo.view()

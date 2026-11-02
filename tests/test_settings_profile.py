@@ -356,3 +356,79 @@ def test_long_paths_scroll_inside_the_list_not_the_dialog(opened, tmp_path) -> N
     assert view.horizontalScrollBar().maximum() > 0
     assert view.height() == view.maximumHeight()
     assert view.height() >= dialog._PROFILE_LIST_ROWS * view.sizeHintForRow(0)
+
+
+@pytest.fixture
+def data_mod_window(tmp_path):
+    """(dialog, window) with a synthetic data mod in effect before the window is built (GH #265)."""
+    from descape import game_dataset
+    from testkit import data_mod_fixture
+
+    game_dataset.set_data_mod(data_mod_fixture.mod_tables(tmp_path))
+    dialog, window = conftest.dialog_and_window()
+    yield dialog, window
+    dialog.close()
+    conftest.close_window(window)
+
+
+def _catalog_listed(window) -> set[int]:
+    from PyQt5.QtCore import Qt
+
+    view = window.units_panel.catalog_view.list
+    return {view.item(i).data(Qt.UserRole) for i in range(view.count()) if not view.item(i).isHidden()}
+
+
+def test_the_data_mod_checkboxes_sit_on_the_mods_tab_with_their_defaults(opened) -> None:
+    dialog, _window, _rescans = opened
+    mods = _select_tab(dialog, "Mods")
+    for check in (dialog.data_mod_hide_unchanged_check, dialog.data_mod_label_check):
+        assert mods.isAncestorOf(check)
+    assert not dialog.data_mod_hide_unchanged_check.isChecked() and dialog.data_mod_label_check.isChecked()
+
+
+def test_the_data_mod_checkboxes_start_from_config() -> None:
+    from descape import asset_source
+
+    asset_source.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    asset_source.CONFIG_PATH.write_text(yaml.safe_dump({"data_mod_hide_unchanged": True, "data_mod_label_shown": False}))
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert dialog.data_mod_hide_unchanged_check.isChecked() and not dialog.data_mod_label_check.isChecked()
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_hide_unchanged_writes_config_and_refreshes_the_catalog(data_mod_window) -> None:
+    dialog, window = data_mod_window
+    archer = 4
+    assert archer in _catalog_listed(window)
+    dialog.data_mod_hide_unchanged_check.setChecked(True)
+    assert _config()["data_mod_hide_unchanged"] is True
+    assert archer not in _catalog_listed(window)
+    assert not window.units_panel.unchanged_note.isHidden()
+    dialog.data_mod_hide_unchanged_check.setChecked(False)
+    assert _config()["data_mod_hide_unchanged"] is False
+    assert archer in _catalog_listed(window)
+
+
+def test_the_label_toggle_renames_the_catalog_and_keeps_a_mod_only_pick(data_mod_window) -> None:
+    from descape import object_catalog
+    from testkit.data_mod_fixture import NEW_UNIT
+
+    dialog, window = data_mod_window
+    panel = window.units_panel
+
+    def row_text() -> str:
+        return panel.catalog_view._items[NEW_UNIT].text()
+
+    assert panel.pick_object(NEW_UNIT)
+    assert row_text().endswith(object_catalog.DATA_MOD_TAG)
+    dialog.data_mod_label_check.setChecked(False)
+    assert _config()["data_mod_label_shown"] is False
+    assert object_catalog.DATA_MOD_TAG not in row_text()
+    assert panel.selected_object_const() == NEW_UNIT, "a mod-only pick survives the rename"
+    assert object_catalog.DATA_MOD_TAG not in panel.selected_object_label()
+    dialog.data_mod_label_check.setChecked(True)
+    assert row_text().endswith(object_catalog.DATA_MOD_TAG)
+    assert panel.selected_object_label().endswith(object_catalog.DATA_MOD_TAG)

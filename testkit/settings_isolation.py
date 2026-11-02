@@ -94,6 +94,8 @@ MEMOIZED_GLOBALS = (
     "_terrain_style",
     "_view_layers",
     "_mod_art_excluded",
+    "_data_mod_hide_unchanged",
+    "_data_mod_label_shown",
     "_terrain_picker_mode",
     "_terrain_grid_swatch_px",
 )

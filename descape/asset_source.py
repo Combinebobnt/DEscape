@@ -228,6 +228,7 @@ def clear_install_caches() -> None:
     get_terrain_mask_array.cache_clear()
     _sized_terrain_mask.cache_clear()
     _string_table.cache_clear()
+    _data_mod_string_ids.cache_clear()
     _ror_icon_files.cache_clear()
     get_unit_icon.cache_clear()
     get_tech_icon.cache_clear()
@@ -278,23 +279,42 @@ def _string_table(lang: str) -> dict[int, str]:
     paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
     if game_dataset.is_ror():
         paths.append(game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
-    mod = game_dataset.data_mod()
-    if mod is not None:
-        from descape import content_roots
-
-        folder = content_roots.child_dir(mod.root, "resources", lang, "strings", "key-value")
-        if folder is not None:
-            paths.extend(folder / name for name in MOD_STRINGS_FILES)
+    paths.extend(_data_mod_strings_paths(lang))
     table: dict[int, str] = {}
     for path in paths:
-        if not path.is_file():
-            continue
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            match = _STRING_LINE.match(line)
-            if match is None:
-                continue
+        for match in _string_lines(path):
             table[int(match.group(1))] = _unescape_string_value(match.group(2))
     return table
+
+
+def _data_mod_strings_paths(lang: str) -> list[Path]:
+    """The active data mod's strings files for lang (GH #58), existing or not; [] with no mod."""
+    mod = game_dataset.data_mod()
+    if mod is None:
+        return []
+    from descape import content_roots
+
+    folder = content_roots.child_dir(mod.root, "resources", lang, "strings", "key-value")
+    return [] if folder is None else [folder / name for name in MOD_STRINGS_FILES]
+
+
+def _string_lines(path: Path) -> list[re.Match]:
+    """Every _STRING_LINE match in a strings file; [] when it does not exist."""
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return [match for match in map(_STRING_LINE.match, lines) if match is not None]
+
+
+@game_dataset.cache(maxsize=4)
+def _data_mod_string_ids(lang: str) -> frozenset[int]:
+    return frozenset(int(match.group(1)) for path in _data_mod_strings_paths(lang) for match in _string_lines(path))
+
+
+def data_mod_string_ids(lang: str | None = None) -> frozenset[int]:
+    """The string keys the active data mod's own strings files define (GH #265),
+    install or not; empty with no data mod. lang defaults to get_language()."""
+    return _data_mod_string_ids(lang or get_language())
 
 
 def resource_string(key: int, lang: str | None = None) -> str | None:

@@ -456,6 +456,42 @@ def set_mod_art_excluded(status_paths) -> None:
     _save_config(config)
 
 
+# GH #265, Settings > Mods: hide the objects a data mod did not change from the
+# Units catalog (off), and end a mod-only object's name in "(data mod)" (on).
+_data_mod_hide_unchanged: bool | None = None
+_data_mod_label_shown: bool | None = None
+
+
+def get_data_mod_hide_unchanged() -> bool:
+    global _data_mod_hide_unchanged
+    if _data_mod_hide_unchanged is None:
+        _data_mod_hide_unchanged = bool(_load_config().get("data_mod_hide_unchanged", False))
+    return _data_mod_hide_unchanged
+
+
+def set_data_mod_hide_unchanged(enabled: bool) -> None:
+    global _data_mod_hide_unchanged
+    _data_mod_hide_unchanged = enabled
+    config = _load_config()
+    config["data_mod_hide_unchanged"] = enabled
+    _save_config(config)
+
+
+def get_data_mod_label_shown() -> bool:
+    global _data_mod_label_shown
+    if _data_mod_label_shown is None:
+        _data_mod_label_shown = bool(_load_config().get("data_mod_label_shown", True))
+    return _data_mod_label_shown
+
+
+def set_data_mod_label_shown(enabled: bool) -> None:
+    global _data_mod_label_shown
+    _data_mod_label_shown = enabled
+    config = _load_config()
+    config["data_mod_label_shown"] = enabled
+    _save_config(config)
+
+
 # View > Distance Ticks: the ruler strip of tick marks drawn in the void
 # just outside the map's own border, with two persisted halves (whether it
 # is drawn at all, and how many tiles apart the minor ticks sit). Unlike

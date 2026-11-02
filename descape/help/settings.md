@@ -14,6 +14,7 @@ Each tab:
 
 - AoE2DE profile folder: optional, and usually found on its own. It is where Players mode finds custom AIs from your profile and mods, and where your enabled mods' art comes from. Browse… and Load set it; Use auto-detect forgets your choice and finds it from the install again. Below it is every folder DEscape scans for content.
 - Mod art list: every enabled mod that ships art, in the game's mod order, the top one winning where two ship the same file. Untick a mod to leave it out of **View > Layers > Mod Art**; it stays off even if you reinstall it. Mods are read once per launch, so after enabling one in the game, restart DEscape or load the profile folder again.
+- Data mods: Hide unchanged objects in the Units catalog lists only what the data mod picked in **File > Data Mod** adds or changes: new objects, objects it reuses or renames, and objects with other art or stats than the game's own. A note under the catalog counts what is hidden, and an object picked with the Eyedropper shows while it is the pick. Show "(data mod)" after objects only the data mod has turns that label on or off.
 
 ## Appearance
 
