@@ -30,8 +30,8 @@ the one obvious command for "did I break anything", and what CI and
 `tools/ci_parity.sh` run. The **full suite** is every item: the quick suite
 plus the `slow` checks and the corpus items against the complete `examples/`
 (`--corpus-full`), in one run and one summary. Run it before a release or
-after touching rendering or write-path internals. `run_all_tests.sh`/`.bat`
-remain as an alias for `run_quick_tests`. Older text that says "default
+after touching rendering or write-path internals. Older text that says
+`run_all_tests` or "default
 tier" means the quick suite.
 
 **Parallel runs.** The wrappers run the suite under pytest-xdist
