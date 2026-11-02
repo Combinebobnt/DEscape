@@ -33,13 +33,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The frozen exe's argument for the derive subprocess (packaging/entry_frozen.py).
 FROZEN_DERIVE_FLAG = "--derive-dat"
 # GH #265: the table sections unchanged_ids() compares per object, each with the
-# top-level fields it ignores: civ ids name the mod's own civs, and a graphic
-# id shifts when a mod adds graphics while the art itself stays the same.
+# top-level fields it ignores: civ ids name the mod's own civs, a graphic id
+# shifts when a mod adds graphics while the art itself stays the same, and a
+# garrison flag's sprite name differs between .dat versions without a mod's doing.
 UNCHANGED_COMPARED = (
     ("object_catalog.json", "objects", frozenset({"civs"})),
     ("unit_stats.json", "stats", frozenset()),
     ("unit_stats.json", "line_of_sight", frozenset()),
-    ("unit_graphic_map.json", "graphics", frozenset({"graphic_id"})),
+    ("unit_graphic_map.json", "graphics", frozenset({"graphic_id", "garrison_flags"})),
 )
 
 

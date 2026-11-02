@@ -143,12 +143,12 @@ def test_mod_strings_override_the_install_key_by_key(tmp_path, monkeypatch, mod_
 
 # --- GH #265: Settings > Mods' unchanged objects and "(data mod)" label ---------
 
-CROSSBOWMAN, LONGBOWMAN, KNIGHT, MILITIA = 7, 8, 38, 74
+CROSSBOWMAN, LONGBOWMAN, KNIGHT, MILITIA, BARRACKS = 7, 8, 38, 74, 12
 
 
 def _edit_rows(mod: game_dataset.DataModTables) -> None:
-    """Militia repurposed and a Knight with another icon (both changed); a
-    Longbowman other only in civs and a Crossbowman only in graphic_id (both unchanged)."""
+    """Militia repurposed and a Knight with another icon (both changed); a Longbowman
+    other only in civs, a Crossbowman only in graphic_id, Barracks only in its garrison flag (all unchanged)."""
     folder = mod.tables_dir
     catalog = data_mod_fixture.load(folder, "object_catalog.json")
     objects = catalog["objects"]
@@ -158,6 +158,7 @@ def _edit_rows(mod: game_dataset.DataModTables) -> None:
     data_mod_fixture.save(folder, "object_catalog.json", catalog)
     graphics = data_mod_fixture.load(folder, "unit_graphic_map.json")
     graphics["graphics"][str(CROSSBOWMAN)]["graphic_id"] += 1000
+    graphics["graphics"][str(BARRACKS)]["garrison_flags"][0]["file_name"] = "b_misc_garrison_flag_x1"
     data_mod_fixture.save(folder, "unit_graphic_map.json", graphics)
 
 
@@ -165,7 +166,7 @@ def test_unchanged_ids_are_the_aoe2_objects_the_mod_left_alone(mod_tables):
     _edit_rows(mod_tables)
     game_dataset.set_data_mod(mod_tables)
     unchanged = data_mods.unchanged_ids()
-    assert {ARCHER, LONGBOWMAN, CROSSBOWMAN} <= unchanged
+    assert {ARCHER, LONGBOWMAN, CROSSBOWMAN, BARRACKS} <= unchanged
     assert not {SPEARMAN, NEW_UNIT, MILITIA, KNIGHT} & unchanged
 
 
