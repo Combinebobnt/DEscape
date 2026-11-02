@@ -14,7 +14,7 @@ jobs:
       matrix:
         runner: [ubuntu-22.04, macos-15, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
 
@@ -33,10 +33,10 @@ jobs:
 
       - uses: ./.github/actions/install-and-build
 
-      # The tier contains the native kernel oracle tests, so each OS's build
-      # is compared against numpy here too.
-      - uses: ./.github/actions/default-tier
-        timeout-minutes: 130
+      # The quick suite contains the native kernel oracle tests, so each OS's
+      # build is compared against numpy here too.
+      - uses: ./.github/actions/quick-suite
+        timeout-minutes: 180
 
   # Keeps the required status context `test`; the matrix reports
   # `tier (<runner>)` instead. always(): a skipped required check passes.

@@ -35,8 +35,8 @@ pytestmark = pytest.mark.corpus
 tool = conftest.load_verify_module("release_render_diff")
 
 MATCH_PCTS = (25, 50, 100, 200)
-# Files outside the quick corpus, the controls' and the tool's own: no scenario_path cell renders them, so they get a match test.
-EXTRA_FILES = sorted(({file for _inject, file, _configs in tool.controls()} - set(tool.QUICK_CORPUS)) | set(tool.EXTRA_MATCH_FILES))
+# Files outside the corpus subset, the controls' and the tool's own: no scenario_path cell renders them, so they get a match test.
+EXTRA_FILES = sorted(({file for _inject, file, _configs in tool.controls()} - set(tool.CORPUS_SUBSET)) | set(tool.EXTRA_MATCH_FILES))
 
 
 def _require_install_and_tag():
@@ -81,7 +81,7 @@ def test_the_render_matches_the_last_release_outside_the_intended_changes(scenar
 
 
 @pytest.mark.parametrize("name", EXTRA_FILES)
-def test_the_files_outside_the_quick_corpus_match_too(name, tmp_path):
+def test_the_files_outside_the_corpus_subset_match_too(name, tmp_path):
     _assert_matches(_example(name), tmp_path)
 
 

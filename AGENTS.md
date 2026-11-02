@@ -127,7 +127,7 @@ page shows the live keys); `tests/test_help_guide.py` lints the rest.
 ## Contributing
 
 If you are working on a contribution for a pull request, follow
-`CONTRIBUTING.md`. Run `./run_all_tests.sh` (`run_all_tests.bat` on Windows)
+`CONTRIBUTING.md`. Run `./run_quick_tests.sh` (`run_quick_tests.bat` on Windows)
 and report what it printed before calling a change done. The Hard rules above
 are not negotiable. A contributed PR leaves `CHANGELOG.md` alone.
 

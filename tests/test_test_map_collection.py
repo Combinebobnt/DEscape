@@ -1,7 +1,6 @@
 """Guards the `test_map` mark: a test that reads the generated test map or
-its resave without it would silently run in the default tier, which stays
-the same as before the map existed. The map items run in the quick and
-stress tiers only."""
+its resave without it would silently drop out of `-m test_map`, which runs
+the map items alone (the quick suite runs them with everything else)."""
 
 from __future__ import annotations
 

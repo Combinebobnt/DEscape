@@ -527,7 +527,7 @@ def test_stepped_pick_agrees_with_the_id_plane_on_a_real_file(scenario_path) -> 
     Size-gated, and the gate is the honest part: the ID plane is a
     full-canvas int32 array, which on the 480x480 corpus outlier is tens of
     GB. Those files skip with a named reason rather than the whole check
-    quietly being written to avoid them. The quick-corpus 144x144 file is
+    quietly being written to avoid them. The corpus subset's 144x144 file is
     ~0.17 GB and runs.
     """
     scenario = load_map_and_units(scenario_path)

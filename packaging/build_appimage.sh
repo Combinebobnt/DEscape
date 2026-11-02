@@ -14,7 +14,7 @@
 # Needs a real chmod (AppRun, the downloaded appimagetool) and network
 # access to fetch appimagetool, so this script is meant to be run by a
 # human, not from an agent session. An in-session pass can still check the
-# built AppDir with tools/verify_appdir.py and run ./run_all_tests.sh
+# built AppDir with tools/verify_appdir.py and run ./run_quick_tests.sh
 # (which covers tests/test_packaging_assets.py); only the download, chmod,
 # and appimagetool call itself need a human.
 set -euo pipefail

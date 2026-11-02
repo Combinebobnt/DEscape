@@ -49,7 +49,7 @@ units to sprite art, and at least one, so a missing install cannot pass as "no
 difference".
 
 Run:
-    tools/release_render_diff.py                         # the quick corpus in examples/
+    tools/release_render_diff.py                         # the corpus subset in examples/
     tools/release_render_diff.py examples/foo.aoe2scenario --elev-step-pct 25 200
     tools/release_render_diff.py --attribute             # name the tiles, terrains and units under each diff
     tools/release_render_diff.py --frames-dir build/release_frames
@@ -82,9 +82,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BASE_REF = "v0.10"
 STYLES = ("flat", "stepped", "sloped")
 DEFAULT_PCTS = (50, 200)
-# The same four files as tests/conftest.py's QUICK_CORPUS_NAMES.
+# The same four files as tests/conftest.py's CORPUS_SUBSET_NAMES.
 # No examples/ file places town centres 71, 141 or 142, so their art is not compared (decided 2026-10-20, record only).
-QUICK_CORPUS = (
+CORPUS_SUBSET = (
     "0_June_Event_Scenario.aoe2scenario",
     "2_Joan_coop_1_v0_13.aoe2scenario",
     "C2_ElCid_coop_1_v0_16.aoe2scenario",
@@ -100,7 +100,7 @@ JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
 OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
 LELOI = "R4_LeLoi_4.aoe2scenario"
 DOS_PILAS = "F7_2_Dos Pilas (648).aoe2scenario"
-# Matched by the release gate beside the quick corpus whatever entries exist (tests/test_release_render_diff.py).
+# Matched by the release gate beside the corpus subset whatever entries exist (tests/test_release_render_diff.py).
 EXTRA_MATCH_FILES = (OLD_ALLIES, LELOI)
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
@@ -781,7 +781,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, epilog=_registry_help(), formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the quick corpus in examples/)")
+    parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the corpus subset in examples/)")
     parser.add_argument("--base", default=BASE_REF, help=f"Release ref to compare against (default {BASE_REF})")
     parser.add_argument("--elev-step-pct", type=int, nargs="+", default=list(DEFAULT_PCTS), help="Isometric elevation height stops")
     parser.add_argument("--style", choices=STYLES, nargs="+", default=list(STYLES))
@@ -799,7 +799,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    scenarios = args.scenarios or [ROOT / "examples" / name for name in QUICK_CORPUS]
+    scenarios = args.scenarios or [ROOT / "examples" / name for name in CORPUS_SUBSET]
     missing = [str(p) for p in scenarios if not p.is_file()]
     if missing:
         parser.error(f"not found: {', '.join(missing)}")

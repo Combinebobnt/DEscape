@@ -707,7 +707,7 @@ def test_sloped_quad_indices_key_cardinality(corpus_files):
     # generous, so a passing run says almost nothing on its own, and the
     # number is what any future maxsize decision has to be made against.
     # Run with -s to see it. Measured 2026-08-20 (average rule, one fold):
-    # 318 keys on the quick subset, 329 across the full corpus. Measured
+    # 318 keys on the corpus subset, 329 across the full corpus. Measured
     # 2026-10-29 (max rule, per fold): NE-SW 21, NW-SE 12, subset and full alike.
     print(f"\nsloped_quad_indices distinct keys: NE-SW {len(seen[False])}, NW-SE {len(seen[True])}")
     # Generous ceiling, not a tight bound -- see the docstring above.

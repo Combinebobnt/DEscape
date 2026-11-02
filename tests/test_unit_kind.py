@@ -21,6 +21,8 @@ import pytest
 from descape import unit_kind
 from descape.terrain_palette import TREE_UNIT_IDS
 
+import conftest
+
 # Hand-picked representatives, each named for why it is in this list.
 WALL2 = 117  # the corpus's most-placed wall, 4437 placements
 AQUEDUCT = 231  # class 27, angle_count 5 -- a full wall since GH #110
@@ -406,9 +408,10 @@ def test_the_eye_candy_set_hides_decoratives_and_keeps_resources(corpus_files) -
 def test_the_obstacle_split_matches_its_measured_corpus_placements(corpus_files, request) -> None:
     """Re-measures GH #149's placement split (2026-10-07): 2,249 obstacle and
     15,722 passable placements over the full corpus, 398 obstacles in the
-    quick subset (Dos Pilas holding 269)."""
+    corpus subset (Dos Pilas holding 269)."""
     from descape.scenario_io import load_map_and_units
 
+    conftest.require_reference_corpus(request.config)
     obstacles = unit_kind.obstacle_consts()
     passable = unit_kind.passable_eye_candy_consts()
     n_obstacles = n_passable = 0
@@ -425,12 +428,13 @@ def test_the_obstacle_split_matches_its_measured_corpus_placements(corpus_files,
 @pytest.mark.corpus
 def test_the_invisible_set_matches_its_measured_corpus_placements(corpus_files, request) -> None:
     """Re-measures the GH #53 plan's placement table (2026-09-21, 20 files)
-    rather than trusting it. The exact counts need --corpus-full; the quick
-    default subset only checks no unexpected invisible const is placed."""
+    rather than trusting it. The exact counts need --corpus-full; the corpus
+    subset only checks no unexpected invisible const is placed."""
     from collections import Counter
 
     from descape.scenario_io import load_map_and_units
 
+    conftest.require_reference_corpus(request.config)
     invisible = unit_kind.invisible_consts()
     placed: Counter[int] = Counter()
     files: Counter[int] = Counter()
@@ -444,7 +448,7 @@ def test_the_invisible_set_matches_its_measured_corpus_placements(corpus_files, 
 
     assert set(placed) <= INVISIBLE_OBJECTS | MAP_REVEALERS | BLOCKERS | {EMPTY_TC_ANNEX, FLARE4}, placed
     if not request.config.getoption("--corpus-full"):
-        assert placed, "the quick corpus carries revealers; this test would prove nothing"
+        assert placed, "the corpus subset carries revealers; this test would prove nothing"
         return
     assert placed[837] == 459 and files[837] == 8
     assert placed[1774] == 50 and placed[1775] == 3

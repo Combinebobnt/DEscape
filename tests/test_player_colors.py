@@ -30,6 +30,7 @@ from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS, resolve_p
 from descape.unit_model import UnitEditModel
 from descape.unit_sprites import TEAM_COLORS
 
+import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
 IDENTITY_IDS = [0, 1, 2, 3, 4, 5, 6, 7]
@@ -202,19 +203,20 @@ def test_two_scenarios_player_1_never_share_a_cached_tint(sprite_install):
 
 
 @pytest.mark.corpus
-def test_corpus_still_has_wrong_default_colors_on_most_files(corpus_files):
+def test_corpus_still_has_wrong_default_colors_on_most_files(corpus_files, request):
     """Guards the guard: the whole point of this feature is that most real
     files DON'T store the identity assignment. If a future corpus swap (or
     a regression back to the identity path) ever made every file resolve
     to [0..7], this would go quiet while the bug it exists to catch came
     back."""
+    conftest.require_reference_corpus(request.config)
     non_identity = 0
     for path in corpus_files:
         scenario = load_map_and_units(str(path))
         if scenario.player_colors != resolve_player_colors(IDENTITY_IDS)[0]:
             non_identity += 1
-    # Measured 17/20 (85%) on the full corpus; the quick 3-file subset
-    # (conftest.QUICK_CORPUS_NAMES) happens to be 3/3. 80% is comfortably
+    # Measured 17/20 (85%) on the full corpus; the corpus subset
+    # (conftest.CORPUS_SUBSET_NAMES) happens to be 3/3. 80% is comfortably
     # below both -- loud regardless of which subset ran -- while still
     # catching a regression back to the identity path (which would read 0%).
     assert non_identity / len(corpus_files) >= 0.8, (

@@ -18,6 +18,8 @@ from descape import asset_source, object_catalog, placement_rules
 from descape.terrain_palette import BUILDING_TILE_SPANS, DOODAD_TILE_SPANS, FOUNDATION_TERRAIN
 from testkit.fakes import FakeScenario, SyntheticTile, SyntheticUnit
 
+import conftest
+
 VILLAGER = 83
 ARCHER = 4
 FISHING_SHIP = 13
@@ -525,8 +527,8 @@ def test_a_garrisoned_mover_skips_both_rules() -> None:
 
 _FISH_CLASSES = frozenset({5, 31, 33})
 _KIND_BY_TYPE = {80: "buildings", 70: "creatables", 10: "type-10"}
-_SCOPES = ("quick", "full")
-# Percent, (quick subset, --corpus-full), pinned just above the 2026-10-12 measurement:
+_SCOPES = ("subset", "full")
+# Percent, (corpus subset, --corpus-full), pinned just above the 2026-10-12 measurement:
 # buildings 9.97 / 6.19 (wall and gate joins, off-parity houses), creatables 0.18 / 0.42, type-10 0.77 / 1.14.
 _OVERLAP_CEILING = {"buildings": (11.0, 7.0), "creatables": (0.5, 0.6), "type-10": (1.0, 1.4)}
 # Measured: buildings 0.88 / 0.38, creatables 0.87 / 0.20, type-10 0.00 / 0.04, fish 0.00 / 1.63.
@@ -554,7 +556,8 @@ def test_real_placements_mostly_satisfy_both_rules(corpus_files, request) -> Non
 
     from descape import render, scenario_io
 
-    scope = _SCOPES.index("full" if request.config.getoption("--corpus-full") else "quick")
+    conftest.require_reference_corpus(request.config)
+    scope = _SCOPES.index("full" if request.config.getoption("--corpus-full") else "subset")
     objects = object_catalog.dat_objects()
     placed, on_wrong_terrain = Counter(), Counter()
     solid, overlapping = Counter(), Counter()
@@ -588,7 +591,7 @@ def test_real_placements_mostly_satisfy_both_rules(corpus_files, request) -> Non
         "overlap": {kind: round(percent(overlapping[kind], solid[kind]), 2) for kind in _OVERLAP_CEILING},
         "shore": round(percent(beside_shore, shore_fish), 1),
     }
-    # Enough of each kind that a rate means something (the quick subset holds 1,147 creatables).
+    # Enough of each kind that a rate means something (the corpus subset holds 1,147 creatables).
     assert all(placed[kind] >= 1000 for kind in _TERRAIN_CEILING), dict(placed)
     assert shore_fish >= 500
     for kind, ceiling in _TERRAIN_CEILING.items():

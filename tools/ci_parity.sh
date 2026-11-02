@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One command for a CI-equivalent local run. Run it before every tag:
 #
-#     bash tools/ci_parity.sh v0.8     # tag check, then the default tier and test map items
-#     bash tools/ci_parity.sh          # the default tier and test map items only
+#     bash tools/ci_parity.sh v0.8     # tag check, then the quick suite
+#     bash tools/ci_parity.sh          # the quick suite only
 #
 # Hides what CI's runner does not have: the Workshop corpus (under $HOME), the
 # AoE2:DE install (AOE2DE_INSTALL_PATH, or config.yaml under XDG_CONFIG_HOME)
@@ -11,7 +11,7 @@
 # here: testkit/qt_window.ensure_qapp() hard-sets it.
 #
 # This mirrors the Linux leg only (the macOS and Windows legs have no local
-# equivalent), and matches .github/actions/default-tier only until that action
+# equivalent), and matches .github/actions/quick-suite only until that action
 # changes, so it does not replace a real CI run on a release branch before tagging.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -25,14 +25,14 @@ if [ "$#" -gt 1 ]; then
     exit 1
 fi
 
-# Same order as build.yml: the cheap tag check fails fast, before the tier.
+# Same order as build.yml: the cheap tag check fails fast, before the suite.
 if [ "$#" -eq 1 ]; then
     .venv/bin/python3 tools/check_release_tag.py "$1" || exit 1
 else
     echo "ci_parity: no tag given, skipping check_release_tag.py"
 fi
 
-# Same as build.yml: the kernel is built first and the tier requires it, so a
+# Same as build.yml: the kernel is built first and the suite requires it, so a
 # missing or stale build fails here rather than skipping the native oracle.
 .venv/bin/python3 tools/build_native.py || exit 1
 
@@ -44,20 +44,9 @@ HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" DESCAPE_REQUIRE_NATIVE=1 
     env -u AOE2DE_INSTALL_PATH -u DESCAPE_COMPOSITE -u QT_QPA_PLATFORM \
     .venv/bin/python3 -m pytest -n auto --maxprocesses 16 --dist loadgroup "--scenario-dir=$sandbox/scenarios"
 status=$?
-if [ "$status" -ne 0 ]; then
-    echo "ci_parity: default tier failed (exit $status)" >&2
-    exit "$status"
-fi
-
-# Same as default-tier's second step: the test map items pytest.ini leaves out.
-HOME="$sandbox/home" XDG_CONFIG_HOME="$sandbox/config" DESCAPE_REQUIRE_NATIVE=1 \
-    env -u AOE2DE_INSTALL_PATH -u DESCAPE_COMPOSITE -u QT_QPA_PLATFORM \
-    .venv/bin/python3 -m pytest -n auto --maxprocesses 16 --dist loadgroup "--scenario-dir=$sandbox/scenarios" \
-    -m "test_map and not corpus"
-status=$?
 if [ "$status" -eq 0 ]; then
     echo "ci_parity: clean"
 else
-    echo "ci_parity: test map items failed (exit $status)" >&2
+    echo "ci_parity: quick suite failed (exit $status)" >&2
 fi
 exit "$status"

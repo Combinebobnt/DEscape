@@ -1,0 +1,18 @@
+name: Quick test suite
+description: >
+  Runs the quick pytest suite (pytest.ini's default selection, the test map
+  items included) with the native kernel required. On Linux xvfb-run wraps
+  the run; other OSes need no display (the tests use Qt's offscreen platform).
+  Assumes the install-and-build action already ran, and qt-linux-libs on Linux.
+runs:
+  using: composite
+  steps:
+    # --durations: the slowest tests per leg, so a leg's wall time can be compared and trimmed.
+    - name: Run the quick suite
+      shell: bash
+      env:
+        DESCAPE_REQUIRE_NATIVE: '1'
+      run: |
+        wrap=()
+        if [ "$RUNNER_OS" = Linux ]; then wrap=(xvfb-run -a); fi
+        "${wrap[@]}" python -m pytest -n auto --maxprocesses 16 --dist loadgroup --durations=60
