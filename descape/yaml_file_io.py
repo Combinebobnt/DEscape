@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import reprlib
-import tempfile
+import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,12 +123,14 @@ def dump(doc: dict) -> str:
     return yaml.dump(doc, Dumper=NoAliasDumper, default_flow_style=False, sort_keys=False)
 
 
-def atomic_write(path: Path, data: str | bytes, *, mode: int | None = None) -> None:
+def atomic_write(path: Path, data: str | bytes, *, mode: int | None = None, create_mode: int = 0o644) -> None:
     """Writes through a temp file in path's directory and os.replace(), so an
     existing file is never truncated in place. Text is written as UTF-8. The
-    file gets `mode`, or 0o644 less the umask when None."""
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp = Path(tmp_name)
+    file gets `mode`, or `create_mode` less the OS-applied umask when None."""
+    tmp = path.with_name(f".descape-{uuid.uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp, flags, 0o600 if mode is not None else create_mode)
+    published = False
     try:
         if isinstance(data, bytes):
             with os.fdopen(fd, "wb") as handle:
@@ -136,15 +138,21 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int | None = None) -> N
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(data)
-        if mode is None:
-            # mkstemp makes the file 0o600; these files are meant to be shared.
-            umask = os.umask(0)
-            os.umask(umask)
-            mode = 0o644 & ~umask
-        tmp.chmod(mode)
+        if mode is not None:
+            tmp.chmod(mode)
         os.replace(tmp, path)
+        published = True
     finally:
-        tmp.unlink(missing_ok=True)
+        try:
+            try:
+                tmp.unlink(missing_ok=True)
+            except PermissionError:
+                # Windows refuses to unlink a read-only file, including our own temporary.
+                tmp.chmod(0o600)
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            if published:
+                raise  # Never replace the original write/publication error with a cleanup error.
 
 
 def _same_file(a: Path, b: Path) -> bool:

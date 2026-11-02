@@ -291,7 +291,7 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.swap_players_dialog import SwapPlayersDialog
 from descape.terrain_palette import name_for_terrain_id, tile_span
 from descape.terrain_panel import TerrainPanel
-from descape.terrain_style import STYLE_LABELS, label_for, style_for_label
+from descape.terrain_style import STYLE_LABELS, TERRAIN_STYLES, label_for, style_for_label
 from descape.text_edits import _MultiLineEdit
 from descape.tool_defaults_page import ToolDefaultsPage
 from descape.toolbar_overflow import partition
@@ -307,14 +307,18 @@ from descape.trigger_model import (
     display_order_with_copies_inserted,
     exec_order_value,
     exec_order_write_supported,
+    id_order_refusal,
+    id_order_to_edge,
     move_entries,
     moved_display_order_block,
+    moved_id_order,
     moved_section_display_order,
     moved_to_section_edge,
     paste_anchor,
     remove_entries,
     renumber_refusal,
     renumber_to_display_order,
+    renumber_to_order,
     resolve_exec_mode,
     section_edge_refusal,
     would_move_entries,
@@ -489,8 +493,8 @@ OFF_GRID_FALLBACK_MESSAGE = (
 LEGACY_REORDER_MESSAGE = (
     "This file runs triggers in ID order (legacy), so moving them in the list does not change "
     "which runs first. Renumber IDs to Display Order, on the trigger list's right-click menu, "
-    "makes them run in the listed order; Map Options' Trigger execution order switches the file "
-    "to display order instead."
+    "makes them run in the listed order, and moving them in File order (trigger ID) view changes "
+    "their IDs; Map Options' Trigger execution order switches the file to display order instead."
 )
 # GH #2: the status line after Renumber IDs to Display Order, one per execution mode.
 LEGACY_RENUMBER_MESSAGE = "This file runs triggers in ID order (legacy), so they now run in the listed order."
@@ -499,6 +503,11 @@ UNKNOWN_RENUMBER_MESSAGE = (
     "This file stores no execution order setting; if the game runs it by ID, "
     "which trigger runs first may have changed."
 )
+# TASK-569: after a File order view ID move, once per document and mode; a legacy file says nothing.
+DISPLAY_ID_MOVE_MESSAGE = (
+    "This file runs triggers in display order, so changing IDs does not change which runs first."
+)
+UNKNOWN_ID_MOVE_MESSAGE = UNKNOWN_RENUMBER_MESSAGE
 
 # Which left-panel page each mode shows. The panel swaps rather than growing
 # a third column -- the mode already says which one is relevant, so a dock
@@ -4061,6 +4070,8 @@ class ViewerWindow(QMainWindow):
         self._entry_clipboard: trigger_clipboard.EntryBlock | None = None
         # The _doc_id LEGACY_REORDER_MESSAGE was last said for.
         self._legacy_reorder_warned: str | None = None
+        # The (_doc_id, exec mode) pairs an ID move's status line was said for.
+        self._id_move_warned: set[tuple[str, str]] = set()
         self._clipboard_dialog: ClipboardHistoryDialog | None = None
         # GH #30's History window. Assigned before on_change is hooked up
         # below, since reset()/mark_saved() fire that hook and the refresh
@@ -10715,6 +10726,14 @@ class ViewerWindow(QMainWindow):
         self.mode_messages_action.triggered.connect(lambda: self.mode_combo.setCurrentText("Messages"))
         self.addAction(self.mode_messages_action)
 
+        self.elevation_actions: dict[str, QAction] = {}
+        for style in TERRAIN_STYLES:
+            action_id = f"elevation_{style}"
+            action = QAction(settings.get_action_label(action_id), self)
+            action.triggered.connect(lambda _=False, s=style: self._select_elevation_view(s))
+            self.addAction(action)
+            self.elevation_actions[action_id] = action
+
         # Per-mode player selection (0-8) -- see _select_player() for the
         # dispatch. No menu entry, same reasoning as the mode_* actions above.
         self.player_select_actions: dict[int, QAction] = {}
@@ -10882,6 +10901,9 @@ class ViewerWindow(QMainWindow):
             "unit_select_stack": self.select_stack_action,
             "unit_wall_pick": self.wall_pick_action,
             **self.trigger_move_actions,
+            "trigger_variables": self.trigger_panel.variables_action,
+            **self.trigger_panel.variable_actions,
+            **self.elevation_actions,
         }
         for tool in settings.TOOLS:
             self._keybind_actions[f"tool_{tool.tool_id}"] = getattr(self, f"{tool.tool_id}_action")
@@ -13401,6 +13423,8 @@ class ViewerWindow(QMainWindow):
         self.save_as_action.setEnabled(write_ok)
         self.resize_action.setEnabled(elevation_ok)  # square-only, see scenario_resize
         self.terrain_style_combo.setEnabled(has_map)
+        for action in self.elevation_actions.values():
+            action.setEnabled(self.terrain_style_combo.isEnabled())
 
         # Per-mode visibility (hide, not grey) for every registered tool --
         # ToolDef.modes empty means every mode, so Pan and Ruler stay visible
@@ -13927,6 +13951,10 @@ class ViewerWindow(QMainWindow):
         # already the current tool, whose lookup in _update_tool_enabled()'s
         # forced-Pan check is a no-op, so it terminates rather than looping.
         self._update_tool_enabled()
+
+    def _select_elevation_view(self, style: str) -> None:
+        if self.terrain_style_combo.isEnabled():
+            self.terrain_style_combo.setCurrentText(label_for(style))
 
     def on_terrain_style_changed(self, text: str) -> None:
         # Validated rather than a bare .lower(): the combo only ever holds
@@ -15428,6 +15456,7 @@ class ViewerWindow(QMainWindow):
             self._log_status("Jump: an edit is still in progress")
             return
         start = self.edit_history.cursor
+        collapse = self.trigger_panel.collapse_snapshot()
         try:
             kinds = self.edit_history.span_kinds(target)
             dirty = self.edit_history.jump_to(
@@ -15444,6 +15473,8 @@ class ViewerWindow(QMainWindow):
         if target == start:
             self._log_status("Already at that history entry")
             return
+        if "trigger" in kinds:
+            self.trigger_panel.follow_collapse(collapse)
         self._refresh_after_history_move(kinds, dirty)
         steps = abs(target - start)
         direction = "back" if target < start else "forward"
@@ -17177,6 +17208,8 @@ class ViewerWindow(QMainWindow):
         programmatic widget populate, or on merely opening the picker would
         record a phantom undo step and dirty the trigger.
         """
+        # Only the tiers that can move sections; a field edit's rename has _retitle_section().
+        collapse = self.trigger_panel.collapse_snapshot() if refresh in ("panel", "order") else None
         model.begin_trigger_edit(content_touched)
         error: Exception | None = None
         try:
@@ -17188,12 +17221,17 @@ class ViewerWindow(QMainWindow):
             # no-op, it marks every blob dirty, so that state still needs a
             # record to undo.
             model.commit_trigger_edit(label, self.edit_history)
+            if error is None:
+                self.trigger_panel.follow_collapse(collapse)
             self._after_trigger_edit(label, error, refresh, refresh_arg)
 
     def _after_trigger_edit(
         self, label: str, error: Exception | None, refresh: str = "", refresh_arg=None
     ) -> None:
-        if refresh and self.mode == "triggers":
+        if refresh == "variables":
+            # The non-modal variables dialog can remain open in any mode.
+            self.trigger_panel.refresh_variables()
+        elif refresh and self.mode == "triggers":
             if refresh == "panel":
                 # Rebuilt rather than patched, for the same reason
                 # _move_history rebuilds on an undo: a structural edit can
@@ -17219,11 +17257,6 @@ class ViewerWindow(QMainWindow):
                 self.trigger_panel.move_row(*refresh_arg)
             elif refresh == "order":
                 self._show_triggers()
-            elif refresh == "variables":
-                # Neither tree in the panel shows a variable, so a full
-                # repopulate would be pure cost. Only the dialog is stale, and
-                # this is a no-op when it is not open.
-                self.trigger_panel.refresh_variables()
             else:
                 self.trigger_panel.refresh_entries()
         # Every tier, field edits included: a typed area_x2 must move the outline.
@@ -17900,13 +17933,18 @@ class ViewerWindow(QMainWindow):
         `indices` at the top or the bottom of their own section
         (_move_to_section_edge()): one permutation, so one record.
 
-        "renumber" (GH #2) is the one op that does renumber: every trigger
+        "renumber" (GH #2) renumbers the whole list: every trigger
         takes the ID of its display position (renumber_to_display_order()), so
         a legacy file runs in the listed order and File order view matches
         Display order. `indices` is only the selection to keep; it may be
         empty. renumber_refusal() is checked before the bracket opens, so a
         refusal records nothing, and one status line then says what changed
         for this file's execution mode.
+
+        "move_ids" (GH #2, TASK-569) is File order view's Move Up/Down and
+        Move to Top/Bottom: `indices` move to earlier or later IDs, `arg` a
+        signed step count or "top"/"bottom" (_move_trigger_ids()). Every
+        trigger keeps its display slot.
 
         Section management carries its payload in `arg`: "new_section" takes
         the title and lands a divider at the end of `indices[0]`'s section (or
@@ -17928,6 +17966,9 @@ class ViewerWindow(QMainWindow):
             return
         if op in ("move_top", "move_bottom"):
             self._move_to_section_edge(indices, op == "move_top")
+            return
+        if op == "move_ids":
+            self._move_trigger_ids(indices, arg)
             return
         model = self._ensure_trigger_edits()
         if model is None:
@@ -18056,9 +18097,7 @@ class ViewerWindow(QMainWindow):
                     EXEC_MODE_LEGACY: LEGACY_RENUMBER_MESSAGE,
                     EXEC_MODE_DISPLAY: DISPLAY_RENUMBER_MESSAGE,
                 }.get(self._exec_mode(), UNKNOWN_RENUMBER_MESSAGE))
-            # By an id set: Select All then renumber on 18k triggers would make a nested scan ~3e8 steps.
-            wanted = {id(source) for source in sources}
-            self.trigger_panel.select_triggers([i for i, t in enumerate(live) if id(t) in wanted])
+            self.trigger_panel.select_triggers(self._indices_of(live, sources))
             return
         if cut_block is not None and len(live) == before_len - count:
             # Only once the removal really happened: _trigger_edit reports a raise, it does not re-raise.
@@ -18220,6 +18259,81 @@ class ViewerWindow(QMainWindow):
         self._warn_legacy_reorder(order)
         # Ids never change on a move, so the pre-move indices still name the rows.
         self.trigger_panel.show_moved_triggers(sorted(indices, key=moved.index), -1 if top else 1)
+
+    @staticmethod
+    def _indices_of(live, triggers) -> list[int]:
+        """The list indices of `triggers` in `live`, by object identity, in
+        list order. By an id set: Select All then renumber on 18k triggers
+        would make a nested scan ~3e8 steps."""
+        wanted = {id(trigger) for trigger in triggers}
+        return [i for i, t in enumerate(live) if id(t) in wanted]
+
+    def _move_trigger_ids(self, indices: Sequence[int], arg) -> None:
+        """File order view's Move Up/Down and Move to Top/Bottom (GH #2,
+        TASK-569): the triggers at `indices` take earlier or later IDs, the
+        ones they pass shift by one, links follow, and every trigger keeps its
+        display slot (renumber_to_order()). `arg` is a signed step count, as
+        Display order's moves capped by the block's room, or "top"/"bottom".
+
+        One record per press, "panel" refresh. A refusal (id_order_refusal(),
+        or no room) is said or skipped before the bracket, so records nothing.
+        The status line says once per document and mode that a display-order
+        or unflagged file's run order is unaffected or uncertain; a legacy
+        file's move does what it shows, so it says nothing."""
+        model = self._ensure_trigger_edits()
+        if model is None:
+            return
+        manager = model.manager()
+        count = len(manager.triggers)
+        indices = list(dict.fromkeys(indices))
+        if not indices or not all(0 <= i < count for i in indices):
+            return
+        n = len(indices)
+        noun = f"trigger {indices[0]} ID" if n == 1 else f"{n} trigger IDs"
+        if arg in ("top", "bottom"):
+            id_order = id_order_to_edge(count, indices, arg == "top")
+            if id_order == list(range(count)):
+                # The panel tooltip's wording for the same state.
+                self._log_status(f"Cannot move trigger IDs: already {'first' if arg == 'top' else 'last'}")
+                return
+            label = f"Move {noun} to the {'start' if arg == 'top' else 'end'}"
+            delta = -1 if arg == "top" else 1
+        elif isinstance(arg, int) and arg:
+            direction = -1 if arg < 0 else 1
+            steps = min(abs(arg), block_room(range(count), indices, direction))
+            if steps <= 0:
+                return
+            delta = direction * steps
+            id_order = moved_id_order(count, indices, delta)
+            label = f"Move {noun} {'up' if delta < 0 else 'down'}"
+            if steps > 1:
+                label += f" {steps} places"
+        else:
+            return
+        reason = id_order_refusal(manager, id_order)
+        if reason:
+            self._log_status(f"Cannot move trigger IDs: {reason}")
+            return
+        current = self.trigger_panel.current_trigger_index()
+        lead = manager.triggers[current] if current in indices else None
+        sources = [manager.triggers[i] for i in indices]
+        succeeded: list[bool] = []
+        with self._trigger_edit(model, label, refresh="panel") as m:
+            m.structural_edit(lambda m: renumber_to_order(m, id_order))
+            succeeded.append(True)
+        live = model.manager().triggers
+        if succeeded:
+            mode = self._exec_mode()
+            key = (self._doc_id, mode)
+            if mode != EXEC_MODE_LEGACY and key not in self._id_move_warned:
+                self._id_move_warned.add(key)
+                self._log_status(DISPLAY_ID_MOVE_MESSAGE if mode == EXEC_MODE_DISPLAY else UNKNOWN_ID_MOVE_MESSAGE)
+        select = self._indices_of(live, sources)
+        if lead is not None:
+            # The current row stays current: select_triggers() makes the first one current.
+            first = self._indices_of(live, [lead])
+            select = first + [i for i in select if i not in first]
+        self.trigger_panel.show_moved_triggers(select, delta)
 
     def _move_section(self, indices: Sequence[int], delta: int) -> None:
         """Section Up/Down (GH #133): swap the one section holding every
@@ -19583,6 +19697,7 @@ class ViewerWindow(QMainWindow):
             # Its own leaf phase, not inside history_diff: phase times sum flat, so nesting double-counts.
             with perf_trace.phase("elev_predict"):
                 elev_changed = self._elevation_changed_tiles(record)
+        collapse = self.trigger_panel.collapse_snapshot() if "trigger" in record.kinds() else None
         with perf_trace.phase("history_restore"):
             dirty = move(
                 self.scenario.map_manager.terrain,
@@ -19591,6 +19706,7 @@ class ViewerWindow(QMainWindow):
                 self.unit_edits,
                 self.message_edits,
             )
+        self.trigger_panel.follow_collapse(collapse)
         splices = None
         if old_footprints is not None:
             splices = []
@@ -19849,6 +19965,7 @@ class ViewerWindow(QMainWindow):
             # membership, order and ids at once.
             self._show_triggers()
         if "trigger" in kinds:
+            self.trigger_panel.refresh_variables()
             # Mode-free: the overlay persists into View, where the panel is not refreshed.
             self._rederive_trigger_overlay()
             # Mode-free too, so a trigger undo from any mode reaches Find (GH #144).

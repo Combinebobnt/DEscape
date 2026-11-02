@@ -26,6 +26,7 @@ import locale
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -562,13 +563,20 @@ def decode_config_bytes(data: bytes) -> str:
 
 
 def write_config_file(path: Path, config: dict) -> None:
-    """Creates `path`'s parent directory if needed, then writes `config` to
-    it. Takes the path explicitly -- rather than reading this module's own
-    CONFIG_PATH -- so settings.py can pass its own (separately monkeypatched
-    in tests) global through; a version that read asset_source.CONFIG_PATH
-    internally would silently make settings.CONFIG_PATH decorative."""
+    """Atomically writes `config`, keeping a symlink's target and its mode,
+    and creating missing parents. Takes the path explicitly rather than
+    reading this module's CONFIG_PATH, so settings.py can pass its own
+    (separately monkeypatched in tests) global through."""
+    # yaml_file_io imports scenario_io, which reaches this module through content_roots.
+    from descape.yaml_file_io import atomic_write
+
+    path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    atomic_write(path, yaml.safe_dump(config, default_flow_style=False, sort_keys=False), mode=mode, create_mode=0o666)
 
 
 def migrate_legacy_config() -> Path | None:

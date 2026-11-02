@@ -11,6 +11,11 @@ active (Trigger Active). Legacy execution order, display order
 G, C, F, A, E, B, D, so both links change ID under the renumber. Playing
 each file prints a different chat transcript, listed below when this runs.
 
+ID-move file (TASK-569): run_order_id_moves, from run_order_before through
+File order view's ID moves (renumber_to_order()): Move to Top on C, then Move
+Up twice on G, so IDs run C, A, B, D, G, E, F (both links change ID, F 5 -> 6,
+G 6 -> 4) while the display order stays G, C, F, A, E, B, D.
+
 Real-file pair: atilla_1_scn_resaved untouched and renumbered, with the rows
 the library rewrites on every re-serialized trigger printed so they can be
 looked up in the editor.
@@ -34,8 +39,11 @@ from descape.trigger_model import (
     TriggerEditModel,
     exec_order_value,
     exec_order_write_supported,
+    id_order_to_edge,
+    moved_id_order,
     renumber_refusal,
     renumber_to_display_order,
+    renumber_to_order,
 )
 
 BLANK = ROOT / "examples" / "blank_map.aoe2scenario"
@@ -110,6 +118,27 @@ def _run_order_pair() -> tuple[Path, Path]:
     return before, after
 
 
+def _id_moves(before: Path) -> Path:
+    """run_order_before with File order view's three ID moves, one structural edit each, as the GUI records them."""
+    out = OUT / "run_order_id_moves.aoe2scenario"
+    loaded = load_map_and_units(before)
+    model = TriggerEditModel(loaded)
+    count = len(model.manager().triggers)
+    c, g = RUNS.index("C"), 6
+    for id_order in (id_order_to_edge(count, [c], True), moved_id_order(count, [g], -1), moved_id_order(count, [g - 1], -1)):
+        model.structural_edit(lambda m, id_order=id_order: renumber_to_order(m, id_order))
+    write_scenario(loaded, out, triggers=model)
+
+    ids = ["C", "A", "B", "D", G_NAME, "E", F_NAME]
+    loaded = load_map_and_units(out)
+    manager = parse_triggers(loaded)
+    assert [t.name for t in manager.triggers] == ids, f"{out.name}: ID order"
+    assert [ids[i] for i in manager.trigger_display_order] == [G_NAME, "C", F_NAME, "A", "E", "B", "D"], "display order"
+    assert _links(manager) == {"E": [F_NAME], G_NAME: [F_NAME]}, f"{out.name}: a link lost F"
+    assert exec_order_value(loaded) == 1, f"{out.name}: not Legacy"
+    return out
+
+
 def _raw(loaded) -> list:
     return loaded._scenario.sections["Triggers"].retriever_map["trigger_data"].data or []
 
@@ -173,6 +202,10 @@ def main() -> None:
     print("  before (IDs A..E, F, G), chat: run A, run B, run C, run D, run E, G saw F, about 5 s later F linked")
     print("  after (IDs follow the list), chat: run C, run A, run E, run B, run D, G saw F, about 5 s later F linked")
     print(f"  {before.relative_to(ROOT)} / {after.relative_to(ROOT)}")
+    moved = _id_moves(before)
+    print(f"  ID moves (Move to Top on C, Move Up twice on G): IDs C, A, B, D, {G_NAME}, E, {F_NAME}, list unchanged")
+    print("  chat: run C, run A, run B, run D, run E, G saw F, about 5 s later F linked")
+    print(f"  {moved.relative_to(ROOT)}")
     _atilla_pair()
 
 

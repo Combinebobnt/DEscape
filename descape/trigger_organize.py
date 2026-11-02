@@ -388,8 +388,9 @@ def section_key(parts: Sequence[Section], position: int) -> tuple[str, int]:
 
     Not header_index: remove/reorder renumber trigger ids across the whole
     list, so an index key goes stale on the very edits that rebuild the tree.
-    A title key only misses when a same-titled section is added or removed
-    above it, and a miss just renders the section expanded.
+    A title key alone misses when same-titled sections swap or one is added or
+    removed above another, so the panel re-keys across structural edits and
+    undo by header identity (TriggerPanel.follow_collapse(), TASK-225).
     """
     title = parts[position].title
     ordinal = sum(1 for section in parts[:position] if section.title == title)

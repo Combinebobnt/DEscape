@@ -485,3 +485,290 @@ def test_closing_the_window_closes_the_dialog() -> None:
         window.close()
     assert not dialog.isVisible()
     assert window.trigger_panel._variables_dialog is None
+
+
+def _bind_variable_shortcuts(window) -> None:
+    from PyQt5.QtGui import QKeySequence
+
+    from descape.viewer import SettingsDialog
+
+    dialog = SettingsDialog(window)
+    try:
+        for aid, key in (
+            ("variable_add", "F9"), ("variable_rename", "F10"),
+            ("variable_remove", "F11"), ("trigger_variables", "F12"),
+        ):
+            dialog._keybind_edits[aid].setKeySequence(QKeySequence(f"Ctrl+Alt+{key}"))
+    finally:
+        dialog.close()
+
+
+def _variable_key(widget, key) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    top = widget.window()
+    top.activateWindow()
+    QApplication.setActiveWindow(top)
+    widget.setFocus()
+    QApplication.processEvents()
+    assert top.isActiveWindow() and widget.hasFocus()
+    QTest.keyClick(widget, key, Qt.ControlModifier | Qt.AltModifier)
+    QApplication.processEvents()
+
+
+def test_variables_opener_real_key_follows_browse_and_mode_gates() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.viewer import SettingsDialog
+
+    window = conftest.shown_window()
+    try:
+        _bind_variable_shortcuts(window)
+        window.mode_combo.setCurrentText("Triggers")
+        action = window._keybind_actions["trigger_variables"]
+        assert not action.isEnabled()
+        _variable_key(window.trigger_panel.tree, Qt.Key_F12)
+        assert window.trigger_panel._variables_dialog is None
+        window.load_scenario(TRIGGER_FIXTURE)
+        panel = window.trigger_panel
+        panel._editable = False
+        panel._update_buttons()
+        assert action.isEnabled() and panel.variables_button.isEnabled()
+        window.mode_combo.setCurrentText("View")
+        assert action.shortcut().isEmpty()
+        _variable_key(window.map_view, Qt.Key_F12)
+        assert panel._variables_dialog is None
+        window.mode_combo.setCurrentText("Triggers")
+        panel._editable = False
+        _variable_key(panel.tree, Qt.Key_F12)
+        dialog = panel._variables_dialog
+        assert dialog is not None and dialog.isVisible()
+        assert _rows(dialog) == FIXTURE_VARIABLES
+        assert not dialog.name_edit.isEnabled()
+        assert window.trigger_edits is None and not window.edit_history.records
+        dialog.close()
+        editor = SettingsDialog(window)
+        try:
+            editor._keybind_edits["trigger_variables"].setKeySequence(QKeySequence("Ctrl+Alt+F8"))
+            _variable_key(panel.tree, Qt.Key_F12)
+            assert not dialog.isVisible(), "old opener binding remained live"
+            _variable_key(panel.tree, Qt.Key_F8)
+            assert dialog.isVisible() and panel._variables_dialog is dialog
+            dialog.close()
+            editor._keybind_edits["trigger_variables"].clear()
+            assert settings.get_keybind("trigger_variables") == "" and action.shortcut().isEmpty()
+            _variable_key(panel.tree, Qt.Key_F8)
+            assert not dialog.isVisible()
+        finally:
+            editor.close()
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("op", ["add", "rename", "remove"])
+def test_variable_real_keys_mutate_once_rebind_clear_and_refresh_after_mode_switch(op, monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+
+    from descape import settings
+    from descape.trigger_model import TriggerEditModel
+    from descape.trigger_panel import QInputDialog
+    from descape.viewer import SettingsDialog
+
+    window = _triggers_window()
+    try:
+        _bind_variable_shortcuts(window)  # binding exists before the lazy dialog
+        dialog = _dialog(window)
+        action_id = f"variable_{op}"
+        action = window._keybind_actions[action_id]
+        assert action not in window.actions() and action not in window.trigger_panel.actions()
+        key = {"add": Qt.Key_F9, "rename": Qt.Key_F10, "remove": Qt.Key_F11}[op]
+        monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("renamed", True)))
+        structural_calls = []
+        structural_edit = TriggerEditModel.structural_edit
+
+        def structural(model, mutate):
+            structural_calls.append(model)
+            return structural_edit(model, mutate)
+
+        monkeypatch.setattr(TriggerEditModel, "structural_edit", structural)
+        window.mode_combo.setCurrentText("View")
+        assert not action.shortcut().isEmpty(), "dialog editing is not Triggers-mode scoped"
+        dialog.tree.setCurrentItem(None)
+        dialog.name_edit.setText("  ")
+        assert not action.isEnabled()
+        _variable_key(dialog.tree, key)
+        assert not window.edit_history.records and window.trigger_edits is None
+
+        dialog.name_edit.setText("new_name")
+        dialog.select_variable(0)
+        assert action.isEnabled()
+        _variable_key(window.map_view, key)
+        assert not window.edit_history.records, "focus outside the dialog cannot edit variables"
+
+        editor = SettingsDialog(window)
+        try:
+            old_key = settings.get_keybind(action_id)
+            editor._keybind_edits[action_id].setKeySequence(QKeySequence("Ctrl+Alt+F8"))
+            assert settings._load_config()["keybinds"][action_id] == "Ctrl+Alt+F8"
+            _variable_key(dialog.tree, key)
+            assert not window.edit_history.records, f"old binding {old_key} remained live"
+            _variable_key(dialog.tree, Qt.Key_F8)
+            expected = {
+                "add": [(0, "fixture_var"), (1, "new_name")],
+                "rename": [(0, "renamed")], "remove": [],
+            }[op]
+            assert _live_variables(window) == _rows(dialog) == expected
+            assert action.associatedWidgets() == [dialog]
+            assert structural_calls == [window.trigger_edits]
+            assert len(window.edit_history.records) == window.edit_history.cursor == 1
+            assert window.trigger_edits.variables_dirty
+            window.undo()
+            assert window.edit_history.cursor == 0
+            assert _rows(dialog) == _live_variables(window) == FIXTURE_VARIABLES
+            window.redo()
+            assert window.edit_history.cursor == 1
+            assert _rows(dialog) == _live_variables(window) == expected
+
+            editor._keybind_edits[action_id].clear()
+            assert action.shortcut().isEmpty() and settings.get_keybind(action_id) == ""
+            dialog.name_edit.setText("would_add")
+            if expected:
+                dialog.select_variable(expected[0][0])
+            _variable_key(dialog.tree, Qt.Key_F8)
+            assert _live_variables(window) == expected
+            assert structural_calls == [window.trigger_edits]
+            assert len(window.edit_history.records) == 1
+        finally:
+            editor.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_variable_shortcuts_follow_read_only_and_individual_button_gates(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape.trigger_panel import QInputDialog
+
+    window = _triggers_window()
+    try:
+        _bind_variable_shortcuts(window)
+        dialog = _dialog(window)
+        actions = window.trigger_panel.variable_actions
+        monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: pytest.fail("disabled rename")))
+        dialog.tree.setCurrentItem(None)
+        dialog.name_edit.setText("new_name")
+        assert actions["variable_add"].isEnabled()
+        assert not actions["variable_rename"].isEnabled() and not actions["variable_remove"].isEnabled()
+        for key in (Qt.Key_F10, Qt.Key_F11):
+            _variable_key(dialog.name_edit, key)
+        assert window.trigger_edits is None
+        dialog.name_edit.clear()
+        dialog.select_variable(0)
+        assert not actions["variable_add"].isEnabled()
+        assert actions["variable_rename"].isEnabled() and actions["variable_remove"].isEnabled()
+        _variable_key(dialog.tree, Qt.Key_F9)
+        assert window.trigger_edits is None
+        dialog.name_edit.setText("new_name")
+        window.trigger_panel._editable = False
+        window.trigger_panel.refresh_variables()
+        assert all(not a.isEnabled() for a in actions.values())
+        for key in (Qt.Key_F9, Qt.Key_F10, Qt.Key_F11):
+            _variable_key(dialog.tree, key)
+        assert _live_variables(window) == FIXTURE_VARIABLES and not window.edit_history.records
+        # Dispatch rechecks the button even if an action's enabled state is stale.
+        for action in actions.values():
+            action.setEnabled(True)
+            action.trigger()
+        assert window.trigger_edits is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_variable_real_key_close_reopen_and_document_recreation_dispatch_once(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _triggers_window()
+    try:
+        _bind_variable_shortcuts(window)
+        panel = window.trigger_panel
+        actions = dict(panel.variable_actions)
+        dispatches = []
+        dispatch = panel._dispatch_variable_action
+
+        def counted_dispatch(op):
+            dispatches.append(op)
+            dispatch(op)
+
+        monkeypatch.setattr(panel, "_dispatch_variable_action", counted_dispatch)
+        dialog = _dialog(window)
+        for _ in range(3):
+            dialog.close()
+            dialog.name_edit.setText("hidden_name")
+            actions["variable_add"].trigger()
+            assert not window.edit_history.records, "hidden dialog must refuse dispatch"
+            _variable_key(panel.tree, Qt.Key_F12)
+            assert panel._variables_dialog is dialog and dialog.isVisible()
+        dispatches.clear()
+        dialog.name_edit.setText("first_document")
+        _variable_key(dialog.name_edit, Qt.Key_F9)
+        assert dispatches == ["add"], "reopening must not reconnect action signals"
+        assert _rows(dialog) == [(0, "fixture_var"), (1, "first_document")]
+        assert len(window.edit_history.records) == 1
+
+        dialog.name_edit.setText("stale_name")
+        assert actions["variable_add"].isEnabled()
+        panel.close_variables_dialog()
+        assert dialog._keybind_actions == {} and not dialog.actions()
+        assert all(not a.isEnabled() and not a.associatedWidgets() for a in actions.values())
+        # Before deferred deletion, signals on the old dialog cannot change replacement gates.
+        panel._open_variables()  # no event pump until the old dialog's signals are exercised
+        replacement = panel._variables_dialog
+        assert replacement is not dialog and panel.variable_actions == actions
+        replacement.name_edit.clear()
+        assert not actions["variable_add"].isEnabled()
+        dialog.name_edit.setText("old_deferred_signal")
+        assert not actions["variable_add"].isEnabled()
+        replacement.name_edit.setText("second_add")
+        _variable_key(replacement.name_edit, Qt.Key_F9)
+        assert dispatches == ["add", "add"]
+        assert _rows(replacement) == [(0, "fixture_var"), (1, "first_document"), (2, "second_add")]
+        assert len(window.edit_history.records) == 2
+
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert panel._variables_dialog is None
+        assert all(not a.isEnabled() and not a.associatedWidgets() for a in actions.values())
+        window.load_scenario(TRIGGER_FIXTURE)
+        fresh = _dialog(window)
+        assert _rows(fresh) == FIXTURE_VARIABLES
+        assert panel.variable_actions == actions
+        fresh.name_edit.setText("fresh_document")
+        _variable_key(fresh.name_edit, Qt.Key_F9)
+        assert dispatches == ["add", "add", "add"]
+        assert _rows(fresh) == [(0, "fixture_var"), (1, "fresh_document")]
+        assert len(window.edit_history.records) == 1
+    finally:
+        conftest.close_window(window)
+    assert panel._variables_dialog is None
+    assert all(not a.isEnabled() and not a.associatedWidgets() for a in actions.values())
+
+
+def test_standalone_variables_dialog_keeps_existing_constructor_and_buttons() -> None:
+    from descape.trigger_panel import VariablesDialog
+
+    conftest.ensure_qapp()
+    calls = []
+    dialog = VariablesDialog(None, lambda *args: calls.append(args))
+    try:
+        dialog.set_variables(FIXTURE_VARIABLES, editable=True)
+        dialog.name_edit.setText("standalone")
+        dialog.add_button.click()
+        assert calls == [("add", -1, "standalone")]
+        assert dialog._keybind_actions == {} and not dialog.actions()
+    finally:
+        dialog.close()
