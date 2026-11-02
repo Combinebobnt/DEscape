@@ -456,6 +456,9 @@ keybinds:
   view_pan_down: Down
   view_pan_left: Left
   view_pan_right: Right
+  elevation_flat: ''
+  elevation_stepped: ''
+  elevation_sloped: ''
   analysis_run: ''
   help_guide: F1
   help_keys: ''
@@ -509,6 +512,10 @@ keybinds:
   trigger_move_down_far: Alt+Shift+Down
   trigger_move_top: Alt+Home
   trigger_move_bottom: Alt+End
+  trigger_variables: ''
+  variable_add: ''
+  variable_rename: ''
+  variable_remove: ''
   player_select_0: '0'
   player_select_1: '1'
   player_select_2: '2'

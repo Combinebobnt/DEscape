@@ -42,6 +42,7 @@ A Return of Rome scenario opens with Return of Rome's own units, names, art, civ
 - Zoom with the mouse wheel. **Settings > General** picks whether it zooms around the cursor or the middle of the view, and **Settings > Keybinds** sets what the wheel does with each modifier held.
 - Hold a Pan key (the Pan Up, Down, Left and Right rows in **Settings > Keybinds**) to scroll. Keys on the map only work while it has focus, so click it first.
 - The Elevation View box on the toolbar picks how the map shows height: Flat (none), Stepped (each tile raised to its height, as blocks) or Sloped (smooth slopes between heights).
+- **Settings > Keybinds > Elevation View** can assign a key to each style; all three start unbound and follow the toolbar's choice.
 - In Flat, **View > Isometric View (game-style)** switches between the game's isometric look and a plain top-down grid.
 
 [View and Filters](view-and-filters.md) covers what else the map can show or hide.

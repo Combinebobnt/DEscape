@@ -647,26 +647,74 @@ def renumber_refusal(manager: TriggerManager) -> str:
 def renumber_to_display_order(manager: TriggerManager) -> None:
     """Give every trigger the ID of its display position, so ID (legacy
     execution) order equals the listed order, and re-point every trigger link.
+    renumber_to_order() with the display order as the new ID order, which
+    leaves the display order identity. Raises ValueError, changing nothing,
+    when renumber_refusal() refuses.
+    """
+    reason = renumber_refusal(manager)
+    if reason:
+        raise ValueError(f"cannot renumber trigger IDs: {reason}")
+    renumber_to_order(manager, list(manager.trigger_display_order))
+
+
+def id_order_refusal(manager: TriggerManager, id_order: Sequence[int]) -> str:
+    """"" when renumber_to_order(manager, id_order) is safe, else why not:
+    `id_order` or the display order is not a permutation of the list,
+    `id_order` is identity (nothing to do), or some trigger's `trigger_id` is
+    not its list position (the remap is keyed by both)."""
+    count = len(manager.triggers)
+    if sorted(id_order) != list(range(count)):
+        return f"the new ID order is not a permutation of the {count} triggers"
+    if sorted(manager.trigger_display_order) != list(range(count)):
+        return f"the display order is not a permutation of the {count} triggers"
+    if list(id_order) == list(range(count)):
+        return "IDs already in that order"
+    for position, trigger in enumerate(manager.triggers):
+        if trigger.trigger_id != position:
+            return f"trigger {position} carries ID {trigger.trigger_id}"
+    return ""
+
+
+def moved_id_order(count: int, indices: Sequence[int], delta: int) -> list[int]:
+    """The new ID order (old list indices by new ID) after a File order view
+    move of the triggers at list `indices` by `delta` IDs: the same block
+    semantics as a Display order move (moved_display_order_block()), applied to
+    the identity permutation. Identity means the move changes nothing."""
+    return moved_display_order_block(range(count), indices, delta)
+
+
+def id_order_to_edge(count: int, indices: Sequence[int], top: bool) -> list[int]:
+    """The new ID order after Move to Top (`top`) or Bottom in File order
+    view: the triggers at list `indices` as one block at ID 0 or the end."""
+    return display_order_moved_to_slot(range(count), indices, 0 if top else count)
+
+
+def renumber_to_order(manager: TriggerManager, id_order: Sequence[int]) -> None:
+    """Give the trigger at list index `id_order[k]` ID k, re-point every
+    trigger link, and keep every trigger in its display slot (GH #2).
 
     The library's reorder_triggers() does the remap: it rewrites `trigger_id`
     on Activate/Deactivate Trigger effects (8/9) and Trigger Active conditions
     (79), the only types any DE version stores a trigger ID in, and none of the
     corpus stores one elsewhere. Its triggers-setter resets the display order
-    to identity, which is the point here.
+    to identity; the display order is then remapped so slot s holds the same
+    trigger object as before. When `id_order` is the display order that remap
+    is identity, which is renumber_to_display_order().
 
     Verified afterwards by object identity: every in-range link must name the
-    same trigger, every -1 or out-of-range value must be unchanged. On a
-    mismatch the manager is put back in place before the RuntimeError, because
-    structural_edit()'s except branch writes the pre-edit display order onto
-    whatever list it finds, and only the original list makes that correct.
-    Raises ValueError, changing nothing, when renumber_refusal() refuses.
+    same trigger, every -1 or out-of-range value must be unchanged, and every
+    display slot must hold its old trigger. On a mismatch the manager is put
+    back in place before the RuntimeError, because structural_edit()'s except
+    branch writes the pre-edit display order onto whatever list it finds, and
+    only the original list makes that correct. Raises ValueError, changing
+    nothing, when id_order_refusal() refuses.
     """
-    reason = renumber_refusal(manager)
+    reason = id_order_refusal(manager, id_order)
     if reason:
         raise ValueError(f"cannot renumber trigger IDs: {reason}")
     triggers = list(manager.triggers)
     ids = [trigger.trigger_id for trigger in triggers]
-    order = list(manager.trigger_display_order)
+    display_before = list(manager.trigger_display_order)
     links = []
     for trigger in triggers:
         for ce in get_trigger_referencing_ce(trigger):
@@ -674,23 +722,31 @@ def renumber_to_display_order(manager: TriggerManager) -> None:
             target = triggers[raw] if isinstance(raw, int) and 0 <= raw < len(triggers) else None
             links.append((trigger, ce, raw, target))
 
-    manager.reorder_triggers(list(order))  # a fresh list: the library keeps what it is handed (Trap 6)
-
-    position = {id(trigger): index for index, trigger in enumerate(manager.triggers)}
-    for trigger, ce, raw, target in links:
-        expected = raw if target is None else position.get(id(target))
-        if ce.trigger_id == expected:
-            continue
+    def restore(message: str) -> None:
         # restore()'s Traps 1-3: slice-assign, the order through the setter, then every id.
         manager.triggers[:] = triggers
-        manager.trigger_display_order = list(order)
+        manager.trigger_display_order = list(display_before)
         for each, trigger_id in zip(triggers, ids, strict=True):
             each.trigger_id = trigger_id
         for _, link, link_raw, _ in links:
             link.trigger_id = link_raw
-        raise RuntimeError(
-            f'trigger "{trigger.name}" links to ID {ce.trigger_id} after the renumber, expected {expected}'
-        )
+        raise RuntimeError(message)
+
+    manager.reorder_triggers(list(id_order))  # a fresh list: the library keeps what it is handed (Trap 6)
+    new_index = {old: new for new, old in enumerate(id_order)}
+    manager.trigger_display_order = [new_index[old] for old in display_before]
+
+    position = {id(trigger): index for index, trigger in enumerate(manager.triggers)}
+    for trigger, ce, raw, target in links:
+        expected = raw if target is None else position.get(id(target))
+        if ce.trigger_id != expected:
+            restore(f'trigger "{trigger.name}" links to ID {ce.trigger_id} after the ID change, expected {expected}')
+    after = list(manager.trigger_display_order)
+    if sorted(after) != list(range(len(triggers))):
+        restore("the display order is not a permutation of the triggers after the ID change")
+    for slot, old in enumerate(display_before):
+        if manager.triggers[after[slot]] is not triggers[old]:
+            restore(f"display slot {slot} no longer holds trigger {triggers[old].name!r} after the ID change")
 
 
 # -- condition and effect display order (GH #213) ------------------------------

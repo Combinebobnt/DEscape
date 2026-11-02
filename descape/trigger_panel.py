@@ -12,6 +12,7 @@ from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
+    QAction,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -46,6 +47,7 @@ from descape import (
     messages_fields,
     object_catalog,
     player_labels,
+    settings,
     train_locations,
     trigger_fields,
     trigger_geometry,
@@ -72,6 +74,7 @@ from descape.trigger_model import (
     MOVE_FAR_STEPS,
     entry_display_order,
     exec_order_value,
+    id_order_to_edge,
     ids_follow_display_order,
     resolve_exec_mode,
     section_edge_refusal,
@@ -228,12 +231,13 @@ class VariablesDialog(QDialog):
 
     _EMPTY = "This scenario has no trigger variables."
 
-    def __init__(self, parent=None, on_structural=None):
+    def __init__(self, parent=None, on_structural=None, keybind_actions=None):
         super().__init__(parent)
         self.setWindowTitle("Trigger Variables")
         self.resize(420, 360)
         self._on_structural = on_structural or (lambda *args: None)
         self._editable = False
+        self._keybind_actions = dict(keybind_actions or {})
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["ID", "Name"])
@@ -279,6 +283,8 @@ class VariablesDialog(QDialog):
         layout.addLayout(add_row)
         layout.addWidget(buttons)
 
+        for action in self._keybind_actions.values():
+            self.addAction(action)
         self.set_variables([], editable=False)
 
     def set_variables(self, variables, editable: bool) -> None:
@@ -322,6 +328,9 @@ class VariablesDialog(QDialog):
         has_selection = self.selected_variable_id() is not None
         self.rename_button.setEnabled(self._editable and has_selection)
         self.remove_button.setEnabled(self._editable and has_selection)
+        for action_id, action in self._keybind_actions.items():
+            button = getattr(self, f"{action_id.removeprefix('variable_')}_button")
+            action.setEnabled(button.isEnabled())
 
     def _request_add(self) -> None:
         name = self.name_edit.text().strip()
@@ -662,6 +671,15 @@ class TriggerPanel(QWidget):
         # Built on first open and then kept, so a variables edit can refresh a
         # dialog that is still showing. Closed and dropped by clear_document().
         self._variables_dialog: VariablesDialog | None = None
+        self.variable_actions: dict[str, QAction] = {}
+        for op in ("add", "rename", "remove"):
+            action_id = f"variable_{op}"
+            action = QAction(settings.get_action_label(action_id), self)
+            action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            action.setAutoRepeat(False)
+            action.setEnabled(False)
+            action.triggered.connect(lambda _=False, o=op: self._dispatch_variable_action(o))
+            self.variable_actions[action_id] = action
 
         # The trigger the picker was opened against, latched at open rather
         # than read back at accept: the trigger tree stays live while the
@@ -723,6 +741,8 @@ class TriggerPanel(QWidget):
         # geometry -- a grouped tree's adjacent row may be a different
         # section's top-level item.
         self._display_slots: list[int] = []
+        # The trigger count at the last populate: File order view's move bounds (TASK-569).
+        self._trigger_count = 0
         self._display_position: dict[int, int] = {}
         # Whether the tree is currently the two-level grouped shape (4c) or
         # flat. Recomputed every show_scenario(); see that method's docstring
@@ -769,6 +789,9 @@ class TriggerPanel(QWidget):
         self.variables_button = QPushButton("Variables…")
         self.variables_button.setToolTip("Add or remove this scenario's trigger variables")
         self.variables_button.clicked.connect(lambda checked=False: self._open_variables())
+        self.variables_action = QAction(settings.get_action_label("trigger_variables"), self)
+        self.variables_action.triggered.connect(self.variables_button.click)
+        self.addAction(self.variables_action)
         layout.addWidget(self.variables_button)
 
         self.clear_document()
@@ -1218,6 +1241,7 @@ class TriggerPanel(QWidget):
             self._reset_statuses()
             self._item_for_index = {}
             self._display_slots = []
+            self._trigger_count = 0
             self._display_position = {}
             self._grouped = False
             self._sections = []
@@ -1316,6 +1340,7 @@ class TriggerPanel(QWidget):
             # Always display order, whatever the sort: the position column and
             # Move Up/Down bounds both mean display position, not view row.
             self._display_slots = list(manager.trigger_display_order)
+            self._trigger_count = len(triggers)
             self._display_position = {
                 index: position for position, index in enumerate(self._display_slots)
             }
@@ -1650,6 +1675,55 @@ class TriggerPanel(QWidget):
             if not self.tree.topLevelItem(position).isExpanded()
         }
 
+    def _live_sections(self):
+        """(triggers, display-order sections) read from the live manager, or
+        None with no document."""
+        manager = self._manager()
+        if manager is None:
+            return None
+        triggers = manager.triggers
+        names = [self._read(t, "name") or "" for t in triggers]
+        return triggers, trigger_organize.sections(names, list(manager.trigger_display_order))
+
+    def collapse_snapshot(self) -> list[tuple[object, bool]] | None:
+        """Each section's collapse state against its header trigger object
+        (None for the leading section), for follow_collapse() once an edit,
+        undo or jump has moved the sections. None when nothing is collapsed."""
+        if not self._collapsed_keys:
+            return None
+        live = self._live_sections()
+        if live is None:
+            return None
+        triggers, parts = live
+        return [
+            (
+                None if section.header_index is None else triggers[section.header_index],
+                trigger_organize.section_key(parts, position) in self._collapsed_keys,
+            )
+            for position, section in enumerate(parts)
+        ]
+
+    def follow_collapse(self, snapshot: list[tuple[object, bool]] | None) -> None:
+        """Re-key the collapse state onto the live sections by header identity
+        (TASK-225), so a swap or a duplicate above a same-titled section does
+        not hand it another section's state. Call before the rebuild. A header
+        the snapshot lacks (a copy, a restored deletion) keeps its title key."""
+        if snapshot is None:
+            return
+        live = self._live_sections()
+        if live is None:
+            return
+        triggers, parts = live
+        # The snapshot holds every header object, so these ids cannot be reused meanwhile.
+        before = {id(header): collapsed for header, collapsed in snapshot}
+        keys = set()
+        for position, section in enumerate(parts):
+            header = None if section.header_index is None else triggers[section.header_index]
+            key = trigger_organize.section_key(parts, position)
+            if before.get(id(header), key in self._collapsed_keys):
+                keys.add(key)
+        self._collapsed_keys = keys
+
     def collapse_all_sections(self) -> None:
         self._filter_expanded = False
         self.tree.collapseAll()
@@ -1704,8 +1778,8 @@ class TriggerPanel(QWidget):
     _MOVE_TO_SECTION_TIP = "Move the selected triggers to the end of another section"
 
     def _section_view_reason(self) -> str:
-        """Why the section verbs are off for view reasons, or "": the same
-        display-order, unfiltered precondition as Move Up/Down."""
+        """Why the section verbs are off for view reasons, or "": Display
+        order (File order view has no sections) and no filter or tag."""
         if self._sort_mode != "display":
             return " (switch to Display order to edit sections)"
         if self.filter_edit.text().strip() or self.tag_combo.currentData() is not None:
@@ -3769,11 +3843,12 @@ class TriggerPanel(QWidget):
         of_section = " of Section" if self._grouped else ""
         up, down = self._trigger_move_reasons()
         top, bottom = self._edge_move_reasons()
+        _, _, up_tip, down_tip, top_tip, bottom_tip = self._move_tips()
         for text, tip, direction, edge, reason in (
-            ("Move Up", self._MOVE_UP_MENU_TIP, -1, False, up),
-            ("Move Down", self._MOVE_DOWN_MENU_TIP, 1, False, down),
-            (f"Move to Top{of_section}", self._MOVE_TOP_TIP, -1, True, top),
-            (f"Move to Bottom{of_section}", self._MOVE_BOTTOM_TIP, 1, True, bottom),
+            ("Move Up", up_tip, -1, False, up),
+            ("Move Down", down_tip, 1, False, down),
+            (f"Move to Top{of_section}", top_tip, -1, True, top),
+            (f"Move to Bottom{of_section}", bottom_tip, 1, True, bottom),
         ):
             move = menu.addAction(text)
             move.setToolTip(tip + reason)
@@ -4019,15 +4094,18 @@ class TriggerPanel(QWidget):
         self._update_buttons()
 
     def show_moved_triggers(self, indices, delta: int) -> None:
-        """After a move of several slots or to a section edge (GH #211): the
+        """After a move of several slots or to a section edge (GH #211), or
+        any File order view ID move (TASK-569, `delta` signed by direction): the
         moved rows selected and the block's leading row (the first going up,
         the last going down) in view, its section expanded. The trigger-tree
         twin of reselect_moved_entries(). Never reveal_trigger(), which
         scrolls the row to the top of the view and so jumps the list on every
         press. Selection only."""
+        # File order view lists by ID, which is the list index.
+        by_display = self._sort_mode == "display"
         moved = sorted(
             (index for index in indices if index in self._item_for_index),
-            key=lambda index: self._display_position.get(index, index),
+            key=lambda index: self._display_position.get(index, index) if by_display else index,
         )
         if not moved:
             self.select_triggers(indices)
@@ -4151,6 +4229,14 @@ class TriggerPanel(QWidget):
             step = op in ("move_up", "move_down")
             if step and self._trigger_move_reasons()[0 if op == "move_up" else 1]:
                 return
+            if self._sort_mode != "display":
+                # TASK-569: File order view moves IDs, a signed step count or an end.
+                if not step:
+                    id_arg = "top" if op == "move_top" else "bottom"
+                else:
+                    id_arg = (arg or 1) * (-1 if op == "move_up" else 1)
+                self._on_trigger_structural("move_ids", indices, id_arg)
+                return
             # An edge move that section_edge_refusal() refuses goes on: the window says why in the status bar.
             if arg is None:
                 self._on_trigger_structural(op, indices)
@@ -4204,17 +4290,32 @@ class TriggerPanel(QWidget):
         if self._loaded is None:
             return
         if self._variables_dialog is None:
-            self._variables_dialog = VariablesDialog(self, on_structural=self._on_variable_structural)
+            self._variables_dialog = VariablesDialog(
+                self, on_structural=self._on_variable_structural, keybind_actions=self.variable_actions
+            )
         self.refresh_variables()
         self._variables_dialog.show()
         self._variables_dialog.raise_()
         self._variables_dialog.activateWindow()
 
+    def _dispatch_variable_action(self, op: str) -> None:
+        dialog = self._variables_dialog
+        if dialog is not None and dialog.isVisible():
+            button = getattr(dialog, f"{op}_button")
+            if button.isEnabled():
+                button.click()
+
     def close_variables_dialog(self) -> None:
         if self._variables_dialog is not None:
-            self._variables_dialog.close()
-            self._variables_dialog.deleteLater()
+            dialog = self._variables_dialog
             self._variables_dialog = None
+            for action in dialog._keybind_actions.values():
+                dialog.removeAction(action)
+                action.setEnabled(False)
+            # Old deferred selection/text signals must not re-enable a replacement's actions.
+            dialog._keybind_actions.clear()
+            dialog.close()
+            dialog.deleteLater()
 
     def refresh_variables(self) -> None:
         """Repopulate the variables dialog if one is open. No-op otherwise, so
@@ -4496,6 +4597,7 @@ class TriggerPanel(QWidget):
         # on a read-only file, and the dialog gates its own Add/Remove on the
         # editable flag it is handed.
         self.variables_button.setEnabled(has_document)
+        self.variables_action.setEnabled(self.variables_button.isEnabled())
 
     # GH #211: the ▲▼ tips name the modifier clicks; a menu entry ignores modifiers, so its tip does not.
     _ENTRY_MOVE_UP_MENU_TIP = "Move the selected conditions and effects up in display order"
@@ -4539,24 +4641,49 @@ class TriggerPanel(QWidget):
         "Move the selected triggers to the bottom of their section, or of the list when there are no sections"
     )
 
-    def _move_view_reason(self) -> str:
-        """Why no trigger can move for view reasons, or "". Moves are
-        display-order-only edits (never reorder_triggers()), so they only make
-        sense, and are only offered, while the panel shows that order
-        unobstructed:
+    # TASK-569: the same verbs in File order view move trigger IDs; picked by _move_tips().
+    _ID_MOVE_UP_MENU_TIP = (
+        "Move the selected triggers to earlier IDs; the triggers they pass move one ID later "
+        "and trigger links follow. Display order is unchanged"
+    )
+    _ID_MOVE_DOWN_MENU_TIP = (
+        "Move the selected triggers to later IDs; the triggers they pass move one ID earlier "
+        "and trigger links follow. Display order is unchanged"
+    )
+    _ID_RENUMBER_NOTE = ". Renumber IDs to Display Order, on the right-click menu, does the whole list at once"
+    _ID_MOVE_UP_TIP = _ID_MOVE_UP_MENU_TIP + ". Shift+click: five places. Ctrl+click: the first IDs" + _ID_RENUMBER_NOTE
+    _ID_MOVE_DOWN_TIP = _ID_MOVE_DOWN_MENU_TIP + ". Shift+click: five places. Ctrl+click: the last IDs" + _ID_RENUMBER_NOTE
+    _ID_MOVE_TOP_TIP = "Give the selected triggers the first IDs; trigger links follow and display order is unchanged"
+    _ID_MOVE_BOTTOM_TIP = "Give the selected triggers the last IDs; trigger links follow and display order is unchanged"
 
-        - sorted by File order, moving would relocate the trigger somewhere
-          the user cannot currently see, since the tree isn't showing display
-          position at all;
-        - filtered by text or by the 4c tag facet, both hide-only, so the
-          adjacent display slot may be a hidden row and a swap into it would
-          look like nothing happened.
-        """
-        if self._sort_mode != "display":
+    def _move_tips(self) -> tuple[str, str, str, str, str, str]:
+        """(▲ button, ▼ button, Move Up menu, Move Down menu, Move to Top,
+        Move to Bottom) tips for the current sort mode."""
+        if self._sort_mode == "display":
             return (
-                " (switch to Display order to reorder; Renumber IDs to Display Order"
-                " on the right-click menu then makes the IDs follow)"
+                self._MOVE_UP_TIP,
+                self._MOVE_DOWN_TIP,
+                self._MOVE_UP_MENU_TIP,
+                self._MOVE_DOWN_MENU_TIP,
+                self._MOVE_TOP_TIP,
+                self._MOVE_BOTTOM_TIP,
             )
+        return (
+            self._ID_MOVE_UP_TIP,
+            self._ID_MOVE_DOWN_TIP,
+            self._ID_MOVE_UP_MENU_TIP,
+            self._ID_MOVE_DOWN_MENU_TIP,
+            self._ID_MOVE_TOP_TIP,
+            self._ID_MOVE_BOTTOM_TIP,
+        )
+
+    def _move_view_reason(self) -> str:
+        """Why no trigger can move for view reasons, or "". In Display order
+        view a move permutes display order; in File order view (TASK-569) it
+        moves trigger IDs and keeps display order. Either way the view must be
+        unfiltered: a text or 4c tag filter is hide-only, so the adjacent row
+        may be hidden and a swap into it would look like nothing happened.
+        """
         if self.filter_edit.text().strip() or self.tag_combo.currentData() is not None:
             return " (clear the filter or tag to reorder)"
         return ""
@@ -4587,10 +4714,21 @@ class TriggerPanel(QWidget):
         display order), not tree geometry: grouped, the adjacent row in
         `self.tree` may belong to a different section's top-level item, where
         `indexOfTopLevelItem` would misread it as -1 or as an unrelated row.
+        In File order view (TASK-569) the bounds are list indices, which are
+        the IDs.
         """
         view = self._move_view_reason()
         if view:
             return view, view
+        if self._sort_mode != "display":
+            count = self._trigger_count
+            positions = [index for index in self.selected_trigger_indices() if index < count]
+            if not positions:
+                return " (select a trigger first)", " (select a trigger first)"
+            return (
+                "" if min(positions) > 0 else " (already first)",
+                "" if max(positions) < count - 1 else " (already last)",
+            )
         positions = [
             self._display_position[index]
             for index in self.selected_trigger_indices()
@@ -4615,6 +4753,16 @@ class TriggerPanel(QWidget):
         indices = self.selected_trigger_indices()
         if not indices:
             return " (select a trigger first)", " (select a trigger first)"
+        if self._sort_mode != "display":
+            # File order view moves IDs and has no sections (TASK-569).
+            count = self._trigger_count
+            if not all(index < count for index in indices):
+                return " (select a trigger first)", " (select a trigger first)"
+            identity = list(range(count))
+            return (
+                "" if id_order_to_edge(count, indices, True) != identity else " (already first)",
+                "" if id_order_to_edge(count, indices, False) != identity else " (already last)",
+            )
         top = section_edge_refusal(self._display_slots, self._display_sections, indices, True)
         bottom = section_edge_refusal(self._display_slots, self._display_sections, indices, False)
         return (f" ({top})" if top else "", f" ({bottom})" if bottom else "")
@@ -4637,15 +4785,16 @@ class TriggerPanel(QWidget):
             up = up[:-1] + ": Ctrl+click gathers the selection here)"
         if down and down_on:
             down = down[:-1] + ": Ctrl+click gathers the selection here)"
-        self.trigger_move_up_button.setToolTip(self._MOVE_UP_TIP + up)
-        self.trigger_move_down_button.setToolTip(self._MOVE_DOWN_TIP + down)
+        up_tip, down_tip = self._move_tips()[:2]
+        self.trigger_move_up_button.setToolTip(up_tip + up)
+        self.trigger_move_down_button.setToolTip(down_tip + down)
 
     _SECTION_UP_TIP = "Move the selected trigger's whole section above the section before it"
     _SECTION_DOWN_TIP = "Move the selected trigger's whole section below the section after it"
 
     def _section_move_reasons(self) -> tuple[str, str]:
         """Why Section Up and Section Down are each off, "" when on (GH
-        #133). Same view gate as Move Up/Down, plus a grouped tree, a
+        #133). Display order and no filter or tag, plus a grouped tree, a
         selection inside one real section, and a real neighbouring section
         that way. The leading run never moves and is never swapped past.
         Bounds come from the display-order partition, never tree geometry."""

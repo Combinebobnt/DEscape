@@ -2413,6 +2413,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_pan_down", "Pan Down", "Down"),
     ("view_pan_left", "Pan Left", "Left"),
     ("view_pan_right", "Pan Right", "Right"),
+] + [
+    (f"elevation_{style}", f"{terrain_style.label_for(style)} Elevation View", "")
+    for style in terrain_style.TERRAIN_STYLES
+] + [
     # Tools > Map Analysis. "analysis_", not "tools_": the Keybinds tab
     # titles a section by prefix and "tool" already means the toolbar tools.
     # Ships unbound, same reasoning as view_distance_ticks above.
@@ -2512,6 +2516,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("trigger_move_down_far", "Move Trigger/Condition/Effect Down 5", "Alt+Shift+Down"),
     ("trigger_move_top", "Move Trigger/Condition/Effect to Top", "Alt+Home"),
     ("trigger_move_bottom", "Move Trigger/Condition/Effect to Bottom", "Alt+End"),
+    ("trigger_variables", "Trigger Variables", ""),
+    ("variable_add", "Add Variable", ""),
+    ("variable_rename", "Rename Variable", ""),
+    ("variable_remove", "Remove Variable", ""),
 ] + [
     # Per-mode player selection: sets the active mode's own player selector
     # (Units' place/convert owner, Players panel, Diplomacy panel) -- see
@@ -2542,12 +2550,14 @@ KEYBIND_SECTION_TITLES: dict[str, str] = {
     "map": "Map",
     "analysis": "Analysis",
     "view": "View",
+    "elevation": "Elevation View",
     "help": "Help",
     "mode": "Modes",
     "filter": "Filters",
     "player": "Player Selection",
     "unit": "Units",
     "trigger": "Triggers",
+    "variable": "Trigger Variables",
     "tool": "Tools",
     "adjust": "Tool Value",
 }
@@ -2590,7 +2600,9 @@ _SCOPED_KEYBINDS: dict[str, frozenset[str]] = {
     "trigger_move_down_far": frozenset({"triggers"}),
     "trigger_move_top": frozenset({"triggers"}),
     "trigger_move_bottom": frozenset({"triggers"}),
+    "trigger_variables": frozenset({"triggers"}),
 }
+# variable_* stay global in mode metadata: their dialog can outlive a mode switch.
 _TOOL_KEYBIND_MODES: dict[str, frozenset[str]] = {f"tool_{t.tool_id}": frozenset(t.modes) for t in TOOLS}
 
 

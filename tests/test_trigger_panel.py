@@ -1670,24 +1670,20 @@ def test_move_buttons_are_disabled_at_the_ends_of_display_order() -> None:
         window.close()
 
 
-def test_move_buttons_are_disabled_off_display_order_or_while_filtered() -> None:
+def test_move_buttons_are_disabled_while_filtered_in_either_view() -> None:
     window = _triggers_window()
     try:
         panel = window.trigger_panel
         panel.tree.setCurrentItem(panel.tree.topLevelItem(1))
         assert panel.trigger_move_up_button.isEnabled()
 
-        panel.sort_combo.setCurrentIndex(1)  # File order
-        assert not panel.trigger_move_up_button.isEnabled()
-        assert not panel.trigger_move_down_button.isEnabled()
-        assert "Display order" in panel.trigger_move_up_button.toolTip()
-        panel.sort_combo.setCurrentIndex(0)
-
-        panel.filter_edit.setText("Fixture")  # matches every shipped trigger
-        assert not panel.trigger_move_up_button.isEnabled()
-        assert "filter" in panel.trigger_move_up_button.toolTip()
-        panel.filter_edit.clear()
-        assert panel.trigger_move_up_button.isEnabled()
+        for sort in (0, 1):  # Display order, File order (TASK-569)
+            panel.sort_combo.setCurrentIndex(sort)
+            panel.filter_edit.setText("Fixture")  # matches every shipped trigger
+            assert not panel.trigger_move_up_button.isEnabled(), sort
+            assert "filter" in panel.trigger_move_up_button.toolTip()
+            panel.filter_edit.clear()
+            assert panel.trigger_move_up_button.isEnabled(), sort
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -7636,6 +7632,209 @@ def test_gh2_renumber_says_what_it_changed_for_the_files_execution_order(mode: s
         window.close()
 
 
+# -- TASK-569: Move Up/Down in File order view moves trigger IDs ------------------
+
+
+def _ids_window():
+    """_gh2_window() with display order [2, 0, 3, 1] (no ID follows its slot), sorted by File order."""
+    window = _gh2_window()
+    window.trigger_structural_edit("move_top", [2])
+    window.trigger_structural_edit("move_down", [1])
+    assert _order(window) == [2, 0, 3, 1], "fixture assumption"
+    window.trigger_panel.sort_combo.setCurrentIndex(1)
+    return window
+
+
+def _link_targets(window) -> dict[str, list[str]]:
+    from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
+
+    names = _names(window)
+    return {
+        t.name: [names[ce.trigger_id] for ce in get_trigger_referencing_ce(t)]
+        for t in window.trigger_panel._manager().triggers
+        if get_trigger_referencing_ce(t)
+    }
+
+
+def test_task569_file_order_bounds_tooltips_and_section_buttons() -> None:
+    window = _ids_window()
+    try:
+        panel = window.trigger_panel
+        up, down = panel.trigger_move_up_button, panel.trigger_move_down_button
+        panel.select_trigger(0)
+        assert not up.isEnabled() and down.isEnabled(), "bounds are IDs, not display slots (trigger 0 sits at slot 1)"
+        assert up.toolTip() == panel._ID_MOVE_UP_TIP + " (already first)"
+        assert down.toolTip() == panel._ID_MOVE_DOWN_TIP
+        panel.select_trigger(3)
+        assert up.isEnabled() and not down.isEnabled()
+        panel.select_trigger(2)
+        assert up.isEnabled() and down.isEnabled()
+        menu = panel.trigger_context_menu(panel._item_for_index[2])
+        tips = {text: _action(menu, text).toolTip() for text in ("Move Up", "Move Down", "Move to Top", "Move to Bottom")}
+        assert tips == {
+            "Move Up": panel._ID_MOVE_UP_MENU_TIP,
+            "Move Down": panel._ID_MOVE_DOWN_MENU_TIP,
+            "Move to Top": panel._ID_MOVE_TOP_TIP,
+            "Move to Bottom": panel._ID_MOVE_BOTTOM_TIP,
+        }
+        panel.select_trigger(0)
+        assert not _action(panel.trigger_context_menu(panel._item_for_index[0]), "Move to Top").isEnabled()
+        panel.sort_combo.setCurrentIndex(0)
+        assert up.toolTip().startswith(panel._MOVE_UP_TIP), "the sort switch swaps the tips back"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_an_id_move_is_one_record_keeps_display_order_and_links() -> None:
+    window = _ids_window()
+    try:
+        panel = window.trigger_panel
+        names, listed, links = _names(window), _display_names(window), _link_targets(window)
+        assert links == {names[2]: [names[0], names[1]]}, "fixture assumption"
+        panel.select_trigger(1)
+        records = _record_count(window)
+        panel.trigger_move_down_button.click()
+        assert _record_count(window) == records + 1 and _last_label(window) == "Move trigger 1 ID down"
+        assert _names(window) == [names[0], names[2], names[1], names[3]]
+        assert _display_names(window) == listed, "every trigger keeps its display slot"
+        assert _link_targets(window) == links, "links follow their triggers"
+        assert [_names(window)[i] for i in _tree_order(panel)] == _names(window), "File order lists by ID"
+        assert [_names(window)[i] for i in panel.selected_trigger_indices()] == [names[1]]
+        assert _names(window)[panel.current_trigger_index()] == names[1], "the selection follows the trigger"
+        window.undo()
+        assert _names(window) == names and _display_names(window) == listed and _link_targets(window) == links
+        window.redo()
+        assert _names(window) == [names[0], names[2], names[1], names[3]] and _link_targets(window) == links
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_modifier_clicks_and_the_menu_route_to_id_moves(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _ids_window()
+    try:
+        panel = window.trigger_panel
+        calls: list[tuple] = []
+        monkeypatch.setattr(panel, "_on_trigger_structural", lambda op, indices, arg=None: calls.append((op, list(indices), arg)))
+        panel.select_trigger(2)
+        panel.trigger_move_up_button.click()
+        _modifier_click(panel.trigger_move_up_button, Qt.ShiftModifier)
+        _modifier_click(panel.trigger_move_down_button, Qt.ControlModifier)
+        _action(panel.trigger_context_menu(panel._item_for_index[2]), "Move to Top").trigger()
+        _action(panel.trigger_context_menu(panel._item_for_index[2]), "Move Down").trigger()
+        assert calls == [
+            ("move_ids", [2], -1),
+            ("move_ids", [2], -5),
+            ("move_ids", [2], "bottom"),
+            ("move_ids", [2], "top"),
+            ("move_ids", [2], 1),
+        ]
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_far_edge_and_split_id_moves_match_display_order_semantics(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _long_window(tmp_path)
+    window._warn = lambda title, text: pytest.fail(f"{title}: {text}")
+    try:
+        panel = window.trigger_panel
+        panel.sort_combo.setCurrentIndex(1)
+        names = _names(window)
+        _ctrl_select(panel, 2, 4)
+        _modifier_click(panel.trigger_move_up_button, Qt.ShiftModifier)
+        assert _last_label(window) == "Move 2 trigger IDs up 2 places", "capped by the leading member's room"
+        assert _names(window)[:6] == [names[i] for i in (2, 0, 4, 1, 3, 5)]
+        assert sorted(_names(window)[i] for i in panel.selected_trigger_indices()) == sorted([names[2], names[4]])
+        assert _order(window) == [_names(window).index(name) for name in names], "display slots kept"
+        records = _record_count(window)
+        panel.select_trigger(_LONG_COUNT - 1)
+        window.trigger_structural_edit("move_ids", [_LONG_COUNT - 1], 1)
+        assert _record_count(window) == records, "no room records nothing"
+        _modifier_click(panel.trigger_move_up_button, Qt.ControlModifier)
+        assert _last_label(window) == f"Move trigger {_LONG_COUNT - 1} ID to the start"
+        assert _names(window)[0] == names[_LONG_COUNT - 1]
+        assert _row_in_view(panel.tree, panel._item_for_index[0])
+        records = _record_count(window)
+        window.trigger_structural_edit("move_ids", [0], "top")
+        assert _record_count(window) == records
+        assert _status(window).rstrip().endswith("Cannot move trigger IDs: already first")
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("mode", ["legacy", "display", "unknown"])
+def test_task569_an_id_move_says_once_what_it_means_for_the_files_execution_order(mode: str, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from descape import viewer
+    from descape.viewer import DISPLAY_ID_MOVE_MESSAGE, LEGACY_REORDER_MESSAGE, UNKNOWN_ID_MOVE_MESSAGE
+
+    window = _ids_window()
+    try:
+        if mode == "legacy":
+            window._set_exec_order(SimpleNamespace(label="execution order"), 1)
+        elif mode == "unknown":
+            monkeypatch.setattr(viewer, "exec_order_value", lambda loaded: None)
+        before, records = _status(window), _record_count(window)
+        for arg in (1, -1, "bottom"):
+            window.trigger_structural_edit("move_ids", [1], arg)
+        assert _record_count(window) == records + 3, "every move happened, in every mode"
+        said = _status(window)[len(before):]
+        assert said.count(DISPLAY_ID_MOVE_MESSAGE) == (mode == "display")
+        assert said.count(UNKNOWN_ID_MOVE_MESSAGE) == (mode == "unknown")
+        assert LEGACY_REORDER_MESSAGE not in said, "an ID move is not a display-order move"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_section_buttons_stay_greyed_in_file_order() -> None:
+    window = _divided_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 1, "--B--")  # 0 | --B-- 1 | --A-- 2, 3
+        panel.select_trigger(3)
+        assert panel.section_up_button.isEnabled(), "fixture assumption: Section Up works in Display order"
+        panel.sort_combo.setCurrentIndex(1)
+        panel.select_trigger(3)
+        assert not panel.section_up_button.isEnabled() and not panel.section_down_button.isEnabled()
+        assert panel.trigger_move_up_button.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_an_id_move_survives_a_write_and_reload(tmp_path: Path) -> None:
+    from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
+
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
+    window = _ids_window()
+    try:
+        names, listed = _names(window), _display_names(window)
+        window.trigger_structural_edit("move_ids", [2], "top")
+        out = tmp_path / "moved.aoe2scenario"
+        write_scenario(window.scenario, out, triggers=window.trigger_edits)
+        manager = parse_triggers(load_map_and_units(out))
+        reloaded = [t.name for t in manager.triggers]
+        assert reloaded == [names[2], names[0], names[1], names[3]]
+        assert [reloaded[i] for i in manager.trigger_display_order] == listed
+        assert [reloaded[ce.trigger_id] for ce in get_trigger_referencing_ce(manager.triggers[0])] == names[:2]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_trigger_tech_field_hides_internal_techs_and_an_object_field_does_not() -> None:
     from descape import object_catalog, trigger_fields
     from descape.constant_picker import HIDDEN_LABEL, INTERNAL_TECHS_LABEL
@@ -9513,6 +9712,67 @@ def test_gh133_a_flat_file_offers_no_section_move() -> None:
         window.close()
 
 
+# -- TASK-225: collapse state follows its section, not its (title, ordinal) -----
+
+
+def _collapsed_by_member(window) -> dict[str, bool]:
+    """Each non-empty section's collapsed state, named by its first member:
+    same-titled headers cannot tell the sections apart."""
+    panel = window.trigger_panel
+    triggers = panel._manager().triggers
+    return {
+        triggers[s.member_indices[0]].name: not panel.tree.topLevelItem(p).isExpanded()
+        for p, s in enumerate(panel._sections)
+        if s.member_indices
+    }
+
+
+def test_task225_collapse_follows_a_same_titled_section_through_a_swap_undo_redo_and_jump() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 0, "--- X ---")
+        _rename(panel, 2, "--- X ---")
+        panel._item_for_index[0].setExpanded(False)
+        expected = {"Fixture: armour split": True, "Fixture: variable": False}
+        assert _collapsed_by_member(window) == expected, "fixture assumption"
+        panel.select_trigger(0)
+        panel.section_down_button.click()
+        assert _order(window) == [2, 3, 0, 1]
+        assert _collapsed_by_member(window) == expected
+        window.undo()
+        assert _order(window) == [0, 1, 2, 3]
+        assert _collapsed_by_member(window) == expected
+        window.redo()
+        assert _collapsed_by_member(window) == expected
+        window._history_jump(window.edit_history.cursor - 1)
+        assert _order(window) == [0, 1, 2, 3]
+        assert _collapsed_by_member(window) == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task225_duplicating_a_bare_ruler_leaves_the_later_rulers_their_own_state() -> None:
+    """The copy is a third `------` between the two; the second keeps its
+    collapse rather than taking the first's."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        _rename(panel, 0, "------")
+        _rename(panel, 2, "------")
+        panel._item_for_index[2].setExpanded(False)
+        expected = {"Fixture: armour split": False, "Fixture: variable": True}
+        assert _collapsed_by_member(window) == expected, "fixture assumption"
+        panel.select_trigger(0)
+        panel.trigger_copy_button.click()
+        assert [s.member_indices == () for s in panel._sections] == [False, True, False], "the copy splits nothing"
+        assert _collapsed_by_member(window) == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 # -- GH #166: trigger status colours -------------------------------------------
 #
 # The fixture's statuses, measured: triggers 0-2 are complete; trigger 3 is not
@@ -11068,14 +11328,13 @@ def test_gh211_the_trigger_menu_moves_follow_their_gates(tmp_path: Path) -> None
         window.undo()
         window.undo()
 
-        # Off Display order, under a filter and under a tag nothing moves, and each says why.
+        # File order view offers all four as ID moves (TASK-569); under a filter and a tag nothing moves.
         panel.sort_combo.setCurrentIndex(1)
         _ctrl_select(panel, 15)
         found = _move_menu_states(panel, 15)
         assert tuple(found) == ("Move Up", "Move Down", "Move to Top", "Move to Bottom"), "File order has no sections"
-        assert [enabled for enabled, _ in found.values()] == [False] * 4
-        assert all(tip.endswith(panel._move_view_reason()) for _, tip in found.values())
-        assert "Renumber IDs to Display Order" in panel._move_view_reason(), "File order names the renumber"
+        assert [enabled for enabled, _ in found.values()] == [True] * 4
+        assert found["Move Up"][1] == panel._ID_MOVE_UP_MENU_TIP
         panel.sort_combo.setCurrentIndex(0)
 
         off = (False, " (clear the filter or tag to reorder)")
@@ -11360,7 +11619,7 @@ def test_gh211_alt_up_in_a_form_dropdown_moves_nothing() -> None:
         window.close()
 
 
-@pytest.mark.parametrize("view", ["file order", "filter", "tag", "type picker"])
+@pytest.mark.parametrize("view", ["filter", "tag", "type picker"])
 def test_gh211_alt_up_is_gated_like_the_move_buttons(tmp_path: Path, view: str) -> None:
     """A shortcut has no disabled button in front of it, so the request path
     itself refuses: nothing is recorded and the tree keeps its order."""
@@ -11371,9 +11630,7 @@ def test_gh211_alt_up_is_gated_like_the_move_buttons(tmp_path: Path, view: str) 
         _activate(window)
         panel = window.trigger_panel
         panel.select_trigger(2)
-        if view == "file order":
-            panel.sort_combo.setCurrentIndex(1)
-        elif view == "filter":
+        if view == "filter":
             panel.filter_edit.setText("e")
         elif view == "tag":
             panel.set_tag_filter("D1")
@@ -11398,6 +11655,29 @@ def test_gh211_alt_up_is_gated_like_the_move_buttons(tmp_path: Path, view: str) 
         assert _order(window) == [0, 1, 2, 3]
         assert _tree_order(panel) == shown
         assert not window.edit_history.is_dirty
+    finally:
+        _release_modifiers(window)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_task569_the_move_trigger_keys_move_ids_in_file_order(tmp_path: Path) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _tagged_window(tmp_path)
+    try:
+        _activate(window)
+        panel = window.trigger_panel
+        panel.sort_combo.setCurrentIndex(1)
+        names = _names(window)
+        panel.select_trigger(2)
+        _focus_on(panel.tree)
+        _press(panel.tree, Qt.Key_Up, Qt.AltModifier)
+        assert _names(window) == [names[i] for i in (0, 2, 1, 3)]
+        _press(panel.tree, Qt.Key_End, Qt.AltModifier)
+        assert _names(window) == [names[i] for i in (0, 1, 3, 2)]
+        assert _order(window) == [_names(window).index(name) for name in names], "display slots kept"
+        assert _record_count(window) == 2
     finally:
         _release_modifiers(window)
         window.edit_history.mark_saved()

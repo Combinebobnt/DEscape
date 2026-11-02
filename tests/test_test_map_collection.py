@@ -13,8 +13,8 @@ import pytest
 import conftest
 
 TESTS_DIR = conftest.ROOT / "tests"
-MAP_NAMES = frozenset({"TEST_MAP_PATH", "TEST_MAP_RESAVE_PATH"})
-MAP_FILES = (conftest.TEST_MAP_PATH.name, conftest.TEST_MAP_RESAVE_PATH.name)
+MAP_NAMES = frozenset({"TEST_MAP_PATH", "TEST_MAP_RESAVE_PATH", "TEST_MAP_RESAVE_SOURCE_PATH"})
+MAP_FILES = (conftest.TEST_MAP_PATH.name, conftest.TEST_MAP_RESAVE_PATH.name, conftest.TEST_MAP_RESAVE_SOURCE_PATH.name)
 
 
 def _mentions(node: ast.AST, names: frozenset[str]) -> bool:

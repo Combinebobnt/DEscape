@@ -26,6 +26,9 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Optional keybinds for Elevation View and trigger variables** (GH #290,
+  GH #291): Flat, Stepped, Sloped, Variables, and the variables dialog's Add,
+  Rename and Remove commands have Settings > Keybinds rows, all unbound by default.
 - **Rotate while moving** (GH #280): the Rotate commands and the wheel's rotate
   binding turn a unit during a Move drag, and the turn lands with the drop as
   one undo step. A gate lands in its new orientation, with "Moving a gate
@@ -73,6 +76,10 @@ content, link the doc instead of summarizing it.
 - **Renumber IDs to Display Order** (GH #2) on the trigger list's
   right-click menu: a file that runs triggers by ID (Legacy) then runs them
   in the listed order, and trigger links follow.
+- **Move trigger IDs in File order view** (GH #2): ▲▼, their Shift and Ctrl
+  clicks and the Move Trigger commands, greyed there before, now move the
+  selected triggers to earlier or later IDs. Links follow and Display order
+  stays as it was.
 - **A trigger technology field's "…" list leaves out placeholder and helper
   techs** (Blank Technology, Placeholder, the "requirement" techs and
   similar) until Show internal techs is ticked.
@@ -348,6 +355,10 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Collapsed trigger sections stay collapsed** when Section Up/Down swaps two
+  same-named sections, a bare `------` section is duplicated, or either is undone.
+- **A second running copy no longer reads half-written settings or an autosave
+  index** (GH #353): both files are replaced atomically, keeping symlinks and permissions.
 - **The wheel and compass work on a group mixing direction counts** (GH #71),
   such as trebuchets and Long Swordsmen, which used to flip between two
   facings and lose the compass pointer.

@@ -593,7 +593,7 @@ def test_keybinds_tab_renders_menu_section_headers() -> None:
                 if label.text().startswith("<b>")
             ]
             headers = set(header_list)
-            for expected in ("File", "Edit", "View", "Help", "Modes", "Tools", "Tool Value"):
+            for expected in ("File", "Edit", "View", "Elevation View", "Help", "Modes", "Tools", "Tool Value"):
                 assert expected in headers, f"{expected} section header missing from Keybinds tab"
             # Presence alone would not catch a SPLIT section: _build_keybinds_tab
             # only compares against the previous row's prefix, so a non-contiguous
@@ -1017,6 +1017,141 @@ def test_the_view_action_ids_form_one_contiguous_run() -> None:
     assert view_positions == list(range(view_positions[0], view_positions[-1] + 1))
 
 
+@pytest.mark.parametrize("style", ["flat", "stepped", "sloped"])
+def test_elevation_real_keys_select_persist_rebind_and_clear(style: str) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings, terrain_style
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+    from descape.viewer import SettingsDialog
+
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    try:
+        action_id = f"elevation_{style}"
+        action = window._keybind_actions[action_id]
+        before = "sloped" if style == "stepped" else "stepped"
+        window.terrain_style_combo.setCurrentText(terrain_style.label_for(before))
+        dialog = SettingsDialog(window)
+        try:
+            assert settings.get_default_keybind(action_id) == ""
+            assert dialog._keybind_edits[action_id].keySequence().isEmpty()
+            dialog._keybind_edits[action_id].setKeySequence(QKeySequence("Ctrl+Alt+F9"))
+            window.activateWindow()
+            QApplication.setActiveWindow(window)
+            window.map_view.setFocus()
+            QApplication.processEvents()
+            QTest.keyClick(window.map_view, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+            QApplication.processEvents()
+            assert window._terrain_style == style
+            assert window.map_view._terrain_style == window._render_style
+            assert window.terrain_style_combo.currentText() == terrain_style.label_for(style)
+            assert settings._load_config()["terrain_style"] == style
+            log = window.status_log.toPlainText()
+            QTest.keyClick(window.map_view, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+            assert window.status_log.toPlainText() == log, "same-style selection is a no-op"
+
+            dialog._keybind_edits[action_id].setKeySequence(QKeySequence("Ctrl+Alt+F10"))
+            window.terrain_style_combo.setCurrentText(terrain_style.label_for(before))
+            QTest.keyClick(window.map_view, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+            assert window._terrain_style == before
+            QTest.keyClick(window.map_view, Qt.Key_F10, Qt.ControlModifier | Qt.AltModifier)
+            assert window._terrain_style == style
+            _row_widgets(dialog, action_id)[3].click()  # Clear
+            assert action.shortcut().isEmpty() and settings.get_keybind(action_id) == ""
+            window.terrain_style_combo.setCurrentText(terrain_style.label_for(before))
+            QTest.keyClick(window.map_view, Qt.Key_F10, Qt.ControlModifier | Qt.AltModifier)
+            assert window._terrain_style == before
+        finally:
+            dialog.close()
+    finally:
+        conftest.close_window(window)
+
+
+def test_elevation_and_variable_registry_rows_are_unbound_and_in_their_sections() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape import settings, terrain_style
+
+    expected = {
+        "Elevation View": [f"elevation_{s}" for s in terrain_style.TERRAIN_STYLES],
+        "Triggers": ["trigger_variables"],
+        "Trigger Variables": ["variable_add", "variable_rename", "variable_remove"],
+    }
+    dialog, window = conftest.dialog_and_window()
+    try:
+        rows = {aid: (label, default) for aid, label, default in settings.REBINDABLE_ACTIONS}
+        ids = [aid for aid, _label, _default in settings.REBINDABLE_ACTIONS]
+        assert [aid for aid in ids if aid.startswith("elevation_")] == expected["Elevation View"]
+        assert [aid for aid in ids if aid.startswith("variable_")] == expected["Trigger Variables"]
+        for title, action_ids in expected.items():
+            sections = [r for _d, h, r in dialog._keybind_sections if h.text() == f"<b>{title}</b>"]
+            assert len(sections) == 1
+            section_ids = [aid for aid, _widgets in sections[0]]
+            for aid in action_ids:
+                assert aid in section_ids
+                assert rows[aid][1] == settings.get_keybind(aid) == ""
+                assert window._keybind_actions[aid].shortcut().isEmpty()
+                assert dialog._keybind_edits[aid].keySequence().isEmpty()
+            positions = [ids.index(aid) for aid in action_ids]
+            assert positions == list(range(positions[0], positions[-1] + 1))
+        assert settings.keybind_modes("trigger_variables") == frozenset({"triggers"})
+        for aid in expected["Trigger Variables"]:
+            action = window._keybind_actions[aid]
+            assert action.parent() is window.trigger_panel
+            assert action.associatedWidgets() == [], "lazy dialog is the only shortcut host"
+            assert action.shortcutContext() == Qt.WidgetWithChildrenShortcut
+            assert not action.autoRepeat() and not action.isEnabled()
+            assert settings.keybind_modes(aid) == frozenset()
+            assert settings.keybind_scopes_overlap(aid, "tool_set_level")
+            assert settings.keybind_scopes_overlap(aid, "tool_place_unit")
+        assert window._keybind_actions["trigger_variables"].parent() is window.trigger_panel
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_elevation_shortcuts_follow_no_map_and_busy_combo_gates() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.shown_window()
+    try:
+        settings.set_keybind("elevation_flat", "Ctrl+Alt+F9")
+        window.apply_keybind("elevation_flat")
+        action = window._keybind_actions["elevation_flat"]
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert not action.isEnabled() and not window.terrain_style_combo.isEnabled()
+        QTest.keyClick(window, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+        window._select_elevation_view("flat")  # dispatch also rechecks the combo gate
+        assert window._terrain_style == "stepped"
+        assert "terrain_style" not in settings._load_config()
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        assert action.isEnabled() and window.terrain_style_combo.isEnabled()
+        window._busy = True
+        QTest.keyClick(window, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+        assert window._terrain_style == "stepped"
+        assert window.terrain_style_combo.currentText() == "Stepped"
+        assert "terrain_style" not in settings._load_config()
+        window._busy = False
+        QTest.keyClick(window, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
+        assert window._terrain_style == "flat"
+        window.edit_history.mark_saved()
+        window.close_scenario()
+        assert not action.isEnabled()
+    finally:
+        window._busy = False
+        conftest.close_window(window)
+
+
 def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_header() -> None:
     """Scoped to the trigger tree and the entry tree, never the window: a
     window-wide Alt+Down would take the key from every dropdown in the trigger
@@ -1036,7 +1171,7 @@ def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_hea
         ("trigger_move_top", "Alt+Home"),
         ("trigger_move_bottom", "Alt+End"),
     ]
-    rows = [(a, label, default) for a, label, default in settings.REBINDABLE_ACTIONS if a.startswith("trigger_")]
+    rows = [(a, label, default) for a, label, default in settings.REBINDABLE_ACTIONS if a.startswith("trigger_move_")]
     assert [(a, default) for a, _label, default in rows] == expected
     for _action_id, label, _default in rows:
         assert "Trigger" in label and "Condition/Effect" in label, label

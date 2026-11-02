@@ -2817,21 +2817,39 @@ def _trigger_diffs(old: dict, new: dict, slot_of: dict[int, int]) -> list[str]:
     return problems
 
 
-def _check_renumber_round_trip(path: Path, tmp_path: Path) -> int:
+def _check_renumber_round_trip(path: Path, tmp_path: Path, id_move: bool = False) -> int:
     """Renumber `path` through structural_edit() + write_scenario(), reload:
-    names in the old display order, every link re-pointed by display
-    position, the execution-order byte unchanged, every trigger the renumber
-    left clean byte-identical, and every dirty one equal field for field but
-    for _entry_diffs()' allowances. Returns how many triggers went dirty."""
-    from descape.trigger_model import exec_order_value, ids_follow_display_order, renumber_to_display_order
+    names in the new ID order, the display order keeping every trigger in
+    its slot, every link re-pointed to its trigger's new ID, the
+    execution-order byte unchanged, every trigger the renumber left clean
+    byte-identical, and every dirty one equal field for field but for
+    _entry_diffs()' allowances. Returns how many triggers went dirty.
+
+    The new ID order is the display order (Renumber IDs to Display Order),
+    or with `id_move` File order view's Move to Top on the last trigger
+    (TASK-569), which shifts every other ID by one so every link moves."""
+    from descape.trigger_model import (
+        exec_order_value,
+        id_order_to_edge,
+        ids_follow_display_order,
+        renumber_to_display_order,
+        renumber_to_order,
+    )
 
     loaded = load_map_and_units(path)
     manager = parse_triggers(loaded)
     if manager is None or not loaded.trigger_write_supported:
         pytest.skip(f"{path.name}: triggers are not editable")
-    order = list(manager.trigger_display_order)
-    if ids_follow_display_order(order):
-        pytest.skip(f"{path.name}: IDs already follow display order")
+    display = list(manager.trigger_display_order)
+    count = len(manager.triggers)
+    if id_move:
+        if count < 2:
+            pytest.skip(f"{path.name}: fewer than two triggers")
+        order = id_order_to_edge(count, [count - 1], True)
+    else:
+        if ids_follow_display_order(display):
+            pytest.skip(f"{path.name}: IDs already follow display order")
+        order = display
     names = [t.name or "" for t in manager.triggers]
     links = _links_by_trigger(manager)
     exec_byte = exec_order_value(loaded)
@@ -2841,7 +2859,7 @@ def _check_renumber_round_trip(path: Path, tmp_path: Path) -> int:
     fields = {i: _raw_fields(s) for i, s in enumerate(_raw_structs(loaded)) if links[i]}
     slot_of = {index: slot for slot, index in enumerate(order)}
 
-    model.structural_edit(renumber_to_display_order)
+    model.structural_edit(lambda m: renumber_to_order(m, order) if id_move else renumber_to_display_order(m))
     dirty = set(model.dirty_indices())
     out = tmp_path / "renumbered.aoe2scenario"
     write_scenario(loaded, out, triggers=model)
@@ -2849,7 +2867,7 @@ def _check_renumber_round_trip(path: Path, tmp_path: Path) -> int:
     reloaded_loaded = load_map_and_units(out)
     reloaded = parse_triggers(reloaded_loaded)
     assert [t.name or "" for t in reloaded.triggers] == [names[i] for i in order], f"{path.name}: names"
-    assert list(reloaded.trigger_display_order) == list(range(len(order)))
+    assert list(reloaded.trigger_display_order) == [slot_of[old] for old in display], f"{path.name}: display slots"
     assert _links_by_trigger(reloaded) == [[slot_of.get(raw, raw) for raw in links[i]] for i in order], (
         f"{path.name}: a link no longer names its trigger"
     )
@@ -3014,6 +3032,122 @@ def test_a_refused_renumber_records_nothing() -> None:
 
 def test_renumbering_round_trips_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
     _check_renumber_round_trip(scenario_path, tmp_path)
+
+
+def test_an_id_move_round_trips_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
+    _check_renumber_round_trip(scenario_path, tmp_path, id_move=True)
+
+
+# -- File order view's ID moves (TASK-569) -------------------------------------
+
+
+def test_an_id_move_keeps_every_display_slot_and_every_link() -> None:
+    """renumber_to_order() on the fixture (display [2, 0, 3, 1], all three link
+    types): IDs follow `id_order`, each display slot holds the same trigger
+    object, every in-range link names the same trigger, and an out-of-range
+    or -1 link is left alone."""
+    from descape.trigger_model import renumber_to_order
+
+    _loaded, model = _renumber_fixture()
+    manager = model.manager()
+    old = list(manager.triggers)
+    display = list(manager.trigger_display_order)
+    stray = old[0].new_effect.activate_trigger(trigger_id=99)
+    unset = old[0].new_effect.deactivate_trigger(trigger_id=-1)
+    targets = [
+        (ce, old[ce.trigger_id])
+        for t in old
+        for ce in get_trigger_referencing_ce(t)
+        if 0 <= ce.trigger_id < len(old)
+    ]
+    id_order = [3, 0, 1, 2]
+
+    model.structural_edit(lambda m: renumber_to_order(m, id_order))
+    assert [t.trigger_id for t in manager.triggers] == [0, 1, 2, 3]
+    assert all(live is old[index] for live, index in zip(manager.triggers, id_order, strict=True))
+    after = list(manager.trigger_display_order)
+    assert all(manager.triggers[after[slot]] is old[display[slot]] for slot in range(4))
+    assert all(manager.triggers[ce.trigger_id] is target for ce, target in targets)
+    assert stray.trigger_id == 99 and unset.trigger_id == -1
+
+
+def test_id_order_refusal_and_a_refused_id_move_change_nothing() -> None:
+    from descape.trigger_model import id_order_refusal, renumber_to_order
+
+    _loaded, model = _renumber_fixture()
+    manager = model.manager()
+    before = _link_state(manager)
+    for id_order, reason in (
+        ([0, 1, 2], "new ID order is not a permutation"),
+        ([0, 0, 1, 2], "new ID order is not a permutation"),
+        ([0, 1, 2, 3], "IDs already in that order"),
+    ):
+        assert reason in id_order_refusal(manager, id_order)
+        with pytest.raises(ValueError, match=reason):
+            renumber_to_order(manager, id_order)
+        assert _link_state(manager) == before, id_order
+    manager.trigger_display_order = [0, 0, 1, 2]
+    assert "display order is not a permutation" in id_order_refusal(manager, [1, 0, 2, 3])
+    manager.trigger_display_order = [2, 0, 3, 1]
+    manager.triggers[1].trigger_id = 7
+    assert id_order_refusal(manager, [1, 0, 2, 3]) == "trigger 1 carries ID 7"
+
+
+@pytest.mark.parametrize("miss", ["link", "slot"])
+def test_an_id_move_whose_remap_misses_puts_the_manager_back(miss: str, monkeypatch) -> None:
+    """D6: a link the library failed to remap, or a display slot that no
+    longer holds its trigger, restores the original list before raising."""
+    import AoE2ScenarioParser.objects.managers.trigger_manager as library
+
+    from descape import trigger_model
+    from descape.trigger_model import renumber_to_order
+
+    _loaded, model = _renumber_fixture()
+    before = _link_state(model.manager())
+    if miss == "link":
+        monkeypatch.setattr(library, "get_trigger_referencing_ce", lambda trigger: [])
+        match = "links to ID"
+    else:
+        real = trigger_model.TriggerManager.trigger_display_order
+
+        remap = [3, 1, 0, 2]  # display [2, 0, 3, 1] under ID order [3, 0, 1, 2]
+
+        def broken(manager, value):
+            # Only the remap is corrupted (reversed); the library's own writes and the restore pass through.
+            real.fset(manager, list(reversed(value)) if list(value) == remap else value)
+
+        monkeypatch.setattr(trigger_model.TriggerManager, "trigger_display_order", property(real.fget, broken))
+        match = "display slot"
+    with pytest.raises(RuntimeError, match=match):
+        renumber_to_order(model.manager(), [3, 0, 1, 2])
+    assert _link_state(model.manager()) == before
+
+
+@pytest.mark.parametrize(
+    "indices, delta, expected",
+    [
+        ([2], -1, [0, 2, 1, 3, 4]),
+        ([2], 1, [0, 1, 3, 2, 4]),
+        ([1, 3], -1, [1, 0, 3, 2, 4]),  # split: each member moves one
+        ([0, 1], -1, [0, 1, 2, 3, 4]),  # a block against the top: nothing
+        ([0, 2], -1, [0, 2, 1, 3, 4]),  # pressed against the top: the free member moves
+        ([4], -5, [4, 0, 1, 2, 3]),  # a far move
+    ],
+)
+def test_moved_id_order_matches_a_display_order_block_move(indices, delta, expected) -> None:
+    from descape.trigger_model import moved_display_order_block, moved_id_order
+
+    assert moved_id_order(5, indices, delta) == expected
+    assert moved_id_order(5, indices, delta) == moved_display_order_block(list(range(5)), indices, delta)
+
+
+def test_id_order_to_edge_gathers_the_selection_at_either_end() -> None:
+    from descape.trigger_model import id_order_to_edge
+
+    assert id_order_to_edge(5, [3, 1], True) == [1, 3, 0, 2, 4]
+    assert id_order_to_edge(5, [3, 1], False) == [0, 2, 4, 1, 3]
+    assert id_order_to_edge(5, [0, 1], True) == [0, 1, 2, 3, 4]
+    assert id_order_to_edge(5, [4], False) == [0, 1, 2, 3, 4]
 
 
 def test_no_entry_outside_the_three_link_types_stores_a_trigger_id(scenario_path: Path) -> None:

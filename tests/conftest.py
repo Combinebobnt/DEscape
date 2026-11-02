@@ -498,6 +498,9 @@ QUICK_CORPUS_NAMES = frozenset(
 TEST_MAP_PATH = ROOT / "tests" / "fixtures" / "test_map_240x240.aoe2scenario"
 # The same map opened and saved once in the AoE2:DE 1.59 editor; never regenerated.
 TEST_MAP_RESAVE_PATH = ROOT / "tests" / "fixtures" / "test_map_game_resave.aoe2scenario"
+# The test map exactly as the game re-saved it into TEST_MAP_RESAVE_PATH (commit
+# 146faf7's generator output), frozen for the structure-inference backtests.
+TEST_MAP_RESAVE_SOURCE_PATH = ROOT / "tests" / "fixtures" / "test_map_resave_source.aoe2scenario"
 
 
 def _scenario_dir(config: pytest.Config) -> Path:
@@ -573,7 +576,7 @@ def pytest_collection_modifyitems(config, items) -> None:
     """Marks `test_map` on any item parametrized with a test map file (a
     tests/fixtures/ glob, say), before -m deselects, so it stays out of the
     default tier like the map items pytest_generate_tests makes."""
-    names = {TEST_MAP_PATH.name, TEST_MAP_RESAVE_PATH.name}
+    names = {TEST_MAP_PATH.name, TEST_MAP_RESAVE_PATH.name, TEST_MAP_RESAVE_SOURCE_PATH.name}
     for item in items:
         callspec = getattr(item, "callspec", None)
         if callspec and any(isinstance(v, Path) and v.name in names for v in callspec.params.values()):
