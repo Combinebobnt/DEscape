@@ -41,6 +41,11 @@ def _load_config() -> dict:
         return {}
 
 
+def _is_int(value) -> bool:
+    # Exact: a YAML `true` or `3.0` must not pass an int getter's gate (TASK-497).
+    return type(value) is int
+
+
 def _save_config(config: dict) -> None:
     # Looks up this module's own CONFIG_PATH at call time, not import time,
     # so a test's monkeypatch of settings.CONFIG_PATH (constraint: it's a
@@ -74,7 +79,7 @@ def get_graphics_quality() -> int:
         raw = config.get("graphics_quality")
         if raw is None and "potato_mode" in config:
             raw = 2 if config.get("potato_mode") else GRAPHICS_QUALITY_DEFAULT
-        _graphics_quality = raw if raw in GRAPHICS_QUALITY_LABELS else GRAPHICS_QUALITY_DEFAULT
+        _graphics_quality = raw if _is_int(raw) and raw in GRAPHICS_QUALITY_LABELS else GRAPHICS_QUALITY_DEFAULT
     return _graphics_quality
 
 
@@ -104,11 +109,8 @@ def get_pan_speed() -> int:
     never set or malformed."""
     global _pan_speed
     if _pan_speed is None:
-        raw = _load_config().get("pan_speed", PAN_SPEED_DEFAULT)
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = PAN_SPEED_DEFAULT
+        raw = _load_config().get("pan_speed")
+        value = raw if _is_int(raw) else PAN_SPEED_DEFAULT
         _pan_speed = max(PAN_SPEED_MIN, min(PAN_SPEED_MAX, value))
     return _pan_speed
 
@@ -132,11 +134,8 @@ def get_wall_opacity_pct() -> int:
     WALL_OPACITY_DEFAULT_PCT if never set or malformed."""
     global _wall_opacity_pct
     if _wall_opacity_pct is None:
-        raw = _load_config().get("wall_opacity_pct", view_layers.WALL_OPACITY_DEFAULT_PCT)
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = view_layers.WALL_OPACITY_DEFAULT_PCT
+        raw = _load_config().get("wall_opacity_pct")
+        value = raw if _is_int(raw) else view_layers.WALL_OPACITY_DEFAULT_PCT
         _wall_opacity_pct = max(view_layers.WALL_OPACITY_MIN_PCT, min(view_layers.WALL_OPACITY_MAX_PCT, value))
     return _wall_opacity_pct
 
@@ -456,6 +455,27 @@ def set_mod_art_excluded(status_paths) -> None:
     _save_config(config)
 
 
+# Mod art opt-ins from Settings > Mods (GH #264): Path strings of mods the game's mod list
+# disables whose art the Mod Art layer draws anyway. A mod that is gone stays listed.
+_mod_art_included: frozenset[str] | None = None
+
+
+def get_mod_art_included() -> frozenset[str]:
+    global _mod_art_included
+    if _mod_art_included is None:
+        raw = _load_config().get("mod_art_included", [])
+        _mod_art_included = frozenset(str(p) for p in raw if isinstance(p, str)) if isinstance(raw, list) else frozenset()
+    return _mod_art_included
+
+
+def set_mod_art_included(status_paths) -> None:
+    global _mod_art_included
+    _mod_art_included = frozenset(str(p) for p in status_paths)
+    config = _load_config()
+    config["mod_art_included"] = sorted(_mod_art_included)
+    _save_config(config)
+
+
 # GH #265, Settings > Mods: hide the objects a data mod did not change from the
 # Units catalog (off), and end a mod-only object's name in "(data mod)" (on).
 _data_mod_hide_unchanged: bool | None = None
@@ -530,7 +550,7 @@ def get_distance_tick_interval() -> int:
     if _distance_tick_interval is None:
         raw = _load_config().get("distance_tick_interval")
         _distance_tick_interval = (
-            raw if raw in edge_ticks.TICK_INTERVALS else edge_ticks.TICK_INTERVAL_DEFAULT
+            raw if _is_int(raw) and raw in edge_ticks.TICK_INTERVALS else edge_ticks.TICK_INTERVAL_DEFAULT
         )
     return _distance_tick_interval
 
@@ -770,6 +790,12 @@ _camera_markers: bool | None = None
 # patrol runs on the map. ON by default, unlike the two above: it draws nothing
 # until a trigger is selected in the Triggers panel, so it costs nothing idle.
 _trigger_overlay: bool | None = None
+# View > Show Trigger-Created Units (GH #167): ON by default for the same
+# reason, independent of the overlay.
+_trigger_ghosts: bool | None = None
+# View > Show Instruction on Map (TASK-550): ON by default for the same reason,
+# and it applies in Triggers mode only.
+_instruction_overlay: bool | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 _grid_major_every: int | None = None
@@ -1004,6 +1030,36 @@ def set_trigger_overlay(enabled: bool) -> None:
     _save_config(config)
 
 
+def get_trigger_ghosts() -> bool:
+    global _trigger_ghosts
+    if _trigger_ghosts is None:
+        _trigger_ghosts = bool(_load_config().get("trigger_ghosts", True))
+    return _trigger_ghosts
+
+
+def set_trigger_ghosts(enabled: bool) -> None:
+    global _trigger_ghosts
+    _trigger_ghosts = enabled
+    config = _load_config()
+    config["trigger_ghosts"] = enabled
+    _save_config(config)
+
+
+def get_instruction_overlay() -> bool:
+    global _instruction_overlay
+    if _instruction_overlay is None:
+        _instruction_overlay = bool(_load_config().get("instruction_overlay", True))
+    return _instruction_overlay
+
+
+def set_instruction_overlay(enabled: bool) -> None:
+    global _instruction_overlay
+    _instruction_overlay = enabled
+    config = _load_config()
+    config["instruction_overlay"] = enabled
+    _save_config(config)
+
+
 def get_grid_blend() -> int:
     """Always within grid_overlay's blend range; an out-of-range integer
     clamps, anything else falls back to the default. A config predating this
@@ -1018,7 +1074,9 @@ def get_grid_blend() -> int:
         if isinstance(raw, int) and not isinstance(raw, bool):
             _grid_blend = grid_overlay.clamp_blend(raw)
         elif isinstance(legacy, int) and not isinstance(legacy, bool):
-            _grid_blend = grid_overlay.blend_for_lightness(legacy)
+            # A grey past 0..240 maps past the blend range anyway; clamped first so a huge one can't overflow.
+            lightness = max(0, min(2 * grid_overlay.LEGACY_LIGHTNESS_MID, legacy))
+            _grid_blend = grid_overlay.blend_for_lightness(lightness)
         else:
             _grid_blend = grid_overlay.BLEND_DEFAULT
     return _grid_blend
@@ -1170,6 +1228,8 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
     ("unit_ghost_refused", "Refused placement", "#ff3c3c"),
     ("footprint_outline", "Footprint outlines", "#c8c8c8"),
+    # View > Layers > Fish Outlines (TASK-499).
+    ("fish_outline", "Fish outlines", "#3cc8ff"),
     ("range_ring", "Range ring", "#404040"),
     ("ruler_line", "Line and endpoints", "#ff8228"),
     ("ruler_label", "Label text", "#ffbe6e"),
@@ -1198,7 +1258,7 @@ def _load_overlay_colors() -> dict[str, str]:
     if _overlay_colors is None:
         persisted = _load_config().get("overlay_colors", {})
         _overlay_colors = dict(_DEFAULT_OVERLAY_COLORS)
-        for color_id, value in persisted.items():
+        for color_id, value in persisted.items() if isinstance(persisted, dict) else ():
             if color_id not in _DEFAULT_OVERLAY_COLORS:
                 continue
             # malformed -- this id keeps its default, others unaffected
@@ -1728,6 +1788,30 @@ def set_units_catalog_mode(mode: str) -> None:
     _save_config(config)
 
 
+# GH #273: Browse's own view of the catalog. Off the Units key: the sidebar reads its mode once.
+BROWSE_CATALOG_MODE_DEFAULT = "icons"
+_browse_catalog_mode: str | None = None
+
+
+def get_browse_catalog_mode() -> str:
+    global _browse_catalog_mode
+    if _browse_catalog_mode is None:
+        value = _load_config().get("browse_catalog_mode", BROWSE_CATALOG_MODE_DEFAULT)
+        _browse_catalog_mode = value if value in UNITS_CATALOG_MODES else BROWSE_CATALOG_MODE_DEFAULT
+    return _browse_catalog_mode
+
+
+def set_browse_catalog_mode(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in UNITS_CATALOG_MODES."""
+    global _browse_catalog_mode
+    if mode not in UNITS_CATALOG_MODES:
+        raise ValueError(f"unknown browse catalog mode {mode!r}")
+    _browse_catalog_mode = mode
+    config = _load_config()
+    config["browse_catalog_mode"] = mode
+    _save_config(config)
+
+
 # Map view vs. system log, inside the right pane. Their own constants rather
 # than reusing MIN_SPLIT_PANE, which is a width -- one name for both axes
 # would lie.
@@ -1935,6 +2019,9 @@ def set_data_mod_for(path: Path, identity: dict | None) -> None:
 NEW_MAP_GAME_DATA = game_dataset.DATASETS
 NEW_MAP_DEFAULT_TERRAIN_ID = 0
 NEW_MAP_DEFAULT_ELEVATION = 0
+# The Terrain tool's own defaults. Off for eye candy: Grass 1, the default terrain, carries some.
+NEW_MAP_DEFAULT_TREES = True
+NEW_MAP_DEFAULT_EYE_CANDY = False
 
 _new_map: dict | None = None
 
@@ -1958,6 +2045,7 @@ def _clean_new_map(raw) -> dict:
     terrain_id = _int_or_none(raw.get("terrain_id"))
     elevation = _int_or_none(raw.get("elevation"))
     game_data = raw.get("game_data")
+    trees, eye_candy = raw.get("trees"), raw.get("eye_candy")
     return {
         "tiles": BLANK_TEMPLATE_TILES if tiles is None else max(MIN_MAP_TILES, min(MAX_MAP_TILES, tiles)),
         "game_data": game_data if game_data in NEW_MAP_GAME_DATA else NEW_MAP_GAME_DATA[0],
@@ -1967,15 +2055,18 @@ def _clean_new_map(raw) -> dict:
             if elevation is None
             else max(iso_geometry.MIN_ELEVATION, min(iso_geometry.MAX_ELEVATION, elevation))
         ),
+        "trees": trees if isinstance(trees, bool) else NEW_MAP_DEFAULT_TREES,
+        "eye_candy": eye_candy if isinstance(eye_candy, bool) else NEW_MAP_DEFAULT_EYE_CANDY,
     }
 
 
 def get_new_map_choice() -> dict:
     """File > New Map…'s last choices as {tiles, game_data, terrain_id,
-    elevation}. Each field falls back on its own: tiles and elevation are
-    clamped into range, an unknown game_data or a terrain id outside 0..255
-    takes the default. Whether the terrain id is in the catalog is the
-    dialog's check, not this one."""
+    elevation, trees, eye_candy}. Each field falls back on its own: tiles
+    and elevation are clamped into range, an unknown game_data, a terrain
+    id outside 0..255 or a non-bool trees or eye_candy takes the default
+    (a choice saved before those two existed takes theirs). Whether the
+    terrain id is in the catalog is the dialog's check, not this one."""
     global _new_map
     if _new_map is None:
         _new_map = _clean_new_map(_load_config().get("new_map"))
@@ -2063,6 +2154,7 @@ class ToolDef:
     # Deliberately separate from enablement (has_map / write_ok /
     # elevation_ok, still driving setEnabled): a Terrain tool on a
     # non-square map should stay greyed and visible, not vanish.
+    # Widening it needs a _migrate_elevate_off_r-style migration: the load reconciler silently clears a binding it makes collide.
     modes: tuple[str, ...] = ()
 
 
@@ -2117,8 +2209,9 @@ TOOLS: list[ToolDef] = [
     # One Select in two modes, dispatched on mode like the Eraser: in Terrain
     # it drags a tile rectangle for Copy/Paste Region (Phase 2.8), in Units it
     # picks units by click, Ctrl/Shift click and marquee (TASK-252). One
-    # action is the only way to keep "S" in both, since key sequences are
-    # globally unique. is_edit_tool=False like Eyedropper/Ruler: the gesture
+    # action, so one key and one Keybinds row serve both modes, and that key
+    # conflicts with a Terrain-only or a Units-only holder (keybind_modes()).
+    # is_edit_tool=False like Eyedropper/Ruler: the gesture
     # is neither a stroke nor a click, so MapView routes it on its own.
     ToolDef("select", "Select", is_edit_tool=False, default_key="S", modes=("terrain", "units")),
     # Drags the unit under the cursor, or the whole selection when that unit
@@ -2287,6 +2380,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #57's Disabled Objects dialog, a dialog opener so unbound. Was edit_disables until it
     # moved to the Map menu; _load_keybinds() migrates a saved binding.
     ("map_disables", "Disabled Objects…", ""),
+    # GH #185's Swap Players dialog, an unbound dialog opener like map_disables, global like it.
+    ("map_swap_players", "Swap Players…", ""),
     # Moved off Ctrl+I when mode_view claimed it below -- see that entry.
     ("view_isometric", "Isometric View", "Ctrl+Shift+I"),
     # Ships unbound, which needs no collision audit (a duplicate binding
@@ -2327,6 +2422,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_player_cameras", "Player Cameras", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_trigger_overlay", "Trigger Overlay", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_trigger_ghosts", "Trigger-Created Units", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_instruction_overlay", "Instruction on Map", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
     # below are generated from TOOLS, so the table stays single-source.
@@ -2442,7 +2541,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("unit_wall_pick", "Pick Last-Used Wall", ""),
     # GH #211: move the selected triggers, or the selected conditions and effects when their
     # list has the focus. Live in those two lists only (Alt+Down opens a focused dropdown).
-    # Kept no wider than the widest other label: a wider one narrows every key box in the tab.
+    # The tagged label stays within the Keybinds tab's three-line cap (test_settings_dialog_width.py).
     ("trigger_move_up", "Move Trigger/Condition/Effect Up", "Alt+Up"),
     ("trigger_move_down", "Move Trigger/Condition/Effect Down", "Alt+Down"),
     ("trigger_move_up_far", "Move Trigger/Condition/Effect Up 5", "Alt+Shift+Up"),
@@ -2490,6 +2589,78 @@ KEYBIND_SECTION_TITLES: dict[str, str] = {
 }
 _DEFAULT_KEYBINDS: dict[str, str] = {action_id: default for action_id, _, default in REBINDABLE_ACTIONS}
 _ACTION_LABELS: dict[str, str] = {action_id: label for action_id, label, _ in REBINDABLE_ACTIONS}
+
+# Mode id -> the mode combo's text, in combo order: the one list of modes
+# (viewer.py builds mode_combo from its values).
+MODE_LABELS: dict[str, str] = {
+    "view": "View",
+    "terrain": "Terrain",
+    "units": "Units",
+    "triggers": "Triggers",
+    "map_options": "Map Options",
+    "players": "Players",
+    "diplomacy": "Diplomacy",
+    "messages": "Messages",
+}
+
+
+def modes_include(modes: tuple[str, ...] | frozenset[str], mode: str) -> bool:
+    """Whether a set of mode ids covers `mode`. Empty means every mode."""
+    return not modes or mode in modes
+
+
+# GH #267: the non-tool keybinds that act in some modes only, so their key may
+# go on a command of another mode. Each one's own enable gate already kills it
+# outside these. Tool rows take ToolDef.modes instead (_TOOL_KEYBIND_MODES).
+# unit_rotate_* stay global: they also turn a pasted or committed region.
+# Widening a scope needs a _migrate_elevate_off_r-style migration: the load reconciler silently clears a binding it makes collide.
+_SCOPED_KEYBINDS: dict[str, frozenset[str]] = {
+    "unit_variant_prev": frozenset({"units"}),
+    "unit_variant_next": frozenset({"units"}),
+    "unit_variant_random": frozenset({"units"}),
+    "unit_select_stack": frozenset({"units"}),
+    "unit_wall_pick": frozenset({"units"}),
+    "trigger_move_up": frozenset({"triggers"}),
+    "trigger_move_down": frozenset({"triggers"}),
+    "trigger_move_up_far": frozenset({"triggers"}),
+    "trigger_move_down_far": frozenset({"triggers"}),
+    "trigger_move_top": frozenset({"triggers"}),
+    "trigger_move_bottom": frozenset({"triggers"}),
+}
+_TOOL_KEYBIND_MODES: dict[str, frozenset[str]] = {f"tool_{t.tool_id}": frozenset(t.modes) for t in TOOLS}
+
+
+def keybind_modes(action_id: str) -> frozenset[str]:
+    """The modes where action_id's key is live. Empty means every mode
+    (global), which is also what an id no row declares gets."""
+    if action_id in _TOOL_KEYBIND_MODES:
+        return _TOOL_KEYBIND_MODES[action_id]
+    return _SCOPED_KEYBINDS.get(action_id, frozenset())
+
+
+def keybind_live_in(action_id: str, mode: str) -> bool:
+    return modes_include(keybind_modes(action_id), mode)
+
+
+def keybind_scopes_overlap(a: str, b: str) -> bool:
+    """Whether actions a and b are live in a common mode, so one key on both
+    would fire neither there. A global action overlaps everything."""
+    modes_a, modes_b = keybind_modes(a), keybind_modes(b)
+    return not modes_a or not modes_b or not modes_a.isdisjoint(modes_b)
+
+
+def keybind_mode_tag(action_id: str) -> str:
+    """The bracketed modes appended to action_id's label wherever it is shown,
+    e.g. " (Terrain, Units)" in MODE_LABELS order, or "" for a global action."""
+    modes = keybind_modes(action_id)
+    if not modes:
+        return ""
+    return f" ({', '.join(text for mode, text in MODE_LABELS.items() if mode in modes)})"
+
+
+def keybind_display_label(action_id: str) -> str:
+    return get_action_label(action_id) + keybind_mode_tag(action_id)
+
 
 _keybinds: dict[str, str] | None = None  # None = not loaded from disk yet
 
@@ -2550,11 +2721,20 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
     default -- presence alone can't distinguish a deliberate choice from an
     incidental one.
 
+    Only a collision counts (GH #267): the same sequence on two actions whose
+    scopes overlap (keybind_scopes_overlap()). Place Unit and Set Elevation
+    may share one; Select, live in both their modes, may share it with neither.
+
     Iterates REBINDABLE_ACTIONS's declared order, both for which action
     claims a sequence first and as the tie-break when priority is equal (two
-    customized values colliding, or two defaults colliding -- the latter
-    should never happen for real, see test_default_keybinds_have_no_
-    duplicate_sequences, but this stays deterministic either way).
+    customized values colliding, or two defaults colliding; the latter
+    should never happen for real, see test_default_keybinds_are_pairwise_
+    conflict_free, but this stays deterministic either way). Each action is
+    checked against every claim it collides with, and the claims stay
+    pairwise collision-free, so the non-transitive case (Set Elevation and
+    Place Unit on one key, then Select on it too) resolves the same way every
+    load: an action that beats all its colliding holders clears them all,
+    else it is the one cleared.
 
     Silent, no warning surface -- matches _migrate_elevate_off_r's own
     precedent, and unlike set_keybind()'s assign-time case there is no
@@ -2563,25 +2743,25 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
     def is_customized(action_id: str) -> bool:
         return action_id in persisted and persisted[action_id] != _DEFAULT_KEYBINDS.get(action_id, "")
 
-    claimed: dict[str, str] = {}  # sequence -> action_id currently holding it
+    claimed: list[tuple[str, str]] = []  # (action_id, sequence) currently held, pairwise collision-free
     for action_id, _label, _default in REBINDABLE_ACTIONS:
         seq = keybinds.get(action_id, "")
         if not seq:
             continue
-        holder = claimed.get(seq)
-        if holder is None:
-            claimed[seq] = action_id
-            continue
-        if is_customized(action_id) and not is_customized(holder):
-            keybinds[holder] = ""
-            claimed[seq] = action_id
+        holders = [h for h, s in claimed if s == seq and keybind_scopes_overlap(action_id, h)]
+        if not holders:
+            claimed.append((action_id, seq))
+        elif is_customized(action_id) and not any(is_customized(h) for h in holders):
+            for holder in holders:
+                keybinds[holder] = ""
+            claimed = [(h, s) for h, s in claimed if h not in holders]
+            claimed.append((action_id, seq))
         else:
             keybinds[action_id] = ""
 
 
-# Action ids of removed tools and renamed actions. A config written before the removal still
-# names them, and set_keybind()'s collision loop walks keybinds.items(), so a
-# phantom entry could be auto-cleared and reported in Settings.
+# Action ids of removed tools and renamed actions, which a config written before the removal
+# still names: dropped on load, so set_keybind()'s whole-dict write does not carry them on.
 _RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables", "file_resize")
 
 # Renamed action ids, old -> new. A saved old binding carries over unless the new id is saved too.
@@ -2592,7 +2772,10 @@ def _load_keybinds() -> dict[str, str]:
     global _keybinds
     if _keybinds is None:
         # A copy: the rename must not write into the config dict, and the reconcilers read it.
-        persisted = dict(_load_config().get("keybinds", {}))
+        # A non-mapping reads as empty; an entry that isn't text to text drops alone (TASK-497).
+        raw = _load_config().get("keybinds", {})
+        raw = raw if isinstance(raw, dict) else {}
+        persisted = {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
         for old, new in _RENAMED_KEYBINDS.items():
             if old in persisted and new not in persisted:
                 persisted[new] = persisted[old]
@@ -2622,30 +2805,45 @@ def get_action_label(action_id: str) -> str:
     return _ACTION_LABELS.get(action_id, action_id)
 
 
-def set_keybind(action_id: str, key_sequence: str) -> str | None:
+def set_keybind(action_id: str, key_sequence: str) -> list[str]:
     """Persists key_sequence for action_id. Two QActions sharing a sequence
-    make Qt fire neither on press, so
-    if key_sequence is already bound to a different action, that other
-    action is auto-cleared here rather than left to silently break both.
-    Returns the auto-cleared action_id, or None if there was no collision.
+    make Qt fire neither on press, so every other action bound to
+    key_sequence whose scope overlaps action_id's (keybind_scopes_overlap())
+    is auto-cleared here rather than left to silently break both. An action
+    of a disjoint mode keeps it (GH #267). Returns the auto-cleared
+    action_ids in declared order, empty when there was no collision: exactly
+    keybind_conflicts(key_sequence, action_id), so an id this build has no
+    row for (another build's config) keeps its key.
 
     An empty key_sequence is exempt from the check in both directions --
     several actions ship unbound on purpose, so two actions both being ""
     is not a collision.
     """
     keybinds = _load_keybinds()
-    cleared_action_id = None
-    if key_sequence:
-        for other_id, other_sequence in keybinds.items():
-            if other_id != action_id and other_sequence == key_sequence:
-                keybinds[other_id] = ""
-                cleared_action_id = other_id
-                break
+    cleared = keybind_conflicts(key_sequence, action_id)
+    for other_id in cleared:
+        keybinds[other_id] = ""
     keybinds[action_id] = key_sequence
     config = _load_config()
     config["keybinds"] = keybinds
     _save_config(config)
-    return cleared_action_id
+    return cleared
+
+
+def keybind_conflicts(key_sequence: str, action_id: str) -> list[str]:
+    """What set_keybind(action_id, key_sequence) would clear, without writing:
+    the actions holding key_sequence in a scope overlapping action_id's, in
+    REBINDABLE_ACTIONS order. Empty sequences never collide."""
+    if not key_sequence:
+        return []
+    keybinds = _load_keybinds()
+    return [
+        other_id
+        for other_id, _label, _default in REBINDABLE_ACTIONS
+        if other_id != action_id
+        and keybinds.get(other_id, "") == key_sequence
+        and keybind_scopes_overlap(action_id, other_id)
+    ]
 
 
 def keybind_holder(key_sequence: str, exclude: str = "") -> str | None:
@@ -2695,13 +2893,13 @@ WHEEL_ACTION_LABELS: dict[str, str] = {
 WHEEL_ACTION_HINTS: dict[str, str] = {
     "zoom": "Zooms the map in or out.",
     "tool": (
-        "Whichever applies: turns Place Unit's preview, steps the size in tools with a Brush size box, "
-        "or turns a just-pasted region. Does nothing anywhere else."
+        "Whichever applies: turns a unit you're dragging with Move or Place Unit's preview, steps the "
+        "size in tools with a Brush size box, or turns a just-pasted region. Does nothing anywhere else."
     ),
     "brush_size": "Steps the size in tools with a Brush size box. Does nothing anywhere else.",
     "rotate": (
-        "Turns Place Unit's preview or a just-pasted region, even in a tool with a Brush size box. "
-        "Does nothing anywhere else."
+        "Turns a unit you're dragging with Move, Place Unit's preview or a just-pasted region, even "
+        "in a tool with a Brush size box. Does nothing anywhere else."
     ),
     "pan_vertical": "Scrolls the map up or down.",
     "pan_horizontal": "Scrolls the map left or right.",
@@ -2798,7 +2996,7 @@ def get_autosave_interval_min() -> int:
     global _autosave_interval_min
     if _autosave_interval_min is None:
         raw = _load_config().get("autosave_interval_min")
-        _autosave_interval_min = raw if raw in AUTOSAVE_INTERVAL_CHOICES else AUTOSAVE_INTERVAL_DEFAULT
+        _autosave_interval_min = raw if _is_int(raw) and raw in AUTOSAVE_INTERVAL_CHOICES else AUTOSAVE_INTERVAL_DEFAULT
     return _autosave_interval_min
 
 
@@ -2820,7 +3018,7 @@ def get_autosave_retention() -> int:
     global _autosave_retention
     if _autosave_retention is None:
         raw = _load_config().get("autosave_retention")
-        _autosave_retention = raw if raw in AUTOSAVE_RETENTION_CHOICES else AUTOSAVE_RETENTION_DEFAULT
+        _autosave_retention = raw if _is_int(raw) and raw in AUTOSAVE_RETENTION_CHOICES else AUTOSAVE_RETENTION_DEFAULT
     return _autosave_retention
 
 

@@ -35,6 +35,7 @@ from descape import (
     scenario_io,
     scenario_new,
     settings,
+    settings_file,
     terrain_style,
     themes,
     tool_options,
@@ -251,6 +252,15 @@ tool_options: {{}}
 # mod_art_excluded:
 #   - subscribed//12345_Example Mod
 
+# Mods the game's own mod list disables whose art View > Layers > Mod Art
+# draws anyway, ticked in Settings > Mods > Mod art, as the game's
+# mods/mod-status.json Path strings. A ticked mod draws at its place in the
+# game's mod order; the game's mod list is never changed. A listed mod that
+# is no longer installed stays listed.
+# Default: [] (no disabled mod's art draws). The value below is only an example.
+# mod_art_included:
+#   - subscribed//67890_Example Disabled Mod
+
 # With a data mod in effect (File > Data Mod), hide from the Units catalog every
 # object the mod did not change (new, repurposed, renamed, other art or stats
 # stay listed), Settings > Mods. Default: false.
@@ -356,6 +366,15 @@ camera_markers: false
 # Triggers panel. Default: true.
 trigger_overlay: true
 
+# The units the selected trigger's Create Object and Place Foundation effects
+# would create, drawn see-through on their tiles, View > Show Trigger-Created
+# Units. Independent of the overlay. Default: true.
+trigger_ghosts: true
+
+# The selected Display Instructions effect's message drawn over the map in
+# Triggers mode, View > Show Instruction on Map. Default: true.
+instruction_overlay: true
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -405,6 +424,11 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # One of {_UNITS_CATALOG_MODES}. Default: {settings.UNITS_CATALOG_MODE_DEFAULT}.
 units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 
+# The same three views for Browse, the object dialog behind a field's "...",
+# set by the same buttons in that dialog. Kept apart from the Units panel's.
+# One of {_UNITS_CATALOG_MODES}. Default: {settings.BROWSE_CATALOG_MODE_DEFAULT}.
+browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
+
 # Height in pixels of the system log, below the map view. Persisted
 # automatically when you drag the split -- not something you normally set by
 # hand. Omitted entirely until first saved; until then the log is four text
@@ -445,12 +469,22 @@ units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 # that dialog -- not something you normally set by hand. Omitted entirely
 # until first saved; until then the dialog opens at the values below.
 # tiles is clamped to {_NEW_MAP_TILES} and elevation to {_NEW_MAP_ELEVATIONS}; game_data is
-# {_NEW_MAP_GAME_DATA}; terrain_id is a terrain id (0 is Grass 1).
+# {_NEW_MAP_GAME_DATA}; terrain_id is a terrain id (0 is Grass 1); trees and
+# eye_candy are the Trees and Eye candy boxes, true or false.
 # new_map:
 #   tiles: {scenario_io.BLANK_TEMPLATE_TILES}
 #   game_data: {settings.NEW_MAP_GAME_DATA[0]}
 #   terrain_id: {settings.NEW_MAP_DEFAULT_TERRAIN_ID}
 #   elevation: {settings.NEW_MAP_DEFAULT_ELEVATION}
+#   trees: {str(settings.NEW_MAP_DEFAULT_TREES).lower()}
+#   eye_candy: {str(settings.NEW_MAP_DEFAULT_EYE_CANDY).lower()}
+
+# The id of the last settings import (Settings > General's Import settings…),
+# written when an import applies at startup; not something you set. It stays
+# on this machine and lets the next launch tell an import it already applied
+# from one still to apply. Omitted entirely until an import applies.
+# The value below is only an example.
+# {settings_file.IMPORT_APPLIED_KEY}: 0123456789abcdef
 
 # Every rebindable action (Settings > Keybinds), shown here at its default
 # -- see settings.REBINDABLE_ACTIONS for the full id/label/default list.

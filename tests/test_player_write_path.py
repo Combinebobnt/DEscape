@@ -196,6 +196,54 @@ def test_corrupting_the_player_data_3_color_mirror_flips_verify_to_false(_loaded
     assert not pf.verify_player_block(loaded)
 
 
+def test_the_allied_victory_mirror_resolves_eight_u8_targets_in_player_data_3(_loaded) -> None:
+    """TASK-062: the second copy of Diplomacy's allied-victory flags, one
+    byte each, located with color's own player_data_3 locator."""
+    loaded = _loaded()
+    targets = pf.aok_allied_victory_mirror_targets(loaded)
+    assert targets is not None and sorted(targets) == list(range(1, 9))
+    pd3 = loaded._scenario.sections["Units"].retriever_map["player_data_3"].data
+    for player_id, t in targets.items():
+        assert (t.length, t.codec) == (1, "u8")
+        assert loaded.decompressed_body[t.offset] == pd3[player_id - 1].retriever_map["aok_allied_victory"].data
+    # The shared locator still lands color's mirror where it did.
+    color = pf._color_mirror_target(loaded, 2)
+    assert color.target == pf.write_targets(loaded)["player:color:2"][1]
+    assert color.target.offset > targets[2].offset, "color sits after aok_allied_victory in the entry"
+
+
+def test_corrupting_an_allied_victory_mirror_byte_fails_the_mirror_closed(_loaded) -> None:
+    loaded = _loaded()
+    target = pf.aok_allied_victory_mirror_targets(loaded)[5]
+    body = bytearray(loaded.decompressed_body)
+    body[target.offset] ^= 0xFF
+    loaded.decompressed_body = bytes(body)
+    assert pf.aok_allied_victory_mirror_targets(loaded) is None
+    assert pf.verify_player_block(loaded), "the mirror is not part of the Players gate"
+
+
+def test_a_shifted_player_data_3_base_fails_the_mirror_closed(_loaded) -> None:
+    loaded = _loaded()
+    loaded.units_block_offset += 1
+    assert pf.aok_allied_victory_mirror_targets(loaded) is None
+
+
+def test_the_player_data_3_span_check_fails_the_mirror_closed(_loaded) -> None:
+    """An entry whose walked length disagrees with its trusted byte_length
+    (the str16 constant_name drifting on re-serialization) must not be trusted."""
+    loaded = _loaded()
+    pd3 = loaded._scenario.sections["Units"].retriever_map["player_data_3"].data
+    pd3[2].byte_length += 1
+    assert pf._player_data_3_target(loaded, 3, "aok_allied_victory") is None
+    assert pf.aok_allied_victory_mirror_targets(loaded) is None
+
+
+def test_the_allied_victory_mirror_needs_a_write_supported_units_block(_loaded) -> None:
+    loaded = _loaded()
+    loaded.units_write_supported = False
+    assert pf.aok_allied_victory_mirror_targets(loaded) is None
+
+
 def test_corrupting_the_player_data_two_anchor_flips_verify_to_false(_loaded) -> None:
     loaded = _loaded()
     loaded.player_data_two_section_end += 4
@@ -217,6 +265,13 @@ def test_encode_target_refuses_a_non_f32_exact_value() -> None:
     with pytest.raises(ValueError):
         pf.encode_target(target, 2**24 + 1)
     pf.encode_target(target, 2**24)  # exact, must not raise
+
+
+@pytest.mark.parametrize(("codec", "value"), [("u8", 256), ("u8", -1), ("s16", 2**15), ("u32", -1)])
+def test_encode_target_raises_value_error_for_an_out_of_range_int(codec: str, value: int) -> None:
+    """struct.error is not a ValueError, so it would escape every caller's refusal path."""
+    with pytest.raises(ValueError):
+        pf.encode_target(pf.PlayerWriteTarget(0, pf._CODEC_STRUCT[codec].size, codec), value)
 
 
 def test_encode_target_refuses_text_that_overflows_a_c256_slot() -> None:

@@ -1370,6 +1370,153 @@ def test_browsing_the_count_leaves_the_document_clean() -> None:
         _close(window)
 
 
+# --- players past Number of Players (TASK-063) ----------------------------
+
+
+def _marked_inactive(panel) -> list[int]:
+    """The selector's player ids whose row is greyed as past the count."""
+    from PyQt5.QtCore import Qt
+
+    combo = panel.player_combo
+    return [combo.itemData(i) for i in range(combo.count()) if combo.itemData(i, Qt.ForegroundRole) is not None]
+
+
+def _tooltip(panel, player_id: int) -> str:
+    from PyQt5.QtCore import Qt
+
+    combo = panel.player_combo
+    return combo.itemData(combo.findData(player_id), Qt.ToolTipRole)
+
+
+def test_the_selector_keeps_all_eight_and_greys_the_ones_past_the_count() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QPalette
+
+    from descape.players_panel import PlayersPanel
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        count = panel.current_player_count()
+        assert count < 8, "the fixture must leave players past the count"
+        assert [panel.player_combo.itemData(i) for i in range(9)] == list(range(9))
+        assert _marked_inactive(panel) == list(range(count + 1, 9))
+        assert [panel.player_combo.itemText(i) for i in range(9)] == ["GAIA"] + [f"P{n}" for n in range(1, 9)]
+        grey = panel.player_combo.palette().color(QPalette.Disabled, QPalette.Text)
+        index = panel.player_combo.findData(8)
+        assert panel.player_combo.itemData(index, Qt.ForegroundRole).color() == grey
+        for pid in range(9):
+            noted = PlayersPanel._INACTIVE_PLAYER_NOTE in _tooltip(panel, pid)
+            assert noted == (pid > count), pid
+            assert _tooltip(panel, pid).startswith(window._player_labels.full[pid]), pid
+    finally:
+        _close(window)
+
+
+def test_a_player_past_the_count_stays_selectable_and_editable() -> None:
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        assert 8 in _marked_inactive(panel)
+        assert panel.select_player(8)
+        assert panel.current_player_id() == 8
+        spec = next(s for s in panel._specs if s.field_id == "food")
+        widget = panel.widget_for("food")
+        assert widget is not None and widget.isEnabled()
+        new = int(panel.current_values()["food"]) + 5
+        window.set_player_field(spec, 8, new)
+        assert window.option_edits.current_value("player:food:8") == new
+        assert window.edit_history.is_dirty
+    finally:
+        _close(window)
+
+
+def test_a_count_edit_re_marks_the_selector_and_keeps_the_selection() -> None:
+    """set_player_count() repopulates the Players panel too, and the marks
+    follow the count as edited (and as undone), not as stored."""
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        before = panel.current_player_count()
+        assert panel.select_player(6)
+        assert 6 in _marked_inactive(panel)
+
+        panel.player_count_spin.setValue(6)
+        assert _marked_inactive(panel) == [7, 8]
+        assert panel.current_player_id() == 6 and panel.player_combo.currentData() == 6
+
+        panel.player_count_spin.setValue(3)
+        assert _marked_inactive(panel) == [4, 5, 6, 7, 8]
+        assert panel.current_player_id() == 6, "the selection stays on a player the count just dropped"
+
+        window.undo()
+        assert _marked_inactive(panel) == [7, 8]
+        window.undo()
+        assert _marked_inactive(panel) == list(range(before + 1, 9))
+        assert panel.current_player_id() == 6
+    finally:
+        _close(window)
+
+
+def test_a_repopulate_with_a_pending_count_keeps_a_one_player_files_floor() -> None:
+    """A count edit now repopulates the panel, so the spinbox's widened floor
+    must come from the stored count as well as the shown one, or a
+    one-player file could never be set back to 1."""
+    from descape.player_fields import PLAYER_COUNT_FIELD_ID
+    from descape.scenario_io import load_map_and_units
+
+    loaded = load_map_and_units(BLANK_FIXTURE)
+    player_data_1 = loaded._scenario.sections["DataHeader"].retriever_map["player_data_1"].data
+    for i, entry in enumerate(player_data_1[:8]):
+        entry.retriever_map["active"].data = 1 if i == 0 else 0
+    panel, reported = _count_panel(loaded)
+    try:
+        assert panel.player_count_spin.minimum() == 1
+        panel.show_scenario(loaded, editable_fields=[PLAYER_COUNT_FIELD_ID], player_count=2)
+        assert panel.player_count_spin.minimum() == 1
+        assert _marked_inactive(panel) == list(range(2, 9)), "stored flags without active_players"
+        panel.player_count_spin.setValue(1)
+        assert reported == [1]
+    finally:
+        panel.deleteLater()
+
+
+def test_a_palette_change_re_tints_the_past_the_count_rows() -> None:
+    """A theme switch reaches the panel only as a palette change, so the grey
+    must be re-read then rather than kept from the last repopulate."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QColor, QPalette
+
+    from descape.scenario_io import load_map_and_units
+
+    panel, _reported = _count_panel(load_map_and_units(BLANK_FIXTURE))
+    try:
+        palette = QPalette(panel.palette())
+        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(12, 34, 56))
+        panel.setPalette(palette)
+        index = panel.player_combo.findData(8)
+        assert panel.player_combo.itemData(index, Qt.ForegroundRole).color() == QColor(12, 34, 56)
+    finally:
+        panel.deleteLater()
+
+
+def test_a_label_refresh_keeps_the_past_the_count_marks() -> None:
+    """refresh_player_labels() rewrites every row's tooltip, so it must
+    re-apply the note rather than drop it."""
+    from descape import player_labels
+    from descape.players_panel import PlayersPanel
+
+    window = _players_window()
+    try:
+        panel = window.players_panel
+        marked = _marked_inactive(panel)
+        panel.refresh_player_labels(player_labels.DEFAULT_LABELS, None)
+        assert _marked_inactive(panel) == marked
+        assert PlayersPanel._INACTIVE_PLAYER_NOTE in _tooltip(panel, 8)
+    finally:
+        _close(window)
+
+
 def test_the_status_line_does_not_count_the_count_row_as_a_setting() -> None:
     """Regression, caught by looking at an offscreen render rather than by
     an assertion: the editable set carries PLAYER_COUNT_FIELD_ID, which has

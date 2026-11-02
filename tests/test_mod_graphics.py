@@ -64,15 +64,85 @@ def test_priority_order_formats_case_and_exclusions(tmp_path, monkeypatch):
     assert mod_graphics.resolve_sprite("b_hut_x1")[1] == "sld"  # .sld beats .smx inside one mod
     assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"u"  # disabled 3_Off skipped
     assert mod_graphics.resolve_terrain_texture("G_GR1.DDS").read_bytes() == b"t"
-    assert [m.status_path for m in mod_graphics.mods_with_art()] == [
-        "subscribed//1_High", "subscribed//2_Low", "local//Loose", "subscribed//9_Unlisted",
+    mods = mod_graphics.mods_with_art()
+    # GH #264: the game's disabled 3_Off is listed at its stored Priority, off.
+    assert [m.status_path for m in mods] == [
+        "subscribed//1_High", "subscribed//2_Low", "subscribed//3_Off", "local//Loose", "subscribed//9_Unlisted",
     ]
+    assert [(m.in_game, m.drawn) for m in mods] == [(True, True)] * 2 + [(False, False)] + [(True, True)] * 2
     before = mod_graphics.generation()
     assert mod_graphics.set_excluded({"subscribed//1_High"}) and mod_graphics.generation() > before
     assert mod_graphics.resolve_sprite("n_tree_x1")[0].read_bytes() == b"low"
     assert mod_graphics.resolve_terrain_texture("g_gr1.dds") is None
     assert mod_graphics.mods_with_art()[0].excluded
+    assert not mod_graphics.mods_with_art()[0].drawn
     assert not mod_graphics.set_excluded({"subscribed//1_High"})
+
+
+def _drawn() -> dict[str, bool]:
+    return {m.status_path: m.drawn for m in mod_graphics.mods_with_art()}
+
+
+def test_a_disabled_mod_draws_only_when_included(tmp_path, monkeypatch):
+    """GH #264: a mod the game disables is opt-in, at its stored Priority
+    (3, above the unlisted mod); the opt-out set never touches it, and the
+    opt-in set never touches a mod the game enables."""
+    _tree(tmp_path, monkeypatch)
+    mod_graphics.set_enabled(True)
+    before = mod_graphics.generation()
+    assert mod_graphics.set_included({"subscribed//3_Off"}) and mod_graphics.generation() > before
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"off"
+    assert _drawn()["subscribed//3_Off"]
+    assert not mod_graphics.set_included({"subscribed//3_Off"})
+
+    mod_graphics.set_excluded({"subscribed//3_Off"})
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"off", "an opt-out of a disabled mod"
+    assert _drawn()["subscribed//3_Off"]
+
+    mod_graphics.set_excluded(())
+    mod_graphics.set_included({"subscribed//1_High"})
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"u"
+    assert mod_graphics.resolve_sprite("n_tree_x1")[0].read_bytes() == b"high"
+    assert _drawn() == {
+        "subscribed//1_High": True, "subscribed//2_Low": True, "subscribed//3_Off": False,
+        "local//Loose": True, "subscribed//9_Unlisted": True,
+    }
+
+
+def _set_enabled_in_game(profile: Path, **enabled: bool) -> None:
+    status_file = profile / PID / "mods" / "mod-status.json"
+    status = json.loads(status_file.read_text())
+    for mod in status["Mods"]:
+        folder = mod["Path"].split("//")[1]
+        if folder in enabled:
+            mod["Enabled"] = enabled[folder]
+    status_file.write_text(json.dumps(status))
+
+
+def test_a_mod_flipped_in_the_game_keeps_the_choice_for_its_new_state(tmp_path, monkeypatch):
+    """GH #264 Decision 3: the opt-out applies while the game enables a mod,
+    the opt-in while it disables it, so a rescan after a flip in the game's
+    mod list picks the choice that belongs to the new state."""
+    profile = _tree(tmp_path, monkeypatch)
+    mod_graphics.set_enabled(True)
+    mod_graphics.set_excluded({"subscribed//3_Off"})  # an opt-out kept from when the game enabled it
+    mod_graphics.set_included({"subscribed//3_Off"})
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"off"
+    assert mod_graphics.resolve_sprite("b_hut_x1") is not None
+
+    _set_enabled_in_game(profile, **{"3_Off": True, "2_Low": False})
+    mod_graphics.clear()
+    drawn = _drawn()
+    assert not drawn["subscribed//3_Off"], "enabled now: its opt-out applies"
+    assert not drawn["subscribed//2_Low"], "disabled now: off until ticked"
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"u"
+    assert mod_graphics.resolve_sprite("b_hut_x1") is None
+    assert {m.status_path: m.in_game for m in mod_graphics.mods_with_art()}["subscribed//2_Low"] is False
+
+    _set_enabled_in_game(profile, **{"3_Off": False, "2_Low": True})
+    mod_graphics.clear()
+    assert _drawn()["subscribed//3_Off"] and _drawn()["subscribed//2_Low"]
+    assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"off"
 
 
 def test_palx_alpha_and_pal_fourth_column(tmp_path):
@@ -108,8 +178,9 @@ def _install_with(tmp_path: Path, monkeypatch, stem: str, frames: int) -> Path:
     one = _frame([(0, [(DRAW, [(9, 0)] * 4)])], width=4)
     (graphics / f"{stem}.smx").write_bytes(_file(*[one] * frames))
     monkeypatch.setattr(unit_sprites, "load_sld", lambda path, **_kw: _fake_install(path, frames))
+    # Recorded before the override, or the undo restores `install` for the rest of the worker.
+    monkeypatch.setattr(asset_source, "_override_path", None)
     asset_source.set_install_path_override(install)
-    monkeypatch.setattr(asset_source, "_override_path", install)
     return install
 
 
@@ -467,7 +538,8 @@ def test_mod_art_off_or_all_opted_out_renders_like_no_profile(name, monkeypatch)
 
     monkeypatch.setenv("AOE2DE_PROFILE_PATH", _PROFILE)
     mod_graphics.clear()
-    mods = mod_graphics.mods_with_art()
+    # Disabled mods are listed too (GH #264), and draw only when included.
+    mods = [mod for mod in mod_graphics.mods_with_art() if mod.in_game]
     if not mods:
         unmet("the named profile has no enabled art mods")
     on = _renders(scenario)

@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    colour_mood,
     edge_ticks,
     grid_overlay,
     iso_geometry,
@@ -223,6 +224,25 @@ def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int
     return x0, y0, x1, y1
 
 
+def paint_colour_grade(painter: QPainter, rect: QRectF, grade: colour_mood.MoodGrade) -> None:
+    """Paints `grade` (colour_mood.apply() is the oracle) over what `rect`
+    already holds: Multiply gives dst*k, ColorDodge with 1 - 1/m gives dst*m
+    (m > 1), each within a level of the formula."""
+    painter.save()
+    darken = tuple(min(m, 1.0) for m in grade.multiply)
+    brighten = tuple(max(m, 1.0) for m in grade.multiply)
+    if min(darken) < 1.0:
+        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+        painter.fillRect(rect, QColor.fromRgbF(*darken))
+    if max(brighten) > 1.0:
+        painter.setCompositionMode(QPainter.CompositionMode_ColorDodge)
+        painter.fillRect(rect, QColor.fromRgbF(*(1.0 - 1.0 / m for m in brighten)))
+    if grade.tint_alpha > 0.0:
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        painter.fillRect(rect, QColor.fromRgbF(*grade.tint, grade.tint_alpha))
+    painter.restore()
+
+
 class _BlockDraw:
     """One block MapCanvasItem blits: the converted QImage, the array its
     pixels may still live in, and the drawImage() overload with its
@@ -392,6 +412,8 @@ class MapCanvasItem(QGraphicsItem):
         # _last_mip: the last live paint's use of them (_blit_preframe()).
         self._preframes: list = []
         self._last_preframe: str | None = None
+        # The map's colour mood (MapView.set_colour_grade()), painted over every draw; None paints nothing.
+        self.grade: colour_mood.MoodGrade | None = None
         self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
 
     def _select_mip(self, painter: QPainter) -> int:
@@ -448,12 +470,15 @@ class MapCanvasItem(QGraphicsItem):
                 # widget is None for QGraphicsScene.render() (captures): those never take a placeholder.
                 drawn = self._level_to_draw(mip, rect, widget is not None, _max_axis_scale(painter.deviceTransform()))
                 self._last_drawn_mip = drawn
-                if widget is not None and drawn == mip and self._blit_preframe(painter, rect, widget, mip):
-                    return
-                self._draw_level(painter, drawn, rect)
+                blitted = widget is not None and drawn == mip and self._blit_preframe(painter, rect, widget, mip)
+                if not blitted:
+                    self._draw_level(painter, drawn, rect)
+                if self.grade is not None:
+                    with perf_trace.repaint_phase("grade"):
+                        paint_colour_grade(painter, rect, self.grade)
         finally:
-            # Every paint, not just the first, and including the two early
-            # returns above: whoever installed the callback is summing them.
+            # Every paint, not just the first, and including the early
+            # return above: whoever installed the callback is summing them.
             if on_paint_timed is not None:
                 on_paint_timed(time.perf_counter() - paint_t0, self._last_mip)
             if first_paint:

@@ -20,9 +20,10 @@ The line at the top counts the settings, names the scenario version and says how
 - **Secondary game mode**: Empire Wars, Sudden Death, Regicide or King of the Hill, played on top of the victory condition, or None.
 - **No waves on shore**: hides the animated waves along shorelines.
 - **Water definition**: the map-wide water look (sun, sky and water colours, waves and sea floor), from the same list as the in-game editor's Water Definitions. An older file's legacy name, or no name, is shown as stored and kept until you pick another entry. DEscape doesn't preview the look.
+- **Colour mood**: the map-wide colour grading, from the same list as the in-game editor's Map > Colour Mood. Triggers can change it during play (Change Color Mood). A value outside the list (Empty, no name, or a name saved in another language) is shown as stored and kept until you pick another entry. Turn on **View > Layers > Colour Mood** to preview it; the preview follows what you pick here.
 - **Script filename**: the XS script file the game runs with this scenario, typed without `.xs`. Leave it empty for none.
 
-The game looks the script file up by name in your profile's `resources/_common/xs` folder and sends it to the other players in a lobby, but not to spectators. Script placed in a Script Call trigger reaches everyone, spectators included; see [Triggers](triggers.md). The name applies when you press Enter or leave the box. DEscape drops spaces around it and a trailing `.xs`, and refuses a folder path or a character a Windows file name can't hold. The row is read-only on a file that already embeds a script.
+The game looks the script file up by name in your profile's `resources/_common/xs` folder and sends it to the other players in a lobby, but not to spectators. Script placed in a Script Call trigger reaches everyone, spectators included; see [Triggers](triggers.md). The name applies when you press Enter, leave the box or save. DEscape drops spaces around it and a trailing `.xs`, and refuses a folder path or a character a Windows file name can't hold. The row is read-only on a file that already embeds a script.
 
 ## Options
 
@@ -31,7 +32,7 @@ The game looks the script file up by name in your profile's `resources/_common/x
 
 ## Triggers
 
-**Trigger execution order** sets the order triggers run in. **Display order** follows the trigger list as Triggers mode shows it; **Legacy - trigger ID order** runs them by trigger ID, as older game versions did. Triggers mode's first column follows this setting.
+**Trigger execution order** sets the order triggers run in. **Display order** follows the trigger list as Triggers mode shows it; **Legacy - trigger ID order** runs them by trigger ID, as older game versions did. Triggers mode's first column follows this setting. To switch a file to Legacy without changing which trigger runs first, use **Renumber IDs to Display Order** on Triggers mode's trigger list right-click menu first.
 
 ## Elsewhere
 
@@ -39,4 +40,4 @@ The team settings (Lock teams, Players choose teams, Random start points and Max
 
 Where this is in the in-game editor: these settings are spread over the Map, Global Victory and Options tabs, with No waves on shore and Water Definitions on the Terrain tab.
 
-DEscape doesn't edit the map's Colour Mood, Team Positions or Testing Difficulty, and has no Cinematics page. Set those in the in-game editor.
+DEscape doesn't edit the map's Team Positions or Testing Difficulty, and has no Cinematics page. Set those in the in-game editor.

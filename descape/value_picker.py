@@ -3,11 +3,12 @@ tree view ValuePickerView, its modal shell ValueBrowseDialog, and the
 type-ahead ValueLineEdit built on top.
 
 Reproduces two existing widgets' exact behaviour with their domain coupling
-lifted out. descape/constant_picker.py's CatalogBrowseDialog/CatalogLineEdit
-subclass these for the object-catalog case (a sprite preview, an
-editor-hidden filter, ids rendered bare); a converted large-ENUM field in
-descape/trigger_panel.py and the Units-mode sidebar catalog are two more
-consumers, neither needing the same trimmings. Dumb like every other widget
+lifted out. descape/constant_picker.py's CatalogLineEdit subclasses the line
+edit for a catalog field (ids rendered bare), and a tech field's Browse is
+ValueBrowseDialog as is; a converted large-ENUM field in
+descape/trigger_panel.py is one more consumer. Object Browse and the
+Units-mode sidebar use descape/catalog_browser.py instead, which needs each
+entry's class. Dumb like every other widget
 in this family: no EditHistory, no model, just `committed`/`activated`
 signals the caller decides what to do with.
 """
@@ -17,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QStringListModel, Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -124,6 +125,8 @@ class ValuePickerView(QWidget):
         self._preview_hook = preview
         self._items: tuple[PickerItem, ...] = ()
         self._by_value: dict[int, PickerItem] = {}
+        # pin()'s value: shown whatever the show-hidden box says.
+        self._pinned: int | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -238,11 +241,17 @@ class ValuePickerView(QWidget):
                 row = self.tree.topLevelItem(i)
                 row.setHidden(self._row_hidden(row, needle, show_hidden))
 
-    @staticmethod
-    def _row_hidden(row: QTreeWidgetItem, needle: str, show_hidden: bool) -> bool:
+    def _row_hidden(self, row: QTreeWidgetItem, needle: str, show_hidden: bool) -> bool:
         text_mismatch = bool(needle) and needle not in (row.data(0, _SEARCH_ROLE) or "")
-        editor_hidden = bool(row.data(0, _HIDDEN_ROLE)) and not show_hidden
+        pinned = self._pinned is not None and row.data(0, Qt.UserRole) == self._pinned
+        editor_hidden = bool(row.data(0, _HIDDEN_ROLE)) and not show_hidden and not pinned
         return text_mismatch or editor_hidden
+
+    def pin(self, value: int | None) -> None:
+        """Keep `value`'s row out of the show-hidden filter (None: no row), so
+        a field whose value is a hidden row can still open on it and keep it."""
+        self._pinned = value
+        self._apply_filter(self.filter_edit.text())
 
     # -- selection ----------------------------------------------------------
 
@@ -298,8 +307,8 @@ class ValueBrowseDialog(QDialog):
     """A thin modal shell around ValuePickerView: title, a fixed size, and
     an Ok/Cancel row. Aliases self.tree/self.filter_edit/
     self.show_hidden_checkbox/self.preview to the view's own widgets, as
-    plain attributes rather than properties, so a caller (or a subclass'
-    existing tests) poking those names keeps working unmodified.
+    plain attributes rather than properties, so a caller poking those names
+    keeps working unmodified.
     """
 
     def __init__(
@@ -341,6 +350,8 @@ class ValueBrowseDialog(QDialog):
         layout.addWidget(buttons)
 
     def select(self, value: int) -> None:
+        """Opens on `value`, the field's current one: pinned, so a hidden row stays pickable."""
+        self.view.pin(value)
         self.view.select(value)
 
     def selected_value(self) -> int | None:
@@ -387,15 +398,16 @@ class ValueLineEdit(QWidget):
         self._preview = preview
         self._browse_title = browse_title
         self._value: int | None = None
+        # set_group()'s filter: "" offers every item.
+        self._group = ""
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.line_edit = QLineEdit()
         self.line_edit.setPlaceholderText(placeholder)
-        completer = QCompleter(
-            [_rendered_text(item, show_values) for item in self._items], self.line_edit
-        )
+        self._completer_model = QStringListModel(self._rendered(self._items), self)
+        completer = QCompleter(self._completer_model, self.line_edit)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         completer.setCompletionMode(QCompleter.PopupCompletion)
@@ -445,6 +457,25 @@ class ValueLineEdit(QWidget):
         self.line_edit.setEnabled(enabled)
         self.browse_button.setEnabled(enabled)
 
+    def set_group(self, group: str) -> None:
+        """Narrows the suggestions and Browse to one group's items, "" to every
+        item (GH #41). Display and a typed name or raw value still match all."""
+        self._group = group
+        self._completer_model.setStringList(self._rendered(self._group_items()))
+
+    def group_of(self, value: int) -> str:
+        """The group of the item holding `value`, or "" when no item does."""
+        item = self._by_value(value)
+        return "" if item is None else item.group
+
+    def _group_items(self) -> tuple[PickerItem, ...]:
+        if not self._group:
+            return self._items
+        return tuple(item for item in self._items if item.group == self._group)
+
+    def _rendered(self, items: Sequence[PickerItem]) -> list[str]:
+        return [_rendered_text(item, self._show_values) for item in items]
+
     def _by_value(self, value: int) -> PickerItem | None:
         return next((item for item in self._items if item.value == value), None)
 
@@ -455,30 +486,36 @@ class ValueLineEdit(QWidget):
         if typed.lstrip("-").isdigit():
             # The raw-value escape hatch: settable even when the item list
             # (library-backed, or a fixed vocabulary) does not cover it.
-            self._commit(int(typed))
+            self.commit_value(int(typed))
             return
         needle = typed.lower()
-        match = next(
-            (
-                item
-                for item in self._items
-                if _rendered_text(item, self._show_values).lower() == needle
-                or item.label.lower() == needle
-            ),
-            None,
-        )
+        # The group's own items first: a label two groups share ("Treasure
+        # Chest" in Others and Units) must resolve to the row's group.
+        match = None
+        for pool in (self._group_items(), self._items):
+            match = next(
+                (
+                    item
+                    for item in pool
+                    if _rendered_text(item, self._show_values).lower() == needle
+                    or item.label.lower() == needle
+                ),
+                None,
+            )
+            if match is not None:
+                break
         if match is None:
             # No such label and not a raw integer either -- reject the edit
             # rather than write a value the user never chose, and restore
             # the field to what it actually holds.
             self.set_value(self._value)
             return
-        self._commit(match.value)
+        self.commit_value(match.value)
 
     def _browse(self) -> None:
         dialog = ValueBrowseDialog(
-            self._items,
-            default_group=self._default_group,
+            self._group_items(),
+            default_group=self._group or self._default_group,
             show_values=self._show_values,
             hidden_label=self._hidden_label,
             preview=self._preview,
@@ -488,9 +525,11 @@ class ValueLineEdit(QWidget):
         if self._value is not None:
             dialog.select(self._value)
         if dialog.exec_() == QDialog.Accepted and dialog.selected_value() is not None:
-            self._commit(dialog.selected_value())
+            self.commit_value(dialog.selected_value())
 
-    def _commit(self, new_value: int) -> None:
+    def commit_value(self, new_value: int) -> None:
+        """Takes `new_value` as a user's pick: shows it and emits `committed`, or
+        emits nothing for the value already held."""
         if new_value == self._value:
             self.set_value(self._value)  # revert any half-typed text
             return

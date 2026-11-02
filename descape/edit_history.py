@@ -775,17 +775,13 @@ class EditHistory:
         self._push(record)
         return record.touched_indices()
 
-    def _push(self, record: DiffRecord) -> None:
-        """Redo truncation, append, cursor advance, and overflow bookkeeping --
-        shared by every push path. Extracted rather than duplicated because a
-        second push path that reimplements the saved_at_cursor arithmetic will
-        get it subtly wrong, and the symptom (a file that silently stops
-        reading as dirty) shows up nowhere near the bug."""
+    def _truncate_redo(self) -> None:
+        """Drops every record ahead of the cursor, saved-state marker included."""
         # The truncation below destroys the saved state whenever it sat AHEAD
         # of the cursor (undo, then a different edit). Leaving the marker
         # pointing at an index that now holds a different record makes
         # is_dirty read clean at a cursor that no longer reconstructs the file
-        # on disk -- the same failure the overflow branch below guards against.
+        # on disk -- the same failure _push()'s overflow branch guards against.
         # A move is undo-then-push by construction, so it reaches this in one
         # gesture: save right after a paste, then drag it.
         if self.saved_at_cursor is not None and self.saved_at_cursor > self.cursor:
@@ -794,6 +790,36 @@ class EditHistory:
             self.saved_at_cursor = self.cursor if all(r.view_only for r in ahead) else None
         del self.records[self.cursor :]
         del self._serials[self.cursor :]
+
+    def drop_redo(self) -> None:
+        """Forgets the redo tail. For a gesture that undid its own record and
+        means it never happened: a compass drag back to where it started."""
+        self._truncate_redo()
+        self._notify()
+
+    def replace_top(self, old: DiffRecord, new: DiffRecord) -> bool:
+        """Swaps the newest record for `new`, which folds one more step of a
+        live gesture into it, so a drag stays one undo step with nothing held
+        open across mouse events. A new serial, since the content changed.
+
+        Returns False, changing nothing, unless `old` is still the newest
+        record, nothing lies ahead of it and it isn't the saved state: the
+        caller then pushes instead, so a save or an undo mid-gesture is never
+        rewritten."""
+        if self.peek_undo() is not old or self.can_redo or self.saved_at_cursor == self.cursor:
+            return False
+        self.records[self.cursor - 1] = new
+        self._serials[self.cursor - 1] = self._new_serial()
+        self._notify()
+        return True
+
+    def _push(self, record: DiffRecord) -> None:
+        """Redo truncation, append, cursor advance, and overflow bookkeeping --
+        shared by every push path. Extracted rather than duplicated because a
+        second push path that reimplements the saved_at_cursor arithmetic will
+        get it subtly wrong, and the symptom (a file that silently stops
+        reading as dirty) shows up nowhere near the bug."""
+        self._truncate_redo()
         self.records.append(record)
         self._serials.append(self._new_serial())
         self.cursor += 1

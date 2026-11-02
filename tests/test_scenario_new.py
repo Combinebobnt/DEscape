@@ -356,6 +356,82 @@ def test_refuses_donor_whose_size_field_disagrees(donor) -> None:
         blank_body(corrupted, 168)
 
 
+FOREST_OAK = 10  # density 1000: a tree on every tile
+FOREST_BUSH = 89  # 1053 at density 1000 in AoE2, 900 in Return of Rome
+
+
+def _gaia_and_others(scenario) -> tuple[list, int]:
+    units = scenario.unit_manager.units
+    return list(units[0]), sum(len(player_units) for player_units in units[1:])
+
+
+def test_the_defaults_plant_nothing_even_on_a_forest(donor) -> None:
+    bare = blank_scenario_bytes(120, donor, terrain_id=FOREST_OAK)
+    assert bare == blank_scenario_bytes(120, donor, terrain_id=FOREST_OAK, trees=False, doodads=False)
+    assert sum(len(units) for units in load_blank_scenario(120, donor, terrain_id=FOREST_OAK).unit_manager.units) == 0
+
+
+def test_a_kind_the_terrain_cannot_place_gives_the_bare_bytes(donor) -> None:
+    """Forest Oak carries no eye candy, so Eye candy alone plants nothing."""
+    bare = blank_scenario_bytes(144, donor, terrain_id=FOREST_OAK)
+    assert blank_scenario_bytes(144, donor, terrain_id=FOREST_OAK, trees=False, doodads=True) == bare
+
+
+def test_a_forest_map_reloads_with_a_gaia_tree_on_every_tile(donor) -> None:
+    import random
+
+    from descape import terrain_units, unit_rotation
+
+    scenario = load_blank_scenario(120, donor, terrain_id=FOREST_OAK, trees=True, rng=random.Random(0))
+    assert scenario.units_write_supported and scenario.terrain_write_supported
+    assert all(t.terrain_id == FOREST_OAK for t in scenario.map_manager.terrain)
+    gaia, others = _gaia_and_others(scenario)
+    assert others == 0
+    assert len(gaia) == 120 * 120
+    assert sorted((int(u.x), int(u.y)) for u in gaia) == [(x, y) for x in range(120) for y in range(120)]
+    assert {u.unit_const for u in gaia} <= terrain_units.TREE_CONSTS
+    for unit in gaia:
+        assert unit.rotation == float(unit.initial_animation_frame)
+        assert 0 <= unit.initial_animation_frame < unit_rotation.angle_count_for(unit.unit_const)
+    assert len({u.reference_id for u in gaia}) == len(gaia)
+
+
+def test_a_return_of_rome_forest_plants_with_return_of_rome_tables_and_switches_back() -> None:
+    """Forest Bush's 1053 is density 900 in Return of Rome, so about one tile
+    in ten stays empty there, where AoE2's table fills every tile."""
+    import random
+
+    from descape import terrain_units
+
+    planted = load_blank_scenario(
+        120, terrain_id=FOREST_BUSH, trees=True, game_data=game_dataset.ROR, rng=random.Random(4)
+    )
+    assert game_dataset.active() == game_dataset.AOE2
+    assert game_dataset.from_variant(planted.game_variant) == game_dataset.ROR
+    with game_dataset.activated(game_dataset.ROR):
+        expected = terrain_units.plan_fill(120, 120, FOREST_BUSH, trees=True, doodads=False, rng=random.Random(4))
+    gaia, _others = _gaia_and_others(planted)
+    assert [(u.x, u.y, u.unit_const, u.initial_animation_frame) for u in gaia] == [
+        (s.x, s.y, s.unit_const, s.initial_animation_frame) for s in expected
+    ]
+    assert len(gaia) < 120 * 120
+
+
+@pytest.mark.parametrize("where", ("model", "write"))
+def test_a_planting_failure_is_a_blank_generation_error(donor, monkeypatch, where) -> None:
+    from descape import scenario_new
+    from descape.scenario_write import WriteBlockedError
+    from descape.unit_model import UnitEditsUnavailableError
+
+    def refuse(*args, **kwargs):
+        raise (UnitEditsUnavailableError if where == "model" else WriteBlockedError)("refused")
+
+    monkeypatch.setattr(scenario_new, "UnitEditModel" if where == "model" else "build_patched_body", refuse)
+    with pytest.raises(BlankGenerationError, match="refused"):
+        blank_scenario_bytes(120, terrain_id=FOREST_OAK, trees=True, game_data=game_dataset.ROR)
+    assert game_dataset.active() == game_dataset.AOE2
+
+
 def test_standard_map_sizes_matches_real_corpus() -> None:
     """Pins the empirical size list this whole feature is built on: every
     real campaign scenario in examples/ uses exactly one of these seven

@@ -1724,6 +1724,16 @@ def test_a_unit_under_a_building_is_stacked_and_one_over_it_is_not() -> None:
     assert over == {}
 
 
+@pytest.mark.parametrize(
+    ("point", "hidden"),
+    [((9.9, 10.5), True), ((9.1, 10.5), False), ((10.5, 9.2), False), ((12.9, 12.9), False), ((12.5, 12.5), True)],
+)
+def test_task051_an_off_centre_unit_whose_mark_leans_past_the_slab_is_not_hidden(point, hidden) -> None:
+    """The 4x4 covers tiles 9..12; a mark leaning into tile 8 or 13 shows past its edge."""
+    groups = stack_groups(build_index(_stack_scenario((*point, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))))
+    assert bool(groups) is hidden, groups
+
+
 _BLOCKER_1X3 = 2423
 
 
@@ -1931,29 +1941,29 @@ _STACKS_PER_FILE = {
     "2_Joan_coop_2_v0_15.aoe2scenario": (6, 6),  # (8, 8)
     "2_Joan_coop_3_v0_14.aoe2scenario": (1, 1),  # (5, 5)
     "2_Joan_coop_4_v0_13.aoe2scenario": (3, 3),
-    "2_Joan_coop_5_v0_13.aoe2scenario": (15, 16),  # (38, 44)
+    "2_Joan_coop_5_v0_13.aoe2scenario": (14, 15),  # (38, 44); (15, 16) before TASK-051
     "2_Joan_coop_6_v0_14.aoe2scenario": (12, 15),  # (21, 25)
-    "C2_ElCid_coop_1_v0_16.aoe2scenario": (88, 89),  # (90, 92)
+    "C2_ElCid_coop_1_v0_16.aoe2scenario": (85, 86),  # (90, 92); (88, 89) before TASK-051
     "C2_ElCid_coop_2_v0_13.aoe2scenario": (20, 20),  # (21, 21); (19, 19) before TASK-134's doodad spans
-    "C2_ElCid_coop_3_v0_12.aoe2scenario": (9, 10),  # (14, 26)
+    "C2_ElCid_coop_3_v0_12.aoe2scenario": (7, 7),  # (14, 26); (9, 10) before TASK-051
     "C2_ElCid_coop_4_v0_13.aoe2scenario": (47, 47),  # (54, 54); (53, 53) before GH #178's 2x2 Perch at (60, 4)
     "C2_ElCid_coop_5_v0_14.aoe2scenario": (8, 8),  # (18, 18)
     "C2_ElCid_coop_6_v0_13.aoe2scenario": (5, 5),  # (17, 21)
-    "F7_2_Dos Pilas (648).aoe2scenario": (80, 90),  # (92, 103); (91, 102) before TASK-134
-    "F7_3_York (865).aoe2scenario": (74, 81),  # (85, 93)
-    "R4_LeLoi_4.aoe2scenario": (131, 355),  # (201, 441); (162, 402) before TASK-134
+    "F7_2_Dos Pilas (648).aoe2scenario": (78, 88),  # (92, 103); (91, 102) before TASK-134, (80, 90) before TASK-051
+    "F7_3_York (865).aoe2scenario": (71, 78),  # (85, 93); (74, 81) before TASK-051
+    "R4_LeLoi_4.aoe2scenario": (130, 354),  # (201, 441); (162, 402) before TASK-134, (131, 355) before TASK-051
     "atilla_1_scn_resaved.aoe2scenario": (54, 67),  # (83, 96); (82, 95) before TASK-134
     "blank_map.aoe2scenario": (0, 0),
     # (104, 124); (98, 118) before GH #121, (96, 116) before TASK-134. Two of
-    # its stacks are grass painted over a unit at its exact point.
-    "old-allies-final-v2.aoe2scenario": (89, 109),
+    # its stacks are grass painted over a unit at its exact point. (89, 109) before TASK-051.
+    "old-allies-final-v2.aoe2scenario": (86, 102),
     "ring75_v0_scx_resaved.aoe2scenario": (0, 0),
 }
 
 
 def test_the_per_file_stack_table_sums_to_the_sizing_measurement() -> None:
-    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1 + 51 - 219
-    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1 + 51 - 260
+    assert sum(g for g, _h in _STACKS_PER_FILE.values()) == 826 + 5 - 2 + 1 + 51 - 219 - 15
+    assert sum(h for _g, h in _STACKS_PER_FILE.values()) == 1147 + 5 - 2 + 1 + 51 - 260 - 20
 
 
 @pytest.mark.corpus

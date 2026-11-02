@@ -135,7 +135,7 @@ def post_extent(cache, changed, levels):
                 contribution = render._resolve_unit_sprite(
                     scenario, proj, cache.elevations, cache.unit_filter, corner_rise, {}, layers.farm_overlay,
                     s.player_id, s.index, s.unit, layers.tree_scale, layers.hero_glow,
-                    layers.wall_alpha,
+                    layers.wall_alpha, fold=cache._level_fold(),
                 )
                 if contribution is not None:
                     level_box = union(level_box, *contribution.bboxes.values())

@@ -28,6 +28,8 @@ SHORE_FISH = 69
 STONE_WALL = 117
 GATE_STRAIGHT = 64  # 4x1
 GATE_DIAGONAL = 659  # 4x4 bounds, six real tiles
+GATE_RUN_Y = 88  # GTBA2, 1x4
+GATE_RUN_Y_CORNER = 95  # GTBC2, its 1x1 corner piece
 RUGS = 711  # eye candy: obstruction 0 with a 0.5 clearance
 COLOSSUS = 263  # 8x8, the widest footprint in the catalog
 HAWK = 96  # obstruction 5 with zero clearance
@@ -433,6 +435,27 @@ def test_move_refused_skips_a_garrisoned_unit_as_move_refusal_does() -> None:
             assert placement_rules.move_refused(scenario, unit, x, y) == expected
     assert placement_rules.move_refused(scenario, walker, 5.5, 5.5)
     assert not placement_rules.move_refused(scenario, occupant, 5.5, 5.5)
+
+
+def test_a_gates_own_corner_pieces_never_block_its_move() -> None:
+    """TASK-340: real files keep a GTBA2's corner pieces (GTBC2) as separate
+    solid units on its end tiles, so a move shorter than the gate refused on
+    the piece left behind. Another owner's piece, or one off the gate's own
+    tiles, still blocks; the grid path answers the same."""
+    gate = _unit(GATE_RUN_Y, 10.5, 10)
+    own = [_unit(GATE_RUN_Y_CORNER, 10.5, 8.5), _unit(GATE_RUN_Y_CORNER, 10.5, 11.5)]
+    assert placement_rules.gate_companions(_scenario([[], [gate, *own]]), gate) == own
+    for blockers, expected in (
+        ([[], [gate, *own]], None),
+        ([[_unit(GATE_RUN_Y_CORNER, 10.5, 11.5)], [gate, own[0]]], "blocked by"),
+        ([[], [gate, own[0], _unit(GATE_RUN_Y_CORNER, 10.5, 12.5)]], "blocked by"),
+    ):
+        scenario = _scenario(blockers)
+        grid = placement_rules.BlockerGrid(scenario, exclude=[gate])
+        for kwargs in ({"exclude": [gate]}, {"grid": grid}):
+            reason = placement_rules.move_refusal(scenario, gate, 10.5, 11, **kwargs)
+            assert (reason is None) if expected is None else reason.startswith(expected), (blockers, reason)
+            assert placement_rules.move_refused(scenario, gate, 10.5, 11, **kwargs) == (reason is not None)
 
 
 def test_refused_builds_no_message(monkeypatch) -> None:

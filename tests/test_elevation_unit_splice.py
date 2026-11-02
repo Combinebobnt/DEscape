@@ -868,6 +868,36 @@ def test_a_filled_pit_re_anchors_its_own_unit(sprites, monkeypatch):
     assert _component(calls) == _ids(mill)
 
 
+# TASK-008: with UNIT_TILE's E, SW and NE neighbours one up, lowering the NE
+# one flips UNIT_TILE's fold (NE-SW to NW-SE) and moves none of its corners.
+# That direction matters: a fold dropped on the way is read as NE-SW.
+FOLD_HILL, FOLD_EDIT = ((41, 40), (39, 41), (41, 39)), (41, 39)
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_a_fold_flip_with_no_corner_change_re_rises_its_units(sprites, sprite_install, monkeypatch):  # noqa: F811
+    scenario = _scenario()
+    for tile in FOLD_HILL:
+        scenario.map_manager.get_tile(*tile).elevation = BASE_ELEVATION + 1
+    # Off-centre, so the rise reads the fold: a centred mark conforms and never does.
+    const = SPRITE_CONST if sprites else MARK_CONST
+    held = _place(scenario, 1, const, UNIT_TILE[0] + 0.3, UNIT_TILE[1] + 0.6)
+    edited = _place(scenario, 1, MARK_CONST, FOLD_EDIT[0] + 0.5, FOLD_EDIT[1] + 0.5)
+    cache = _make_cache("sloped", scenario, sprites=sprites)
+    x, y = UNIT_TILE
+    old_corners, old_fold = cache.corner_rise[y:y + 2, x:x + 2].copy(), bool(cache.fold[y, x])
+    assert UNIT_TILE in cache.elevation_seed_tiles({FOLD_EDIT}, {FOLD_EDIT: BASE_ELEVATION})
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _set_one("sloped", cache, scenario, FOLD_EDIT, BASE_ELEVATION)
+
+    assert np.array_equal(cache.corner_rise[y:y + 2, x:x + 2], old_corners), "the fixture moved a corner"
+    assert (old_fold, bool(cache.fold[y, x])) == (False, True), "the fixture did not flip the fold to NW-SE"
+    assert sorted(_component(calls)) == sorted(_ids(held, edited))
+    _assert_spliced("sloped", cache, scenario, sprites, counts)
+
+
 @pytest.mark.parametrize("distance", [1, 2])
 def test_a_farm_near_the_edit_matches_a_fresh_cache(distance, fake_farm, monkeypatch):  # noqa: F811
     scenario = _scenario()

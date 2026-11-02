@@ -117,6 +117,26 @@ def test_a_switch_runs_the_hooks_and_clears_the_install_caches(monkeypatch):
     assert ran == [game_dataset.ROR] and cleared == [True]
 
 
+def test_activated_switches_for_the_block_and_back_even_on_a_raise(monkeypatch):
+    ran = []
+    monkeypatch.setattr(game_dataset, "_switch_hooks", [lambda: ran.append(game_dataset.active())])
+    with pytest.raises(RuntimeError, match="inside"), game_dataset.activated(game_dataset.ROR):
+        assert game_dataset.active() == game_dataset.ROR
+        raise RuntimeError("inside")
+    assert game_dataset.active() == game_dataset.AOE2
+    assert ran == [game_dataset.ROR, game_dataset.AOE2]
+
+
+def test_activated_does_not_switch_when_already_active(monkeypatch):
+    ran = []
+    monkeypatch.setattr(game_dataset, "_switch_hooks", [lambda: ran.append(game_dataset.active())])
+    with game_dataset.activated(game_dataset.AOE2):
+        assert game_dataset.active() == game_dataset.AOE2
+    with pytest.raises(ValueError, match="unknown game dataset"), game_dataset.activated("aoe3"):
+        pass
+    assert ran == [] and game_dataset.active() == game_dataset.AOE2
+
+
 # --- the guard ------------------------------------------------------------
 
 

@@ -91,6 +91,14 @@ def _fits(x: float, y: float, span: tuple[int, int], width: int, height: int) ->
     return x0 >= 0 and y0 >= 0 and x0 + span[0] <= width and y0 + span[1] <= height
 
 
+def hover_anchor(const: int, tile: tuple[int, int], width: int, height: int) -> tuple[float, float] | None:
+    """Where a dab on `tile` stands `const` before jitter, or None for a
+    footprint past the map edge: paint_dab()'s own snap and fit."""
+    span = tile_span(const, NON_BUILDING_SPAN)
+    x, y = snapped_anchor(tile, None, span, width, height)
+    return (x, y) if _fits(x, y, span, width, height) else None
+
+
 def _ensure_rule_state(scenario, stroke: BrushStroke) -> None:
     """The grid and, for a stroke with a mobile const, the laid terrain, built
     on the first candidate the rules judge. The grid then learns every

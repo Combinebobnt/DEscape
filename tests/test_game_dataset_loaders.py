@@ -19,9 +19,12 @@ from descape import (
     game_dataset,
     garrison,
     object_catalog,
+    placement_rules,
     terrain_blend,
+    terrain_catalog,
     terrain_palette,
     terrain_units,
+    trigger_fields,
     unit_kind,
     unit_rotation,
     unit_sprites,
@@ -114,12 +117,14 @@ def test_sprites_stats_and_rotation_follow_the_dataset():
 
 
 def test_ror_particle_units_match_aoe2s():
-    """GH #67: RoR's Butterflies and Seagulls use the same graphics and effects as AoE2's, so both tables carry them."""
+    """GH #67: RoR's Butterflies and Seagulls use the same graphics and effects as AoE2's, so both
+    tables carry them. Smoke and the Flames (GH #256) are AoE2's only until the RoR .dat is measured."""
     aoe2 = {k: e for k, e in unit_sprites.graphic_map().items() if e.get("particle")}
     _ror()
     ror = {k: e for k, e in unit_sprites.graphic_map().items() if e.get("particle")}
-    assert set(aoe2) == {303, 1608, 1609, 1610}
-    assert ror == aoe2
+    assert set(ror) == {303, 1608, 1609, 1610}
+    assert set(aoe2) == set(ror) | {1308, 1333, 1334, 1335, 1336}
+    assert ror == {k: aoe2[k] for k in ror}
 
 
 def test_blend_priorities_follow_the_dataset_both_ways():
@@ -219,6 +224,72 @@ def test_ror_strings_are_read_over_the_base_strings(ror_install):
     assert asset_source.resource_string(305188, "en") == "Hoplite"
     assert asset_source.resource_string(1, "en") == "Only base"
     assert object_catalog.display_name(HOPLITE_SPEARMAN) == "Hoplite"
+
+
+def _both_rows(table, id_: int) -> tuple[dict, dict]:
+    """id_'s (AoE2 row, RoR row) from an object_catalog.dat_*() reader, read at test time."""
+    aoe2 = table()[id_]
+    _ror()
+    ror = table()[id_]
+    _aoe2()
+    return aoe2, ror
+
+
+def _write_base_string(install, key: int, text: str) -> None:
+    base = install / asset_source.STRINGS_SUBPATH_TEMPLATE.format(lang="en")
+    base.parent.mkdir(parents=True)
+    base.write_text(f'{key} "{text}"\n', encoding="utf-8")
+
+
+def test_without_ror_strings_a_ror_tech_keeps_its_own_name(ror_install):
+    aoe2, ror = _both_rows(object_catalog.dat_techs, 101)
+    assert aoe2["string_id"] != ror["string_id"]
+    assert ror["code"] == "Tool Age"
+    _write_base_string(ror_install, ror["string_id"], "Keep")
+    _ror()
+    assert object_catalog.tech_name(101) == "Tool Age"
+    assert trigger_fields.resolve_reference("TechInfo", 101) == "Tool Age"
+
+
+def test_without_ror_strings_a_row_both_games_share_takes_the_install_name(ror_install):
+    aoe2, ror = _both_rows(object_catalog.dat_objects, 102)
+    assert (aoe2["code"], aoe2["string_id"]) == (ror["code"], ror["string_id"])
+    _write_base_string(ror_install, ror["string_id"], "Stone Mine")
+    _ror()
+    assert object_catalog.object_name(102) == "Stone Mine"
+
+
+def test_without_ror_strings_a_reused_slot_keeps_its_ror_code(ror_install):
+    aoe2, ror = _both_rows(object_catalog.dat_objects, 751)
+    assert aoe2["string_id"] == ror["string_id"]
+    assert aoe2["code"] != ror["code"]
+    assert ror["code"] == "Clubman"
+    _write_base_string(ror_install, ror["string_id"], "Eagle Scout")
+    _ror()
+    assert object_catalog.object_name(751) == "Clubman"
+
+
+def test_without_ror_strings_a_ror_terrain_keeps_its_panel_label(ror_install):
+    aoe2, ror = _both_rows(object_catalog.dat_terrains, 40)
+    assert aoe2["string_id"] != ror["string_id"]
+    _write_base_string(ror_install, ror["string_id"], "Temple Guard")
+    _ror()
+    label = terrain_catalog.display_name(terrain_palette.name_for_terrain_id(40))
+    assert label != "Temple Guard"
+    assert placement_rules._terrain_name(40) == label
+
+
+def test_with_ror_strings_a_key_they_lack_still_reads_the_base_file(ror_install):
+    _aoe2_row, ror_row = _both_rows(object_catalog.dat_techs, 101)
+    _write_base_string(ror_install, ror_row["string_id"], "Base text")
+    assert not asset_source.has_ror_strings("en")
+    ror = ror_install / game_dataset.ROR_SUBPATH / asset_source.ROR_STRINGS_SUBPATH_TEMPLATE.format(lang="en")
+    ror.parent.mkdir(parents=True)
+    ror.write_text('1 "Unrelated"\n', encoding="utf-8")
+    asset_source.clear_install_caches()
+    assert asset_source.has_ror_strings("en")
+    _ror()
+    assert object_catalog.tech_name(101) == "Base text"
 
 
 def test_ror_icons_and_textures_come_from_the_ror_root_first(ror_install):

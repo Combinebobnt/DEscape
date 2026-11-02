@@ -85,6 +85,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
 
     from genieutils.datfile import DatFile
 
@@ -113,7 +114,10 @@ def main() -> None:
             continue
         classes[str(i)] = {"raw": raw, "family": family, "climate": climate}
 
-    if violations:
+    if violations and _game_root.lenient():
+        for line in violations:
+            _game_root.refuse(f"is_water bitmask invariant: {line.strip()}", "terrain left out of the class table")
+    elif violations:
         print("The is_water bitmask invariant no longer holds:", file=sys.stderr)
         for line in violations:
             print(line, file=sys.stderr)

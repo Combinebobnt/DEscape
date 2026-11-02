@@ -36,9 +36,16 @@ _TIMEOUT_S = 600
 
 
 @pytest.fixture(scope="module")
-def sweep_runs():
+def sweep_runs(request):
     """Starts every DPI's subprocess at once, so the sweep costs about one
     run's wall time instead of seven; each case then waits on its own."""
+    # --dist loadgroup suffixes a grouped item's nodeid with @<group>; without it every worker starts all seven.
+    if request.config.getoption("loadgroup", default=False):
+        ungrouped = [
+            item.nodeid for item in request.session.items if item.module is request.module and not item.nodeid.endswith("@font_dpi_sweep")
+        ]
+        if ungrouped:
+            pytest.fail(f"--dist loadgroup ignored xdist_group (pytest {pytest.__version__}): {ungrouped[:2]}")
     procs = {}
     for dpi in _SWEPT:
         env = dict(os.environ)

@@ -13,8 +13,10 @@ no-trailing-NUL list), so a file storing `Preset_Main\\x00` reports 13 bytes
 for 14. A backward walk across this field lands one byte off, which is why
 this forward walk is the only reader of these spans.
 
-Only water_definition is editable. The splice region runs from the first
-marker through the end of map_color_mood, the strings this module owns.
+Two names are editable, water_definition and map_color_mood (TASK-238), in
+one splice region: the first marker through the end of map_color_mood, the
+strings this module owns. layout() checks the walk; write_supported(loaded,
+name) adds that name's own payload check, so a bad name greys its one row.
 script_name is walked for the gate but never rebuilt here: GH #216's own
 splice (options_model.serialize_script_name_resize()) owns it, and runs
 before this one because it sits at the higher offset.
@@ -29,9 +31,10 @@ from dataclasses import dataclass
 from descape.scenario_io import LoadedScenario, retriever_length
 
 WATER_DEFINITION = "water_definition"
-# The strings this module may rebuild; map_color_mood is copied verbatim today.
-OWNED = ("water_definition", "map_color_mood")
-EDITABLE = frozenset({WATER_DEFINITION})
+COLOUR_MOOD = "map_color_mood"
+# The strings this module may rebuild.
+OWNED = (WATER_DEFINITION, COLOUR_MOOD)
+EDITABLE = frozenset(OWNED)
 
 _MARKER = b"\x60\x0a"
 _STR16_PREFIX = struct.Struct("<h")
@@ -112,11 +115,6 @@ def layout(loaded: LoadedScenario) -> MapStringsLayout | None:
     strings = [item for item in items if item.is_string]
     if WATER_DEFINITION not in {item.name for item in strings}:
         return None
-    for item in strings:
-        if item.name in EDITABLE:
-            payload = bytes(body[item.offset + 2 : item.offset + item.length])
-            if not _payload_matches(payload, retriever_map[item.name].data):
-                return None
     owned = [i for i, item in enumerate(items) if item.is_string and item.name in OWNED]
     last = owned[-1]
     # A string another splice owns must not sit inside this region.
@@ -126,9 +124,18 @@ def layout(loaded: LoadedScenario) -> MapStringsLayout | None:
     return MapStringsLayout(start, region_end, tuple(items), cursor)
 
 
-def write_supported(loaded: LoadedScenario) -> bool:
-    """The water row's own gate, never folded into options_write_supported()."""
-    return layout(loaded) is not None
+def _name_verifies(loaded: LoadedScenario, found: MapStringsLayout, name: str) -> bool:
+    item = next((i for i in found.items if i.is_string and i.name == name), None)
+    if item is None:
+        return False
+    payload = bytes(loaded.decompressed_body[item.offset + 2 : item.offset + item.length])
+    return _payload_matches(payload, loaded._scenario.sections["Map"].retriever_map[name].data)
+
+
+def write_supported(loaded: LoadedScenario, name: str) -> bool:
+    """`name`'s row's own gate, never folded into options_write_supported()."""
+    found = layout(loaded)
+    return found is not None and _name_verifies(loaded, found, name)
 
 
 def current_value(loaded: LoadedScenario, name: str) -> str:
@@ -162,6 +169,9 @@ def splice(loaded: LoadedScenario, edits: Mapping[str, str]) -> tuple[int, int, 
     unknown = set(edits) - EDITABLE
     if unknown:
         raise KeyError(f"not an editable Map string: {sorted(unknown)}")
+    failed = sorted(name for name in edits if not _name_verifies(loaded, found, name))
+    if failed:
+        raise ValueError(f"this file's {failed} does not verify")
     body = loaded.decompressed_body
     parts: list[bytes] = []
     for item in found.items:

@@ -106,7 +106,9 @@ def test_a_set_row_stores_its_ticked_members_in_schema_order(tmp_path: Path, dia
     actions["Trees"].setChecked(True)
     assert _stored(tmp_path) == {"eraser_targets": ["units", "buildings", "trees", "cliffs"]}
     assert window.eraser_target_actions["cliffs"].isChecked()
-    assert button.text() == "Units, Buildings, Trees, Cliffs"
+    # The button's own text is elided to the column (TASK-498); the tooltip has the whole list.
+    assert button.toolTip() == "Units, Buildings, Trees, Cliffs"
+    assert button.text().startswith("Units, Buildings")
     assert _last_status(window) == "Eraser targets default: Units, Buildings, Trees, Cliffs"
 
 

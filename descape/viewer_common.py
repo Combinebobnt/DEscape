@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QColor, QFontMetricsF, QIcon, QImage, QPixmap, QValidator
 from PyQt5.QtWidgets import (
     QAction,
@@ -22,7 +22,11 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QMenu,
+    QPushButton,
+    QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionButton,
 )
 
 from descape import (
@@ -101,8 +105,7 @@ def tool_applicable(tool_id: str, mode: str) -> bool:
     ViewerWindow._update_tool_enabled() to hide mode-inapplicable tools
     instead of just greying them out.
     """
-    modes = _TOOL_MODES.get(tool_id, ())
-    return not modes or mode in modes
+    return settings.modes_include(_TOOL_MODES.get(tool_id, ()), mode)
 
 # How many characters a property-form combo box sizes itself for. Without it a
 # combo's minimumSizeHint is its longest *item*, and ObjectAttribute's longest
@@ -379,3 +382,26 @@ def _make_spinbox(
         # Last, so it parks the special text set above.
         spin.set_indeterminate()
     return spin
+
+
+class LabelFitButton(QPushButton):
+    """A push button that may shrink to its own label (GH #213). Fusion
+    floors a labelled button's size hint at 80 px, which the entry row cannot
+    spare beside its ▲▼ pair. The hint stays; only the minimum drops, to what
+    the style gives the same label without that floor. Read off the live font
+    and style on every query, so a UI font change needs no refit."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        # Shrinkable: under QPushButton's own Minimum policy the layout takes sizeHint() as the floor.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        label = self.fontMetrics().size(Qt.TextShowMnemonic, self.text())
+        # The style applies its floor only to an option that carries text; frame and margins are the same.
+        option.text = ""
+        fitted = self.style().sizeFromContents(QStyle.CT_PushButton, option, label, self).width()
+        return QSize(min(fitted, hint.width()), hint.height())

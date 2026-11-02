@@ -4806,7 +4806,7 @@
       "pierce_armour": 6
     },
     "873": {
-      "hp": 230,
+      "hp": 220,
       "attack": 6,
       "melee_armour": 0,
       "range": 4.0,
@@ -4814,7 +4814,7 @@
       "pierce_armour": 2
     },
     "875": {
-      "hp": 280,
+      "hp": 270,
       "attack": 7,
       "melee_armour": 0,
       "range": 4.0,
@@ -6100,7 +6100,7 @@
     },
     "1135": {
       "hp": 25,
-      "attack": 3,
+      "attack": 2,
       "melee_armour": 0,
       "range": 0.0,
       "max_range": 0.0,
@@ -12801,7 +12801,7 @@
     },
     "2592": {
       "hp": 25,
-      "attack": 3,
+      "attack": 2,
       "melee_armour": 0,
       "range": 0.0,
       "max_range": 0.0,

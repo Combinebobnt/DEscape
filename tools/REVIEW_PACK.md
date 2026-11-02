@@ -22,7 +22,15 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --check --pack ground_borders   # needs examples/ + install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack sprite_shrink   # needs install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack garrison_flags   # needs examples/ + install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack particle_doodads   # needs install
+.venv/bin/python3 tools/gen_instruction_box_review_pack.py --check   # needs examples/ + install, drives Qt
 ```
+
+A pack whose subject is a widget over the map rather than scene content cannot
+render off-engine: `scene.render()` leaves it out. Such a pack is its own script,
+as `tools/gen_doodad_review_pack.py` is, and captures an offscreen
+`ViewerWindow`'s `map_view.grab()` under `testkit.settings_isolation`, so
+`gen_review_pack.py` itself stays Qt-free.
 
 Each run prints the opaque directory it wrote to. Record that pairing somewhere
 the reviewer will never see, then spawn one agent per run with a one-line

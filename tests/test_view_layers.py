@@ -19,16 +19,16 @@ reuses the existing no-install fallback rather than being a second code path.
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass
+from dataclasses import FrozenInstanceError, dataclass, replace
 
 import numpy as np
 import pytest
 
-from descape import asset_source, render, render_cache, settings, unit_sprites
+from descape import asset_source, iso_geometry, render, render_cache, settings, unit_sprites
 from descape.render import tile_pixels_for_map
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.terrain_palette import TREE_UNIT_IDS
-from descape.view_layers import DEFAULT_LAYERS, LAYERS, SMALL_TREE_SCALE, LayerState, availability
+from descape.view_layers import DEFAULT_LAYERS, LAYERS, SMALL_TREE_SCALE, LayerState, availability, render_key
 from testkit.fakes import FakeScenario, SyntheticTile
 
 from test_unit_sprites import build_sld
@@ -259,6 +259,7 @@ def test_default_layers_is_byte_identical_to_omitting_the_argument(monkeypatch) 
     tile_px = tile_pixels_for_map(MAP_W, MAP_H)
     elevations, proj = render.elevations_and_proj(scn)
     _, corner_rise, sproj = render.sloped_elevations_and_proj(scn)
+    fold = iso_geometry.tile_folds(elevations)
 
     omitted = render.composite_rect_iso(scn, 0, 0, 128, 128, elevations, proj, tile_px, {}, {})
     passed = render.composite_rect_iso(
@@ -266,9 +267,9 @@ def test_default_layers_is_byte_identical_to_omitting_the_argument(monkeypatch) 
     )
     assert np.array_equal(omitted, passed)
 
-    omitted = render.composite_rect_sloped(scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {})
+    omitted = render.composite_rect_sloped(scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, fold=fold)
     passed = render.composite_rect_sloped(
-        scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, layers=LayerState()
+        scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, layers=LayerState(), fold=fold
     )
     assert np.array_equal(omitted, passed)
 
@@ -807,6 +808,112 @@ def test_wall_alpha_maps_the_row_and_the_opacity_to_a_factor() -> None:
     assert LayerState(translucent_walls=True, wall_opacity_pct=30).wall_alpha == 0.3
 
 
+# --- Fish Outlines (TASK-499), the first scene-overlay row ---------------
+
+FISH_OUTLINES = next(s for s in LAYERS if s.layer_id == "fish_outlines")
+
+
+def test_fish_outlines_is_a_default_off_scene_overlay_row() -> None:
+    assert FISH_OUTLINES.default is False and DEFAULT_LAYERS.fish_outlines is False
+    assert [spec.layer_id for spec in LAYERS if spec.scene_overlay] == ["fish_outlines"]
+    mnemonics = [spec.label[spec.label.index("&") + 1].lower() for spec in LAYERS]
+    assert len(mnemonics) == len(set(mnemonics)), mnemonics
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped", "sloped"])
+@pytest.mark.parametrize("sprites_enabled", [True, False])
+def test_fish_outlines_is_available_in_every_style_with_sprites_on_or_off(style, sprites_enabled) -> None:
+    enabled, tip = availability(FISH_OUTLINES, style=style, sprites_enabled=sprites_enabled, has_map=True)
+    assert enabled and tip == FISH_OUTLINES.tooltip
+    assert availability(FISH_OUTLINES, style=style, sprites_enabled=sprites_enabled, has_map=True, terrain_textures=False)[0]
+
+
+def test_render_key_drops_the_overlay_row_and_keeps_every_other_field() -> None:
+    assert render_key(LayerState(fish_outlines=True)) == DEFAULT_LAYERS
+    state = LayerState(terrain_textures=False, translucent_walls=True, wall_opacity_pct=30, fish_outlines=True)
+    assert render_key(state) == LayerState(terrain_textures=False, translucent_walls=True, wall_opacity_pct=30)
+    for spec in LAYERS:
+        if not spec.scene_overlay:
+            flipped = replace(DEFAULT_LAYERS, **{spec.layer_id: not spec.default})
+            assert render_key(flipped) == flipped, spec.layer_id
+
+
+def _unchanged_chunks(cache, chunks: dict, stamps: dict) -> bool:
+    """Every chunk still cached as the same array with the same stamp: nothing evicted or recomposited."""
+    return (
+        cache._cache.keys() == chunks.keys()
+        and all(cache._cache[key] is chunk for key, chunk in chunks.items())
+        and cache._chunk_stamp == stamps
+    )
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_toggling_fish_outlines_evicts_no_chunk_and_rebuilds_no_unit_source(builder, fake_trees, monkeypatch) -> None:
+    """Fish Outlines is a MapView item, so every cache stores render_key():
+    on from the constructor, flipped with a build-time row, or flipped alone,
+    the overlay row never reaches a chunk."""
+    cache = builder(_scenario(with_trees=True), sprites=True, layers=LayerState(fish_outlines=True))
+    assert cache.layers == DEFAULT_LAYERS
+    cache.set_layers(LayerState(small_trees=True, fish_outlines=True))
+    assert cache.layers == LayerState(small_trees=True)
+    before = _whole_canvas(cache).copy()
+    chunks, stamps = dict(cache._cache), dict(cache._chunk_stamp)
+    assert chunks, "nothing cached, so no eviction could show"
+    rebuilds = []
+    real = cache._refresh_unit_sources
+    monkeypatch.setattr(cache, "_refresh_unit_sources", lambda: (rebuilds.append(1), real())[1])
+
+    for state in (LayerState(small_trees=True), LayerState(small_trees=True, fish_outlines=True)):
+        cache.set_layers(state)
+        assert rebuilds == []
+        assert _unchanged_chunks(cache, chunks, stamps)
+        assert cache.layers == LayerState(small_trees=True)
+    assert np.array_equal(before, _whole_canvas(cache))
+    assert _unchanged_chunks(cache, chunks, stamps)
+
+
+COLOUR_MOOD = next(s for s in LAYERS if s.layer_id == "colour_mood")
+
+
+def test_colour_mood_is_a_default_off_row_in_every_style() -> None:
+    assert COLOUR_MOOD.default is False and DEFAULT_LAYERS.colour_mood is False
+    assert not COLOUR_MOOD.scene_overlay and not COLOUR_MOOD.requires_sprites and not COLOUR_MOOD.requires_textures
+    assert COLOUR_MOOD.styles is None
+    for style in ("flat", "stepped", "sloped"):
+        assert availability(COLOUR_MOOD, style=style, sprites_enabled=False, has_map=True)[0], style
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_toggling_colour_mood_alone_evicts_no_chunk_and_rebuilds_no_unit_source(builder, fake_trees, monkeypatch) -> None:
+    """The load-bearing early return: a draw-only row paints over the canvas,
+    so a flip keeps every chunk, and the cache's copy still follows the window's."""
+    cache = builder(_scenario(with_trees=True), sprites=True)
+    before = _whole_canvas(cache).copy()
+    chunks, stamps = dict(cache._cache), dict(cache._chunk_stamp)
+    assert chunks, "nothing cached, so no eviction could show"
+    rebuilds = []
+    real = cache._refresh_unit_sources
+    monkeypatch.setattr(cache, "_refresh_unit_sources", lambda: (rebuilds.append(1), real())[1])
+
+    for on in (True, False):
+        cache.set_layers(LayerState(colour_mood=on))
+        assert cache.layers.colour_mood is on
+        assert rebuilds == []
+        assert _unchanged_chunks(cache, chunks, stamps)
+    assert np.array_equal(before, _whole_canvas(cache))
+
+
+@pytest.mark.parametrize("builder", [_iso_cache, _sloped_cache, _flat_cache])
+def test_a_flip_carried_with_a_pixel_row_still_evicts(builder, fake_trees) -> None:
+    """The early return is for a change confined to the draw-only row."""
+    cache = builder(_scenario(with_trees=True), sprites=True)
+    _whole_canvas(cache)
+    chunks, stamps = dict(cache._cache), dict(cache._chunk_stamp)
+    cache.set_layers(LayerState(colour_mood=True, terrain_textures=False))
+    assert cache.layers == LayerState(colour_mood=True, terrain_textures=False)
+    assert not _unchanged_chunks(cache, chunks, stamps)
+
+
 def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
     """TASK-378: on by default, in every style and with sprites off (it also
     swaps terrain textures), greyed only when no scanned mod ships art."""
@@ -815,9 +922,11 @@ def test_mod_art_greys_only_without_a_mod_that_ships_art() -> None:
     assert spec.styles is None and not spec.requires_sprites
     assert availability(spec, style="flat", sprites_enabled=False, has_map=True) == (True, spec.tooltip)
     enabled, tip = availability(spec, style="stepped", sprites_enabled=True, has_map=True, has_mod_art=False)
-    assert not enabled and tip.startswith("No enabled mod ships art")
+    assert not enabled and tip.startswith("No mod in the profile ships art")
     # GH #244: both point at the tab that holds the profile folder and the Mod art list.
     assert "Settings > Mods" in tip and "Settings > Mods lists the mods" in spec.tooltip
+    # GH #264: a disabled mod draws once ticked there.
+    assert "plus any disabled mod ticked in Settings > Mods" in spec.tooltip
     assert availability(spec, style="stepped", sprites_enabled=True, has_map=False, has_mod_art=False)[1] == (
         "Open a map first"
     )

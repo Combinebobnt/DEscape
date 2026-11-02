@@ -469,9 +469,9 @@ def resolve_civilization_name(value: int | str) -> str:
 # scenario_io.py already trusts -- the same backward-walk technique
 # descape/diplomacy_fields.py and descape/options_model.py use, plus one
 # forward walk (DataHeader, the first section in decompressed_body, so no
-# anchor is needed) and one special-cased route (Units.player_data_3.color,
-# below). Route per section, all measured byte-for-byte against every
-# examples/ file:
+# anchor is needed) and one special-cased route (Units.player_data_3's color
+# and aok_allied_victory, below). Route per section, all measured
+# byte-for-byte against every examples/ file:
 #
 # - DataHeader: forward from body offset 0. A backward walk would inherit
 #   `filename`'s (str16) re-serialization drift; forward never crosses it,
@@ -948,6 +948,13 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     Measured against all 20 examples/ files: holds byte-for-byte on every
     entry of every file.
     """
+    return _player_data_3_target(loaded, player_id, "color")
+
+
+def _player_data_3_target(loaded: LoadedScenario, player_id: int, struct_field: str) -> _Resolved | None:
+    """Units.player_data_3[player_id-1].<struct_field>, located the way
+    _color_mirror_target()'s docstring describes. None on a file whose
+    Units block is not write-supported or whose entry does not span-check."""
     if not loaded.units_write_supported:
         return None
     retrievers = _retriever_map(loaded, "Units")
@@ -959,7 +966,36 @@ def _color_mirror_target(loaded: LoadedScenario, player_id: int) -> _Resolved | 
     array_start = loaded.units_block_offset - retriever_length(retriever)
     if array_start < 0:
         return None
-    return _variable_stride_target(array_start, retriever.data, player_id - 1, "color")
+    return _variable_stride_target(array_start, retriever.data, player_id - 1, struct_field)
+
+
+def aok_allied_victory_mirror_targets(loaded: LoadedScenario) -> dict[int, PlayerWriteTarget] | None:
+    """{player_id: target} for Units.player_data_3[player_id-1].aok_allied_victory,
+    players 1..8: the second stored copy of Diplomacy's
+    per_player_allied_victory, which AoE2ScenarioParser writes from the same
+    value on commit, and which AoE2:DE rewrites from the Diplomacy copy on
+    save (tests/fixtures/test_map_game_resave.aoe2scenario). In sync with the
+    Diplomacy copy across the corpus, pinned by
+    tests/test_diplomacy_write_path.py. Structural, unlike color's optional
+    mirror: an allied-victory edit writes both copies or neither, so this is
+    all-or-nothing and self-verifying (each target must reproduce its parsed
+    value from the body's own bytes). None when any player fails, which takes the
+    allied-victory cells, and only them, out of the write path."""
+    body = loaded.decompressed_body
+    targets: dict[int, PlayerWriteTarget] = {}
+    for player_id in range(1, NUM_PLAYERS + 1):
+        resolved = _player_data_3_target(loaded, player_id, "aok_allied_victory")
+        if resolved is None:
+            return None
+        t = resolved.target
+        try:
+            expected = encode_target(t, resolved.parsed_value)
+        except ValueError:
+            return None
+        if t.offset < 0 or body[t.offset : t.offset + t.length] != expected:
+            return None
+        targets[player_id] = t
+    return targets
 
 
 @dataclass(frozen=True)
@@ -1545,7 +1581,11 @@ def encode_target(target: PlayerWriteTarget, value: int | str) -> bytes:
                 f"would silently desync this field's mirrored copy"
             )
         return packed
-    return _CODEC_STRUCT[target.codec].pack(value)
+    try:
+        return _CODEC_STRUCT[target.codec].pack(value)
+    except struct.error as e:
+        # struct.error is not a ValueError, so it would escape every caller's refusal path.
+        raise ValueError(f"{value!r} does not fit a {target.codec} slot: {e}") from e
 
 
 # == AI personality locator (GH #126) =========================================

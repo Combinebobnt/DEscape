@@ -359,6 +359,265 @@ def test_set_visible_values_hides_cells_and_emptied_headings_and_restores_the_cu
         grid.close()
 
 
+# -- collapsible sections (TASK-552) --------------------------------------------
+
+
+def _heading(grid, group: str):
+    return next(heading for heading in grid.heading_items() if heading.text().startswith(f"{group} ("))
+
+
+def _heading_point(grid, group: str):
+    return grid.visualItemRect(_heading(grid, group)).center()
+
+
+def _click_heading(grid, group: str) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    QTest.mouseClick(grid.viewport(), Qt.LeftButton, Qt.NoModifier, _heading_point(grid, group))
+    _pump()
+
+
+def _hidden(grid, *values) -> list[bool]:
+    return [grid.cell_item(v).isHidden() for v in values]
+
+
+def test_a_heading_click_collapses_its_section_and_a_second_restores_it() -> None:
+    grid, _hook = _grid()
+    try:
+        picked = []
+        grid.picked.connect(picked.append)
+        below = _rect(grid, 30).top()
+        _click_heading(grid, "Grass")
+        assert not grid.section_open("Grass")
+        assert _hidden(grid, 20, 21, 22) == [True] * 3
+        assert not _heading(grid, "Grass").isHidden()
+        assert _rect(grid, 30).top() < below  # the next section moved up
+        assert grid.section_open("Water") and _hidden(grid, 10) == [False]
+        _click_heading(grid, "Grass")
+        assert grid.section_open("Grass")
+        assert _hidden(grid, 20, 21, 22) == [False] * 3
+        assert _rect(grid, 30).top() == below
+        assert picked == []
+    finally:
+        grid.close()
+
+
+def test_a_click_on_the_armed_sections_own_heading_keeps_the_armed_value() -> None:
+    grid, _hook = _grid()
+    try:
+        grid.set_current_value(20)
+        picked = []
+        grid.picked.connect(picked.append)
+        _click_heading(grid, "Grass")
+        assert grid.current_value() == 20
+        assert grid.currentItem() is None
+        _click_heading(grid, "Grass")
+        assert grid.current_value() == 20
+        assert grid.currentItem() is grid.cell_item(20)
+        assert picked == []
+    finally:
+        grid.close()
+
+
+def test_a_double_click_on_a_heading_is_two_toggles() -> None:
+    """The whole sequence: QTest.mouseDClick alone sends only the double-click event, which emits nothing."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    grid, _hook = _grid()
+    try:
+        seen = []
+        grid.itemClicked.connect(lambda _item: seen.append(grid.section_open("Grass")))
+        point = _heading_point(grid, "Grass")
+        QTest.mousePress(grid.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseRelease(grid.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseDClick(grid.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseRelease(grid.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        assert seen == [False, True]
+        assert grid.section_open("Grass")
+    finally:
+        grid.close()
+
+
+def test_a_drag_from_a_heading_onto_a_cell_toggles_nothing() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    grid, _hook = _grid()
+    try:
+        QTest.mousePress(grid.viewport(), Qt.LeftButton, Qt.NoModifier, _heading_point(grid, "Grass"))
+        QTest.mouseMove(grid.viewport(), _center(grid, 21))
+        QTest.mouseRelease(grid.viewport(), Qt.LeftButton, Qt.NoModifier, _center(grid, 21))
+        assert grid.section_open("Grass")
+    finally:
+        grid.close()
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_closed_sections_stack_their_headings_without_overlap(width: int) -> None:
+    items = _terrain_items()
+    groups = list(dict.fromkeys(item.group for item in items))
+    grid, _hook = _grid(items, width=width, height=500)
+    try:
+        for closing in (groups[::2], groups):  # the second leaves no cell, so the vertical scrollbar drops
+            for group in closing:
+                grid.set_section_open(group, False)
+            _pump()
+            viewport = grid.viewport().width()
+            headings = [grid.visualItemRect(heading) for heading in grid.heading_items()]
+            cells = [_rect(grid, v) for v in _shown_cells(grid)]
+            for rect in headings:
+                assert rect.width() >= viewport - 2 * grid.spacing(), (rect, viewport)
+                assert not any(rect.intersects(cell) for cell in cells), rect
+            for a, b in itertools.combinations(headings, 2):
+                assert not a.intersects(b)
+            assert grid.horizontalScrollBar().maximum() == 0
+    finally:
+        grid.close()
+
+
+def test_arrow_keys_skip_a_closed_section_and_never_land_on_a_heading() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    from descape.swatch_grid import _HEADING_ROLE
+
+    grid, _hook = _grid(width=300)
+    try:
+        grid.setFocus()
+        grid.set_section_open("Grass", False)
+        grid.set_current_value(10)
+        seen = set()
+        for key in [Qt.Key_Down] * 8 + [Qt.Key_Right] * 4 + [Qt.Key_Up] * 8 + [Qt.Key_Left] * 4:
+            QTest.keyClick(grid, key)
+            current = grid.currentItem()
+            assert current is not None and not current.data(_HEADING_ROLE)
+            assert not current.isHidden()
+            seen.add(grid.current_value() // 10)
+        assert 2 not in seen
+        assert len(seen) >= 3, seen
+    finally:
+        grid.close()
+
+
+def test_reopening_a_section_leaves_the_view_where_it_was() -> None:
+    """With the armed cell last in a long section, Qt's auto-scroll would take the heading from under the cursor."""
+    from descape.value_picker import PickerItem
+
+    last = 127
+    items = [PickerItem(f"Top {i}", i, "Top") for i in range(3)]
+    items += [PickerItem(f"Long {i:02}", 100 + i, "Long") for i in range(28)]
+    grid, _hook = _grid(items, width=300, height=200)
+    try:
+        grid.set_current_value(last)
+        _pump()
+        _click_heading(grid, "Long")
+        grid.scrollToTop()
+        _pump()
+        top = grid.visualItemRect(_heading(grid, "Long")).top()
+        _click_heading(grid, "Long")
+        assert grid.currentItem() is grid.cell_item(last)
+        assert grid.visualItemRect(_heading(grid, "Long")).top() == top
+        assert not _rect(grid, last).intersects(grid.viewport().rect()), "fixture: the armed cell must be off screen"
+        grid.scroll_to_value(last)  # an explicit scroll still works
+        _pump()
+        assert _rect(grid, last).intersects(grid.viewport().rect())
+    finally:
+        grid.close()
+
+
+def test_reveal_opens_only_the_sections_holding_a_wanted_value() -> None:
+    grid, _hook = _grid()
+    try:
+        for group in ("Water", "Grass", "Rock"):
+            grid.set_section_open(group, False)
+        grid.set_visible_values({10, 20, 40})
+        assert not grid.section_open("Water") and not grid.section_open("Grass")
+        assert _hidden(grid, 10, 20) == [True, True]
+        grid.set_visible_values({10, 40}, reveal=True)
+        assert grid.section_open("Water")
+        assert _hidden(grid, 10) == [False]
+        assert not grid.section_open("Grass") and not grid.section_open("Rock")
+        assert _heading(grid, "Grass").isHidden(), "no wanted cell: no heading, closed or not"
+        assert _heading(grid, "Rock").isHidden()
+        grid.set_visible_values({30})
+        assert not _heading(grid, "Rock").isHidden(), "a closed section with a wanted cell keeps its heading"
+        assert _hidden(grid, 30) == [True]
+    finally:
+        grid.close()
+
+
+def test_arming_a_value_in_a_closed_section_opens_and_frames_it() -> None:
+    grid, _hook = _grid()
+    try:
+        grid.set_section_open("Snow", False)
+        grid.set_current_value(42)
+        _pump()
+        assert grid.section_open("Snow")
+        assert grid.currentItem() is grid.cell_item(42)
+        assert _frame_sides(grid, 42) == [True] * 4
+    finally:
+        grid.close()
+
+
+@pytest.mark.parametrize("value", [None, 999])
+def test_arming_nothing_or_an_unknown_value_leaves_the_sections_alone(value) -> None:
+    grid, _hook = _grid()
+    try:
+        grid.set_section_open("Snow", False)
+        grid.set_current_value(value)
+        assert not grid.section_open("Snow")
+    finally:
+        grid.close()
+
+
+def test_a_closed_section_decodes_nothing_until_it_opens() -> None:
+    grid, hook = _grid(show=False)
+    try:
+        grid.set_section_open("Grass", False)
+        grid.show()
+        grid.flush_swatches()
+        assert not {20, 21, 22} & set(hook.calls)
+        assert not grid.fill_pending()
+        grid.set_section_open("Grass", True)
+        assert grid.fill_pending()
+        grid.flush_swatches()
+        assert {20, 21, 22} <= set(hook.calls)
+    finally:
+        grid.close()
+
+
+def test_the_heading_arrow_shows_the_state_left_of_the_heading_text() -> None:
+    from PyQt5.QtGui import QPalette
+
+    from descape.swatch_grid import PAD
+
+    grid, _hook = _grid()
+    try:
+        heading = grid.visualItemRect(_heading(grid, "Grass"))
+        arrow = grid.arrow_rect(heading)
+        opened = grid.viewport().grab().toImage()
+        grid.set_section_open("Grass", False)
+        _pump()
+        closed = grid.viewport().grab().toImage()
+        assert grid.visualItemRect(_heading(grid, "Grass")) == heading
+        assert opened.copy(arrow) != closed.copy(arrow)
+
+        base = grid.palette().color(QPalette.Base).rgb()
+        for image in (opened, closed):
+            ink = [
+                x for x in range(heading.left(), heading.right())
+                if any(image.pixel(x, y) != base for y in range(heading.top(), heading.bottom()))
+            ]
+            arrow_ink = [x for x in ink if x <= arrow.right()]
+            text_ink = [x for x in ink if x > arrow.right()]
+            assert arrow_ink and text_ink
+            assert min(text_ink) >= arrow.right() + PAD
+    finally:
+        grid.close()
+
+
 # -- swatch fill --------------------------------------------------------------
 
 

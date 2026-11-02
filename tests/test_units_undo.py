@@ -26,7 +26,7 @@ import pytest
 from descape.edit_history import EditHistory
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
-from descape.unit_model import UnitEditModel
+from descape.unit_model import UnitEditModel, merged_field_record
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 
@@ -391,3 +391,61 @@ def test_a_second_edit_after_undo_does_not_mutate_the_first_records_snapshot() -
 
     history.undo([], None, None, model)
     assert (villager.x, villager.y, villager.z) == original
+
+
+# -- 5. a compass drag folds its spokes into one record (TASK-548) -------------
+
+
+def _turn(model, history, units, rotation: float, label: str):
+    model.begin_unit_edit([1, 2], fields_only=True)
+    for unit in units:
+        model.set_rotation(unit, rotation)
+    return model.commit_unit_edit(label, history, push=False)
+
+
+def test_merged_field_record_keeps_the_first_before_and_the_last_after() -> None:
+    loaded, model, history = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    original = archer.rotation
+
+    older = _turn(model, history, [archer], 1.0, "first")
+    newer = _turn(model, history, [archer], 2.0, "second")
+    history.push_unit_record(merged_field_record(older, newer))
+
+    assert history.peek_undo().label == "second"
+    assert len(history.peek_undo().unit_field_entries) == 1
+    history.undo([], None, None, model)
+    assert archer.rotation == original
+    history.redo([], None, None, model)
+    assert archer.rotation == 2.0
+
+
+def test_merged_field_record_keeps_a_key_only_one_side_touched_in_matching_order() -> None:
+    loaded, model, history = _open()
+    archer, other = _unit(loaded, _REF_ARCHER_P1), _unit(loaded, _REF_ARCHER_P2)
+    originals = (archer.rotation, other.rotation)
+
+    older = _turn(model, history, [archer], 1.0, "first")
+    newer = _turn(model, history, [other], 2.0, "second")
+    merged = merged_field_record(older, newer)
+    history.push_unit_record(merged)
+
+    assert list(merged.before.entries) == list(merged.after.entries)
+    history.undo([], None, None, model)
+    assert (archer.rotation, other.rotation) == originals
+    history.redo([], None, None, model)
+    assert (archer.rotation, other.rotation) == (1.0, 2.0)
+
+
+def test_merged_field_record_carries_the_clean_flag_of_the_first_before() -> None:
+    loaded, model, history = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    assert not model.has_edits
+
+    older = _turn(model, history, [archer], 1.0, "first")
+    newer = _turn(model, history, [archer], 2.0, "second")
+    history.push_unit_record(merged_field_record(older, newer))
+
+    assert model.has_edits
+    history.undo([], None, None, model)
+    assert not model.has_edits

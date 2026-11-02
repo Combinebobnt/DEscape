@@ -30,6 +30,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+# Bound at import, so a test that monkeypatches the library's name still reads the real links.
+from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 from AoE2ScenarioParser.scenarios.aoe2_scenario import _decompress_bytes
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, parse_triggers
@@ -2489,6 +2492,44 @@ def test_removing_any_entry_keeps_the_survivors_display_order_on_a_non_identity_
     assert _check_removals_keep_display_order(path), "corpus assumption: a non-identity entry order"
 
 
+def _quantity_fields(loaded) -> list[list[tuple[bytes, ...]]]:
+    """Each trigger's effects' `quantity` and, where the file stores it, `quantity_float` bytes."""
+    names = ("quantity", "quantity_float")
+    return [
+        [
+            tuple(entry.retriever_map[n].get_data_as_bytes() for n in names if n in entry.retriever_map)
+            for entry in struct.retriever_map["effect_data"].data or []
+        ]
+        for struct in _raw_structs(loaded)
+    ]
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    "name", ["8tp3w9j", "old-allies-final-v2", "2_Joan_coop_2_v0_15", "C2_ElCid_coop_1_v0_16"]
+)
+def test_resave_keeps_every_effect_quantity_pair(name: str, tmp_path: Path) -> None:
+    """Every trigger dirty, both stored halves byte-equal. QUICK_CORPUS_NAMES
+    holds none of the files with a disagreeing pair, and the last has no float
+    field. Other fields differ by design on a dirty trigger."""
+    path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
+    if not path.exists():
+        pytest.skip(f"{path.name} is not in this corpus")
+    loaded = load_map_and_units(path)
+    model = TriggerEditModel(loaded)
+    before = _quantity_fields(loaded)
+    for index in range(len(model.manager().triggers)):
+        model.mark_dirty(index)
+    out = tmp_path / "resaved.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+
+    reloaded = load_map_and_units(out)
+    assert parse_triggers(reloaded) is not None
+    after = _quantity_fields(reloaded)
+    assert any(before), "corpus assumption: the file has effects"
+    assert after == before
+
+
 # -- tag management: rename and remove a tag across its carriers ---------------
 
 # Trigger 1 is the case variant, trigger 2 carries D1 only as a chained second
@@ -2700,3 +2741,293 @@ def test_renaming_each_files_commonest_tag_survives_a_reload(scenario_path: Path
             assert name_after == name_before
         else:
             assert tag_chain(name_after) == [new if t == old else t for t in tag_chain(name_before)]
+
+
+# -- GH #2: renumber IDs to display order --------------------------------------
+
+# Where each entry kind stores its type, and the types that link to a trigger.
+_LINK_TYPES = {"effect_data": ("effect_type", {"8", "9"}), "condition_data": ("condition_type", {"79"})}
+
+
+def _links_by_trigger(manager) -> list[list[int]]:
+    """Every trigger's links (Activate/Deactivate Trigger, Trigger Active), as IDs."""
+    return [[ce.trigger_id for ce in get_trigger_referencing_ce(t)] for t in manager.triggers]
+
+
+def _raw_structs(loaded) -> list:
+    return loaded._scenario.sections["Triggers"].retriever_map["trigger_data"].data or []
+
+
+def _raw_fields(struct) -> dict:
+    """A parsed struct's stored values, type-strict (repr), entry lists recursed."""
+    out: dict = {}
+    for name, retriever in struct.retriever_map.items():
+        data = retriever.data
+        if name in _LINK_TYPES or (isinstance(data, list) and data and hasattr(data[0], "retriever_map")):
+            out[name] = [_raw_fields(item) for item in data or []]
+        else:
+            out[name] = repr(data)
+    return out
+
+
+def _entry_diffs(kind: str, old: dict, new: dict, slot_of: dict[int, int]) -> list[str]:
+    """What changed in one condition or effect beyond a renumber's own remap
+    and the library's normalizations of any re-serialized trigger, each
+    allowed only in its exact value shape: `item_id` -1 filled from the field
+    its getter derives it from, and a legacy location reference moved into an
+    unset or equal one."""
+    old, new = dict(old), dict(new)
+    type_field, link_types = _LINK_TYPES[kind]
+    problems = []
+    if old.get(type_field) in link_types:
+        raw = int(old["trigger_id"])
+        expected = repr(slot_of.get(raw, raw))
+        if new["trigger_id"] != expected:
+            problems.append(f"trigger_id {raw} became {new['trigger_id']}, expected {expected}")
+        old["trigger_id"] = new["trigger_id"]
+    if kind == "effect_data":
+        if old.get("item_id") == "-1" and new.get("item_id") != "-1":
+            derived = next(
+                (old[f] for f in ("object_list_unit_id", "technology", "tribute_list") if old.get(f) not in (None, "-1", "None")),
+                None,
+            )
+            if new["item_id"] == derived:
+                old["item_id"] = new["item_id"]
+        location, legacy = "location_object_reference", "legacy_location_object_reference"
+        if legacy in old and old[legacy] not in ("-1", "None") and (
+            old[location] in ("-1", old[legacy]) and new[location] == old[legacy] and new[legacy] == "-1"
+        ):
+            old[location], old[legacy] = new[location], new[legacy]
+    problems += [f"{k}: {old.get(k)} -> {new.get(k)}" for k in sorted(old.keys() | new.keys()) if old.get(k) != new.get(k)]
+    return problems
+
+
+def _trigger_diffs(old: dict, new: dict, slot_of: dict[int, int]) -> list[str]:
+    problems = []
+    for key in sorted(old.keys() | new.keys()):
+        if key in _LINK_TYPES:
+            olds, news = old.get(key, []), new.get(key, [])
+            if len(olds) != len(news):
+                problems.append(f"{key}: {len(olds)} entries became {len(news)}")
+                continue
+            for i, (o, n) in enumerate(zip(olds, news, strict=True)):
+                problems += [f"{key}[{i}] {p}" for p in _entry_diffs(key, o, n, slot_of)]
+        elif old.get(key) != new.get(key):
+            problems.append(f"{key}: {old.get(key)} -> {new.get(key)}")
+    return problems
+
+
+def _check_renumber_round_trip(path: Path, tmp_path: Path) -> int:
+    """Renumber `path` through structural_edit() + write_scenario(), reload:
+    names in the old display order, every link re-pointed by display
+    position, the execution-order byte unchanged, every trigger the renumber
+    left clean byte-identical, and every dirty one equal field for field but
+    for _entry_diffs()' allowances. Returns how many triggers went dirty."""
+    from descape.trigger_model import exec_order_value, ids_follow_display_order, renumber_to_display_order
+
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    if manager is None or not loaded.trigger_write_supported:
+        pytest.skip(f"{path.name}: triggers are not editable")
+    order = list(manager.trigger_display_order)
+    if ids_follow_display_order(order):
+        pytest.skip(f"{path.name}: IDs already follow display order")
+    names = [t.name or "" for t in manager.triggers]
+    links = _links_by_trigger(manager)
+    exec_byte = exec_order_value(loaded)
+    model = TriggerEditModel(loaded)
+    slices = model_blob_lengths(_section_bytes(loaded), model)
+    # Only a trigger holding a link can go dirty; dumped before the save can rewrite the structs.
+    fields = {i: _raw_fields(s) for i, s in enumerate(_raw_structs(loaded)) if links[i]}
+    slot_of = {index: slot for slot, index in enumerate(order)}
+
+    model.structural_edit(renumber_to_display_order)
+    dirty = set(model.dirty_indices())
+    out = tmp_path / "renumbered.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+
+    reloaded_loaded = load_map_and_units(out)
+    reloaded = parse_triggers(reloaded_loaded)
+    assert [t.name or "" for t in reloaded.triggers] == [names[i] for i in order], f"{path.name}: names"
+    assert list(reloaded.trigger_display_order) == list(range(len(order)))
+    assert _links_by_trigger(reloaded) == [[slot_of.get(raw, raw) for raw in links[i]] for i in order], (
+        f"{path.name}: a link no longer names its trigger"
+    )
+    assert exec_order_value(reloaded_loaded) == exec_byte
+    after_slices = model_blob_lengths(_section_bytes(reloaded_loaded), TriggerEditModel(reloaded_loaded))
+    after_structs = _raw_structs(reloaded_loaded)
+    problems = []
+    for position, index in enumerate(order):
+        if position not in dirty:
+            if after_slices[position] != slices[index]:
+                problems.append(f"clean trigger {names[index]!r} changed bytes")
+            continue
+        assert index in fields, f"{path.name}: trigger {names[index]!r} went dirty holding no link"
+        problems += [
+            f"{names[index]!r} {p}" for p in _trigger_diffs(fields[index], _raw_fields(after_structs[position]), slot_of)
+        ]
+    assert not problems, f"{path.name}: {problems[:10]}"
+    return len(dirty)
+
+
+def _renumber_fixture() -> tuple:
+    """The fixture with a Trigger Active link added on trigger 3 (onto 1) and
+    display order [2, 0, 3, 1], so every link of all three types changes ID."""
+    loaded = load_map_and_units(FIXTURE_PATH)
+    model = TriggerEditModel(loaded)
+    model.manager().triggers[3].new_condition.trigger_active(trigger_id=1)
+    model.mark_dirty(3)
+    model.structural_edit(lambda m: setattr(m, "trigger_display_order", [2, 0, 3, 1]))
+    return loaded, model
+
+
+def _link_state(manager) -> tuple:
+    """List order by identity, IDs, display order and every link."""
+    return (
+        [id(t) for t in manager.triggers],
+        [t.trigger_id for t in manager.triggers],
+        list(manager.trigger_display_order),
+        _links_by_trigger(manager),
+    )
+
+
+def test_renumbering_gives_ids_in_display_order_and_keeps_every_link(tmp_path: Path) -> None:
+    from descape.trigger_model import exec_order_value, renumber_to_display_order
+
+    loaded, model = _renumber_fixture()
+    manager = model.manager()
+    order = list(manager.trigger_display_order)
+    old = list(manager.triggers)
+    targets = [(ce, ce.trigger_id, old[ce.trigger_id]) for t in old for ce in get_trigger_referencing_ce(t)]
+    kinds = sorted({(type(ce).__name__, getattr(ce, "effect_type", getattr(ce, "condition_type", None))) for ce, _, _ in targets})
+    assert kinds == [("Condition", 79), ("Effect", 8), ("Effect", 9)], "fixture assumption: all three link types"
+    names = [t.name for t in old]
+    links = _links_by_trigger(manager)
+    slot_of = {index: slot for slot, index in enumerate(order)}
+    exec_byte = exec_order_value(loaded)
+    slices = model_blob_lengths(_section_bytes(loaded), model)
+
+    model.structural_edit(renumber_to_display_order)
+    assert list(manager.trigger_display_order) == [0, 1, 2, 3]
+    assert [t.trigger_id for t in manager.triggers] == [0, 1, 2, 3]
+    assert all(live is old[index] for live, index in zip(manager.triggers, order, strict=True))
+    assert all(manager.triggers[ce.trigger_id] is target for ce, _, target in targets)
+    assert all(ce.trigger_id != raw for ce, raw, _ in targets), "fixture assumption: every link moves"
+    dirty = model.dirty_indices()
+
+    out = tmp_path / "renumbered.aoe2scenario"
+    write_scenario(loaded, out, triggers=model)
+    reloaded_loaded = load_map_and_units(out)
+    reloaded = parse_triggers(reloaded_loaded)
+    assert [t.name for t in reloaded.triggers] == [names[i] for i in order]
+    # By position, not name: dividers repeat names.
+    assert _links_by_trigger(reloaded) == [[slot_of[raw] for raw in links[i]] for i in order]
+    assert exec_order_value(reloaded_loaded) == exec_byte
+    after = model_blob_lengths(_section_bytes(reloaded_loaded), TriggerEditModel(reloaded_loaded))
+    clean = [position for position in range(4) if position not in dirty]
+    assert clean, "fixture assumption: a trigger holding no link"
+    assert all(after[position] == slices[order[position]] for position in clean)
+
+
+def test_a_renumber_whose_remap_misses_a_link_puts_the_manager_back(monkeypatch) -> None:
+    """D8: the helper restores the original list before raising, so
+    structural_edit()'s except branch writes the old display order onto it."""
+    import AoE2ScenarioParser.objects.managers.trigger_manager as library
+
+    from descape.trigger_model import renumber_to_display_order
+
+    _loaded, model = _renumber_fixture()
+    before = _link_state(model.manager())
+    monkeypatch.setattr(library, "get_trigger_referencing_ce", lambda trigger: [])
+
+    with pytest.raises(RuntimeError, match="links to ID"):
+        renumber_to_display_order(model.manager())
+    assert _link_state(model.manager()) == before
+    with pytest.raises(RuntimeError, match="links to ID"):
+        model.structural_edit(renumber_to_display_order)
+    assert _link_state(model.manager()) == before
+
+
+def test_renumber_refusal_names_a_bad_order_and_a_stray_id() -> None:
+    from descape.trigger_model import ids_follow_display_order, renumber_refusal, renumber_to_display_order
+
+    assert ids_follow_display_order([0, 1, 2]) and ids_follow_display_order([])
+    assert not ids_follow_display_order([1, 0, 2])
+    _loaded, model = _renumber_fixture()
+    manager = model.manager()
+    assert renumber_refusal(manager) == ""
+    manager.trigger_display_order = [0, 0, 1, 2]
+    assert "not a permutation" in renumber_refusal(manager)
+    before = _link_state(manager)
+    with pytest.raises(ValueError, match="not a permutation"):
+        renumber_to_display_order(manager)
+    assert _link_state(manager) == before, "a refusal changes nothing"
+    manager.trigger_display_order = [0, 1, 2, 3]
+    assert renumber_refusal(manager) == "IDs already follow display order"  # no empty undo step
+    manager.trigger_display_order = [2, 0, 3, 1]
+    manager.triggers[1].trigger_id = 7
+    assert renumber_refusal(manager) == "trigger 1 carries ID 7"
+
+
+def test_a_renumber_that_fails_in_the_viewer_warns_once_and_changes_nothing(monkeypatch) -> None:
+    import AoE2ScenarioParser.objects.managers.trigger_manager as library
+
+    window = conftest.shown_window()
+    warned: list[str] = []
+    window._warn = lambda title, text: warned.append(title)
+    try:
+        window.load_scenario(FIXTURE_PATH)
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_structural_edit("move_down", [0])
+        manager = window.trigger_edits.manager()
+        before = _link_state(manager)
+        monkeypatch.setattr(library, "get_trigger_referencing_ce", lambda trigger: [])
+        window.trigger_structural_edit("renumber", [])
+        assert warned == ["Trigger edit failed"]
+        assert _link_state(window.trigger_edits.manager()) == before
+        assert "Renumber trigger IDs to display order failed" in window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_refused_renumber_records_nothing() -> None:
+    window = conftest.shown_window()
+    warned: list[str] = []
+    window._warn = lambda title, text: warned.append(title)  # a real box hangs a headless worker
+    try:
+        window.load_scenario(FIXTURE_PATH)
+        window.mode_combo.setCurrentText("Triggers")
+        window.trigger_structural_edit("move_down", [0])
+        model = window.trigger_edits
+        records = len(window.edit_history.records)
+        good = list(model.manager().trigger_display_order)
+        model.manager().trigger_display_order = [0, 0, 1, 2]
+        window.trigger_structural_edit("renumber", [])
+        assert warned == [] and len(window.edit_history.records) == records
+        assert "Cannot renumber trigger IDs: the display order is not a permutation" in window.status_log.toPlainText()
+        model.manager().trigger_display_order = good
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_renumbering_round_trips_across_the_corpus(scenario_path: Path, tmp_path: Path) -> None:
+    _check_renumber_round_trip(scenario_path, tmp_path)
+
+
+def test_no_entry_outside_the_three_link_types_stores_a_trigger_id(scenario_path: Path) -> None:
+    """Fact 2, re-measured per file: a renumber remaps only types 8/9/79."""
+    loaded = load_map_and_units(scenario_path)
+    if parse_triggers(loaded) is None:
+        pytest.skip(f"{scenario_path.name}: Triggers section does not parse")
+    stray = []
+    for t, trigger in enumerate(_raw_structs(loaded)):
+        for kind, (type_field, link_types) in _LINK_TYPES.items():
+            for i, entry in enumerate(trigger.retriever_map[kind].data or []):
+                stored = entry.retriever_map.get("trigger_id")
+                if stored is None or repr(entry.retriever_map[type_field].data) in link_types:
+                    continue
+                if stored.data not in (-1, None):
+                    stray.append((t, kind, i, stored.data))
+    assert not stray, f"{scenario_path.name}: {stray[:10]}"

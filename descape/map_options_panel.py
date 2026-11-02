@@ -597,8 +597,8 @@ class MapOptionsPanel(QWidget):
     _NOT_SET_LABEL = "(not set)"
     _AS_STORED_SUFFIX = " (as stored)"
     _NOT_SET_TIP = (
-        "Stored empty: this file sets no water definition. Kept as stored until "
-        "another entry is picked."
+        "Stored empty: this file sets no {row}. Kept as stored until another "
+        "entry is picked."
     )
     _AS_STORED_TIP = (
         "Stored as \"{value}\", a name the game's list does not offer today. Kept "
@@ -606,7 +606,7 @@ class MapOptionsPanel(QWidget):
     )
 
     def _string_combo(self, spec, editable: bool) -> QComboBox:
-        """A STRING_COMBO row (water_definition): the spec's list, then the
+        """A STRING_COMBO row (water_definition, map_color_mood): the spec's list, then the
         file's own value as a row of its own when the list lacks it, so a
         legacy or empty name is shown and kept rather than snapped to an entry.
         That row stays after an edit, so the user can go back without Undo."""
@@ -618,7 +618,7 @@ class MapOptionsPanel(QWidget):
         value = self._values[spec.field_id]
         if widget.findData(stored) < 0:
             label = f"{stored}{self._AS_STORED_SUFFIX}" if stored else self._NOT_SET_LABEL
-            tip = self._AS_STORED_TIP.format(value=stored) if stored else self._NOT_SET_TIP
+            tip = self._AS_STORED_TIP.format(value=stored) if stored else self._NOT_SET_TIP.format(row=spec.label.lower())
             widget.addItem(label, stored)
             widget.setItemData(widget.count() - 1, tip, Qt.ToolTipRole)
         if widget.findData(value) < 0:

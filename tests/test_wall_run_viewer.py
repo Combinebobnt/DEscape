@@ -1757,7 +1757,9 @@ def test_something_left_standing_in_the_gateway_keeps_its_tile_open():
 
 
 def test_a_group_drag_of_the_gate_with_its_whole_run_changes_no_wall():
-    """Walls travelling in the selection are left alone, and nothing stays behind to plan."""
+    """Every wall travelling in the selection is re-derived where it lands
+    (GH #266), and a run that already stores its shapes keeps them; nothing
+    stays behind to plan."""
     window, gate = _gate_window()
     try:
         walls = _walls_on(window, set(_RUN))
@@ -1816,8 +1818,8 @@ def test_a_group_drag_holding_a_gate_plans_the_gate_move_once(monkeypatch):
         other = _add_unit(window, VILLAGER, 60.5, 60.5)
         _select_units(window, [gate, other])
         calls = []
-        real = wall_run.scenario_gate_moves
-        monkeypatch.setattr(wall_run, "scenario_gate_moves", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+        real = wall_run.scenario_move_plan
+        monkeypatch.setattr(wall_run, "scenario_move_plan", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
 
         _drag_gate(window, 5, 0)
 
@@ -1911,9 +1913,9 @@ def test_box_on_a_move_with_no_gate_in_it_keeps_the_splice_path(monkeypatch):
         villager = _add_unit(window, VILLAGER, 60.5, 60.5)
 
         def never(*_args, **_kwargs):
-            raise AssertionError("a move with no gate in it must not plan")
+            raise AssertionError("a move with no gate or wall in it must not plan")
 
-        monkeypatch.setattr(wall_run, "scenario_gate_moves", never)
+        monkeypatch.setattr(wall_run, "scenario_move_plan", never)
         refreshes = []
         real = window._after_unit_mutation
         monkeypatch.setattr(
@@ -1949,9 +1951,11 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
         _drag_gate(window, 5, 0)
         _select_units(window, [gate])
         steps = []
+        deltas = []
         for _step in range(2):
             _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
             steps.append(_last_status(window))
+            deltas.append(_is_field_delta(window))
             overrides = render.wall_variant_rotation_overrides(window.scenario)
             assert bool(overrides) == (encoding == "radian")
             units = window.scenario.unit_manager.units
@@ -1960,6 +1964,8 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
                 assert derived == unit_sprites.variant_index(unit.rotation, 5), (unit.x, unit.y, derived, unit.rotation)
         assert steps[0].endswith(", filling 4")
         assert steps[1].endswith(", reshaping 4 adjacent")
+        # GH #266: a plan with rewrites only is a fields-only splice edit; fills keep the wholesale record.
+        assert deltas == [False, True]
         # The gate is two rows away again, so the whole row reads as one plain run.
         assert _row_indices(window) == {x: (2.0 if x in (20, 40) else 0.0) for x in range(20, 41)}
     finally:
@@ -1986,5 +1992,352 @@ def test_a_gate_drag_ghost_onto_walls_is_refused_only_where_the_drop_is(box):
         finally:
             _HELD["value"] = False
         assert ((gate.x, gate.y) != (27.0, _ROW + 0.5)) is box, _last_status(window)
+    finally:
+        _close(window)
+
+
+# --- A moved wall takes the shape of its new place (GH #266) ----------------
+#
+# The integer cases store the fixture's one radian wall as the literal 2.0
+# before laying the run, so the file is integer-encoded and DEscape draws each
+# stored index as is. Laying the run bumps unit_gen past that bare write.
+
+
+def _moved_wall_window(integer: bool = True):
+    """(window, wall, west, east): _RUN laid on _ROW with Move armed; `wall`
+    is the piece on (30, _ROW), `west` and `east` its run neighbours, all
+    storing the run index 0."""
+    window = _window()
+    if integer:
+        _gaia_wall(window).rotation = 2.0
+    window.on_shape_commit(_RUN)
+    window.move_action.setChecked(True)
+    (west,), (wall,), (east,) = (_walls_on(window, {(x, _ROW)}) for x in (29, 30, 31))
+    assert (west.rotation, wall.rotation, east.rotation) == (0.0, 0.0, 0.0)
+    return window, wall, west, east
+
+
+def _drag_wall_down(window, rows: int) -> None:
+    _drag_point(window, (30.5, _ROW + 0.5), (30.5, _ROW + 0.5 + rows))
+
+
+def _shapes(*walls) -> tuple:
+    return tuple(u.rotation for u in walls)
+
+
+def _derived_around(window, tiles) -> int:
+    """Asserts every wall on or beside `tiles` stores the index its neighbours
+    derive (2 with none) and returns how many it checked."""
+    from descape import unit_sprites, wall_run
+
+    mm = window.scenario.map_manager
+    connectors, walls = wall_run.wall_scene(window.scenario, mm.map_width, mm.map_height)
+    near = {(tx + dx, ty + dy) for tx, ty in tiles for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
+    checked = 0
+    for wall in walls:
+        if (wall.tx, wall.ty) not in near:
+            continue
+        mask = unit_sprites.neighbour_mask(wall.tx, wall.ty, connectors, diagonals=True)
+        derived = unit_sprites.wall_variant_from_neighbours8(mask)
+        assert unit_sprites.variant_index(wall.unit.rotation, 5) == (2 if derived is None else derived), (wall.tx, wall.ty)
+        checked += 1
+    return checked
+
+
+def _file_is_radian(window) -> bool:
+    from descape import render, unit_sprites
+
+    return unit_sprites.file_is_radian(
+        [
+            render.stored_rotation(player_id, u)
+            for player_id, units in enumerate(window.scenario.unit_manager.units)
+            for u in units
+            if unit_sprites.rotation_variant_eligible(u.unit_const)
+        ],
+        5,
+    )
+
+
+def test_a_wall_dragged_off_its_run_is_a_tower_and_so_are_its_old_neighbours():
+    """The GH #266 screenshot case, as one fields-only record: undo puts back
+    the position and all three indices, redo reapplies them."""
+    window, wall, west, east = _moved_wall_window()
+    try:
+        records = len(window.edit_history.records)
+
+        _drag_wall_down(window, 3)
+
+        assert (wall.x, wall.y) == (30.5, _ROW + 3.5), _last_status(window)
+        assert _shapes(wall, west, east) == (2.0, 2.0, 2.0)
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        assert _last_status(window).endswith(", reshaping 2 adjacent")
+        assert _derived_around(window, [(30, _ROW), (30, _ROW + 3)]) == 3
+        assert not _file_is_radian(window)
+
+        window.undo()
+        assert (wall.x, wall.y) == (30.5, _ROW + 0.5)
+        assert _shapes(wall, west, east) == (0.0, 0.0, 0.0)
+        window.redo()
+        assert (wall.y, *_shapes(wall, west, east)) == (_ROW + 3.5, 2.0, 2.0, 2.0)
+    finally:
+        _close(window)
+
+
+def test_a_shift_nudge_carries_a_wall_off_its_run_and_a_plain_one_keeps_its_tile(monkeypatch):
+    """A plain arrow moves 0.1 inside the tile: nothing reshapes and the one
+    splice is the wall's own. Shift moves it a tile, diagonal to both old
+    neighbours: a tower, each of them a run end, one splice per reshaped wall."""
+    from PyQt5.QtCore import Qt
+
+    window, wall, west, east = _moved_wall_window()
+    try:
+        _select_units(window, [wall])
+        refreshes = []
+        real = window._after_unit_mutation
+        monkeypatch.setattr(
+            window, "_after_unit_mutation", lambda changed=None, **kw: (refreshes.append(changed), real(changed, **kw))[1]
+        )
+
+        _arrow(window, Qt.Key_Down)
+        assert wall.y == pytest.approx(_ROW + 0.6)
+        assert _shapes(wall, west, east) == (0.0, 0.0, 0.0)
+        assert _is_field_delta(window) and "reshaping" not in _last_status(window)
+        assert [s.unit for s in refreshes[-1]] == [wall]
+
+        window.undo()
+        _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
+        assert wall.y == _ROW + 1.5
+        assert _shapes(wall, west, east) == (2.0, 2.0, 2.0)
+        assert _is_field_delta(window)
+        assert _last_status(window).endswith(", reshaping 2 adjacent")
+        assert sorted(int(s.unit.x) for s in refreshes[-1]) == [29, 30, 31]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("how", ["group_drag", "y_step"])
+def test_two_walls_carried_out_of_a_run_together_reshape_the_ends_they_leave(how):
+    """A group drag and the Inspector's Y step on a two-wall selection (GH
+    #154) both go through _move_units: the pair lands as two run ends, and
+    the walls either side of the gap become run ends."""
+    window, wall, west, east = _moved_wall_window()
+    try:
+        (beyond,) = _walls_on(window, {(32, _ROW)})
+        _select_units(window, [wall, east])
+        records = len(window.edit_history.records)
+
+        if how == "group_drag":
+            _drag_wall_down(window, 3)
+        else:
+            window.units_panel.unit_field_editors["y"].stepBy(3)
+
+        assert (wall.y, east.y) == (_ROW + 3.5, _ROW + 3.5), _last_status(window)
+        assert _shapes(wall, east, west, beyond) == (2.0, 2.0, 2.0, 2.0)
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        moved = "Moved 2 units by (0, 3)" if how == "group_drag" else "Moved 2 units by +3 on Y"
+        assert _last_status(window) == f"{moved}, reshaping 2 adjacent"
+    finally:
+        _close(window)
+
+
+def test_typing_x_on_a_wall_carries_it_off_its_run():
+    window, wall, west, east = _moved_wall_window()
+    try:
+        _select_units(window, [wall])
+        records = len(window.edit_history.records)
+
+        window.units_panel.unit_field_editors["x"].setValue(50.5)
+
+        assert (wall.x, wall.y) == (50.5, _ROW + 0.5)
+        assert _shapes(wall, west, east) == (2.0, 2.0, 2.0)
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        assert _last_status(window) == "Set unit X, reshaping 2 adjacent"
+        window.undo()
+        assert (wall.x, *_shapes(wall, west, east)) == (30.5, 0.0, 0.0, 0.0)
+    finally:
+        _close(window)
+
+
+def test_scatter_move_mode_carries_a_wall_off_its_run():
+    from descape.scatter_dialog import ScatterParams
+
+    window, wall, west, east = _moved_wall_window()
+    try:
+        keys = _select_units(window, [wall])
+        entries = [window.map_view._unit_index.entry_for_key(key) for key in keys]
+        area = [(x, y) for x in range(50, 54) for y in range(50, 54)]
+        params = ScatterParams(
+            tiles=area, unit_const=None, player=PLAYER, count=None, density=None, seed=7, jitter=0.0,
+            min_spacing=0, move_selected=True,
+        )
+        records = len(window.edit_history.records)
+
+        window._scatter_selected_units(entries, params)
+
+        assert (int(wall.x), int(wall.y)) in area, _last_status(window)
+        assert _shapes(wall, west, east) == (2.0, 2.0, 2.0)
+        assert len(window.edit_history.records) == records + 1
+        assert _is_field_delta(window)
+        assert _last_status(window) == "Scattered 1 selected units across the area, reshaping 2 adjacent"
+    finally:
+        _close(window)
+
+
+def test_in_a_radian_file_the_drag_writes_literal_shapes_the_render_agrees_with():
+    """The fixture as loaded: its radian GAIA wall keeps the file radian. One
+    run neighbour stores radian noise (index 1); left a run end, it stores
+    the literal 2.0, and no override disagrees with a stored index."""
+    from descape import render, unit_sprites
+
+    window, wall, west, east = _moved_wall_window(integer=False)
+    try:
+        west.rotation = 1.256637
+        window._after_unit_mutation()
+
+        _drag_wall_down(window, 3)
+
+        assert _shapes(wall, west, east) == (2.0, 2.0, 2.0), _last_status(window)
+        assert _file_is_radian(window)
+        assert _is_field_delta(window)
+        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        assert overrides, "the radian wall should force the override path"
+        units = window.scenario.unit_manager.units
+        for (player_id, index), derived in overrides.items():
+            unit = units[player_id][index]
+            assert derived == unit_sprites.variant_index(unit.rotation, 5), (unit.x, unit.y, derived, unit.rotation)
+    finally:
+        _close(window)
+
+
+def test_the_status_counts_no_rewrite_of_a_wall_the_user_moved():
+    """A wall moved within its own tile can be re-derived as a staying wall,
+    but it is one of the movers, so it is not reported as reshaped."""
+    from descape import wall_run
+    from descape.viewer import ViewerWindow
+
+    mover, other = object(), object()
+    plan = wall_run.MovePlan(removals=[], fills=[], rewrites=[(1, mover, 2), (1, other, 2)], moved=[(1, object(), 2)])
+    assert ViewerWindow._gate_move_clauses(plan, [mover]) == ", reshaping 1 adjacent"
+    assert ViewerWindow._gate_move_clauses(plan) == ", reshaping 2 adjacent"
+
+
+# --- GH #280: a gate turned during its drag ---------------------------------------------
+
+
+def _turn_drag(window, a, b, cw: int = 0, ccw: int = 0) -> None:
+    """_drag_point(), with the Rotate actions fired while the button is down."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view = window.map_view
+    start, end = _point_pos(window, *a), _point_pos(window, *b)
+    _HELD["value"] = True
+    try:
+        view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
+        for _ in range(cw):
+            window.rotate_cw_action.trigger()
+        for _ in range(ccw):
+            window.rotate_ccw_action.trigger()
+        view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _HELD["value"] = False
+
+
+_GATE_Y = 88  # the (1, 4) sibling of GATE, two steps along
+
+
+def _player_gate(window):
+    return next(u for u in window.scenario.unit_manager.units[PLAYER] if u.unit_const in (GATE, _GATE_Y))
+
+
+def test_a_gate_turned_then_moved_out_of_its_run_fills_the_gap_and_undo_restores_it_all():
+    """GH #280's reported case: read after a turn at the source, the gap reads as a line across the wall."""
+    window, gate = _gate_window()
+    try:
+        before = (_unit_count(window), gate.x, gate.y)
+        records = len(window.edit_history.records)
+
+        _turn_drag(window, _GRAB, (50.5, _ROW + 10.1), cw=2)
+
+        assert gate.unit_const == _GATE_Y
+        assert (gate.x, gate.y) == (50.5, _ROW + 10.0)
+        filled = _walls_on(window, _OLD)
+        assert sorted(int(u.x) for u in filled) == [25, 26, 27, 28]
+        assert all(u.unit_const == WALL for u in filled)
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert window.edit_history.peek_undo().label == "Move and rotate unit"
+        assert "filling 4" in _last_status(window)
+
+        window.undo()
+        restored = _player_gate(window)
+        assert (_unit_count(window), restored.x, restored.y) == before
+        assert restored.unit_const == GATE
+        assert _walls_on(window, _OLD) == []
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_onto_a_run_replaces_the_walls_under_its_turned_footprint_only():
+    window, gate = _gate_window()
+    try:
+        _turn_drag(window, _GRAB, (36.5, _ROW + 0.1), cw=2)
+        assert gate.unit_const == _GATE_Y
+        assert (gate.x, gate.y) == (36.5, float(_ROW))
+        assert _walls_on(window, {(36, _ROW)}) == []
+        assert len(_walls_on(window, {(35, _ROW), (37, _ROW)})) == 2, "a (4, 1) footprint would take them"
+        assert "replacing 1 wall," in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_back_in_the_drag_plans_as_an_unturned_move():
+    window, gate = _gate_window()
+    try:
+        _turn_drag(window, _GRAB, (_GRAB[0] + 5, _GRAB[1]), cw=1, ccw=1)
+        assert (gate.unit_const, gate.x, gate.y) == (GATE, 32.0, _ROW + 0.5)
+        assert _walls_on(window, _NEW) == []
+        assert len(_walls_on(window, _OLD)) == 4
+        assert window.edit_history.peek_undo().label == "Move unit"
+        assert _moved_gate_status(window) == f"to (32, {_ROW + 0.5:g}), replacing 4 walls, filling 4"
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_on_its_own_low_corner_plans_with_the_box_as_a_rotate():
+    """Its in-place drop still reads the plan: the rest of the line fills, wholesale, with no position write."""
+    window, gate = _gate_window()
+    try:
+        # The (1, 4) sibling's anchor on the low corner (25, _ROW), and off the tie on the even axis.
+        _turn_drag(window, _GRAB, (25.5, _ROW + 2.1), cw=2)
+        assert (gate.unit_const, gate.x, gate.y) == (_GATE_Y, 25.5, _ROW + 2.0)
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [26, 27, 28]
+        assert window.edit_history.peek_undo().label == "Rotate unit"
+    finally:
+        _close(window)
+
+
+def test_a_group_holding_a_turned_gate_plans_it_once_by_its_turned_span(monkeypatch):
+    from descape import wall_run
+
+    window, gate = _gate_window()
+    try:
+        villager = _add_unit(window, VILLAGER, 27.5, _ROW + 6.5)
+        _select_units(window, [gate, villager])
+        plans: list = []
+        real = wall_run.scenario_move_plan
+        monkeypatch.setattr(
+            wall_run, "scenario_move_plan", lambda *a, **k: (plans.append(k.get("consts")), real(*a, **k))[1]
+        )
+        _turn_drag(window, _GRAB, (_GRAB[0] + 24, _GRAB[1] + 10), cw=2)
+        assert len(plans) == 1
+        assert plans[0][id(gate)] == _GATE_Y
+        assert gate.unit_const == _GATE_Y
+        # Rotate, then the delta: (1, 4) on the low corner (25, _ROW) is (25.5, _ROW + 2).
+        assert (gate.x, gate.y) == (49.5, _ROW + 12.0)
+        assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [25, 26, 27, 28]
     finally:
         _close(window)

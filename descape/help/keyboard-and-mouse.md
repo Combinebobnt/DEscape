@@ -14,12 +14,12 @@ In DEscape this page shows your current keys and mouse wheel settings next, read
 
 ## Picking on the map
 
-These apply while a trigger field's Set button or the Garrison list's Pick from map is waiting for the map.
+These apply while a trigger field's Set, Pick or eyedropper button, or the Garrison list's Pick from map, is waiting for the map.
 
 - A location takes one click. An area takes a drag, and is set when you let go.
 - Picking units: click a unit, and click again to walk down a stack.
 - Right-click or Esc cancels the pick, or finishes Pick from map.
-- With Edit Area ticked under Pan in Triggers mode, drag the middle of the shown area to move it, or an edge or corner to resize it. Right-click or Esc during the drag cancels it.
+- With Edit Area ticked under Pan in Triggers mode, drag the middle of the shown area to move it, or an edge or corner to resize it. With Move ticked too, drag a location's mark to move it, unless the mark is dimmed. Right-click or Esc during the drag cancels it.
 - With the Create Objects tool, a left click stamps; a right click does nothing.
 
 ## Ruler
@@ -52,8 +52,9 @@ These apply while a trigger field's Set button or the Garrison list's Pick from 
 ## Triggers panel
 
 - The ▲ and ▼ buttons: a click moves the selection one place, Shift+click five places, and Ctrl+click to the top or bottom. Ctrl wins when both are held.
-- Right-click the trigger list for Cut, Copy, Paste, the four Move commands, Select Section and Select Tag.
+- Right-click the trigger list for Cut, Copy, Paste, the four Move commands, Renumber IDs to Display Order, Select Section and Select Tag.
 - Right-click the conditions and effects for Cut, Copy, Paste, the four Move commands and Select Same Type.
+- Double-click a trigger to rename it in the list. A section header with triggers under it collapses or expands instead.
 - Double-click a variable in the Trigger Variables window to rename it. Double-click in the type picker to accept a type.
 - Neither list reorders by dragging, and Delete does nothing in them.
 
@@ -61,8 +62,9 @@ These apply while a trigger field's Set button or the Garrison list's Pick from 
 
 - Units catalog: double-click an object, or press Enter, to switch to Place Unit with it.
 - Garrison list: double-click a row to select that unit (with **Filters > Show Garrisoned Units** on).
-- Facing dial: click or drag to set the facing, scroll to step it.
+- Facing dial: click to set the facing, drag to turn the unit as you go, scroll to step it.
 - X, Y and Z with several units selected: the arrows, the arrow keys or the wheel move every selected unit by one step.
+- Rotation with several units selected: the arrows or the wheel turn every selected unit by one step.
 - In the Units Inspector, the wheel over an Owner, Unit State or Capture Flag dropdown scrolls the Inspector until you click the dropdown. The mouse wheel dropdowns in **Settings > Keybinds** ignore the wheel.
 - Text boxes in the trigger form and Messages mode: drag the grip on the bottom edge to change the height in whole lines; double-click the grip to reset it.
 - Filters menu: a click or Space toggles an entry, and the menu stays open.

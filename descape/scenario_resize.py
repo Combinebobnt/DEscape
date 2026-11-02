@@ -45,6 +45,7 @@ import math
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import Enum
 
 from descape import library_compat, player_fields, render, trigger_geometry, unit_references
@@ -175,6 +176,8 @@ class ResizePlan:
     refusal: str | None
     # TASK-219: trigger unit ids that resolve now and name only deleted objects afterwards; kept as written.
     dangling_references: int = 0
+    # The units units_deleted counted, so the preview draws exactly those (TASK-547).
+    removed: tuple = dataclass_field(default=(), compare=False, repr=False)
 
     @property
     def destructive(self) -> bool:
@@ -314,6 +317,7 @@ def resize_plan(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor
         trigger_note=note,
         refusal=_refusal(scenario, new_w, new_h, dx, dy, deleted),
         dangling_references=dangling_reference_count(scenario, removed),
+        removed=tuple(removed),
     )
 
 

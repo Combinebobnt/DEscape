@@ -191,5 +191,29 @@ def facing_scale(unit_consts) -> int:
 def snap_facing(facing: int, from_count: int, to_count: int) -> int:
     """`facing` on a `from_count` grid, as the nearest facing on a `to_count`
     grid. A mixed-direction-count group edits on its finest grid, and each
-    member lands on its own nearest frame through this."""
-    return rotation_to_facing(facing_to_rotation(facing, from_count), to_count)
+    member lands on its own nearest frame through this.
+
+    Integer arithmetic, half up: going through radians breaks a tie by float
+    noise, and an aligned group's read-back rests on this agreeing with itself."""
+    return ((2 * (facing % from_count) * to_count + from_count) // (2 * from_count)) % to_count
+
+
+def common_facing(members) -> int | None:
+    """The one facing a group of ANGLE units reads as, or None for "(mixed)".
+    `members` are (rotation, angle_count) pairs.
+
+    snap_facing()'s rule read backwards: the group is at a facing when every
+    member sits where that facing would put it, so a write always reads back.
+    A member on the finest grid always exists and decides the only candidate."""
+    scale = max(count for _rotation, count in members)
+    lead = next(rotation_to_facing(rotation, scale) for rotation, count in members if count == scale)
+    agrees = all(rotation_to_facing(rotation, count) == snap_facing(lead, scale, count) for rotation, count in members)
+    return lead if agrees else None
+
+
+def member_steps(lead_facing: int, scale: int, count: int, steps: int) -> int:
+    """The frames of its own a member with `count` frames turns while the
+    group's lead turns `steps` on the `scale` grid. Stateless and telescoping,
+    so N notches up then N down restores everyone. A whole turn is not 0:
+    across the wrap one frame up reads -(count - 1), so test `% count`."""
+    return snap_facing(lead_facing + steps, scale, count) - snap_facing(lead_facing, scale, count)

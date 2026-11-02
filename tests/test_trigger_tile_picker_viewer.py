@@ -164,7 +164,9 @@ def test_rows_appear_only_for_the_groups_the_definition_carries(kind, index, gro
             assert caption is not None and caption.text() == group.capitalize()
             # Right after the group's last field row.
             last = {"location": "location_y", "area": "area_y2", "objects": "selected_object_ids"}[group]
-            assert _form_row(panel, row.set_button.parentWidget()) == _form_row(panel, _row(panel, last)) + 1
+            # GH #277: an area's boxes share the form row of their grid.
+            above = _row(panel, last).parentWidget() if group == "area" else _row(panel, last)
+            assert _form_row(panel, row.set_button.parentWidget()) == _form_row(panel, above) + 1
         hosts = {row.set_button.parentWidget() for row in panel._group_rows.values()}
         assert not any(widget in hosts for *_, widget in panel._rows), "group rows stay out of _rows"
     finally:
@@ -267,7 +269,8 @@ def test_group_rows_do_not_overlap_or_squeeze() -> None:
         panel.select_entry("effect", PATROL_EFFECT)
         assert len(panel._group_rows) == 3
         walked, _wrapped = _assert_form_rows_do_not_overlap(panel.property_form)
-        assert walked >= len(panel._rows) + 3
+        # GH #277: the area's four boxes are one form row.
+        assert walked >= len(panel._rows) - (len(AREA) - 1) + 3
         assert not panel.property_area.horizontalScrollBar().isVisible()
     finally:
         conftest.close_window(window)

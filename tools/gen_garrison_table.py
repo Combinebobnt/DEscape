@@ -57,6 +57,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
 
     from genieutils.datfile import DatFile
 

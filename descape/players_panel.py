@@ -46,6 +46,12 @@ for GAIA. Tribe name, name string ID, base priority and Personality are
 absent there, and the Point of View pair is not a Players-tab control at all.
 GAIA's Pop Limit is Map.per_player_population_cap's slot 8, so a pre-1.44
 file has no Pop Limit row for GAIA (`specs_for_player()`).
+
+The selector always lists all eight players, whatever Number of Players
+says (TASK-063). A player past the count is greyed, with a tooltip saying
+so, but stays selectable and editable: lowering the count leaves its
+settings on disk by design, and this selector is how to read or repair
+them. The marks follow the count as edited, on every repopulate.
 """
 
 from __future__ import annotations
@@ -55,8 +61,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.helper.bytes_conversions import str_to_bytes
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QValidator
+from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtGui import QBrush, QPalette, QValidator
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -87,6 +93,7 @@ from descape.player_fields import (
     civilization_choices,
     current_value,
     defined_player_count,
+    defined_player_ids,
     pov_bounds,
     specs_for_player,
     starting_age_choices,
@@ -189,8 +196,9 @@ _POV_GROUP = "Point of View"
 
 
 class PlayersPanel(QWidget):
-    """Per-player settings: a GAIA, P1..P8 selector plus one form (the Players
-    mode's left page).
+    """Per-player settings: a GAIA, P1..P8 selector (players past Number of
+    Players greyed but selectable) plus one form (the Players mode's left
+    page).
 
     Dumb by design, same as MapOptionsPanel/TriggerPanel: it reports "the
     user set field X for player N to raw value V" through the callback it
@@ -220,6 +228,13 @@ class PlayersPanel(QWidget):
         "Read-only for this file: its Options disable lists failed verification, "
         "so rewriting that region would land at an offset that cannot be trusted."
     )
+    # GH #185. Its finer refusals are the dialog's own preview line.
+    _SWAP_LABEL = "Swap Players…"
+    _SWAP_TOOLTIP = (
+        "Exchange two players' slots: units, settings, Personality and disabled "
+        "objects, and optionally their trigger references and diplomacy."
+    )
+    _SWAP_GATE_REASON = "Needs a scenario with at least two players, open in its own game's data."
     _SET_VIEW_LABEL = "Set View"
     _SET_VIEW_TOOLTIP = (
         "Set this player's starting camera to the tile at the centre of the "
@@ -240,6 +255,10 @@ class PlayersPanel(QWidget):
         "Clear this player's starting camera back to unset (-1, -1), which is "
         "what every scenario with no view set stores."
     )
+    _INACTIVE_PLAYER_NOTE = (
+        " (past Number of players: not in play in this scenario; its settings "
+        "stay in the file and can still be edited)"
+    )
     _PLAYER_COUNT_LABEL = "Number of players"
     _PLAYER_COUNT_TOOLTIP = (
         "How many players this scenario defines. Lowering it deactivates the "
@@ -259,6 +278,7 @@ class PlayersPanel(QWidget):
         on_reset_view=None,
         on_player_selected=None,
         on_centre_view=None,
+        on_swap_requested=None,
     ):
         super().__init__()
         # No-op defaults so the panel stays constructible on its own, the
@@ -266,6 +286,7 @@ class PlayersPanel(QWidget):
         self._on_player_field = on_player_field or (lambda *args: None)
         self._on_player_count = on_player_count or (lambda *args: None)
         self._on_disables_requested = on_disables_requested or (lambda *args: None)
+        self._on_swap_requested = on_swap_requested or (lambda *args: None)
         # GH #22's four Point of View buttons (GH #157 added Set to Centre) and
         # the selection notice the camera markers' emphasis follows. All five
         # stay model-free: the panel reports the gesture and the player it was
@@ -295,6 +316,8 @@ class PlayersPanel(QWidget):
         # derivable from the file once an edit is pending" reasoning
         # _values has, for the one row that isn't per-player.
         self._player_count = _MIN_PLAYER_COUNT
+        # Players 1..8 in play (as edited); the selector greys the rest (TASK-063).
+        self._active_players: frozenset[int] = frozenset()
         self._personality = PersonalityOptions()
         self._populating = False
         # GH #130: pushed by refresh_player_labels(), read when the combo is built.
@@ -341,7 +364,17 @@ class PlayersPanel(QWidget):
         self.disables_button = QPushButton(self._DISABLES_LABEL)
         self.disables_button.setEnabled(False)
         self.disables_button.clicked.connect(lambda *_: self._on_disables_requested())
-        layout.addWidget(self.disables_button)
+        # GH #185, beside it: also scenario-wide, also a dialog (Map > Swap Players… too).
+        self.swap_button = QPushButton(self._SWAP_LABEL)
+        self.swap_button.clicked.connect(lambda *_: self._on_swap_requested())
+        self.set_swap_enabled(False)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.addWidget(self.disables_button)
+        buttons.addWidget(self.swap_button)
+        self.scenario_buttons = QWidget()
+        self.scenario_buttons.setLayout(buttons)
+        layout.addWidget(self.scenario_buttons)
 
         self._rebuild_host()
 
@@ -375,9 +408,11 @@ class PlayersPanel(QWidget):
             self._read_only_reasons = {}
             self._pending_values = {}
             self._player_count = _MIN_PLAYER_COUNT
+            self._active_players = frozenset()
             self._personality = PersonalityOptions()
             self.player_count_spin.setEnabled(False)
             self._set_disables_enabled(False)
+            self.set_swap_enabled(False)
             self.player_combo.blockSignals(True)
             self.player_combo.clear()
             self.player_combo.blockSignals(False)
@@ -398,6 +433,8 @@ class PlayersPanel(QWidget):
         disables_editable: bool = False,
         disables_carrier_ok: bool = True,
         personality: PersonalityOptions | None = None,
+        swap_editable: bool = False,
+        active_players: Iterable[int] | None = None,
     ) -> None:
         """Populate from `loaded`. The single repopulate path -- both
         ViewerWindow._show_players() (mode entry, a new document) and
@@ -446,6 +483,18 @@ class PlayersPanel(QWidget):
 
         `personality` is the Personality combo's choices and per-row
         refusals (GH #126); None means Standard and None only.
+
+        `swap_editable` is the Swap Players… button's gate (GH #185), the
+        window's _swap_editable(): not the Disabled Objects one, which would
+        grey Swap out wherever the disables block fails to verify.
+
+        `active_players` is which of P1..P8 are in play as edited (the
+        window's _current_active_players(), so it follows a pending Number
+        of Players); None means what the file stores. The selector keeps all
+        eight either way, and greys the rest with a tooltip saying why, on
+        every call rather than only on a new document (TASK-063): a player
+        past the count is still selectable and editable, since its settings
+        stay on disk and the selector is how to read or repair them.
         """
         if loaded is None:
             self.clear_document()
@@ -460,7 +509,9 @@ class PlayersPanel(QWidget):
         self._populate_player_count(
             defined_player_count(loaded) if player_count is None else player_count
         )
+        self._active_players = frozenset(defined_player_ids(loaded) if active_players is None else active_players)
         self._set_disables_enabled(disables_editable, disables_carrier_ok)
+        self.set_swap_enabled(swap_editable)
 
         if not same_document:
             self._player_id = 1
@@ -472,8 +523,29 @@ class PlayersPanel(QWidget):
             self.player_combo.setCurrentIndex(self.player_combo.findData(1))
             self.player_combo.blockSignals(False)
             self.player_combo.setEnabled(True)
+        self._mark_inactive_players()
 
         self._populate_current_player()
+
+    def _mark_inactive_players(self) -> None:
+        """Grey each selector row past Number of Players and say so in its
+        tooltip; restore the plain label on the rest. Touches only the
+        foreground and tooltip, so the selection and swatches stay put."""
+        grey = QBrush(self.palette().color(QPalette.Disabled, QPalette.Text))
+        for i in range(self.player_combo.count()):
+            pid = self.player_combo.itemData(i)
+            inactive = pid != 0 and pid not in self._active_players
+            self.player_combo.setItemData(i, grey if inactive else None, Qt.ForegroundRole)
+            tooltip = self._player_labels.full[pid]
+            if inactive:
+                tooltip += self._INACTIVE_PLAYER_NOTE
+            self.player_combo.setItemData(i, tooltip, Qt.ToolTipRole)
+
+    def changeEvent(self, event) -> None:
+        # A theme switch changes the disabled-text grey baked into those rows, and repopulates nothing.
+        if event.type() == QEvent.PaletteChange and hasattr(self, "player_combo"):
+            self._mark_inactive_players()
+        super().changeEvent(event)
 
     def _set_disables_enabled(self, editable: bool, carrier_ok: bool = True) -> None:
         """Enable the Disabled Objects button, or grey it out and say which
@@ -491,16 +563,23 @@ class PlayersPanel(QWidget):
             reason = self._DISABLES_CARRIER_GATE_REASON
         self.disables_button.setToolTip(reason)
 
+    def set_swap_enabled(self, editable: bool) -> None:
+        """The window re-gates the button here too, after edits that skip show_scenario() (a player count)."""
+        self.swap_button.setEnabled(editable)
+        self.swap_button.setToolTip(self._SWAP_TOOLTIP if editable else self._SWAP_GATE_REASON)
+
     def _populate_player_count(self, count: int) -> None:
         """Put Number of Players' spinbox in step with `count`, widening its
         range downward rather than clamping if a file stores fewer than
         _MIN_PLAYER_COUNT -- never redraw a stored value as something else,
         the same rule _out_of_range_label() states for per-player rows."""
         editable = PLAYER_COUNT_FIELD_ID in self._editable_fields
+        # The stored count too: a repopulate after an edit must not narrow the floor out from under it.
+        floor = min(_MIN_PLAYER_COUNT, count, defined_player_count(self._loaded))
         self._populating = True
         try:
             self._player_count = count
-            self.player_count_spin.setRange(min(_MIN_PLAYER_COUNT, count), NUM_PLAYERS)
+            self.player_count_spin.setRange(floor, NUM_PLAYERS)
             self.player_count_spin.setValue(count)
             self.player_count_spin.setEnabled(editable)
             self.player_count_spin.setToolTip(
@@ -946,3 +1025,4 @@ class PlayersPanel(QWidget):
         self._player_labels = labels
         for i in range(self.player_combo.count()):
             _set_player_item(self.player_combo, i, self.player_combo.itemData(i), labels, colors)
+        self._mark_inactive_players()  # _set_player_item() reset each tooltip

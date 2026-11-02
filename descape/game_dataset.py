@@ -23,8 +23,9 @@ one cache per pair, and generation() moves on every change to either.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from functools import lru_cache, update_wrapper
 from pathlib import Path
 
@@ -49,13 +50,16 @@ class DataModTables:
     """An active data mod's derived tables (GH #58). `key` is its cache entry's
     name, unique per mod .dat and derivation inputs; `root` the mod folder, for
     its strings; `title` what the window title shows; `mod_only_ids` the unit
-    consts its .dat defines and the install's does not."""
+    consts its .dat defines and the install's does not; `warnings` what the
+    lenient derive simplified (GH #262)."""
 
     key: str
     tables_dir: Path
     root: Path
     title: str
     mod_only_ids: frozenset[int] = frozenset()
+    # Outside the hash game_dataset.cache takes on every call; `key` already identifies the derive.
+    warnings: tuple[str, ...] = field(default=(), compare=False)
 
 
 _active = AOE2
@@ -121,6 +125,23 @@ def set_active(dataset: str) -> bool:
     if dataset == _active:
         return False
     return _set_state(dataset, _data_mod)
+
+
+@contextmanager
+def activated(dataset: str) -> Iterator[None]:
+    """`dataset` active for the block, the previous one again after it,
+    even on a raise. No switch at all when it is already active; the data
+    mod stays set throughout. A switch drops what set_active() drops, so
+    keep the block free of anything that paints with the other game's tables."""
+    previous = _active
+    if dataset == previous:
+        yield
+        return
+    set_active(dataset)
+    try:
+        yield
+    finally:
+        set_active(previous)
 
 
 def set_data_mod(mod: DataModTables | None) -> bool:

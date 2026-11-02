@@ -391,8 +391,11 @@ Cosmetic mods draw too: the art your enabled mods ship (trees, buildings,
 units, walls, terrain textures, `.sld` or `.smx`) replaces the game's own on
 the map, in the game's mod order, the top mod winning where two ship the
 same file. **View > Layers > Mod Art** turns it off, and the Mod art list in
-Settings > Mods leaves single mods out. Mods are read once per launch; after
-enabling one in the game, restart DEscape or reload the profile folder.
+Settings > Mods leaves single mods out. That list also shows the mods the
+game's own mod list disables, off until ticked: a ticked one draws in DEscape
+only, at its place in the game's mod order, and the game's list is not
+changed. Mods are read once per launch; after enabling or disabling one in
+the game, restart DEscape or reload the profile folder.
 
 Data mods (a mod that ships its own `resources/_common/dat/empires2_x2_p1.dat`,
 the kind the game's lobby selects rather than enables) are picked in
@@ -405,11 +408,13 @@ when that file opens. The first pick of a mod reads its `.dat` in the
 background (about 10-25 s, "Parsing …" in the status bar) and caches the
 result in DEscape's own cache folder, so later picks are instant. An older
 mod whose `.dat` genieutils-py cannot read logs why when picked, and stays
-greyed out with the reason until DEscape restarts. Data mods apply to Age
-of Empires II data only, not Return of Rome. Settings > Mods can hide from
-the Units catalog every object the mod did not change (new, repurposed,
-renamed, or with other art or stats than AoE2's own stay listed), and can
-drop the "(data mod)" label.
+greyed out with the reason until DEscape restarts. A mod that differs from
+what DEscape measured on the game's own data still loads: those objects are
+drawn simplified or left out, and the status log lists them once. Data mods
+apply to Age of Empires II data only, not Return of Rome. Settings > Mods can
+hide from the Units catalog every object the mod did not change (new,
+repurposed, renamed, or with other art or stats than AoE2's own stay listed),
+and can drop the "(data mod)" label.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`

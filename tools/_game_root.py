@@ -6,6 +6,13 @@ empires2_x2_p1.dat under `modes/Pompeii/`, which mirrors the install's layout;
 any other file a generator reads (textures, palettes, particles, .sld
 headers) is taken from the RoR root when it has one and from the install
 otherwise, the same order descape/game_dataset.py resolves at runtime.
+
+`--lenient` (GH #262) is for a data mod's .dat, which descape/dat_derive.py
+passes and regen_game_data.py never does. Each generator calls set_lenient()
+after parsing its arguments; a guard that pins an invariant measured on the
+stock .dat then goes through refuse(), which raises SystemExit as before when
+strict, and when lenient records the message in WARNINGS and returns, so the
+caller degrades only the object or row it guards.
 """
 
 from __future__ import annotations
@@ -18,6 +25,10 @@ ROR = "ror"
 DATASETS = (AOE2, ROR)
 ROR_SUBPATH = Path("modes") / "Pompeii"
 DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
+
+_lenient = False
+# Insertion-ordered and de-duplicated: per-civ loops repeat a message.
+WARNINGS: list[str] = []
 
 
 def add_dataset_argument(parser: argparse.ArgumentParser) -> None:
@@ -33,6 +44,31 @@ def add_dataset_argument(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Read this .dat instead of the dataset's own, e.g. a data mod's (GH #58); other files still come from the install",
     )
+    parser.add_argument(
+        "--lenient",
+        action="store_true",
+        help="a data mod's .dat: a broken invariant degrades that object with a warning instead of failing (GH #262)",
+    )
+
+
+def set_lenient(on: bool) -> None:
+    """Called by each generator after parse_args(), so a strict run never inherits an earlier lenient one."""
+    global _lenient
+    _lenient = bool(on)
+
+
+def lenient() -> bool:
+    return _lenient
+
+
+def refuse(message: str, fallback: str) -> None:
+    """Strict: raise SystemExit(message). Lenient: record `message (fallback)`
+    in WARNINGS and return, and the caller takes `fallback`."""
+    if not _lenient:
+        raise SystemExit(message)
+    warning = f"{message} ({fallback})"
+    if warning not in WARNINGS:
+        WARNINGS.append(warning)
 
 
 def game_root(install: Path, dataset: str) -> Path:

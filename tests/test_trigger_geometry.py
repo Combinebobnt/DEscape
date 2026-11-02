@@ -200,6 +200,97 @@ def test_the_fixture_geometry_reads_back_as_generated() -> None:
             assert shapes == [], other
 
 
+# -- GH #167: the units a trigger creates ------------------------------------
+
+FIND_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "find_triggers_120x120.aoe2scenario"
+_ARCHER = 4
+_CREATE_OBJECT = 11
+_TASK_OBJECT = 12
+_PLACE_FOUNDATION = 25
+
+
+def _created(path: Path) -> dict[int, list]:
+    loaded = load_map_and_units(path)
+    manager = parse_triggers(loaded)
+    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    return {
+        index: trigger_geometry.created_units_for_trigger(trigger, vocabulary, trigger_index=index)
+        for index, trigger in enumerate(manager.triggers)
+    }
+
+
+def test_the_triggers_fixtures_create_object_reads_with_its_unset_player() -> None:
+    gen = conftest.load_verify_module("gen_trigger_fixture")
+    created = _created(FIXTURE_PATH)
+    assert created[GEOMETRY_TRIGGER] == [
+        trigger_geometry.CreatedUnit(
+            GEOMETRY_TRIGGER, 2, "create_object", _ARCHER, trigger_geometry.UNSET, gen.GEOMETRY_CREATE_LOCATION
+        )
+    ]
+    (record,) = created[GEOMETRY_TRIGGER]
+    assert record.entry_ref == ("effect", 2)
+    assert record.payload == ("create_object", _ARCHER, -1, (70, 80), -1), "the memo key leaves both indices out"
+    assert all(not records for index, records in created.items() if index != GEOMETRY_TRIGGER)
+
+
+def test_the_find_fixtures_retarget_creates_one_player_one_archer() -> None:
+    """Its Task Object, Patrol and Attack Move carry a unit and a location too, and create nothing."""
+    gen = conftest.load_verify_module("gen_trigger_fixture")
+    created = _created(FIND_FIXTURE_PATH)
+    (record,) = created[gen.FIND_RETARGET_TRIGGER]
+    assert (record.effect, record.unit_const, record.player, record.tile, record.facet) == (
+        "create_object", _ARCHER, 1, (70, 70), -1
+    )
+    assert record.entry_ref == ("effect", 1)
+    assert all(type(v) is int for v in (record.unit_const, record.player, record.facet, *record.tile))
+
+
+def _vocabulary(*definitions: VocabularyEntry) -> SimpleNamespace:
+    return SimpleNamespace(effects={d.id: d for d in definitions})
+
+
+def _effect_definition(type_id: int, name: str, *attributes: str) -> VocabularyEntry:
+    return VocabularyEntry(id=type_id, name=name, attributes=("effect_type", *attributes), default_attributes={})
+
+
+def test_a_place_foundation_yields_one_record_with_no_facet() -> None:
+    """It has no facet field, so even a stray facet attribute on the entry is not read."""
+    vocabulary = _vocabulary(
+        _effect_definition(_PLACE_FOUNDATION, "place_foundation", "object_list_unit_id", "source_player", "location_x", "location_y")
+    )
+    entry = SimpleNamespace(
+        effect_type=_PLACE_FOUNDATION, object_list_unit_id=82, source_player=2, location_x=12, location_y=30, facet=5
+    )
+    trigger = SimpleNamespace(effects=[entry])
+    assert trigger_geometry.created_units_for_trigger(trigger, vocabulary, trigger_index=4) == [
+        trigger_geometry.CreatedUnit(4, 0, "place_foundation", 82, 2, (12, 30), trigger_geometry.UNSET)
+    ]
+
+
+def test_an_unset_const_or_a_half_set_location_creates_nothing_and_a_task_object_never_does() -> None:
+    fields = ("object_list_unit_id", "source_player", "location_x", "location_y")
+    vocabulary = _vocabulary(
+        _effect_definition(_CREATE_OBJECT, "create_object", *fields, "facet"),
+        _effect_definition(_TASK_OBJECT, "task_object", *fields),
+    )
+
+    def create(**values):
+        base = {"effect_type": _CREATE_OBJECT, "object_list_unit_id": _ARCHER, "source_player": 1,
+                "location_x": 5, "location_y": 6, "facet": 3}
+        return SimpleNamespace(**{**base, **values})
+
+    effects = [
+        create(object_list_unit_id=-1),
+        create(object_list_unit_id=None),
+        create(location_x=-1),
+        create(location_y=None),
+        create(effect_type=_TASK_OBJECT),
+        create(),
+    ]
+    records = trigger_geometry.created_units_for_trigger(SimpleNamespace(effects=effects), vocabulary, trigger_index=0)
+    assert records == [trigger_geometry.CreatedUnit(0, 5, "create_object", _ARCHER, 1, (5, 6), 3)]
+
+
 # -- corpus -------------------------------------------------------------------
 
 
@@ -490,3 +581,58 @@ def test_a_wider_pixel_band_with_tile_borders_still_keeps_a_middle() -> None:
     assert trigger_geometry.area_hit_zone(six, (1.9, 3.0), 3.0, tile_borders=True) == "w", "capped at a third: 2 tiles"
     assert trigger_geometry.area_hit_zone(six, (2.1, 3.0), 3.0, tile_borders=True) == "move"
     assert trigger_geometry.area_hit_zone(six, (0.9, 3.0), 0.5) == "move", "off: today's thin band"
+
+
+# -- GH #41: dragging a location ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("point", "hit"),
+    [
+        ((10.5, 20.5), True),
+        ((10.2, 20.8), True),  # on the reach, both axes
+        ((10.8, 20.2), True),
+        ((10.15, 20.5), False),
+        ((10.85, 20.5), False),
+        ((10.5, 20.15), False),
+        ((10.5, 20.85), False),
+    ],
+)
+def test_location_hit_reaches_from_the_tile_centre_on_both_axes(point, hit) -> None:
+    assert trigger_geometry.location_hit((10, 20), point, 0.3 + 1e-9) is hit
+
+
+def test_a_location_hit_reach_can_pass_the_tile_edge() -> None:
+    assert trigger_geometry.location_hit((10, 20), (11.2, 20.5), 0.8)
+    assert not trigger_geometry.location_hit((10, 20), (11.2, 20.5), 0.3)
+
+
+def test_run_origin_is_the_area_centre_else_the_selection_centroid_else_none() -> None:
+    index = _index(_ref(1, (50, 55), (50, 51, 55, 56)), _ref(2, (53, 58), (53, 54, 58, 59)))
+    definition = _definition("selected_object_ids", *trigger_geometry.AREA_FIELDS, *trigger_geometry.LOCATION_FIELDS)
+    unset = {"area_x1": -1, "area_y1": -1, "area_x2": -1, "area_y2": -1}
+    area = {"area_x1": 10, "area_y1": 20, "area_x2": 14, "area_y2": 30}
+    for selected, corners, origin in (
+        ([1, 2], area, (12, 25)),
+        ([1, 2], unset, (51, 56)),
+        ([], area, (12, 25)),
+        ([], unset, None),
+    ):
+        entry = SimpleNamespace(selected_object_ids=selected, location_x=70, location_y=80, **corners)
+        assert trigger_geometry.run_origin(_unit_shapes(entry, definition, index)) == origin
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ((-50, 22), (0, 22)),
+        ((500, 22), (119, 22)),
+        ((15, -50), (15, 0)),
+        ((15, 500), (15, 79)),
+        ((18, 24), (18, 24)),
+    ],
+)
+def test_a_dragged_location_is_a_one_tile_rect_clamped_to_each_map_edge(end, expected) -> None:
+    coords = (15, 22, 15, 22)
+    moved = trigger_geometry.dragged_area(coords, trigger_geometry.ZONE_LOCATION, (15, 22), end, 120, 80)
+    assert moved == (*expected, *expected)

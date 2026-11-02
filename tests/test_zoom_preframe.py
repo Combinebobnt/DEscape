@@ -368,6 +368,35 @@ def test_a_hit_equals_a_direct_paint(monkeypatch, synthetic_textures, where, dir
 
 
 @pytest.mark.gui
+def test_a_hit_takes_the_colour_mood_like_a_direct_paint(monkeypatch, synthetic_textures):  # noqa: F811
+    """TASK-238: a frame holds ungraded pixels, so a hit must grade after its
+    blit. The hit is measured against a paint of the same view with no grade."""
+    from descape.colour_mood import apply, grade_for
+
+    window = _preframe_window(varied=True)
+    try:
+        view = window.map_view
+        grade = grade_for("Night")
+        view.set_colour_grade(grade)
+        _pump()
+        hit, direct = _hit_then_direct(monkeypatch, window, "centre", 1)
+        assert hit is not None, "not a raster backing store"
+        assert np.array_equal(hit, direct), f"{int((hit != direct).any(axis=1).sum())} rows differ"
+
+        log = _PaintLog(monkeypatch)
+        view.set_colour_grade(None)
+        _outcome, plain = log.wait(1)
+        plain_rgb = plain.reshape(plain.shape[0], -1, 4)[..., 2::-1].astype(int)
+        hit_rgb = hit.reshape(hit.shape[0], -1, 4)[..., 2::-1].astype(int)
+        assert (plain_rgb != hit_rgb).any(), "the grade changed nothing"
+        colours, inverse = np.unique(plain_rgb.reshape(-1, 3), axis=0, return_inverse=True)
+        want = np.array([apply(grade, tuple(int(c) for c in colour)) for colour in colours])[inverse.reshape(-1)]
+        assert (np.abs(hit_rgb.reshape(-1, 3) - want) <= 2).all()
+    finally:
+        _close(window)
+
+
+@pytest.mark.gui
 def test_a_walk_of_notches_hits_every_time(monkeypatch):
     """The twin's prediction over a sample of anchors and both directions,
     down the ladder and back: every notch whose frames were rendered for it

@@ -68,3 +68,53 @@ def test_the_arrow_agrees_with_the_sprite_frame_it_selects(facet: int) -> None:
     assert residual == pytest.approx(18.43, abs=0.01)
     gap = abs((arrow_deg - frame_deg + 180.0) % 360.0 - 180.0)
     assert gap <= residual + 1e-9, f"facet {facet}: arrow {arrow_deg:.2f}, frame {frame} at {frame_deg:.2f}"
+
+
+# -- GH #167: the one facing rule the panel and the map's ghosts share ----------------
+
+_ARCHER = 4
+_CASTLE = 82
+_UNKNOWN = 4242
+
+
+def test_unit_facet_rotation_has_none_for_an_unset_facet_or_a_const_with_no_facing() -> None:
+    from descape.facet_preview import facet_rotation, unit_facet_rotation
+
+    assert unit_facet_rotation(_ARCHER, -1) is None
+    assert unit_facet_rotation(_CASTLE, 4) is None, "a known const with no facing never takes a facet"
+    assert unit_facet_rotation(_ARCHER, 4) == pytest.approx(facet_rotation(4))
+    assert unit_facet_rotation(_UNKNOWN, 4) == pytest.approx(facet_rotation(4)), "as the panel's arrow does today"
+    assert unit_facet_rotation(-1, 6) == pytest.approx(facet_rotation(6)), "an unset or differing unit keeps the arrow"
+
+
+def test_the_ghost_draws_the_default_facing_until_the_mapping_is_measured(monkeypatch) -> None:
+    from descape import facet_preview
+
+    assert facet_preview.GHOST_FACING_MEASURED is False, "TASK-194's Phase D turns this on"
+    for const, facet in ((_ARCHER, 4), (_ARCHER, -1), (_CASTLE, 2), (_UNKNOWN, 9)):
+        assert facet_preview.ghost_rotation(const, facet) == 0.0, (const, facet)
+
+    monkeypatch.setattr(facet_preview, "GHOST_FACING_MEASURED", True)
+    assert facet_preview.ghost_rotation(_ARCHER, 4) == pytest.approx(facet_preview.facet_rotation(4))
+    assert facet_preview.ghost_rotation(_UNKNOWN, 9) == pytest.approx(facet_preview.facet_rotation(9))
+    assert facet_preview.ghost_rotation(_ARCHER, -1) == 0.0
+    assert facet_preview.ghost_rotation(_CASTLE, 2) == 0.0
+
+
+def test_the_arrow_and_the_sprite_take_unit_facet_rotations_value(monkeypatch) -> None:
+    """A stand-in value no facet maps to: a preview still reading
+    facet_rotation() directly would show 4/16 of a turn instead."""
+    from descape import constant_picker, facet_preview
+
+    conftest.ensure_qapp()
+    asked = []
+    monkeypatch.setattr(facet_preview, "unit_facet_rotation", lambda unit, facet: 1.25)
+    monkeypatch.setattr(constant_picker, "preview_pixmap", lambda unit, rotation: asked.append((unit, rotation)))
+    entry = {"facet": 4, "object_list_unit_id": _ARCHER}
+    preview = facet_preview.FacetPreview()
+    preview.bind(
+        {"facet": None, "object_list_unit_id": None}, "facet", "object_list_unit_id", lambda e, name: e[name], entry=entry
+    )
+    assert preview.rotation == 1.25
+    assert preview.tile.rotation == 1.25 and preview.arrow_shown
+    assert asked == [(_ARCHER, 1.25)]

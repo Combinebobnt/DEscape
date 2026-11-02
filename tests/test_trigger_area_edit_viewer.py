@@ -11,6 +11,7 @@ from test_trigger_tile_picker_viewer import (
     AREA,
     CREATE_EFFECT,
     HALF_SET_EFFECT,
+    LOCATION,
     PATROL_EFFECT,
     _arm,
     _escape,
@@ -64,6 +65,18 @@ def _drag(view, start, end):
 
 def _last_status(window) -> str:
     return window.status_log.toPlainText().splitlines()[-1]
+
+
+def _mark_pos(view, tile=None):
+    """The viewport point at a location mark's centre, the patrol's by default."""
+    x, y = tile or _gen().GEOMETRY_PATROL_LOCATION
+    return _ground_pos(view, x + 0.5, y + 0.5)
+
+
+def _set_location(window, entry, tile) -> None:
+    gen = _gen()
+    values = dict(zip(LOCATION, tile, strict=True))
+    window.set_entry_field_group(gen.REFERENCE_TRIGGER, ("effect", entry), values, "Set Location")
 
 
 # -- the four checkboxes below Mode --------------------------------------------------
@@ -151,10 +164,10 @@ def test_a_read_only_file_disables_the_box_and_its_handles() -> None:
 
 
 def test_turning_it_on_with_no_area_shown_says_how_to_get_one() -> None:
-    hint = "Select one condition or effect with an area to move or resize it"
+    hint = "Select one condition or effect with an area or location to edit it on the map"
     window = _window()
     try:
-        window.trigger_panel.select_entry("effect", CREATE_EFFECT)
+        window.trigger_panel.select_entry("effect", HALF_SET_EFFECT)
         window.area_edit_check.setChecked(True)
         assert _last_status(window) == hint
         window.area_edit_check.setChecked(False)
@@ -424,8 +437,9 @@ def test_hover_cursors_follow_the_zone_on_screen(style) -> None:
 # -- cancels ----------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("grab", ["area", "location"])
 @pytest.mark.parametrize("how", ["escape", "right_click", "restyle", "mode", "untick", "ruler"])
-def test_every_cancel_drops_the_drag_without_writing(how) -> None:
+def test_every_cancel_drops_the_drag_without_writing(how, grab) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
@@ -433,7 +447,7 @@ def test_every_cancel_drops_the_drag_without_writing(how) -> None:
     try:
         view = window.map_view
         records = _records(window)
-        _press(view, _point(view, "move"))
+        _press(view, _point(view, "move") if grab == "area" else _mark_pos(view))
         _move(view, _ground_pos(view, 40.5, 50.5))
         if how == "escape":
             _escape(view)
@@ -450,11 +464,12 @@ def test_every_cancel_drops_the_drag_without_writing(how) -> None:
         else:
             window.ruler_action.setChecked(True)
         assert view._area_drag is None
-        assert view._tile_pick_item is None, "no preview left behind"
+        assert view._tile_pick_item is None and view._tile_pick_label is None, "no preview left behind"
         _move(view, _ground_pos(view, 45.5, 55.5))
         _release(view, _ground_pos(view, 45.5, 55.5))
         assert _records(window) == records
         assert _values(window, "effect", PATROL_EFFECT, AREA) == _gen().GEOMETRY_PATROL_AREA
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == _gen().GEOMETRY_PATROL_LOCATION
     finally:
         conftest.close_window(window)
 
@@ -579,5 +594,363 @@ def test_a_drag_whose_entry_changes_to_one_with_the_same_area_writes_nothing() -
         _release(view, _ground_pos(view, 50.5, 50.5))
         assert _records(window) == records
         assert _values(window, "effect", HALF_SET_EFFECT, AREA) == area
+    finally:
+        conftest.close_window(window)
+
+
+# -- GH #41: dragging the location mark ------------------------------------------------
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_dragging_the_mark_moves_the_location_and_leaves_the_area(style) -> None:
+    gen = _gen()
+    window = _editing(style)
+    try:
+        view = window.map_view
+        assert view.location_edit() == gen.GEOMETRY_PATROL_LOCATION
+        records = _records(window)
+        _press(view, _mark_pos(view))
+        assert view._area_drag is not None and view._area_drag[0] == "location"
+        _move(view, _mark_pos(view, (57, 44)))
+        assert view._tile_pick_item is not None, "the drag previews"
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == gen.GEOMETRY_PATROL_LOCATION, "nothing until release"
+        _release(view, _mark_pos(view, (57, 44)))
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == (57, 44)
+        assert _values(window, "effect", PATROL_EFFECT, AREA) == gen.GEOMETRY_PATROL_AREA
+        assert _records(window) == records + 1
+        assert _last_status(window).endswith("Move Location")
+        assert view._tile_pick_item is None
+        assert view.location_edit() == (57, 44), "the handle follows the write"
+        window.undo()
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == gen.GEOMETRY_PATROL_LOCATION
+        assert view.location_edit() == gen.GEOMETRY_PATROL_LOCATION, "and the undo"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_location_only_entry_drags_its_mark_with_no_area() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QGraphicsView
+
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry("effect", CREATE_EFFECT)
+        assert view.area_edit() is None
+        assert view.location_edit() == gen.GEOMETRY_CREATE_LOCATION
+        mark = _mark_pos(view, gen.GEOMETRY_CREATE_LOCATION)
+        _move(view, mark)
+        assert view._area_hover == "location"
+        assert view.cursor().shape() == Qt.SizeAllCursor
+        assert view.dragMode() == QGraphicsView.NoDrag
+        _drag(view, mark, _mark_pos(view, (72, 83)))
+        assert _values(window, "effect", CREATE_EFFECT, LOCATION) == (72, 83)
+        assert _last_status(window).endswith("Move Location")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("entry", [PATROL_EFFECT, CREATE_EFFECT])
+@pytest.mark.parametrize(
+    ("move", "resize", "grabs"), [(True, True, True), (True, False, True), (False, True, False), (False, False, False)]
+)
+def test_only_move_gates_the_mark(entry, move, resize, grabs) -> None:
+    from PyQt5.QtWidgets import QGraphicsView
+
+    window = _editing()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry("effect", entry)
+        window.area_move_check.setChecked(move)
+        window.area_resize_check.setChecked(resize)
+        x, y = view.location_edit()
+        records = _records(window)
+        _move(view, _mark_pos(view, (x, y)))
+        assert view._area_hover == ("location" if grabs else None)
+        assert view.dragMode() == (QGraphicsView.NoDrag if grabs else QGraphicsView.ScrollHandDrag)
+        _drag(view, _mark_pos(view, (x, y)), _mark_pos(view, (x + 3, y + 2)))
+        assert _records(window) == records + (1 if grabs else 0), "else the drag pans"
+        assert _values(window, "effect", entry, LOCATION) == ((x + 3, y + 2) if grabs else (x, y))
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_mark_inside_the_area_wins_and_beside_it_the_area_still_moves() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        _set_location(window, PATROL_EFFECT, (32, 43))
+        _move(view, _mark_pos(view, (32, 43)))
+        assert view._area_hover == "location"
+        _move(view, _ground_pos(view, 33.5, 43.5))
+        assert view._area_hover == "move"
+        _drag(view, _mark_pos(view, (32, 43)), _mark_pos(view, (36, 48)))
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == (36, 48)
+        assert _values(window, "effect", PATROL_EFFECT, AREA) == gen.GEOMETRY_PATROL_AREA
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_one_tile_area_under_the_mark_keeps_its_rim() -> None:
+    """Decisions 3 and 4: the mark takes the middle, the rim still resizes, and Move off gives the middle back."""
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        window.set_entry_field_group(
+            gen.REFERENCE_TRIGGER, ("effect", PATROL_EFFECT), dict(zip(AREA, (32, 43, 32, 43), strict=True)), "Set Area"
+        )
+        _set_location(window, PATROL_EFFECT, (32, 43))
+        view.scale(4.0, 4.0)
+        assert view._area_band_tiles() < 0.4, "the rim probe must sit past the reach"
+        _move(view, _mark_pos(view, (32, 43)))
+        assert view._area_hover == "location"
+        _move(view, _ground_pos(view, 32.05, 43.5))
+        assert view._area_hover == "w"
+        window.area_move_check.setChecked(False)
+        _move(view, _mark_pos(view, (32, 43)))
+        assert view._area_hover is None
+        _move(view, _ground_pos(view, 32.05, 43.5))
+        assert view._area_hover == "w"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_location_its_object_overrides_has_no_handle() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry("effect", gen.TASK_OBJECT_EFFECT)
+        assert view.location_edit() is None
+        records = _records(window)
+        mark = _mark_pos(view, gen.HOUSE_TILE)
+        _move(view, mark)
+        assert view._area_hover is None
+        _press(view, mark)
+        assert view._area_drag is None, "the drag pans"
+        _move(view, _mark_pos(view, (45, 60)))
+        _release(view, _mark_pos(view, (45, 60)))
+        assert _records(window) == records
+        assert _values(window, "effect", gen.TASK_OBJECT_EFFECT, LOCATION) == gen.HOUSE_TILE
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_mark_grabs_at_its_raised_tile(style) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    gen = _gen()
+    tile = gen.GEOMETRY_PATROL_LOCATION
+    window = _editing(style)
+    try:
+        view = window.map_view
+        before = view._tile_polygon(*tile).boundingRect().center().y()
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*tile, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        assert window.scenario.map_manager.get_tile(*tile).elevation > 0
+        window.mode_combo.setCurrentText("Triggers")
+        window._on_tool_selected("pan")
+        QApplication.processEvents()
+        assert view.location_edit() == tile
+        assert view._tile_polygon(*tile).boundingRect().center().y() < before, "the tile must really rise"
+        _press(view, conftest.polygon_viewport_pos(view, *tile))
+        assert view._area_drag is not None and view._area_drag[0] == "location"
+        _move(view, _mark_pos(view, (55, 45)))
+        _release(view, _mark_pos(view, (55, 45)))
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == (55, 45)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("end", "expected"), [((-20.5, 50.5), (0, 50)), ((140.5, 130.5), (119, 119))])
+def test_a_drag_past_the_map_edge_stops_the_mark_on_the_edge_tile(end, expected) -> None:
+    window = _editing()
+    try:
+        view = window.map_view
+        _drag(view, _mark_pos(view), _ground_pos(view, *end))
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == expected
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_click_on_the_mark_records_nothing() -> None:
+    window = _editing()
+    try:
+        view = window.map_view
+        records = _records(window)
+        _press(view, _mark_pos(view))
+        _release(view, _mark_pos(view))
+        assert _records(window) == records
+        assert view._area_drag is None and view._tile_pick_item is None and view._tile_pick_label is None
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_the_preview_shows_the_mark_the_line_and_the_rulers_distance(style) -> None:
+    from descape import ruler, trigger_geometry
+
+    gen = _gen()
+    origin = trigger_geometry.area_centre(gen.GEOMETRY_PATROL_AREA)
+    window = _editing(style)
+    try:
+        view = window.map_view
+        (old_label,) = [i for i in view.trigger_overlay_items() if i.data(0) == "label"]
+        old_text = old_label.text()
+        _press(view, _mark_pos(view))
+        label = view._tile_pick_label
+        for tile in ((57, 44), (58, 60)):
+            _move(view, _mark_pos(view, tile))
+            assert view._tile_pick_label is label, "reused across moves"
+            assert label.text() == ruler.format_measurement(ruler.measure(origin, tile))
+            assert label.pos() == view._ruler_anchor(tile)
+            box = view._tile_pick_item.path().boundingRect()
+            assert box.contains(view._location_mark(tile).boundingRect())
+            assert box.contains(view._ruler_anchor(origin))
+        assert old_label.text() == old_text, "the old run stays until release"
+        _release(view, _mark_pos(view, (58, 60)))
+        assert view._tile_pick_item is None and view._tile_pick_label is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_selection_run_previews_from_the_units_centroid() -> None:
+    from descape import ruler
+
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        _set_location(window, gen.PATROL_IDS_EFFECT, (70, 70))
+        window.trigger_panel.select_entry("effect", gen.PATROL_IDS_EFFECT)
+        assert view.area_edit() is None
+        _press(view, _mark_pos(view, (70, 70)))
+        _move(view, _mark_pos(view, (72, 73)))
+        origin = (int(gen.ARCHER_B_POS[0]), int(gen.ARCHER_B_POS[1]))
+        assert view._tile_pick_label.text() == ruler.format_measurement(ruler.measure(origin, (72, 73)))
+    finally:
+        conftest.close_window(window)
+
+
+def test_no_run_origin_on_the_map_previews_the_mark_alone() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry("effect", CREATE_EFFECT)
+        _press(view, _mark_pos(view, gen.GEOMETRY_CREATE_LOCATION))
+        _move(view, _mark_pos(view, (72, 83)))
+        assert view._tile_pick_label is None
+        box = view._tile_pick_item.path().boundingRect()
+        assert box == view._location_mark((72, 83)).boundingRect(), "no line either"
+        _escape(view)
+        view.set_location_edit(gen.GEOMETRY_CREATE_LOCATION, (500, 500))
+        _press(view, _mark_pos(view, gen.GEOMETRY_CREATE_LOCATION))
+        _move(view, _mark_pos(view, (72, 83)))
+        assert view._tile_pick_label is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_clear_image_forgets_a_live_mark_drag() -> None:
+    window = _editing()
+    try:
+        view = window.map_view
+        _press(view, _mark_pos(view))
+        assert view._tile_pick_label is not None
+        view.clear_image()
+        assert view._area_drag is None
+        assert view._tile_pick_item is None and view._tile_pick_label is None
+        view.set_tile_picker(None)  # would removeItem() a deleted item
+    finally:
+        conftest.close_window(window)
+
+
+def test_no_mark_handle_past_the_map_with_the_box_or_overlay_off_or_for_several_entries() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        panel = window.trigger_panel
+        location = gen.GEOMETRY_PATROL_LOCATION
+        window.trigger_overlay_action.setChecked(False)
+        assert view.location_edit() is None
+        window.trigger_overlay_action.setChecked(True)
+        assert view.location_edit() == location
+        window.ruler_action.setChecked(True)
+        assert view.location_edit() is None
+        window.pan_action.setChecked(True)
+        assert view.location_edit() == location
+        panel.select_entries([("effect", PATROL_EFFECT), ("effect", CREATE_EFFECT)])
+        assert view.location_edit() is None
+        panel.select_entry("effect", PATROL_EFFECT)
+        assert view.location_edit() == location
+        window.area_edit_check.setChecked(False)
+        assert view.location_edit() is None
+        window.area_edit_check.setChecked(True)
+        _set_location(window, PATROL_EFFECT, (500, 50))
+        assert view.location_edit() is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_an_armed_set_location_wins_over_the_handle() -> None:
+    window = _editing()
+    try:
+        view = window.map_view
+        _arm(window, "location")
+        _move(view, _mark_pos(view))
+        assert view._area_hover is None
+        _press(view, _mark_pos(view))
+        assert view._area_drag is None, "the press is the pick's"
+        assert view.tile_picker_kind() is None
+        assert view.location_edit() == _gen().GEOMETRY_PATROL_LOCATION, "disarmed, the handle comes back"
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_location_callback_refuses_an_entry_the_form_no_longer_shows() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        records = _records(window)
+        window.trigger_panel.select_entry("effect", CREATE_EFFECT)
+        window._location_edit_target = (gen.REFERENCE_TRIGGER, "effect", PATROL_EFFECT, gen.GEOMETRY_PATROL_LOCATION)
+        window.map_view.on_location_edit(1, 2)
+        assert _records(window) == records
+        assert _values(window, "effect", PATROL_EFFECT, LOCATION) == gen.GEOMETRY_PATROL_LOCATION
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_mark_drag_whose_entry_changes_to_one_with_the_same_coords_writes_nothing() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        view = window.map_view
+        area, location = gen.GEOMETRY_PATROL_AREA, gen.GEOMETRY_PATROL_LOCATION
+        twin = ("effect", gen.PATROL_IDS_EFFECT)
+        window.set_entry_field_group(gen.REFERENCE_TRIGGER, twin, dict(zip(AREA, area, strict=True)), "Set Area")
+        _set_location(window, gen.PATROL_IDS_EFFECT, location)
+        window.trigger_panel.select_entry("effect", PATROL_EFFECT)
+        assert (view.area_edit(), view.location_edit()) == (area, location)
+        records = _records(window)
+        _press(view, _mark_pos(view))
+        window.trigger_panel.select_entry(*twin)
+        assert (view.area_edit(), view.location_edit()) == (area, location)
+        assert view._area_drag is None
+        _move(view, _mark_pos(view, (55, 45)))
+        _release(view, _mark_pos(view, (55, 45)))
+        assert _records(window) == records
+        assert _values(window, *twin, LOCATION) == location
     finally:
         conftest.close_window(window)

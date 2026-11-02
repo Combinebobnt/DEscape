@@ -8,6 +8,13 @@ points them at `dat` through their --dat argument. Their other inputs (.sld
 headers, the palette, texture names) still come from the install, since a data
 mod ships none of them.
 
+derive() runs them lenient by default (GH #262, `--lenient`, tools/_game_root.py):
+a guard pinning an invariant measured on the stock .dat degrades only what it
+guards (a plain entry, dropped pieces, an omitted row) and returns a warning
+instead of failing the whole mod. regen_game_data.py runs them strict, so the
+shipped tables and their failures are unchanged; derive(lenient=False) does too.
+A missing install file or an unreadable .dat still fails either way.
+
 genieutils-py is imported only inside derive(). The viewer never calls derive()
 itself: a parse holds the GIL for seconds, so it runs in a subprocess,
 `python -m descape.dat_derive <dat> <install> <out>` from source and the frozen
@@ -39,6 +46,7 @@ GENERATORS: tuple[tuple[str, tuple[str, ...]], ...] = (
 TABLE_NAMES: tuple[str, ...] = tuple(name for _script, names in GENERATORS for name in names)
 # Imported by every generator; part of what derive() runs, so part of source_digest().
 GAME_ROOT_HELPER = "_game_root.py"
+GAME_ROOT_MODULE = "_game_root"
 
 
 def tools_dir() -> Path:
@@ -81,11 +89,21 @@ def unit_ids(dat_file) -> set[int]:
     return {const for const, unit in enumerate(dat_file.civs[0].units) if unit is not None}
 
 
-def derive(dat: Path, install: Path, out_dir: Path, *, tools: Path | None = None, parsed: dict | None = None) -> None:
+def derive(
+    dat: Path,
+    install: Path,
+    out_dir: Path,
+    *,
+    tools: Path | None = None,
+    parsed: dict | None = None,
+    lenient: bool = True,
+) -> list[str]:
     """Runs every generator against `dat` (AoE2 dataset, install files from
-    `install`), writing TABLE_NAMES into `out_dir`. Raises DeriveError, or
-    whatever genieutils raises on a .dat it cannot read. `parsed` is the
-    memo of DatFile.parse results by path, shared with the caller."""
+    `install`), writing TABLE_NAMES into `out_dir`, and returns the lenient
+    guards' warnings, each prefixed with its generator's script name. Raises
+    DeriveError, or whatever genieutils raises on a .dat it cannot read.
+    `parsed` is the memo of DatFile.parse results by path, shared with the
+    caller. `lenient=False` fails on the first guard, as regen_game_data.py does."""
     from genieutils.datfile import DatFile
 
     tools = tools_dir() if tools is None else tools
@@ -100,22 +118,48 @@ def derive(dat: Path, install: Path, out_dir: Path, *, tools: Path | None = None
 
     out_dir.mkdir(parents=True, exist_ok=True)
     saved_argv, saved_path = sys.argv, list(sys.path)
+    saved_helper = sys.modules.get(GAME_ROOT_MODULE)
     DatFile.parse = classmethod(parse_once)
     sys.path.insert(0, str(tools))
+    helper = None
+    warnings: list[str] = []
     try:
+        helper = _tools_helper(tools)
         for script, names in GENERATORS:
             sys.argv = [script, str(install), "--out-dir", str(out_dir), "--dat", str(dat)]
+            if lenient:
+                sys.argv.append("--lenient")
+            # Per run, so a later generator's repeat of an earlier text is kept under its own label.
+            helper.WARNINGS.clear()
             try:
                 runpy.run_path(str(tools / script), run_name="__main__")
             except SystemExit as exc:
                 if exc.code not in (0, None):
                     raise DeriveError(f"{script} exited with {exc.code}") from exc
+            warnings += [f"{script}: {warning}" for warning in helper.WARNINGS]
             missing = [name for name in names if not (out_dir / name).is_file()]
             if missing:
                 raise DeriveError(f"{script} wrote no {', '.join(missing)}")
     finally:
+        if helper is not None:
+            helper.set_lenient(False)
+            helper.WARNINGS.clear()
+        if saved_helper is not None:
+            sys.modules[GAME_ROOT_MODULE] = saved_helper
         DatFile.parse = real_parse
         sys.argv, sys.path[:] = saved_argv, saved_path
+    return warnings
+
+
+def _tools_helper(tools: Path):
+    """`tools`' own _game_root, the module the runpy'd generators import: one
+    cached from another folder (a test's tools copy) is set aside until derive() ends."""
+    cached = sys.modules.get(GAME_ROOT_MODULE)
+    if cached is not None and Path(cached.__file__).resolve() != (tools / GAME_ROOT_HELPER).resolve():
+        del sys.modules[GAME_ROOT_MODULE]
+    import _game_root
+
+    return _game_root
 
 
 def parse_unit_ids(dat: Path, parsed: dict | None = None) -> set[int]:

@@ -187,7 +187,11 @@ def _terrain_restriction_entries(restrictions: list, objects: dict[str, dict], t
     entries: dict[str, list[int]] = {}
     for restriction_id in used:
         if restriction_id >= len(restrictions):
-            raise SystemExit(f"Terrain restriction {restriction_id} has no .dat row; the placement rule needs re-checking")
+            _game_root.refuse(
+                f"Terrain restriction {restriction_id} has no .dat row; the placement rule needs re-checking",
+                "its objects are placed without a terrain check",
+            )
+            continue
         row = restrictions[restriction_id].passable_buildable_dmg_multiplier
         entries[str(restriction_id)] = [t for t in terrain_ids if t < len(row) and row[t] > 0]
     return entries
@@ -448,6 +452,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
 
     from genieutils.datfile import DatFile
 
@@ -461,7 +466,10 @@ def main() -> None:
     # gen_tree_unit_ids.py already reads.
     blank_ids = _blank_graphic_ids(data.graphics)
     if not blank_ids:
-        raise SystemExit("No BLANK graphic in the .dat; the no_graphic rule needs re-checking")
+        _game_root.refuse(
+            "No BLANK graphic in the .dat; the no_graphic rule needs re-checking",
+            "only objects with no standing graphic are marked no_graphic",
+        )
     objects = _object_entries(data.civs[0].units, blank_ids)
     techs = _tech_entries(data.techs)
     availability = _civ_availability(data)

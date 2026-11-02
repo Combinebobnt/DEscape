@@ -529,3 +529,64 @@ def test_a_paste_raising_mid_skirt_still_records_every_tile_it_wrote(monkeypatch
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_undo_after_a_repaired_paste_restores_the_repaired_tile() -> None:
+    from descape.edit_history import tile_state
+    from descape.elevation_tools import set_tiles_elevation
+    from descape.map_analysis import check_elevation
+
+    window = _window()
+    try:
+        mm = window.scenario.map_manager
+        set_tiles_elevation(mm, conftest.illegal_step_hill_targets(40, 40))
+        window.on_region_selected((40, 40, 45, 45))
+        window.copy_region()
+        window.edit_history.reset()
+        window.paste_terrain_check.setChecked(False)
+        window.paste_elevation_check.setChecked(True)
+        window.paste_units_check.setChecked(False)
+        window.on_hover(conftest.ILLEGAL_STEP_HILL_ANCHOR)
+        start = [tile_state(t) for t in mm.terrain]
+        rx, ry = conftest.ILLEGAL_STEP_HILL_REPAIRED_TILE
+        repaired = ry * mm.map_width + rx
+
+        changes = _paste_record_guard(window)
+
+        assert mm.terrain[repaired].elevation == 1
+        assert repaired in {i for i, _old, _new in changes}
+        assert check_elevation(window.scenario).is_clean
+        window.undo()
+        assert [tile_state(t) for t in mm.terrain] == start
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_set_elevation_stroke_beside_a_hill_leaves_no_illegal_step() -> None:
+    from descape.elevation_tools import _propagate, set_tiles_elevation
+    from descape.map_analysis import check_elevation
+    from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+
+    hill = conftest.illegal_step_hill_targets(40, 40)
+    unrepaired = load_map_and_units(BLANK_TEMPLATE_PATH)
+    set_tiles_elevation(unrepaired.map_manager, hill)
+    _propagate(unrepaired.map_manager, [(44, 40, 2)], set())
+    assert not check_elevation(unrepaired).is_clean, "the repro no longer leaves a step, so this test is vacuous"
+
+    window = _window()
+    try:
+        mm = window.scenario.map_manager
+        set_tiles_elevation(mm, hill)
+        assert check_elevation(window.scenario).is_clean
+        window._on_tool_selected("set_level")
+        window.elevation_level_spin.setValue(2)
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(44, 40, 0)
+        window.on_edit_stroke_end()
+
+        assert mm.get_tile(44, 40).elevation == 2
+        assert check_elevation(window.scenario).is_clean
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

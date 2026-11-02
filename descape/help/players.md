@@ -2,9 +2,9 @@
 
 Players mode edits each player's own settings: name, civilization, starting age and resources, colour, AI and starting camera. Pick **Players** in the toolbar's Mode list.
 
-**Number of players** at the top sets how many players the scenario has, from 2 to 8. Lowering it deactivates the highest-numbered players and leaves their other settings as they were, and Diplomacy's stance list follows it. It can be read-only on a file whose other player settings are editable; its tooltip says why.
+**Number of players** at the top sets how many players the scenario has, from 2 to 8 (from 1 on a file that stores one player). Lowering it deactivates the highest-numbered players and leaves their other settings as they were, and Diplomacy's stance list follows it. It can be read-only on a file whose other player settings are editable; its tooltip says why.
 
-The selector below it picks the player to edit: GAIA first, then Players 1 to 8. The Select Player commands pick one from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys. Each change is one undo step. A setting this file's scenario version doesn't store isn't listed, and a greyed row's tooltip says why it is read-only.
+The selector below it picks the player to edit: GAIA first, then Players 1 to 8. It keeps all eight whatever **Number of players** says, and greys the ones past it; their tooltip says so. A greyed player can still be picked and edited, which is how to check or repair the settings a lower count left behind. The Select Player commands pick one from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys. Each change is one undo step. A setting this file's scenario version doesn't store isn't listed, and a greyed row's tooltip says why it is read-only.
 
 ## Identity
 
@@ -48,4 +48,13 @@ GAIA has only Civilization, Architecture, the two locks, Starting age, the four 
 
 Where this is in the in-game editor: the Players tab, with the starting camera under the Options tab's Point of View.
 
-DEscape has no Swap Players. Swap two players' settings in the in-game editor.
+## Swap players
+
+**Swap Players…** at the bottom of the panel, or **Map > Swap Players…**, makes two players exchange slots, so the scenario plays as before with the two renumbered. The dialog starts on the player selected here, or Player 1 when GAIA is selected. Only the scenario's own players can be swapped, never GAIA.
+
+Each player's units, every setting on this panel, Personality and disabled objects always move to the other. Two boxes, both ticked to start, choose the rest:
+
+- **Swap players in triggers**: conditions and effects that name one of the two as their source or target player name the other instead. A condition or effect type DEscape doesn't know is left as it is, and the dialog counts them.
+- **Swap diplomacy**: each one's stances toward the others, the others' stances toward them, and allied victory.
+
+Trigger names, messages and scripts are never rewritten, so a message or script that mentions a player by number still does after the swap. The line under the boxes says what will move, or why this file can't be swapped, and Swap stays greyed then. The whole swap is one undo step. In the in-game editor, this is the Players tab's Swap Players.

@@ -19,7 +19,9 @@ pytestmark = [
 ]
 
 _NARROW_PX = 150
-# The View tests start from a narrow Terrain pane: Units has its page's own drag floor (TASK-362).
+# The View tests start from a narrow pane in a mode with the plain MIN_SPLIT_PANE drag floor:
+# Units (TASK-362) and Terrain (TASK-551) have their pages' own.
+_PLAIN_FLOOR_MODE = "Players"
 
 
 def _panel_class(mode: str):
@@ -145,7 +147,7 @@ def test_the_view_stats_value_column_shows_in_full_at_the_floor() -> None:
 
     window = _blank_window()
     try:
-        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain") == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        assert _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE) == window.INFO_PAGE_MIN_USEFUL_WIDTH
         combo = window.stats_player_combo
         combo.setCurrentIndex(combo.findData(1))
         QApplication.processEvents()
@@ -194,7 +196,7 @@ def test_the_view_table_fits_the_floor_with_note_hidden_and_full_labels_in_toolt
     """
     window = _blank_window()
     try:
-        assert _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain") == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        assert _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE) == window.INFO_PAGE_MIN_USEFUL_WIDTH
         _show_view_player(window, player_id)
         tree = window.info_tree
         assert not tree.horizontalScrollBar().isVisible()
@@ -233,7 +235,7 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
     with no horizontal scroll bar at any of the three."""
     window = _blank_window()
     try:
-        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
+        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE)
         _show_view_player(window, 1)
         tree = window.info_tree
         seen = []
@@ -256,7 +258,7 @@ def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
 
     window = _blank_window()
     try:
-        _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
+        _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE)
         _show_view_player(window, 1)
         tree = window.info_tree
         font = tree.font()
@@ -292,7 +294,7 @@ def test_a_long_player_label_elides_inside_the_view_floor() -> None:
             (base.text[0], long, *base.text[2:]), (base.full[0], long, *base.full[2:])
         )
         window._relabel_stats_players()
-        _enter(window, "View", from_px=_NARROW_PX, from_mode="Terrain")
+        _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE)
         _show_view_player(window, 1)
         QApplication.processEvents()
         tree = window.info_tree
@@ -343,3 +345,82 @@ def test_the_garrison_buttons_show_in_full_with_a_tower_selected() -> None:
         assert not panel.inspector_area.horizontalScrollBar().isVisible()
     finally:
         viewer_tests._close(window)
+
+
+# --- TASK-551: Terrain mode's drag floor ---------------------------------------
+
+
+def _filter_placeholder_image(window):
+    """The filter field's placeholder strip, unfocused (no caret): what a cut placeholder changes."""
+    from PyQt5.QtCore import QRect
+    from PyQt5.QtWidgets import QApplication
+
+    edit = window.terrain_panel.view.filter_edit
+    edit.clearFocus()
+    QApplication.processEvents()
+    advance = edit.fontMetrics().horizontalAdvance(edit.placeholderText())
+    # The frame and text margins sit left of the text, so the strip runs a little past its advance.
+    return edit.grab().toImage().copy(QRect(0, 0, advance + edit.height() // 2, edit.height()))
+
+
+def check_terrain_fits_its_drag_floor(window) -> int:
+    """Terrain mode with the pane dragged as narrow as the splitter allows, every group expanded
+    and the unused terrains shown. Pass conditions:
+    - the pane stops above MIN_SPLIT_PANE;
+    - every heading and terrain name shows in full: the name column fits the tree's viewport and
+      there is nothing to scroll horizontally;
+    - the show-unused box and the List/Grid buttons lie wholly inside the page at no less than
+      their size hints;
+    - the filter's placeholder paints exactly as in a pane 200 px wider, so it is not elided.
+    Returns the narrowest pane width."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window.mode_combo.setCurrentText("Terrain")
+    # Relative, not a fixed 600 px: at 168 DPI the floor itself passes 600.
+    _set_left(window, window.terrain_panel.drag_floor() + 200)
+    wide_placeholder = _filter_placeholder_image(window)
+    total = sum(window.content_splitter.sizes())
+    window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+    QApplication.processEvents()
+    pane = window.content_splitter.sizes()[0]
+    assert pane > settings.MIN_SPLIT_PANE, "Terrain has no drag floor"
+
+    panel = window.terrain_panel
+    view = panel.view
+    view.show_hidden_checkbox.setChecked(True)
+    view.tree.expandAll()
+    QApplication.processEvents()
+    tree = view.tree
+    assert tree.header().sectionSize(0) <= tree.viewport().width(), (tree.header().sectionSize(0), tree.viewport().width())
+    assert tree.horizontalScrollBar().maximum() == 0, "a name is cut at the floor"
+    for widget in (view.show_hidden_checkbox, *view.mode_buttons.values()):
+        left = widget.mapTo(panel, QPoint(0, 0)).x()
+        assert left >= 0 and left + widget.width() <= panel.width(), (widget.text(), left, widget.width(), panel.width())
+        assert widget.width() >= widget.sizeHint().width(), widget.text()
+    assert _filter_placeholder_image(window) == wide_placeholder, "the filter's placeholder is cut at the floor"
+    return pane
+
+
+@pytest.mark.font_sensitive
+def test_terrain_mode_cannot_be_dragged_below_its_names_and_controls() -> None:
+    """GH #142 follow-up (TASK-551), at the pinned font: check_terrain_fits_its_drag_floor's
+    conditions; leaving Terrain gives the pane back its plain floor."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window = _blank_window()
+    try:
+        floor = check_terrain_fits_its_drag_floor(window)
+        assert floor < window.terrain_panel.MIN_USEFUL_WIDTH, "the drag floor should stay below Terrain's entry widen"
+        window.mode_combo.setCurrentText("View")
+        QApplication.processEvents()
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+        QApplication.processEvents()
+        assert window.content_splitter.sizes()[0] == settings.MIN_SPLIT_PANE
+    finally:
+        conftest.close_window(window)

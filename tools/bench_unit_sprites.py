@@ -372,7 +372,7 @@ def bench_mod_art(path: Path) -> str:
 
     scenario = load_map_and_units(path)
     elevations, proj, _tile_px = _projection(scenario)
-    active = [m for m in mod_graphics.mods_with_art() if not m.excluded]
+    active = [m for m in mod_graphics.mods_with_art() if m.drawn]
     lines = [f"  {path.name}", f"    active art mods {len(active)}: " + ", ".join(m.title for m in active)]
 
     def cold(on: bool) -> tuple[float, int, int]:

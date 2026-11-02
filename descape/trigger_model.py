@@ -33,10 +33,11 @@ Two invariants worth stating outright, because breaking either is silent:
    back through scenario_io.parse_triggers(), which is memoized (no re-parse)
    and depoisons on the way. See that function's docstring.
 2. **A reference remap dirties more triggers than the one that moved.**
-   remove_triggers()/reorder_triggers() rewrite (de)activate-trigger references
-   across the whole list. A trigger whose references were rewritten is no
-   longer described by its original bytes even though the user never selected
-   it, so it has to be marked dirty or the splice writes stale ids back.
+   remove_triggers()/reorder_triggers() rewrite (de)activate-trigger effect and
+   Trigger Active condition references across the whole list. A trigger whose
+   references were rewritten is no longer described by its original bytes even
+   though the user never selected it, so it has to be marked dirty or the
+   splice writes stale ids back.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ from AoE2ScenarioParser.objects.managers.trigger_manager import (
     get_trigger_referencing_ce,
 )
 
-from descape import trigger_fields, trigger_organize, unlinked_fields
+from descape import effect_quantity, trigger_fields, trigger_organize, unlinked_fields
 from descape.edit_history import EditHistory, TriggerDiffRecord
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -618,6 +619,80 @@ def display_order_with_block_inserted(
     return order
 
 
+# -- renumber IDs to display order (GH #2) -------------------------------------
+
+
+def ids_follow_display_order(order: Sequence[int]) -> bool:
+    """Whether trigger IDs already run in display order: the order is identity."""
+    return list(order) == list(range(len(order)))
+
+
+def renumber_refusal(manager: TriggerManager) -> str:
+    """"" when renumber_to_display_order() is safe on `manager`, else why not:
+    the display order is not a permutation of the list, it is already
+    identity (nothing to do, empty list included), or some trigger's
+    `trigger_id` is not its list position (the remap is keyed by both)."""
+    order = list(manager.trigger_display_order)
+    count = len(manager.triggers)
+    if sorted(order) != list(range(count)):
+        return f"the display order is not a permutation of the {count} triggers"
+    if ids_follow_display_order(order):
+        return "IDs already follow display order"
+    for position, trigger in enumerate(manager.triggers):
+        if trigger.trigger_id != position:
+            return f"trigger {position} carries ID {trigger.trigger_id}"
+    return ""
+
+
+def renumber_to_display_order(manager: TriggerManager) -> None:
+    """Give every trigger the ID of its display position, so ID (legacy
+    execution) order equals the listed order, and re-point every trigger link.
+
+    The library's reorder_triggers() does the remap: it rewrites `trigger_id`
+    on Activate/Deactivate Trigger effects (8/9) and Trigger Active conditions
+    (79), the only types any DE version stores a trigger ID in, and none of the
+    corpus stores one elsewhere. Its triggers-setter resets the display order
+    to identity, which is the point here.
+
+    Verified afterwards by object identity: every in-range link must name the
+    same trigger, every -1 or out-of-range value must be unchanged. On a
+    mismatch the manager is put back in place before the RuntimeError, because
+    structural_edit()'s except branch writes the pre-edit display order onto
+    whatever list it finds, and only the original list makes that correct.
+    Raises ValueError, changing nothing, when renumber_refusal() refuses.
+    """
+    reason = renumber_refusal(manager)
+    if reason:
+        raise ValueError(f"cannot renumber trigger IDs: {reason}")
+    triggers = list(manager.triggers)
+    ids = [trigger.trigger_id for trigger in triggers]
+    order = list(manager.trigger_display_order)
+    links = []
+    for trigger in triggers:
+        for ce in get_trigger_referencing_ce(trigger):
+            raw = ce.trigger_id
+            target = triggers[raw] if isinstance(raw, int) and 0 <= raw < len(triggers) else None
+            links.append((trigger, ce, raw, target))
+
+    manager.reorder_triggers(list(order))  # a fresh list: the library keeps what it is handed (Trap 6)
+
+    position = {id(trigger): index for index, trigger in enumerate(manager.triggers)}
+    for trigger, ce, raw, target in links:
+        expected = raw if target is None else position.get(id(target))
+        if ce.trigger_id == expected:
+            continue
+        # restore()'s Traps 1-3: slice-assign, the order through the setter, then every id.
+        manager.triggers[:] = triggers
+        manager.trigger_display_order = list(order)
+        for each, trigger_id in zip(triggers, ids, strict=True):
+            each.trigger_id = trigger_id
+        for _, link, link_raw, _ in links:
+            link.trigger_id = link_raw
+        raise RuntimeError(
+            f'trigger "{trigger.name}" links to ID {ce.trigger_id} after the renumber, expected {expected}'
+        )
+
+
 # -- condition and effect display order (GH #213) ------------------------------
 
 ENTRY_KINDS = ("condition", "effect")
@@ -1142,8 +1217,8 @@ class TriggerEditModel:
         API (add_trigger, remove_triggers, reorder_triggers, move_triggers,
         copy_trigger, import_triggers, add_variable). Those methods renumber
         trigger ids across the whole list and remap (de)activate-trigger
-        references to match, so triggers the caller never named come back
-        changed.
+        effects and Trigger Active conditions to match, so triggers the caller
+        never named come back changed.
 
         **Content-mutating operations must declare themselves via
         `content_touched`.** Automatic dirty detection here is a
@@ -1283,8 +1358,11 @@ class TriggerEditModel:
             )
         # The commit re-slotted every condition. A no-op since 0.9.3 links
         # allow_in_fog; see unlinked_fields for why the call stays.
-        for trigger, entry in zip(manager.triggers, entries, strict=True):
+        for trigger, entry, blob in zip(manager.triggers, entries, self._blobs, strict=True):
             unlinked_fields.push(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
+            # The commit also normalized every effect's quantity pair; only a dirty trigger reads it.
+            if blob is None:
+                effect_quantity.push(trigger.effects, entry.retriever_map["effect_data"].data or [])
 
         parts: list[bytes] = [
             self._original_section[: SECTION_HEADER_SIZE - _TRIGGER_COUNT_STRUCT.size],

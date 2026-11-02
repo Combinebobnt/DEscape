@@ -9,6 +9,14 @@ What a facet number means is not measured yet. The working hypothesis is
 facet_rotation()'s: facet k is the same radians a placed unit's `rotation`
 holds for facing k of 16. It lives in that one function, so the in-game check
 can change it in one place.
+
+unit_facet_rotation() is the one facing rule the panel's preview and the
+map's trigger ghosts share, so the two cannot disagree. The ghosts read it
+through ghost_rotation(), which draws every ghost at the default facing while
+GHOST_FACING_MEASURED is False: the hypothesis is off by two steps on the GH
+#167 tester's own facet-2 shot, and a map full of wrongly turned units would
+show that error again. The in-game sitting that measures the mapping turns
+the constant on.
 """
 
 from __future__ import annotations
@@ -38,6 +46,30 @@ def facet_rotation(facet: int) -> float | None:
     if facet < 0:
         return None
     return unit_rotation.facing_to_rotation(facet, FACET_STEPS)
+
+
+# False until the facet mapping is measured in game: every ghost draws the default facing.
+GHOST_FACING_MEASURED = False
+
+
+def unit_facet_rotation(unit_const: int, facet: int) -> float | None:
+    """`unit_const`'s stored radians under `facet`, or None for a negative
+    facet or a const object_catalog knows that has no facing (a facet is
+    never written into a variant index). Unknown consts take facet_rotation()."""
+    if facet < 0:
+        return None
+    if unit_const >= 0 and object_catalog.is_known_object(unit_const) and not unit_rotation.rotation_is_angle(unit_const):
+        return None
+    return facet_rotation(facet)
+
+
+def ghost_rotation(unit_const: int, facet: int) -> float:
+    """The rotation a map ghost is built with: 0.0 while GHOST_FACING_MEASURED
+    is off, else unit_facet_rotation(), with 0.0 where that has none."""
+    if not GHOST_FACING_MEASURED:
+        return 0.0
+    rotation = unit_facet_rotation(unit_const, facet)
+    return 0.0 if rotation is None else rotation
 
 
 def arrow_vector(rotation: float) -> tuple[float, float]:
@@ -196,11 +228,12 @@ class FacetPreview(QWidget):
         if not self._fields:
             return
         facet = self._facet()
-        rotation = None if facet is None else facet_rotation(facet)
-        shown = rotation is not None
+        shown = facet is not None and facet >= 0
+        unit = self._unit() if shown else UNSET
+        rotation = unit_facet_rotation(unit, facet) if shown else None
         self.rotation = rotation
         if shown:
-            self._show(facet, rotation, self._unit())
+            self._show(facet, rotation, unit)
         if shown != self._shown:
             # Explicit even the first time: a never-shown row would be shown by the form's fit pass.
             self.setVisible(shown)
@@ -211,9 +244,10 @@ class FacetPreview(QWidget):
             if self._on_resize is not None:
                 self._on_resize()
 
-    def _show(self, facet: int, rotation: float, unit: int) -> None:
+    def _show(self, facet: int, rotation: float | None, unit: int) -> None:
         known = unit >= 0 and object_catalog.is_known_object(unit)
-        if known and not unit_rotation.rotation_is_angle(unit):
+        # unit_facet_rotation() gives None here only for a known const with no facing.
+        if rotation is None:
             self.tile.set_rotation(None)
             self.tile.hide()
             self._set_sprite(None)

@@ -100,7 +100,8 @@ above Units), _patch_disables(), _patch_personality(), _patch_messages(), then
 _patch_player_data_1().
 
 TASK-333's water definition adds _patch_map_strings(), the Map string front
-from its first marker through map_color_mood. It sits just below
+from its first marker through map_color_mood, which TASK-238's colour mood
+shares. It sits just below
 Map.script_name, so it runs right after _patch_script_name() and before
 _patch_disables(). Like every splice from _patch_script_name() on, it is
 upstream of the terrain block, so it counts toward the terrain offset's
@@ -121,8 +122,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from descape.messages_model import MessagesEditModel
+from descape.option_fields import label_for
 from descape.options_model import (
+    MAP_STRING_FIELDS,
     OptionsEditModel,
+    allied_victory_write_supported,
     diplomacy_write_supported,
     disables_write_supported,
     map_strings_write_supported,
@@ -476,8 +480,8 @@ def _patch_script_name(body: bytes, scenario: LoadedScenario, options: OptionsEd
 
 def _patch_map_strings(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
     """Returns `body` with the Map string front (first marker through
-    map_color_mood) rebuilt for a pending water definition; a no-op without
-    one. After _patch_script_name(), whose span sits just above this region,
+    map_color_mood) rebuilt for a pending Map string; a no-op without one.
+    After _patch_script_name(), whose span sits just above this region,
     and before _patch_disables(), so every offset here is still load-time.
     Refuses a region outside Map's head (between Options and the terrain
     block)."""
@@ -713,8 +717,10 @@ def write_scenario(
             (units_write_supported is False), or if `options` has edits
             on a file whose map-option block does not re-verify, or has
             Diplomacy grid edits on a file whose grid does not re-verify, or
-            has Players mode edits on a file whose per-player block does not
-            re-verify, or has disable-list edits on a file whose disables
+            has allied-victory edits on a file whose player_data_3 copy does
+            not re-verify, or has Players mode edits on a file whose
+            per-player block does not re-verify, or has disable-list edits
+            on a file whose disables
             region no longer round-trips
             (diplomacy_write_supported/players_write_supported/
             disables_write_supported are False; each a separate gate from the
@@ -851,6 +857,12 @@ def build_patched(
                 "This file's Diplomacy grid no longer verifies -- patching would "
                 "land at an offset that can't be trusted."
             )
+        if options.has_allied_victory_edits and not allied_victory_write_supported(scenario):
+            raise WriteBlockedError(
+                "This file's second stored copy of the allied-victory flags (Units "
+                "player_data_3) no longer verifies -- patching would land at an offset "
+                "that can't be trusted."
+            )
         if options.has_player_edits and not players_write_supported(scenario):
             raise WriteBlockedError(
                 "This file's Players mode fields no longer verify -- patching would "
@@ -882,11 +894,14 @@ def build_patched(
                 "This file's script filename fields no longer verify -- splicing "
                 "would land at an offset that can't be trusted."
             )
-        if options.has_map_string_edits and not map_strings_write_supported(scenario):
-            raise WriteBlockedError(
-                "This file's water definition no longer verifies -- splicing "
-                "would land at an offset that can't be trusted."
-            )
+        if options.has_map_string_edits:
+            pending = options.pending_values()
+            for field_id, name in MAP_STRING_FIELDS.items():
+                if field_id in pending and not map_strings_write_supported(scenario, name):
+                    raise WriteBlockedError(
+                        f"This file's {label_for(field_id).lower()} no longer verifies -- splicing "
+                        "would land at an offset that can't be trusted."
+                    )
         header_bytes = _patch_header_player_count(header_bytes, options)
         patched_body = _patch_options(patched_body, scenario, options)
 

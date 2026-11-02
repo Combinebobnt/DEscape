@@ -145,6 +145,7 @@ def test_ruler_registered_as_keybind_and_toolbar_action() -> None:
     try:
         assert window._keybind_actions["tool_ruler"] is window.ruler_action
         assert window.ruler_action.shortcut() == QKeySequence("R")
+        window.mode_combo.setCurrentText("Terrain")  # Elevate holds its key only there
         assert window.elevation_action.shortcut() == QKeySequence("E")
     finally:
         window.edit_history.mark_saved()
@@ -629,6 +630,7 @@ def test_the_keybind_migration_reaches_the_real_actions(tmp_path) -> None:
     conftest.ensure_qapp()
     window = ViewerWindow()
     try:
+        window.mode_combo.setCurrentText("Terrain")  # Elevate holds its key only there
         assert window.elevation_action.shortcut() == QKeySequence("E")
         assert window.ruler_action.shortcut() == QKeySequence("R")
         assert window.pan_action.shortcut() == QKeySequence("M")

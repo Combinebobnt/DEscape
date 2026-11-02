@@ -19,7 +19,7 @@ import pytest
 from descape import gate_orientation, render
 from descape.terrain_palette import tile_span
 
-STONE_CLOSED = (64, 659, 88, 667)  # ne, e, se, n; AGENTS.md's own example
+STONE_CLOSED = (64, 659, 88, 667)  # ne, e, se, n; docs/WRITE_RULES.md's own example
 PALISADE_CLOSED_NE = 789
 COLLIDING_CORNER = 1192  # carries code GTAC2 too, colliding with 81
 WALL = 117
@@ -117,7 +117,7 @@ def test_no_gate_const_is_also_a_rotatable_angle_const():
     """The viewer partitions a selection into rotatable / cyclable / skipped
     and assumes those cannot overlap. All 96 gate consts store a single frame,
     so none of them is ANGLE, and the partition is genuinely a partition. The
-    24-const figure in AGENTS.md's gate rule counts only the visible ones."""
+    24-const figure in docs/WRITE_RULES.md's gate rule counts only the visible ones."""
     from descape import unit_rotation
 
     for consts in gate_orientation.groups().values():

@@ -8,6 +8,7 @@ those modules' own deliberately self-contained style.
 
 from __future__ import annotations
 
+import itertools
 import math
 import random
 
@@ -339,6 +340,69 @@ def test_odd_n_centre_row_and_column_mirror_without_exception() -> None:
         for slice_index in range(len(mode.group)):
             plan = plan_mirror(mm, mode.mode_id, slice_index, do_terrain=True, do_elevation=False)
             assert isinstance(plan.changes, list)  # must not raise
+
+
+def _source_tiles(mode_id: int, slice_index: int, n: int) -> set[tuple[int, int]]:
+    source = plan_mirror(_square(n), mode_id, slice_index, do_terrain=False, do_elevation=False).source_indices
+    return {(index % n, index // n) for index in source}
+
+
+def _component_count(tiles: set[tuple[int, int]]) -> int:
+    """4-connected components."""
+    seen: set[tuple[int, int]] = set()
+    count = 0
+    for start in tiles:
+        if start in seen:
+            continue
+        count += 1
+        stack = [start]
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            for step in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if step in tiles and step not in seen:
+                    seen.add(step)
+                    stack.append(step)
+    return count
+
+
+def _arc_degrees(tiles: set[tuple[int, int]], n: int) -> float:
+    """The narrowest arc about the map centre holding every tile but the centre itself."""
+    angles = sorted(
+        math.degrees(math.atan2(v, u)) % 360 for u, v in (doubled(x, y, n) for x, y in tiles) if (u, v) != (0, 0)
+    )
+    gaps = [b - a for a, b in itertools.pairwise(angles)] + [angles[0] + 360 - angles[-1]]
+    return 360 - max(gaps)
+
+
+def test_every_lattice_slice_sources_one_connected_wedge() -> None:
+    """The source is what the overlay shades and the user edits, so each
+    slice's must be one 4-connected region inside one wedge of 360/|group|
+    degrees about the centre. An on-boundary orbit with no member in
+    preferred_domain falls back to its lowest (y, x) member, which can lie
+    on the far side: on an odd map the centre row or column (modes 6 and
+    8), on any map mode 7's x == y diagonal. An arm can stay connected
+    through the centre (mode 8 given only one of its two mirror axes keeps
+    the centre column's far half), hence the arc."""
+    failures = []
+    for n in (4, 5, 8, 9, 10, 11):
+        for mode in MODES:
+            wedge = 360 / len(mode.group) + 1e-9
+            for slice_index in range(len(mode.group)):
+                tiles = _source_tiles(mode.mode_id, slice_index, n)
+                components, arc = _component_count(tiles), _arc_degrees(tiles, n)
+                if components != 1 or arc > wedge:
+                    failures.append((mode.mode_id, slice_index, n, components, round(arc, 3)))
+    assert not failures, failures
+
+
+def test_four_way_rotation_on_a_9x9_map_sources_one_quadrant():
+    """The user report: slice 0 also held the centre column's far half, a
+    line of tiles opposite the shaded quadrant. One tile per orbit: the
+    centre and (81 - 1) / 4 others, all in the closed quadrant."""
+    tiles = _source_tiles(6, 0, 9)
+    assert len(tiles) == 21
+    assert all(x >= 4 and y >= 4 for x, y in tiles), sorted(tiles)
 
 
 # ---------------------------------------------------------------------

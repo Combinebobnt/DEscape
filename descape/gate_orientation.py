@@ -97,6 +97,23 @@ def _siblings_by_const() -> dict[int, tuple[int, ...]]:
     return {const: consts for consts in groups().values() for const in consts}
 
 
+@game_dataset.cache(maxsize=1)
+def _corner_by_const() -> dict[int, int]:
+    found = groups()
+    corners: dict[int, int] = {}
+    for (family, state), consts in found.items():
+        corner = found.get((family, "C"))
+        if state in ("A", "B") and corner is not None:
+            corners.update(zip(consts, corner, strict=True))
+    return corners
+
+
+def corner_piece(unit_const: int) -> int | None:
+    """The 1x1 corner-piece const (state C) of a closed or open gate's own
+    family and orientation, or None for anything else (TASK-340)."""
+    return _corner_by_const().get(unit_const)
+
+
 def orientation_siblings(unit_const: int) -> tuple[int, ...] | None:
     """`unit_const`'s whole group in cycle order, or None if it is not a gate.
 

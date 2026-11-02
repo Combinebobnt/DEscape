@@ -245,7 +245,8 @@ def test_a_sloped_sample_round_trips_back_to_the_requested_tile_radius() -> None
         theta = 2.0 * math.pi * i / segments
         tile = (int(cx + radius * math.cos(theta)), int(cy + radius * math.sin(theta)))
         solved = iso_geometry.screen_to_map_point(
-            int(sx), int(sy), "sloped", proj=proj, corner_rise=corner_rise, tile=tile
+            int(sx), int(sy), "sloped", proj=proj, corner_rise=corner_rise, tile=tile,
+            fold=np.zeros((_MAP, _MAP), dtype=bool),
         )
         assert solved is not None
         assert math.dist(solved, (cx, cy)) == pytest.approx(radius, abs=0.1)

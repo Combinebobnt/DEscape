@@ -33,6 +33,13 @@ Three edits, all deliberately asymmetric so "did anything change" becomes
      circle), in both an integer and a radian file, placed as 5's ring is:
      its side apex sits on the anchor wall, so it shows a junction too. Its
      diagonal stretches are the shapes 3 and 4 in a closed ring.
+  9. A wall moved MOVE_ROWS rows out of the middle of a straight x run (GH
+     #266), in both an integer and a radian file, as three files: the
+     untouched "before", a "stale" one with the move alone (set_position(),
+     what DEscape wrote until GH #266) and the "after", planned and applied
+     as the viewer's move does. In the after file the moved wall is a tower
+     at its new tile and the two walls either side of the gap are run ends
+     (also index 2); in the stale file all three keep their old index.
 
 Writes into build/wall_run_pairs/, which is gitignored.
 """
@@ -90,6 +97,12 @@ GATE_MOVE_CASES = [
     ("gate_move_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
 ]
 GATE_MOVE_TILES = 5
+# (label, source file): GH #266's wall moved MOVE_ROWS off its run.
+MOVE_CASES = [
+    ("move_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
+    ("move_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
+]
+MOVE_ROWS = 3
 
 
 def _busiest_wall(scenario, w: int, h: int):
@@ -344,6 +357,104 @@ def _gate_move_case(label: str, name: str) -> None:
     )
 
 
+def _move_site(scenario, w: int, h: int):
+    """(wall, west, east, new_tile): a non-GAIA wall in the interior of a
+    straight x run (walls on t-2..t+2), with its two run neighbours, where
+    each of the three decodes to something other than 2 and stands alone on
+    its tile, and no connector stands beside either neighbour off the run,
+    so the move leaves both with one run neighbour. It goes MOVE_ROWS down
+    (else up) onto a tile no object blocks with no connector in its
+    8-neighbourhood, so it lands as a tower."""
+    connectors = unit_sprites.wall_connector_consts()
+    counts: dict[tuple[int, int], int] = {}
+    for units in scenario.unit_manager.units:
+        for unit in units:
+            if unit.unit_const in connectors:
+                for tile in unit_occupied_tiles(unit, w, h) or ():
+                    counts[tile] = counts.get(tile, 0) + 1
+    _tiles, walls = wall_run.wall_scene(scenario, w, h)
+    at = {(wall.tx, wall.ty): wall for wall in walls}
+    blocked = wall_run.blocked_tiles(scenario, w, h)
+
+    def landing(tx: int, ty: int) -> bool:
+        return (
+            0 <= ty < h
+            and (tx, ty) not in blocked
+            and not any((tx + dx, ty + dy) in counts for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+        )
+
+    for (tx, ty), wall in sorted(at.items(), key=lambda item: (item[0][1], item[0][0])):
+        if wall.player_id == GAIA:
+            continue
+        if not all((tx + dx, ty) in at for dx in range(-2, 3)):
+            continue
+        row = [at[(tx + dx, ty)] for dx in (-1, 0, 1)]
+        if any(counts[(r.tx, r.ty)] != 1 or unit_sprites.variant_index(r.unit.rotation, 5) == 2 for r in row):
+            continue
+        if any((tx + dx, ty + dy) in counts for dx in (-1, 1) for dy in (-1, 1)):
+            continue
+        for dy in (MOVE_ROWS, -MOVE_ROWS):
+            if landing(tx, ty + dy):
+                return row[1], row[0], row[2], (tx, ty + dy)
+    raise SystemExit(f"no straight x run with a wall to move {MOVE_ROWS} rows into the open")
+
+
+def _move_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    loaded = load_map_and_units(src)
+    mm = loaded.map_manager
+    w, h = mm.map_width, mm.map_height
+    wall, west, east, (nx, ny) = _move_site(loaded, w, h)
+    trio = (wall, west, east)
+    old_indices = [unit_sprites.variant_index(r.unit.rotation, 5) for r in trio]
+    x, y = wall.unit.x, wall.unit.y + (ny - wall.ty)
+    plan = wall_run.scenario_move_plan(loaded, w, h, [(wall.unit, x, y)], gate_walls=False)
+    assert plan, "the move planned nothing"
+
+    before = OUT / f"{label}_before.aoe2scenario"
+    stale = OUT / f"{label}_stale.aoe2scenario"
+    after = OUT / f"{label}_after.aoe2scenario"
+    write_scenario(loaded, before)
+    model = UnitEditModel(loaded)
+    history = EditHistory()
+    # The stale file is the move alone; the after file adds the plan's shapes on top, the
+    # same end state as the viewer's single record (set_position(), then apply_move_plan()).
+    model.begin_unit_edit([wall.player_id])
+    model.set_position(wall.unit, x, y, wall.unit.z)
+    model.commit_unit_edit("Move unit", history)
+    write_scenario(loaded, stale, units=model)
+    model.begin_unit_edit(sorted({wall.player_id} | wall_run.move_plan_players(plan)))
+    wall_run.apply_move_plan(model, plan)
+    model.commit_unit_edit("Move unit", history)
+    write_scenario(loaded, after, units=model)
+
+    # The M check, on the files as written: the three walls found by reference_id.
+    refs = [r.unit.reference_id for r in trio]
+
+    def reread(path) -> list[int]:
+        found = {
+            u.reference_id: u
+            for units in load_map_and_units(path).unit_manager.units
+            for u in units
+            if u.reference_id in refs
+        }
+        assert (int(found[refs[0]].x), int(found[refs[0]].y)) == (nx, ny), (path.name, found[refs[0]].x, found[refs[0]].y)
+        return [unit_sprites.variant_index(found[ref].rotation, 5) for ref in refs]
+
+    stale_indices, after_indices = reread(stale), reread(after)
+    assert stale_indices == old_indices, (stale.name, stale_indices, old_indices)
+    assert after_indices == [2, 2, 2], (after.name, after_indices)
+    others = [(int(u.x), int(u.y)) for _p, u, _v in plan.rewrites if u is not west.unit and u is not east.unit]
+    print(
+        f"{label:8s} {name} (owner {wall.player_id})\n"
+        f"         moved wall: tile ({wall.tx}, {wall.ty}) -> ({nx}, {ny}), index {old_indices[0]} -> {after_indices[0]}\n"
+        f"         west ({west.tx}, {west.ty}) {old_indices[1]} -> {after_indices[1]}, "
+        f"east ({east.tx}, {east.ty}) {old_indices[2]} -> {after_indices[2]}; stale file keeps {stale_indices}\n"
+        f"         other walls reshaped: {others or 'none'}\n"
+        f"         {before.name} / {stale.name} / {after.name}"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for label, name, kind, owner in CASES:
@@ -395,6 +506,8 @@ def main() -> None:
         _gate_case(label, name)
     for label, name in GATE_MOVE_CASES:
         _gate_move_case(label, name)
+    for label, name in MOVE_CASES:
+        _move_case(label, name)
 
 
 if __name__ == "__main__":

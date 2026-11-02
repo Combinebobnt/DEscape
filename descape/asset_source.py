@@ -229,6 +229,7 @@ def clear_install_caches() -> None:
     _sized_terrain_mask.cache_clear()
     _string_table.cache_clear()
     _data_mod_string_ids.cache_clear()
+    _has_ror_strings.cache_clear()
     _ror_icon_files.cache_clear()
     get_unit_icon.cache_clear()
     get_tech_icon.cache_clear()
@@ -268,6 +269,22 @@ def _unescape_string_value(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
 
+def _ror_strings_path(install: Path, lang: str) -> Path:
+    return game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang)
+
+
+@lru_cache(maxsize=4)
+def _has_ror_strings(lang: str) -> bool:
+    install = get_install_path()
+    return install is not None and _ror_strings_path(install, lang).is_file()
+
+
+def has_ror_strings(lang: str | None = None) -> bool:
+    """Whether the configured install has Return of Rome's own strings file
+    for lang (default get_language()), whatever dataset is active."""
+    return _has_ror_strings(lang or get_language())
+
+
 @game_dataset.cache(maxsize=4)
 def _string_table(lang: str) -> dict[int, str]:
     """The install's strings for lang; under Return of Rome its own strings
@@ -278,7 +295,7 @@ def _string_table(lang: str) -> dict[int, str]:
         return {}
     paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
     if game_dataset.is_ror():
-        paths.append(game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
+        paths.append(_ror_strings_path(install, lang))
     paths.extend(_data_mod_strings_paths(lang))
     table: dict[int, str] = {}
     for path in paths:
@@ -530,7 +547,11 @@ def read_config_text(path: Path) -> str:
     locale: Windows' cp1252 would mangle a hand-edited non-ASCII path. A file
     that is not UTF-8 (an older Notepad's ANSI save) reads as the locale's,
     or as cp1252 under a UTF-8 locale, so a later save keeps its characters."""
-    data = path.read_bytes()
+    return decode_config_bytes(path.read_bytes())
+
+
+def decode_config_bytes(data: bytes) -> str:
+    """read_config_text() for bytes already read."""
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:

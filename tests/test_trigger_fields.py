@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from descape import library_compat, trigger_fields
+from descape import library_compat, trigger_fields, trigger_geometry
 from descape.trigger_fields import FieldSpec
 
 
@@ -1228,3 +1228,134 @@ def test_button_location_stays_a_combo_with_a_tooltip() -> None:
         assert not trigger_fields.wants_picker(spec)
         assert "command panel" in spec.tooltip
         assert all(not other.tooltip for other in specs if other.name != "button_location")
+
+
+# -- GH #41: the property form's order and object list type row --------------
+
+
+def _every_shipped_form():
+    """(label, field_specs()) for every condition and effect type of every shipped version."""
+    for version in library_compat.vocabulary_versions():
+        vocabulary = library_compat.load_vocabulary(version)
+        for kind, entries, presentation, type_attribute in (
+            ("condition", vocabulary.conditions, vocabulary.condition_presentation, "condition_type"),
+            ("effect", vocabulary.effects, vocabulary.effect_presentation, "effect_type"),
+        ):
+            for entry in entries.values():
+                yield f"v{version}/{kind}/{entry.name}", trigger_fields.field_specs(entry, presentation, type_attribute)
+
+
+def test_every_shipped_field_has_a_form_rank() -> None:
+    """A new vocabulary field fails here until it gets a place in _FORM_ORDER."""
+    rank = trigger_fields._FORM_ORDER
+    assert len(set(rank)) == len(rank), "a duplicate would leave a dead slot"
+    unranked = sorted({spec.name for _, specs in _every_shipped_form() for spec in specs} - set(rank))
+    assert unranked == []
+
+
+def _shipped_form(version: str, kind: str, name: str) -> tuple[str, ...]:
+    """One shipped form's field names in form order."""
+    specs = next(specs for label, specs in _every_shipped_form() if label == f"v{version}/{kind}/{name}")
+    return tuple(spec.name for spec in trigger_fields.form_order(specs))
+
+
+_QUANTITY_RUN = ("quantity", "quantity_float", "armour_attack_quantity", "armour_attack_class")
+_AREA_RUN = ("area_x1", "area_y1", "area_x2", "area_y2")
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (
+            "modify_attribute",
+            (*_QUANTITY_RUN, "object_list_unit_id", "source_player", "item_id", "operation", "object_attributes", "message"),
+        ),
+        (
+            "modify_attribute_for_class",
+            (*_QUANTITY_RUN, "object_group2", "object_type2", "source_player", "operation", "object_attributes", "message"),
+        ),
+        (
+            "modify_object_attribute",
+            (
+                *_QUANTITY_RUN,
+                "object_list_unit_id",
+                "source_player",
+                *_AREA_RUN,
+                "operation",
+                "object_attributes",
+                "message",
+                "selected_object_ids",
+                "object_filter",
+            ),
+        ),
+    ],
+)
+def test_form_order_lays_out_the_modify_attribute_family(name, expected) -> None:
+    """GH #278: the family's shared fields in one order, values on top. GH #275:
+    quantity_float directly under quantity."""
+    assert _shipped_form("1.59", "effect", name) == expected
+
+
+def test_form_order_keeps_the_run_on_a_version_without_quantity_float() -> None:
+    names = _shipped_form("1.45", "effect", "modify_attribute")
+    assert "quantity_float" not in names
+    assert names[:3] == ("quantity", "armour_attack_quantity", "armour_attack_class")
+
+
+def test_form_order_keeps_each_field_group_together_in_every_version() -> None:
+    """A permutation; object_group then object_type directly under the first
+    object list field, a filter with neither being an offender; and the area
+    and location fields consecutive and in order, which _add_group_row() needs."""
+    filters = ("object_group", "object_type")
+    list_fields = ("object_list", "object_list_unit_id")
+    with_filter = 0
+    offenders = []
+    for label, specs in _every_shipped_form():
+        ordered = trigger_fields.form_order(specs)
+        names, new = [s.name for s in specs], [s.name for s in ordered]
+        if sorted(new) != sorted(names) or len(ordered) != len(specs):
+            offenders.append(f"{label}: not a permutation {new}")
+            continue
+        listed = [f for f in filters if f in new]
+        if listed:
+            with_filter += 1
+            anchor = next((n for n in new if n in list_fields), None)
+            if anchor is None:
+                offenders.append(f"{label}: {listed} with no object list field")
+            elif new[new.index(anchor) + 1 : new.index(anchor) + 1 + len(listed)] != listed:
+                offenders.append(f"{label}: {listed} not under {anchor} {new}")
+        offenders += [
+            f"{label}: {group} split {new}"
+            for group in (trigger_geometry.AREA_FIELDS, trigger_geometry.LOCATION_FIELDS)
+            if group[0] in new and new[new.index(group[0]) : new.index(group[0]) + len(group)] != list(group)
+        ]
+    assert offenders == [], offenders
+    assert with_filter > 100, with_filter
+
+
+def test_form_order_sorts_an_unranked_field_last() -> None:
+    specs = (
+        FieldSpec("from_a_later_version", trigger_fields.INT),
+        FieldSpec("message", trigger_fields.INT),
+        FieldSpec("also_later", trigger_fields.INT),
+        FieldSpec("quantity", trigger_fields.INT),
+    )
+    assert [s.name for s in trigger_fields.form_order(specs)] == [
+        "quantity",
+        "message",
+        "from_a_later_version",
+        "also_later",
+    ]
+
+
+def test_has_list_type_is_editable_object_pickers_only() -> None:
+    from dataclasses import replace
+
+    unit = FieldSpec("object_list_unit_id", trigger_fields.REFERENCE, presentation="UnitInfo")
+    building = FieldSpec("building_list", trigger_fields.REFERENCE, presentation="BuildingInfo")
+    tech = FieldSpec("technology", trigger_fields.REFERENCE, presentation="TechInfo")
+    placed = FieldSpec("unit_object", trigger_fields.REFERENCE, presentation="Unit")
+    assert trigger_fields.has_list_type(unit) and trigger_fields.has_list_type(building)
+    assert not trigger_fields.has_list_type(replace(unit, read_only=True))
+    assert not trigger_fields.has_list_type(tech) and not trigger_fields.has_list_type(placed)
+    assert not trigger_fields.has_list_type(FieldSpec("object_list_unit_id", trigger_fields.INT))

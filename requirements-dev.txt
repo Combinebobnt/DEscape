@@ -3,7 +3,12 @@
 # pytest runs the regression suite in tests/ (.venv/bin/python3 -m pytest --
 # see tests/README.md for tiers). Along with ruff below, these are the two
 # entries a contributor actually needs before doing any work in this repo.
-pytest
+#
+# Capped below 9.2: under pytest 9.2.0, pytest-xdist 3.8.0's --dist loadgroup
+# no longer sees xdist_group marks, so test_font_dpi_sweep.py's seven DPI
+# children start once per worker and time out on the 3-core macOS runner.
+# test_font_dpi_sweep.py's sweep_runs fixture fails fast if that recurs.
+pytest<9.2
 
 # pytest-qt supplies the `qtbot` fixture for the `gui`-marked offscreen
 # ViewerWindow tests. Most of what it offers those tests already hand-roll

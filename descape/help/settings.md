@@ -9,12 +9,14 @@ Each tab:
 - Mouse wheel zoom: zoom around the mouse cursor, or around the middle of the view.
 - AoE2DE install path: optional. Type the game's install folder or Browse… to it, then Load, which checks the path and saves it. With an install, terrain draws with its real textures and **View > Show sprites** can draw units as the game does. Without one, terrain falls back to flat colours.
 - On Linux, X11 compatibility on Wayland runs DEscape under XWayland from the next launch. Try it if map drags lag or freeze for seconds at a time; it costs a blurry window under fractional display scaling.
+- Settings file: Export settings… saves your preferences as a `.descape-settings.yaml` file, and Import settings… loads one, say on another computer. The file carries the preferences from every tab, the View menu and the panels: keybinds and mouse wheel actions, the look, tool defaults, saving options and the rest. It never carries folder paths (the install, the profile and the autosave folder), your recent files, the New Map dialog's last choices, **File > Data Mod**'s choice for each map, the window's size and layout, or X11 compatibility on Wayland; those stay as they are on this computer. Export refuses a `mods/subscribed/` folder, and will not replace `config.yaml` or the import files kept beside it.
+- An import replaces your preferences rather than adding to them: one the file leaves at its default goes back to the default here too. Import settings… first lists what would change and what would reset. Nothing changes until the next time DEscape starts, so after Apply you can quit DEscape at once or carry on and restart later. Until then a line under the buttons names the file, and Discard cancels the import; if this version of DEscape cannot apply the staged import, the line says so instead. When it is applied, the old `config.yaml` is kept as `config.before-import.yaml` beside it.
 
 ## Mods
 
-- AoE2DE profile folder: optional, and usually found on its own. It is where Players mode finds custom AIs from your profile and mods, and where your enabled mods' art comes from. Browse… and Load set it; Use auto-detect forgets your choice and finds it from the install again. Below it is every folder DEscape scans for content.
-- Mod art list: every enabled mod that ships art, in the game's mod order, the top one winning where two ship the same file. Untick a mod to leave it out of **View > Layers > Mod Art**; it stays off even if you reinstall it. Mods are read once per launch, so after enabling one in the game, restart DEscape or load the profile folder again.
-- Data mods: Hide unchanged objects in the Units catalog lists only what the data mod picked in **File > Data Mod** adds or changes: new objects, objects it reuses or renames, and objects with other art or stats than the game's own. A note under the catalog counts what is hidden, and an object picked with the Eyedropper shows while it is the pick. Show "(data mod)" after objects only the data mod has turns that label on or off.
+- AoE2DE profile folder: optional, and usually found on its own. It is where Players mode finds custom AIs from your profile and mods, and where your mods' art comes from. Browse… and Load set it; Use auto-detect forgets your choice and finds it from the install again. Below it is every folder DEscape reads AIs and other content from. A mod disabled in the game's mod list is left out there, though the Mod art list can still tick its art on, and **File > Data Mod** still offers a disabled data mod.
+- Mod art list: every mod in the profile the game last used that ships art, in the game's mod order, the top one winning where two ship the same file. Untick a mod to leave it out of **View > Layers > Mod Art**; it stays off even if you reinstall it. A mod disabled in the game's own mod list is listed too, marked "(disabled in game)" and off until you tick it. Ticking it draws its art in DEscape only; the game's mod list is not changed. Mods are read once per launch, so after enabling or disabling one in the game, restart DEscape or load the profile folder again.
+- Data mods: Hide unchanged objects in the Units catalog lists only what the data mod picked in **File > Data Mod** adds or changes: new objects, objects it reuses or renames, and objects with other art or stats than the game's own. A note under the catalog counts what is hidden, and an object picked with the Eyedropper shows while it is the pick. Show "(data mod)" after mod-only objects turns that label on or off.
 
 ## Appearance
 
@@ -38,7 +40,7 @@ The icons sit in their own column between ID and Trigger, so the names line up, 
 
 ## Tools
 
-**Settings > Tools** sets what each control on the Tool Options row starts at when you launch DEscape: the brush size, shape and outline thickness; Auto beach, the beach terrain and width, Trees and Eye candy; the Set Elevation level and whether Draw Rectangle is filled; the Paste Region ticks; Free placement, Off-grid, Walls skip occupied tiles and Moving a gate updates walls; the wall the Wall button picks, and the Cliff family, piece and frame; the Unit Brush's density and Random facing/variant; Convert's sources, the Eraser's targets, and the Edit Area options for trigger areas.
+**Settings > Tools** sets what each control on the Tool Options row starts at when you launch DEscape: the brush size, shape and outline thickness; Auto beach, the beach terrain and width, Trees and Eye candy; the Set Elevation level and whether Draw Rectangle is filled; the Paste Region ticks; Free placement, Off-grid, Walls skip occupied tiles and Moving a gate updates walls; the wall the Wall button picks, and the Cliff family, piece and frame; the Unit Brush's density and Random facing/variant; Convert's sources, the Eraser's targets, and the Edit Area options for trigger areas and locations.
 
 A change on this tab shows on the toolbar at once and is kept for every later launch. A change you make on the toolbar itself lasts until you close DEscape. **Default** on a row puts that option back to DEscape's own default, **Load From Toolbar** makes everything the toolbar shows right now the default, and **Reset All to Defaults** puts every option, and the toolbar, back to DEscape's own defaults. Changing the Cliff family resets the piece and frame, and changing the piece resets the frame. A wall, beach or cliff the current game data doesn't have shows as Unavailable and is kept until you change it. Target always starts on Terrain.
 
@@ -59,14 +61,14 @@ The Mouse Wheel section comes first, with a row for the wheel alone and one each
 
 - Zoom.
 - Brush size: steps the size in tools with a Brush size box.
-- Rotate preview: turns Place Unit's preview or a just-pasted region.
+- Rotate preview: turns a unit you're dragging with Move, Place Unit's preview or a just-pasted region.
 - Brush size or rotate preview: whichever of the two applies.
 - Pan up / down, or Pan left / right.
 - Nothing.
 
 Each choice's tooltip says where it applies. Where Brush size or Rotate preview has nothing to act on, the wheel does nothing rather than zoom. A modifier combination with no row of its own zooms. Holding Shift or Alt for a tool's own modifier, such as a straight wall run or off-grid placement, also uses that row. Some desktops take Alt + Wheel for themselves.
 
-Below it is a row for every command, grouped like the menus. Click a row's box and press the keys you want. Default puts the shipped key back, unless another command has it now, and Clear removes the key. Giving one command a key another already has clears it from the other, and the tab says which.
+Below it is a row for every command, grouped like the menus. Click a row's box and press the keys you want. A command that works only in some modes shows them after its name, and its key can also go on a command of another mode, each working in its own. Commands that work in every mode keep their key to themselves. Giving one command a key another has in a mode they share clears it from the other, and the tab says which. Default puts the shipped key back, unless another command has it now in a mode they share, and Clear removes the key.
 
 ## Advanced
 

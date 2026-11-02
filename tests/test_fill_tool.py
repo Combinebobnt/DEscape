@@ -105,6 +105,7 @@ def test_fill_registered_as_keybind_and_toolbar_action() -> None:
         # (no default -- an AttributeError there would already have failed
         # window construction, but this pins the specific mapping too).
         assert window._keybind_actions["tool_fill"] is window.fill_action
+        window.mode_combo.setCurrentText("Terrain")  # a tool holds its key only in its own modes
         assert window.fill_action.shortcut() == QKeySequence("P")
     finally:
         window.edit_history.mark_saved()

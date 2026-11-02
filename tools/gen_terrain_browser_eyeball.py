@@ -156,13 +156,14 @@ def _grid_report(window, label: str, expect_detail: bool) -> int:
 
     Every shown cell has an icon (with real texture detail when an install is
     configured), every caption's wrapped text rect fits its cell, headings
-    are left-aligned in WindowText, and the armed cell carries Highlight on
-    all four sides with its swatch untinted. Offscreen Qt geometry."""
+    start right after their arrow in WindowText, each arrow stands off the base
+    colour, and the armed cell carries Highlight on all four sides with its
+    swatch untinted. Offscreen Qt geometry."""
     from PyQt5.QtCore import QRect
     from PyQt5.QtGui import QFontMetrics, QPalette
 
     from descape import asset_source
-    from descape.swatch_grid import _TEXT_FLAGS, PAD
+    from descape.swatch_grid import _GROUP_ROLE, _TEXT_FLAGS, PAD
 
     grid = window.terrain_panel.view.grid
     grid.flush_swatches()
@@ -188,17 +189,26 @@ def _grid_report(window, label: str, expect_detail: bool) -> int:
         if not rect.contains(used):
             failures.append(f"caption overflows on {cell.text()}: {used} outside {rect}")
     text = palette.color(QPalette.WindowText).rgb()
+    base = palette.color(QPalette.Base).rgb()
     viewport = grid.viewport().rect()
+    arrows = {True: 0, False: 0}
     for heading in grid.heading_items():
         rect = grid.visualItemRect(heading)
         if heading.isHidden() or not rect.intersects(viewport):
             continue
-        xs = [x for y in range(rect.top(), rect.bottom()) for x in range(rect.left(), rect.right())
+        arrow = grid.arrow_rect(rect)
+        text_left = arrow.right() + 1 + PAD
+        xs = [x for y in range(rect.top(), rect.bottom()) for x in range(text_left, rect.right())
               if image.valid(x, y) and image.pixel(x, y) == text]
         if not xs:
             failures.append(f"heading {heading.text()!r} has no WindowText pixels")
-        elif min(xs) - rect.left() > PAD + 4:
-            failures.append(f"heading {heading.text()!r} starts {min(xs) - rect.left()} px in, not left-aligned")
+        elif min(xs) - text_left > 4:
+            failures.append(f"heading {heading.text()!r} starts {min(xs) - rect.left()} px in, not beside its arrow")
+        if viewport.contains(arrow):
+            arrows[grid.section_open(heading.data(_GROUP_ROLE))] += 1
+            if all(image.pixel(x, y) == base for y in range(arrow.top(), arrow.bottom() + 1)
+                   for x in range(arrow.left(), arrow.right() + 1)):
+                failures.append(f"heading {heading.text()!r} has no arrow ink")
     armed = grid.current_value()
     cell = grid.cell_item(armed) if armed is not None else None
     if cell is not None and not cell.isHidden() and grid.visualItemRect(cell).intersects(viewport):
@@ -220,7 +230,8 @@ def _grid_report(window, label: str, expect_detail: bool) -> int:
     print(
         f"  [{label}] cells shown={len(shown)} cell_w={grid.cell_width()} per_row={per_row} "
         f"content height={grid.verticalScrollBar().maximum() + grid.viewport().height()} "
-        f"hscroll max={grid.horizontalScrollBar().maximum()} failures={len(failures)}"
+        f"hscroll max={grid.horizontalScrollBar().maximum()} "
+        f"arrows open={arrows[True]} closed={arrows[False]} failures={len(failures)}"
     )
     for failure in failures:
         print(f"    FAIL {failure}")
@@ -229,7 +240,8 @@ def _grid_report(window, label: str, expect_detail: bool) -> int:
 
 def _capture_grid(out_dir: Path) -> tuple[list[Path], int]:
     """Grid mode at MIN_USEFUL_WIDTH and 600 px, at each swatch size, once with
-    show-hidden ticked, and once under a dark theme (offscreen Qt)."""
+    show-hidden ticked, once under a dark theme and once there with two
+    sections closed (offscreen Qt)."""
     from PyQt5.QtWidgets import QApplication
 
     from descape import asset_source, settings
@@ -269,6 +281,17 @@ def _capture_grid(out_dir: Path) -> tuple[list[Path], int]:
         QApplication.processEvents()
         failures += _grid_report(window, "grid dark", expect_detail)
         path = out_dir / "grid_dark.png"
+        panel.grab().save(str(path))
+        written.append(path)
+        grid = panel.view.grid
+        armed = grid.cell_item(grid.current_value())
+        closing = [group for group, heading, cells in grid._sections if not heading.isHidden() and armed not in cells]
+        for group in closing[:2]:
+            grid.set_section_open(group, False)
+        grid.scrollToTop()
+        QApplication.processEvents()
+        failures += _grid_report(window, "grid collapsed", expect_detail)
+        path = out_dir / "grid_collapsed_dark.png"
         panel.grab().save(str(path))
         written.append(path)
     finally:

@@ -31,7 +31,9 @@ one undo step; scatter never touches EditHistory.
 (GH #105) only plans new x/y for units the caller already has and mutates
 nothing, so scatter_units()'s place-new contract above stays as it is. The
 caller applies the plan with set_position(), which leaves rotation, z and
-every other field verbatim.
+every other field verbatim; the viewer's move mode then re-derives the shape
+of each wall it moved and of the walls beside them, as any move does (GH #266,
+wall_run.scenario_move_plan()).
 
 Leaf module: batch_api.py must not import fill_tools.py, so a scatter helper
 living inside batch_api could never be combined with it. A batch script
@@ -285,7 +287,8 @@ def scatter_existing_units(
 ) -> ExistingScatter:
     """Plans a random new position inside `tiles` for each of `units` and
     mutates nothing (GH #105). Only x/y are planned: the caller applies them
-    with set_position(), so rotation and every other field stay verbatim.
+    with set_position(), so rotation and every other field stay verbatim,
+    but for the wall shapes the viewer's move re-derives (GH #266).
 
     Deterministic per seed for a given input order; a caller whose units
     arrive in click order sorts them first. Multi-tile units go first, each

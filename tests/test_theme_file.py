@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from descape import settings, theme_file, themes
+from descape import settings, theme_file, themes, yaml_file_io
 
 import conftest
 
@@ -357,6 +357,11 @@ def test_overwriting_replaces_the_file(tmp_path) -> None:
     out.write_text("old contents\n")
     theme_file.write_theme_file(out, theme_file.build_document())
     assert yaml.safe_load(out.read_text()) == theme_file.build_document()
+
+
+def test_the_whole_number_check_is_the_shared_one() -> None:
+    """Theme and settings files read versions and sizes through one int check, not a copy each."""
+    assert theme_file._is_int is yaml_file_io.is_int
 
 
 def test_summary_lists_changes_problems_and_notes(tmp_path) -> None:

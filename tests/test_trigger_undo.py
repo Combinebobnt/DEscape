@@ -614,3 +614,32 @@ def test_the_record_carries_its_label_and_kind() -> None:
     assert record.kind == "trigger"
     assert history.peek_undo() is record
     assert record.touched_indices() == [], "trigger records touch no tiles"
+
+
+def test_undoing_a_renumber_puts_back_ids_links_order_and_blobs(tmp_path: Path) -> None:
+    """GH #2 on a file saved with display order [2, 0, 3, 1], so the renumber
+    is the only edit: its undo leaves nothing to save, and a redo reapplies it."""
+    from descape.trigger_model import renumber_to_display_order
+
+    loaded, model, _history = _open()
+    model.structural_edit(lambda m: setattr(m, "trigger_display_order", [2, 0, 3, 1]))
+    base = tmp_path / "ordered.aoe2scenario"
+    write_scenario(loaded, base, triggers=model)
+
+    loaded = load_map_and_units(base)
+    model, history = TriggerEditModel(loaded), EditHistory()
+    before = _graph_state(model.manager())
+    model.begin_trigger_edit()
+    model.structural_edit(renumber_to_display_order)
+    model.commit_trigger_edit("Renumber trigger IDs to display order", history)
+    after = _graph_state(model.manager())
+    edited = model.serialize()
+    assert after != before and after[3] == [0, 1, 2, 3]
+
+    history.undo(loaded.map_manager.terrain, model)
+    assert _graph_state(model.manager()) == before
+    assert not model.has_edits
+    assert model.serialize() == _section_bytes(loaded)
+    history.redo(loaded.map_manager.terrain, model)
+    assert _graph_state(model.manager()) == after
+    assert model.serialize() == edited

@@ -24,6 +24,9 @@ Rules, each with its reason:
   also yields one "unit" shape per id that resolves to an on-map unit: the
   footprint as inclusive corners, like an area. Its coords are derived, not
   stored, so a writer (map resize) must skip "unit" shapes.
+- created_units_for_trigger() reads the units a Create Object or Place
+  Foundation effect would place (GH #167), matched on the vocabulary's effect
+  name, never a type number. The map's trigger ghosts draw them.
 """
 
 from __future__ import annotations
@@ -58,6 +61,12 @@ _KINDS = (
     (ENTRY_EFFECT, "effects", "effect_type"),
 )
 
+# GH #167: the effects that put a new unit of their const on their location.
+CREATING_EFFECTS = ("create_object", "place_foundation")
+CREATED_UNIT_FIELD = "object_list_unit_id"
+CREATED_PLAYER_FIELD = "source_player"
+FACET_FIELD = "facet"
+
 
 @dataclass(frozen=True)
 class TriggerShape:
@@ -82,6 +91,32 @@ class TriggerShape:
     def entry_ref(self) -> tuple[str, int]:
         """(entry_kind, entry_index), the panel's own entry reference shape."""
         return (self.entry_kind, self.entry_index)
+
+
+@dataclass(frozen=True)
+class CreatedUnit:
+    """One unit a Create Object or Place Foundation effect would place, as
+    plain ints (GH #167). `effect` is the vocabulary name; `player` may be
+    UNSET; `facet` is UNSET when unset or when the effect has no facet."""
+
+    trigger_index: int
+    entry_index: int
+    effect: str
+    unit_const: int
+    player: int
+    tile: tuple[int, int]
+    facet: int = UNSET
+
+    @property
+    def entry_ref(self) -> tuple[str, int]:
+        """(entry_kind, entry_index), as TriggerShape's: always an effect."""
+        return (ENTRY_EFFECT, self.entry_index)
+
+    @property
+    def payload(self) -> tuple:
+        """Everything but the two indices: what the ghost looks like, so the
+        map's resolve memo keys on it and survives an entry renumbering."""
+        return (self.effect, self.unit_const, self.player, self.tile, self.facet)
 
 
 def _read(obj: Any, attribute: str) -> Any:
@@ -190,6 +225,25 @@ def shapes_for_trigger(
     return shapes
 
 
+def created_units_for_trigger(trigger: Any, vocabulary: Any, *, trigger_index: int) -> list[CreatedUnit]:
+    """The units one trigger's Create Object and Place Foundation effects
+    would place, in list order. An unset const and an unset or half-set
+    location yield nothing; the facet is read only where the type lists it."""
+    records: list[CreatedUnit] = []
+    for entry_index, entry in enumerate(_read(trigger, "effects") or ()):
+        definition = vocabulary.effects.get(_read(entry, "effect_type"))
+        if definition is None or definition.name not in CREATING_EFFECTS:
+            continue
+        const = coordinate(entry, CREATED_UNIT_FIELD)
+        x, y = (coordinate(entry, f) for f in LOCATION_FIELDS)
+        if const < 0 or x < 0 or y < 0:
+            continue
+        facet = coordinate(entry, FACET_FIELD) if FACET_FIELD in definition.attributes else UNSET
+        player = coordinate(entry, CREATED_PLAYER_FIELD)
+        records.append(CreatedUnit(trigger_index, entry_index, definition.name, const, player, (x, y), facet))
+    return records
+
+
 def area_centre(coords: Sequence[int]) -> tuple[int, int]:
     """An area's integer midpoint, so a run's number is reproducible."""
     x1, y1, x2, y2 = coords
@@ -211,30 +265,38 @@ def location_superseded(shapes: Iterable[TriggerShape]) -> bool:
     return any(s.shape == SHAPE_UNIT and s.fields == (LOCATION_OBJECT_FIELD,) for s in shapes)
 
 
-def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
-    """Origin to destination, for ONE entry's shapes, or None unless the
-    entry has both. Origin: the area centre, else the integer centroid of the
-    selected units' own tiles. Destination: the location object's own tile,
-    else the location. Not special-cased to Patrol: Attack Move, Task Object,
-    Teleport and the rest share the same shape."""
-    area = location = target = None
+def run_origin(shapes: Iterable[TriggerShape]) -> tuple[int, int] | None:
+    """Where ONE entry's run starts: the area centre, else the integer
+    centroid of the selected units' own tiles, else None."""
     selected: list[tuple[int, int]] = []
     for shape in shapes:
-        if shape.shape == SHAPE_AREA and area is None:
-            area = shape
-        elif shape.shape == SHAPE_LOCATION and location is None:
-            location = shape
-        elif shape.shape == SHAPE_UNIT and shape.anchor is not None:
-            if shape.fields == (LOCATION_OBJECT_FIELD,) and target is None:
-                target = shape.anchor
-            elif shape.fields == (SELECTED_OBJECTS_FIELD,):
-                selected.append(shape.anchor)
-    if area is not None:
-        origin = area_centre(area.coords)
-    elif selected:
-        origin = tile_centroid(selected)
-    else:
+        if shape.shape == SHAPE_AREA:
+            return area_centre(shape.coords)
+        if shape.shape == SHAPE_UNIT and shape.anchor is not None and shape.fields == (SELECTED_OBJECTS_FIELD,):
+            selected.append(shape.anchor)
+    return tile_centroid(selected)
+
+
+def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
+    """Origin to destination, for ONE entry's shapes, or None unless the
+    entry has both. Origin: run_origin(). Destination: the location object's
+    own tile, else the location. Not special-cased to Patrol: Attack Move,
+    Task Object, Teleport and the rest share the same shape."""
+    shapes = list(shapes)
+    origin = run_origin(shapes)
+    if origin is None:
         return None
+    location = target = None
+    for shape in shapes:
+        if shape.shape == SHAPE_LOCATION and location is None:
+            location = shape
+        elif (
+            shape.shape == SHAPE_UNIT
+            and shape.anchor is not None
+            and shape.fields == (LOCATION_OBJECT_FIELD,)
+            and target is None
+        ):
+            target = shape.anchor
     if target is not None:
         destination = target
     elif location is not None:
@@ -248,6 +310,8 @@ def run_for_entry(shapes: Iterable[TriggerShape]) -> ruler.Measurement | None:
 # side they grab in map axes (n/s the y-min/y-max side, w/e the x-min/x-max).
 ZONE_MOVE = "move"
 AREA_ZONES = (ZONE_MOVE, "n", "s", "w", "e", "nw", "ne", "sw", "se")
+# GH #41's location mark, dragged by the same machine. Not an area zone.
+ZONE_LOCATION = "location"
 
 
 def area_hit_zone(
@@ -273,6 +337,12 @@ def area_hit_zone(
     return ns + we or ZONE_MOVE
 
 
+def location_hit(tile: Sequence[int], point: tuple[float, float], reach: float) -> bool:
+    """Whether the fractional map point is within `reach` tiles of the tile's
+    centre on both axes."""
+    return abs(point[0] - tile[0] - 0.5) <= reach and abs(point[1] - tile[1] - 0.5) <= reach
+
+
 def _clamp(value: int, low: int, high: int) -> int:
     return min(max(value, low), high)
 
@@ -288,11 +358,11 @@ def dragged_area(
     """The min/max area a drag from start_tile to end_tile makes of `coords`.
     A move keeps the size and shifts the whole area no further than the map
     edge; a resize shifts the grabbed sides by the same delta, clamped to the
-    map, and may cross the opposite side."""
+    map, and may cross the opposite side. A location drags as a 1x1 rect."""
     x1, x2 = sorted((coords[0], coords[2]))
     y1, y2 = sorted((coords[1], coords[3]))
     dx, dy = end_tile[0] - start_tile[0], end_tile[1] - start_tile[1]
-    if zone == ZONE_MOVE:
+    if zone in (ZONE_MOVE, ZONE_LOCATION):
         dx = _clamp(dx, -x1, map_w - 1 - x2)
         dy = _clamp(dy, -y1, map_h - 1 - y2)
         return (x1 + dx, y1 + dy, x2 + dx, y2 + dy)

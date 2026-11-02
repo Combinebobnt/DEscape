@@ -135,6 +135,13 @@ def _key_under(lines: list[str], heading: str, label: str) -> str:
     return lines[lines.index(label, start) + 1]
 
 
+def _native(sequence: str) -> str:
+    """The page shows NativeText, so macOS reads Ctrl+Alt+P as ⌥⌘P."""
+    from PyQt5.QtGui import QKeySequence
+
+    return QKeySequence(sequence).toString(QKeySequence.NativeText)
+
+
 def test_keys_page_shows_the_live_bindings_and_follows_a_rebind() -> None:
     window = conftest.blank_window(load=False)
     try:
@@ -143,8 +150,8 @@ def test_keys_page_shows_the_live_bindings_and_follows_a_rebind() -> None:
         browser = window._help_window.browser
         lines = browser.toPlainText().splitlines()
         assert lines[0] == "Keyboard and Mouse"
-        assert _key_under(lines, "Edit", "Paste") == "Ctrl+Alt+P"
-        assert _key_under(lines, "Help", "DEscape Guide") == "F1"
+        assert _key_under(lines, "Edit", "Paste") == _native("Ctrl+Alt+P")
+        assert _key_under(lines, "Help", "DEscape Guide") == _native("F1")
         # Markdown-special keys survive the escaping and Qt's renderer.
         assert _key_under(lines, "Tool Value", "Increase Tool Value") == "]"
         assert _key_under(lines, "Units", "Rotate Unit Anticlockwise (Quarter Turn)") == "<"
@@ -152,8 +159,8 @@ def test_keys_page_shows_the_live_bindings_and_follows_a_rebind() -> None:
         settings.set_keybind("edit_paste", "Ctrl+Alt+O")
         window.help_keys_action.trigger()
         text = browser.toPlainText()
-        assert _key_under(text.splitlines(), "Edit", "Paste") == "Ctrl+Alt+O"
-        assert "Ctrl+Alt+P" not in text
+        assert _key_under(text.splitlines(), "Edit", "Paste") == _native("Ctrl+Alt+O")
+        assert _native("Ctrl+Alt+P") not in text
     finally:
         _close(window)
 

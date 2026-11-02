@@ -1,15 +1,15 @@
 """The visual terrain picker: a category-grouped tree of terrain swatches,
 living in the Terrain-mode sidebar page (descape/terrain_panel.py).
 
-A thin adapter over descape/value_picker.py, the same shape
-constant_picker.py's CatalogBrowseDialog is. (The plan for this called for a
-hand-written sibling instead, because CatalogBrowseDialog was hard-wired to
-object_catalog/unit_sprites at the time -- the value_picker extraction has
-since lifted exactly that coupling out, so there is nothing left to copy.)
+A thin adapter over descape/value_picker.py, the same shape constant_picker.py's
+CatalogLineEdit is. (The plan for this called for a hand-written sibling of
+the object Browse dialog instead, because that dialog was hard-wired to
+object_catalog/unit_sprites at the time -- the value_picker extraction
+lifted exactly that coupling out, so there was nothing left to copy.)
 
 What this module adds on top is the one piece of domain knowledge
-value_picker.py has none of: a terrain swatch, as both the side preview and
-a per-row icon. The icons are what make this a browser rather than a second
+value_picker.py has none of: a terrain swatch, as a per-row icon and the
+grid's tile. The icons are what make this a browser rather than a second
 list of names, so they are populated per category on expand rather than
 decoding 85 .dds files the moment the view is built.
 """
@@ -83,10 +83,6 @@ def items_for(entries=None) -> tuple[PickerItem, ...]:
     )
 
 
-def _terrain_preview(item: PickerItem) -> QPixmap:
-    return swatch_pixmap(item.value)
-
-
 def _category_of(terrain_id: int | None) -> str:
     """The category to start expanded, or "" for none matched -- which
     ValuePickerView reads as "expand everything", so a caller passing an
@@ -129,7 +125,6 @@ class TerrainPickerView(ValuePickerView):
             items_for(),
             default_group=_category_of(current_id),
             hidden_label=HIDDEN_LABEL,
-            preview=_terrain_preview,
             parent=parent,
         )
         self._build_grid(swatch_px)
@@ -212,8 +207,6 @@ class TerrainPickerView(ValuePickerView):
         self.stack.setCurrentWidget(self.grid if mode == "grid" else self.tree)
         self.mode_buttons[mode].setChecked(True)
         if mode == "list":
-            if self.preview is not None:
-                self.preview.show()
             for i in range(self.tree.topLevelItemCount()):
                 group = self.tree.topLevelItem(i)
                 if group.isExpanded():
@@ -221,9 +214,6 @@ class TerrainPickerView(ValuePickerView):
             if self.tree.currentItem() is not None:
                 self.tree.scrollToItem(self.tree.currentItem())
         else:
-            # The grid needs the width the 64 px side preview takes.
-            if self.preview is not None:
-                self.preview.hide()
             self.grid.scroll_to_value(self.grid.current_value())
         self.display_mode_changed.emit(mode)
 
@@ -245,6 +235,11 @@ class TerrainPickerView(ValuePickerView):
         if value is not None:
             self.grid.set_current_value(value)
 
+    def select(self, value: int) -> None:
+        super().select(value)
+        # The eyedropper on the armed terrain moves no current item, and its grid section may be closed.
+        self._mirror_to_grid()
+
     def _apply_filter(self, text: str) -> None:
         super()._apply_filter(text)
         if not hasattr(self, "grid"):
@@ -258,7 +253,8 @@ class TerrainPickerView(ValuePickerView):
                 child = group.child(c)
                 if not child.isHidden():
                     shown.add(child.data(0, Qt.UserRole))
-        self.grid.set_visible_values(shown)
+        # A filter opens the sections it matches, as the tree's own filter does its groups.
+        self.grid.set_visible_values(shown, reveal=bool(text.strip()))
 
     def refresh_swatches(self) -> None:
         """Drop every row icon and redecode the expanded groups.
@@ -266,9 +262,7 @@ class TerrainPickerView(ValuePickerView):
         Needed only because this view outlives an install-path change:
         _populate_icons skips any row that already has an icon, so without
         the clear the tree would keep showing the flat fallback colours (or
-        the previous install's textures) forever. The side preview is
-        rebuilt too, since it is a separate pixmap that only refreshes when
-        the current row changes.
+        the previous install's textures) forever.
         """
         for i in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(i)
@@ -278,7 +272,6 @@ class TerrainPickerView(ValuePickerView):
             group = self.tree.topLevelItem(i)
             if group.isExpanded():
                 self._populate_icons(group)
-        self._update_preview()
         self.grid.refresh_swatches()
 
     def _populate_icons(self, group: QTreeWidgetItem) -> None:
@@ -301,7 +294,7 @@ class TerrainPickerView(ValuePickerView):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             for child in pending:
-                # The 64 px swatch, drawn at ROW_ICON_PX by the view: list, preview and grid share one decode.
+                # The 64 px swatch, drawn at ROW_ICON_PX by the view: list and grid share one decode.
                 child.setIcon(0, QIcon(swatch_pixmap(child.data(0, Qt.UserRole))))
         finally:
             QApplication.restoreOverrideCursor()

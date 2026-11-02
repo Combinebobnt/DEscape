@@ -55,6 +55,7 @@ ACTION_ICONS: dict[str, str] = {
     "map_resize": "map-resize",
     "map_mirror": "map-mirror",
     "map_disables": "map-disables",
+    "map_swap_players": "map-swap-players",
     "analysis_run": "map-analysis",
     "help_guide": "help-guide",
     "help_keys": "help-keys",
@@ -130,3 +131,5 @@ def apply_icons(window) -> None:
         window.clear_recent_action.setIcon(icon(CLEAR_RECENT_ICON))
     # The More Tools button wears the active tool's icon while that tool is in its menu.
     window._update_more_tools_button()
+    # Built per populate, so an open form's are in no table here.
+    window.trigger_panel.refresh_pick_icons()

@@ -6,7 +6,7 @@ with RoR game data active; elsewhere every test skips. Point it at RoR files:
     pytest -m corpus tests/test_ror_corpus.py --scenario-dir <RoR folder> --corpus-full
 
 The other corpus tests assume AoE2 files and are not run on that folder.
-Measured on 8 RoR scenarios (100,098 placements) on 2026-10-17; AGENTS.md
+Measured on 8 RoR scenarios (100,098 placements) on 2026-10-17; docs/WRITE_RULES.md
 quotes these figures.
 """
 

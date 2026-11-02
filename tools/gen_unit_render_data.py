@@ -185,7 +185,7 @@ consts:
   Flat's icon contain-fits the 6x6 rect; snapped Place Unit and a group
   move's edge clamp put an even-span doodad on whole coordinates and keep
   its footprint on the map; Replace re-anchors on the low corner when the
-  span changes (root AGENTS.md), so a tree replaced by a mountain lands the
+  span changes (docs/WRITE_RULES.md), so a tree replaced by a mountain lands the
   mountain's low corner on the tree's tile; Scatter and Mirror treat doodads
   as multi-tile; a free-placed doodad's footprint quantizes like an off-grid
   building's, up to 0.74 tile from its sprite; and a 1x1 unit under a
@@ -265,28 +265,33 @@ _FISH_SPAN_CONSTS = (53, 61, 450, 455, 456, 457, 458, 2625)
 _DOODAD_CLASS = 14
 
 
-def _fish_span(unit_const: int, unit) -> list[int]:
+def _fish_span(unit_const: int, unit) -> list[int] | None:
+    """None only when lenient and the guard fired: the fish then gets no row."""
     outline = (unit.outline_size_x, unit.outline_size_y)
     if tuple(unit.clearance_size) != outline:
-        raise SystemExit(
+        _game_root.refuse(
             f"fish {unit_const} outline_size {outline} != clearance_size "
-            f"{tuple(unit.clearance_size)} -- re-verify _FISH_SPAN_CONSTS against the .dat"
+            f"{tuple(unit.clearance_size)} -- re-verify _FISH_SPAN_CONSTS against the .dat",
+            "no fish_spans row",
         )
+        return None
     return [max(1, round(v * 2)) for v in outline]
 
 
 def _doodad_span(unit_const: int, unit) -> list[int] | None:
     """A class-14 non-building's collision span when it is above 1x1, else
-    None. Refuses when `outline_size` gives a different span."""
+    None. Refuses when `outline_size` gives a different span (None when lenient)."""
     span = [max(1, round(unit.collision_size_x * 2)), max(1, round(unit.collision_size_y * 2))]
     if span == [1, 1]:
         return None
     outline = [max(1, round(unit.outline_size_x * 2)), max(1, round(unit.outline_size_y * 2))]
     if outline != span:
-        raise SystemExit(
+        _game_root.refuse(
             f"doodad {unit_const} collision span {span} != outline span {outline} "
-            "-- re-measure the doodad_spans rule against the .dat"
+            "-- re-measure the doodad_spans rule against the .dat",
+            "no doodad_spans row",
         )
+        return None
     return span
 
 
@@ -365,6 +370,7 @@ def main() -> None:
     )
     _game_root.add_dataset_argument(parser)
     args = parser.parse_args()
+    _game_root.set_lenient(args.lenient)
     _select_dataset(args.dataset)
 
     from genieutils.datfile import DatFile
@@ -406,7 +412,9 @@ def main() -> None:
                 max(1, round(unit.collision_size_y * 2)),
             ]
         if unit_const in _FISH_SPAN_CONSTS:
-            fish_spans[str(unit_const)] = _fish_span(unit_const, unit)
+            fish_span = _fish_span(unit_const, unit)
+            if fish_span is not None:
+                fish_spans[str(unit_const)] = fish_span
         if unit.class_ == _DOODAD_CLASS and unit.building is None and unit_const not in _BLOCKER_SPAN_CONSTS:
             span = _doodad_span(unit_const, unit)
             if span is not None:

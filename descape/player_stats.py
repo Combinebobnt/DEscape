@@ -73,7 +73,7 @@ TREBUCHET_CONSTS = frozenset({42, 331, 1690, 1691})
 _GOLD_MINE_CLASSES = frozenset({32})
 _STONE_MINE_CLASSES = frozenset({8})
 _BERRY_BUSH_CLASSES = frozenset({7})
-_FISH_CLASSES = frozenset({5, 31, 33, 63})  # ocean, deep-sea, shore fish, oysters
+# Fish are unit_kind.fish_consts(), shared with View > Layers > Fish Outlines (TASK-499).
 _OTHER_PILE_CLASSES = frozenset({40, 41, 48})  # salvage, resource pile, ore mine
 _ANIMAL_CLASSES = frozenset({9, 10, 58, 61})  # prey, predator, livestock, controlled
 _BIRD_CLASS = 11  # MISCELLANEOUS: an animal only at type 70 (HAWKX); flares are type 10
@@ -209,7 +209,7 @@ def _sets() -> _Sets:
         gold_mines=_classes(objects, _GOLD_MINE_CLASSES),
         stone_mines=_classes(objects, _STONE_MINE_CLASSES),
         berry_bushes=_classes(objects, _BERRY_BUSH_CLASSES),
-        fish=_classes(objects, _FISH_CLASSES),
+        fish=unit_kind.fish_consts(),
         other_piles=_classes(objects, _OTHER_PILE_CLASSES),
         animals=_classes(objects, _ANIMAL_CLASSES) | birds,
         cliffs=_classes(objects, _CLIFF_CLASSES),

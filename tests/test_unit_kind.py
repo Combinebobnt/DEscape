@@ -185,7 +185,7 @@ INVISIBLE_OBJECTS = {1291, 2551, 2553, 2555, 2563}  # Invisible Object A-E, clas
 MAP_REVEALERS = {837, 1774, 1775}  # Map Revealer / Medium / Giant, class 30
 BLOCKERS = {1776, 2423, 2424}  # Blocker, Blocker 1x3, Blocker 3x1, class 14
 FARM = 50  # no unit_graphic_map.json entry, but real art in the game
-FLAME4 = 1336
+WFALL = 1635  # a particle effect with ImageAngles, which particle_art does not read
 FLARE4 = 697  # BLANK graphic, so invisible since 2026-09-26
 
 
@@ -196,14 +196,14 @@ def test_invisible_consts_holds_the_objects_revealers_and_blockers() -> None:
 
 
 def test_invisible_consts_is_no_dat_graphic_not_no_map_entry() -> None:
-    """FARM and FLAME4 have no unit_graphic_map.json entry, but the .dat gives
+    """FARM and WFALL have no unit_graphic_map.json entry, but the .dat gives
     each a real standing graphic: they are art gaps, not invisible."""
     import json
     from pathlib import Path
 
     graphics = json.loads((Path(unit_kind.__file__).parent / "unit_graphic_map.json").read_text())["graphics"]
     invisible = unit_kind.invisible_consts()
-    for const in (FARM, FLAME4):
+    for const in (FARM, WFALL):
         assert str(const) not in graphics, f"{const} gained a map entry; pick another counterexample"
         assert const not in invisible
 
@@ -277,6 +277,32 @@ def test_mobile_unit_consts_is_the_eraser_units_target() -> None:
     }
     by_class = {cls: sum(1 for c in creatable - units if objects[c].get("class") == cls) for cls in (40, 41, 42)}
     assert by_class == {40: 6, 41: 4, 42: 12}
+
+
+# TASK-499: one member of each fish kind the Fish Outlines layer rings, and the near misses.
+SHORE_FISH, BOX_TURTLES, OYSTERS, WHALE, FISH1 = 69, 1141, 2170, 2625, 455
+TURTLE_SHIPS, BEACHED_WHALE, OLD_FISH3, SHARKATZOR = (831, 832), 2457, 260, 1222
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror"])
+def test_fish_consts_is_the_four_class_rule_in_both_games(dataset) -> None:
+    """The literal rule rather than unit_kind's own constant, so a narrowed
+    class list fails here; 17 in both catalogs as measured 2026-10-29."""
+    from descape import game_dataset
+
+    game_dataset.set_active(dataset)
+    fish = unit_kind.fish_consts()
+    assert fish == {c for c, e in unit_kind._objects().items() if e.get("class") in {5, 31, 33, 63}}
+    assert {SHORE_FISH, BOX_TURTLES, OYSTERS, WHALE, FISH1} <= fish
+    assert fish.isdisjoint({*TURTLE_SHIPS, BEACHED_WHALE, OLD_FISH3, SHARKATZOR})
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror"])
+def test_player_stats_counts_exactly_the_fish_the_layer_rings(dataset) -> None:
+    from descape import game_dataset, player_stats
+
+    game_dataset.set_active(dataset)
+    assert player_stats.bucket_sets()["fish"] == unit_kind.fish_consts()
 
 
 def test_the_module_stays_a_stdlib_only_leaf() -> None:

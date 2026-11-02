@@ -317,9 +317,9 @@ def test_every_row_shows_the_files_own_value() -> None:
             raw = _raw_value(window.scenario, spec)
             shown = _shown_value(panel, spec)
             assert shown == raw, f"{spec.field_id} shows {shown}, file holds {raw}"
-        # 17, not 21: the four Diplomacy-group scalars moved to
+        # 18, not 22: the four Diplomacy-group scalars moved to
         # DiplomacyPanel (step 5) and no longer count here.
-        assert len(panel._specs) == 17, f"{len(panel._specs)} rows -- the spec list changed"
+        assert len(panel._specs) == 18, f"{len(panel._specs)} rows -- the spec list changed"
     finally:
         _close(window)
 
@@ -1291,6 +1291,77 @@ def test_a_fully_read_only_file_reports_it_once_rather_than_per_row(monkeypatch)
         panel.deleteLater()
 
 
+# --- the colour mood row (TASK-238) -----------------------------------------
+
+
+def test_the_mood_row_lists_the_19_names_then_a_not_set_row() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape.option_fields import COLOUR_MOODS
+    from descape.scenario_io import load_map_and_units
+
+    panel, _ = _water_panel(load_map_and_units(TRIGGER_FIXTURE))
+    try:
+        combo = panel.widget_for("map_color_mood")
+        assert len(COLOUR_MOODS) == 19
+        assert _items(combo) == [(n, n) for n in COLOUR_MOODS] + [("(not set)", "")]
+        assert combo.currentData() == ""
+        assert "colour mood" in combo.itemData(19, Qt.ToolTipRole)
+    finally:
+        panel.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("payload", "stored"), [(b"Empty", "Empty"), ("\u9ed8\u8ba4".encode(), "\u9ed8\u8ba4")], ids=["empty-name", "localized"]
+)
+def test_a_stored_mood_outside_the_list_keeps_its_own_row(payload, stored) -> None:
+    from test_map_strings import _variant
+
+    from descape import map_strings
+
+    panel, emitted = _water_panel(_variant(payload, name=map_strings.COLOUR_MOOD))
+    try:
+        combo = panel.widget_for("map_color_mood")
+        assert combo.count() == 20
+        assert combo.currentData() == stored
+        assert combo.currentText() == f"{stored} (as stored)"
+        assert emitted == []
+    finally:
+        panel.deleteLater()
+
+
+def test_a_listed_mood_adds_no_row() -> None:
+    from test_map_strings import _variant
+
+    from descape import map_strings
+
+    panel, _ = _water_panel(_variant(b"Winter", name=map_strings.COLOUR_MOOD))
+    try:
+        combo = panel.widget_for("map_color_mood")
+        assert combo.count() == 19 and combo.currentData() == "Winter"
+    finally:
+        panel.deleteLater()
+
+
+def test_picking_undoing_and_redoing_a_colour_mood() -> None:
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        combo = _row(window, "map_color_mood")
+        combo.setCurrentIndex(combo.findData("Night"))
+        assert window.option_edits.current_value("map_color_mood") == "Night"
+        assert [r.kind for r in window.edit_history.records] == ["options"]
+
+        window.undo()
+        assert _row(window, "map_color_mood").currentText() == "(not set)"
+        assert not window.option_edits.has_edits and not window.edit_history.is_dirty
+
+        window.redo()
+        assert _row(window, "map_color_mood").currentData() == "Night"
+        assert window.option_edits.has_map_string_edits
+    finally:
+        _close(window)
+
+
 # --- the water definition row (TASK-333) ------------------------------------
 
 
@@ -1317,7 +1388,8 @@ def test_the_water_row_sits_under_no_waves_on_shore() -> None:
     try:
         ids = [s.field_id for s in panel._specs]
         assert ids.index("water_definition") == ids.index("no_waves_on_shore") + 1
-        assert ids.index("script_name") == ids.index("water_definition") + 1
+        assert ids.index("map_color_mood") == ids.index("water_definition") + 1
+        assert ids.index("script_name") == ids.index("map_color_mood") + 1
     finally:
         panel.deleteLater()
 
@@ -1472,13 +1544,32 @@ def test_a_failed_string_gate_greys_only_the_water_row(monkeypatch) -> None:
     window = _options_window(TRIGGER_FIXTURE)
     try:
         assert "water_definition" in window._editable_option_fields()
-        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded: False)
+        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded, name: name != "water_definition")
         window._show_map_options()
         row = _row(window, "water_definition")
         assert not row.isEnabled()
-        assert row.toolTip() == ViewerWindow._WATER_DEFINITION_READ_ONLY
+        assert row.toolTip() == ViewerWindow._MAP_STRING_READ_ONLY
+        assert _row(window, "map_color_mood").isEnabled()
         assert _row(window, "collide_and_correct").isEnabled()
         assert _row(window, "script_name").isEnabled()
+    finally:
+        _close(window)
+
+
+def test_a_failed_string_gate_greys_only_the_mood_row(monkeypatch) -> None:
+    from descape import viewer
+    from descape.viewer import ViewerWindow
+
+    window = _options_window(TRIGGER_FIXTURE)
+    try:
+        assert "map_color_mood" in window._editable_option_fields()
+        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded, name: name != "map_color_mood")
+        window._show_map_options()
+        row = _row(window, "map_color_mood")
+        assert not row.isEnabled()
+        assert row.toolTip() == ViewerWindow._MAP_STRING_READ_ONLY
+        assert _row(window, "water_definition").isEnabled()
+        assert _row(window, "collide_and_correct").isEnabled()
     finally:
         _close(window)
 

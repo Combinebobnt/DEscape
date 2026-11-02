@@ -94,7 +94,7 @@
       "garrison_flags": [
         {
           "unit_id": 12,
-          "file_name": "b_misc_garrison_flag_x1",
+          "file_name": "b_west_garrison_flag_x1",
           "angle_count": 1,
           "frame_count": 90,
           "dx": 84,
@@ -102,7 +102,7 @@
         },
         {
           "unit_id": 12,
-          "file_name": "b_misc_garrison_flag_x1",
+          "file_name": "b_west_garrison_flag_x1",
           "angle_count": 1,
           "frame_count": 90,
           "dx": -7,
@@ -501,7 +501,7 @@
       "garrison_flags": [
         {
           "unit_id": 45,
-          "file_name": "b_misc_garrison_flag_x1",
+          "file_name": "b_west_garrison_flag_x1",
           "angle_count": 1,
           "frame_count": 90,
           "dx": 2,
@@ -1661,7 +1661,7 @@
       "garrison_flags": [
         {
           "unit_id": 109,
-          "file_name": "b_misc_garrison_flag_x1",
+          "file_name": "b_west_garrison_flag_x1",
           "angle_count": 1,
           "frame_count": 90,
           "dx": -31,
@@ -11974,6 +11974,15 @@
       "rotation_is_variant": true,
       "variant_count": 2
     },
+    "1308": {
+      "graphic_id": 5314,
+      "file_name": "smoke_chimney",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.66
+    },
     "1309": {
       "graphic_id": 8225,
       "file_name": "s_bridge_wood_a_top_x1",
@@ -12169,6 +12178,42 @@
       "frame_count": 60,
       "rotation_is_variant": true,
       "variant_count": 16
+    },
+    "1333": {
+      "graphic_id": 1734,
+      "file_name": "fire_small_left",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
+    },
+    "1334": {
+      "graphic_id": 1736,
+      "file_name": "fire_medium_left",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
+    },
+    "1335": {
+      "graphic_id": 1738,
+      "file_name": "fire_large_left",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
+    },
+    "1336": {
+      "graphic_id": 1741,
+      "file_name": "fire_large_right",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "particle": true,
+      "art_scale": 0.5
     },
     "1337": {
       "graphic_id": 1885,

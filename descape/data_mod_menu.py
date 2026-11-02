@@ -19,6 +19,10 @@ with one log line, and its key stays until the next pick or Save As.
 
 Under Return of Rome data the overlay is inert (game_dataset), so the menu's
 mods are disabled and nothing is remembered.
+
+A mod whose derive simplified objects or rows (GH #262, dat_derive's lenient
+mode) says so once per window and cache key, in the status log when its tables
+take effect (up to WARNING_LINES of them), and from then on in its menu item's tooltip.
 """
 
 from __future__ import annotations
@@ -29,10 +33,12 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QLabel, QMenu
 
-from descape import asset_source, data_mods, game_dataset, settings
+from descape import asset_source, dat_cache, data_mods, game_dataset, settings
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
+# How many of a mod's derive warnings the status log lists; meta.json has them all.
+WARNING_LINES = 20
 # load_scenario()'s default: a saved document's remembered mod, the session's for an untitled one.
 FROM_PATH = object()
 
@@ -62,6 +68,10 @@ class DataModMenu(QObject):
         # status_path -> why it cannot be used, for this session (a failed parse).
         self._failed: dict[str, str] = {}
         self._job: _Job | None = None
+        # Cache keys whose derive warnings this window's status log has shown.
+        self._warned: set[str] = set()
+        # status_path -> the warning count of the summary last logged for it.
+        self._warning_counts: dict[str, int] = {}
         # A finished parse's swap, waiting for an idle window: (tables, mod).
         self._pending: tuple[game_dataset.DataModTables, data_mods.DataMod] | None = None
         self._apply_timer = QTimer(self)
@@ -107,10 +117,17 @@ class DataModMenu(QObject):
             action.setChecked(mod == self._wanted)
             reason = self.unusable_reason(mod)
             action.setEnabled(reason is None)
-            action.setToolTip(reason or mod.status_path)
+            action.setToolTip(reason or self._item_tooltip(mod))
             action.triggered.connect(lambda checked=False, mod=mod: self.choose(mod))
             group.addAction(action)
             menu.addAction(action)
+
+    def _item_tooltip(self, mod: data_mods.DataMod) -> str:
+        """A usable mod's tooltip: its status path, plus its warning count once the status log has the summary."""
+        count = self._warning_counts.get(mod.status_path)
+        if not count:
+            return mod.status_path
+        return f"{mod.status_path} ({_warning_count(count)}; see the status log)"
 
     def unusable_reason(self, mod: data_mods.DataMod) -> str | None:
         """Why `mod` cannot be picked right now, or None."""
@@ -325,4 +342,31 @@ class DataModMenu(QObject):
         if changed:
             shown = "the game's own data" if game_dataset.data_mod() is None else f"data mod {mod.title}'s data"
             self._window._log_status(f"Showing {shown}")
+        if changed and tables is not None:
+            if mod is not None:
+                self._warning_counts[mod.status_path] = len(tables.warnings)
+            if tables.warnings and tables.key not in self._warned:
+                self._warned.add(tables.key)
+                self._window._log_status(warning_summary(tables))
         return changed
+
+
+def _warning_count(count: int) -> str:
+    return "1 warning" if count == 1 else f"{count} warnings"
+
+
+def warning_summary(tables: game_dataset.DataModTables) -> str:
+    """The status log's lines for a mod's derive warnings: a count, up to WARNING_LINES of them, the rest's count."""
+    warnings = tables.warnings
+    lines = [
+        (
+            f"Data mod {tables.title}: {_warning_count(len(warnings))}: objects or rows that differ from what "
+            "DEscape measured on the game's own data are shown simplified:"
+        ),
+        *(f"  {warning}" for warning in warnings[:WARNING_LINES]),
+    ]
+    if len(warnings) > WARNING_LINES:
+        lines.append(
+            f"  ... and {len(warnings) - WARNING_LINES} more (full list in {tables.tables_dir / dat_cache.META_NAME})"
+        )
+    return "\n".join(lines)

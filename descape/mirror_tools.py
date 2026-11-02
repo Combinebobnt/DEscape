@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from functools import cache, lru_cache
 from typing import NamedTuple
 
-from descape import gate_orientation, render, unit_rotation, unit_sprites
+from descape import gate_orientation, render, unit_kind, unit_rotation, unit_sprites
 from descape.edit_history import TileState, tile_state
 from descape.terrain_palette import tile_span
 
@@ -234,15 +234,17 @@ MODES: tuple[MirrorMode, ...] = (
     _mode(2, "Mirror North ↔ South (top/bottom on screen)", ("id", "d"), lambda u, v: v - u < 0),
     _mode(3, "Mirror West ↔ North", ("id", "mx"), lambda u, v: u < 0),
     _mode(4, "Mirror West ↔ South", ("id", "my"), lambda u, v: v < 0),
-    _mode(5, "180° rotation", ("id", "r2"), lambda u, v: u + v < 0),
-    _mode(6, "4-way rotational (90°)", ("id", "r", "r2", "r3"), lambda u, v: u > 0 and v > 0),
+    _mode(5, "180° rotation", ("id", "r2"), lambda u, v: u + v < 0 or (u + v == 0 and v < 0)),
+    # Every on-boundary orbit needs a member in the domain, or rep falls back to a far-side tile:
+    # a rotation's domain takes one boundary ray, a reflection's both (they are mirror axes).
+    _mode(6, "4-way rotational (90°)", ("id", "r", "r2", "r3"), lambda u, v: u > 0 and v >= 0),
     _mode(
         7,
         "4-way reflective, screen axes",
         ("id", "d", "a", "r2"),
-        lambda u, v: u + v > 0 and v - u < 0,
+        lambda u, v: u + v >= 0 and v - u <= 0,
     ),
-    _mode(8, "4-way reflective, map axes", ("id", "mx", "my", "r2"), lambda u, v: u > 0 and v > 0),
+    _mode(8, "4-way reflective, map axes", ("id", "mx", "my", "r2"), lambda u, v: u >= 0 and v >= 0),
     _mode(
         9,
         "8-way (full symmetry)",
@@ -871,6 +873,12 @@ class UnitMirrorPlan:
     overlapping: list[UnitImage] = field(default_factory=list)
     # The overlap policy the plan was built with (OVERLAP_POLICIES).
     overlaps: str = OVERLAPS_REFUSE
+    # Report-only: what the refusal names, as (unit, tile), once per unit. Of
+    # an image and the source unit it lands on, the one whose footprint spills
+    # out of the source slice, with its first tile out there; if neither does
+    # (a unit straddling a modes 1/2 axis row), the unit landed on and the
+    # first shared tile. A tree landing on a spilling building names the building.
+    overlap_blockers: list[tuple[object, tuple[int, int]]] = field(default_factory=list)
 
     @property
     def overlap_blocked(self) -> bool:
@@ -910,7 +918,7 @@ def _image_position(
     gathered by a snap that need not agree), and a building rotates its
     footprint CENTRE and re-anchors the same axis-aligned span around it:
     AoE2 has no rotated footprint, so the image is the closest placeable one.
-    Images are never checked against each other, so two may overlap (accepted, root AGENTS.md).
+    Images are never checked against each other, so two may overlap (accepted, docs/WRITE_RULES.md).
     """
     if isinstance(element, AngularElement):
         if element in _D4_EQUIVALENT:
@@ -1110,6 +1118,10 @@ def plan_mirror_units(
     copy out, OVERLAPS_PLACE adds it to `images` after the emit loop. It
     never touches `garrisoned_blockers`, and plan_mirror()'s elevation check
     has no such parameter at all.
+
+    Passable eye candy (unit_kind.passable_eye_candy_consts(): grass, plants,
+    flowers) has no collision, so it takes no part in the straddle check:
+    its image lands anywhere, and nothing landing on it counts (TASK-042).
     """
     if overlaps not in OVERLAP_POLICIES:
         raise ValueError(f"unknown overlap policy {overlaps!r}: expected one of {OVERLAP_POLICIES}")
@@ -1142,9 +1154,11 @@ def plan_mirror_units(
                 kept.append(unit)
                 continue
             (sources if index in source_indices else removals).append(unit)
+    passable = unit_kind.passable_eye_candy_consts()
     kept_tiles: set[tuple[int, int]] = set()
     for unit in kept:
-        kept_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
+        if unit.unit_const not in passable:
+            kept_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
 
     garrisoned_blockers = []
     if referencing is not None:
@@ -1155,9 +1169,36 @@ def plan_mirror_units(
 
     file_radian = walls_are_radian(unit for units in units_by_player for unit in units)
 
-    source_tiles: set[tuple[int, int]] = set()
+    def spot(const: int, player: int, x: float, y: float) -> tuple[int, int, int, int]:
+        # Millitile, not _key(): a saved copy's position went through float32.
+        return const, player, round(x * 1000), round(y * 1000)
+
+    # A passable copy landing where a same-kind source already stands is that source: re-mirroring must not stack it.
+    passable_spots = {spot(u.unit_const, u.player, u.x, u.y) for u in sources if u.unit_const in passable}
+    source_owners: dict[tuple[int, int], list[object]] = {}
     for unit in sources:
-        source_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
+        if unit.unit_const not in passable:
+            for tile in render.unit_occupied_tiles(unit, width, height) or ():
+                source_owners.setdefault(tile, []).append(unit)
+
+    spills: dict[int, list[tuple[int, int]]] = {}
+
+    def spilled_tiles(unit) -> list[tuple[int, int]]:
+        # A source unit's footprint tiles outside the source slice, sorted.
+        if id(unit) not in spills:
+            footprint = render.unit_occupied_tiles(unit, width, height) or ()
+            spills[id(unit)] = sorted(t for t in footprint if t[1] * width + t[0] not in source_indices)
+        return spills[id(unit)]
+
+    blockers: dict[int, tuple[object, tuple[int, int]]] = {}
+
+    def blame(mover, landed_on, tile: tuple[int, int]) -> None:
+        # Whichever of the two spills out of the slice is in the way, the unit landed on first (TASK-043).
+        for culprit in (landed_on, mover):
+            if spilled_tiles(culprit):
+                blockers.setdefault(id(culprit), (culprit, spilled_tiles(culprit)[0]))
+                return
+        blockers.setdefault(id(landed_on), (landed_on, tile))
 
     def image_of(unit, index: int, element: Element, new_const: int, x: float, y: float) -> UnitImage:
         # The one place an image is built, so a placed overlap and a normal copy cannot drift.
@@ -1199,7 +1240,8 @@ def plan_mirror_units(
             if _key(x, y) in seen and new_const == unit.unit_const:
                 continue  # a degenerate orbit: this element maps the unit onto itself
             seen.add(_key(x, y))
-            if angular is not None and not _angular_image_lands(new_const, x, y, n, unreachable, kept_tiles):
+            blocking = set() if new_const in passable else kept_tiles  # passable eye candy collides with nothing
+            if angular is not None and not _angular_image_lands(new_const, x, y, n, unreachable, blocking):
                 off_map.append((unit, element))
                 continue
             if new_const != unit.unit_const and unit not in gates:
@@ -1207,8 +1249,13 @@ def plan_mirror_units(
             if span_x != span_y and swaps_axes(element) and not is_gate and not reported_span:
                 unsquare_spans.append(unit)
                 reported_span = True
-            tiles = render.occupied_tiles_for(new_const, x, y, width, height)
-            if tiles and source_tiles.intersection(tiles):
+            collides = new_const not in passable
+            owner = _rotated_owner(unit.player, player_ids, (index - slice_index) % len(elements) * ownership_steps)
+            if not collides and spot(new_const, owner, x, y) in passable_spots:
+                continue
+            tiles = render.occupied_tiles_for(new_const, x, y, width, height) if collides else None
+            hits = sorted(tile for tile in tiles or () if tile in source_owners)
+            if hits:
                 # An image overlapping a KEPT source unit means the source's
                 # own footprint crosses the symmetry axis: dedup cannot catch
                 # it (the two anchors genuinely differ), and no repair exists
@@ -1216,6 +1263,9 @@ def plan_mirror_units(
                 # many of its images overlap; the image itself, once per image.
                 if unit not in straddling:
                     straddling.append(unit)
+                for tile in hits:
+                    for owner in source_owners[tile]:
+                        blame(unit, owner, tile)
                 overlapping.append(image_of(unit, index, element, new_const, x, y))
                 continue
             images.append(image_of(unit, index, element, new_const, x, y))
@@ -1233,6 +1283,7 @@ def plan_mirror_units(
         off_map=off_map,
         overlapping=overlapping,
         overlaps=overlaps,
+        overlap_blockers=list(blockers.values()),
     )
 
 

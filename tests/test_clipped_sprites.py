@@ -146,7 +146,8 @@ def _stitched(style: str, scn) -> np.ndarray:
 
 def _ink_origin(style: str, scn, elevations, corner_rise, proj) -> tuple[int, int]:
     """Top-left canvas pixel of the sprite, from the production anchor."""
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+    fold = None if corner_rise is None else iso_geometry.tile_folds(elevations)
+    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
     ((draw, ax, ay, _rise),) = layer.by_anchor[(UX, UY)]
     assert draw.rgba is INK
     return ax - draw.hotspot_x, ay - draw.hotspot_y
@@ -304,7 +305,8 @@ def _sprite_positions(style: str, scn) -> dict:
         (elevations, proj), corner_rise = render.elevations_and_proj(scn), None
     else:
         elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+    fold = None if corner_rise is None else iso_geometry.tile_folds(elevations)
+    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
     return {key: [entry[1:] for entry in entries] for key, entries in layer.by_anchor.items()}
 
 

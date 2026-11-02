@@ -384,3 +384,23 @@ def test_a_water_definition_edit_undoes_and_redoes_through_a_diff_record() -> No
     history.redo(loaded.map_manager.terrain, None, model)
     assert model.current_value("water_definition") == "Red Tide"
     assert model.has_map_string_edits
+
+
+def test_a_colour_mood_edit_undoes_and_redoes_alongside_a_water_edit() -> None:
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    history = EditHistory()
+    _set(model, history, "water_definition", "Arctic")
+    _set(model, history, "map_color_mood", "Night")
+
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("map_color_mood") == ""
+    assert model.current_value("water_definition") == "Arctic"
+    assert model.has_map_string_edits, "a pending water edit no longer counts"
+    history.undo(loaded.map_manager.terrain, None, model)
+    assert not model.has_edits
+    assert model.serialize_map_strings_resize() is None
+
+    history.redo(loaded.map_manager.terrain, None, model)
+    history.redo(loaded.map_manager.terrain, None, model)
+    assert model.current_value("map_color_mood") == "Night"

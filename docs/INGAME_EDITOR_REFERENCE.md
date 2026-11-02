@@ -170,7 +170,7 @@ Useful Hotkeys
 
 - **Map Style**: Blank Map (single terrain throughout), Random Map (RMS-generated), Seed Map (RMS with a fixed seed for reproducible generation).
 - **AI Map Type**: classifies the map for AI strategy selection (e.g. water maps trigger water-build strategies).
-- **Colour Mood**: cosmetic map color/lighting theme; default "Empty" (no theme).
+- **Colour Mood**: cosmetic map color/lighting theme, stored as its display name in the saving client's language (files saved in another language hold, for example, `默认` or `Standard` for Default and `Leer` for Empty). The list, in order: Default, Autumn, Winter, Jungle, Desert, Night, Evening, Spring, Savannah, Arctic, Rainforest, Swamp, Steppes, Misty, Summer, Murky, Brumous, Twilight, Darkness. Older files store `Empty`, newer ones `Default`, and a template stores none. The trigger effect Change Color Mood stores the index in the same order. DEscape edits it as Map Options > Map > Colour mood.
 - **Team Positions**: for RMS maps — same-team players spawn in player-number order, or randomly distributed.
 - **Extend Map**: checkbox + New Map Size + Map Offset (N/S/E/W) to expand an existing map.
 - **Script Filename**: names an XS script file used by the map.
