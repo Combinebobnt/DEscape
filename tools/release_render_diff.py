@@ -192,6 +192,17 @@ def _no_smoke_and_flame_particles() -> None:
     unit_sprites._particle_stems.cache_clear()
 
 
+def _age_techs_only() -> None:
+    """Put the pre-TASK-205 building table back: age techs 101-103 at ages 3..5, no civ rows, no per-age annexes."""
+    from gen_start_upgrade_review_pack import age_techs_only
+
+    from descape import unit_sprites
+
+    _require(unit_sprites, "building_art", "BuildingArt")
+    table = age_techs_only(unit_sprites.building_art())
+    unit_sprites.building_art = lambda: table
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -277,6 +288,12 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         "GH #256 (TASK-454): Smoke and Flames 1-4 draw their fire and smoke, not a coloured mark",
         since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
         patch=_no_smoke_and_flame_particles,
+    ),
+    Neutralization(
+        "start-upgrades",
+        "TASK-205 (GH #328): buildings draw the upgrades their civilization and starting age have, Post-Imperial included",
+        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
+        patch=_age_techs_only,
     ),
 )
 

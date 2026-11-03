@@ -179,9 +179,9 @@ def _unit(const: int, x: float, y: float, ref: int):
     )
 
 
-def _render_units(base, units_by_player: list[list], player_art) -> np.ndarray:
+def _render_units(base, units_by_player: list[list], player_art, headroom: int = 5) -> np.ndarray:
     """Stepped composite of `units_by_player` on `base`'s own terrain, cropped
-    to the units' footprints plus a tile, with headroom above for tall art."""
+    to the units' footprints plus a tile, with `headroom` half-tiles above for tall art."""
     scn = SimpleNamespace(
         map_manager=base.map_manager,
         unit_manager=SimpleNamespace(units=units_by_player),
@@ -208,7 +208,7 @@ def _render_units(base, units_by_player: list[list], player_art) -> np.ndarray:
     xs, ys = [t[0] for t in tiles], [t[1] for t in tiles]
     corners = [(min(xs) - 1, min(ys) - 1), (max(xs) + 1, max(ys) + 1), (min(xs) - 1, max(ys) + 1), (max(xs) + 1, min(ys) - 1)]
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, corners, max_elev)
-    y0 = max(0, y0 - 5 * proj.half_h)
+    y0 = max(0, y0 - headroom * proj.half_h)
     return render.composite_rect_iso(
         scn, x0, y0, x1, y1, elevations, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites,
     )
