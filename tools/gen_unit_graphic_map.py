@@ -228,6 +228,11 @@ table and writes a second file, descape/building_art_map.json:
                      distinct one once.
     "civ_art":      {"<civ_index>": {"<const>": index into entries}}, only
                      where that civ's entry differs from Gaia's.
+    "age_art":      {"<const>": {"3".."6": {"<art civ, 0 = Gaia>": index
+                     into entries}}}, _AGE_ART_SCOPE's town centres (the
+                     Satrapy TCs), whose annexes change with age while the
+                     const does not (_age_art()); a civ only where it differs
+                     from Gaia's at that age, and 6 is 5's. Absent when empty.
 
 The run fails unless every per-civ entry and every age target agrees with
 its reference on angle_count, rotation_is_variant, variant_count and the
@@ -544,6 +549,11 @@ _PIECE_SLOTS: dict[int, list[list[int]]] = {
 # The town-centre consts of _COMPOSITE_SCOPE, whose slots are keyed by art set.
 _TOWN_CENTRE_SCOPE: frozenset[int] = frozenset({71, 109, 141, 142, 2275, 2276, 2277})
 
+# The town centres the age techs neither upgrade nor target (TASK-205 Slice 2):
+# the hidden Satrapy TCs, whose .dat lists the Dark Age annexes 618-620. The
+# game upgrades those annex slots at each age, so _age_art() draws them per age.
+_AGE_ART_SCOPE: frozenset[int] = frozenset({2275, 2276, 2277})
+
 # Town-centre art set (its pieces' file names, in emitted order) -> each
 # piece's depth slot, as _PIECE_SLOTS. Keyed by the whole set, not the parent
 # file: the Persian age-2 back piece heads sets whose annexes differ, and they
@@ -556,8 +566,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_afri_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_afri_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_afri_town_center_age2_center_x1",
+        "b_afri_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_afri_town_center_age3_main_x1",
         "b_afri_town_center_age3_back_x1",
+        "b_afri_town_center_age3_center_x1",
+        "b_afri_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_afri_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_afri_town_center_age3_center_x1",
         "b_afri_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -568,8 +590,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_afri_town_center_age4_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_afri_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_afri_town_center_age4_center_x1",
+        "b_afri_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_ande_town_center_age2_main_x1",
         "b_ande_town_center_age2_back_x1",
+        "b_ande_town_center_age2_center_x1",
+        "b_ande_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ande_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_ande_town_center_age2_center_x1",
         "b_ande_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -580,8 +614,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_ande_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_ande_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_ande_town_center_age3_center_x1",
+        "b_ande_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_ande_town_center_age4_main_x1",
         "b_ande_town_center_age4_back_x1",
+        "b_ande_town_center_age4_center_x1",
+        "b_ande_town_center_age4_front_x1",
+    ): [[2, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ande_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_ande_town_center_age4_center_x1",
         "b_ande_town_center_age4_front_x1",
     ): [[2, 2], [0, 3], [0, 3], [0, 3]],
@@ -604,8 +650,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_asia_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_asia_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_asia_town_center_age2_center_x1",
+        "b_asia_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_asia_town_center_age3_main_x1",
         "b_asia_town_center_age3_back_x1",
+        "b_asia_town_center_age3_center_x1",
+        "b_asia_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_asia_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_asia_town_center_age3_center_x1",
         "b_asia_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -616,8 +674,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_asia_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_asia_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_asia_town_center_age4_center_x1",
+        "b_asia_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_ceas_town_center_age2_main_x1",
         "b_ceas_town_center_age2_back_x1",
+        "b_ceas_town_center_age2_center_x1",
+        "b_ceas_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ceas_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_ceas_town_center_age2_center_x1",
         "b_ceas_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -628,8 +698,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_ceas_town_center_age3_front_x1",
     ): [[0, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_ceas_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_ceas_town_center_age3_center_x1",
+        "b_ceas_town_center_age3_front_x1",
+    ): [[0, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_ceas_town_center_age4_main_x1",
         "b_ceas_town_center_age4_back_x1",
+        "b_ceas_town_center_age4_center_x1",
+        "b_ceas_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_ceas_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_ceas_town_center_age4_center_x1",
         "b_ceas_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
@@ -652,8 +734,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_east_town_center_age2_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_east_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_east_town_center_age2_center_x1",
+        "b_east_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_east_town_center_age3_main_x1",
         "b_east_town_center_age3_back_x1",
+        "b_east_town_center_age3_center_x1",
+        "b_east_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_east_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_east_town_center_age3_center_x1",
         "b_east_town_center_age3_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
@@ -664,8 +758,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_east_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_east_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_east_town_center_age4_center_x1",
+        "b_east_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_greek_town_center_age2_main_x1",
         "b_greek_town_center_age2_back_x1",
+        "b_greek_town_center_age2_center_x1",
+        "b_greek_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_greek_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_greek_town_center_age2_center_x1",
         "b_greek_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -676,8 +782,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_greek_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_greek_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_greek_town_center_age3_center_x1",
+        "b_greek_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_greek_town_center_age4_main_x1",
         "b_greek_town_center_age4_back_x1",
+        "b_greek_town_center_age4_center_x1",
+        "b_greek_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_greek_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_greek_town_center_age4_center_x1",
         "b_greek_town_center_age4_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -688,8 +806,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_indi_town_center_age2_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_indi_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_indi_town_center_age2_center_x1",
+        "b_indi_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_indi_town_center_age3_main_x1",
         "b_indi_town_center_age3_back_x1",
+        "b_indi_town_center_age3_center_x1",
+        "b_indi_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_indi_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_indi_town_center_age3_center_x1",
         "b_indi_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
@@ -700,8 +830,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_indi_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_indi_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_indi_town_center_age4_center_x1",
+        "b_indi_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_medi_town_center_age2_main_x1",
         "b_medi_town_center_age2_back_x1",
+        "b_medi_town_center_age2_center_x1",
+        "b_medi_town_center_age2_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_medi_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_medi_town_center_age2_center_x1",
         "b_medi_town_center_age2_front_x1",
     ): [[1, 3], [0, 3], [0, 3], [0, 3]],
@@ -712,8 +854,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_medi_town_center_age3_front_x1",
     ): [[1, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_medi_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_medi_town_center_age3_center_x1",
+        "b_medi_town_center_age3_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_medi_town_center_age4_main_x1",
         "b_medi_town_center_age4_back_x1",
+        "b_medi_town_center_age4_center_x1",
+        "b_medi_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_medi_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_medi_town_center_age4_center_x1",
         "b_medi_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
@@ -724,8 +878,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_meso_town_center_age2_front_x1",
     ): [[1, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_meso_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_meso_town_center_age2_center_x1",
+        "b_meso_town_center_age2_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_meso_town_center_age3_main_x1",
         "b_meso_town_center_age3_back_x1",
+        "b_meso_town_center_age3_center_x1",
+        "b_meso_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_meso_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_meso_town_center_age3_center_x1",
         "b_meso_town_center_age3_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
@@ -736,8 +902,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_meso_town_center_age4_front_x1",
     ): [[1, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_meso_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_meso_town_center_age4_center_x1",
+        "b_meso_town_center_age4_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_nors_town_center_age2_main_x1",
         "b_nors_town_center_age2_back_x1",
+        "b_nors_town_center_age2_center_x1",
+        "b_nors_town_center_age2_front_x1",
+    ): [[2, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_nors_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_nors_town_center_age2_center_x1",
         "b_nors_town_center_age2_front_x1",
     ): [[2, 2], [0, 3], [0, 3], [0, 3]],
@@ -748,8 +926,20 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_nors_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
+        "b_nors_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_nors_town_center_age3_center_x1",
+        "b_nors_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
         "b_nors_town_center_age4_main_x1",
         "b_nors_town_center_age4_back_x1",
+        "b_nors_town_center_age4_center_x1",
+        "b_nors_town_center_age4_front_x1",
+    ): [[1, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_nors_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_nors_town_center_age4_center_x1",
         "b_nors_town_center_age4_front_x1",
     ): [[1, 3], [0, 3], [0, 3], [0, 3]],
@@ -760,14 +950,32 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
         "b_orie_town_center_age2_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_orie_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_orie_town_center_age2_center_x1",
+        "b_orie_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_orie_town_center_age3_main_x1",
         "b_orie_town_center_age3_back_x1",
         "b_orie_town_center_age3_center_x1",
         "b_orie_town_center_age3_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
+        "b_orie_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_orie_town_center_age3_center_x1",
+        "b_orie_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
         "b_orie_town_center_age4_main_x1",
         "b_orie_town_center_age4_back_x1",
+        "b_orie_town_center_age4_center_x1",
+        "b_orie_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_orie_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
         "b_orie_town_center_age4_center_x1",
         "b_orie_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
@@ -779,9 +987,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_persian_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_persian_town_center_age3_center_x1",
+        "b_persian_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_persian_town_center_age3_main_x1",
         "b_persian_town_center_age3_back_x1",
         "b_persian_town_center_age3_center_x1",
         "b_persian_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_persian_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_persian_town_center_age4_center_x1",
+        "b_persian_town_center_age4_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_persian_town_center_age4_main_x1",
@@ -791,9 +1011,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_puru_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_puru_town_center_age2_center_x1",
+        "b_puru_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age2_main_x1",
         "b_puru_town_center_age2_back_x1",
         "b_puru_town_center_age2_center_x1",
         "b_puru_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age3_Main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_puru_town_center_age3_Center_x1",
+        "b_puru_town_center_age3_Front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_puru_town_center_age3_Main_x1",
@@ -803,15 +1035,33 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_puru_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_puru_town_center_age4_Center_x1",
+        "b_puru_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_puru_town_center_age4_main_x1",
         "b_puru_town_center_age4_back_x1",
         "b_puru_town_center_age4_Center_x1",
         "b_puru_town_center_age4_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_seas_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_seas_town_center_age2_center_x1",
+        "b_seas_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age2_main_x1",
         "b_seas_town_center_age2_back_x1",
         "b_seas_town_center_age2_center_x1",
         "b_seas_town_center_age2_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_seas_town_center_age3_center_x1",
+        "b_seas_town_center_age3_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_seas_town_center_age3_main_x1",
@@ -821,9 +1071,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_seas_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_seas_town_center_age4_center_x1",
+        "b_seas_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_seas_town_center_age4_main_x1",
         "b_seas_town_center_age4_back_x1",
         "b_seas_town_center_age4_center_x1",
         "b_seas_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_slav_town_center_age2_center_x1",
+        "b_slav_town_center_age2_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_slav_town_center_age2_main_x1",
@@ -833,9 +1095,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_slav_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_slav_town_center_age3_center_x1",
+        "b_slav_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age3_main_x1",
         "b_slav_town_center_age3_back_x1",
         "b_slav_town_center_age3_center_x1",
         "b_slav_town_center_age3_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_slav_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_slav_town_center_age4_center_x1",
+        "b_slav_town_center_age4_front_x1",
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_slav_town_center_age4_main_x1",
@@ -845,9 +1119,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_thracian_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_thracian_town_center_age2_center_x1",
+        "b_thracian_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age2_main_x1",
         "b_thracian_town_center_age2_back_x1",
         "b_thracian_town_center_age2_center_x1",
         "b_thracian_town_center_age2_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_thracian_town_center_age3_center_x1",
+        "b_thracian_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_thracian_town_center_age3_main_x1",
@@ -857,9 +1143,21 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_thracian_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_thracian_town_center_age4_center_x1",
+        "b_thracian_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_thracian_town_center_age4_main_x1",
         "b_thracian_town_center_age4_back_x1",
         "b_thracian_town_center_age4_center_x1",
         "b_thracian_town_center_age4_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age2_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_west_town_center_age2_center_x1",
+        "b_west_town_center_age2_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_west_town_center_age2_main_x1",
@@ -869,10 +1167,22 @@ _PIECE_SLOTS_BY_ART: dict[tuple[str, ...], list[list[int]]] = {
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
     (
         "b_west_town_center_age3_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_west_town_center_age3_center_x1",
+        "b_west_town_center_age3_front_x1",
+    ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age3_main_x1",
         "b_west_town_center_age3_back_x1",
         "b_west_town_center_age3_center_x1",
         "b_west_town_center_age3_front_x1",
     ): [[1, 2], [0, 3], [0, 3], [0, 3]],
+    (
+        "b_west_town_center_age4_main_x1",
+        "b_persian_town_center_age2_back_x1",
+        "b_west_town_center_age4_center_x1",
+        "b_west_town_center_age4_front_x1",
+    ): [[0, 3], [0, 3], [0, 3], [0, 3]],
     (
         "b_west_town_center_age4_main_x1",
         "b_west_town_center_age4_back_x1",
@@ -1937,11 +2247,59 @@ def _annex_upgrades(ages: dict[int, dict[int, int]]) -> dict[int, dict[int, int]
     }
 
 
+def _age_art(
+    data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
+    ages_only: dict[int, dict[int, int]],
+) -> dict[int, dict[int, dict[int, dict[str, object]]]]:
+    """const -> {age: {art civ (0 = Gaia): entry}} for _AGE_ART_SCOPE, ages 3..6
+    (6 is 5's), each civ only where its entry differs from Gaia's at that age.
+    Each age's annexes go through `ages_only` at that age, as an upgraded town
+    centre's do (_annex_upgrades()); the parent piece stays the const's own."""
+    reached = set(ages_only) | {t for by_age in ages_only.values() for t in by_age.values()}
+    unreached = frozenset(c for c in _TOWN_CENTRE_SCOPE if c not in reached)
+    if unreached != _AGE_ART_SCOPE:
+        _game_root.refuse(
+            f"town centres no age tech reaches: {sorted(unreached)}, listed "
+            f"{sorted(_AGE_ART_SCOPE)} -- re-verify _AGE_ART_SCOPE against the .dat",
+            "only the listed ones that are unreached draw per age",
+        )
+    scope = sorted(unreached & _AGE_ART_SCOPE)
+    age_annexes = {
+        age: {base: by_age[age] for base, by_age in ages_only.items() if age in by_age}
+        for age in range(_DARK_AGE + 1, _POST_IMPERIAL)
+    }
+    result: dict[int, dict[int, dict[int, dict[str, object]]]] = {}
+    for const in scope:
+        by_age: dict[int, dict[int, dict[str, object]]] = {}
+        for age, annexes in age_annexes.items():
+            by_civ: dict[int, dict[str, object]] = {}
+            for civ_index, civ in enumerate(data.civs):
+                entry, _kind = _entry_for(
+                    civ.units, graphics, graphics_dir, const, body_positions, {const: annexes}
+                )
+                if entry is None or "pieces" not in entry:
+                    _game_root.refuse(
+                        f"civ {civ_index} const {const} at age {age} resolves no town-centre pieces",
+                        "drawn with its base entry at that age",
+                    )
+                    continue
+                if civ_index == 0 or entry != by_civ.get(0):
+                    by_civ[civ_index] = entry
+            if 0 in by_civ:
+                by_age[age] = by_civ
+        if _POST_IMPERIAL - 1 in by_age:
+            by_age[_POST_IMPERIAL] = by_age[_POST_IMPERIAL - 1]
+        if by_age:
+            result[const] = by_age
+    return result
+
+
 def _building_art(
     data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
     gaia_entries: dict[str, dict[str, object]], building_consts: set[int],
     ages: dict[int, dict[int, int]], annex_upgrades: dict[int, dict[int, int]],
     civ_ages: dict[int, dict[int, dict[int, int]]] | None = None,
+    age_art: dict[int, dict[int, dict[int, dict[str, object]]]] | None = None,
 ) -> dict[str, object]:
     """descape/building_art_map.json's content (GH #48): the age table, every
     civ's building entries that differ from Gaia's, and the civ names.
@@ -2113,13 +2471,26 @@ def _building_art(
     shared: list[dict[str, object]] = []
     index_of: dict[str, int] = {}
     civ_art_indexed: dict[str, dict[str, int]] = {}
+
+    def index(entry: dict[str, object]) -> int:
+        key = json.dumps(entry, sort_keys=True)
+        if key not in index_of:
+            index_of[key] = len(shared)
+            shared.append(entry)
+        return index_of[key]
+
     for civ_key, art in civ_art.items():
         for const_key, entry in art.items():
-            key = json.dumps(entry, sort_keys=True)
-            if key not in index_of:
-                index_of[key] = len(shared)
-                shared.append(entry)
-            civ_art_indexed.setdefault(civ_key, {})[const_key] = index_of[key]
+            civ_art_indexed.setdefault(civ_key, {})[const_key] = index(entry)
+    age_art_indexed = {
+        str(const): {
+            str(age): {str(civ): index(entry) for civ, entry in sorted(by_civ.items())}
+            for age, by_civ in sorted(by_age.items())
+        }
+        for const, by_age in sorted((age_art or {}).items())
+    }
+    if age_art_indexed:
+        print(f"  per-age town centres (age_art): {sorted(age_art or {})}")
 
     def keyed(table: dict[int, dict[int, int]]) -> dict[str, dict[str, int]]:
         return {str(base): {str(age): t for age, t in sorted(by_age.items())} for base, by_age in sorted(table.items())}
@@ -2140,6 +2511,7 @@ def _building_art(
         **upgrades,
         "entries": shared,
         "civ_art": civ_art_indexed,
+        **({"age_art": age_art_indexed} if age_art_indexed else {}),
     }
 
 
@@ -2157,6 +2529,7 @@ _ROR_VALUES: dict[str, object] = {
     "_COMPOSITE_SCOPE": frozenset(),
     "_PIECE_SLOTS": {const: _PIECE_SLOTS[const] for const in _ANNEX_TREE_SCOPE},
     "_TOWN_CENTRE_SCOPE": frozenset(),
+    "_AGE_ART_SCOPE": frozenset(),
     "_PIECE_SLOTS_BY_ART": {},
     # Its pastures carry AoE2's annex tree (hut 1890, 2078, posts 1888); the hut shows in game.
     "_ANNEX_TREE_SCOPE": _ANNEX_TREE_SCOPE,
@@ -2205,7 +2578,7 @@ def _narrow_to_dat(units: list, graphics: list) -> None:
     guards still raise on a const it has but changed, never on one it lacks.
     This narrowing comes first; a const the mod has but changed then trips its
     guard, which derive()'s lenient run (GH #262) turns into a warning."""
-    global _EXTRA_ANGLE_CONSTS, _COMPOSITE_SCOPE, _PIECE_SLOTS, _TOWN_CENTRE_SCOPE
+    global _EXTRA_ANGLE_CONSTS, _COMPOSITE_SCOPE, _PIECE_SLOTS, _TOWN_CENTRE_SCOPE, _AGE_ART_SCOPE
     global _ANNEX_TREE_SCOPE, _BODY_GRAPHIC_OVERRIDES, _UNDERWATER_BODY_CONSTS
     global _BODY_FRAME_OFFSETS, _PARTICLE_CONSTS, _ART_INVARIANT_HOLDOUTS, _DATA_MOD_DAT
     _DATA_MOD_DAT = True
@@ -2216,6 +2589,7 @@ def _narrow_to_dat(units: list, graphics: list) -> None:
     _EXTRA_ANGLE_CONSTS = keep(_EXTRA_ANGLE_CONSTS)
     _COMPOSITE_SCOPE = keep(_COMPOSITE_SCOPE)
     _TOWN_CENTRE_SCOPE = keep(_TOWN_CENTRE_SCOPE)
+    _AGE_ART_SCOPE = keep(_AGE_ART_SCOPE)
     _ANNEX_TREE_SCOPE = keep(_ANNEX_TREE_SCOPE)
     _UNDERWATER_BODY_CONSTS = keep(_UNDERWATER_BODY_CONSTS)
     _PARTICLE_CONSTS = keep(_PARTICLE_CONSTS)
@@ -2348,8 +2722,10 @@ def main() -> None:
         start = _start_upgrades(data, building_consts)
         _check_start_upgrades(data, building_consts, start)
         generic, civ_ages = start.generic, start.per_civ
+    age_art = _age_art(data, graphics, graphics_dir, body_positions, ages) if _AGE_ART_SCOPE else None
     building_art = _building_art(
-        data, graphics, graphics_dir, body_positions, entries, building_consts, generic, annex_upgrades, civ_ages
+        data, graphics, graphics_dir, body_positions, entries, building_consts, generic, annex_upgrades, civ_ages,
+        age_art,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     art_path = args.out_dir / "building_art_map.json"

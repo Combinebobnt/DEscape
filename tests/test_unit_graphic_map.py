@@ -864,10 +864,32 @@ def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(mon
     assert not gen._ANNEX_TREE_SCOPE
     assert not {1893, 1897} & set(gen._PIECE_SLOTS)
     assert sorted(gen._TOWN_CENTRE_SCOPE) == [71, 109, 141, 142]
+    assert not gen._AGE_ART_SCOPE
     assert 2625 not in gen._UNDERWATER_BODY_CONSTS and 61 not in gen._UNDERWATER_BODY_CONSTS
     assert 53 in gen._UNDERWATER_BODY_CONSTS
     assert not gen._BODY_FRAME_OFFSETS
     assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [446]
+
+
+def test_a_data_mod_lacking_a_start_tech_gets_a_report_not_a_refusal(monkeypatch, capsys):
+    """TASK-205: a VER 7.7 mod's .dat lacks the Settlement's 1354 and 1469, so
+    _check_start_upgrades()' pinned measurements print for a data mod; the
+    dataset's own .dat still refuses."""
+    import importlib.util
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    path = GRAPHIC_MAP_PATH.parent.parent / "tools" / "gen_unit_graphic_map.py"
+    spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_start_mod", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)  # a private copy: the test flips _DATA_MOD_DAT
+    data = NS(effects=[], civs=[NS(tech_tree_id=-1, team_bonus_id=-1)])
+    measured = gen.StartUpgrades({}, {}, set(gen._START_UPGRADE_TECHS) - {1354, 1469}, set(gen._WAVE_CONFLICT_SLOTS))
+    with pytest.raises(SystemExit, match="re-verify _start_upgrades"):
+        gen._check_start_upgrades(data, set(), measured)
+    monkeypatch.setattr(gen, "_DATA_MOD_DAT", True)
+    gen._check_start_upgrades(data, set(), measured)
+    assert "data mod: techs firing a building upgrade" in capsys.readouterr().out
 
 
 def test_only_a_wall_may_carry_frames_past_its_references_variants(monkeypatch):

@@ -259,8 +259,10 @@ def test_resolve_and_player_art_carry_the_tech_civ():
 
 
 # The town centres the age techs reach: Dark Age 109 and its age targets.
-# 2275-2277 (satrapy town centres) are out of scope and keep the .dat's annexes.
+# 2275-2277 (satrapy town centres) draw per age through age_art instead:
+# test_satrapy_town_centres_draw_their_ages_annexes.
 AGE_TOWN_CENTRES = (109, 71, 141, 142)
+SATRAPY_TOWN_CENTRES = (2275, 2276, 2277)
 
 
 def _age_token(file_name: str) -> str:
@@ -284,6 +286,33 @@ def test_every_town_centre_entry_is_one_age():
             assert ages == {_age_token(parent["file_name"])}, (const, [p["file_name"] for p in entry["pieces"]])
             checked += 1
     assert checked > 100
+
+
+def test_satrapy_town_centres_draw_their_ages_annexes():
+    """TASK-205 Slice 2: at each age 3..5 every annex is that age's (a Castle
+    start draws age3 annexes), for Gaia and every civ in age_art, around the
+    const's own Persian age-2 back piece; Post-Imperial draws as Imperial."""
+    age_art = unit_sprites.building_art().age_art
+    assert sorted(age_art) == list(SATRAPY_TOWN_CENTRES)
+    checked = 0
+    for const in SATRAPY_TOWN_CENTRES:
+        by_age = age_art[const]
+        assert sorted(by_age) == [3, 4, 5, 6]
+        assert by_age[6] == by_age[5]
+        for age in (3, 4, 5):
+            assert 0 in by_age[age], (const, age)
+            for civ, entry in by_age[age].items():
+                annexes = [p for p in entry["pieces"] if not p.get("parent")]
+                assert {_age_token(p["file_name"]) for p in annexes} == {str(age - 1)}, (const, age, civ)
+                checked += 1
+    assert checked > 100
+    achaemenids = 46
+    dark = unit_sprites.resolve_entry(2275, achaemenids, 2, achaemenids)
+    castle = unit_sprites.resolve_entry(2275, achaemenids, 4, achaemenids)
+    assert castle is age_art[2275][4][achaemenids]
+    assert dark is not castle
+    assert unit_sprites.resolve_entry(2275, 99, 4) is age_art[2275][4][0]  # no own art: Gaia's
+    assert unit_sprites.resolve_entry(2275, None, 6) is age_art[2275][5][0]
 
 
 def test_a_chinese_castle_age_town_centre_draws_one_asia_age3_set():

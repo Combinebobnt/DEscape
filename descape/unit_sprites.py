@@ -693,6 +693,8 @@ class BuildingArt(NamedTuple):
     # tech civ -> {base const -> {age: const drawn}}, replacing age_upgrades' row (TASK-205)
     civ_upgrades: Mapping[int, dict[int, dict[int, int]]] = MappingProxyType({})
     max_age: int = 5  # a lookup clamps its age to this; a table without the key is 5
+    # const -> {age: {art civ, 0 = Gaia: entry}}, the Satrapy TCs' per-age annexes (TASK-205 Slice 2)
+    age_art: Mapping[int, dict[int, dict[int, dict]]] = MappingProxyType({})
 
 
 def _upgrade_rows(rows: dict) -> dict[int, dict[int, int]]:
@@ -713,6 +715,13 @@ def building_art() -> BuildingArt:
         civ_names={int(civ): name for civ, name in data["civ_names"].items()},
         civ_upgrades={int(civ): _upgrade_rows(rows) for civ, rows in data.get("civ_upgrades", {}).items()},
         max_age=data.get("max_age", 5),
+        age_art={
+            int(const): {
+                int(age): {int(civ): entries[index] for civ, index in by_civ.items()}
+                for age, by_civ in by_age.items()
+            }
+            for const, by_age in data.get("age_art", {}).items()
+        },
     )
 
 
@@ -742,7 +751,8 @@ def resolve_entry(
     (art_civ, age, tech_civ) (descape/civ_art.py): the const the techs a
     player starting at `age` has fired upgrade it to (`tech_civ`'s own row
     where its civ differs from the generic one, TASK-205), in that civ's art
-    if it has its own, else in the Gaia table.
+    if it has its own, else in the Gaia table. A Satrapy TC, which no age tech
+    upgrades, draws its age's annexes from `age_art` instead (Slice 2).
     Only the drawn entry changes: every caller still keys rotation, variant,
     footprint and wall/gate logic on the placed const, which the generator's
     invariant asserts make safe. A directly placed age target (463) is never
@@ -756,6 +766,9 @@ def resolve_entry(
     if by_age is None:
         by_age = art.age_upgrades.get(unit_const, {})
     drawn = by_age.get(age, unit_const)
+    by_civ = art.age_art.get(drawn, {}).get(age)
+    if by_civ is not None:
+        return by_civ.get(art_civ or 0, by_civ[0])
     if art_civ is not None:
         entry = art.civ_art.get(art_civ, {}).get(drawn)
         if entry is not None:
@@ -1679,7 +1692,9 @@ def referenced_entries() -> list[tuple[str, int, int]]:
     entry, each at its own offset from the unit's anchor
     (tools/scan_sprite_reach.py's input)."""
     entries: set[tuple[str, int, int]] = set()
-    per_civ = [e for art in building_art().civ_art.values() for e in art.values()]
+    art_table = building_art()
+    per_civ = [e for art in art_table.civ_art.values() for e in art.values()]
+    per_civ += [e for by_age in art_table.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
     for entry in [*graphic_map().values(), *per_civ]:
         # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
         entries.add((entry["file_name"], *_body_offset(entry)))
