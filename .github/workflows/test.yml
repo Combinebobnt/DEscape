@@ -8,11 +8,16 @@ concurrency:
   cancel-in-progress: true
 jobs:
   # The same three runners and test steps as build.yml's legs, minus the bundle.
+  # macOS runs only the native kernel oracle tests: its full quick suite outgrew
+  # 180 min on 3 workers. build.yml (tag push or manual dispatch) runs it in full.
   tier:
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-22.04, macos-15, windows-2025]
+        include:
+          - runner: macos-15
+            pytest-args: tests/test_native_composite.py tests/test_sld_native.py
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 210
     steps:
@@ -37,6 +42,8 @@ jobs:
       # build is compared against numpy here too.
       - uses: ./.github/actions/quick-suite
         timeout-minutes: 180
+        with:
+          pytest-args: ${{ matrix.pytest-args }}
 
   # Keeps the required status context `test`; the matrix reports
   # `tier (<runner>)` instead. always(): a skipped required check passes.

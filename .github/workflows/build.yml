@@ -12,11 +12,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {runner: ubuntu-22.04, label: linux-x86_64}
-          - {runner: macos-15,     label: macos-arm64}
-          - {runner: windows-2025, label: windows-x86_64}
+          - {runner: ubuntu-22.04, label: linux-x86_64,   suite-minutes: 180, job-minutes: 210}
+          - {runner: macos-15,     label: macos-arm64,    suite-minutes: 330, job-minutes: 350}
+          - {runner: windows-2025, label: windows-x86_64, suite-minutes: 180, job-minutes: 210}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 210
+    # GitHub-hosted jobs stop at 360 min whatever this says.
+    timeout-minutes: ${{ matrix.job-minutes }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,9 +52,10 @@ jobs:
       # Every OS, not only Linux: besides the quick suite itself, this is the
       # one place the MSVC and arm64 clang builds are compared byte for byte
       # against numpy (the native kernel oracle tests run inside the suite).
-      # macOS arm64's test run took 88 min on its first run, and over 130 by 2026-11.
+      # macOS arm64's test run took 88 min on its first run and over 180 by 2026-11,
+      # so PR CI runs only its oracle tests; this is the one full macOS run.
       - uses: ./.github/actions/quick-suite
-        timeout-minutes: 180
+        timeout-minutes: ${{ matrix.suite-minutes }}
 
       - name: Build frozen bundle
         if: runner.os != 'Linux'

@@ -22,8 +22,8 @@ Pull requests are welcome. A small fix (a typo, an obvious bug together with
 its test) can go straight to a PR. Anything larger starts as an issue, so the
 approach is agreed before you write the code. Keep one change per PR.
 
-CI runs the quick test suite on Linux, macOS and Windows for every PR, so a
-check can take up to about two hours (macOS). A first-time contributor's run waits for the
+CI runs the quick test suite on Linux and Windows for every PR, about an hour
+each, and only the native kernel tests on macOS. A first-time contributor's run waits for the
 maintainer to approve it. The corpus tests are not in CI, so still say in the
 PR whether you ran them (below).
 

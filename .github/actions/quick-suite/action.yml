@@ -4,6 +4,11 @@ description: >
   items included) with the native kernel required. On Linux xvfb-run wraps
   the run; other OSes need no display (the tests use Qt's offscreen platform).
   Assumes the install-and-build action already ran, and qt-linux-libs on Linux.
+inputs:
+  pytest-args:
+    description: Test paths or extra pytest arguments; empty runs the whole quick suite.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -12,7 +17,8 @@ runs:
       shell: bash
       env:
         DESCAPE_REQUIRE_NATIVE: '1'
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
       run: |
         wrap=()
         if [ "$RUNNER_OS" = Linux ]; then wrap=(xvfb-run -a); fi
-        "${wrap[@]}" python -m pytest -n auto --maxprocesses 16 --dist loadgroup --durations=60
+        "${wrap[@]}" python -m pytest -n auto --maxprocesses 16 --dist loadgroup --durations=60 $PYTEST_ARGS
