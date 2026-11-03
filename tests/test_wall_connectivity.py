@@ -218,22 +218,90 @@ def test_an_l_junction_resolves_to_index_2(wall_install):
     assert overrides[(1, 0)] == 2.0
 
 
-def test_an_isolated_piece_falls_through_to_its_stored_value(wall_install):
-    """No neighbours -> no entry in the table at all, so callers keep
-    resolving through today's variant_index() on the stored rotation
-    unchanged -- an isolated piece's shape is author-chosen, not derivable."""
+def test_an_isolated_piece_in_a_radian_file_draws_as_the_tower(wall_install):
+    """No neighbours: the table has no entry, and the render draws the tower,
+    as AoE2:DE does, rather than the stored radian value, which carries no
+    shape (it used to fall through to that stored value)."""
     scn = _scenario([[], [Unit(2.0, 2.0, WALL_CONST, _RADIAN[3])]])
     overrides = render.wall_variant_rotation_overrides(scn)
-    assert (1, 0) not in overrides
+    assert overrides[(1, 0)] == 2.0
+
+
+_NE_SW = unit_sprites.NE | unit_sprites.SW
+_NW_SE = unit_sprites.NW | unit_sprites.SE
+_W_E = unit_sprites.WEST | unit_sprites.EAST
+
+
+def test_wall_drawn_shape_table():
+    """The per-wall rule, both encodings, every row reported at once."""
+    rows = [
+        # integer file: at most one neighbour draws the tower unless it already stores it
+        (0, 0, False, 2),
+        *((bit, 0, False, 2) for _dx, _dy, bit in unit_sprites.NEIGHBOUR_OFFSETS),
+        (0, 2, False, None),
+        (unit_sprites.WEST, 2, False, None),
+        (_W_E, 2, False, None),
+        (_NE_SW, 0, False, None),
+        # radian file: the 8-bit table, a lone wall as the tower
+        (_NE_SW, 0, True, 4),
+        (_NW_SE, 0, True, 3),
+        (unit_sprites.NE | unit_sprites.SE, 0, True, 2),
+        (0, 0, True, 2),
+        (_W_E, 3, True, 0),
+    ]
+    bad = [
+        (mask, stored, radian, got, want)
+        for mask, stored, radian, want in rows
+        if (got := unit_sprites.wall_drawn_shape(mask, stored, radian)) != want
+    ]
+    assert bad == []
+
+
+def test_an_integer_files_lone_wall_and_run_end_draw_as_towers(wall_install):
+    """A stale integer file (a wall moved out of a run by an older editor):
+    the lone wall and the run's end, both storing a run piece, draw as
+    towers; a lone wall already storing the tower gets no entry, and the run
+    piece with two neighbours keeps its stored index."""
+    scn = _scenario([[], [
+        Unit(2.0, 2.0, WALL_CONST, 0.0),  # lone, stale
+        Unit(9.0, 2.0, WALL_CONST, 2.0),  # lone, already a tower
+        Unit(5.0, 8.0, WALL_CONST, 0.0),  # run end, stale
+        Unit(6.0, 8.0, WALL_CONST, 0.0),  # run middle
+        Unit(7.0, 8.0, WALL_CONST, 2.0),  # run end, already a tower
+    ]])
+    assert render.wall_variant_rotation_overrides(scn) == {(1, 0): 2.0, (1, 2): 2.0}
+
+
+def test_an_integer_wall_with_an_orthogonal_neighbour_and_a_diagonal_pair_keeps_its_stored_run(wall_install):
+    """Three neighbours: the stored diagonal run (4) stays, though both
+    tables would derive 2 there; game-saved files store the run."""
+    scn = _scenario([[], [
+        Unit(5.0, 5.0, WALL_CONST, 4.0),
+        Unit(6.0, 4.0, WALL_CONST, 2.0),  # NE
+        Unit(4.0, 6.0, WALL_CONST, 2.0),  # SW
+        Unit(5.0, 4.0, WALL_CONST, 2.0),  # N
+    ]])
+    assert (1, 0) not in render.wall_variant_rotation_overrides(scn)
+
+
+@pytest.mark.parametrize(("step", "interior"), [((1, -1), 4.0), ((1, 1), 3.0)])
+def test_a_radian_diagonal_run_draws_its_diagonal_shape(wall_install, step, interior):
+    """A diagonal run's interior draws the diagonal run piece (NE+SW 4,
+    NW+SE 3) and its ends the tower, whatever the radian values store."""
+    dx, dy = step
+    scn = _scenario([[], [Unit(5.0 + k * dx, 5.0 + k * dy, WALL_CONST, _RADIAN[1]) for k in range(3)]])
+    overrides = render.wall_variant_rotation_overrides(scn)
+    assert overrides == {(1, 0): 2.0, (1, 1): interior, (1, 2): 2.0}
 
 
 def test_a_literal_integer_rotation_is_untouched_when_the_file_has_no_radian_evidence(wall_install):
     """The whole-corpus regression guard, at unit-test scale: a file where
     every wall/gate rotation is already a literal index (today's confirmed-
-    in-game path) must see ZERO overrides, even when the connectivity mask
-    would derive a different shape -- precondition 3 only relaxes inside a
-    file that also carries a real radian-encoded wall
-    (unit_sprites.rotation_variant_eligible()'s docstring)."""
+    in-game path) must see ZERO overrides for its walls with 2+ neighbours,
+    even when the connectivity mask would derive a different shape. Here the
+    run's ends store the tower, so the lone rule adds nothing either; only a
+    radian file draws every wall by its neighbours
+    (unit_sprites.wall_drawn_shape())."""
     scn = _scenario([[], [
         Unit(5.0, 5.0, WALL_CONST, 2.0),  # stored as a literal index, not radian
         Unit(6.0, 5.0, WALL_CONST, 2.0),

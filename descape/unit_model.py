@@ -987,7 +987,14 @@ class UnitEditModel:
         written by wall_run.apply_move_plan() or the viewer's
         _apply_wall_reshapes()). A wall a move or a gate move leaves with no
         neighbour at all, a carried one landing alone included, takes the
-        tower index 2 (wall_run.ISOLATED_VARIANT).
+        tower index 2 (wall_run.ISOLATED_VARIANT). The walls beside a gate
+        whose orientation cycle or Replace into a gate const gives it a new
+        footprint (GH #339, wall_run.scenario_gate_changes(), the walls
+        under that footprint removed first). The walls left beside a wall
+        or gate that Delete, Cut Units, Find's Delete or the Eraser removes
+        (GH #340, wall_run.plan_removal_rewrites(), written by
+        wall_run.apply_rewrites() or the Eraser's release), where a wall
+        left with no neighbour takes the tower index 2 too.
         Also a selected wall flipped or
         turned in place (TASK-256), whose index is the element's image
         through mirror_tools.wall_index_image() (region_transform.
@@ -1024,7 +1031,7 @@ class UnitEditModel:
         value, so a literal can never make a file radian, but overwriting
         the file's last radian value makes it integer-only: a move whose
         writes do that is planned `radian_flip` and goes wholesale
-        (wall_run.MovePlan).
+        (wall_run.MovePlan). A removal's rewrites always go wholesale.
         """
         if not unit_sprites.rotation_variant_eligible(unit.unit_const):
             raise ValueError(

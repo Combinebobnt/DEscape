@@ -1781,6 +1781,48 @@ def test_a_group_note_costs_the_inspector_no_line_of_height() -> None:
     assert _group_inspector_height(_BARRACKS_CONST) == _group_inspector_height(_TREBUCHET_CONST)
 
 
+_GROUP = ("group", (_ARCHER_CONST, _BARRACKS_CONST))
+
+
+@pytest.mark.parametrize("height", [380, 500])
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [_GROUP],
+        [("unit", _ARCHER_CONST), _GROUP],
+        [("unit", _TOWER_CONST), _GROUP],
+        [_GROUP, ("unit", _ARCHER_CONST)],
+        [_GROUP, ("none", None)],
+    ],
+    ids=["fresh-group", "unit-group", "tower-group", "group-unit", "group-nothing"],
+)
+def test_the_inspector_height_is_settled_right_after_each_selection(steps, height) -> None:
+    """TASK-339: the fit measured a nested widget's stale layout (the field grid's
+    hidden rows, the card's old contents), leaving 50-71 px of blank scroll under a
+    group. Each call's height must already be what a later event spin and refit give."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, height)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        for kind, arg in steps:
+            if kind == "unit":
+                panel.show_unit(_entry(unit_const=arg))
+            elif kind == "group":
+                panel.show_group([_entry(unit_const=const, reference_id=101 + i) for i, const in enumerate(arg)])
+            else:
+                panel.show_selection_count(0)
+            raw = panel.inspector_host.minimumHeight()
+            QApplication.processEvents()
+            panel._fit_inspector_height()
+            panel._fit_inspector_height()
+            assert raw == panel.inspector_host.minimumHeight(), (kind, arg)
+    finally:
+        panel.close()
+
+
 # --- GH #42: the Garrison block -----------------------------------------
 
 

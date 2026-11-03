@@ -26,6 +26,20 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Mouse wheel rows can turn the selected units** (GH #356): Settings >
+  Keybinds adds *Rotate preview or selection* and *Brush size, rotate
+  preview or selection*, which turn a Units-mode selection as the
+  Rotate commands do when no Move drag is live and neither Place Unit nor
+  the Unit Brush is armed.
+- **The Eyedropper can switch back after a pick** (GH #300): with *Switch
+  back after a pick* ticked on its Tool Options row (start value in Settings >
+  Tools), a pick returns to the tool used before the Eyedropper; Ctrl+click
+  picks and stays.
+- **Find and Replace has an Obstacles kind**: rocks, ruins, statues and other
+  eye candy that blocks units. *Eye candy* now finds only the passable kind,
+  so it finds fewer objects than before.
+- **Settings > General: Clear beside Load** (GH #337) forgets the AoE2DE
+  install path, and terrain and sprites go back to flat colours at once.
 - **Optional keybinds for Elevation View and trigger variables** (GH #290,
   GH #291): Flat, Stepped, Sloped, Variables, and the variables dialog's Add,
   Rename and Remove commands have Settings > Keybinds rows, all unbound by default.
@@ -93,7 +107,7 @@ content, link the doc instead of summarizing it.
 - **Trigger-created units preview** (GH #167): View > Show Trigger-Created
   Units draws each unit the selected trigger's Create Object and Place
   Foundation effects would create, see-through on its tile, with or without
-  the trigger overlay. Facing is not shown yet.
+  the trigger overlay. A Create Object unit faces the way its Facet says.
 - **Swap Players** (GH #185): Players mode's Swap Players… button, also
   Map > Swap Players…, exchanges two players' slots: their units, settings,
   Personality and disabled objects, and by default their trigger player
@@ -210,6 +224,21 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **Scatter snaps every object bigger than one tile onto the game grid**
+  (GH #301, GH #333): deep fish, shipwrecks, mountains and cliffs, as it does
+  buildings. One whose footprint would hang outside the area (or off the
+  water, with Water only) is skipped, so a scatter can place fewer than asked.
+- **Theme files carry trigger status** (GH #338): the marker style, the
+  Complete and Something missing colours, *Mark triggers that pass* and
+  *Colour section rows*.
+- **Map Analysis no longer counts missing scenario instructions** (GH #319):
+  the finding is still listed, but a map whose only finding is missing
+  instructions reads Clean on N of N checks.
+- **More trigger section markers are recognised**: names with only a leading
+  rule (`----- ambush-setup`) or one `~` on each side (`~Part I~`) now head
+  their own section, and like other section headers they are never flagged
+  for having no effects. A marker right under another header leaves that
+  header empty.
 - **The compass turns units as you drag it** (GH #71), instead of on release:
   the whole drag is still one undo step, and a drag back to where it started
   leaves none.
@@ -355,6 +384,48 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Shipwrecks, flares, ruined-building rubble and the editor-hidden dolphins
+  and whales cover their in-game size** (GH #333): their mark, click target,
+  selection outline and Footprint Outline span 2x2 to 4x4 tiles instead of
+  one, and a wall run stops at a wreck's or flare's whole footprint. The
+  hidden dolphin DOLP3 draws its body.
+- **Rotate turns the Unit Brush's preview** (GH #355): the Rotate commands
+  and the wheel's Rotate preview binding turn the brush's hover preview, and
+  the objects it paints take that facing or variant. A turn unticks Random
+  facing/variant.
+- **The facet direction preview shows the facing the game uses** (GH #167):
+  the arrow and sprite under a Create Object or Replace Object effect's
+  Facet field were two steps off. A facet is now read as the unit's own
+  direction number, measured in game: a Trebuchet counts in its own 32
+  directions, and a facet past the unit's last direction faces like facet 0.
+  A Replace Object that keeps the same unit type keeps the unit's facing in
+  game, whatever its Facet; the preview still shows the Facet there.
+- **A fish's placement preview is ringed** (GH #281): with Fish Outlines on,
+  Place Unit's and the Unit Brush's preview of a fish is ringed like a placed
+  fish.
+- **Turning a gate, or replacing objects with a gate, clears the walls under
+  it** (GH #339): cycling a gate's orientation or Find and Replace into a gate
+  removes the walls under the gate's new footprint and reshapes the walls
+  beside it, as placing a gate does.
+- **Deleting a wall reshapes its neighbours** (GH #340): deleting, cutting or
+  erasing a wall or gate rewrites the stored shape of the walls left beside
+  it, so a run's new end is saved as an end piece.
+- **The Cliff tool removes trees under a new cliff**, instead of leaving a
+  forest standing inside it.
+- **Athenian, Spartan and Macedonian Fortified Walls draw with their own
+  Greek art** instead of the western set (GH #329).
+- **Find and Replace numbers trigger conditions and effects by their row in
+  the Triggers pane**, counting from 1; the CSV's `entry_index` is unchanged.
+- **Selecting two or more units no longer leaves blank space** under the
+  Units inspector's fields.
+- **In Units mode with a map open, the toolbar no longer runs past the window
+  edge**: the Rotate buttons count when deciding which tools move into More
+  Tools.
+- **Walls draw as the game shows them** (GH #348): a wall standing alone or
+  ending a run draws as a tower even when the file stores a run piece for it
+  (a wall moved before the GH #266 fix, or a file another tool edited), and in
+  files that store wall shapes as angles, diagonal wall runs draw as diagonal
+  runs instead of random pieces.
 - **Collapsed trigger sections stay collapsed** when Section Up/Down swaps two
   same-named sections, a bare `------` section is duplicated, or either is undone.
 - **A second running copy no longer reads half-written settings or an autosave

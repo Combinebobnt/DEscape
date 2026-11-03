@@ -607,19 +607,24 @@ def test_placing_a_wall_beside_walls_takes_the_reach_fallback(style, mip, art, m
     """A wall's neighbours change shape with it, so only today's reach bbox
     covers them. The fallback must fire, and the neighbours must repaint.
     Both setup walls store a radian-encoded index, which makes the file
-    radian-encoded, so every wall's shape is derived from its neighbours."""
+    radian-encoded, so every wall's shape is derived from its neighbours: the
+    two-wall run draws two towers, and a third wall at its east end turns the
+    middle one into a run piece."""
     window = _window(style)
     try:
-        walls = [_add(window, 1, STONE_WALL, x, 50.5) for x in (50.5, 52.5)]
+        walls = [_add(window, 1, STONE_WALL, x, 50.5) for x in (50.5, 51.5)]
         for wall in walls:
             wall.rotation = 2 * math.pi / 5
         window._after_unit_mutation()
-        assert render.wall_variant_rotation_overrides(window.scenario) == {}, "isolated walls keep their own shape"
+        drawn = render.wall_variant_rotation_overrides(window.scenario)
+        assert sorted(drawn.values()) == [2.0, 2.0], "a two-wall run's ends draw as towers"
         _show_level(window, monkeypatch, mip)
         spy = _Spy(window, monkeypatch)
         before = _level(window, mip)
-        _place(window, monkeypatch, 1, STONE_WALL, 51.5, 50.5)
-        assert len(render.wall_variant_rotation_overrides(window.scenario)) == 3, "the run did not reshape"
+        _place(window, monkeypatch, 1, STONE_WALL, 52.5, 50.5)
+        after = render.wall_variant_rotation_overrides(window.scenario)
+        middle = next(i for i, u in enumerate(window.scenario.unit_manager.units[1]) if u is walls[1])
+        assert len(after) == 3 and after[(1, middle)] == 0.0, "the run did not reshape"
         assert not np.array_equal(_check(window, mip, "wall place"), before)
         spy.assert_fallback(mip)
     finally:
@@ -868,8 +873,9 @@ def _wall_run(window, xs=(50.5, 51.5, 52.5), y: float = 50.5, variant: int = 2, 
 
 def _literal_walls(window, shapes: dict) -> dict:
     """A Palisade on each tile of `shapes`, storing its literal index:
-    with no radian value in the file, each draws its stored shape, and
-    every shape draws differently (the `art` fixture)."""
+    with no radian value in the file, each with 2+ neighbours draws its
+    stored shape (a lone wall or run end draws the tower), and every shape
+    draws differently (the `art` fixture)."""
     walls = {tile: _add(window, 1, PALISADE, tile[0] + 0.5, tile[1] + 0.5) for tile in shapes}
     for tile, wall in walls.items():
         wall.rotation = float(shapes[tile])
@@ -928,15 +934,16 @@ def test_a_wall_dragged_out_of_an_integer_run_repaints_every_reshaped_wall(style
 def test_a_move_that_overwrites_the_last_radian_walls_goes_wholesale(style, mip, art, monkeypatch) -> None:
     """GH #266: carrying the radian run's two ends off leaves all three walls
     towers, written as literals over the file's only radian values, so it
-    now reads integer-encoded. The pair at (60, 56) stores 1: the radian
-    file's overrides draw them as the run ends they are (2), an integer one
-    as stored. They are outside the edit, so only the wholesale refresh
-    repaints them. Undo flips the file back."""
+    now reads integer-encoded. The run at (60..62, 56) stores 1: the radian
+    file draws its middle by its neighbours (0), an integer one as stored
+    (1). It is outside the edit, so only the wholesale refresh repaints it.
+    Undo flips the file back."""
     window = _window(style)
     try:
         walls = _wall_run(window, variant=1, const=PALISADE)
-        _literal_walls(window, {(60, 56): 1, (61, 56): 1})
+        middle = _literal_walls(window, {(60, 56): 1, (61, 56): 1, (62, 56): 1})[(61, 56)]
         assert _file_is_radian(window)
+        assert _drawn(window, middle) == 0
         _show_level(window, monkeypatch, mip)
         before = _level(window, mip)
 
@@ -946,6 +953,7 @@ def test_a_move_that_overwrites_the_last_radian_walls_goes_wholesale(style, mip,
         _check(window, mip, "radian flip")
         assert [w.rotation for w in walls] == [2.0, 2.0, 2.0]
         assert not _file_is_radian(window)
+        assert _drawn(window, middle) == 1, "the run beyond the edit draws as it did"
         assert window.edit_history.peek_undo().unit_field_entries is None, "the flip did not go wholesale"
         window.undo()
         assert _file_is_radian(window)
@@ -961,15 +969,17 @@ def test_a_typed_x_or_scatter_that_overwrites_the_last_radian_walls_goes_wholesa
     """The case above through the Inspector's typed X and Scatter's move
     mode, which plan with no gate part: the radian run's middle wall leaves
     for (56, 50), so all three walls are towers written as literals over the
-    file's only radian values. The pair at (60, 56) repaints only through
-    the wholesale refresh. Undo flips the file back."""
+    file's only radian values. The run at (60..62, 56), whose middle draws
+    0 while radian and its stored 1 once integer, repaints only through the
+    wholesale refresh. Undo flips the file back."""
     from descape.scatter_dialog import ScatterParams
 
     window = _window("Stepped")
     try:
         walls = _wall_run(window, variant=1, const=PALISADE)
-        _literal_walls(window, {(60, 56): 1, (61, 56): 1})
+        middle = _literal_walls(window, {(60, 56): 1, (61, 56): 1, (62, 56): 1})[(61, 56)]
         assert _file_is_radian(window)
+        assert _drawn(window, middle) == 0
         _show_level(window, monkeypatch, 0)
         before = _level(window, 0)
         entry = _select(window, walls[1])
@@ -986,6 +996,7 @@ def test_a_typed_x_or_scatter_that_overwrites_the_last_radian_walls_goes_wholesa
         assert (int(walls[1].x), int(walls[1].y)) == (56, 50)
         assert [w.rotation for w in walls] == [2.0, 2.0, 2.0]
         assert not _file_is_radian(window)
+        assert _drawn(window, middle) == 1, "the run beyond the edit draws as it did"
         assert window.edit_history.peek_undo().unit_field_entries is None, "the flip did not go wholesale"
         _check(window, 0, how)
         window.undo()
@@ -1020,6 +1031,96 @@ def test_a_gate_stepping_off_a_run_reshapes_it_by_splice(style, mip, art, monkey
         assert window.edit_history.peek_undo().unit_field_entries is not None, "not a fields-only record"
         _check(window, mip, "gate step")
         window.undo()
+        _check(window, mip, "undo")
+    finally:
+        conftest.close_window(window)
+
+
+def _drawn(window, unit) -> int:
+    """The shape `unit` draws: its override, else its stored index."""
+    player = next(p for p, units in enumerate(window.scenario.unit_manager.units) if any(u is unit for u in units))
+    i = next(i for i, u in enumerate(window.scenario.unit_manager.units[player]) if u is unit)
+    rotation = render.wall_variant_rotation_overrides(window.scenario).get((player, i), unit.rotation)
+    return unit_sprites.variant_index(rotation, 5)
+
+
+LONE_WALL_STYLE_MIPS = [*STYLE_MIPS, ("Flat", 0)]
+
+
+@pytest.mark.parametrize(("style", "mip"), LONE_WALL_STYLE_MIPS)
+def test_a_gate_dragged_off_an_integer_run_end_draws_the_wall_it_left_as_a_tower(style, mip, art, monkeypatch) -> None:
+    """TASK-524, "Moving a gate updates walls" unticked, so no wall is
+    rewritten: (51, 50) keeps storing its run piece (0), but with only (50,
+    50) left beside it it draws the tower the game shows, and its run piece
+    again on undo."""
+    window = _window(style)
+    try:
+        walls = _literal_walls(window, {(50, 50): 2, (51, 50): 0})
+        gate = _add(window, 1, GATE_NE, 54.0, 50.5)  # x 52..55
+        window.gate_walls_check.setChecked(False)
+        _show_level(window, monkeypatch, mip)
+        _level(window, mip)
+        assert _drawn(window, walls[(51, 50)]) == 0
+
+        _drop(window, monkeypatch, gate, 54.0, 55.5)
+
+        assert [w.rotation for w in walls.values()] == [2.0, 0.0], "the box is off, yet a wall was rewritten"
+        assert _drawn(window, walls[(51, 50)]) == 2
+        _check(window, mip, "gate drag")
+        window.undo()
+        assert _drawn(window, walls[(51, 50)]) == 0
+        _check(window, mip, "undo")
+        window.redo()
+        _check(window, mip, "redo")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), LONE_WALL_STYLE_MIPS)
+def test_a_gate_dragged_off_a_diagonal_runs_end_draws_its_diagonal_neighbour_as_a_tower(style, mip, art, monkeypatch) -> None:
+    """(56, 49) is a NE-SW diagonal run piece (4) between (57, 48) and the
+    gate's end tile (55, 50), diagonal to both. The gate's drag leaves it one
+    neighbour, so it draws the tower. Only the 8-neighbour widening of the
+    splice and of Flat's repaint reaches it."""
+    window = _window(style)
+    try:
+        walls = _literal_walls(window, {(56, 49): 4, (57, 48): 2})
+        gate = _add(window, 1, GATE_NE, 54.0, 50.5)  # x 52..55
+        window.gate_walls_check.setChecked(False)
+        _show_level(window, monkeypatch, mip)
+        _level(window, mip)
+        assert _drawn(window, walls[(56, 49)]) == 4
+
+        _drop(window, monkeypatch, gate, 54.0, 55.5)
+
+        assert walls[(56, 49)].rotation == 4.0
+        assert _drawn(window, walls[(56, 49)]) == 2
+        _check(window, mip, "gate drag")
+        window.undo()
+        assert _drawn(window, walls[(56, 49)]) == 4
+        _check(window, mip, "undo")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), LONE_WALL_STYLE_MIPS)
+def test_deleting_an_integer_runs_end_draws_the_new_end_as_a_tower(style, mip, art, monkeypatch) -> None:
+    """Delete rewrites the run's new end (51, 50) from 0 to the tower (GH
+    #340), a wholesale record, and it draws the tower, and its run piece on
+    undo."""
+    window = _window(style)
+    try:
+        walls = _literal_walls(window, {(50, 50): 2, (51, 50): 0, (52, 50): 2})
+        _show_level(window, monkeypatch, mip)
+        _level(window, mip)
+
+        _delete(window, walls[(52, 50)])
+
+        assert walls[(51, 50)].rotation == 2.0
+        assert _drawn(window, walls[(51, 50)]) == 2
+        _check(window, mip, "delete")
+        window.undo()
+        assert _drawn(window, walls[(51, 50)]) == 0
         _check(window, mip, "undo")
     finally:
         conftest.close_window(window)

@@ -61,10 +61,11 @@ zoom_centered_on_cursor: true
 
 # What the mouse wheel does over the map, per modifier held, Settings >
 # Keybinds. Slots: plain, ctrl, shift, alt.
-# Actions: zoom, tool, brush_size, rotate, pan_vertical, pan_horizontal, none.
+# Actions: zoom, tool, tool_selection, brush_size, rotate, rotate_selection, pan_vertical, pan_horizontal, none.
 # "tool" steps the brush size or turns Place Unit's preview, whichever
-# applies; a tool action with nothing to act on zooms, and so does any other
-# modifier combination. Only slots moved off their default are stored, and an
+# applies, and the "_selection" choices also turn the selected units in Units
+# mode. A tool action with nothing to act on does nothing; any other modifier
+# combination zooms. Only slots moved off their default are stored, and an
 # unknown slot or action is ignored.
 # Defaults: plain zoom, ctrl tool, shift zoom, alt zoom.
 # The value below is only an example.
@@ -142,6 +143,7 @@ view_layers:
 #   walls_skip_occupied (default false): true or false
 #   gate_walls (default false): true or false
 #   last_wall (default 117): a wall unit id
+#   eyedropper_returns (default false): true or false
 #   cliff_family (default null): null for the first family, or a cliff
 #     graphic name
 #   cliff_piece (default null): null for the family's first piece, or a

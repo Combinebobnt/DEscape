@@ -27,6 +27,7 @@ rather than read off a spec, so each one records what would break:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import struct
@@ -177,6 +178,23 @@ def install(tmp_path, monkeypatch):
 )
 def test_angle_index_rounds_and_wraps(rotation, angle_count, expected):
     assert unit_sprites.angle_index(rotation, angle_count) == expected
+
+
+def test_rotation_for_angle_index_inverts_angle_index_for_every_real_angle_count():
+    """GH #167's facet preview draws a measured stored index through the
+    inverse, so a drift between the two shows the wrong frame. Every count in
+    the shipped graphic table, both zero points; reports every failing input."""
+    graphics = json.loads(Path(unit_sprites.__file__).with_name("unit_graphic_map.json").read_text())["graphics"]
+    counts = sorted({int(entry["angle_count"]) for entry in graphics.values()})
+    assert 16 in counts and 32 in counts
+    bad = []
+    for offset in (unit_sprites.ANGLE_ZERO_OFFSET_DEG, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG):
+        for n in counts:
+            for k in range(n):
+                rotation = unit_sprites.rotation_for_angle_index(k, n, offset)
+                if not 0.0 <= rotation < 2 * math.pi or unit_sprites.angle_index(rotation, n, offset) != (k if n > 1 else 0):
+                    bad.append((offset, n, k, rotation))
+    assert not bad, bad
 
 
 @pytest.mark.parametrize("angle_count", [2, 3, 4, 5, 6, 25])
@@ -524,7 +542,7 @@ def test_the_real_wall_consts_are_gated_onto_the_variant_path():
 @pytest.mark.parametrize(
     ("mask", "expected"),
     [
-        (0, None),  # isolated -- no derivable answer, caller must fall through
+        (0, None),  # isolated -- no table entry, the caller supplies the tower
         (unit_sprites.WEST | unit_sprites.EAST, 0),
         (unit_sprites.NORTH | unit_sprites.SOUTH, 1),
         (unit_sprites.WEST, 2),
@@ -583,7 +601,8 @@ def test_wall_variant_from_neighbours8_resolves_the_diagonal_only_masks(mask, ex
 def test_wall_variant_from_neighbours8_leaves_mask_zero_underivable():
     """Deliberately None rather than the 2 that 24 of 24 isolated corpus
     walls store: that keeps this function's contract identical to the 4-bit
-    one at every mask. "A lone wall is a tower" is wall_run's policy."""
+    one at every mask. "A lone wall is a tower" is its callers' policy
+    (wall_run, and wall_drawn_shape() on the render side)."""
     assert unit_sprites.wall_variant_from_neighbours8(0) is None
 
 

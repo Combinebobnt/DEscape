@@ -60,13 +60,14 @@ touched.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cache
 
 from descape import cliff_catalog, cliff_connectivity, unit_sprites
 from descape.cliff_connectivity import DRAG_FACE_SIDE, edge_tall, leg_tall
 from descape.render import span_anchor, unit_tile_bounds
-from descape.terrain_palette import tile_span
+from descape.terrain_palette import TREE_UNIT_IDS, tile_span
 
 Bounds = tuple[int, int, int, int]
 Direction = tuple[int, int]
@@ -155,6 +156,23 @@ def existing_cliffs(scenario, map_width: int, map_height: int) -> list[ExistingC
                     )
                 )
     return out
+
+
+def trees_under(scenario, bounds: Iterable[Bounds]) -> list[tuple[int, object]]:
+    """(player, unit) for every tree whose anchor tile `(int(x), int(y))`
+    lies in one of the half-open `bounds` rects, any owner: what a Cliff
+    stroke removes under the cliffs it places. A tree is a TREE_UNIT_IDS
+    const, the set Filters' Show Trees and the Eraser's Trees target own,
+    so a hand-placed or imported tree const counts too."""
+    tiles = {tile for rect in bounds for tile in _tiles(rect)}
+    if not tiles:
+        return []
+    return [
+        (player, unit)
+        for player, units in enumerate(scenario.unit_manager.units)
+        for unit in units
+        if unit.unit_const in TREE_UNIT_IDS and (int(unit.x), int(unit.y)) in tiles
+    ]
 
 
 def _overlap(a: Bounds, b: Bounds) -> bool:

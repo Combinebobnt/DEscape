@@ -69,6 +69,7 @@ def _non_defaults(window) -> dict:
         "walls_skip_occupied": True,
         "gate_walls": True,
         "last_wall": walls[0],
+        "eyedropper_returns": True,
         "cliff_family": family,
         "cliff_piece": piece,
         "cliff_frame": 2,

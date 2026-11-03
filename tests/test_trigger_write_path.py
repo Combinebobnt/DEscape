@@ -3009,6 +3009,20 @@ def test_a_renumber_that_fails_in_the_viewer_warns_once_and_changes_nothing(monk
         window.close()
 
 
+def test_a_raise_inside_trigger_edit_fails_fast_on_a_factory_window() -> None:
+    """TASK-077: unstubbed, the failure's QMessageBox blocks forever offscreen."""
+    window = conftest.blank_window()
+    try:
+        model = window._ensure_trigger_edits()
+        with (
+            pytest.raises(conftest.UnexpectedWarning, match="Trigger edit failed: boom"),
+            window._trigger_edit(model, "Boom", refresh="panel"),
+        ):
+            raise RuntimeError("boom")
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_refused_renumber_records_nothing() -> None:
     window = conftest.shown_window()
     warned: list[str] = []

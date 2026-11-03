@@ -399,7 +399,7 @@ def test_the_tool_hides_outside_units_mode_and_shows_its_widgets() -> None:
         assert not window.convert_sources_param_action.isVisible()
         assert window.unit_brush_density_spin.value() == 100
         assert window.unit_brush_density_spin.suffix() == " %"
-        assert "Place Unit or by the Eyedropper" in window.unit_brush_random_check.toolTip()
+        assert "turning the preview" in window.unit_brush_random_check.toolTip()
         window.mode_combo.setCurrentText("Terrain")
         assert not window.unit_brush_action.isVisible()
         assert window._current_tool != "unit_brush"
@@ -410,15 +410,21 @@ def test_the_tool_hides_outside_units_mode_and_shows_its_widgets() -> None:
         _close(window)
 
 
-def test_a_tool_wheel_slot_resizes_the_brush_and_a_rotate_slot_does_nothing() -> None:
-    """GH #245: the brush has a size box, and a ghost that does not turn."""
-    from PyQt5.QtCore import Qt
+def test_a_tool_wheel_slot_resizes_the_brush_and_a_rotate_slot_turns_the_ghost() -> None:
+    """GH #245's "under tool the brush wins"; GH #355: the rotate slot turns the ghost while it shows."""
+    from PyQt5.QtCore import QEvent, Qt
 
-    window = _window()
+    window = _window(const=VILLAGER, owner=P1, shown=True)
     try:
         view = window.map_view
         view._wheel_bindings[int(Qt.ControlModifier)] = "tool"
         view._wheel_bindings[int(Qt.ShiftModifier)] = "rotate"
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        assert view._wheel_action(Qt.ControlModifier) == "brush_size"
+        assert view._wheel_action(Qt.ShiftModifier) == "rotate"
+        view.leaveEvent(QEvent(QEvent.Leave))
+        assert _ghost(window) is None
         assert view._wheel_action(Qt.ControlModifier) == "brush_size"
         assert view._wheel_action(Qt.ShiftModifier) == "none"
     finally:
@@ -470,6 +476,19 @@ def test_the_ghost_goes_with_the_hover_the_tool_and_the_mode(end) -> None:
         assert view._place_hover is None
         view.refresh_place_ghost()
         assert _ghost(window) is None, "a refresh must not resurrect it"
+    finally:
+        _close(window)
+
+
+def test_a_fish_ghost_is_ringed_with_fish_outlines_on() -> None:
+    """GH #281: the brush shares Place Unit's on_place_preview(), ring included."""
+    shore_fish = 69
+    window = _window(const=shore_fish, owner=GAIA, size=1, shown=True)
+    try:
+        window.layer_actions["fish_outlines"].setChecked(True)
+        _hover(window, (40, 40))
+        assert _ghost(window) is not None
+        assert window.map_view._ghost_fish_item is not None
     finally:
         _close(window)
 
@@ -715,13 +734,198 @@ def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -
         _close(window)
 
 
-def test_the_ghost_arms_no_rotate_input() -> None:
-    """GH #170's Out of scope stands: rotate inputs turn only Place Unit's ghost."""
+# --- turning the ghost (GH #355) ------------------------------------------------------
+
+
+def _turn_seen(window, monkeypatch) -> list:
+    """The rotation every later ghost (and size-1 hover) is built with, through viewer.new_unit."""
+    from descape import viewer
+
+    seen = []
+    real = viewer.new_unit
+    monkeypatch.setattr(viewer, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
+    return seen
+
+
+@pytest.mark.parametrize("pick, armed", [(VILLAGER, True), (STONE_WALL, False), (STONE_GATE, False)])
+def test_rotate_is_armed_for_a_pick_the_brush_paints_only(pick, armed) -> None:
+    window = _window(const=pick, owner=P1, shown=True)
+    try:
+        _hover(window, (40, 40))
+        assert window._place_rotate_armed() is armed
+        assert window._place_ghost_active() is armed
+        assert all(action.isEnabled() is armed for action in window._rotate_toolbar_actions)
+    finally:
+        _close(window)
+
+
+def test_the_rotate_buttons_follow_a_catalog_pick_with_no_selection() -> None:
+    window = _window(const=VILLAGER, owner=P1)
+    try:
+        assert not window._selection
+        assert all(action.isEnabled() for action in window._rotate_toolbar_actions)
+        assert window.units_panel.pick_object(STONE_WALL)
+        assert not any(action.isEnabled() for action in window._rotate_toolbar_actions)
+        assert window.units_panel.pick_object(OAK)
+        assert all(action.isEnabled() for action in window._rotate_toolbar_actions)
+    finally:
+        _close(window)
+
+
+def test_rotate_over_the_ghost_turns_the_pending_facing_and_the_ghost(monkeypatch) -> None:
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        window.unit_brush_random_check.setChecked(False)
+        _hover(window, (40, 40))
+        seen = _turn_seen(window, monkeypatch)
+        window.on_unit_rotate(1)
+        count = unit_rotation.angle_count_for(VILLAGER)
+        turned = rotation_for(window._place_rotation, VILLAGER, P1)
+        assert unit_rotation.rotation_to_facing(turned, count) == 1
+        assert seen == [turned], "the ghost was not rebuilt with the turned facing"
+        assert _status(window) == f"Unit Brush: {display_name(VILLAGER)} facing 1/{count}"
+        window.on_unit_rotate_coarse(1)
+        quarter = unit_rotation.quarter_turn_steps(count)
+        assert unit_rotation.rotation_to_facing(rotation_for(window._place_rotation, VILLAGER, P1), count) == 1 + quarter
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("const, owner", [(VILLAGER, P1), (OAK, GAIA)], ids=["facing", "variant"])
+def test_unticked_a_turned_ghost_paints_its_rotation_on_every_unit(const, owner) -> None:
+    window = _window(const=const, owner=owner, size=3, shown=True)
+    try:
+        window.unit_brush_random_check.setChecked(False)
+        _hover(window, (40, 40))
+        for _ in range(3):
+            window.on_unit_rotate(1)
+        turned = rotation_for(window._place_rotation, const, owner)
+        assert turned != rotation_for(PlaceRotation(), const, owner)
+        _drag(window, _row(40, 40, 44))
+        rotations = {u.rotation for _p, u in _units(window)}
+        assert len(_units(window)) > 3 and rotations == {turned}
+    finally:
+        _close(window)
+
+
+def test_a_turn_with_random_ticked_unticks_it_and_the_next_stroke_paints_the_turn() -> None:
+    """D1 (user, 2026-11-02)."""
+    window = _window(const=VILLAGER, owner=P1, size=3, shown=True)
+    try:
+        assert window.unit_brush_random_check.isChecked()
+        _hover(window, (40, 40))
+        window.on_unit_rotate(1)
+        assert not window.unit_brush_random_check.isChecked()
+        count = unit_rotation.angle_count_for(VILLAGER)
+        assert _status(window).endswith(f"facing 1/{count} (Random facing/variant unticked)")
+        turned = rotation_for(window._place_rotation, VILLAGER, P1)
+        _drag(window, _row(40, 40, 44))
+        assert {u.rotation for _p, u in _units(window)} == {turned}
+        window.on_unit_rotate(1)
+        assert "unticked" not in _status(window), "an already unticked box has nothing to say"
+    finally:
+        _close(window)
+
+
+def test_a_turn_on_a_pick_with_nothing_to_turn_leaves_random_ticked() -> None:
+    window = _window(const=HOUSE, owner=P1, shown=True)
+    try:
+        _hover(window, (40, 40))
+        assert window._place_ghost_active()
+        window.on_unit_rotate(1)
+        assert window.unit_brush_random_check.isChecked()
+        assert _status(window) == f"Unit Brush: {display_name(HOUSE)} has no facing or variant to rotate"
+    finally:
+        _close(window)
+
+
+def _paint_and_select_one(window):
+    """A size-1 villager stroke at (60, 60), that villager selected."""
+    _drag(window, [(60, 60)])
+    ((_p, villager),) = _units(window)
+    window._selection = [(P1, villager.reference_id)]
+    window._refresh_selection_view()
+    return villager
+
+
+def test_rotate_mid_stroke_changes_nothing_and_the_stroke_stays_one_record() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        window.unit_brush_random_check.setChecked(False)
+        villager = _paint_and_select_one(window)
+        before = (villager.rotation, window._place_rotation, len(window.edit_history.records))
+        _hover(window, (40, 40))
+        _press(window, (40, 40))
+        stroke = window._unit_brush
+        assert stroke is not None
+        assert window._selection == [(P1, villager.reference_id)]
+        window.map_view._wheel_bindings[int(Qt.ShiftModifier)] = "rotate"
+        assert window.map_view._wheel_action(Qt.ShiftModifier) == "none", "the wheel is silent mid-stroke"
+        window.on_unit_rotate(1)
+        assert _status(window) == "Unit Brush: turn the preview between strokes"
+        window.on_unit_rotate_coarse(-1)
+        assert _status(window) == "Unit Brush: turn the preview between strokes"
+        assert (villager.rotation, window._place_rotation) == before[:2]
+        assert window._unit_brush is stroke and stroke.pending == before[1]
+        _held_move(window, (41, 40))
+        _release(window, (41, 40))
+        assert len(window.edit_history.records) == before[2] + 1
+        assert villager.rotation == before[0]
+    finally:
+        _close(window)
+
+
+def test_over_the_ghost_flip_and_rotate_group_leave_the_selection_alone() -> None:
+    """Place Unit's parity (test_selection_transform_viewer.py), with the brush's real ghost."""
+    window = _window(const=VILLAGER, owner=P1, size=1, shown=True)
+    try:
+        villager = _paint_and_select_one(window)
+        _hover(window, (40, 40))
+        assert window._place_ghost_active()
+        before = (villager.x, villager.y, villager.rotation, len(window.edit_history.records))
+        window.flip_horizontal_action.trigger()
+        assert _status(window).startswith("Flip: nothing changed while placing")
+        window.rotate_group_cw_action.trigger()
+        assert _status(window).startswith("Rotate Group: nothing changed while placing")
+        assert (villager.x, villager.y, villager.rotation, len(window.edit_history.records)) == before
+        assert window._lift is None
+    finally:
+        _close(window)
+
+
+def test_an_armed_brush_off_the_map_keeps_rotate_off_a_committed_region() -> None:
+    """_region_rotate_target() stands down for an armed brush, as for Place Unit."""
+    from PyQt5.QtCore import QEvent
+
+    window = _window(const=VILLAGER, owner=P1, shown=True)
+    try:
+        window.on_region_selected((10, 10, 14, 13))
+        assert window._region is not None and window._place_rotate_armed()
+        window.map_view.leaveEvent(QEvent(QEvent.Leave))
+        assert _ghost(window) is None
+        assert not window._region_rotate_target()
+        records = len(window.edit_history.records)
+        window.on_unit_rotate(1)
+        assert _status(window) == "Rotate: nothing to rotate (hover the map to turn the preview)"
+        assert len(window.edit_history.records) == records
+        assert window._lift is None and window._place_rotation == PlaceRotation()
+    finally:
+        _close(window)
+
+
+def test_a_turn_under_the_brush_carries_to_place_units_ghost(monkeypatch) -> None:
     window = _window(const=VILLAGER, owner=P1, shown=True)
     try:
         _hover(window, (40, 40))
-        assert _ghost(window) is not None
-        assert not window._place_ghost_active()
+        window.on_unit_rotate(2)
+        turned = rotation_for(window._place_rotation, VILLAGER, P1)
+        assert turned != rotation_for(PlaceRotation(), VILLAGER, P1)
+        window.place_unit_action.setChecked(True)
+        seen = _turn_seen(window, monkeypatch)
+        _hover(window, (50, 50))
+        assert _ghost(window) is not None and seen == [turned]
     finally:
         _close(window)
 

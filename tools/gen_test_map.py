@@ -439,6 +439,14 @@ class _Map:
         return list(range(start, start + len(names)))
 
 
+def _straddles_mirror_axis(x0: int, sx: int) -> bool:
+    """Whether tiles x0..x0+sx-1 cross the map's x = MAP_SIZE / 2 axis without mapping onto themselves.
+
+    Mirror mode 3 (`mx`) refuses such a footprint, and the mirror round trip needs this map to mirror cleanly."""
+    mid = MAP_SIZE // 2
+    return x0 < mid < x0 + sx and 2 * x0 + sx != MAP_SIZE
+
+
 def _pack(m: _Map, region: Region, items, *, gap: int = 1, row_gap: int = 1, layer: bool = False, cycle: bool = False) -> None:
     """Shelf-packs `items` ((const, owner, rotations), side by side per item) by ground, then by height.
 
@@ -457,8 +465,12 @@ def _pack(m: _Map, region: Region, items, *, gap: int = 1, row_gap: int = 1, lay
         for const, owner, rotations in group:
             sx, sy = _span(const)
             width = sx * len(rotations)
+            if any(_straddles_mirror_axis(x + k * sx, sx) for k in range(len(rotations))):
+                x = MAP_SIZE // 2
             if x + width > region.x1:
                 x, row_top, row_h = region.x0, row_top + row_h + row_gap, 0
+                if any(_straddles_mirror_axis(x + k * sx, sx) for k in range(len(rotations))):
+                    x = MAP_SIZE // 2  # a group wider than region.x0..axis; the building() check catches overflow
             placements.append((const, owner, rotations, x, row_top))
             x += width + gap
             row_h = max(row_h, sy)

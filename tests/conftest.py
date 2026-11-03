@@ -224,6 +224,19 @@ def rotating_install(tmp_path, monkeypatch):
     unit_sprites.clear_caches()
 
 
+class UnexpectedWarning(AssertionError):
+    """A window factory's _warn: the real QMessageBox blocks forever offscreen (TASK-077)."""
+
+
+def _raise_on_warn(window):
+    def warn(title: str, text: str) -> None:
+        raise UnexpectedWarning(f"{title}: {text}")
+
+    # Tests that expect a warning replace window._warn with their own recorder.
+    window._warn = warn
+    return window
+
+
 def stepped_window(
     path,
     *,
@@ -244,7 +257,7 @@ def stepped_window(
     module for the settings-module-globals rule, the Stepped-combo no-op,
     and the mark_saved()-before-close() requirement."""
     try:
-        return qt_window.stepped_window(
+        window = qt_window.stepped_window(
             path,
             elev_step_pct=elev_step_pct,
             graphics_quality=graphics_quality,
@@ -254,6 +267,7 @@ def stepped_window(
         )
     except qt_window.ScenarioLoadError as exc:
         pytest.skip(str(exc))
+    return _raise_on_warn(window)
 
 
 def shown_window(width: int = 1200, height: int = 800):
@@ -268,7 +282,7 @@ def shown_window(width: int = 1200, height: int = 800):
     from descape.viewer import ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     window.resize(width, height)
     window.show()
     QApplication.processEvents()
@@ -283,7 +297,7 @@ def blank_window(load: bool = True):
     from descape.viewer import ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     if load:
         window.load_scenario(BLANK_TEMPLATE_PATH)
         assert window.scenario is not None, "blank template failed to load"
@@ -321,7 +335,7 @@ def dialog_and_window():
     from descape.viewer import SettingsDialog, ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     return SettingsDialog(window), window
 
 
@@ -643,6 +657,16 @@ def _aoe2_dataset():
     yield
     game_dataset.set_active(game_dataset.AOE2)
     game_dataset.set_data_mod(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_stubbed_cliff_families_left():
+    """22 tests stub unit_sprites.graphic_map; a window built under one caches
+    cliff_catalog.families() from the fake table (every cliff its own one-piece
+    family) for the rest of the xdist worker. Dropped after every test (~5 ms to refill)."""
+    yield
+    if "descape.cliff_catalog" in sys.modules:
+        sys.modules["descape.cliff_catalog"].families.cache_clear()
 
 
 @pytest.fixture(autouse=True)

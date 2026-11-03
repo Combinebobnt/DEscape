@@ -1237,6 +1237,150 @@ def test_a_tool_mode_or_index_switch_restarts_the_eyedropper_at_the_top_of_a_sta
         _close(window)
 
 
+# --- TASK-287: Switch back after a pick, in Units mode --------------------------------
+
+
+def _press_tile(window, tile, modifiers=Qt.NoModifier) -> None:
+    from PyQt5.QtGui import QMouseEvent
+
+    view = window.map_view
+    pos = conftest.viewport_pos(view, *tile)
+    view.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton, modifiers))
+
+
+def _stack_three(window, tile=(40, 40)) -> list[tuple[int, int]]:
+    """test_repeat_eyedropper_clicks_walk_down_a_stack's stack: (const, owner) per member, top first."""
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Stack", [1, 2]):
+        model.add(1, _UNIT_CONST, tile[0] + 0.5, tile[1] + 0.5)
+        model.add(2, _ARCHER, tile[0] + 0.5, tile[1] + 0.5)
+        model.add(1, _ARCHER, tile[0] + 0.5, tile[1] + 0.5)
+    want = [(member.unit.unit_const, member.player_id) for member in window.map_view.stack_group_at(tile)]
+    assert len(set(want)) == 3, "each member must be tellable from the others"
+    return want
+
+
+def _picked(window) -> tuple[int | None, int]:
+    return window.units_panel.selected_object_const(), window.units_panel.owner_id()
+
+
+@pytest.mark.parametrize("modifiers", [Qt.NoModifier, Qt.ShiftModifier])
+def test_a_units_pick_with_the_box_ticked_returns_to_place_unit(modifiers) -> None:
+    window = _eyedrop_window()
+    try:
+        window.eyedropper_return_check.setChecked(True)
+        _press_tile(window, _FIXTURE_ARCHER_TILE, modifiers)
+        assert window.units_panel.selected_object_const() == _ARCHER
+        if modifiers == Qt.NoModifier:
+            assert window.units_panel.owner_id() == 2
+        assert window._current_tool == "place_unit" and window.place_unit_action.isChecked()
+        assert window.map_view._tool == "place_unit"
+    finally:
+        _close(window)
+
+
+def test_a_units_pick_the_catalog_lacks_stays() -> None:
+    from types import SimpleNamespace
+
+    window = _eyedrop_window()
+    try:
+        window.eyedropper_return_check.setChecked(True)
+        stranger = SimpleNamespace(player_id=2, unit=SimpleNamespace(unit_const=-12345, rotation=2.0))
+        window.pick_unit_value(stranger, (3, 4), Qt.NoModifier)
+        assert window._current_tool == "eyedropper"
+    finally:
+        _close(window)
+
+
+def test_an_eyedropper_entered_from_the_pan_a_units_entry_forces_returns_to_pan() -> None:
+    window = _window(const=None)
+    try:
+        window.mode_combo.setCurrentText("Terrain")
+        window.mode_combo.setCurrentText("Units")
+        assert window._current_tool == "pan"
+        window.eyedropper_action.setChecked(True)
+        window.eyedropper_return_check.setChecked(True)
+        _press_tile(window, _FIXTURE_ARCHER_TILE)
+        assert window.units_panel.selected_object_const() == _ARCHER
+        assert window._current_tool == "pan"
+    finally:
+        _close(window)
+
+
+def test_a_units_click_on_empty_ground_stays() -> None:
+    window = _eyedrop_window()
+    try:
+        window.eyedropper_return_check.setChecked(True)
+        _press_tile(window, (60, 60))
+        assert window.units_panel.selected_object_const() == _HOUSE
+        assert window._current_tool == "eyedropper"
+    finally:
+        _close(window)
+
+
+def test_ctrl_clicks_walk_a_stack_and_a_plain_click_picks_and_returns() -> None:
+    window = _eyedrop_window()
+    try:
+        window.eyedropper_return_check.setChecked(True)
+        want = _stack_three(window)
+        _press_tile(window, (40, 40), Qt.ControlModifier)
+        assert _picked(window) == want[0] and window._current_tool == "eyedropper"
+        _press_tile(window, (40, 40), Qt.ControlModifier)
+        assert _picked(window) == want[1] and window._current_tool == "eyedropper"
+        _press_tile(window, (40, 40))
+        assert _picked(window) == want[2]
+        assert window._current_tool == "place_unit"
+    finally:
+        _close(window)
+
+
+def test_a_double_click_with_no_switch_back_still_walks_the_stack() -> None:
+    from test_eyedropper import drive_gesture
+
+    window = _eyedrop_window()
+    try:
+        assert not window.eyedropper_return_check.isChecked()
+        want = _stack_three(window)
+        drive_gesture(window.map_view, (40, 40), "double")
+        assert _picked(window) == want[1], "the double-click's second press picked the next member"
+        assert window._current_tool == "eyedropper"
+    finally:
+        _close(window)
+
+
+def _units_inertness_cases() -> list:
+    from test_eyedropper import applicable_tools
+
+    stone_wall = 117  # Place Unit's shape-drag path
+    cases = [(tool, None) for tool in applicable_tools("units")]
+    return [*cases, ("place_unit", stone_wall)]
+
+
+@pytest.mark.parametrize("gesture", ["drag", "double"])
+@pytest.mark.parametrize(("tool", "pending"), _units_inertness_cases())
+def test_the_switching_gesture_does_nothing_under_the_restored_units_tool(tool, pending, gesture) -> None:
+    """Free placement ticked, so a stray Place Unit press over the picked archer would place."""
+    from test_eyedropper import assert_inert, drive_gesture
+
+    window = _window(const=_UNIT_CONST if pending is None else pending)
+    try:
+        action = getattr(window, f"{tool}_action")
+        if not action.isEnabled():
+            pytest.skip(f"{tool} is disabled on the units fixture")
+        window.unrestricted_check.setChecked(True)
+        action.setChecked(True)
+        window.eyedropper_action.setChecked(True)
+        window.eyedropper_return_check.setChecked(True)
+        assert window._eyedropper_return_tool == tool
+        records = len(window.edit_history.records)
+        units = sum(len(u) for u in window.scenario.unit_manager.units)
+        drive_gesture(window.map_view, _FIXTURE_ARCHER_TILE, gesture)
+        assert window.units_panel.selected_object_const() == _ARCHER, "the press picked"
+        assert_inert(window, tool, records, units)
+    finally:
+        _close(window)
+
+
 # --- GH #32: the eyedropper on a bad file's player-owned GAIA-only object -------
 
 _DEER = 65
@@ -1402,5 +1546,156 @@ def test_a_move_inside_one_tile_asks_the_rule_once_and_a_unit_mutation_asks_agai
         with window._unit_edit(model, "Add", [2]):
             model.add(2, _UNIT_CONST, 70.5, 70.5)
         assert len(calls) == 2
+    finally:
+        _close(window)
+
+
+# --- GH #281: a fish ghost carries the Fish Outlines ring ---------------------------
+
+_SHORE_FISH = 69  # 1x1
+_DEEP_FISH = 455  # 2x2
+
+
+def _fish_window(style: str = "Flat", const: int = _SHORE_FISH, layer: bool = True):
+    window = _window(style, const=const)
+    window.layer_actions["fish_outlines"].setChecked(layer)
+    assert window.map_view._fish_enabled is layer
+    return window
+
+
+def _hover_polygon(window, tile_x: int, tile_y: int) -> QPointF:
+    """_hover_tile() for every style: the tile's real polygon centre."""
+    view = window.map_view
+    viewport = conftest.polygon_viewport_pos(view, tile_x, tile_y)
+    view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, viewport, Qt.NoButton, Qt.NoButton))
+    return view.mapToScene(viewport.toPoint())
+
+
+def _ring(window):
+    return window.map_view._ghost_fish_item
+
+
+def _rgb(color) -> tuple[int, int, int]:
+    return tuple(color.getRgb()[:3])
+
+
+@pytest.mark.parametrize("const", [_SHORE_FISH, _DEEP_FISH])
+@pytest.mark.parametrize("style", ["Flat", "Stepped"])
+def test_a_fish_ghost_is_ringed_exactly_like_the_fish_the_click_places(style, const) -> None:
+    from PyQt5.QtGui import QColor
+
+    from descape import settings, unit_kind, unit_pick
+    from descape.map_view import MapView
+
+    window = _fish_window(style, const)
+    try:
+        view = window.map_view
+        assert view._terrain_style == style.lower()
+        fish = unit_kind.fish_consts()
+        assert not [e for e in view._unit_index.entries if e.unit.unit_const in fish], "the fixture holds no fish"
+        # The fixture is land: Free placement, so the click places what the ghost shows.
+        window.unrestricted_check.setChecked(True)
+        scene = _hover_polygon(window, 40, 40)
+        ring = _ring(window)
+        assert ring is not None and view._unit_ghost_item is not None
+        assert ring.zValue() == MapView.GHOST_FISH_Z
+        assert MapView.UNIT_GHOST_Z < MapView.GHOST_FISH_Z < MapView.UNIT_STACK_Z
+        assert _rgb(ring.pen().color()) == _rgb(QColor(settings.get_overlay_color("fish_outline")))
+        assert ring.pen().isCosmetic() and ring.pen().widthF() == MapView.FISH_OUTLINE_PEN_WIDTH
+        ghost_rect = ring.path().boundingRect()
+
+        entry = _place_at(window, scene)
+        assert entry.unit.unit_const == const
+        merged = unit_pick.merge_footprint_polygons(view._unit_polygons_for(entry))
+        want = QRectF()
+        for polygon in merged:
+            xs = [float(x) for x, _y in polygon]
+            ys = [float(y) for _x, y in polygon]
+            want = want.united(QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)))
+        assert ghost_rect == want
+        assert view._fish_item.path().boundingRect() == ghost_rect, "the placed ring and the ghost's agree"
+    finally:
+        _close(window)
+
+
+def test_no_ring_with_the_layer_off_or_for_a_pick_that_is_not_a_fish() -> None:
+    window = _fish_window(layer=False)
+    try:
+        _hover_polygon(window, 40, 40)
+        assert window.map_view._unit_ghost_item is not None
+        assert _ring(window) is None
+    finally:
+        _close(window)
+    window = _fish_window(const=_UNIT_CONST)
+    try:
+        _hover_polygon(window, 40, 40)
+        assert window.map_view._unit_ghost_item is not None
+        assert _ring(window) is None
+    finally:
+        _close(window)
+
+
+def test_toggling_the_layer_with_no_mouse_move_adds_then_drops_the_ring() -> None:
+    window = _fish_window(layer=False)
+    try:
+        _hover_polygon(window, 40, 40)
+        assert _ring(window) is None
+        window.layer_actions["fish_outlines"].setChecked(True)
+        assert _ring(window) is not None
+        window.layer_actions["fish_outlines"].setChecked(False)
+        assert _ring(window) is None
+        assert window.map_view._unit_ghost_item is not None, "the ghost itself stays"
+    finally:
+        _close(window)
+
+
+def test_a_catalog_pick_from_a_fish_to_a_villager_drops_the_ring_without_a_move() -> None:
+    window = _fish_window()
+    try:
+        _hover_polygon(window, 40, 40)
+        assert _ring(window) is not None
+        window.units_panel.pick_object(_UNIT_CONST)
+        assert window.map_view._unit_ghost_item is not None
+        assert _ring(window) is None
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("end", ["leave", "tool", "mode", "close", "reload"])
+def test_the_ring_goes_with_the_ghost(end) -> None:
+    window = _fish_window()
+    try:
+        view = window.map_view
+        _hover_polygon(window, 40, 40)
+        assert _ring(window) is not None
+        if end == "leave":
+            view.leaveEvent(QEvent(QEvent.Leave))
+        elif end == "tool":
+            window.pan_action.setChecked(True)
+        elif end == "mode":
+            window.mode_combo.setCurrentText("View")
+        elif end == "close":
+            window.close_scenario()
+            assert window.scenario is None
+        else:
+            window.load_scenario(FIXTURE_PATH)
+        assert view._unit_ghost_item is None
+        assert _ring(window) is None
+        if end == "reload":
+            # The old item died with scene().clear(); the next hover must build a new one.
+            _hover_polygon(window, 40, 40)
+            assert _ring(window) is not None and _ring(window).scene() is view.scene()
+    finally:
+        _close(window)
+
+
+def test_a_refused_fish_ghost_keeps_its_ring_in_the_fish_pen() -> None:
+    window = _fish_window()
+    try:
+        _hover_polygon(window, 40, 40)
+        assert _refused(window), "a fish on the fixture's land is refused"
+        ring = _ring(window)
+        assert ring is not None
+        assert _rgb(ring.pen().color()) == _rgb(window.map_view._fish_pen.color())
     finally:
         _close(window)

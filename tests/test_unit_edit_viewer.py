@@ -5817,21 +5817,29 @@ def test_scatter_places_every_unit_inside_the_region_and_on_water(monkeypatch) -
         window.scatter_units_in_region()
 
         fish = _gaia_fish(window)
-        assert len(fish) == before_fish + 40
+        placed = len(fish) - before_fish
+        # TASK-277: a 2x2 picked on the pond's far edge would overhang it, so it is skipped.
+        assert 0 < placed < 40
         mm = window.scenario.map_manager
         for unit in fish:
-            tx, ty = int(unit.x), int(unit.y)
-            assert 60 <= tx < 70 and 60 <= ty < 70
-            assert mm.terrain[ty * mm.map_width + tx].terrain_id == _WATER_TERRAIN
+            # GH #301: a 2x2 deep fish snaps to the corner one past its picked tile.
+            assert unit.x == int(unit.x) and unit.y == int(unit.y)
+            x0, x1, y0, y1 = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+            assert x0 >= 60 and x1 <= 70 and y0 >= 60 and y1 <= 70
+            for ty in range(y0, y1):
+                for tx in range(x0, x1):
+                    assert mm.terrain[ty * mm.map_width + tx].terrain_id == _WATER_TERRAIN
             # AGENTS.md's hard rule: rotation is a variant index for most
             # GAIA objects, so scatter never invents one.
             assert unit.rotation == 0.0
             assert unit.initial_animation_frame == 0
         assert len({(int(u.x), int(u.y)) for u in fish}) == len(fish)  # one per tile
-        assert len(window._selection) == 40
+        assert len(window._selection) == placed
         assert set(window._selection) == {(0, u.reference_id) for u in fish}
         assert len(window.edit_history.records) == before_records + 1
-        assert "Scattered 40 x" in window.status_log.toPlainText()
+        log = window.status_log.toPlainText()
+        assert f"Scattered {placed} x" in log
+        assert "asked for 40; clamped by eligible tiles, spacing or object size" in log
 
         window.undo()
         assert len(_gaia_fish(window)) == before_fish
@@ -5948,10 +5956,36 @@ def test_asking_for_more_fish_than_the_pond_holds_says_so(monkeypatch) -> None:
 
         _arm_scatter(window, monkeypatch, configure)
         window.scatter_units_in_region()
-        assert len(_gaia_fish(window)) == 9
+        placed = len(_gaia_fish(window))
+        # TASK-277: of 9 water tiles, only picks whose 2x2 stays on the water place.
+        assert 0 < placed < 9
         log = window.status_log.toPlainText()
-        assert "Scattered 9 x" in log
+        assert f"Scattered {placed} x" in log
         assert "asked for 50" in log
+    finally:
+        _close(window)
+
+
+def test_a_scatter_where_no_footprint_fits_records_nothing(monkeypatch) -> None:
+    """TASK-277: every 2x2 picked on a one-tile-wide channel overhangs it, so
+    nothing is placed and no empty undo step, dirty flag or selection change follows."""
+    window = _window()
+    try:
+        _paint_water(window, (60, 60, 70, 61))
+
+        def configure(dialog):
+            dialog.water_radio.setChecked(True)
+            dialog.count_spin.setValue(5)
+
+        _arm_scatter(window, monkeypatch, configure)
+        _select_keys(window, [(2, 300)])
+        before_records = len(window.edit_history.records)
+        before_fish = len(_gaia_fish(window))
+        window.scatter_units_in_region()
+        assert len(_gaia_fish(window)) == before_fish
+        assert len(window.edit_history.records) == before_records
+        assert window._selection == [(2, 300)]
+        assert "fits the eligible tiles, so nothing was placed" in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -5964,7 +5998,7 @@ def test_scatter_outside_units_mode_leaves_the_selection_alone(monkeypatch) -> N
         window.mode_combo.setCurrentText("Terrain")
         window._selection = []
         window.scatter_units_in_region()
-        assert len(_gaia_fish(window)) == 40
+        assert _gaia_fish(window)
         assert window._selection == []
     finally:
         _close(window)
@@ -6009,10 +6043,10 @@ def _press_on_map(window, key) -> None:
 def test_a_real_ctrl_z_takes_a_scatter_back_and_ctrl_y_puts_it_back(monkeypatch) -> None:
     """TASK-106: the keybinds, not window.undo()/redo().
 
-    Passes when, on a shown window, a scatter adds 40 GAIA units and changes
+    Passes when, on a shown window, a scatter adds GAIA units and changes
     the chunk under the region; a real Ctrl+Z on the map then leaves exactly
     the pre-scatter unit list and repaints that chunk to its pre-scatter
-    pixels; and a real Ctrl+Y brings back the same 40 units at the same
+    pixels; and a real Ctrl+Y brings back the same units at the same
     coordinates and the scattered pixels."""
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
@@ -6029,7 +6063,7 @@ def test_a_real_ctrl_z_takes_a_scatter_back_and_ctrl_y_puts_it_back(monkeypatch)
 
         window.scatter_units_in_region()
         scattered_units = [(u.reference_id, u.x, u.y) for u in window.scenario.unit_manager.units[0]]
-        assert len(scattered_units) == len(before_units) + 40
+        assert len(scattered_units) > len(before_units)
         scattered = window._cache.get_chunk(0, cx, cy).copy()
         assert not np.array_equal(before, scattered)
 

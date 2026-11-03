@@ -82,9 +82,9 @@ def x2_reach(x2, dx: int, dy: int) -> tuple[float, float, float, float]:
         box = main_box(frame)
         if box is None:
             continue
-        # dx/dy are x1 px from the unit anchor to the piece's hotspot.
+        # dx/dy are x1 px from the unit anchor to the piece's hotspot (render.py paints at anchor + (dx, dy)).
         left, right, up, down = box
-        sides = (left / 2 + dx, right / 2 - dx, up / 2 + dy, down / 2 - dy)
+        sides = (left / 2 - dx, right / 2 + dx, up / 2 - dy, down / 2 + dy)
         reach = [max(a, b) for a, b in zip(reach, sides, strict=True)]
     return tuple(reach)
 

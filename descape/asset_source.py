@@ -579,16 +579,19 @@ def migrate_legacy_config() -> Path | None:
     return CONFIG_PATH
 
 
-def save_install_path_to_config(path: Path) -> None:
+def save_install_path_to_config(path: Path | None) -> None:
     """Persists `path` to config.yaml (read-modify-write, so any other keys
-    a future version adds there survive)."""
+    a future version adds there survive); None removes the key."""
     config = {}
     if CONFIG_PATH.is_file():
         try:
             config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
             config = {}
-    config["aoe2de_install"] = str(path)
+    if path is None:
+        config.pop("aoe2de_install", None)
+    else:
+        config["aoe2de_install"] = str(path)
     write_config_file(CONFIG_PATH, config)
 
 

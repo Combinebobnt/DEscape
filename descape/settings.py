@@ -1613,10 +1613,12 @@ def apply_appearance_values(values: dict) -> None:
     """A validated theme-file import (theme_file.parse_theme_file()'s
     ImportPlan.values): one config read, every key set, one save, memo globals
     updated, so an import is never half-applied and never ~30 YAML round
-    trips. Keys absent from `values` are left alone; overlay colours merge."""
+    trips. Keys absent from `values` are left alone; overlay and trigger status colours merge."""
     global _theme, _theme_colors, _ui_font_family, _ui_font_size, _overlay_colors
     global _ruler_label_font_px, _distance_tick_font_px, _stack_badge_position, _grid_blend, _grid_thickness
+    global _trigger_status_colors, _trigger_status_marker, _trigger_status_color_ok_rows, _trigger_status_color_sections
     merged_overlay = dict(_load_overlay_colors()) if "overlay_colors" in values else None
+    merged_status = dict(_load_trigger_status_colors()) if "trigger_status_colors" in values else None
     config = _load_config()
     if "theme" in values:
         _theme = values["theme"]["preset"]
@@ -1650,6 +1652,19 @@ def apply_appearance_values(values: dict) -> None:
     if "grid_thickness" in values:
         _grid_thickness = values["grid_thickness"]
         config["grid_thickness"] = _grid_thickness
+    if merged_status is not None:
+        merged_status.update(values["trigger_status_colors"])
+        _trigger_status_colors = merged_status
+        config["trigger_status_colors"] = dict(merged_status)
+    if "trigger_status_marker" in values:
+        _trigger_status_marker = values["trigger_status_marker"]
+        config["trigger_status_marker"] = _trigger_status_marker
+    if "trigger_status_color_ok_rows" in values:
+        _trigger_status_color_ok_rows = values["trigger_status_color_ok_rows"]
+        config["trigger_status_color_ok_rows"] = _trigger_status_color_ok_rows
+    if "trigger_status_color_sections" in values:
+        _trigger_status_color_sections = values["trigger_status_color_sections"]
+        config["trigger_status_color_sections"] = _trigger_status_color_sections
     _save_config(config)
 
 
@@ -2189,7 +2204,8 @@ TOOLS: list[ToolDef] = [
     # instead of hunting for them. Reads only -- is_edit_tool=False, no
     # undo record -- and click_only since a drag has no meaning for a pick.
     # In Units mode it picks a placed unit into the Units catalog instead (type,
-    # owner, facing or variant), on a MapView press branch of its own. After
+    # owner, facing or variant), on a MapView press branch of its own, and with
+    # Switch back after a pick on it returns to the previous tool (TASK-287). After
     # Select and Move so those two overflow last in Units mode.
     ToolDef(
         "eyedropper", "Eyedropper", is_edit_tool=False, default_key="I",
@@ -2845,13 +2861,17 @@ WHEEL_SLOT_LABELS: dict[str, str] = {
     "shift": "Shift + Wheel",
     "alt": "Alt + Wheel",
 }
-# Dropdown order. "tool" is whichever of rotate and brush_size applies; a tool
-# action with nothing to act on does nothing (see MapView._wheel_action).
+# Dropdown order. "tool" is whichever of rotate and brush_size applies; the
+# "_selection" pair also turn the Units-mode selection when nothing ahead of
+# it applies (GH #356). A tool action with nothing to act on does nothing
+# (see MapView._wheel_action).
 WHEEL_ACTIONS: tuple[str, ...] = (
     "zoom",
     "tool",
+    "tool_selection",
     "brush_size",
     "rotate",
+    "rotate_selection",
     "pan_vertical",
     "pan_horizontal",
     "none",
@@ -2859,8 +2879,10 @@ WHEEL_ACTIONS: tuple[str, ...] = (
 WHEEL_ACTION_LABELS: dict[str, str] = {
     "zoom": "Zoom",
     "tool": "Brush size or rotate preview",
+    "tool_selection": "Brush size, rotate preview or selection",
     "brush_size": "Brush size",
     "rotate": "Rotate preview",
+    "rotate_selection": "Rotate preview or selection",
     "pan_vertical": "Pan up / down",
     "pan_horizontal": "Pan left / right",
     "none": "Nothing",
@@ -2870,12 +2892,24 @@ WHEEL_ACTION_HINTS: dict[str, str] = {
     "zoom": "Zooms the map in or out.",
     "tool": (
         "Whichever applies: turns a unit you're dragging with Move or Place Unit's preview, steps the "
-        "size in tools with a Brush size box, or turns a just-pasted region. Does nothing anywhere else."
+        "size in tools with a Brush size box (the Unit Brush's included, so it resizes rather than "
+        "turns there), or turns a just-pasted region. Does nothing anywhere else."
+    ),
+    "tool_selection": (
+        "Whichever applies: turns a unit you're dragging with Move or Place Unit's preview, steps the "
+        "size in tools with a Brush size box (the Unit Brush's included), turns a just-pasted region, "
+        "or turns the selected units in Units mode, as the Rotate keys do. Never turns a selected "
+        "region in place. Does nothing anywhere else."
     ),
     "brush_size": "Steps the size in tools with a Brush size box. Does nothing anywhere else.",
     "rotate": (
-        "Turns a unit you're dragging with Move, Place Unit's preview or a just-pasted region, even "
-        "in a tool with a Brush size box. Does nothing anywhere else."
+        "Turns a unit you're dragging with Move, Place Unit's or the Unit Brush's preview or a "
+        "just-pasted region, even in a tool with a Brush size box. Does nothing anywhere else."
+    ),
+    "rotate_selection": (
+        "Turns a unit you're dragging with Move, Place Unit's or the Unit Brush's preview, a "
+        "just-pasted region, or the selected units in Units mode, as the Rotate keys do. Never "
+        "turns a selected region in place. Does nothing anywhere else."
     ),
     "pan_vertical": "Scrolls the map up or down.",
     "pan_horizontal": "Scrolls the map left or right.",

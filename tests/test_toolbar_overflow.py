@@ -213,3 +213,19 @@ def test_resize_wide_then_narrow_then_wide_returns_to_the_same_state():
         assert not window.more_tools_action.isVisible()
     finally:
         conftest.close_window(window)
+
+
+@pytest.mark.parametrize("width", _WIDTHS)
+def test_units_mode_with_a_map_counts_the_rotate_pair(width):
+    """TASK-108: the Rotate pair is hidden at the first-show measure, so the bar overran by its width."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.shown_terrain_window(width=width)
+    try:
+        window.mode_combo.setCurrentText("Units")
+        QApplication.processEvents()
+        assert all(a.isVisible() for a in window._rotate_toolbar_actions), "fixture assumption: Units with a map"
+        bar = window.main_toolbar
+        assert bar.sizeHint().width() <= window.width(), (bar.sizeHint().width(), window.width())
+    finally:
+        conftest.close_window(window)

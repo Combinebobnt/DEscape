@@ -2103,6 +2103,36 @@ def test_a_mountains_outline_is_6x6() -> None:
     _assert_one_ring_tracing(unit_pick.merge_footprint_polygons(polygons), polygons)
 
 
+_LEVIATHAN_WRECK = 2353  # 4x4 (TASK-277)
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped"])
+def test_picking_a_leviathan_wrecks_outer_tile_selects_it(style) -> None:
+    """TASK-277: a wreck read as 1x1, so only its anchor tile picked it."""
+    scn = _stack_scenario((10.0, 10.0, _LEVIATHAN_WRECK))
+    index = build_index(scn)
+    tile_px = _tile_px()
+    elevations, proj = render.elevations_and_proj(scn)
+    for tx, ty in ((8, 8), (11, 11), (8, 11), (11, 8)):
+        if style == "flat":
+            sx, sy = tx * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
+        else:
+            sx, sy = _tile_center(tx, ty, proj)
+        entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
+        assert entry is not None and entry.unit.unit_const == _LEVIATHAN_WRECK, (style, tx, ty)
+
+
+def test_a_leviathan_wrecks_outline_is_4x4() -> None:
+    _scn, entry = _one_unit_entry(_LEVIATHAN_WRECK, 10.0, 10.0)
+    tp = _tile_px()
+    assert unit_polygons(entry, "flat", tp, MAP_W, MAP_H) == [
+        [(8 * tp, 8 * tp), (12 * tp, 8 * tp), (12 * tp, 12 * tp), (8 * tp, 12 * tp)]
+    ]
+    polygons = _stepped_polygons(_LEVIATHAN_WRECK, 10.0, 10.0)
+    assert len(polygons) == 16
+    _assert_one_ring_tracing(unit_pick.merge_footprint_polygons(polygons), polygons)
+
+
 def test_a_1x1_unit_under_a_later_painted_mountain_is_a_stack_member() -> None:
     """TASK-134 decision 5: true to mark painting, and what keeps the unit
     reachable (a second click). One placed after the mountain is not stacked."""

@@ -490,6 +490,75 @@ def test_loading_an_install_path_refreshes_the_swatches(monkeypatch) -> None:
         _close(window)
 
 
+def _saved_config() -> dict:
+    import yaml
+
+    return yaml.safe_load(asset_source.CONFIG_PATH.read_text()) or {}
+
+
+def test_clear_forgets_the_install_path_and_its_art_caches(tmp_path, monkeypatch) -> None:
+    """TASK-101: Load refuses an empty field, so Clear is the UI route back to flat colours."""
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    install = tmp_path / "AoE2DE"
+    install.mkdir()
+    asset_source.save_install_path_to_config(install)
+    asset_source.save_profile_path_to_config(tmp_path / "profile")  # other keys survive
+    asset_source.set_install_path_override(install)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert dialog.install_path_edit.text() == str(install)
+        assert dialog.install_clear_button.isEnabled()
+        asset_source.get_terrain_texture_path(0)
+        assert asset_source.get_terrain_texture_path.cache_info().currsize > 0
+        calls: list[bool] = []
+        monkeypatch.setattr(window.terrain_panel.view, "refresh_swatches", lambda: calls.append(True))
+
+        dialog.install_clear_button.click()
+
+        assert asset_source.get_install_path() is None
+        assert asset_source.get_terrain_texture_path.cache_info().currsize == 0
+        assert "aoe2de_install" not in _saved_config()
+        assert _saved_config()["aoe2de_profile"] == str(tmp_path / "profile")
+        assert calls == [True]
+        assert dialog.install_path_edit.text() == ""
+        assert not dialog.install_clear_button.isEnabled()
+        assert dialog._install_status_ok is False
+        assert "No install path configured" in dialog.install_status_label.text()
+        assert "Install path cleared" in window.status_log.toPlainText()
+
+        from descape.viewer import SettingsDialog
+
+        dialog.close()
+        asset_source.clear_install_caches()  # the next run re-reads config.yaml
+        dialog = SettingsDialog(window)
+        assert dialog.install_path_edit.text() == ""
+        assert not dialog.install_clear_button.isEnabled()
+    finally:
+        dialog.close()
+        _close(window)
+        asset_source.set_install_path_override(None)
+
+
+def test_clear_under_the_env_var_says_the_env_path_still_applies(tmp_path, monkeypatch) -> None:
+    env_install = tmp_path / "env_install"
+    env_install.mkdir()
+    monkeypatch.setenv("AOE2DE_INSTALL_PATH", str(env_install))
+    asset_source.save_install_path_to_config(tmp_path)
+    asset_source.set_install_path_override(tmp_path)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        dialog.install_clear_button.click()
+        assert asset_source.get_install_path() == env_install
+        assert "aoe2de_install" not in _saved_config()
+        assert dialog.install_path_edit.text() == str(env_install)
+        assert "AOE2DE_INSTALL_PATH still sets" in dialog.install_status_label.text()
+        assert dialog.install_clear_button.isEnabled()
+    finally:
+        dialog.close()
+        _close(window)
+        asset_source.set_install_path_override(None)
+
+
 # -- GH #161: the grid presentation ------------------------------------------
 
 

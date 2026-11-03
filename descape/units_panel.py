@@ -1221,7 +1221,13 @@ class UnitsPanel(QWidget):
         added moments ago answers for the PREVIOUS content instead). Three
         word-wrapping labels inside a widgetResizable scroll area reproduce
         the exact defect that method documents: rows draw on top of each
-        other while every measurement still reads correct."""
+        other while every measurement still reads correct. The outer
+        activate() does not reach a child widget's own layout (TASK-339), so
+        every nested one is activated first, deepest first."""
+        for widget in reversed(self.inspector_host.findChildren(QWidget)):
+            layout = widget.layout()
+            if layout is not None:
+                layout.activate()
         self.inspector_layout.activate()
         height = self.inspector_layout.minimumSize().height()
         width = self.inspector_area.viewport().width()

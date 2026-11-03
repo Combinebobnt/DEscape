@@ -823,6 +823,61 @@ def test_place_units_ghost_wins_over_an_armed_paste(action) -> None:
         _close(window)
 
 
+def _arm_unit_brush(window) -> None:
+    """_place_window()'s setup with the Unit Brush instead of Place Unit (GH #355)."""
+    window.mode_combo.setCurrentText("Units")
+    window.units_panel._set_pending_object(_PLACE_CONST)
+    window.units_panel.select_owner(1)
+    window.unit_brush_action.setChecked(True)
+    assert window._current_tool == "unit_brush"
+    _hover_centre(window.map_view)
+    assert window.map_view._unit_ghost_item is not None
+
+
+@pytest.mark.parametrize("action", ["tool", "rotate"])
+def test_a_wheel_event_sent_through_the_application_over_the_unit_brush(action) -> None:
+    """GH #355: rotate turns the brush's ghost; tool resizes the brush, its size winning as in GH #245."""
+    window = _window()
+    try:
+        _arm_unit_brush(window)
+        view = window.map_view
+        _bind(window, ctrl=action)
+        size, scale = window.brush_size_spin.value(), _scale(view)
+        event = _send_wheel(view, (0, 120), _mods("ControlModifier"))
+        assert event.isAccepted() and _scale(view) == scale
+        if action == "rotate":
+            assert (_facing(window), window.brush_size_spin.value()) == (1, size)
+        else:
+            assert (_facing(window), window.brush_size_spin.value()) == (0, size + 1)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("action", ["tool", "rotate"])
+def test_the_unit_brushs_ghost_wins_over_an_armed_paste(action) -> None:
+    """GH #355, Place Unit's parity: the wheel never turns the paste under the brush, nor do the Rotate keys."""
+    window = _select_window()
+    try:
+        _setup(window)
+        _paste(window)
+        tiles = _tiles(window)
+        _arm_unit_brush(window)
+        assert window._paste_armed() and not window._region_turn_target()
+        view = window.map_view
+        _bind(window, plain=action)
+        size = window.brush_size_spin.value()
+        _wheel_xy(view, (0, 120))
+        if action == "rotate":
+            assert (_facing(window), window.brush_size_spin.value()) == (1, size)
+        else:
+            assert (_facing(window), window.brush_size_spin.value()) == (0, size + 1)
+        window.on_unit_rotate(1)
+        assert _turn(window) == "id" and _tiles(window) == tiles
+        assert _facing(window) == (2 if action == "rotate" else 1)
+    finally:
+        _close(window)
+
+
 # --- where each action applies (GH #245) ----------------------------------------------
 
 
@@ -832,12 +887,12 @@ def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
     from descape import settings
 
     assert set(settings.WHEEL_ACTION_HINTS) == set(settings.WHEEL_ACTIONS)
-    for action in ("tool", "brush_size", "rotate"):
+    for action in ("tool", "brush_size", "rotate", "tool_selection", "rotate_selection"):
         assert settings.WHEEL_ACTION_HINTS[action].endswith("Does nothing anywhere else."), action
     assert "Brush size box" in settings.WHEEL_ACTION_HINTS["brush_size"]
-    for action in ("tool", "rotate"):
+    for action in ("tool", "rotate", "tool_selection", "rotate_selection"):
         hint = settings.WHEEL_ACTION_HINTS[action]
-        assert "Place Unit's preview" in hint and "just-pasted region" in hint, action
+        assert "Place Unit's" in hint and "Unit Brush" in hint and "just-pasted region" in hint, action
     dialog, window = conftest.dialog_and_window()
     try:
         for slot, combo in dialog._wheel_combos.items():
@@ -845,7 +900,9 @@ def test_every_wheel_dropdown_item_says_where_its_action_applies() -> None:
                 tip = combo.itemData(i, Qt.ToolTipRole)
                 assert tip, f"{slot}: {combo.itemText(i)!r} has no tooltip"
                 assert tip == settings.WHEEL_ACTION_HINTS[combo.itemData(i)]
-        assert dialog._wheel_note.text().endswith("Brush size and Rotate preview do nothing in a tool they don't apply to.")
+        assert dialog._wheel_note.text().endswith(
+            "Brush size and the Rotate choices do nothing where they have nothing to act on."
+        )
     finally:
         dialog.close()
         conftest.close_window(window)
@@ -863,7 +920,7 @@ def _live_drag():
     return window, unit
 
 
-@pytest.mark.parametrize("action", ["rotate", "tool"])
+@pytest.mark.parametrize("action", ["rotate", "tool", "rotate_selection", "tool_selection"])
 def test_a_rotate_or_tool_slot_turns_a_live_drag_and_spends_no_zoom_state(action) -> None:
     window, unit = _live_drag()
     try:
@@ -941,13 +998,249 @@ def test_a_rotate_slot_under_move_with_no_live_drag_stays_none() -> None:
     window = drag_preview._window()
     try:
         view = window.map_view
-        _bind(window, ctrl="rotate")
+        _bind(window, ctrl="rotate", plain="rotate_selection", shift="tool_selection")
         drag_preview._add(window, drag_preview._ARCHER, [(60, 60)])
         ctrl = _mods("ControlModifier")
         assert view._wheel_action(ctrl) == "none"
         press = drag_preview._viewport_pos(window, 60, 60)
         view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, press, Qt.LeftButton, Qt.LeftButton))
         assert view._wheel_action(ctrl) == "none", "a held press that never moved is not a move"
+        # GH #356: the press selected the Archer, so the selected-units choices turn it, as ',' and '.' do.
+        assert window._selection
+        assert view._wheel_action(_mods("NoModifier")) == "rotate"
+        assert view._wheel_action(_mods("ShiftModifier")) == "rotate"
         view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, press, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _close(window)
+
+
+# --- GH #356: the "selected units" choices turn the Units-mode selection ----------
+
+_SELECTION_ACTIONS = ["rotate_selection", "tool_selection"]
+_ARCHER_AT = (80.5, 80.5)
+
+
+def _selected_archer_window():
+    """(window, archer): _select_window() in Units mode with one Archer selected."""
+    window = _select_window()
+    (archer,) = _add(window, [(1, 4, *_ARCHER_AT, 0.0, None)])  # an archer, ANGLE
+    window.mode_combo.setCurrentText("Units")
+    window._selection = [(1, archer.reference_id)]
+    window._refresh_selection_view()
+    return window, archer
+
+
+def _archer_rotation(window) -> list[float]:
+    return [float(u.rotation) for u in _live(window, 4) if (u.x, u.y) == _ARCHER_AT]
+
+
+@pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_a_selection_choice_turns_the_selected_unit_as_the_rotate_key_does(slot, modifier, delta, action) -> None:
+    from descape.map_view import MapView
+
+    window, _archer = _selected_archer_window()
+    try:
+        view = window.map_view
+        _bind(window, **{slot: action})
+        depth = len(window.edit_history.records)
+        scale, gesture = _scale(view), _gesture(view)
+        event = _wheel_xy(view, delta, _mods(modifier))
+        assert event.isAccepted()
+        assert (_scale(view), _gesture(view)) == (scale, gesture), "a turn must not zoom or spend the budget"
+        assert len(window.edit_history.records) == depth + 1, "one notch, one undo record"
+        wheeled = _archer_rotation(window)
+        assert wheeled != [0.0]
+        back = (-delta[0], -delta[1])
+        _wheel_xy(view, back, _mods(modifier))
+        assert _archer_rotation(window) == [0.0], "a notch down turns it back"
+        window.on_unit_rotate(MapView.PLACE_WHEEL_DIRECTION)
+        assert _archer_rotation(window) == wheeled, "scroll up is the Rotate key's clockwise step"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", ["rotate", "tool", "brush_size"])
+def test_the_older_choices_still_leave_a_units_selection_alone(action) -> None:
+    """TASK-195's "ghost only" stands for the GH #245 choices."""
+    window, _archer = _selected_archer_window()
+    try:
+        _bind(window, plain=action)
+        view = window.map_view
+        depth = len(window.edit_history.records)
+        assert view._wheel_action(_mods("NoModifier")) == "none"
+        _wheel_xy(view, (0, 120))
+        assert _archer_rotation(window) == [0.0]
+        assert len(window.edit_history.records) == depth
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_a_selection_notch_goes_through_on_unit_rotate(monkeypatch, action) -> None:
+    """The hard rule: one router for the keys and the wheel, and the wheel writes nothing itself."""
+    from descape.map_view import MapView
+
+    window, _archer = _selected_archer_window()
+    try:
+        calls: list[int] = []
+        monkeypatch.setattr(window, "on_unit_rotate", calls.append)
+        window.map_view.set_place_rotate(window.on_unit_rotate)
+        _bind(window, plain=action)
+        _wheel_xy(window.map_view, (0, 120))
+        _wheel_xy(window.map_view, (0, -240))
+        assert calls == [MapView.PLACE_WHEEL_DIRECTION, -2 * MapView.PLACE_WHEEL_DIRECTION]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_place_units_ghost_wins_over_the_selection(action) -> None:
+    window, _archer = _selected_archer_window()
+    try:
+        window.units_panel._set_pending_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        _hover_centre(window.map_view)
+        assert window.map_view._unit_ghost_item is not None and window._selection
+        _bind(window, plain=action)
+        _wheel_xy(window.map_view, (0, 120))
+        assert _facing(window) == 1
+        assert _archer_rotation(window) == [0.0]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("tool", ["place_unit", "unit_brush"])
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_an_armed_place_target_with_its_ghost_hidden_never_turns_the_selection(action, tool) -> None:
+    """A notch off the map, where the ghost hides, must not turn the units just placed."""
+    window, _archer = _selected_archer_window()
+    try:
+        window.units_panel._set_pending_object(_PLACE_CONST)
+        window.units_panel.select_owner(1)
+        getattr(window, f"{tool}_action").setChecked(True)
+        assert window._current_tool == tool and window._place_rotate_armed()
+        assert window.map_view._unit_ghost_item is None and window._selection
+        _bind(window, plain=action)
+        depth = len(window.edit_history.records)
+        expected = "brush_size" if (tool, action) == ("unit_brush", "tool_selection") else "none"
+        assert window.map_view._wheel_action(_mods("NoModifier")) == expected
+        _wheel_xy(window.map_view, (0, 120))
+        assert _archer_rotation(window) == [0.0]
+        assert len(window.edit_history.records) == depth
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_under_the_unit_brush_the_ghost_or_the_brush_wins_over_the_selection(action) -> None:
+    """After GH #355: rotate_selection turns the brush's preview, tool_selection steps the brush."""
+    window, _archer = _selected_archer_window()
+    try:
+        _arm_unit_brush(window)
+        assert window._selection
+        _bind(window, plain=action)
+        size = window.brush_size_spin.value()
+        _wheel_xy(window.map_view, (0, 120))
+        if action == "rotate_selection":
+            assert (_facing(window), window.brush_size_spin.value()) == (1, size)
+        else:
+            assert (_facing(window), window.brush_size_spin.value()) == (0, size + 1)
+        assert _archer_rotation(window) == [0.0]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_a_selection_choice_with_a_paste_armed_turns_the_selection_not_the_paste(action) -> None:
+    """The paste never turns; the selection's edit then keeps the paste as any other edit does, as the key's."""
+    from descape.map_view import MapView
+
+    results = []
+    for by_wheel in (True, False):
+        window = _select_window()
+        try:
+            _add(window, [(1, 4, *_ARCHER_AT, 0.0, None)])
+            _setup(window)
+            _paste(window)
+            (archer,) = [u for u in _live(window, 4) if (u.x, u.y) == _ARCHER_AT]
+            window.mode_combo.setCurrentText("Units")
+            window._selection = [(1, archer.reference_id)]
+            window._refresh_selection_view()
+            assert window._paste_armed() and not window._region_turn_target()
+            assert _turn(window) == "id"
+            tiles = _tiles(window)
+            if by_wheel:
+                _bind(window, plain=action)
+                _wheel_xy(window.map_view, (0, 120))
+            else:
+                window.on_unit_rotate(MapView.PLACE_WHEEL_DIRECTION)
+            assert _tiles(window) == tiles, "the paste kept its unturned tiles"
+            results.append((_archer_rotation(window), window._paste_armed(), _units(window)))
+        finally:
+            _close(window)
+    assert results[0][0] != [0.0]
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_a_selection_choice_never_turns_a_committed_region(monkeypatch, action) -> None:
+    """_region_rotate_target()'s rule: a notch never turns terrain, even with a region and a selection on it."""
+    window, archer = _selected_archer_window()
+    try:
+        window.on_region_selected((78, 78, 84, 84))
+        window._selection = [(1, archer.reference_id)]
+        window._refresh_selection_view()
+        assert window._region is not None and window._selection
+        spied: list = []
+        monkeypatch.setattr(window, "_transform_region", lambda *a: spied.append(("in place", a)))
+        monkeypatch.setattr(window, "on_region_transform", lambda *a: spied.append(("paste", a)))
+        _bind(window, plain=action)
+        tiles, others = _tiles(window, 70, 70, 90, 90), [u for u in _units(window, 70, 70, 90, 90) if u[1] != 4]
+        _wheel_xy(window.map_view, (0, 120))
+        assert spied == []
+        assert _archer_rotation(window) != [0.0], "the selection turns"
+        assert _tiles(window, 70, 70, 90, 90) == tiles
+        assert [u for u in _units(window, 70, 70, 90, 90) if u[1] != 4] == others
+
+        window._selection = []
+        window._refresh_selection_view()
+        depth = len(window.edit_history.records)
+        assert window.map_view._wheel_action(_mods("NoModifier")) == "none"
+        _wheel_xy(window.map_view, (0, 120))
+        assert spied == [] and len(window.edit_history.records) == depth
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+def test_a_selection_choice_does_nothing_outside_units_mode_or_mid_stroke(monkeypatch, action) -> None:
+    window, _archer = _selected_archer_window()
+    try:
+        _bind(window, plain=action)
+        view = window.map_view
+        assert view._wheel_action(_mods("NoModifier")) == "rotate"
+        stroke = {"open": True}
+        monkeypatch.setattr(window, "_stroke_in_progress", lambda: stroke["open"])
+        assert view._wheel_action(_mods("NoModifier")) == "none"
+        stroke["open"] = False
+        window.mode_combo.setCurrentText("Terrain")
+        window._selection = [(1, _archer.reference_id)]  # a stale selection outside Units mode
+        assert view._wheel_action(_mods("NoModifier")) == "none"
+        _wheel_xy(view, (0, 120))
+        assert _archer_rotation(window) == [0.0]
+    finally:
+        _close(window)
+
+
+def test_two_half_notches_make_one_selection_turn() -> None:
+    window, _archer = _selected_archer_window()
+    try:
+        _bind(window, plain="rotate_selection")
+        _wheel_xy(window.map_view, (0, 60))
+        assert _archer_rotation(window) == [0.0]
+        _wheel_xy(window.map_view, (0, 60))
+        assert _archer_rotation(window) != [0.0]
     finally:
         _close(window)

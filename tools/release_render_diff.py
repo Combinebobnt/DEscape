@@ -161,6 +161,26 @@ def _fixed_sloped_fold() -> None:
     iso_geometry.tile_folds = lambda elevations: np.zeros(elevations.shape, dtype=bool)
 
 
+def _stored_wall_shapes() -> None:
+    """Put the pre-TASK-524 walls back: radian files take the 4-bit table, integer files their stored index."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "wall_drawn_shape", "wall_variant_from_neighbours", "ORTHOGONAL_MASK")
+    table, orthogonal = unit_sprites.wall_variant_from_neighbours, unit_sprites.ORTHOGONAL_MASK
+    unit_sprites.wall_drawn_shape = lambda mask8, stored, radian: table(mask8 & orthogonal) if radian else None
+
+
+def _one_tile_statics_and_hidden_fish() -> None:
+    """Put the pre-TASK-277 spans back: no static_spans, and the eight original fish only."""
+    from descape import terrain_palette
+
+    _require(terrain_palette, "STATIC_TILE_SPANS", "FISH_TILE_SPANS")
+    # In place, never rebound: render.py imports the tables by name.
+    terrain_palette.STATIC_TILE_SPANS.clear()
+    for const in (451, 452, 454, 459, 460, 461):
+        terrain_palette.FISH_TILE_SPANS.pop(const, None)
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -227,6 +247,19 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         since="v0.10", control_file=ELCID,
         must_fail=frozenset({("sloped", False), ("sloped", True)}),
         patch=_fixed_sloped_fold,
+    ),
+    Neutralization(
+        "lone-walls",
+        "TASK-524: a wall with at most one neighbour draws as a tower, and radian files draw diagonal walls by their neighbours",
+        since="v0.10", control_file=ELCID, must_fail=SPRITES_ON,
+        patch=_stored_wall_shapes,
+    ),
+    Neutralization(
+        "non-building-spans",
+        "TASK-277 (GH #333): shipwrecks, rubble, flares and the hidden fish draw their real footprint, not 1x1",
+        # Measured 2026-11-03: LeLoi's 230 FLARE4 markers draw only with sprites on.
+        since="v0.10", control_file=LELOI, must_fail=SPRITES_ON,
+        patch=_one_tile_statics_and_hidden_fish,
     ),
 )
 

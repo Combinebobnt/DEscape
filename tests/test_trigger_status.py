@@ -326,7 +326,8 @@ def _trigger(
 
 def test_an_empty_divider_is_empty() -> None:
     """TASK-317: a section with no conditions and no effects gets its own mark."""
-    for name in ("--- Setup ---", "-----"):
+    # TASK-223: marker-style headers too, which read red before.
+    for name in ("--- Setup ---", "-----", "----- ambush-setup", "~P2~"):
         result = trigger_status.evaluate_trigger(_trigger(name), _context())
         assert result.trigger == trigger_status.EntryStatus(Status.EMPTY), name
         assert result.divider is True, name

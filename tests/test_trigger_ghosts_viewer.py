@@ -211,7 +211,7 @@ def test_flat_and_show_sprites_off_draw_marks(sprite_install) -> None:
 # -- facing ----------------------------------------------------------------------
 
 
-def test_every_ghost_takes_the_default_facing_until_the_constant_is_on(monkeypatch) -> None:
+def test_every_ghost_takes_the_default_facing_while_the_constant_is_off(monkeypatch) -> None:
     from PyQt5.QtWidgets import QApplication
 
     from descape import facet_preview
@@ -221,6 +221,7 @@ def test_every_ghost_takes_the_default_facing_until_the_constant_is_on(monkeypat
         built = []
         real = facet_preview.ghost_rotation
         monkeypatch.setattr(facet_preview, "ghost_rotation", lambda c, f: (built.append(real(c, f)), built[-1])[1])
+        monkeypatch.setattr(facet_preview, "GHOST_FACING_MEASURED", False)
         _set(window, CREATE, object_list_unit_id=SPRITE_CONST, source_player=1, facet=4)
         assert built and set(built) == {0.0}, "facet 4 with the constant off"
         built.clear()

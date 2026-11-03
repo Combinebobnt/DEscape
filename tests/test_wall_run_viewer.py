@@ -798,8 +798,9 @@ def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
     disagree with what was stored. The fixture's radian wall at (7, 5) keeps
     the file radian, so render resolves them through the override path. The
     ring stays clear of that wall, as the Wall Circle twin does: a junction
-    there would rewrite it to a literal integer and render would resolve
-    nothing (TASK-469; the junction itself is test_wall_run.py's)."""
+    there would rewrite it to a literal integer, the file would read as
+    integer-only, and render would derive only lone walls and run ends
+    (TASK-469; the junction itself is test_wall_run.py's)."""
     from descape import render, unit_sprites
 
     window = _rect_window()
@@ -956,8 +957,8 @@ def test_a_committed_circle_agrees_with_the_render_sides_derivation(owner):
     render resolves every circle node with an orthogonal neighbour through
     the override path; none may disagree with what was stored. The circle
     stays clear of that wall: a junction would rewrite it to a literal
-    integer, the file would read as integer-only, and render would resolve
-    nothing at all (the junction itself is test_wall_run.py's)."""
+    integer, the file would read as integer-only, and render would derive
+    only lone walls and run ends (the junction itself is test_wall_run.py's)."""
     from descape import render, unit_sprites
 
     window = _circle_window()
@@ -1937,7 +1938,7 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
     (the gate stepping further away). The fixture's GAIA wall is radian, which
     forces render's override path: no override may disagree with what is
     stored. Without that wall the file is integer-only and render derives
-    nothing, so there the stored indices are read directly."""
+    only lone walls and run ends, so there the stored indices are read directly."""
     from PyQt5.QtCore import Qt
 
     from descape import render, unit_sprites
@@ -2339,5 +2340,398 @@ def test_a_group_holding_a_turned_gate_plans_it_once_by_its_turned_span(monkeypa
         # Rotate, then the delta: (1, 4) on the low corner (25, _ROW) is (25.5, _ROW + 2).
         assert (gate.x, gate.y) == (49.5, _ROW + 12.0)
         assert sorted(int(u.x) for u in _walls_on(window, _OLD)) == [25, 26, 27, 28]
+    finally:
+        _close(window)
+
+
+# --- GH #339: a gate's orientation cycle clears the walls under its new footprint ----
+#
+# A y run on x = _COL, and a Stone Gate clicked across it with its low corner
+# on (_COL, _ROW) (GH #159's path: one wall removed, three tiles sticking out
+# along x). Turned two steps it lies along the run, on _TURNED.
+
+_COL = 50
+_TURNED = {(_COL, y) for y in range(_ROW, _ROW + 4)}
+_ARCHER = 4
+
+
+def _crossed_gate_window(run_owner: int = PLAYER):
+    """(window, gate): the y run (owned by `run_owner`) with the x gate
+    across it, the gate selected under Move so no Place ghost turns instead."""
+    window = _window()
+    window.unrestricted_check.setChecked(True)
+    assert window.units_panel.select_owner(run_owner)
+    window.on_shape_commit([(_COL, y) for y in range(_ROW - 4, _ROW + 7)])
+    assert window.units_panel.select_owner(PLAYER)
+    _pick(window, GATE)
+    _click_point(window, _COL + 1.7, _ROW + 0.4)
+    gate = window.scenario.unit_manager.units[PLAYER][-1]
+    assert gate.unit_const == GATE and (gate.x, gate.y) == (_COL + 2.0, _ROW + 0.5)
+    assert _walls_on(window, {(_COL, _ROW)}) == [] and len(_walls_on(window, _TURNED)) == 3
+    window.move_action.setChecked(True)
+    _select_units(window, [gate])
+    return window, gate
+
+
+def _footprint(window, unit, const=None) -> set:
+    """`unit`'s sparse tiles, or as `const` re-anchored the way a cycle re-anchors it."""
+    from descape import render
+    from descape.unit_model import reanchored
+
+    mm = window.scenario.map_manager
+    if const is None:
+        return set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    return set(render.occupied_tiles_for(const, *reanchored(unit, const), mm.map_width, mm.map_height))
+
+
+def test_rotate_turns_a_gate_onto_a_crossing_run_and_clears_the_walls_under_it():
+    window, gate = _crossed_gate_window()
+    try:
+        under = _walls_on(window, _TURNED)
+        rotations = {id(u): u.rotation for u in under}
+        start = (gate.unit_const, gate.x, gate.y)
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        window.on_unit_rotate_coarse(1)
+
+        assert gate.unit_const == _GATE_Y and _footprint(window, gate) == _TURNED
+        assert _walls_on(window, _TURNED) == []
+        assert _unit_count(window) == before - 3
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert "replacing 3 walls" in _last_status(window)
+
+        window.undo()
+        restored = _walls_on(window, _TURNED)
+        assert {id(u) for u in restored} == set(rotations)
+        assert all(u.rotation == rotations[id(u)] for u in restored)
+        assert (gate.unit_const, gate.x, gate.y) == start
+
+        window.redo()
+        assert _walls_on(window, _TURNED) == [] and gate.unit_const == _GATE_Y
+    finally:
+        _close(window)
+
+
+def test_a_gate_and_an_archer_rotate_in_the_one_wholesale_record():
+    from descape import unit_pick, unit_rotation
+
+    window, gate = _crossed_gate_window()
+    try:
+        assert unit_rotation.rotation_is_angle(_ARCHER)
+        archer = _add_unit(window, _ARCHER, 70.5, 70.5)
+        _select_units(window, [gate, archer])
+        facing, start = archer.rotation, (gate.unit_const, gate.x, gate.y)
+        records = len(window.edit_history.records)
+
+        window.on_unit_rotate_coarse(1)
+
+        assert gate.unit_const == _GATE_Y and archer.rotation != facing
+        assert _walls_on(window, _TURNED) == []
+        assert len(window.edit_history.records) == records + 1
+        window.undo()
+        assert len(_walls_on(window, _TURNED)) == 3
+        assert archer.rotation == facing and (gate.unit_const, gate.x, gate.y) == start
+        assert window._selection == [unit_pick.unit_key(PLAYER, gate), unit_pick.unit_key(PLAYER, archer)]
+    finally:
+        _close(window)
+
+
+def test_a_tree_in_a_turned_gates_selection_still_cycles_its_variant():
+    from descape import unit_pick, unit_variant
+
+    window, gate = _crossed_gate_window()
+    try:
+        assert unit_variant.is_cyclable(TREE)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [GAIA_PLAYER_ID]):
+            tree = model.add(GAIA_PLAYER_ID, TREE, 72.5, 72.5)
+        window._selection = [unit_pick.unit_key(PLAYER, gate), unit_pick.unit_key(GAIA_PLAYER_ID, tree)]
+        window._refresh_selection_view()
+        variant = tree.rotation
+        records = len(window.edit_history.records)
+
+        window.on_unit_rotate_coarse(1)
+
+        assert gate.unit_const == _GATE_Y and _walls_on(window, _TURNED) == []
+        assert tree.rotation != variant
+        assert len(window.edit_history.records) == records + 1
+        window.undo()
+        assert tree.rotation == variant and len(_walls_on(window, _TURNED)) == 3
+    finally:
+        _close(window)
+
+
+def test_the_rotation_field_typed_to_the_runs_orientation_clears_the_same_walls():
+    window, gate = _crossed_gate_window()
+    try:
+        before = _unit_count(window)
+        records = len(window.edit_history.records)
+
+        window.units_panel.unit_field_editors["rotation"].setValue(2)
+
+        assert gate.unit_const == _GATE_Y and _walls_on(window, _TURNED) == []
+        assert _unit_count(window) == before - 3
+        assert len(window.edit_history.records) == records + 1
+        assert window.edit_history.peek_undo().label == "Set unit Rotation"
+        assert _last_status(window) == "Set unit Rotation, replacing 3 walls"
+        window.undo()
+        assert gate.unit_const == GATE and len(_walls_on(window, _TURNED)) == 3
+    finally:
+        _close(window)
+
+
+def test_a_wall_an_intermediate_orientation_cleared_stays_cleared_after_the_next_press():
+    """The plan's decision A: each Rotate press is its own record, and a wall
+    the diagonal passed over is not put back when the next press moves on."""
+    window, gate = _crossed_gate_window()
+    try:
+        diagonal = _footprint(window, gate, 659)
+        assert len(diagonal) == 6
+        tile = min(diagonal - _footprint(window, gate) - _TURNED)
+        assert tile[0] != _COL
+        _pick(window, WALL)
+        window.place_unit_action.setChecked(True)
+        window.on_shape_commit([tile])
+        assert len(_walls_on(window, {tile})) == 1
+        window.move_action.setChecked(True)
+        _select_units(window, [gate])
+
+        window.on_unit_rotate(1)
+        assert gate.unit_const == 659 and _walls_on(window, diagonal) == []
+        window.on_unit_rotate(1)
+
+        assert gate.unit_const == _GATE_Y
+        assert _walls_on(window, {tile}) == [], "decision A: the diagonal's removal stands"
+        assert _walls_on(window, _TURNED) == []
+    finally:
+        _close(window)
+
+
+def test_a_free_standing_gates_cycle_keeps_the_fields_only_splice_record(monkeypatch):
+    window, _gate = _crossed_gate_window()
+    try:
+        _pick(window, GATE)
+        window.place_unit_action.setChecked(True)
+        _click_point(window, 81.7, 90.4)
+        lone = window.scenario.unit_manager.units[PLAYER][-1]
+        assert lone.unit_const == GATE and not _walls_on(window, _footprint(window, lone, 659) | _footprint(window, lone))
+        window.move_action.setChecked(True)
+        _select_units(window, [lone])
+        before = _unit_count(window)
+        refreshes = []
+        real = window._after_unit_mutation
+        monkeypatch.setattr(
+            window, "_after_unit_mutation", lambda changed=None, **kw: (refreshes.append(changed), real(changed, **kw))[1]
+        )
+
+        window.on_unit_rotate(1)
+
+        assert lone.unit_const == 659 and _unit_count(window) == before
+        assert _is_field_delta(window)
+        assert len(refreshes) == 1 and refreshes[0], "expected one spliced refresh"
+        assert "replacing" not in _last_status(window) and "reshaping" not in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_referenced_wall_under_the_turned_gate_stays():
+    window, gate = _crossed_gate_window()
+    try:
+        (held,) = _walls_on(window, {(_COL, _ROW + 2)})
+        _add_unit(window, VILLAGER, _COL + 0.5, _ROW + 2.5, garrisoned_in_id=held.reference_id)
+        _select_units(window, [gate])
+
+        window.on_unit_rotate_coarse(1)
+
+        assert gate.unit_const == _GATE_Y
+        assert _walls_on(window, _TURNED) == [held]
+        assert "replacing 2 walls" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_undo_restores_walls_another_player_owns_under_the_turned_gate():
+    """gate_move_players() reaches the snapshot: the run is player 2's, the gate player 1's."""
+    window, gate = _crossed_gate_window(run_owner=2)
+    try:
+        assert gate.unit_const == GATE
+        under = _walls_on(window, _TURNED)
+        assert {id(u) for u in under} <= {id(u) for u in window.scenario.unit_manager.units[2]}
+
+        window.on_unit_rotate_coarse(1)
+        assert _walls_on(window, _TURNED) == []
+
+        window.undo()
+        assert {id(u) for u in _walls_on(window, _TURNED)} == {id(u) for u in under}
+        assert all(any(u is w for w in window.scenario.unit_manager.units[2]) for u in under)
+    finally:
+        _close(window)
+
+
+def test_a_notch_on_a_mixed_gate_group_clears_the_walls_under_each_new_footprint():
+    """The Rotation field's step over "(mixed)" gates (_step_rotation_field) is a cycle too."""
+    from PyQt5.QtCore import QPoint, QPointF, Qt
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    window, gate = _crossed_gate_window()
+    try:
+        other = _add_unit(window, _GATE_Y, 90.5, 92.0)
+        landing = _footprint(window, gate, 659)
+        _pick(window, WALL)
+        window.place_unit_action.setChecked(True)
+        window.on_shape_commit(sorted(landing - _footprint(window, gate) - {(_COL, y) for y in range(_ROW, _ROW + 7)}))
+        under = _walls_on(window, landing)
+        assert len(under) >= 2
+        window.move_action.setChecked(True)
+        _select_units(window, [gate, other])
+        spin = window.units_panel.unit_field_editors["rotation"]
+        assert spin.text() == "(mixed)"
+        records = len(window.edit_history.records)
+
+        centre = QPointF(spin.rect().center())
+        QApplication.sendEvent(
+            spin, QWheelEvent(centre, centre, QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        )
+
+        assert gate.unit_const == 659 and _walls_on(window, landing) == []
+        assert len(window.edit_history.records) == records + 1
+        assert not _is_field_delta(window)
+        assert _last_status(window) == f"Turned 2 units by +1, replacing {len(under)} walls"
+        window.undo()
+        assert {id(u) for u in _walls_on(window, landing)} == {id(u) for u in under}
+    finally:
+        _close(window)
+
+
+# --- GH #340: a removed wall or gate reshapes the walls left beside it -------
+#
+# The integer cases make the fixture's one (radian) wall literal before laying
+# the run, so the file is integer-only: render memoizes on unit_gen, which a
+# direct field write does not bump and the run's add_many() does.
+
+_DEL_ROW = 30
+_DEL_RUN = [(x, _DEL_ROW) for x in range(30, 41)]
+
+
+def _run_window(integer: bool = True):
+    """(window, {tile x: wall}): a Stone Wall run along _DEL_ROW, Place Unit still armed."""
+    window = _window()
+    if integer:
+        _gaia_wall(window).rotation = 2.0
+    window.on_shape_commit(_DEL_RUN)
+    return window, {int(u.x): u for u in _walls_on(window, set(_DEL_RUN))}
+
+
+def _delete(window, units) -> None:
+    _select_units(window, units)
+    window.on_unit_delete(None)
+
+
+def test_deleting_a_mid_run_wall_turns_its_two_neighbours_into_run_ends():
+    from descape import render, unit_sprites
+
+    window, row = _run_window()
+    try:
+        assert (row[34].rotation, row[36].rotation) == (0.0, 0.0)
+        before = {x: u.rotation for x, u in row.items()}
+        records = len(window.edit_history.records)
+
+        _delete(window, [row[35]])
+
+        assert (row[34].rotation, row[36].rotation) == (2.0, 2.0)
+        assert not any(u is row[35] for u in window.scenario.unit_manager.units[PLAYER])
+        assert len(window.edit_history.records) == records + 1
+        assert _last_status(window).endswith(", reshaping 2 adjacent")
+        tiles = {(int(u.x), int(u.y)) for u in _walls_on(window, set(_DEL_RUN))}
+        for x in range(33, 38):
+            if x == 35:
+                continue
+            derived = unit_sprites.wall_variant_from_neighbours8(unit_sprites.neighbour_mask(x, _DEL_ROW, tiles, diagonals=True))
+            assert row[x].rotation == float(2 if derived is None else derived), x
+        assert render.wall_variant_rotation_overrides(window.scenario) == {}, "the file stays integer-only"
+
+        window.undo()
+        assert any(u is row[35] for u in window.scenario.unit_manager.units[PLAYER])
+        assert {x: u.rotation for x, u in row.items()} == before
+        window.redo()
+        assert (row[34].rotation, row[36].rotation) == (2.0, 2.0)
+    finally:
+        _close(window)
+
+
+def test_cut_units_and_finds_delete_reshape_the_same_way():
+    for how in ("cut", "find"):
+        window, row = _run_window()
+        try:
+            if how == "cut":
+                _select_units(window, [row[35], row[36]])
+                window.cut_units()
+            else:
+                index = window.map_view._unit_index
+                entries = [index.entry_for_key((PLAYER, row[x].reference_id)) for x in (35, 36)]
+                assert window._delete_units(entries) == (2, 0, 0)
+            assert (row[34].rotation, row[37].rotation) == (2.0, 2.0), how
+            assert _last_status(window).endswith(", reshaping 2 adjacent"), how
+        finally:
+            _close(window)
+
+
+def test_deleting_both_ends_of_a_three_wall_run_leaves_the_middle_a_tower():
+    window = _window()
+    try:
+        _gaia_wall(window).rotation = 2.0
+        window.on_shape_commit([(x, _DEL_ROW) for x in range(50, 53)])
+        west, middle, east = sorted(_walls_on(window, {(x, _DEL_ROW) for x in range(50, 53)}), key=lambda u: u.x)
+        assert middle.rotation == 0.0
+
+        _delete(window, [west, east])
+
+        assert middle.rotation == 2.0
+        assert _last_status(window).endswith(", reshaping 1 adjacent")
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("what", ["villager", "lone wall"])
+def test_a_delete_that_reshapes_no_wall_keeps_the_single_unit_splice_path(monkeypatch, what):
+    window = _window()
+    try:
+        if what == "villager":
+            unit = _add_unit(window, VILLAGER, 60.5, 60.5)
+        else:
+            window.on_shape_commit([(60, 60)])
+            (unit,) = _walls_on(window, {(60, 60)})
+        refreshes = []
+        real = window._after_unit_mutation
+        monkeypatch.setattr(
+            window, "_after_unit_mutation", lambda changed=None, **kw: (refreshes.append(changed), real(changed, **kw))[1]
+        )
+
+        _delete(window, [unit])
+
+        assert not any(u is unit for u in window.scenario.unit_manager.units[PLAYER])
+        assert len(refreshes) == 1 and refreshes[0], "expected one spliced refresh"
+        assert "reshaping" not in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_radian_files_neighbour_is_rewritten_and_the_file_stays_radian():
+    """Decision 1: both file classes. The run sits clear of the radian GAIA
+    wall at (7, 5), and one neighbour is seeded with radian index 1."""
+    from descape import render
+
+    window, row = _run_window(integer=False)
+    try:
+        row[34].rotation = 1.256637
+        assert render.wall_variant_rotation_overrides(window.scenario)
+
+        _delete(window, [row[35]])
+
+        assert row[34].rotation == 2.0 and row[36].rotation == 2.0
+        assert render.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
     finally:
         _close(window)

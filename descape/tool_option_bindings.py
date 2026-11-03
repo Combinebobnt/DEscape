@@ -172,6 +172,7 @@ def build(window: ViewerWindow) -> dict[str, Binding]:
         "walls_skip_occupied": _check("walls_skip_occupied", window.skip_occupied_check),
         "gate_walls": _check("gate_walls", window.gate_walls_check),
         "last_wall": _last_wall(window),
+        "eyedropper_returns": _check("eyedropper_returns", window.eyedropper_return_check),
         "cliff_family": _combo("cliff_family", window.cliff_family_combo, first_is_none=True),
         "cliff_piece": _cliff_piece(window),
         "cliff_frame": _spin("cliff_frame", window.cliff_frame_spin),

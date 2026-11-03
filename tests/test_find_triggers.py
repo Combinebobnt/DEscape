@@ -242,6 +242,33 @@ def test_follow_replace_of_both_archers_pairs_the_patrol() -> None:
 # -- CSV -----------------------------------------------------------------------------
 
 
+def _reverse_trigger_0_effects(loaded) -> int:
+    from descape.trigger_model import set_entry_order
+
+    trigger = parse_triggers(loaded).triggers[0]
+    count = len(trigger.effects)
+    assert count >= 4
+    set_entry_order(trigger, "effect", list(reversed(range(count))))
+    return count
+
+
+def test_an_entry_hit_carries_its_display_slot_and_the_csv_keeps_the_list_index(tmp_path) -> None:
+    loaded = _loaded()
+    identity = _find(loaded, text="findCounter", text_scopes=frozenset({"xs"}))
+    assert [(h.entry_index, h.display_slot) for h in identity] == [(3, 3)]
+    count = _reverse_trigger_0_effects(loaded)
+    (hit,) = _find(loaded, text="findCounter", text_scopes=frozenset({"xs"}))
+    assert (hit.entry_index, hit.display_slot) == (3, count - 1 - 3)
+    (name_hit,) = _find(loaded, text="second line", text_scopes=frozenset({"descriptions"}))
+    assert name_hit.display_slot == -1
+    out = tmp_path / "hits.csv"
+    ft.hits_to_csv([hit], out)
+    with out.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[1][ft.CSV_COLUMNS.index("entry_index")] == "3"
+    assert "display_slot" not in rows[0]
+
+
 def test_hits_to_csv_round_trip_and_mods_subscribed(tmp_path) -> None:
     hits = _find(_loaded(), text="bridge")
     out = tmp_path / "hits.csv"

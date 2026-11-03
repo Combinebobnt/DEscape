@@ -119,6 +119,11 @@ a class-14 collision_size rule): 6x6 mountains, the 5x5 Theatre and
 Stonehenge, the 4x4 CastleRuins and MRKT, 3x3 and 2x2 ruins, rock formations
 and burned buildings. The other two doodads with a span, PandaRock 2082 and
 HowlerMonkey 2585, are type 20 and not obstacles. The rest stay 1x1.
+terrain_palette.STATIC_TILE_SPANS (TASK-277, "static_spans", an outline_size
+rule for types 10/20/30 outside classes 5, 14 and 34) sizes 13 more. The four
+shipwrecks, TREBU_D and the four invisible flares are not passable eye candy,
+so a wall run is refused on their whole footprint too. FLR_R 201 and the three
+rubbles are passable eye candy and block nothing.
 
 ## invisible_consts(): no .dat standing graphic, 115 consts
 
@@ -249,8 +254,8 @@ and View > Layers > Fish Outlines read one set and cannot disagree. Measured
 - class 63, 2: Oysters 2170 and WHALE 2625.
 - class 31 (deep-sea fish) has no member; it stays in the rule for data mods.
 
-Spans come from terrain_palette.FISH_TILE_SPANS: 2x2 for 53, 61, 450 and
-455-458, 3x3 for WHALE 2625, 1x1 for every other member.
+Spans come from terrain_palette.FISH_TILE_SPANS: 2x2 for every class-5
+member, 3x3 for WHALE 2625, 1x1 for the shore fish and Oysters.
 
 Left out by the rule, correctly: Turtle Ship 831/832 (class 22, a warship),
 Beached Whale 2457 (class 14, a doodad), OLD-FISH3 260 (class 11, hidden) and

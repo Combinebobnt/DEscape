@@ -2,8 +2,9 @@
 
 A theme file is YAML carrying the look-only Appearance settings: the chrome
 theme (preset + per-role overrides), the UI font, the tool overlay colours,
-the ruler and distance-tick label sizes, the stacked-unit badge position and
-the grid's blend and thickness. Machine, performance and feel settings
+the ruler and distance-tick label sizes, the stacked-unit badge position,
+the grid's blend and thickness, and the Triggers panel's status marker, its
+two colours and its two toggles (TASK-211). Machine, performance and feel settings
 (graphics quality, preloading, elevation height, pan speed) never travel.
 
 Import validates rather than trusts. A file that isn't a theme file at all is
@@ -37,6 +38,13 @@ _INT_RANGES: dict[str, tuple[int, int]] = {
 }
 _STACK_BADGE_IDS = tuple(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _OVERLAY_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COLORS)
+_TRIGGER_STATUS_IDS = tuple(sid for sid, _label, _default in settings.TRIGGER_STATUS_COLORS)
+_TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
+# Each key's import-summary label, as the Trigger status group labels its control.
+_TRIGGER_STATUS_TOGGLES: dict[str, str] = {
+    "trigger_status_color_ok_rows": "Mark triggers that pass",
+    "trigger_status_color_sections": "Colour section rows",
+}
 
 
 class ThemeWriteBlockedError(ValueError):
@@ -82,6 +90,10 @@ def build_document() -> dict:
         "stack_badge_position": settings.get_stack_badge_position(),
         "grid_blend": settings.get_grid_blend(),
         "grid_thickness": settings.get_grid_thickness(),
+        "trigger_status_marker": settings.get_trigger_status_marker(),
+        "trigger_status_colors": {sid: settings.get_trigger_status_color(sid) for sid in _TRIGGER_STATUS_IDS},
+        "trigger_status_color_ok_rows": settings.get_trigger_status_color_ok_rows(),
+        "trigger_status_color_sections": settings.get_trigger_status_color_sections(),
     }
 
 
@@ -196,6 +208,20 @@ def parse_theme_file(path: Path | str, installed_families: Collection[str] | Non
                 plan.problems.append(f"stack_badge_position: {_short(raw)} is not one of {', '.join(_STACK_BADGE_IDS)}")
         elif key in ("ruler_label_font_px", "distance_tick_font_px", "grid_blend", "grid_thickness"):
             _parse_int(key, raw, plan)
+        elif key == "trigger_status_colors":
+            colors = _parse_colors(raw, _TRIGGER_STATUS_IDS, "trigger_status_colors", plan)
+            if colors:
+                plan.values[key] = colors
+        elif key == "trigger_status_marker":
+            if isinstance(raw, str) and raw in _TRIGGER_STATUS_MARKER_IDS:
+                plan.values[key] = raw
+            else:
+                plan.problems.append(f"{key}: {_short(raw)} is not one of {', '.join(_TRIGGER_STATUS_MARKER_IDS)}")
+        elif key in _TRIGGER_STATUS_TOGGLES:
+            if isinstance(raw, bool):
+                plan.values[key] = raw
+            else:
+                plan.problems.append(f"{key}: expected true or false, got {type(raw).__name__}")
         else:
             plan.problems.append(f"unknown key {_short(key)}")
     return plan
@@ -232,6 +258,21 @@ def describe_changes(values: dict) -> list[str]:
     for key, (label, getter, unit) in getters.items():
         if key in values and values[key] != getter():
             lines.append(f"{label}: {getter()}{unit} -> {values[key]}{unit}")
+    marker = values.get("trigger_status_marker")
+    if marker is not None and marker != settings.get_trigger_status_marker():
+        labels = dict(settings.TRIGGER_STATUS_MARKERS)
+        lines.append(f"Trigger status: {labels[settings.get_trigger_status_marker()]} -> {labels[marker]}")
+    toggle_getters = {
+        "trigger_status_color_ok_rows": settings.get_trigger_status_color_ok_rows,
+        "trigger_status_color_sections": settings.get_trigger_status_color_sections,
+    }
+    for key, label in _TRIGGER_STATUS_TOGGLES.items():
+        if key in values and values[key] != toggle_getters[key]():
+            lines.append(f"{label}: {'on' if values[key] else 'off'}")
+    for status_id, hex_str in values.get("trigger_status_colors", {}).items():
+        current = settings.get_trigger_status_color(status_id)
+        if hex_str != current:
+            lines.append(f"Trigger status colour {settings.get_trigger_status_color_label(status_id)}: {current} -> {hex_str}")
     return lines
 
 

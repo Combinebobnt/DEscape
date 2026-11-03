@@ -17,7 +17,7 @@ The panel on the left lists every terrain by category, each with a swatch of its
 - **Elevate** raises the ground under the brush by one level. Right-drag, or Shift+drag, lowers it.
 - **Set Elevation** sets the ground under the brush to the Level on the Tool Options row, 0 to 15.
 - **Cliff**, **Eraser** and **Select** are described below.
-- **Eyedropper**: click a tile to load its terrain into the panel and its height into Level. With Target on Layer it picks the tile's layered terrain.
+- **Eyedropper**: click a tile to load its terrain into the panel and its height into Level. With Target on Layer it picks the tile's layered terrain. Tick **Switch back after a pick** on the Tool Options row to return to the tool you used before the Eyedropper once a pick changes something; Ctrl+click picks and stays.
 
 Pan and Ruler work in every mode; see [Keyboard and Mouse](keyboard-and-mouse.md).
 
@@ -46,12 +46,13 @@ The Cliff tool's options pick a Cliff family, a Piece and a Frame, with a previe
 - Click to place one piece, centred on the tile.
 - Drag to lay a connected run in the picked family. The drag direction sets which way the cliff face points. Start the drag on an existing cliff to continue it as one wall; the piece it joins is reshaped to fit where the family allows.
 - Right-click or right-drag erases cliffs. A run left with one neighbour gets its end cap back.
+- A placed cliff removes the trees under it, in the same undo step. Other objects under it stay.
 
 Cliffs belong to GAIA, so unticking **Filters > Show GAIA** hides them.
 
 ## Eraser
 
-Drag to remove the objects under the brush that match a ticked entry in the Targets menu: Units, Buildings, Trees, Terrain Overlay (the layered terrain), Invisible Objects and Gaia Objects. Everything ticks those six. Cliffs is a separate tick, because erasing one piece breaks its chain. Objects that Filters hide are never erased, and erasing a building also erases what it garrisons. The Eraser works the same way in Units mode.
+Drag to remove the objects under the brush that match a ticked entry in the Targets menu: Units, Buildings, Trees, Terrain Overlay (the layered terrain), Invisible Objects and Gaia Objects. Everything ticks those six. Cliffs is a separate tick, because erasing one piece breaks its chain. Objects that Filters hide are never erased, and erasing a building also erases what it garrisons. When you let go, the walls left beside an erased wall or gate reshape to fit their remaining neighbours. The Eraser works the same way in Units mode.
 
 ## Regions: copy, paste and turn
 

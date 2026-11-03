@@ -28,11 +28,15 @@ from dataclasses import dataclass
 # Characters that read as a divider rule when repeated. Fitted against 1570
 # trigger names across 16 examples/ scenarios; re-measured against a much
 # larger private scenario collection (not shipped in this repo) with
-# tools/census_trigger_names.py before this shipped. Provisional in the
-# sense that a wider corpus could still move it.
+# tools/census_trigger_names.py before this shipped, and again on 2026-10-27
+# over 42,140 names in 144 parsed files, when is_divider() was widened to
+# marker-style headers. Provisional in the sense that a wider corpus could
+# still move it.
 _DIVIDER_CHARS = frozenset("-=~*_#")
 _DIVIDER_RUN = 2
 _DIVIDER_BARE_RUN = 3
+# The one character authors wrap a title in singly (`~Part I~`).
+_DIVIDER_WRAP = "~"
 
 _TAG_DELIMITERS = {"[": "]", "(": ")", "<": ">"}
 
@@ -145,9 +149,9 @@ def strip_tag_from_chain(name: str, tag: str) -> str:
 def leading_divider_run(name: str) -> int:
     """How many divider characters `name` (stripped) starts with.
 
-    Exposed for tools/census_trigger_names.py's near-miss diagnostic (a name
-    starting with >=2 divider characters that is_divider() still rejects) --
-    not used by is_divider() itself, which needs the trailing run too.
+    Used by is_divider(), and by tools/census_trigger_names.py's near-miss
+    diagnostic (a name starting with >=2 divider characters that
+    is_divider() still rejects).
     """
     stripped = name.strip()
     lead = 0
@@ -159,11 +163,18 @@ def leading_divider_run(name: str) -> int:
 def is_divider(name: str) -> bool:
     """Whether `name` reads as a `--- Section ---`-style header.
 
-    A name is a divider if, stripped, it either starts with >=2 AND ends with
-    >=2 characters from _DIVIDER_CHARS with something in between (`--- Setup
-    ---`, `---Setup---`, `--Start--`), or consists entirely of >=3 of them (a
-    bare `------`). The two cases are kept disjoint on purpose: a 2-character
-    `--` is neither a real rule nor two overlapping runs of one.
+    A name consisting entirely of >=3 characters from _DIVIDER_CHARS is a
+    bare divider (`------`); a 2-character `--` is neither a real rule nor two
+    overlapping runs of one. Otherwise, stripped, a name is a divider in any
+    of three shapes:
+
+    - it starts with >=2 AND ends with >=2 of them (`--- Setup ---`,
+      `---Setup---`, `--Start--`);
+    - it starts with >=2 of them followed by whitespace or a letter or digit
+      (`----- ambush-setup`, `--lost-both-path`). The character after the run
+      keeps an arrow such as `--> Attack` out;
+    - one `~` on each side of a title (`~Part I~`). `~` is the only character
+      the corpus wraps singly; `*Boss*` reads as emphasis and stays out.
 
     A false positive here costs a cosmetic nesting level, never data: the
     header row IS the divider trigger, so it stays selectable, editable, and
@@ -176,10 +187,19 @@ def is_divider(name: str) -> bool:
     if all(c in _DIVIDER_CHARS for c in stripped):
         return len(stripped) >= _DIVIDER_BARE_RUN
 
+    lead = leading_divider_run(name)
     trail = 0
     while trail < len(stripped) and stripped[-(trail + 1)] in _DIVIDER_CHARS:
         trail += 1
-    return leading_divider_run(name) >= _DIVIDER_RUN and trail >= _DIVIDER_RUN
+    if lead >= _DIVIDER_RUN:
+        after = stripped[lead]
+        return trail >= _DIVIDER_RUN or after.isspace() or after.isalnum()
+    return (
+        lead == 1
+        and trail == 1
+        and stripped[0] == stripped[-1] == _DIVIDER_WRAP
+        and bool(stripped[1:-1].strip())
+    )
 
 
 @dataclass(frozen=True)
@@ -228,7 +248,9 @@ def split_divider(name: str) -> tuple[str, str, str] | None:
 
 def _format_of(name: str) -> DividerFormat | None:
     """The DividerFormat `name` was written in, or None when it has no title
-    slot or its runs mix characters (no single `char` describes it)."""
+    slot, its runs mix characters (no single `char` describes it), or either
+    run is shorter than two (a marker such as `----- ambush-setup` or `~P2~`),
+    so New Section only ever emits the two-sided shape."""
     parts = split_divider(name)
     if parts is None:
         return None
@@ -236,6 +258,8 @@ def _format_of(name: str) -> DividerFormat | None:
     lead_ws = prefix[: len(prefix) - len(prefix.lstrip())]
     lead_run = prefix[len(lead_ws):].rstrip()
     trail_run = suffix.strip()
+    if len(lead_run) < _DIVIDER_RUN or len(trail_run) < _DIVIDER_RUN:
+        return None
     chars = set(lead_run) | set(trail_run)
     if len(chars) != 1:
         return None

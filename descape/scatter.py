@@ -50,9 +50,9 @@ from typing import NamedTuple
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
 # render is already loaded by unit_model, so importing it here costs nothing.
-from descape.render import NON_BUILDING_SPAN, snapped_anchor, span_anchor, unit_tile_bounds
+from descape.render import NON_BUILDING_SPAN, _span_start, snapped_anchor, span_anchor, unit_tile_bounds
 from descape.scenario_io import LoadedScenario
-from descape.terrain_palette import BUILDING_TILE_SPANS, tile_span
+from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
 
 # Strictly below 0.5 so a jittered unit's int(x)/int(y) never leaves its tile.
@@ -181,6 +181,12 @@ def _pick_tiles(
     return picked
 
 
+def _footprint_fits(x: float, y: float, span: tuple[int, int], eligible: set[tuple[int, int]]) -> bool:
+    """Whether a `span` footprint anchored at (x, y) covers eligible tiles only."""
+    x0, y0 = _span_start(x, span[0]), _span_start(y, span[1])
+    return all((x0 + dx, y0 + dy) in eligible for dy in range(span[1]) for dx in range(span[0]))
+
+
 def scatter_units(
     scenario: LoadedScenario,
     units: UnitEditModel,
@@ -188,6 +194,23 @@ def scatter_units(
     unit_consts: int | Sequence[int],
     *,
     player: int = 0,
+    **kwargs,
+) -> list[Unit]:
+    """Places units for `player` on randomly chosen tiles from `tiles`
+    ((x, y) pairs or TerrainTiles) and returns the units actually placed:
+    plan_scatter_units()'s specs, added in one add_many(). Every keyword
+    argument is plan_scatter_units()'s."""
+    specs = plan_scatter_units(scenario, tiles, unit_consts, **kwargs)
+    if not specs:
+        return []
+    return units.add_many(player, specs)
+
+
+def plan_scatter_units(
+    scenario: LoadedScenario,
+    tiles: Iterable,
+    unit_consts: int | Sequence[int],
+    *,
     count: int | tuple[int, int] | None = None,
     density: float | None = None,
     weights: Sequence[float] | None = None,
@@ -197,25 +220,30 @@ def scatter_units(
     avoid_occupied: bool = False,
     rotation_choices: Sequence[float] | None = None,
     animation_frames: Sequence[int] | None = None,
-) -> list[Unit]:
-    """Places units for `player` on randomly chosen tiles from `tiles`
-    ((x, y) pairs or TerrainTiles) and returns the units actually placed.
+) -> list[_Spec]:
+    """Plans scatter_units(): the (x, y, const, rotation, frame) specs for
+    randomly chosen tiles from `tiles` ((x, y) pairs or TerrainTiles), adding
+    nothing. A caller that must not open an edit for an empty scatter plans first.
 
     Exactly one of `count` (an int, or an inclusive (lo, hi) range drawn
     from the same RNG) or `density` (a fraction of eligible tiles, rounded
     up) must be given. The requested number is clamped to what is eligible,
-    so asking for 200 fish in a 30-tile pond places 30; the returned list is
-    the truthful count.
+    so asking for 200 Shore Fish in a 30-tile pond places 30; a multi-tile
+    const can place fewer (below). The returned list is the truthful count.
 
     `unit_consts` is one const or a mix, chosen per unit (by `weights` if
     given). Consts are passed through unchecked, same as add().
 
     Units sit at tile centres (x + 0.5) unless `jitter` > 0 opts into
-    x + 0.5 +/- jitter, clamped to MAX_JITTER. A building's multi-tile axis
-    takes render.snapped_anchor() instead, unjittered: `x + 1` on an even
-    span, so a Mill lands on the game's grid. z is always 0.0, never derived
-    from terrain elevation. `min_spacing` is a Chebyshev tile distance,
-    best-effort. `avoid_occupied` drops tiles under any existing unit's
+    x + 0.5 +/- jitter, clamped to MAX_JITTER. Any multi-tile axis
+    (tile_span(): buildings, fish, cliffs, doodads, wrecks) takes
+    render.snapped_anchor() instead, unjittered: `x + 1` on an even span, so a
+    Mill or a salmon lands on the game's grid. A multi-tile pick is kept only
+    when its whole footprint lies in the eligible tiles, as in
+    scatter_existing_units(); otherwise it is dropped, so a "Water only"
+    region's edge never puts a fish on shore and the returned list stays the
+    truthful count. z is always 0.0, never derived from terrain elevation.
+    `min_spacing` is a Chebyshev tile distance, best-effort. `avoid_occupied` drops tiles under any existing unit's
     footprint (see occupied_tiles()).
     """
     if jitter < 0:
@@ -240,6 +268,7 @@ def scatter_units(
     wanted = _requested_count(rng, count, density, len(eligible))
     picked = _pick_tiles(rng, eligible, wanted, min_spacing)
     jitter = min(jitter, MAX_JITTER)
+    eligible_set = set(eligible)
 
     specs = []
     for x, y in picked:
@@ -252,19 +281,18 @@ def scatter_units(
         # Verbatim caller-supplied values only; see the module docstring.
         rotation = rng.choice(rotation_choices) if rotation_choices is not None else 0.0
         frame = rng.choice(animation_frames) if animation_frames is not None else 0
-        # A building's multi-tile axis sits on the game's grid, unjittered (GH #206). Deep fish keep the old rule.
-        span = BUILDING_TILE_SPANS.get(const, (1, 1))
+        # Any multi-tile axis sits on the game's grid, unjittered (GH #206, GH #301, TASK-277).
+        span = tile_span(const, NON_BUILDING_SPAN)
         ux, uy = snapped_anchor((x, y), None, span, mm.map_width, mm.map_height)
         if jitter:
-            # Both draws always happen, so a seeded scatter's stream is unchanged by a building in the mix.
+            # Both draws always happen, so a seeded scatter's stream is unchanged by a multi-tile pick.
             jx, jy = rng.uniform(-jitter, jitter), rng.uniform(-jitter, jitter)
             ux += jx if span[0] <= 1 else 0.0
             uy += jy if span[1] <= 1 else 0.0
+        if span != NON_BUILDING_SPAN and not _footprint_fits(ux, uy, span, eligible_set):
+            continue  # after every draw, so the picks after it place as before
         specs.append(_Spec(ux, uy, const, rotation, frame))
-
-    if not specs:
-        return []
-    return units.add_many(player, specs)
+    return specs
 
 
 class ExistingScatter(NamedTuple):

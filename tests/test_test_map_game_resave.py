@@ -104,7 +104,9 @@ def test_terrain_differs_only_by_the_editors_conversions() -> None:
         assert a.elevation == b.elevation, f"tile {index}"
         if (a.terrain_id, a.layer) == (b.terrain_id, b.layer):
             continue
-        if TERRAIN_CONVERSIONS.get(a.terrain_id) == (b.terrain_id, b.layer):
+        if STALE_TERRAIN.get(divmod(index, 240)) == ((a.terrain_id, a.layer), (b.terrain_id, b.layer)):
+            seen["stale"] += 1
+        elif TERRAIN_CONVERSIONS.get(a.terrain_id) == (b.terrain_id, b.layer):
             seen["conversion"] += 1
         elif b.terrain_id in FOUNDATION_TERRAINS and b.layer == -1:
             seen["foundation"] += 1
@@ -112,11 +114,17 @@ def test_terrain_differs_only_by_the_editors_conversions() -> None:
             unexplained.append((index, a.terrain_id, a.layer, b.terrain_id, b.layer))
     assert not unexplained, unexplained[:10]
     assert seen["conversion"] and seen["foundation"], seen
+    assert seen["stale"] == len(STALE_TERRAIN), "a STALE_TERRAIN tile no longer differs: drop it"
 
 
 # STALE RESAVE, waiting on TASK-434 (refresh the resave in AoE2:DE): the generator moved after the
 # 2026-10-17 save. TASK-358 lays Short Marble 2190 runs flush, so their rotation and y differ.
 STALE_UNIT_CONSTS = {2190}
+# TASK-277 grows the variants region's shipwrecks to their real spans, so its water band
+# (gen_test_map's WATER, 23) starts one row lower: (y, x) -> ((generated id, layer), (resaved id, layer)).
+STALE_TERRAIN = {(211, x): ((0, -1), (23, -1)) for x in range(74, 134)} | {
+    (213, x): ((23, -1), (0, -1)) for x in range(74, 134)
+}
 # TASK-399 closes the Limestone loop: its closing 2070 at (205.5, 27.5) is frame 8, 22 in the resave.
 STALE_UNIT_REFS = {5027}
 # TASK-396 types create_decision's options as text, so option 2's stored string differs (TASK-434).

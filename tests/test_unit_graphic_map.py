@@ -259,9 +259,10 @@ def test_fish_resolve_to_their_underwater_body_not_the_splash(graphics):
 
 
 def test_only_the_marlin_body_carries_a_frame_offset(graphics):
-    """Its frames 0-4 hold no ink and 5-6 a few px; every other body has a fish at frame 0."""
+    """Its frames 0-4 hold no ink and 5-6 a few px; every other body has a fish at frame 0.
+    DOLP3 452's standing graphic is the Marlin body itself, so the offset goes by graphic."""
     offsets = {int(k): e["frame_offset"] for k, e in graphics.items() if "frame_offset" in e}
-    assert offsets == {450: 7, 451: 7}
+    assert offsets == {450: 7, 451: 7, 452: 7}
 
 
 def test_only_the_perch_body_carries_a_top_level_offset(graphics):
@@ -866,7 +867,29 @@ def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(mon
     assert 2625 not in gen._UNDERWATER_BODY_CONSTS and 61 not in gen._UNDERWATER_BODY_CONSTS
     assert 53 in gen._UNDERWATER_BODY_CONSTS
     assert not gen._BODY_FRAME_OFFSETS
-    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [155, 446]
+    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [446]
+
+
+def test_only_a_wall_may_carry_frames_past_its_references_variants(monkeypatch):
+    """GH #329: Greek Fortified Wall art stores 11 frames over the five wall
+    shapes, so a wall's per-civ variant_count may exceed its reference's. Never
+    fewer, never another field, and never for a const that is not a wall."""
+    import importlib.util
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    path = GRAPHIC_MAP_PATH.parent.parent / "tools" / "gen_unit_graphic_map.py"
+    spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_walls", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    ref = {"angle_count": 5, "rotation_is_variant": True, "variant_count": 5}
+    wall = NS(class_=gen._WALL_CLASS, clearance_size=(1.0, 1.0))
+    tower = NS(class_=gen._WALL_CLASS + 1, clearance_size=(1.0, 1.0))
+    more = dict(ref, variant_count=11)
+    assert gen._art_invariant_violations("w", more, wall, ref, wall) == []
+    assert gen._art_invariant_violations("w", dict(ref, variant_count=4), wall, ref, wall)
+    assert gen._art_invariant_violations("w", dict(more, angle_count=11), wall, ref, wall)
+    assert gen._art_invariant_violations("t", more, tower, ref, tower)
 
 
 # GH #262: a data mod's .dat breaks invariants measured on the stock one.

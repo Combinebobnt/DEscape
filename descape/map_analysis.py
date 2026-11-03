@@ -21,7 +21,8 @@ off-map, display-order and trigger-reference checks fire on 0/20; one
 dangling unit reference fires (a disabled trigger); active-player-with-no-
 units fires only on blank_map. Victory text is empty and unset on 20/20 and
 instructions on 17/20, so the objectives check is instructions-only and
-INFO. Stranded-unit reachability is approximate: is_water() is a name
+INFO, and shown but left out of the headline's finding total and clean
+count (TASK-096). Stranded-unit reachability is approximate: is_water() is a name
 match, only terrain is considered (not trees, buildings or cliffs, which
 are GAIA objects), and elevation is ignored.
 
@@ -127,6 +128,8 @@ class CheckResult:
     label: str
     findings: tuple[Finding, ...] = ()
     unavailable: str = ""
+    # TASK-096: False shows the findings but keeps them out of the headline, where the check counts as clean.
+    counted: bool = True
 
     @property
     def is_clean(self) -> bool:
@@ -139,11 +142,11 @@ class AnalysisReport:
 
     @property
     def finding_count(self) -> int:
-        return sum(len(r.findings) for r in self.results)
+        return sum(len(r.findings) for r in self.results if r.counted)
 
     @property
     def headline(self) -> str:
-        clean = sum(1 for r in self.results if r.is_clean)
+        clean = sum(1 for r in self.results if r.is_clean or (not r.counted and not r.unavailable))
         unavailable = sum(1 for r in self.results if r.unavailable)
         findings = self.finding_count
         detail = f"{findings} finding{'' if findings == 1 else 's'}"
@@ -562,20 +565,25 @@ def _messages(loaded: LoadedScenario):
 
 def check_instructions(loaded: LoadedScenario) -> CheckResult:
     """A set string-table id wins over typed text in game, so empty text
-    with an id set can't be judged from the file."""
+    with an id set can't be judged from the file. Not counted in the
+    headline (TASK-096): it fires on 17/20 campaign files, which keep their
+    instructions outside the .aoe2scenario."""
     label = "Scenario instructions"
     messages = _messages(loaded)
     if messages is None:
-        return CheckResult(label, unavailable="the Messages section could not be read")
+        return CheckResult(label, unavailable="the Messages section could not be read", counted=False)
     text = messages["ascii_instructions"].data
     string_id = messages["instructions"].data
     if text:
-        return CheckResult(label)
+        return CheckResult(label, counted=False)
     if string_id != STRING_ID_UNSET:
-        return CheckResult(label, unavailable=f"string-table id {string_id} is set; its in-game text can't be read")
+        return CheckResult(
+            label, unavailable=f"string-table id {string_id} is set; its in-game text can't be read", counted=False
+        )
     return CheckResult(
         label,
         (Finding("No scenario instructions text; the objectives screen will be empty unless triggers fill it", "info"),),
+        counted=False,
     )
 
 

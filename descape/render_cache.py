@@ -188,8 +188,9 @@ class UnitSplice:
         place (old and new tiles equal). For a wall/connector that changes
         its tiles, set_position() keeps list order, and two fields-only
         writes of a rotation-variant const's rotation exist, both literal
-        set_wall_variant() indices that keep the file's radian verdict and
-        so every override key. A move's (GH #266,
+        set_wall_variant() indices that keep the file's radian verdict (in
+        an integer file one can add or drop the written wall's own lone-wall
+        key, and that wall is in the edit). A move's (GH #266,
         viewer._apply_wall_reshapes()) goes wholesale instead when it would
         flip the verdict (wall_run.MovePlan.radian_flip). The Selection
         transform's (viewer._write_lift_units()) writes only in an
@@ -242,7 +243,7 @@ def _splice_eligible(units_by_tile: dict, splice: UnitSplice) -> bool:
 
     - A wall/connector const's override is a function of its NEIGHBOURS
       (render.wall_variant_rotation_overrides' own docstring): moving one
-      reshapes up to four other units this splice never touches, and the
+      reshapes up to eight other units this splice never touches, and the
       override dict's own key shifts on any removal. A moved one is refused
       here and spliced by _membership_component_splices(), which re-derives
       those neighbours too (_batch_splice_refusal()'s `const:move`).
@@ -484,10 +485,10 @@ def _connector_neighbours(
     """Every rotation-variant unit outside `known` whose shape a batch
     connector's move can change, as (player_id, i, unit, own tile, occupied
     tiles). render._wall_variant_rotation_overrides_uncached() reads a
-    wall's 4-bit orthogonal mask over every connector's tiles, at its bounds'
-    low corner, so a moved connector reshapes only the walls whose low corner
-    is orthogonally beside one of its old or new tiles. Those tiles are
-    dilated by NEIGHBOUR_OFFSETS[:4] (the tiles themselves kept too, which
+    wall's 8-bit mask over every connector's tiles, at its bounds' low
+    corner, so a moved connector reshapes only the walls whose low corner is
+    one of the eight tiles around one of its old or new tiles. Those tiles
+    are dilated by NEIGHBOUR_OFFSETS (the tiles themselves kept too, which
     errs wide), looked up in the filter-free own_index, and every 1x1
     rotation-variant unit there is kept. A hidden or off-map one holds no
     key and is skipped. Over-inclusion is harmless, a re-anchor being
@@ -501,7 +502,7 @@ def _connector_neighbours(
             continue
         for x, y in (*s.old_tiles, *s.new_tiles):
             dilated.add((x, y))
-            dilated.update((x + dx, y + dy) for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS[:4])
+            dilated.update((x + dx, y + dy) for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS)
     out: list[tuple] = []
     seen = set(known)
     for tile in dilated:

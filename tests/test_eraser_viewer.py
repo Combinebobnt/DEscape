@@ -350,3 +350,36 @@ def test_the_mid_stroke_flush_repaints_before_release() -> None:
         assert not np.array_equal(before, mid)
     finally:
         _close(window)
+
+
+def test_erasing_a_mid_run_wall_turns_its_neighbours_into_run_ends_at_release() -> None:
+    """GH #340: the Buildings target takes walls, and the release re-derives
+    the walls left beside the gap, in the stroke's one record."""
+    window = _window()
+    try:
+        gaia_wall = next(u for u in window.scenario.unit_manager.units[0] if u.reference_id == 102)
+        gaia_wall.rotation = 2.0  # literal, so the file is integer-only
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            row = {x: model.add(1, 117, x + 0.5, 40.5, rotation=0.0 if 40 < x < 46 else 2.0) for x in range(40, 47)}
+        _tick(window, buildings=True)
+        records = len(window.edit_history.records)
+
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tiles([(43, 40)], 0)
+        # Mid-drag the neighbours keep their shape, as cliff ends do.
+        assert (row[42].rotation, row[44].rotation) == (0.0, 0.0)
+        window.on_edit_stroke_end()
+
+        assert row[43].reference_id not in _refs(window)
+        assert (row[42].rotation, row[44].rotation) == (2.0, 2.0)
+        assert len(window.edit_history.records) == records + 1
+        assert "Erased 1 object(s), 2 adjacent wall(s) reshaped" in window.status_log.toPlainText()
+
+        window.undo()
+        assert row[43].reference_id in _refs(window)
+        assert (row[42].rotation, row[44].rotation) == (0.0, 0.0)
+        window.redo()
+        assert (row[42].rotation, row[44].rotation) == (2.0, 2.0)
+    finally:
+        _close(window)

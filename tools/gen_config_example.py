@@ -198,8 +198,9 @@ zoom_centered_on_cursor: true
 # Keybinds. Slots: {_WHEEL_SLOTS}.
 # Actions: {_WHEEL_ACTIONS}.
 # "tool" steps the brush size or turns Place Unit's preview, whichever
-# applies; a tool action with nothing to act on zooms, and so does any other
-# modifier combination. Only slots moved off their default are stored, and an
+# applies, and the "_selection" choices also turn the selected units in Units
+# mode. A tool action with nothing to act on does nothing; any other modifier
+# combination zooms. Only slots moved off their default are stored, and an
 # unknown slot or action is ignored.
 # Defaults: {_WHEEL_DEFAULTS}.
 # The value below is only an example.

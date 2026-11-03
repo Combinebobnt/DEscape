@@ -651,8 +651,9 @@ def test_a_committed_run_agrees_with_the_render_sides_own_derivation():
     render.wall_variant_rotation_overrides() as the value it already stores.
 
     A lone radian-encoded wall is planted far away on purpose: without it
-    the file classifies as integer-only, render.py skips it outright, and
-    the assertion would pass vacuously no matter what the write side did.
+    the file classifies as integer-only, render.py derives only lone walls
+    and run ends, and the assertion would pass for the run's interior no
+    matter what the write side did.
     """
     from descape import render
 
@@ -797,6 +798,26 @@ def test_a_mountain_blocks_its_whole_footprint():
     blocked = wall_run.blocked_tiles(scenario, 60, 60)
     assert blocked == {(x, y) for x in range(17, 23) for y in range(17, 23)}
     assert len(blocked) == 36
+
+
+@pytest.mark.parametrize(
+    ("unit_const", "x", "expected"),
+    [
+        (2353, 20.0, 16),  # Leviathan Shipwreck, 4x4
+        (697, 20.0, 4),  # FLARE4, invisible, 2x2
+        (1402, 20.5, 0),  # Barracks DARK (Rubble), 3x3 passable eye candy
+    ],
+)
+def test_static_objects_block_their_whole_footprint_unless_passable(unit_const, x, expected):
+    """TASK-277 decision 7: only the footprint grows, not who blocks."""
+    from descape import render
+
+    unit = FakeUnit(x=x, y=x, unit_const=unit_const, rotation=0.0)
+    scenario = _Scenario(60, [[unit], [], [], [], [], [], [], [], []])
+    blocked = wall_run.blocked_tiles(scenario, 60, 60)
+    assert len(blocked) == expected
+    if expected:
+        assert blocked == set(render.unit_occupied_tiles(unit, 60, 60))
 
 
 # --- a moved gate (GH #194: Moving a gate updates walls) -----------------
@@ -1366,6 +1387,214 @@ def test_consts_for_a_gate_that_keeps_its_const_plan_as_no_consts_do():
     plain = wall_run.scenario_move_plan(scenario, 60, 60, moves, gate_walls=True)
     same = wall_run.scenario_move_plan(scenario, 60, 60, moves, gate_walls=True, consts={id(gate): GATE})
     assert same == plain
+
+
+# --- a gate's const change (GH #339): orientation cycle and Replace --------
+
+
+def test_plan_gate_moves_with_fill_off_removes_the_same_walls_and_leaves_the_line_open():
+    """The GH #194 straight-run case without the fill: the walls beside the
+    gate's old ends lose their gate neighbour and become run ends."""
+    walls = _gated_run(5, 20, 10, gate_x=8)
+    old, new = _gate_tiles(GATE, 8, 10), _gate_tiles(GATE, 13, 10)
+    filled = _move_plan([(old, new)], walls)
+    static_tiles, static_walls = _existing(walls)
+
+    plan = wall_run.plan_gate_moves(
+        [wall_run.GateMove(frozenset(old), frozenset(new))],
+        static_tiles=static_tiles,
+        static_walls=static_walls,
+        moved_tiles=set(new),
+        blocked_tiles=frozenset({(9, 10)}),
+        fill=False,
+    )
+
+    assert plan.removals == filled.removals
+    assert (plan.fills, plan.blocked) == ([], 0)
+    assert _by_tile(plan.rewrites) == {(7, 10): 2, (12, 10): 2}
+    assert filled.rewrites == []
+
+
+def _crossed_gate_scenario(extra=()):
+    """_gate_scenario() plus a y run on x = 8 from y = 11 to 16 under the
+    gate's low corner, each wall storing the shape the scene gives it."""
+    crossing = [_wall_at(8, y, rotation=2.0 if y == 16 else 1.0) for y in range(11, 17)]
+    gate, walls, scenario = _gate_scenario([*crossing, *extra])
+    return gate, walls, crossing, scenario
+
+
+def test_scenario_gate_changes_clears_a_cycled_gates_new_tiles_and_ends_the_run_it_left():
+    """x to y (two steps) about the low corner (8, 10): the y walls under
+    (8, 11..13) go, and (12, 10) loses (11, 10), which only counts as the
+    gate's old tile, so it becomes a run end."""
+    from descape import gate_orientation
+    from descape.unit_model import reanchored
+
+    gate, _walls, crossing, scenario = _crossed_gate_scenario()
+    turned = gate_orientation.cycle_const(GATE, 2)
+    assert turned == _GATE_Y
+    x, y = reanchored(gate, turned)
+
+    plan = wall_run.scenario_gate_changes(scenario, 60, 60, [(gate, turned, x, y)], fill=False)
+
+    assert sorted(_tile(u) for _p, u in plan.removals) == [(8, 11), (8, 12), (8, 13)]
+    assert all(u in crossing for _p, u in plan.removals)
+    assert plan.fills == [] and plan.blocked == 0
+    assert _by_tile(plan.rewrites) == {(12, 10): 2}
+    assert gate not in [u for _p, u, _v in plan.rewrites]
+    # The same call with the stored const plans nothing: the footprint did not move.
+    assert wall_run.scenario_gate_changes(scenario, 60, 60, [(gate, GATE, gate.x, gate.y)], fill=False) is None
+
+
+def test_scenario_gate_changes_for_a_wall_replaced_by_a_gate_clears_the_three_it_now_covers():
+    """A mid-run wall becoming Stone Gate 64 re-anchors on its low corner, so
+    it covers itself and the next three. The replaced wall is a changing
+    unit: neither removed nor rewritten. The ends beside the gate keep it as
+    a neighbour, so nothing reshapes."""
+    from descape.unit_model import replaced_position
+
+    run = _x_run(5, 20, 10)
+    wall = next(u for u in run if _tile(u) == (10, 10))
+    scenario = _walls_scenario(*run)
+    x, y = replaced_position(wall, GATE)
+    assert (x, y) == (12.0, 10.5)
+
+    plan = wall_run.scenario_gate_changes(scenario, 60, 60, [(wall, GATE, x, y)], fill=False)
+
+    assert sorted(_tile(u) for _p, u in plan.removals) == [(11, 10), (12, 10), (13, 10)]
+    assert wall not in [u for _p, u in plan.removals] + [u for _p, u, _v in plan.rewrites]
+    assert plan.rewrites == [] and plan.fills == []
+
+
+def test_scenario_gate_changes_keeps_a_wall_removable_refuses():
+    gate, _walls, crossing, scenario = _crossed_gate_scenario()
+    kept = next(u for u in crossing if _tile(u) == (8, 12))
+    plan = wall_run.scenario_gate_changes(
+        scenario, 60, 60, [(gate, _GATE_Y, 8.5, 12.0)], removable=lambda u: u is not kept, fill=False
+    )
+    assert sorted(_tile(u) for _p, u in plan.removals) == [(8, 11), (8, 13)]
+    assert kept not in [u for _p, u in plan.removals]
+
+
+def test_scenario_gate_moves_is_scenario_gate_changes_with_each_units_own_const_and_the_fill():
+    gate, _walls, scenario = _gate_scenario()
+    moves = _shifted([gate], 5, 0)
+    assert wall_run.scenario_gate_moves(scenario, 60, 60, moves) == wall_run.scenario_gate_changes(
+        scenario, 60, 60, [(gate, GATE, x, y) for _u, x, y in moves], fill=True
+    )
+
+
+def test_reanchored_four_cycle_steps_return_every_gate_family_to_its_start():
+    from descape import gate_orientation
+    from descape.unit_model import reanchored
+
+    families = gate_orientation.groups()
+    assert len(families) >= 6
+    for siblings in families.values():
+        start = FakeUnit(x=20.0, y=30.5, unit_const=siblings[0])
+        # Anchored as a placed gate is: the low corner plus half its span.
+        start.x, start.y = reanchored(start, siblings[0])
+        unit = FakeUnit(x=start.x, y=start.y, unit_const=start.unit_const)
+        for _step in range(4):
+            new_const = gate_orientation.cycle_const(unit.unit_const, 1)
+            unit.x, unit.y = reanchored(unit, new_const)
+            unit.unit_const = new_const
+        assert (unit.unit_const, unit.x, unit.y) == (start.unit_const, start.x, start.y), siblings
+
+
+# --- a removed wall or gate (GH #340) ---------------------------------------
+
+
+def _removal(scenario, units):
+    return wall_run.scenario_removal_rewrites(scenario, 60, 60, units)
+
+
+def test_a_mid_run_delete_turns_both_neighbours_into_run_ends():
+    run = _x_run(5, 15, 10)
+    wall = run[5]
+    rewrites = _removal(_walls_scenario(*run), [wall])
+    assert _by_tile(rewrites) == {(9, 10): 2, (11, 10): 2}
+    assert wall not in [u for _p, u, _v in rewrites]
+
+
+def test_a_run_end_deleted_turns_only_the_new_end():
+    run = _x_run(5, 15, 10)
+    assert _by_tile(_removal(_walls_scenario(*run), [run[0]])) == {(6, 10): 2}
+
+
+def test_a_wall_both_its_neighbours_leave_together_becomes_a_tower():
+    """Isolated: the middle of a three-wall run (0) and a diagonal run's
+    interior (3) are left alone. Without the tower rule nothing names them."""
+    west, middle, east = _x_run(5, 7, 10)
+    assert _removal(_walls_scenario(west, middle, east), [west, east]) == [(1, middle, 2)]
+
+    low, mid, high = (_wall_at(i, i, rotation=2.0 if i != 21 else 3.0) for i in (20, 21, 22))
+    assert _removal(_walls_scenario(low, mid, high), [low, high]) == [(1, mid, 2)]
+
+    alone = [wall_run.ExistingWall(unit=mid, player_id=1, tx=21, ty=21)]
+    assert wall_run._neighbour_rewrites(alone, {(21, 21)}, set(), set()) == []
+
+
+@pytest.mark.parametrize("stored", [2.0, 2 * _RADIAN_1], ids=["literal", "radian"])
+def test_a_survivor_already_a_tower_is_not_rewritten(stored):
+    west, east = _wall_at(5, 10, rotation=2.0), _wall_at(6, 10, rotation=stored)
+    assert _removal(_walls_scenario(west, east), [west]) == []
+
+
+def test_deleting_one_of_two_stacked_walls_reshapes_nothing():
+    """The tile stays a connector, so no mask changed, and the neighbours'
+    radian noise (index 1 where they derive 2 and 0) is left as it is."""
+    staying, leaving = _wall_at(10, 10, rotation=0.0), _wall_at(10, 10, rotation=0.0)
+    noisy_west, noisy_east = _wall_at(9, 10, rotation=_RADIAN_1), _wall_at(11, 10, rotation=_RADIAN_1)
+    far = _wall_at(12, 10, rotation=2.0)
+    assert _removal(_walls_scenario(noisy_west, staying, leaving, noisy_east, far), [leaving]) == []
+
+
+def test_an_off_map_wall_among_the_removed_is_skipped():
+    run = _x_run(5, 15, 10)
+    off = FakeUnit(x=-5.5, y=10.5, unit_const=WALL)
+    scenario = _walls_scenario(*run, off)
+    assert _removal(scenario, [off]) == []
+    assert _by_tile(_removal(scenario, [off, run[5]])) == {(9, 10): 2, (11, 10): 2}
+
+
+def test_a_deleted_gate_turns_the_walls_that_ended_against_it_into_run_ends():
+    gate, _walls, scenario = _gate_scenario()
+    rewrites = _removal(scenario, [gate])
+    assert _by_tile(rewrites) == {(7, 10): 2, (12, 10): 2}
+    assert all(u.unit_const == WALL for _p, u, _v in rewrites)
+
+
+def test_a_wall_deleted_beside_a_gate_never_rewrites_the_gate():
+    gate, walls, scenario = _gate_scenario()
+    beside = next(u for u in walls if _tile(u) == (12, 10))
+    rewrites = _removal(scenario, [beside])
+    assert gate not in [u for _p, u, _v in rewrites]
+    assert _by_tile(rewrites) == {(13, 10): 2}
+
+
+def test_scenario_removal_rewrites_walks_no_scene_without_a_wall_or_gate(monkeypatch):
+    villager = _wall_at(40, 40, const=_VILLAGER)
+    scenario = _walls_scenario(*_x_run(5, 15, 10), villager)
+
+    def walk(*_args, **_kwargs):
+        raise AssertionError("planned through a scene walk")
+
+    monkeypatch.setattr(wall_run, "wall_scene", walk)
+    assert _removal(scenario, [villager]) == []
+    assert _removal(scenario, []) == []
+
+
+def test_apply_rewrites_writes_each_index_through_set_wall_variant():
+    from descape.edit_history import EditHistory
+
+    loaded, model = _open()
+    wall = _unit(loaded, _REF_WALL)
+    owner = next(p for p, units in enumerate(loaded.unit_manager.units) if any(u is wall for u in units))
+    model.begin_unit_edit([owner])
+    wall_run.apply_rewrites(model, [(owner, wall, 4)])
+    model.commit_unit_edit("Delete unit", EditHistory())
+    assert wall.rotation == 4.0
 
 
 def test_scenario_move_plan_answers_none_without_a_scene_walk(monkeypatch):

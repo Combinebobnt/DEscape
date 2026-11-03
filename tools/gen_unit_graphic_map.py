@@ -29,7 +29,8 @@ resolves to a named graphic:
                               -- The edit path's install-free cycle modulus
                               -- (descape.unit_variant); render still reads
                               -- the file itself.
-      "frame_offset": int,   -- OPTIONAL, fish bodies only (_BODY_FRAME_OFFSETS):
+      "frame_offset": int,   -- OPTIONAL, any entry whose resolved file_name is
+                              -- in _BODY_FRAME_OFFSETS (fish bodies):
                               -- added to the dispatched frame, for a body whose
                               -- frame 0 holds no fish. See "Fish bodies".
       "dx": int, "dy": int,  -- OPTIONAL, fish bodies only, both or neither,
@@ -221,7 +222,8 @@ table and writes a second file, descape/building_art_map.json:
 
 The run fails unless every per-civ entry and every age target agrees with
 its reference on angle_count, rotation_is_variant, variant_count and the
-unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS`.
+unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS` and
+a wall's frames past its five shapes (`_wall_frames_agree()`).
 A decoration-shell body is the delta at the same position in that civ's own
 shell as the hand-verified Gaia body.
 
@@ -244,9 +246,10 @@ delta": birds, sea rocks and Oysters carry shadow/reflection deltas, and
 Flotsam 2577 and Driftwood 2741, whose standing graphic is the floating
 debris rather than an empty splash, keep it. The generator fails unless each
 listed splash has exactly one `_underwater` delta with the splash's own angle
-and frame counts. Marlin's body holds no fish until frame 7, so its entry
-carries `frame_offset` (`_BODY_FRAME_OFFSETS`), which
-`descape.unit_sprites._frame_for` adds. A body delta that sits off the anchor
+and frame counts. Marlin's body holds no fish until frame 7, so every entry
+that resolves to it carries `frame_offset` (`_BODY_FRAME_OFFSETS`, keyed by
+file_name), which `descape.unit_sprites._frame_for` adds. That includes DOLP3
+452, whose standing graphic is the Marlin body itself rather than a splash. A body delta that sits off the anchor
 keeps its offset as the entry's top-level `dx`/`dy` (only Perch 53, at
 (0, -30), measured 2026-10-09), so the body draws where the .dat puts it
 rather than 30 native px low.
@@ -1562,10 +1565,11 @@ def _graphic_entry_for(
         frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
         if frames is not None and graphic.frame_count > 0:
             entry["variant_count"] = frames // graphic.frame_count
+    # By graphic, not const: DOLP3 452's standing graphic is already the Marlin body.
+    offset = _BODY_FRAME_OFFSETS.get(graphic.file_name)
+    if offset is not None:
+        entry["frame_offset"] = offset
     if underwater is not None:
-        offset = _BODY_FRAME_OFFSETS.get(graphic.file_name)
-        if offset is not None:
-            entry["frame_offset"] = offset
         if body_offset != (0, 0):
             entry["dx"], entry["dy"] = body_offset
         return entry, "underwater"
@@ -1627,9 +1631,25 @@ _ART_INVARIANT_FIELDS = ("angle_count", "rotation_is_variant", "variant_count")
 # other civs keep their own. The generator fails unless the measured
 # violators are exactly these, so a new one is still loud.
 _ART_INVARIANT_HOLDOUTS: dict[int, str] = {
-    155: "Fortified Wall: Greek art (civs 47, 48, 54) stores 11 variants, not 5",
     446: "PORT, hidden in the editor: a projectile graphic, angle_count 32 vs 1",
 }
+
+
+def _wall_frames_agree(field: str, entry: dict, ref_entry: dict, unit, ref_unit) -> bool:
+    """A wall's art may store frames past its reference's variant_count: every
+    wall write path stores an index in 0..4 and the render's wall rule draws one.
+    Fortified Wall's Greek art (b_greek_wall_fortified_x1, civs 47, 48, 54)
+    stores 11, and its frames 0-4 are the western set's five shapes in order
+    while 5-10 are scaffolding and rubble (measured 2026-11-02, GH #329: each of
+    0-4 best-matches its western namesake by silhouette, as the east, medi and
+    afri sets do). No corpus Fortified Wall stores a literal index past 4.
+    The relaxation covers every wall, not just 155: a new wall art with extra
+    frames passes unmeasured, so re-check its frames 0-4 when one appears."""
+    walls = getattr(unit, "class_", None) == getattr(ref_unit, "class_", None) == _WALL_CLASS
+    if field != "variant_count" or not walls:
+        return False
+    count, ref_count = entry.get(field), ref_entry.get(field)
+    return isinstance(count, int) and isinstance(ref_count, int) and count >= ref_count
 
 
 def _art_invariant_violations(
@@ -1638,11 +1658,13 @@ def _art_invariant_violations(
     """Every way `entry` (for `unit`) disagrees with the reference on a field
     the placed const's own logic reads. The AGENTS.md hard rules (walls
     angle_count 5, gates 1) were measured on Gaia; this is what extends them
-    to every civ and every age target (GH #48)."""
+    to every civ and every age target (GH #48). A wall may carry extra
+    frames past its five shapes (_wall_frames_agree())."""
     found = [
         f"{what}: {field} {entry.get(field)!r} != reference {ref_entry.get(field)!r}"
         for field in _ART_INVARIANT_FIELDS
         if entry.get(field) != ref_entry.get(field)
+        and not _wall_frames_agree(field, entry, ref_entry, unit, ref_unit)
     ]
     if tuple(unit.clearance_size) != tuple(ref_unit.clearance_size):
         found.append(
@@ -1799,7 +1821,7 @@ def _building_art(
             for base, by_age in ages.items()
             if (kept := {age: target for age, target in by_age.items() if (base, age) not in bad_ages})
         }
-    # A data mod's .dat may lack the civ a holdout was listed for (155's Greek civs).
+    # A data mod's .dat may lack the civ a holdout was listed for.
     unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS)
     if _DATA_MOD_DAT:
         unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS)

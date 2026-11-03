@@ -252,12 +252,18 @@ def test_gates_carry_no_age_art():
     assert unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 5) is unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 2)
 
 
-def test_the_greek_fortified_wall_holdout_keeps_gaia_art_only_where_it_must():
-    """Greek-set Fortified Wall art stores 11 variants, not the 5 the wall logic
-    reads, so those civs keep Gaia's; every other civ keeps its own."""
+def test_the_greek_civs_draw_their_own_fortified_wall_over_the_five_shapes():
+    """Greek-set Fortified Wall art stores 11 frames, and its first five are the
+    western set's five shapes in order (GH #329; the rest scaffolding and rubble
+    no wall index reaches), so those civs draw it as they draw their Greek Stone
+    Wall, under the same five-shape logic."""
     gm = unit_sprites.graphic_map()
     for greek in (47, 48, 54):
-        assert unit_sprites.resolve_entry(FORTIFIED_WALL, greek, 2) is gm[FORTIFIED_WALL]
+        entry = unit_sprites.resolve_entry(FORTIFIED_WALL, greek, 2)
+        assert entry["file_name"] == "b_greek_wall_fortified_x1"
+        assert unit_sprites.resolve_entry(STONE_WALL, greek, 2)["file_name"] == "b_greek_wall_stone_x1"
+        assert (entry["angle_count"], entry["rotation_is_variant"]) == (5, True)
+        assert entry["variant_count"] > gm[FORTIFIED_WALL]["variant_count"] == 5
     assert unit_sprites.resolve_entry(FORTIFIED_WALL, CHINESE, 2)["file_name"] == "b_asia_wall_fortified_x1"
 
 
@@ -283,14 +289,19 @@ def test_every_civs_walls_and_gates_keep_the_hard_rule_shapes():
 
 def test_every_civ_entry_keeps_its_bases_const_logic():
     """The generator's invariant, re-read off the committed file: a drawn entry
-    never changes what the placed const's rotation/variant logic reads."""
+    never changes what the placed const's rotation/variant logic reads. A wall
+    may store frames past its five shapes, never fewer (GH #329)."""
     gm = unit_sprites.graphic_map()
     art = unit_sprites.building_art()
+    walls = set(unit_sprites.wall_family_consts())
     checked = 0
     for civ, consts in art.civ_art.items():
         for const, entry in consts.items():
             base = gm[const]
             for field in ("angle_count", "rotation_is_variant", "variant_count"):
+                if field == "variant_count" and const in walls:
+                    assert entry.get(field) >= base.get(field), (civ, const, field)
+                    continue
                 assert entry.get(field) == base.get(field), (civ, const, field)
             checked += 1
     assert checked > 1000

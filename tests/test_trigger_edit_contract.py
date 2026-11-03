@@ -180,19 +180,13 @@ def test_only_the_edited_trigger_is_marked_dirty() -> None:
         window.close()
 
 
-def test_a_failed_edit_is_reported_and_still_recorded(monkeypatch) -> None:
+def test_a_failed_edit_is_reported_and_still_recorded() -> None:
     """A raised edit is not a no-op: it can leave every blob dirty, so it needs
     a record to undo and has to tell the user the minimal-diff guarantee is
     gone. Presenting it as a clean no-op is the failure mode."""
-    from descape import viewer as viewer_module
-
     window = conftest.shown_window()
     warned = []
-    monkeypatch.setattr(
-        viewer_module.QMessageBox,
-        "warning",
-        lambda *args, **kwargs: warned.append(args),
-    )
+    window._warn = lambda title, text: warned.append(title)
     try:
         window.load_scenario(TRIGGER_FIXTURE)
         model = window._ensure_trigger_edits()

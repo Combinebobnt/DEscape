@@ -10,7 +10,9 @@ much larger private scenario collection (not shipped in this repo) before
 any panel code gets written, producing two diagnostic lists: near-misses
 (names starting with >=2 divider characters that the predicate rejects) and
 the accepted divider names themselves, so both false-negative and
-false-positive risk can be eyeballed before the heuristic is frozen.
+false-positive risk can be eyeballed before the heuristic is frozen. The
+rule was widened to marker-style headers (a leading run only, or one `~` on
+each side) after a 2026-10-27 re-measure.
 
 One file per subprocess, deliberately -- same reason as
 tools/census_trigger_versions.py: parse_triggers()'s library-side field
@@ -89,10 +91,16 @@ def run_worker(path: Path) -> dict:
 
 
 def near_miss(name: str) -> bool:
-    """A name starting with >=2 divider characters that is_divider() rejects
-    -- the false-negative side of the heuristic (a real header that won't
-    group)."""
-    return leading_divider_run(name) >= 2 and not is_divider(name)
+    """A name is_divider() rejects that starts with >=2 divider characters, or
+    starts and ends with the same single one (`*Boss*`, `-x-`): the
+    false-negative side of the heuristic (a real header that won't group),
+    and the evidence for widening the `~`-only single wrap."""
+    if is_divider(name):
+        return False
+    if leading_divider_run(name) >= 2:
+        return True
+    stripped = name.strip()
+    return len(stripped) >= 3 and leading_divider_run(name) == 1 and stripped[0] == stripped[-1]
 
 
 def main() -> None:
@@ -153,7 +161,7 @@ def main() -> None:
     print(f"{total_names} trigger names across parsed files")
     print(f"{len(divider_names)} divider names, {len(tag_counts)} distinct tags")
 
-    print(f"\nnear-misses ({len(near_misses)}) -- >=2 leading divider chars, rejected:")
+    print(f"\nnear-misses ({len(near_misses)}) -- >=2 leading divider chars, or one same char each side, rejected:")
     for name in sorted(set(near_misses)):
         print(f"  {name!r}")
 

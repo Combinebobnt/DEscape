@@ -38,6 +38,7 @@ from descape.terrain_palette import (
     DOODAD_TILE_SPANS,
     FISH_TILE_SPANS,
     OBJECT_TILE_SPANS,
+    STATIC_TILE_SPANS,
 )
 
 MAP_W = MAP_H = 64
@@ -405,6 +406,7 @@ def test_no_corpus_building_or_cliff_has_a_non_half_coordinate(corpus_files):
         "cliffs": OBJECT_TILE_SPANS,
         "blockers": BLOCKER_TILE_SPANS,
         "doodads": DOODAD_TILE_SPANS,
+        "statics": STATIC_TILE_SPANS,
     }
     counts = dict.fromkeys(tables, 0)
     totals = dict.fromkeys(tables, 0)
@@ -549,10 +551,16 @@ REAL_FISH_SPANS = {
     53: ("Perch", (2, 2)),
     61: ("Dolphin", (2, 2)),
     450: ("Marlin", (2, 2)),
+    451: ("DOLP2, hidden", (2, 2)),
+    452: ("DOLP3, hidden", (2, 2)),
+    454: ("DOLP5, hidden", (2, 2)),
     455: ("Dorado", (2, 2)),
     456: ("Salmon", (2, 2)),
     457: ("Tuna", (2, 2)),
     458: ("Snapper", (2, 2)),
+    459: ("FISH5, hidden", (2, 2)),
+    460: ("WHAL1, hidden", (2, 2)),
+    461: ("WHAL2, hidden", (2, 2)),
     2625: ("Whale", (3, 3)),
 }
 
@@ -650,7 +658,7 @@ def test_the_doodad_span_table_is_exactly_the_46_consts():
     assert len(REAL_DOODAD_SPANS) == 46
     table = DOODAD_TILE_SPANS
     assert table == {c: span for c, (_name, span) in REAL_DOODAD_SPANS.items()}
-    for other in (BUILDING_TILE_SPANS, OBJECT_TILE_SPANS, BLOCKER_TILE_SPANS, FISH_TILE_SPANS):
+    for other in (BUILDING_TILE_SPANS, OBJECT_TILE_SPANS, BLOCKER_TILE_SPANS, FISH_TILE_SPANS, STATIC_TILE_SPANS):
         assert not DOODAD_TILE_SPANS.keys() & other.keys()
 
 
@@ -704,6 +712,129 @@ def test_every_half_grid_doodad_placement_is_on_its_spans_parity(corpus_files):
                     wrong.append((path.name, unit.unit_const, unit.x, unit.y))
     assert on_grid > 0
     assert wrong == []
+
+
+# -- other static objects (TASK-277) ------------------------------------------
+
+# Hardcoded from the .dat's `outline_size`, doubled (build 26249352). Names are the .dat's own.
+REAL_STATIC_SPANS = {
+    112: ("FLARE", (2, 2)),
+    194: ("TREBU_D", (3, 3)),
+    201: ("FLR_R", (2, 2)),
+    274: ("FLARE2", (2, 2)),
+    332: ("FLARE3", (4, 4)),
+    697: ("FLARE4", (2, 2)),
+    1402: ("Barracks DARK (Rubble)", (3, 3)),
+    1408: ("TownCenter DARK (Rubble)", (4, 4)),
+    2352: ("Antiquity Transport Shipwreck", (2, 2)),
+    2353: ("Leviathan Shipwreck", (4, 4)),
+    2354: ("Galley Shipwreck", (2, 2)),
+    2355: ("Catapult Shipwreck", (3, 3)),
+    2476: ("Macedonian Command Post (Rubble)", (3, 3)),
+}
+
+_SPAN_TABLES = {
+    "buildings": BUILDING_TILE_SPANS,
+    "cliffs": OBJECT_TILE_SPANS,
+    "blockers": BLOCKER_TILE_SPANS,
+    "fish": FISH_TILE_SPANS,
+    "doodads": DOODAD_TILE_SPANS,
+    "statics": STATIC_TILE_SPANS,
+}
+
+
+def test_the_static_span_table_is_exactly_the_13_consts():
+    """A .dat type rule, so a game update that moves the set fails here."""
+    assert len(REAL_STATIC_SPANS) == 13
+    table = STATIC_TILE_SPANS
+    assert table == {c: span for c, (_name, span) in REAL_STATIC_SPANS.items()}
+
+
+def test_no_const_is_in_two_span_tables():
+    """tile_span() reads the tables in order, so an overlap would hide a row.
+    Whale 2625 (class 63, type 30) is the one the static rule would also catch."""
+    names = list(_SPAN_TABLES)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert not _SPAN_TABLES[a].keys() & _SPAN_TABLES[b].keys(), (a, b)
+    assert 2625 in FISH_TILE_SPANS and 2625 not in STATIC_TILE_SPANS
+
+
+@pytest.mark.parametrize("unit_const", sorted(REAL_STATIC_SPANS))
+def test_statics_span_their_outline(unit_const):
+    name, expected = REAL_STATIC_SPANS[unit_const]
+    x = 32.0 if expected[0] % 2 == 0 else 32.5
+    y = 32.0 if expected[1] % 2 == 0 else 32.5
+    assert span_of(x, y, unit_const) == expected, name
+
+
+@pytest.mark.parametrize("frac", [0.0, 0.13, 0.5, 0.77, 0.99])
+def test_a_statics_own_tile_stays_inside_its_bounds_at_any_coordinate(frac):
+    for unit_const in sorted(REAL_STATIC_SPANS):
+        x0, x1, y0, y1 = bounds(32.0 + frac, 20.0 + frac, unit_const)
+        assert x0 <= 32 < x1 and y0 <= 20 < y1, (unit_const, frac)
+
+
+@pytest.mark.parametrize(
+    "unit_const",
+    [
+        548,  # Siege Ram: outline 0.8 rounds up to 2x2, but every corpus ram sits on a tile centre
+        1258,  # Capped Ram
+        1704,  # Hussite Wagon
+        2319,  # The Aeginetan, a ship
+        1973,  # NESSIE
+        261,  # PILE8, hidden
+        1413,  # Barracks Age2 Rubble, class 14 outline-only
+        1358,  # Grass Green
+    ],
+)
+def test_mobile_units_and_outline_only_decorations_stay_one_tile(unit_const):
+    """TASK-277 decision 2: no mobile unit gets a span; class 14's outline-only consts neither."""
+    assert all(unit_const not in table for table in _SPAN_TABLES.values())
+    assert span_of(32.5, 32.5, unit_const) == (1, 1)
+
+
+def test_a_leviathan_wreck_on_a_whole_coordinate_covers_4x4_centred_on_it():
+    assert bounds(20.0, 20.0, 2353) == (18, 22, 18, 22)
+
+
+def _dat_units():
+    from descape import asset_source
+
+    install = asset_source.get_install_path()
+    if install is None:
+        pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH to one")
+    pytest.importorskip("genieutils")
+    from genieutils.datfile import DatFile
+
+    dat = install / "resources" / "_common" / "dat" / "empires2_x2_p1.dat"
+    if not dat.is_file():
+        pytest.skip(f"no .dat at {dat}")
+    return DatFile.parse(str(dat)).civs[0].units
+
+
+@pytest.mark.corpus
+def test_the_fish_and_static_tables_cover_what_the_install_dat_says():
+    """The loud check for a .dat update, since the generator refuses nothing
+    here (data mods run it). Written from the rule, not from the generator."""
+    def span(x, y):
+        return [max(1, round(2 * x)), max(1, round(2 * y))]
+
+    fish, statics = set(), set()
+    for const, unit in enumerate(_dat_units()):
+        if unit is None or unit.building is not None:
+            continue
+        if span(unit.outline_size_x, unit.outline_size_y) == [1, 1]:
+            continue
+        if unit.class_ == 5:
+            fish.add(const)
+        elif unit.type in (10, 20, 30) and unit.class_ not in (14, 34) and const not in BLOCKER_TILE_SPANS:
+            statics.add(const)
+    statics -= FISH_TILE_SPANS.keys()  # the class-63 Whale
+    assert fish <= FISH_TILE_SPANS.keys(), sorted(fish - FISH_TILE_SPANS.keys())
+    assert statics == STATIC_TILE_SPANS.keys(), (
+        sorted(statics - STATIC_TILE_SPANS.keys()), sorted(STATIC_TILE_SPANS.keys() - statics)
+    )
 
 
 def test_the_cliff_span_table_and_the_cliff_variant_set_cover_the_same_consts():

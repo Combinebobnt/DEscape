@@ -119,6 +119,9 @@ class EraseStroke:
     reshaped: int = 0
     left_alone: int = 0
     ends_note: str | None = None
+    # Every tile an erased wall or gate occupied; the walls beside them re-derive at release (GH #340).
+    wall_vacated: set[tuple[int, int]] = field(default_factory=set)
+    walls_reshaped: int = 0
 
 
 def collect_hits(
