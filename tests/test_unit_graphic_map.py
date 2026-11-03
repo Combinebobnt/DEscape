@@ -1141,6 +1141,22 @@ def test_building_art_holds_out_a_civ_entry_and_drops_an_age_pair_when_lenient(g
     ], "a lenient hold-out is not a measured one, so the holdout list check stays quiet"
 
 
+def test_a_gate_upgrade_must_keep_its_orientation_code(gen, lenient, monkeypatch):
+    """TASK-205 Slice 3: Fortified Wall upgrades a gate to its own orientation's
+    sibling (GTAA2 -> GTAA3); one that turns it (GTAB3) is dropped, loudly."""
+    data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
+    gaia_units = data.civs[0].units
+    for const, name in ((11, "GTAA2"), (12, "GTAB3"), (13, "GTAA3")):
+        gaia_units[const].class_, gaia_units[const].name = gen._GATE_CLASS, name
+    art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    assert art["age_upgrades"] == {"11": {"4": 13}}
+    assert lenient[0] == (
+        "age table: gate upgrade 11 'GTAA2' -> 12 'GTAB3' changes its orientation "
+        "(dropped from the age table for every civ)"
+    )
+    assert not any("-> 13" in warning for warning in lenient), lenient
+
+
 def test_a_civ_missing_an_age_target_drops_the_pair_when_lenient(gen, lenient, monkeypatch):
     data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
     data.civs[1].units[13] = None

@@ -1963,11 +1963,9 @@ _START_UPGRADE_TECHS: frozenset[int] | None = frozenset({
     930, 941,          # Georgians' and Armenians' Fortified Church 1806
     1292,              # Thracians' Castle 82 -> 2418, the same art
     1354, 1355,        # Settlement 2556 -> 2558 -> 2560
+    140, 194,          # Imperial start: Guard Tower 79 -> 234, Fortified Wall 117 -> 155 and its gates
+    63,                # Post-Imperial start: Keep 79, 234 -> 235
 })
-
-# Researched techs held out of the start-researched class until TASK-205 Slice 3
-# (walls, gates and towers): Keep, Guard Tower, Fortified Wall.
-_HELD_RESEARCHED_TECHS: frozenset[int] = frozenset({63, 140, 194})
 
 # Slots one firing wave writes two ways, where id order decides: Poles' Folwark
 # (793-795 re-fire together) and the Settlement (1354 and 1355 re-fire together,
@@ -2060,7 +2058,7 @@ def _start_upgrades(data, building_consts: set[int]) -> StartUpgrades:
     }
     memo: dict[int, int] = {}
     researched_age = {
-        tech_id: _catalog_age(techs, tech_id, memo) for tech_id in closure - forced - _HELD_RESEARCHED_TECHS
+        tech_id: _catalog_age(techs, tech_id, memo) for tech_id in closure - forced
         if techs[tech_id].civ == -1 and _research_buttons(techs[tech_id])
     }
 
@@ -2340,18 +2338,22 @@ def _building_art(
         note = "; its annexes may still show the upgraded age's art" if annexed else ""
         return f"dropped from the age table for every civ{note}"
 
-    # Gates carry no age art: their orientation siblings are keyed on the const.
+    # A gate's orientation is its const (one sibling per orientation), so an upgrade
+    # (Fortified Wall's GTAA2 -> GTAA3) must keep the orientation code: name[:-1].
     for row in rows:
         base, _age, target = row
-        for c in (base, target):
-            if gaia_units[c].class_ != _GATE_CLASS:
-                continue
-            message = f"age table: gate const {c} is upgraded by an age tech"
-            if not lenient:
-                violations.append(message)
-                continue
-            _game_root.refuse(message, age_fallback(base))
-            bad_ages.add(row)
+        gates = [gaia_units[c].class_ == _GATE_CLASS for c in (base, target)]
+        if not any(gates):
+            continue
+        names = (gaia_units[base].name, gaia_units[target].name)
+        if all(gates) and names[0][:-1] == names[1][:-1]:
+            continue
+        message = f"age table: gate upgrade {base} {names[0]!r} -> {target} {names[1]!r} changes its orientation"
+        if not lenient:
+            violations.append(message)
+            continue
+        _game_root.refuse(message, age_fallback(base))
+        bad_ages.add(row)
     for civ_index, civ in enumerate(data.civs):
         units = civ.units
         art: dict[str, dict[str, object]] = {}

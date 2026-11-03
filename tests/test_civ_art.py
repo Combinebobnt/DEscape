@@ -242,6 +242,29 @@ def test_central_asian_siege_workshops_follow_upgrade_rams():
     assert _drawn(SIEGE_WORKSHOP, CUMANS, 4, CUMANS) == "b_ceas_siege_workshop_age3_x1"
 
 
+BRITONS, GOTHS, ATHENIANS = 1, 3, 47
+WATCH_TOWER, FORTIFIED_GATE_NE = 79, 63
+
+
+def test_towers_follow_guard_tower_at_imperial_and_keep_at_post_imperial():
+    """Slice 3: a later start has its earlier ages' generic techs, unless the
+    civ's tech tree disables them (French have no Keep)."""
+    gm = unit_sprites.graphic_map()
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 5, BRITONS) is gm[234]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 6, BRITONS) is gm[235]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 4, BRITONS) is gm[WATCH_TOWER]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 6, FRANKS) is gm[234]
+
+
+def test_walls_and_gates_are_fortified_at_an_imperial_start_where_the_civ_has_it():
+    gm = unit_sprites.graphic_map()
+    assert unit_sprites.resolve_entry(STONE_WALL, None, 5, BRITONS) is gm[FORTIFIED_WALL]
+    assert unit_sprites.resolve_entry(STONE_WALL, None, 5, GOTHS) is gm[STONE_WALL]  # no Fortified Wall
+    assert _drawn(STONE_WALL, ATHENIANS, 5, ATHENIANS) == "b_greek_wall_fortified_x1"  # GH #329's own art
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, None, 5, BRITONS) is gm[FORTIFIED_GATE_NE]
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, None, 5, GOTHS) is gm[STONE_GATE_NE]
+
+
 def test_a_table_without_max_age_clamps_post_imperial_to_imperial(monkeypatch):
     """Today's RoR table: no max_age key, so age 6 reads its age-5 row."""
     real = unit_sprites.building_art()
@@ -346,10 +369,24 @@ def test_walls_and_gates_draw_their_owners_architecture():
     assert unit_sprites.resolve_entry(PALISADE, 47, 2)["file_name"] == "b_archaic_wall_palisade_x1"
 
 
-def test_gates_carry_no_age_art():
-    for const in unit_sprites.building_art().age_upgrades:
-        assert not gate_orientation.is_gate(const), const
-    assert unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 5) is unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 2)
+def test_a_gate_upgrade_keeps_its_orientation():
+    """TASK-205 Slice 3: Fortified Wall upgrades a stone gate to the fortified
+    sibling at the same place in its group's cycle, in every table."""
+    art = unit_sprites.building_art()
+    tables = [art.age_upgrades, *art.civ_upgrades.values()]
+    gate_rows = 0
+    for table in tables:
+        for base, by_age in table.items():
+            if not gate_orientation.is_gate(base):
+                continue
+            for target in by_age.values():
+                base_group = gate_orientation.orientation_siblings(base)
+                target_group = gate_orientation.orientation_siblings(target)
+                assert target_group is not None, (base, target)
+                assert base_group.index(base) == target_group.index(target), (base, target)
+                gate_rows += 1
+    assert gate_rows, "no gate upgrade at all, so this proves nothing"
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 4) is unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 2)
 
 
 def test_the_greek_civs_draw_their_own_fortified_wall_over_the_five_shapes():

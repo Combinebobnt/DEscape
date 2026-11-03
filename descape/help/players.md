@@ -15,7 +15,7 @@ The selector below it picks the player to edit: GAIA first, then Players 1 to 8.
 
 ## Start
 
-- **Starting age**. A Return of Rome scenario lists that game's ages.
+- **Starting age**. A Return of Rome scenario lists that game's ages. The map draws the player's buildings as that age has them, with the upgrades a player starting there already has: from Imperial, Guard Towers and Fortified Walls and gates where the civilization has them, and from Post-Imperial, Keeps.
 - **Starting food**, **Starting wood**, **Starting stone** and **Starting gold**.
 - **Population limit**, which can't go below 0.
 - **Colour**.
