@@ -3724,7 +3724,7 @@ def _flat_unit_icon(
     is the unit's position in its player's full list, the key `overrides`
     (wall_variant_rotation_overrides()) uses. Footprint size comes from the
     CLAMPED bounds, matching the rect _flat_unit_bbox() paints. `art` is the
-    owner's player_art_for() pair (GH #48). with_farms: FLAT_DRAPED for a
+    owner's player_art_for() triple (GH #48). with_farms: FLAT_DRAPED for a
     draped const with no icon, where None would keep its rect."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     rotation = stored_rotation(player_id, unit)

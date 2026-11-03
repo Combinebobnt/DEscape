@@ -141,7 +141,9 @@ def scan(graphics_dir: Path, check_ink: bool) -> dict:
     particles = unit_sprites._particle_stems()
     offsets: dict[str, set[tuple[int, int]]] = {}
     layout: dict[str, tuple[int, int]] = {}
-    per_civ = [e for art in unit_sprites.building_art().civ_art.values() for e in art.values()]
+    table = unit_sprites.building_art()
+    per_civ = [e for art in table.civ_art.values() for e in art.values()]
+    per_civ += [e for by_age in table.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
     for entry in [*unit_sprites.graphic_map().values(), *per_civ]:
         for item in [entry, *entry.get("pieces", ())]:
             layout.setdefault(item["file_name"], (max(1, int(item["frame_count"])), max(1, int(item["angle_count"]))))

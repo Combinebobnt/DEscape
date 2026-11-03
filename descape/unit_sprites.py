@@ -780,7 +780,8 @@ def _entry_for_art(unit_const: int, art: tuple[int | None, int, int | None] | No
     """graphic_map()'s entry when `art` is None (today's art), else resolve_entry()'s."""
     if art is None:
         return graphic_map().get(unit_const)
-    return resolve_entry(unit_const, *art)
+    art_civ, age, tech_civ = art  # a leftover (art_civ, age) pair raises rather than drawing generic upgrades
+    return resolve_entry(unit_const, art_civ, age, tech_civ)
 
 
 def _body_offset(entry: dict) -> tuple[int, int]:

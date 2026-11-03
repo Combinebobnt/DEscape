@@ -1,6 +1,6 @@
 """GH #48: per-civ architecture and per-age building art.
 
-descape/civ_art.py derives each player's (art_civ, age) from the scenario's
+descape/civ_art.py derives each player's (art_civ, age, tech_civ) from the scenario's
 civilization, architecture and starting age; unit_sprites.resolve_entry()
 turns a placed building const into the entry that owner draws; the render
 paths thread it through, and a Players-mode edit re-derives it

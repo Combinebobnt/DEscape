@@ -214,6 +214,9 @@ def test_a_ror_players_barracks_draws_its_civ_and_age_art(tmp_path):
     _ror()
     assert unit_sprites.resolve_entry(BARRACKS, 1, 4)["file_name"] == "b_egy_barracks_age3_x1"
     assert unit_sprites.resolve_entry(BARRACKS, 13, 4)["file_name"] == "b_rom_barracks_age3_x1"
+    # The RoR table has no max_age: Post-Iron (6) draws as Iron (5), TASK-205.
+    assert unit_sprites.building_art().max_age == 5
+    assert unit_sprites.resolve_entry(BARRACKS, 1, 6) is unit_sprites.resolve_entry(BARRACKS, 1, 5)
 
 
 def test_a_ror_file_gets_player_art_and_a_mismatched_display_none(tmp_path):

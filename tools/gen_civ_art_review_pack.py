@@ -10,7 +10,7 @@ render.composite_rect_iso, Stepped, on each file's own terrain and elevation,
 with only the units under review kept so nothing else crowds the crop.
 
 Each style question pairs a scene with two reference frames: the same building
-types on blank ground, drawn with an explicit (art_civ, age), so the reviewer
+types on blank ground, drawn with an explicit (art_civ, age, tech_civ), so the reviewer
 matches styles rather than naming them. References never read the scenario,
 so no inject can move them (`--check` asserts it).
 
@@ -94,8 +94,8 @@ _REFERENCES = {
 
 
 def _arch_from_civ(real):
-    def resolve(civilization, architecture, starting_age):
-        return real(civilization, None, starting_age)
+    def resolve(civilization, architecture, starting_age, ror=False):
+        return real(civilization, None, starting_age, ror=ror)
     return resolve
 
 

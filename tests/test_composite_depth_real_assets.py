@@ -398,7 +398,7 @@ def test_a_unit_inside_a_town_centre_paints_between_its_back_and_front_pieces():
             assert not bad_back.any(), f"{where}: {int(bad_back.sum())} px of it hidden by a back piece"
 
 
-# GH #48: (art_civ, age) -> a town-centre art set whose measured slots still
+# GH #48: (art_civ, age, tech_civ) -> a town-centre art set whose measured slots still
 # leave a footprint tile between back and front: Gaia's west Feudal set (its
 # age-remapped annexes), Vikings' nors (main at [2, 2]), Incas' Imperial ande
 # ([2, 2]) and Cumans' Castle ceas ([0, 2]). Sets whose main slot is [0, 3] or

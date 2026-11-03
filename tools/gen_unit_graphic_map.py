@@ -336,6 +336,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -548,6 +549,10 @@ _PIECE_SLOTS: dict[int, list[list[int]]] = {
 
 # The town-centre consts of _COMPOSITE_SCOPE, whose slots are keyed by art set.
 _TOWN_CENTRE_SCOPE: frozenset[int] = frozenset({71, 109, 141, 142, 2275, 2276, 2277})
+
+# A gate's .dat name: family prefix, GT, orientation, state, material digits.
+# descape/gate_orientation.py's _CODE_RE, copied: generators are standalone. Keep in step.
+_GATE_CODE_RE = re.compile(r"^([PSCF]?)GT([ABCD])([ABCX])(\d*)$")
 
 # The town centres the age techs neither upgrade nor target (TASK-205 Slice 2):
 # the hidden Satrapy TCs, whose .dat lists the Dark Age annexes 618-620. The
@@ -2267,6 +2272,7 @@ def _age_art(
         for age in range(_DARK_AGE + 1, _POST_IMPERIAL)
     }
     result: dict[int, dict[int, dict[int, dict[str, object]]]] = {}
+    gaia_units = data.civs[0].units
     for const in scope:
         by_age: dict[int, dict[int, dict[str, object]]] = {}
         for age, annexes in age_annexes.items():
@@ -2275,11 +2281,22 @@ def _age_art(
                 entry, _kind = _entry_for(
                     civ.units, graphics, graphics_dir, const, body_positions, {const: annexes}
                 )
+                fallback = "drawn with its base entry at that age" if civ_index == 0 else "drawn with Gaia's art at that age"
                 if entry is None or "pieces" not in entry:
-                    _game_root.refuse(
-                        f"civ {civ_index} const {const} at age {age} resolves no town-centre pieces",
-                        "drawn with its base entry at that age",
-                    )
+                    _game_root.refuse(f"civ {civ_index} const {const} at age {age} resolves no town-centre pieces", fallback)
+                    continue
+                # The same guards as a civ_art entry (_building_art()), against Gaia's at this age.
+                if civ_index and 0 not in by_civ:
+                    continue
+                what = f"civ {civ_index} const {const} age {age}"
+                reference = by_civ.get(0, entry)
+                problems = _structure_violations(what, entry, civ.units[const], reference, gaia_units[const])
+                found = _art_invariant_violations(what, entry, civ.units[const], reference, gaia_units[const])
+                if found and const in _ART_INVARIANT_HOLDOUTS:
+                    continue
+                if problems + found:
+                    for problem in problems + found:
+                        _game_root.refuse(problem, fallback)
                     continue
                 if civ_index == 0 or entry != by_civ.get(0):
                     by_civ[civ_index] = entry
@@ -2339,16 +2356,17 @@ def _building_art(
         return f"dropped from the age table for every civ{note}"
 
     # A gate's orientation is its const (one sibling per orientation), so an upgrade
-    # (Fortified Wall's GTAA2 -> GTAA3) must keep the orientation code: name[:-1].
+    # (Fortified Wall's GTAA2 -> GTAA3) may change only the code's material digits.
     for row in rows:
         base, _age, target = row
         gates = [gaia_units[c].class_ == _GATE_CLASS for c in (base, target)]
         if not any(gates):
             continue
         names = (gaia_units[base].name, gaia_units[target].name)
-        if all(gates) and names[0][:-1] == names[1][:-1]:
+        codes = [_GATE_CODE_RE.match(str(name)) for name in names]
+        if all(gates) and all(codes) and codes[0].groups()[:3] == codes[1].groups()[:3]:
             continue
-        message = f"age table: gate upgrade {base} {names[0]!r} -> {target} {names[1]!r} changes its orientation"
+        message = f"age table: gate upgrade {base} {names[0]!r} -> {target} {names[1]!r} changes its family, orientation or state"
         if not lenient:
             violations.append(message)
             continue
@@ -2417,7 +2435,7 @@ def _building_art(
             violations += found
         if art:
             civ_art[str(civ_index)] = art
-    undrawn = set(rows) - drawn_rows
+    undrawn = set(rows) - drawn_rows - bad_ages
     dropped = bad_ages | undrawn
 
     def kept(table: dict[int, dict[int, int]]) -> dict[int, dict[int, int]]:

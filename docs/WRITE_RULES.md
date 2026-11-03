@@ -290,7 +290,11 @@ ever `0.0` or the junk sentinel `7.0`. A gate's orientation lives in its
 therefore means swapping the const among its four siblings, which changes the
 footprint. Top-down Flat (GH #151) draws a gate with its next orientation
 sibling's art through `unit_sprites.flat_art()`, inside the placed const's
-own footprint; that is draw-only, and no write path may use it.
+own footprint; that is draw-only, and no write path may use it. The building
+art tables may likewise draw a stone gate with its Fortified Wall sibling's
+image at a later starting age (`unit_sprites.resolve_entry()`); that is
+draw-only too, and orientation, footprint and `set_unit_const()` stay on the
+placed const.
 
 ## Walls
 
