@@ -212,9 +212,18 @@ graphics per architecture. The same `_entry_for()` runs over every civ's
 table and writes a second file, descape/building_art_map.json:
 
     "civ_names":    {"<civ_index>": "<.dat civ name>"},
-    "age_upgrades": {"<base_const>": {"3"|"4"|"5": const drawn at that
-                     StartingAge}}, from the age techs' "upgrade unit"
-                     commands; only ages where the const changes.
+    "max_age":      6, the last StartingAge the tables name. Absent (the RoR
+                     table): 5, and a lookup clamps its age to it.
+    "age_upgrades": {"<base_const>": {"2".."6": const drawn at that
+                     StartingAge}}, only ages where the const changes: the
+                     generic run of _start_upgrades() (TASK-205), the techs a
+                     player starting there has fired with no civ. Without
+                     max_age, the age techs' commands alone, ages 3..5.
+    "civ_upgrades": {"<civ_index>": {"<base_const>": {"<age>": const}}},
+                     the same run for that civilization, a const's whole
+                     dict wherever it differs from age_upgrades ({} when the
+                     civ loses every upgrade). Keyed by the civilization,
+                     never the architecture.
     "entries":      [entry, ...], unit_graphic_map.json-shaped, each
                      distinct one once.
     "civ_art":      {"<civ_index>": {"<const>": index into entries}}, only
@@ -222,8 +231,10 @@ table and writes a second file, descape/building_art_map.json:
 
 The run fails unless every per-civ entry and every age target agrees with
 its reference on angle_count, rotation_is_variant, variant_count and the
-unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS` and
-a wall's frames past its five shapes (`_wall_frames_agree()`).
+unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS`,
+`_UPGRADE_HOLDOUTS` and a wall's frames past its five shapes
+(`_wall_frames_agree()`). An upgrade no civ draws on either side (Tatars' and
+Saxons' town centre annex swaps) is dropped.
 A decoration-shell body is the delta at the same position in that civ's own
 shell as the hand-verified Gaia body.
 
@@ -322,6 +333,7 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 import _game_root
 
@@ -1621,6 +1633,213 @@ def _age_upgrades(data, building_consts: set[int]) -> dict[int, dict[int, int]]:
     return result
 
 
+# TASK-205: what a player starting at an age has already fired. Dark Age 104 is
+# every player's first tech; StartingAge 6 forces no age tech of its own.
+_DARK_AGE_TECH = 104
+_DARK_AGE = 2
+_POST_IMPERIAL = 6
+
+# Effect command type "disable tech" (the tech id in d), in a civ's tech tree.
+_DISABLE_TECH_COMMAND = 102
+
+# Every tech _start_upgrades() fires a building upgrade from, over every civ and
+# starting age (measured 2026-11-03, build 26249352). A patch that adds or drops
+# one fails the run until someone reviews it.
+_START_UPGRADE_TECHS: frozenset[int] | None = frozenset({
+    101, 102, 103,     # the age techs
+    303, 1469,         # Tatars at Castle, Saxons: a town centre annex 890/2718 no piece draws
+    706, 712,          # Upgrade Rams: Siege Workshop 49 -> 150 (Cumans only at Castle)
+    793, 794, 795,     # Poles' Folwark, held out (_UPGRADE_HOLDOUTS)
+    930, 941,          # Georgians' and Armenians' Fortified Church 1806
+    1292,              # Thracians' Castle 82 -> 2418, the same art
+    1354, 1355,        # Settlement 2556 -> 2558 -> 2560
+})
+
+# Researched techs held out of the start-researched class until TASK-205 Slice 3
+# (walls, gates and towers): Keep, Guard Tower, Fortified Wall.
+_HELD_RESEARCHED_TECHS: frozenset[int] = frozenset({63, 140, 194})
+
+# Slots one firing wave writes two ways, where id order decides: Poles' Folwark
+# (793-795 re-fire together) and the Settlement (1354 and 1355 re-fire together,
+# the later age's 2560 last). Measured 2026-11-03; a new one fails the run.
+_WAVE_CONFLICT_SLOTS: frozenset[int] = frozenset({68, 129, 130, 131, 1734, 2556})
+
+# civ -> placed consts whose own upgrades that civ draws by the generic table
+# instead. Poles' Mill 68-131 -> Folwark 1734/1711/1720 changes the clearance
+# (1.0 vs 1.5), so the art keeps the Mill like footprint and picking (user,
+# 2026-10-28): DEscape shows a Mill where the game shows a Folwark. The run fails
+# unless the measured breaks are exactly these.
+_UPGRADE_HOLDOUTS: dict[int, frozenset[int]] = {38: frozenset({68, 129, 130, 131})}
+
+
+def _research_buttons(tech) -> list[list[int]]:
+    """[building, button] per real research button. gen_object_catalog.py's
+    _button_slots(), copied: each generator is a standalone script. Keep in step."""
+    return [
+        [loc.location_id, loc.button_id] for loc in tech.research_locations
+        if loc.location_id >= 0 and loc.button_id >= 1
+    ]
+
+
+# The age techs a requirement list names, and the age each one starts.
+_CATALOG_AGE_TECHS = {_DARK_AGE_TECH: _DARK_AGE, **dict(_AGE_TECHS)}
+
+
+def _catalog_age(techs: list, tech_id: int, memo: dict[int, int]) -> int:
+    """A tech's age, the latest age tech it requires directly, else its
+    requirements' latest. gen_object_catalog.py's _add_ages(), copied. Keep in step."""
+    if tech_id in memo:
+        return memo[tech_id]
+    memo[tech_id] = _DARK_AGE  # a requirement cycle reads as Dark Age
+    required = [r for r in techs[tech_id].required_techs if 0 <= r < len(techs)]
+    direct = [_CATALOG_AGE_TECHS[r] for r in required if r in _CATALOG_AGE_TECHS]
+    memo[tech_id] = max(direct) if direct else max((_catalog_age(techs, r, memo) for r in required), default=_DARK_AGE)
+    return memo[tech_id]
+
+
+def _building_commands(data, effect_id: int, building_consts: set[int]) -> list[tuple[int, int]]:
+    """An effect's "upgrade unit" commands between two building consts, as (a, b)."""
+    if not 0 <= effect_id < len(data.effects):
+        return []
+    return [
+        (c.a, c.b) for c in data.effects[effect_id].effect_commands
+        if c.type == _UPGRADE_UNIT_COMMAND and c.a in building_consts and c.b in building_consts
+    ]
+
+
+class StartUpgrades(NamedTuple):
+    generic: dict[int, dict[int, int]]               # const -> {age: const drawn}, no civ
+    per_civ: dict[int, dict[int, dict[int, int]]]    # civ index -> the same, that civ's techs
+    fired: set[int]                                  # techs that fired a building upgrade
+    conflicts: set[int]                              # slots one wave wrote two ways
+
+
+def _start_upgrades(data, building_consts: set[int]) -> StartUpgrades:
+    """The building each placed const draws at each StartingAge 2..6, from the
+    techs a player starting there has fired, per civ and once with no civ.
+
+    Candidates: the techs of no civ or this civ, minus its tech tree's disables.
+    Auto techs (no research button, no cost, not an age tech) fire once their
+    required-tech count is met; so do the generic researched ones (no civ, a
+    button) whose catalog age is below the start, as a later start already
+    has them (civ_availability.py's measurement). Stage 2 researches 104;
+    stages 3..start research the age tech, re-fire every researched repeatable
+    auto tech, then fire whatever became eligible. Each pass fires its techs in
+    id order, and each "upgrade unit" command sets slot[a] = b, so a placed
+    463 is never a source. The re-fire is inferred, not measured: the
+    Armenian Fortified Church (941: 104, 30-32 -> 1806) only survives Feudal's
+    104 -> 30 if it fires again after it."""
+    techs = data.techs
+    commands = {
+        tech_id: found for tech_id, tech in enumerate(techs)
+        if tech is not None and (found := _building_commands(data, tech.effect_id, building_consts))
+    }
+    # Only an upgrading tech and what it requires can move a slot or unlock one that does.
+    closure: set[int] = set()
+    todo = list(commands)
+    while todo:
+        tech_id = todo.pop()
+        if tech_id not in closure and 0 <= tech_id < len(techs) and techs[tech_id] is not None:
+            closure.add(tech_id)
+            todo += [r for r in techs[tech_id].required_techs if r >= 0]
+    forced = {_DARK_AGE_TECH, *(tech_id for tech_id, _age in _AGE_TECHS)}
+    auto = {
+        tech_id for tech_id in closure - forced
+        if not _research_buttons(techs[tech_id])
+        and not any(cost.type >= 0 and cost.amount > 0 for cost in techs[tech_id].resource_costs)
+    }
+    memo: dict[int, int] = {}
+    researched_age = {
+        tech_id: _catalog_age(techs, tech_id, memo) for tech_id in closure - forced - _HELD_RESEARCHED_TECHS
+        if techs[tech_id].civ == -1 and _research_buttons(techs[tech_id])
+    }
+
+    def met(tech_id: int, researched: set[int]) -> bool:
+        tech = techs[tech_id]
+        return sum(r in researched for r in tech.required_techs if r >= 0) >= tech.required_tech_count
+
+    result = StartUpgrades({}, {}, set(), set())
+
+    def simulate(civ_index: int | None, start: int) -> dict[int, int]:
+        disabled: set[int] = set()
+        if civ_index is not None:
+            tree = data.civs[civ_index].tech_tree_id
+            disabled = {
+                int(c.d) for c in (data.effects[tree].effect_commands if 0 <= tree < len(data.effects) else ())
+                if c.type == _DISABLE_TECH_COMMAND
+            }
+        candidates = sorted(
+            tech_id for tech_id in auto | {t for t, age in researched_age.items() if age < start}
+            if tech_id not in disabled and techs[tech_id].civ in (-1, civ_index)
+        )
+        researched: set[int] = set()
+        slots: dict[int, int] = {}
+
+        def wave(tech_ids: list[int]) -> None:
+            written: dict[int, set[int]] = {}
+            for tech_id in tech_ids:
+                for a, b in commands.get(tech_id, ()):
+                    slots[a] = b
+                    written.setdefault(a, set()).add(b)
+                    result.fired.add(tech_id)
+            result.conflicts.update(a for a, targets in written.items() if len(targets) > 1)
+
+        def settle() -> None:
+            while new := [t for t in candidates if t not in researched and met(t, researched)]:
+                researched.update(new)
+                wave(new)
+
+        researched.add(_DARK_AGE_TECH)
+        wave([_DARK_AGE_TECH])
+        settle()
+        for tech_id, age in _AGE_TECHS:
+            if age > start:
+                break
+            researched.add(tech_id)
+            wave([tech_id])
+            wave([t for t in candidates if t in researched and t in auto and techs[t].repeatable])
+            settle()
+        return slots
+
+    for civ_index in (None, *range(1, len(data.civs))):
+        table: dict[int, dict[int, int]] = {}
+        for start in range(_DARK_AGE, _POST_IMPERIAL + 1):
+            for base, target in simulate(civ_index, start).items():
+                if target != base:
+                    table.setdefault(base, {})[start] = target
+        if civ_index is None:
+            result.generic.update(table)
+        else:
+            result.per_civ[civ_index] = table
+    return result
+
+
+def _check_start_upgrades(data, building_consts: set[int], upgrades: StartUpgrades) -> None:
+    """The simulation's pinned measurements. A data mod's .dat may add or lack
+    any of these techs (VER 7.7 lacks 1354 and 1469), so for one they are a
+    printed report, not a refusal."""
+    found = []
+    if upgrades.fired != _START_UPGRADE_TECHS:
+        found.append(
+            f"techs firing a building upgrade at a start: measured {sorted(upgrades.fired)}, "
+            f"listed {sorted(_START_UPGRADE_TECHS or ())}"
+        )
+    if upgrades.conflicts != _WAVE_CONFLICT_SLOTS:
+        found.append(
+            f"slots one wave upgrades two ways: measured {sorted(upgrades.conflicts)}, "
+            f"listed {sorted(_WAVE_CONFLICT_SLOTS)}"
+        )
+    for civ_index, civ in enumerate(data.civs):
+        for kind, effect_id in (("tech tree", civ.tech_tree_id), ("team bonus", civ.team_bonus_id)):
+            if _building_commands(data, effect_id, building_consts):
+                found.append(f"civ {civ_index}'s {kind} upgrades a building, which no start models")
+    for problem in found:
+        if _DATA_MOD_DAT:
+            print(f"  data mod: {problem}")
+        else:
+            _game_root.refuse(f"{problem} -- re-verify _start_upgrades() against the .dat", "written as measured")
+
+
 # The fields an entry's const-keyed logic reads (rotation dispatch, variant
 # cycling, footprints): they must not change with the art.
 _ART_INVARIANT_FIELDS = ("angle_count", "rotation_is_variant", "variant_count")
@@ -1722,24 +1941,40 @@ def _building_art(
     data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
     gaia_entries: dict[str, dict[str, object]], building_consts: set[int],
     ages: dict[int, dict[int, int]], annex_upgrades: dict[int, dict[int, int]],
+    civ_ages: dict[int, dict[int, dict[int, int]]] | None = None,
 ) -> dict[str, object]:
     """descape/building_art_map.json's content (GH #48): the age table, every
     civ's building entries that differ from Gaia's, and the civ names.
 
+    `ages` is the generic table and `civ_ages` each civ's own (TASK-205,
+    _start_upgrades()); None writes the age table alone, as before. Every
+    (base, age, target) row of any table is checked against every civ's art,
+    since a player's architecture need not be its civilization. A row no civ
+    draws on either side (a town centre annex swap) is dropped.
+
     Lenient (GH #262), each violation is handled where it is found instead of
-    failing: a civ's const entry is held out on Gaia art, and a bad age pair
-    is dropped from the shared age table for every civ once all civs are read.
+    failing: a civ's const entry is held out on Gaia art, and a bad age row
+    is dropped from every table holding it once all civs are read.
     `annex_upgrades` was built from the full table, so a dropped pair can leave
     a composite's annexes at the upgraded age's art."""
     gaia_units = data.civs[0].units
     lenient = _game_root.lenient()
+    civ_ages = {civ: {base: dict(by_age) for base, by_age in table.items()} for civ, table in (civ_ages or {}).items()}
+    # (base, age, target) -> the tables holding it, None for the generic one.
+    rows: dict[tuple[int, int, int], set[int | None]] = {}
+    for holder, table in ((None, ages), *civ_ages.items()):
+        for base, by_age in table.items():
+            for age, target in by_age.items():
+                rows.setdefault((base, age, target), set()).add(holder)
 
     civ_art: dict[str, dict[str, dict[str, object]]] = {}
     no_gaia_entry: set[int] = set()
     violations: list[str] = []
     held_out: set[int] = set()
     lenient_held_out: set[int] = set()
-    bad_ages: set[tuple[int, int]] = set()
+    bad_ages: set[tuple[int, int, int]] = set()
+    drawn_rows: set[tuple[int, int, int]] = set()
+    held_upgrades: dict[int, set[int]] = {}
 
     def age_fallback(base: int) -> str:
         # annex_upgrades was built from the full table, before the pair was dropped.
@@ -1748,8 +1983,9 @@ def _building_art(
         return f"dropped from the age table for every civ{note}"
 
     # Gates carry no age art: their orientation siblings are keyed on the const.
-    for base, by_age in ages.items():
-        for c in (base, *by_age.values()):
+    for row in rows:
+        base, _age, target = row
+        for c in (base, target):
             if gaia_units[c].class_ != _GATE_CLASS:
                 continue
             message = f"age table: gate const {c} is upgraded by an age tech"
@@ -1757,7 +1993,7 @@ def _building_art(
                 violations.append(message)
                 continue
             _game_root.refuse(message, age_fallback(base))
-            bad_ages |= {(base, age) for age, target in by_age.items() if c in (base, target)}
+            bad_ages.add(row)
     for civ_index, civ in enumerate(data.civs):
         units = civ.units
         art: dict[str, dict[str, object]] = {}
@@ -1789,57 +2025,88 @@ def _building_art(
             violations += problems
             if keep and civ_index and entry != gaia_entry:
                 art[str(const)] = entry
-        for base, by_age in ages.items():
+        for row, holders in rows.items():
+            base, age, target = row
+            if row in bad_ages:
+                continue
             base_entry = art.get(str(base)) or gaia_entries.get(str(base))
-            for age, target in by_age.items():
-                if (base, age) in bad_ages:
-                    continue
-                target_entry = art.get(str(target)) or gaia_entries.get(str(target))
-                if base_entry is None or target_entry is None or units[base] is None or units[target] is None:
-                    _game_root.refuse(
-                        f"civ {civ_index}: age {age} upgrade {base} -> {target} has no "
-                        f"entry on one side -- re-verify the age techs against the .dat",
-                        age_fallback(base),
-                    )
-                    bad_ages.add((base, age))
-                    continue
-                found = _art_invariant_violations(
-                    f"civ {civ_index} age {age} {base} -> {target}", target_entry,
-                    units[target], base_entry, units[base],
+            target_entry = art.get(str(target)) or gaia_entries.get(str(target))
+            if base_entry is None and target_entry is None:
+                continue  # nothing drawn either way in this civ's art
+            drawn_rows.add(row)
+            if base_entry is None or target_entry is None or units[base] is None or units[target] is None:
+                _game_root.refuse(
+                    f"civ {civ_index}: age {age} upgrade {base} -> {target} has no "
+                    f"entry on one side -- re-verify the age techs against the .dat",
+                    age_fallback(base),
                 )
-                if found and lenient:
-                    for problem in found:
-                        _game_root.refuse(problem, age_fallback(base))
-                    bad_ages.add((base, age))
-                    continue
-                violations += found
+                bad_ages.add(row)
+                continue
+            techs = "" if None in holders else f" (civ {', '.join(map(str, sorted(holders)))}'s techs)"
+            what = f"civ {civ_index} age {age} {base} -> {target}{techs}"
+            found = _art_invariant_violations(what, target_entry, units[target], base_entry, units[base])
+            if found and None not in holders and all(base in _UPGRADE_HOLDOUTS.get(c, ()) for c in holders):
+                for c in holders:
+                    held_upgrades.setdefault(c, set()).add(base)
+                continue
+            if found and lenient:
+                for problem in found:
+                    _game_root.refuse(problem, age_fallback(base))
+                bad_ages.add(row)
+                continue
+            violations += found
         if art:
             civ_art[str(civ_index)] = art
-    if bad_ages:
-        ages = {
-            base: kept
-            for base, by_age in ages.items()
-            if (kept := {age: target for age, target in by_age.items() if (base, age) not in bad_ages})
+    undrawn = set(rows) - drawn_rows
+    dropped = bad_ages | undrawn
+
+    def kept(table: dict[int, dict[int, int]]) -> dict[int, dict[int, int]]:
+        return {
+            base: remaining
+            for base, by_age in table.items()
+            if (remaining := {age: t for age, t in by_age.items() if (base, age, t) not in dropped})
         }
+
+    # A held-out base draws by the generic table, as for a civ without the upgrade.
+    for c, bases in held_upgrades.items():
+        for base in bases:
+            civ_ages[c][base] = dict(ages.get(base, {}))
+    generic = kept(ages)
+    civ_upgrades: dict[int, dict[int, dict[int, int]]] = {}
+    for c, raw in civ_ages.items():
+        table = kept(raw)
+        differs = {base: table.get(base, {}) for base in set(table) | set(generic) if table.get(base, {}) != generic.get(base, {})}
+        if differs:
+            civ_upgrades[c] = differs
+    ages = generic
     # A data mod's .dat may lack the civ a holdout was listed for.
-    unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS)
+    measured_upgrades = {c: frozenset(bases) for c, bases in held_upgrades.items()}
+    listed_upgrades = _UPGRADE_HOLDOUTS if civ_ages else {}
+    unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS) or measured_upgrades != listed_upgrades
     if _DATA_MOD_DAT:
-        unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS)
+        unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS) or any(
+            not bases <= listed_upgrades.get(c, frozenset()) for c, bases in measured_upgrades.items()
+        )
     if violations or unexplained:
         _game_root.refuse(
             "per-civ/per-age building art breaks the placed const's own logic -- "
             "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
-            + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}",
+            + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}"
+            + (f"\n  upgrade holdouts measured {_holdout_text(measured_upgrades)}, listed {_holdout_text(listed_upgrades)}"
+               if measured_upgrades != listed_upgrades else ""),
             "written as measured",
         )
     print(f"  building consts: {len(building_consts)}; age-upgraded bases: {len(ages)}")
+    print(f"    civs with their own upgrades: {len(civ_upgrades)}; upgrade holdouts: {_holdout_text(measured_upgrades)}")
+    if undrawn:
+        print(f"    upgrades no civ draws, dropped: {sorted({(b, t) for b, _a, t in undrawn})}")
     differing = {c for art in civ_art.values() for c in art}
     print(f"  building consts whose art differs by civ: {len(differing)}")
     print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
     if lenient_held_out:
         print(f"    held out on Gaia art (lenient): {sorted(lenient_held_out)}")
     if bad_ages:
-        print(f"    age pairs dropped (lenient): {sorted(bad_ages)}")
+        print(f"    age rows dropped (lenient): {sorted(bad_ages)}")
     if no_gaia_entry:
         print(f"    skipped, no Gaia entry to fall back from: {sorted(no_gaia_entry)}")
     # Civs sharing an art set share entries, so each distinct one is stored once.
@@ -1853,19 +2120,31 @@ def _building_art(
                 index_of[key] = len(shared)
                 shared.append(entry)
             civ_art_indexed.setdefault(civ_key, {})[const_key] = index_of[key]
+
+    def keyed(table: dict[int, dict[int, int]]) -> dict[str, dict[str, int]]:
+        return {str(base): {str(age): t for age, t in sorted(by_age.items())} for base, by_age in sorted(table.items())}
+
+    upgrades: dict[str, object] = {"age_upgrades": keyed(ages)}
+    if civ_ages:
+        upgrades = {
+            "max_age": _POST_IMPERIAL,
+            **upgrades,
+            "civ_upgrades": {str(c): keyed(table) for c, table in sorted(civ_upgrades.items())},
+        }
     return {
         "_comment": (
             "GH #48 per-civ and per-age building art -- see "
             "tools/gen_unit_graphic_map.py"
         ),
         "civ_names": {str(i): civ.name for i, civ in enumerate(data.civs)},
-        "age_upgrades": {
-            str(base): {str(age): target for age, target in sorted(by_age.items())}
-            for base, by_age in sorted(ages.items())
-        },
+        **upgrades,
         "entries": shared,
         "civ_art": civ_art_indexed,
     }
+
+
+def _holdout_text(holdouts: dict[int, frozenset[int]]) -> str:
+    return str({c: sorted(bases) for c, bases in sorted(holdouts.items())})
 
 
 # GH #67: each list above is hand-measured on the AoE2 .dat, so a RoR run
@@ -1888,6 +2167,8 @@ _ROR_VALUES: dict[str, object] = {
     "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
     # Smoke and Flames unmeasured on the RoR .dat (absent 2026-10-28). The rest match AoE2's (2026-10-17).
     "_PARTICLE_CONSTS": frozenset({303, 1608, 1609, 1610}),
+    # TASK-205's start simulation is unmeasured on the RoR .dat (absent 2026-11-03): the age techs alone.
+    "_START_UPGRADE_TECHS": None,
 }
 # Measured on the RoR .dat (2026-10-16): _AGE_TECHS' 101/102/103 are its Tool,
 # Bronze and Iron Ages, so they stay; the holdout is the same hidden PORT as AoE2's.
@@ -2060,8 +2341,15 @@ def main() -> None:
             )
             del entry["pieces"]
 
+    # The age techs alone still drive the annexes: a persisting upgrade (49 -> 150 at
+    # every age) would trip _annex_upgrades()' "target at two ages" check.
+    generic, civ_ages = ages, None
+    if _START_UPGRADE_TECHS is not None:
+        start = _start_upgrades(data, building_consts)
+        _check_start_upgrades(data, building_consts, start)
+        generic, civ_ages = start.generic, start.per_civ
     building_art = _building_art(
-        data, graphics, graphics_dir, body_positions, entries, building_consts, ages, annex_upgrades
+        data, graphics, graphics_dir, body_positions, entries, building_consts, generic, annex_upgrades, civ_ages
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     art_path = args.out_dir / "building_art_map.json"

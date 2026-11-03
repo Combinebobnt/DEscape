@@ -30,7 +30,7 @@
   },
   "steam_buildid": "26249352",
   "tables": {
-    "building_art_map.json": "f5b056501b6058e407deee37d6035d5df21dae8aae4ad18aff0517f89e272b21",
+    "building_art_map.json": "d4addf33f775b31b9590aae28366cdbef29020edf5d5624d4823d57a394506a9",
     "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
     "object_catalog.json": "0740a67aaaf9fc9fc25f9174edac7e242be3bb4b4b89d8a27ae94015bb2c33e1",
     "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",

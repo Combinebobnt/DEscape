@@ -181,9 +181,10 @@ def test_a_non_building_const_is_untouched():
 
 
 def test_the_age_table_reads_the_age_techs():
+    """TASK-205: the generic start simulation, ages 2..6; Post-Imperial adds no age tech."""
     ages = unit_sprites.building_art().age_upgrades
-    assert ages[12] == {3: 498, 4: 132, 5: 20}
-    assert ages[HOUSE] == {3: 463, 4: 464, 5: 465}
+    assert ages[12] == {3: 498, 4: 132, 5: 20, 6: 20}
+    assert ages[HOUSE] == {3: 463, 4: 464, 5: 465, 6: 465}
     assert 463 not in ages
 
 
