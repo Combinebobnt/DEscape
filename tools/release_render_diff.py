@@ -181,6 +181,17 @@ def _one_tile_statics_and_hidden_fish() -> None:
         terrain_palette.FISH_TILE_SPANS.pop(const, None)
 
 
+def _no_smoke_and_flame_particles() -> None:
+    """Put the pre-GH #256 Smoke and Flames back: no graphic-map entry, so they draw a coloured mark."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "graphic_map", "_particle_stems")
+    # Built once: the worker never switches dataset, and graphic_map() runs several times per unit.
+    table = {c: e for c, e in unit_sprites.graphic_map().items() if c not in (1308, 1333, 1334, 1335, 1336)}
+    unit_sprites.graphic_map = lambda: table
+    unit_sprites._particle_stems.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -260,6 +271,12 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         # Measured 2026-11-03: LeLoi's 230 FLARE4 markers draw only with sprites on.
         since="v0.10", control_file=LELOI, must_fail=SPRITES_ON,
         patch=_one_tile_statics_and_hidden_fish,
+    ),
+    Neutralization(
+        "particle-fire",
+        "GH #256 (TASK-454): Smoke and Flames 1-4 draw their fire and smoke, not a coloured mark",
+        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
+        patch=_no_smoke_and_flame_particles,
     ),
 )
 
