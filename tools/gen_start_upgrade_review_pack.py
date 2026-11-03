@@ -9,12 +9,18 @@ recorded verdicts stand. The scenes come from a fixture written through the
 real write path: examples/blank_map.aoe2scenario, eight players set through
 OptionsEditModel, buildings placed through UnitEditModel (walls and the gate
 through descape/wall_run.py's plans), then write_scenario() to
-build/task205/fixture.aoe2scenario, read back before any frame renders. That
-file is also the AoE2:DE editor check's input (`--fixture-only`).
+build/task205/fixture.aoe2scenario (`--fixture-only`, the AoE2:DE editor
+check's input), read back before any frame renders. A pack run renders from
+its own scratch copy, so it never rewrites the file a tester has open.
 
-Each style question pairs a scene with two references on blank ground, drawn
-as the target const itself at an age and tech civ no upgrade row covers, so
-no inject can move them (`--check` asserts it).
+Each style question pairs a scene with two references on blank ground, the
+scene's units redrawn with explicit (art_civ, age, tech_civ) and consts no
+inject's table change reaches (`_REFERENCES` says how each stays put;
+`--check` asserts none moves).
+
+Every inject swaps whole buildings, so a localized inject is as large as the
+coarse one on the frame it shares with it. Size is not what this pack
+resolves: `--check` asserts that each localized inject reaches one frame.
 
 Run:
     tools/gen_start_upgrade_review_pack.py --fixture-only
@@ -30,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -43,7 +50,7 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, civ_art, player_fields, render, unit_sprites, wall_run
+from descape import asset_source, batch_api, civ_art, player_fields, render, unit_sprites, wall_run
 from descape.edit_history import EditHistory
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units
@@ -104,10 +111,11 @@ def _place_walls(model, loaded, player: int) -> None:
     spec = WALLS[player]
     gate = spec[2]
     if gate is not None:
-        gate_tiles = [(gate[0] + i, gate[1]) for i in range(render.tile_span(STONE_GATE, render.NON_BUILDING_SPAN)[0])]
+        span = render.tile_span(STONE_GATE, render.NON_BUILDING_SPAN)
+        gate_tiles = [(gate[0] + i, gate[1] + j) for i in range(span[0]) for j in range(span[1])]
         tiles, walls = wall_run.wall_scene(loaded, mm.map_width, mm.map_height)
         plan = wall_run.plan_gate_over_walls(gate_tiles, existing_tiles=tiles, existing_walls=walls)
-        wall_run.apply_gate_plan(model, player, STONE_GATE, *render.span_anchor(*gate, 4, 1), plan)
+        wall_run.apply_gate_plan(model, player, STONE_GATE, *render.span_anchor(*gate, *span), plan)
     tiles, walls = wall_run.wall_scene(loaded, mm.map_width, mm.map_height)
     plan = wall_run.plan_wall_run(_wall_tiles(spec), unit_const=STONE_WALL, existing_tiles=tiles, existing_walls=walls)
     wall_run.apply_wall_plan(model, player, plan)
@@ -117,7 +125,7 @@ def write_fixture(path: Path = FIXTURE) -> Path:
     """The fixture, through the real write path, read back and checked."""
     if is_workshop_subscribed(path):
         raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {path}")
-    loaded = load_map_and_units(SOURCE)
+    loaded = batch_api.load(SOURCE)  # activates the file's game dataset (AGENTS.md)
     options = OptionsEditModel(loaded)
     options.set_value(player_fields.PLAYER_COUNT_FIELD_ID, len(PLAYERS))
     for player, (civ, arch, age, _units) in PLAYERS.items():
@@ -159,7 +167,8 @@ def _check_readback(path: Path) -> None:
 
 @cache
 def _fixture():
-    return load_map_and_units(str(write_fixture()))
+    scratch = Path(tempfile.mkdtemp(prefix="t205_fixture_")) / FIXTURE.name
+    return load_map_and_units(str(write_fixture(scratch)))
 
 
 # ----------------------------------------------------------------- injects
@@ -254,7 +263,8 @@ _SCENES = {
 }
 
 # reference id -> (scene whose units it redraws, {placed const: const drawn}, (art_civ, age, tech_civ)).
-# Every pair's age 2 and tech civ are ones no upgrade row covers for the drawn consts, so no inject moves them.
+# The drawn consts at age 2 with no tech civ have no upgrade row, so no inject's table change reaches them; r1b/r2b
+# draw 104 at Feudal through the generic age-tech row (104 -> 30), which every inject keeps.
 _REFERENCES = {
     "r1a": ("s1", {MONASTERY: FORTIFIED_CHURCH}, (ARMENIANS, 2, None)),
     "r1b": ("s1", {MONASTERY: MONASTERY}, (ARMENIANS, FEUDAL, None)),
@@ -264,7 +274,7 @@ _REFERENCES = {
     "r3b": ("s3", {WATCH_TOWER: GUARD_TOWER}, (BRITONS, 2, None)),
     "r4a": ("s4", {STONE_WALL: FORTIFIED_WALL, STONE_GATE: FORTIFIED_GATE, WATCH_TOWER: GUARD_TOWER}, (BRITONS, 2, None)),
     "r4b": ("s4", {}, (BRITONS, 2, None)),
-    # Cumans' row starts the workshop at age 4, so r5a draws the unupgraded 49.
+    # The generic row draws 49 as 150 from age 2; Cumans' row starts at age 4, so r5a draws 49 itself.
     "r5a": ("s5", {}, (TATARS, 2, CUMANS)),
     "r5b": ("s5", {SIEGE_WORKSHOP: SIEGE_WORKSHOP_2}, (TATARS, 2, None)),
     "r6a": ("s6", {SETTLEMENT: SETTLEMENT_2}, (ARMENIANS, 2, None)),
@@ -371,7 +381,7 @@ def generate(out_dir: Path, inject: str | None, replica: int = 0) -> list[Path]:
 
 def check() -> None:
     """Spec coupling, frame band, that each reference pair differs, each inject's reach per frame, that no
-    inject moves a reference or the specificity frame, and that some inject is smaller than the coarse one."""
+    inject moves a reference or the specificity frame, and that each localized inject reaches one frame."""
     failures: list[str] = []
     spec = _spec()
     try:
@@ -407,9 +417,13 @@ def check() -> None:
         reach[name] = touched
         shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
         print(f"reach: {name} -> {shown or 'nothing'}")
-    coarse_total = sum(px for px, _c in reach[COARSE_INJECT].values())
-    if not any(sum(px for px, _c in t.values()) < coarse_total for name, t in reach.items() if name != COARSE_INJECT):
-        failures.append("no inject is smaller than the coarse one")
+    # Whole-building swaps (module docstring): a localized inject is localized by frame count, not by size.
+    coarse = set(reach[COARSE_INJECT])
+    for name, touched in reach.items():
+        if name != COARSE_INJECT and len(touched) != 1:
+            failures.append(f"inject {name}: reached {sorted(touched)}, not one frame")
+    if len(coarse) < 2:
+        failures.append(f"coarse inject {COARSE_INJECT} reached {sorted(coarse)}: not coarse")
     if failures:
         for f in failures:
             print(f"FAIL: {f}")

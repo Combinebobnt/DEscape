@@ -200,6 +200,7 @@ def _age_techs_only() -> None:
 
     _require(unit_sprites, "building_art", "BuildingArt")
     table = age_techs_only(unit_sprites.building_art())
+    # The lambda has no cache_clear(): safe because the worker never calls unit_sprites.clear_caches().
     unit_sprites.building_art = lambda: table
 
 
