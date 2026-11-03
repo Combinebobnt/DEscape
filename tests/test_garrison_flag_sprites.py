@@ -223,8 +223,8 @@ def test_the_hosts_facing_turns_its_body_but_never_its_flag(art, rotation):
 def test_the_hosts_civ_art_picks_its_own_flags(art, monkeypatch):
     """The flags come from the entry the body draws from (resolve_entry())."""
     civ_entry = dict(art, garrison_flags=[_flag(dx=50, dy=-90)])
-    monkeypatch.setattr(unit_sprites, "resolve_entry", lambda const, civ, age: civ_entry if civ == 7 else art)
-    gaia = unit_sprites.garrison_flag_pieces_for(HOST, 1, NATIVE_HALF_W, art=(None, 2))
-    civ = unit_sprites.garrison_flag_pieces_for(HOST, 1, NATIVE_HALF_W, art=(7, 2))
+    monkeypatch.setattr(unit_sprites, "resolve_entry", lambda const, civ, age, tech: civ_entry if civ == 7 else art)
+    gaia = unit_sprites.garrison_flag_pieces_for(HOST, 1, NATIVE_HALF_W, art=(None, 2, None))
+    civ = unit_sprites.garrison_flag_pieces_for(HOST, 1, NATIVE_HALF_W, art=(7, 2, 7))
     assert [(p.dx, p.dy) for p in gaia] == [(FLAG_DX, FLAG_DY)]
     assert [(p.dx, p.dy) for p in civ] == [(50, -90)]

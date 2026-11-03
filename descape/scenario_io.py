@@ -482,11 +482,11 @@ class LoadedScenario:
     # if units_write_supported is False.
     unit_spans: list[list[tuple[int, int]]] | None = None
 
-    # GH #48: (art_civ, age) per player_id 0..8, from civ_art.player_art() at
+    # GH #48: (art_civ, age, tech_civ) per player_id 0..8, from civ_art.player_art() at
     # load and refresh_player_render_context() after a Players edit. Read with
     # getattr(scenario, "player_art", None): the duck-typed fakes lack it, and
     # None draws today's Gaia-table art.
-    player_art: tuple[tuple[int | None, int], ...] | None = None
+    player_art: tuple[tuple[int | None, int, int | None], ...] | None = None
 
 
 def retriever_length(retriever: Any) -> int:
@@ -1402,7 +1402,7 @@ def _header_variant(header_retriever_map: dict) -> int | None:
         return None
 
 
-def _player_art_or_none(loaded: LoadedScenario, pending=None) -> tuple[tuple[int | None, int], ...] | None:
+def _player_art_or_none(loaded: LoadedScenario, pending=None) -> tuple[tuple[int | None, int, int | None], ...] | None:
     """civ_art.player_art(), or None (today's Gaia-table art) when surprising
     player data makes player_fields raise: art must never make a file unopenable.
     A Return of Rome file indexes its own civs (GH #67)."""

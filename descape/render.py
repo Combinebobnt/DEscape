@@ -3716,7 +3716,7 @@ def _flat_unit_icon(
     team_index: int,
     bounds: tuple[int, int, int, int],
     tile_px: int,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
     with_farms: bool = False,
 ) -> unit_sprites.SpriteDraw | None:
     """One unit's Flat icon, the per-unit body of _flat_icon_layer_sliced()
@@ -3745,8 +3745,8 @@ def _flat_unit_icon(
     return icon
 
 
-def player_art_for(scenario, player_id: int) -> tuple[int | None, int] | None:
-    """`player_id`'s (art_civ, age) building-art pair (GH #48, civ_art), or
+def player_art_for(scenario, player_id: int) -> tuple[int | None, int, int | None] | None:
+    """`player_id`'s (art_civ, age, tech_civ) building art (GH #48, civ_art), or
     None for today's Gaia-table art: a duck-typed fake scenario carries no
     player_art, and a file shown with the other game's data (GH #67) indexes
     civs the active art tables do not have."""

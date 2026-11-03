@@ -53,10 +53,11 @@ import json
 import math
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 import numpy as np
@@ -689,6 +690,13 @@ class BuildingArt(NamedTuple):
     age_upgrades: dict[int, dict[int, int]]  # base const -> {age: const drawn}
     civ_art: dict[int, dict[int, dict]]      # civ index -> {const: entry}
     civ_names: dict[int, str]
+    # tech civ -> {base const -> {age: const drawn}}, replacing age_upgrades' row (TASK-205)
+    civ_upgrades: Mapping[int, dict[int, dict[int, int]]] = MappingProxyType({})
+    max_age: int = 5  # a lookup clamps its age to this; a table without the key is 5
+
+
+def _upgrade_rows(rows: dict) -> dict[int, dict[int, int]]:
+    return {int(base): {int(age): target for age, target in by_age.items()} for base, by_age in rows.items()}
 
 
 @game_dataset.cache(maxsize=1)
@@ -697,15 +705,14 @@ def building_art() -> BuildingArt:
     data = json.loads(game_dataset.table_path(BUILDING_ART_PATH).read_text())
     entries = data["entries"]
     return BuildingArt(
-        age_upgrades={
-            int(base): {int(age): target for age, target in by_age.items()}
-            for base, by_age in data["age_upgrades"].items()
-        },
+        age_upgrades=_upgrade_rows(data["age_upgrades"]),
         civ_art={
             int(civ): {int(const): entries[index] for const, index in art.items()}
             for civ, art in data["civ_art"].items()
         },
         civ_names={int(civ): name for civ, name in data["civ_names"].items()},
+        civ_upgrades={int(civ): _upgrade_rows(rows) for civ, rows in data.get("civ_upgrades", {}).items()},
+        max_age=data.get("max_age", 5),
     )
 
 
@@ -728,10 +735,14 @@ def _art_excluded(unit_const: int) -> bool:
     )
 
 
-def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None:
+def resolve_entry(
+    unit_const: int, art_civ: int | None, age: int, tech_civ: int | None = None,
+) -> dict | None:
     """The entry a placed `unit_const` draws for an owner with this
-    (art_civ, age) (descape/civ_art.py): the const the age techs upgrade it to
-    at `age`, in that civ's art if it has its own, else in the Gaia table.
+    (art_civ, age, tech_civ) (descape/civ_art.py): the const the techs a
+    player starting at `age` has fired upgrade it to (`tech_civ`'s own row
+    where its civ differs from the generic one, TASK-205), in that civ's art
+    if it has its own, else in the Gaia table.
     Only the drawn entry changes: every caller still keys rotation, variant,
     footprint and wall/gate logic on the placed const, which the generator's
     invariant asserts make safe. A directly placed age target (463) is never
@@ -740,7 +751,11 @@ def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None
     if _art_excluded(unit_const):
         return graphic_map().get(unit_const)
     art = building_art()
-    drawn = art.age_upgrades.get(unit_const, {}).get(age, unit_const)
+    age = min(age, art.max_age)
+    by_age = art.civ_upgrades.get(tech_civ, {}).get(unit_const)
+    if by_age is None:
+        by_age = art.age_upgrades.get(unit_const, {})
+    drawn = by_age.get(age, unit_const)
     if art_civ is not None:
         entry = art.civ_art.get(art_civ, {}).get(drawn)
         if entry is not None:
@@ -748,11 +763,11 @@ def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None
     return graphic_map().get(drawn)
 
 
-def _entry_for_art(unit_const: int, art: tuple[int | None, int] | None) -> dict | None:
+def _entry_for_art(unit_const: int, art: tuple[int | None, int, int | None] | None) -> dict | None:
     """graphic_map()'s entry when `art` is None (today's art), else resolve_entry()'s."""
     if art is None:
         return graphic_map().get(unit_const)
-    return resolve_entry(unit_const, art[0], art[1])
+    return resolve_entry(unit_const, *art)
 
 
 def _body_offset(entry: dict) -> tuple[int, int]:
@@ -2117,7 +2132,7 @@ def rect_marker_for(category: str, team_index: int, w: int, h: int, half_w: int)
 
 def sprite_for(
     unit_const: int, rotation: float, team_index: int, half_w: int,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
 ) -> SpriteDraw | None:
     """This unit's tinted, scaled sprite, or None to fall back to a mark.
 
@@ -2131,7 +2146,7 @@ def sprite_for(
     this draws only the entry's OWN graphic -- unchanged behavior for every
     existing caller. sprite_pieces_for() is the composite-aware sibling.
 
-    `art` is the owner's (art_civ, age) (GH #48, resolve_entry()); None draws
+    `art` is the owner's (art_civ, age, tech_civ) (GH #48, resolve_entry()); None draws
     today's Gaia-table art.
     """
     entry = _entry_for_art(unit_const, art)
@@ -2145,7 +2160,7 @@ def sprite_for(
 def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
     wall_alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
@@ -2204,7 +2219,7 @@ def sprite_pieces_for(
 
 
 def garrison_flag_pieces_for(
-    unit_const: int, team_index: int, half_w: int, art: tuple[int | None, int] | None = None,
+    unit_const: int, team_index: int, half_w: int, art: tuple[int | None, int, int | None] | None = None,
 ) -> list[SpritePiece]:
     """The garrison flag(s) a host shows while it holds units (GH #203): one
     SpritePiece per `garrison_flags` item of the entry its body draws from
@@ -2486,7 +2501,7 @@ def _art_key(entry: dict) -> tuple:
 
 def icon_for(
     unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int,
-    seed: int | None = None, art: tuple[int | None, int] | None = None,
+    seed: int | None = None, art: tuple[int | None, int, int | None] | None = None,
 ) -> SpriteDraw | None:
     """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
     Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the

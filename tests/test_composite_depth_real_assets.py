@@ -112,11 +112,11 @@ def _unit(const: int, x: float, y: float):
 
 
 def _scenario(placed, terrain_id: int, art: tuple | None = None):
-    """`art` is PLAYER's (art_civ, age) building art (GH #48); None draws the Gaia table."""
+    """`art` is PLAYER's (art_civ, age, tech_civ) building art (GH #48); None draws the Gaia table."""
     base = _base(terrain_id)
     units = [[] for _ in base.unit_manager.units]
     units[PLAYER] = [_unit(*p) for p in placed]
-    player_art = None if art is None else tuple(art if i == PLAYER else (None, 2) for i in range(len(units)))
+    player_art = None if art is None else tuple(art if i == PLAYER else (None, 2, None) for i in range(len(units)))
     return SimpleNamespace(
         map_manager=base.map_manager,
         unit_manager=SimpleNamespace(units=units),
@@ -167,7 +167,7 @@ def _patched(const: int, transform, art: tuple | None = None):
     elif transform is not None:
         drawn = copy.deepcopy(real_resolve(const, *art))
         drawn["pieces"] = transform(drawn["pieces"])
-        unit_sprites.resolve_entry = lambda c, civ, age: drawn if c == const else real_resolve(c, civ, age)
+        unit_sprites.resolve_entry = lambda c, *art_: drawn if c == const else real_resolve(c, *art_)
     try:
         yield
     finally:
@@ -403,7 +403,7 @@ def test_a_unit_inside_a_town_centre_paints_between_its_back_and_front_pieces():
 # age-remapped annexes), Vikings' nors (main at [2, 2]), Incas' Imperial ande
 # ([2, 2]) and Cumans' Castle ceas ([0, 2]). Sets whose main slot is [0, 3] or
 # [1, 3] (east, medi, ...) have no tile between, so no unit can be sandwiched.
-TC_ART_SETS = [(None, 3), (11, 3), (21, 5), (33, 4)]
+TC_ART_SETS = [(None, 3, None), (11, 3, 11), (21, 5, 21), (33, 4, 33)]
 
 
 @pytest.mark.parametrize("art", TC_ART_SETS, ids=lambda a: f"civ{a[0]}-age{a[1]}")

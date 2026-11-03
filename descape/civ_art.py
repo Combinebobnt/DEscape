@@ -2,19 +2,25 @@
 
 A building's art depends on its owner's architecture and starting age, so the
 renderer resolves a placed building const through a per-player
-`(art_civ, age)` pair (`unit_sprites.resolve_entry()`). This module derives
-that pair from the scenario's own player fields. Qt-free.
+`(art_civ, age, tech_civ)` triple (`unit_sprites.resolve_entry()`). This
+module derives that triple from the scenario's own player fields. Qt-free.
 
 - `art_civ` is a .dat civ index (1..62): the architecture if it names a real
   civ, else the civilization if that does, else None, meaning today's
   (Gaia-table) art. Random values, unknown tokens and a missing
   `architecture_set` (a 1.37 file) fall through to the next choice.
-- `age` is the StartingAge value, 2..5: 6 (Post-Imperial) draws as 5, and
-  anything else (0 and 4294967295 appear on inactive players) as 2.
+- `age` is the StartingAge value, 2..6 (Post-Imperial is its own age,
+  TASK-205: it has Keep and the other age-5 techs); anything else (0 and
+  4294967295 appear on inactive players) is 2. A table without a `max_age`
+  clamps it at lookup.
+- `tech_civ` is the civilization's .dat index, never the architecture's:
+  the civ whose tech tree and auto techs upgrade the building (Armenians'
+  Fortified Church). None (random, unknown) uses the generic upgrades.
 - GAIA is always `GAIA_ART`, so Gaia's buildings keep today's art.
 - A Return of Rome file (GH #67) indexes its own .dat's civs: ints 1..17, and
   tokens through `player_fields.ROR_CIVILIZATIONS` (its PERSIAN-CIV is RoR 9,
-  not AoE2's Persians). Its ages are stored 2..6 like AoE2's (Post-Iron draws as Iron).
+  not AoE2's Persians). Its ages are stored 2..6 like AoE2's; its table has
+  no `max_age`, so Post-Iron draws as Iron.
 
 Civilization values are ints below scenario version 1.56 (CivilizationOld,
 equal to the .dat civ index) and str16 tokens such as 'HUN-CIV' from 1.56 on
@@ -30,8 +36,11 @@ from collections.abc import Mapping
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld
 
-GAIA_ART: tuple[int | None, int] = (None, 2)
-"""(art_civ, age) for GAIA, and for any player whose values resolve nowhere."""
+Art = tuple[int | None, int, int | None]
+"""(art_civ, age, tech_civ), one player's building art."""
+
+GAIA_ART: Art = (None, 2, None)
+"""(art_civ, age, tech_civ) for GAIA, and for any player whose values resolve nowhere."""
 
 MAX_CIV_INDEX = 62
 """The .dat's last civ index (Danes)."""
@@ -87,23 +96,22 @@ def _ror_civ_index(value: object) -> int | None:
 
 
 def art_age(value: object) -> int:
-    """The StartingAge a building draws at: 2..5 as-is, Post-Imperial as
-    Imperial, anything else as Dark Age."""
+    """The StartingAge a building draws at: 2..6 as-is, anything else as
+    Dark Age."""
     if isinstance(value, bool) or not isinstance(value, int):
         return DARK_AGE
-    if value == POST_IMPERIAL_AGE:
-        return IMPERIAL_AGE
-    return value if DARK_AGE <= value <= IMPERIAL_AGE else DARK_AGE
+    return value if DARK_AGE <= value <= POST_IMPERIAL_AGE else DARK_AGE
 
 
 def resolve(
     civilization: object, architecture: object, starting_age: object, ror: bool = False,
-) -> tuple[int | None, int]:
-    """One player's (art_civ, age) from its three raw values; `ror` as civ_index()."""
+) -> Art:
+    """One player's (art_civ, age, tech_civ) from its three raw values; `ror` as civ_index()."""
+    tech_civ = civ_index(civilization, ror)
     art_civ = civ_index(architecture, ror)
     if art_civ is None:
-        art_civ = civ_index(civilization, ror)
-    return art_civ, art_age(starting_age)
+        art_civ = tech_civ
+    return art_civ, art_age(starting_age), tech_civ
 
 
 _FIELDS = ("civilization", "architecture", "starting_age")
@@ -111,8 +119,8 @@ _FIELDS = ("civilization", "architecture", "starting_age")
 
 def player_art(
     loaded, pending: Mapping[str, Mapping[int, object]] | None = None,
-) -> tuple[tuple[int | None, int], ...]:
-    """(art_civ, age) for player_id 0..8 on `loaded`, the stored values
+) -> tuple[Art, ...]:
+    """(art_civ, age, tech_civ) for player_id 0..8 on `loaded`, the stored values
     overlaid with `pending` ({field_id: {player_id: value}}, the viewer's
     pending Players-mode edits). A field the file does not carry reads as
     missing, which falls through like a random value. Civs are indexed in

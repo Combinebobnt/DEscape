@@ -224,6 +224,11 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **Buildings draw the upgrades a player's civilization and starting age
+  already have** (GH #328): Armenian and Georgian monasteries draw as
+  Fortified Churches, Settlements past the Dark Age and Central Asian siege
+  workshops draw their upgraded art, and Post-Imperial is its own age
+  rather than drawing as Imperial.
 - **Scatter snaps every object bigger than one tile onto the game grid**
   (GH #301, GH #333): deep fish, shipwrecks, mountains and cliffs, as it does
   buildings. One whose footprint would hang outside the area (or off the

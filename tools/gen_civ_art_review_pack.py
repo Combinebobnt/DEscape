@@ -77,16 +77,16 @@ _SCENES = {
     "s6": (OLD_ALLIES, 0, lambda u: u.unit_const == TOWN_CENTRE and abs(u.x - 108.0) < 1 and abs(u.y - 120.0) < 1),
 }
 
-# reference id -> (consts in a row, (art_civ, age)). Each pair's two sets differ.
+# reference id -> (consts in a row, (art_civ, age, tech_civ)). Each pair's two sets differ.
 _REFERENCES = {
-    "r1a": ((HOUSE, BARRACKS, MILL), (4, 3)),       # Teutons Feudal: east
-    "r1b": ((HOUSE, BARRACKS, MILL), (2, 3)),       # Franks Feudal: west
-    "r2a": ((HOUSE, MILL), (12, 3)),                # Mongols Feudal: asia
-    "r2b": ((HOUSE, MILL), (17, 3)),                # Huns Feudal: east
-    "r3a": ((HOUSE, HOUSE), (2, 4)),                # Franks Castle: west age3
-    "r3b": ((HOUSE, HOUSE), (2, 3)),                # Franks Feudal: west age2
-    "r4a": ((HOUSE, HOUSE), (None, 2)),             # the Gaia table
-    "r4b": ((HOUSE, HOUSE), (39, 3)),               # Bohemians Feudal: slav
+    "r1a": ((HOUSE, BARRACKS, MILL), (4, 3, 4)),    # Teutons Feudal: east
+    "r1b": ((HOUSE, BARRACKS, MILL), (2, 3, 2)),    # Franks Feudal: west
+    "r2a": ((HOUSE, MILL), (12, 3, 12)),            # Mongols Feudal: asia
+    "r2b": ((HOUSE, MILL), (17, 3, 17)),            # Huns Feudal: east
+    "r3a": ((HOUSE, HOUSE), (2, 4, 2)),             # Franks Castle: west age3
+    "r3b": ((HOUSE, HOUSE), (2, 3, 2)),             # Franks Feudal: west age2
+    "r4a": ((HOUSE, HOUSE), civ_art.GAIA_ART),      # the Gaia table
+    "r4b": ((HOUSE, HOUSE), (39, 3, 39)),           # Bohemians Feudal: slav
 }
 
 
@@ -109,8 +109,8 @@ TC_MAIN_PART = "main"
 
 
 def _dark_town_centre_annexes(real):
-    def resolve_entry(unit_const, art_civ, age):
-        entry = real(unit_const, art_civ, age)
+    def resolve_entry(unit_const, art_civ, age, tech_civ=None):
+        entry = real(unit_const, art_civ, age, tech_civ)
         if unit_const != TOWN_CENTRE or entry is None or "pieces" not in entry:
             return entry
         out = copy.deepcopy(entry)
@@ -333,8 +333,8 @@ def _whole_1_tc_parts(inject: str | None, keep: frozenset[str]) -> np.ndarray:
     with _patched(inject):
         real = unit_sprites.resolve_entry
 
-        def resolve_entry(unit_const, art_civ, age):
-            entry = real(unit_const, art_civ, age)
+        def resolve_entry(unit_const, art_civ, age, tech_civ=None):
+            entry = real(unit_const, art_civ, age, tech_civ)
             if unit_const != TOWN_CENTRE or entry is None or "pieces" not in entry:
                 return entry
             return {**entry, "pieces": [p for p in entry["pieces"] if _tc_part(p) in keep]}
