@@ -262,6 +262,15 @@ tool_options: {{}}
 # mod_art_included:
 #   - subscribed//67890_Example Disabled Mod
 
+# With a data mod in effect (File > Data Mod), hide from the Units catalog every
+# object the mod did not change (new, repurposed, renamed, other art or stats
+# stay listed), Settings > Mods. Default: false.
+data_mod_hide_unchanged: false
+
+# End the name of an object only the data mod has in "(data mod)", in the
+# catalog and the pickers, Settings > Mods. Default: true.
+data_mod_label_shown: true
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false

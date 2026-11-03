@@ -62,6 +62,8 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "zoom_centered_on_cursor": (_GENERAL, "Mouse wheel zoom"),
     "mod_art_excluded": (_MODS, "Mod art left unticked"),
     "mod_art_included": (_MODS, "Mod art ticked while disabled in game"),
+    "data_mod_hide_unchanged": (_MODS, "Hide a data mod's unchanged objects"),
+    "data_mod_label_shown": (_MODS, "Show the \"(data mod)\" label"),
     "theme": (_APPEARANCE, "Theme"),
     "theme_colors": (_APPEARANCE, "Chrome colours"),
     "dark_mode": (_APPEARANCE, "Theme"),

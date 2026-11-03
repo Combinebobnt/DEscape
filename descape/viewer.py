@@ -1298,6 +1298,7 @@ class SettingsDialog(QDialog):
         # Profile first: its refresh also refreshes the mod art list once that exists.
         self._add_profile_section(layout)
         self._add_mod_art_section(layout)
+        self._add_data_mod_section(layout)
         layout.addStretch(1)
         return tab
 
@@ -3299,6 +3300,40 @@ class SettingsDialog(QDialog):
             settings.set_mod_art_included(included)
         title = item.data(Qt.UserRole + 2)
         self._window._apply_mod_art_change(f"Mod art from {title}: {'on' if drawn else 'off'}")
+
+    def _add_data_mod_section(self, layout: QVBoxLayout) -> None:
+        """GH #265: two Units catalog options for a data mod in effect, applied at once."""
+        layout.addWidget(QLabel("Data mods (File > Data Mod):"))
+        self.data_mod_hide_unchanged_check = QCheckBox("Hide unchanged objects in the Units catalog")
+        self.data_mod_hide_unchanged_check.setToolTip(
+            "Lists only the objects the data mod adds or changes: new, repurposed, renamed, "
+            "or with other art or stats than the game's own. An object picked with the "
+            "Eyedropper shows while it is the pick. Trigger pickers, Find and Map Analysis "
+            "still list everything."
+        )
+        self.data_mod_hide_unchanged_check.setChecked(settings.get_data_mod_hide_unchanged())
+        self.data_mod_hide_unchanged_check.toggled.connect(self._on_data_mod_hide_unchanged_toggled)
+        layout.addWidget(self.data_mod_hide_unchanged_check)
+        self.data_mod_label_check = QCheckBox('Show "(data mod)" after mod-only objects')
+        self.data_mod_label_check.setToolTip(
+            "In the Units catalog, the placing card, the inspector and the pickers that name objects."
+        )
+        self.data_mod_label_check.setChecked(settings.get_data_mod_label_shown())
+        self.data_mod_label_check.toggled.connect(self._on_data_mod_label_toggled)
+        layout.addWidget(self.data_mod_label_check)
+
+    def _on_data_mod_hide_unchanged_toggled(self, hide: bool) -> None:
+        settings.set_data_mod_hide_unchanged(hide)
+        self._window.units_panel.refresh_owner_filter()
+        shown = "hidden from" if hide else "listed in"
+        self._window._log_status(f"Objects a data mod did not change: {shown} the Units catalog")
+
+    def _on_data_mod_label_toggled(self, shown: bool) -> None:
+        settings.set_data_mod_label_shown(shown)
+        object_catalog.objects.cache_clear()
+        self._window.units_panel.rename_catalog()
+        self._window._update_unit_inspector_from_selection()
+        self._window._log_status(f'"(data mod)" label: {"on" if shown else "off"}')
 
     def _fit_profile_list_height(self) -> None:
         self._fit_list_height(self.profile_roots_list)

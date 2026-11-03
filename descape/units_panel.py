@@ -45,7 +45,9 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     catalog_thumbs,
+    data_mods,
     facing_dial,
+    game_dataset,
     gate_orientation,
     object_catalog,
     place_random,
@@ -318,6 +320,10 @@ class UnitsPanel(QWidget):
         # filter or selection change that lands on nothing): the object the
         # next Place click/Enter places. See _on_catalog_current_changed.
         self._pending_object_const: int | None = None
+        # GH #265: an unchanged object pick_object() shows until it becomes the pending pick,
+        # and the unchanged set the last refresh_owner_filter() applied.
+        self._keep_shown: int | None = None
+        self._unchanged_applied: frozenset[int] = frozenset()
         # GH #32: the shown garrison's GAIA-only occupants, by reference_id (show_garrison()).
         self._garrison_gaia_only: frozenset[int] = frozenset()
         self._pending_name: str | None = None
@@ -367,6 +373,10 @@ class UnitsPanel(QWidget):
         self.catalog_view.current_changed.connect(self._on_catalog_current_changed)
         self.catalog_view.activated.connect(self._on_catalog_activated)
         pane_layout.addWidget(self.catalog_view, stretch=1)
+        self.unchanged_note = QLabel("")
+        self.unchanged_note.setWordWrap(True)
+        self.unchanged_note.hide()
+        pane_layout.addWidget(self.unchanged_note)
 
         owner_row = QHBoxLayout()
         owner_row.setContentsMargins(0, 0, 0, 0)
@@ -398,6 +408,7 @@ class UnitsPanel(QWidget):
         self._on_place_requested(value)
 
     def _set_pending_object(self, value: int) -> None:
+        changed = value != self._pending_object_const
         self._pending_object_const = value
         if place_random.is_random(value):
             # GH #164: rolled now, so the ghost already shows what the next click places.
@@ -417,6 +428,10 @@ class UnitsPanel(QWidget):
         # so the full one stays reachable by hover.
         self.placing_label.setToolTip(name)
         self._on_pending_changed()
+        # GH #265: the unchanged object picked before this one hides again.
+        if changed and self._hides_unchanged():
+            self._keep_shown = None
+            self.refresh_owner_filter()
 
     def selected_object_const(self) -> int | None:
         """The real const the next placement adds: a random pick's rolled one (GH #164)."""
@@ -448,7 +463,8 @@ class UnitsPanel(QWidget):
         """select_object() that also lands on a row the catalog filter hides,
         by clearing that filter (GH #125's wall button), on an editor-hidden
         row, by ticking the show-hidden box, or on a GAIA-only row hidden for a
-        player owner, by setting Owner to GAIA (GH #32). True if `const` is now the pending
+        player owner, by setting Owner to GAIA (GH #32), or on a data mod's
+        unchanged object, by listing it while it is the pick (GH #265). True if `const` is now the pending
         object; False, changing nothing, for a const the catalog doesn't list."""
         view = self.catalog_view
         entry = object_catalog.entry(object_catalog.objects(), const)
@@ -457,6 +473,9 @@ class UnitsPanel(QWidget):
         # GH #32: a GAIA-only object is listed only for GAIA in hide mode, so the eyedropper switches Owner.
         if self._hides_gaia_only() and unit_kind.owner_refused(const, self.owner_id()):
             self.select_owner(GAIA_PLAYER_ID)
+        if self._hides_unchanged() and const in data_mods.unchanged_ids():
+            self._keep_shown = const
+            self.refresh_owner_filter()
         # Before select(), as TerrainPanel.set_terrain does: a row the box hides never reads as picked.
         if entry.hidden and view.show_hidden_checkbox is not None:
             view.show_hidden_checkbox.setChecked(True)
@@ -474,15 +493,34 @@ class UnitsPanel(QWidget):
     def _hides_gaia_only(self) -> bool:
         return settings.get_gaia_only_catalog_mode() == "hide" and self.owner_id() != GAIA_PLAYER_ID
 
+    def _hides_unchanged(self) -> bool:
+        return settings.get_data_mod_hide_unchanged() and game_dataset.data_mod() is not None
+
     def refresh_owner_filter(self) -> None:
-        """GH #32: hides the GAIA-only objects from the catalog while Owner is a
-        player in hide mode, and drops a pending pick that leaves hidden."""
-        excluded = unit_kind.gaia_only_consts() if self._hides_gaia_only() else frozenset()
-        self.catalog_view.set_excluded(excluded)
+        """Both catalog filters: the GAIA-only objects while Owner is a player
+        in hide mode (GH #32), and a data mod's unchanged objects while
+        Settings > Mods hides them (GH #265), with a note counting those.
+        A pending pick either filter newly hides is dropped (user decision
+        for the second), except one pick_object() made while hiding, which
+        stays listed while it is the pick."""
+        gaia_only = unit_kind.gaia_only_consts() if self._hides_gaia_only() else frozenset()
+        unchanged = data_mods.unchanged_ids() if self._hides_unchanged() else frozenset()
+        newly_unchanged = unchanged != self._unchanged_applied
+        self._unchanged_applied = unchanged
         pending = self._pending_object_const
-        if pending is not None and excluded.issuperset(place_random.choices(pending)):
-            self.catalog_view.clear_current()
-            self._clear_pending()
+        if pending is not None:
+            choices = place_random.choices(pending)
+            if gaia_only.issuperset(choices) or (newly_unchanged and unchanged.issuperset(choices)):
+                self.catalog_view.clear_current()
+                self._clear_pending()
+                pending = None
+        kept = {self._keep_shown, *(() if pending is None else place_random.choices(pending))}
+        hidden = unchanged - kept
+        self.catalog_view.set_excluded(gaia_only | hidden)
+        count = sum(1 for entry in object_catalog.objects() if not entry.hidden and entry.id in hidden)
+        noun = "object" if count == 1 else "objects"
+        self.unchanged_note.setText(f"{count} unchanged {noun} hidden (Settings > Mods)")
+        self.unchanged_note.setVisible(count > 0)
 
     def refresh_player_labels(self, labels, colors) -> None:
         """GH #130: relabel the Place owner combo and the inspector's Owner
@@ -760,6 +798,14 @@ class UnitsPanel(QWidget):
         self._keep_pending_after_reload()
         # The new dataset has its own GAIA-only set (GH #32).
         self.refresh_owner_filter()
+
+    def rename_catalog(self) -> None:
+        """After Settings > Mods' "(data mod)" label changes (GH #265): the same
+        rows and pending pick, under the names object_catalog now gives them."""
+        self.catalog_view.reload_entries()
+        pending = self._pending_object_const
+        if pending is not None and not place_random.is_random(pending):
+            self._set_pending_object(pending)
 
     def _keep_pending_after_reload(self) -> None:
         pending = self._pending_object_const
