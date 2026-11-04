@@ -20057,6 +20057,8 @@ class ViewerWindow(QMainWindow):
         self._close_find_dialog()
         if self.scenario is None:
             return  # Settings > Advanced with no document open
+        # GH #263: the stored building art follows the data mod's civ list; refresh_map() draws it.
+        refresh_player_render_context(self.scenario, self._pending_player_values())
         self.refresh_map()
         if self.map_view._unit_index is not None:
             self._rebuild_unit_index()
@@ -22248,6 +22250,9 @@ class ViewerWindow(QMainWindow):
                 switched = True
             if switched:
                 self._refresh_game_lists()
+                # GH #263: the file parsed under the previous data mod's civ list. No pending
+                # edits: self.option_edits still belongs to the previous document here.
+                refresh_player_render_context(self.scenario, {})
             if untitled:
                 self.scenario.path = UNTITLED_PATH
             else:

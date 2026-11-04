@@ -662,7 +662,8 @@ def _location_problem(
 
     reason = civ_availability.missing(civ, overrides, mover, kind, start_age)
     if reason:
-        text = train_locations.missing_text(reason, kind, name(), civ_text, edit.player, start_age)
+        civ_value = civ_availability.player_civ_value(loaded, edit.player)
+        text = train_locations.missing_text(reason, kind, name(), civ_text, edit.player, start_age, civ_value)
         how = train_locations.enable_hint(reason, kind)
         return f"{text}, so it gets no button" + (f"; enable it with {how}" if how else ""), "warning"
     if (

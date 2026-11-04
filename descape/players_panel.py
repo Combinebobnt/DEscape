@@ -97,6 +97,9 @@ from descape.player_fields import (
     pov_bounds,
     specs_for_player,
     starting_age_choices,
+    starting_age_tooltip,
+    unlisted_civ_shown,
+    unlisted_civ_tooltip,
 )
 from descape.scenario_io import LoadedScenario
 from descape.viewer_common import (
@@ -686,6 +689,10 @@ class PlayersPanel(QWidget):
                     reason = self._PLAYER_TYPE_REASON
                 else:
                     reason = self._read_only_reasons.get(spec.field_id, "")
+                    if not reason and spec.field_id == "starting_age":
+                        reason = starting_age_tooltip(self._age_civ_value())
+                    if not reason and spec.field_id in _DYNAMIC_CHOICE_FIELDS:
+                        reason = unlisted_civ_tooltip(spec.field_id, value, civilization_choices(self._loaded))
                 widget.setToolTip(reason or spec.tooltip)
             form.addRow(spec.label, widget)
         self._build_point_of_view_buttons(forms.get(_POV_GROUP))
@@ -797,21 +804,26 @@ class PlayersPanel(QWidget):
             if spec.field_id in _DYNAMIC_CHOICE_FIELDS:
                 choices = civilization_choices(self._loaded)
             elif spec.field_id == "starting_age":
-                choices = starting_age_choices()
+                choices = starting_age_choices(self._age_civ_value())
             else:
                 choices = spec.choices
             for choice, choice_label in choices:
                 widget.addItem(choice_label, choice)
-            if widget.findData(value) < 0:
+            # GH #263: a civ a data mod lacks shows what the game's editor shows; nothing is written until picked.
+            shown = unlisted_civ_shown(spec.field_id, value, choices) if spec.field_id in _DYNAMIC_CHOICE_FIELDS else None
+            if shown is None and widget.findData(value) < 0:
                 # Same rule as MapOptionsPanel/TriggerPanel: an out-of-enum
                 # value is kept as its own row rather than snapped to the
                 # nearest legal one.
                 widget.addItem(f"unknown ({value})", value)
-            widget.setCurrentIndex(max(widget.findData(value), 0))
+            widget.setCurrentIndex(max(widget.findData(value if shown is None else shown), 0))
             widget.setEnabled(editable)
             widget.currentIndexChanged.connect(
                 lambda _, s=spec, w=widget: self._changed(s, w.currentData())
             )
+            if shown is not None:
+                # Picking the shown choice changes no index, so only activated reports it.
+                widget.activated.connect(lambda _, s=spec, w=widget: self._changed(s, w.currentData()))
             return widget
 
         # SPINBOX -- value is guaranteed int here, never str (current_value()
@@ -989,7 +1001,31 @@ class PlayersPanel(QWidget):
             return
         self._values[spec.field_id] = value
         self._pending_values.setdefault(spec.field_id, {})[self._player_id] = value
+        if spec.field_id == "civilization":
+            self._relabel_starting_age()
         self._on_player_field(spec, self._player_id, value)
+
+    def _age_civ_value(self) -> int | str | None:
+        """The shown player's civilization for its age names, pending value first
+        (GH #263). None for GAIA, so its row shows the era most of the mod's civs
+        share, like the players', whatever era the mod's list gives GAIA itself."""
+        return None if self._player_id == 0 else self._values.get("civilization")
+
+    def _relabel_starting_age(self) -> None:
+        """A civ edit moves a data mod's age names: relabelled in place, values and selection kept."""
+        widget = self._widgets.get("starting_age")
+        if widget is None:
+            return
+        civ_value = self._age_civ_value()
+        labels = dict(starting_age_choices(civ_value))
+        self._populating = True
+        try:
+            for i in range(widget.count()):
+                if widget.itemData(i) in labels:
+                    widget.setItemText(i, labels[widget.itemData(i)])
+        finally:
+            self._populating = False
+        widget.setToolTip(self._read_only_reasons.get("starting_age", "") or starting_age_tooltip(civ_value))
 
     def _text_changed(self, spec, widget: QLineEdit) -> None:
         """QLineEdit.editingFinished carries no value -- read it back off

@@ -38,7 +38,7 @@ from AoE2ScenarioParser.datasets.object_support import Civilization, Civilizatio
 from AoE2ScenarioParser.datasets.players import ColorId
 from AoE2ScenarioParser.helper.bytes_conversions import fixed_chars_to_bytes
 
-from descape import ai_scripts, game_dataset
+from descape import ai_scripts, data_mod_side, game_dataset
 from descape.option_fields import CHECKBOX, COMBO, SPINBOX
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -455,6 +455,9 @@ def resolve_civilization_name(value: int | str) -> str:
     """
     if game_dataset.is_ror() and value in _ROR_CIV_NAMES:
         return _ROR_CIV_NAMES[value]
+    civ = data_mod_side.find_civ(value)
+    if civ is not None:
+        return data_mod_side.civ_name(civ)
     try:
         if isinstance(value, str):
             return Civilization(value).name.title()
@@ -544,6 +547,22 @@ _STR16_LENGTH_STRUCT = struct.Struct("<h")
 _ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization) | frozenset(
     token for _civ_id, token, _name in ROR_CIVILIZATIONS
 )
+# GH #263: every civ token of a data mod put in effect in this process. It only
+# grows: the token check runs again at save, undo and redo, so a mod switch with
+# Players edits pending must not make those raise.
+_SESSION_MOD_TOKENS: set[str] = set()
+
+
+@game_dataset.on_switch
+def _remember_mod_tokens() -> None:
+    _SESSION_MOD_TOKENS.update(civ.token for civ in data_mod_side.civilizations() or ())
+
+
+def encodable_civilizations() -> frozenset[str]:
+    """The tokens a 1.56+ civilization/architecture field may hold in this process."""
+    _remember_mod_tokens()
+    return _ENCODABLE_CIVILIZATIONS | _SESSION_MOD_TOKENS
+
 
 # Never written as its own row: player_type (ai_type) is written only as
 # part of a Personality choice, never by itself (GH #126).
@@ -647,9 +666,54 @@ def _player_data_1_field_codec(loaded: LoadedScenario, struct_field: str) -> str
     return _codec_for(field_retriever)
 
 
-def starting_age_choices() -> tuple[tuple[int, str], ...]:
-    """(value, label) pairs for the Starting age combo in the active game dataset (GH #67)."""
-    return _ROR_STARTING_AGE_CHOICES if game_dataset.is_ror() else _STARTING_AGE_CHOICES
+def starting_age_choices(civ_value: object = None) -> tuple[tuple[int, str], ...]:
+    """(value, label) pairs for the Starting age combo in the active game
+    dataset (GH #67); under a data mod with eras, the ages of the era of the civ
+    `civ_value` names (GH #263)."""
+    if game_dataset.is_ror():
+        return _ROR_STARTING_AGE_CHOICES
+    labels = data_mod_side.age_labels(civ_value)
+    if labels is None:
+        return _STARTING_AGE_CHOICES
+    return tuple((value, label) for (value, _name), label in zip(_STARTING_AGE_CHOICES, labels, strict=True))
+
+
+def unlisted_civ_shown(field_id: str, value: object, choices: tuple[tuple[int | str, str], ...]):
+    """Under a data mod with civs, the choice a Civilization or Architecture combo
+    selects for a stored civ the mod lacks (GH #263): the list's first civ, as the
+    game's editor shows it, or Random for the architecture. The stored value is
+    not written until a choice is picked. None for no mod, a civ it lists or a value already listed (Random)."""
+    if not choices or data_mod_side.civilizations() is None or data_mod_side.find_civ(value) is not None:
+        return None
+    if any(choice == value for choice, _label in choices):
+        return None
+    if field_id == "civilization":
+        return choices[0][0]
+    return next((choice for choice, label in choices if label == "Random"), None)
+
+
+def unlisted_civ_tooltip(field_id: str, value: object, choices: tuple[tuple[int | str, str], ...]) -> str:
+    """Why unlisted_civ_shown() selects another choice, or ""."""
+    shown = unlisted_civ_shown(field_id, value, choices)
+    if shown is None:
+        return ""
+    stored = resolve_civilization_name(value)
+    if field_id == "civilization":
+        why = f"so the game's editor shows its first civilization, {dict(choices)[shown]}"
+    else:
+        why = "so Random is shown"
+    return f"This data mod has no {stored}, {why}. The file keeps {stored} until you pick one here."
+
+
+def starting_age_tooltip(civ_value: object = None) -> str:
+    """Why a data mod's age names differ from the game's editor, or "" when they do not (GH #263)."""
+    choices = starting_age_choices(civ_value)
+    if game_dataset.is_ror() or choices == _STARTING_AGE_CHOICES:
+        return ""
+    return (
+        "The names this data mod shows in the game. The game's editor lists these "
+        f"as {_STARTING_AGE_CHOICES[0][1]} to {_STARTING_AGE_CHOICES[-1][1]}."
+    )
 
 
 def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str], ...]:
@@ -669,6 +733,12 @@ def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str],
     Sorted by display name for a scannable combo.
     """
     is_str16 = _player_data_1_field_codec(loaded, "civilization") == "str16"
+    mod_civs = data_mod_side.playable_civs()
+    if mod_civs:
+        # GH #263: as the game's editor lists a mod's civs, by name with the random choices last.
+        pairs = [(civ.token if is_str16 else civ.index, name) for civ, name in mod_civs]
+        members = Civilization if is_str16 else CivilizationOld
+        return (*pairs, (members.FULL_RANDOM.value, "Full Random"), (members.RANDOM.value, "Random"))
     if game_dataset.is_ror():
         pairs = [(token if is_str16 else civ_id, name) for civ_id, token, name in ROR_CIVILIZATIONS]
         # Random is the parser's own value in both encodings, as RoR files store it.
@@ -1530,8 +1600,8 @@ def _encode_str16(value: int | str) -> bytes:
     constructing a throwaway PlayerWriteTarget just to reach this branch.
     See encode_target()'s own docstring for the format's provenance and
     the GAIA-inclusion rationale."""
-    if not isinstance(value, str) or value not in _ENCODABLE_CIVILIZATIONS:
-        raise ValueError(f"{value!r} is not a real Civilization or Return of Rome civ token")
+    if not isinstance(value, str) or value not in encodable_civilizations():
+        raise ValueError(f"{value!r} is not a real Civilization, Return of Rome or data mod civ token")
     payload = value.encode("utf-8")
     return _STR16_LENGTH_STRUCT.pack(len(payload)) + payload
 

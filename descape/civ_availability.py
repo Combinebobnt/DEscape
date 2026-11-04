@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.datasets.effects import EffectId
 
-from descape import civ_art, command_buttons, disables_fields, game_dataset
+from descape import civ_art, command_buttons, data_mod_side, disables_fields, game_dataset
 from descape.command_buttons import TECH, UNIT
 
 Item = tuple[int, str]
@@ -151,6 +151,15 @@ def player_start_age(loaded, player: int) -> int | None:
     """`player`'s StartingAge (2 Dark .. 6 Post-Imperial), or None."""
     value = _player_value(loaded, player, "starting_age")
     return value if value in AGE_NAMES and not isinstance(value, bool) else None
+
+
+def start_age_text(start_age: int | None, civ_value: object = None) -> str:
+    """A start age as a clause's object: "the Feudal Age", or a data mod's own
+    name for the era of the civ `civ_value` names ("Tech Level 2", GH #263)."""
+    labels = data_mod_side.age_labels(civ_value)
+    if labels is not None and start_age in AGE_NAMES:
+        return labels[start_age - data_mod_side.FIRST_AGE_VALUE]
+    return f"the {AGE_NAMES.get(start_age, '')} Age"
 
 
 def player_civ(loaded, player: int) -> int | None:

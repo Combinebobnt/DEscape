@@ -399,3 +399,178 @@ def test_a_parser_that_cannot_start_fails_readably(window, mods, monkeypatch):
     assert game_dataset.data_mod() is None
     assert any(line.startswith("Data mod Alpha cannot be used: the parser could not start") for line in lines)
     assert not _menu(window)["Alpha"].isEnabled()
+
+
+# --- GH #263: a mod's civilizations.json and eras.json ------------------
+
+
+def _side_files(mod: data_mods.DataMod) -> None:
+    dat = mod.root / "resources" / "_common" / "dat"
+    dat.mkdir(parents=True)
+    civs = [
+        {"data_name": "GAIA", "internal_name": "Gaia", "name_string_id": 1, "era": "base"},
+        {"data_name": "MOD-A-CIV", "internal_name": "Alpha Civ", "name_string_id": 2, "era": "future"},
+        {"data_name": "MOD-B-CIV", "internal_name": "Beta Civ", "name_string_id": 3, "era": "future"},
+        {"data_name": "CHINESE-CIV", "internal_name": "Old Civ", "name_string_id": 4, "era": "base"},
+    ]
+    (dat / "civilizations.json").write_text(json.dumps({"civilization_list": civs}))
+    eras = [
+        {"Name": "base", "Ages": [{"NameId": id_} for id_ in range(11, 16)]},
+        {"Name": "future", "Ages": [{"NameId": id_} for id_ in range(21, 26)]},
+    ]
+    (dat / "eras.json").write_text(json.dumps(eras))
+    strings = mod.root / "resources" / "en" / "strings" / "key-value"
+    strings.mkdir(parents=True)
+    lines = [f'{id_} "Base {id_}"' for id_ in range(11, 16)] + [f'{id_} "Future {id_}"' for id_ in range(21, 26)]
+    (strings / "key-value-modded-strings-utf8.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.fixture()
+def side_mods(mods, monkeypatch) -> FakeMods:
+    monkeypatch.setattr(asset_source, "get_language", lambda: "en")
+    _side_files(mods.alpha)
+    mods.cached(mods.alpha, mods.beta)
+    return mods
+
+
+def _pick_civ(window, token: str, field_id: str = "civilization") -> None:
+    window.mode_combo.setCurrentText("Players")
+    combo = window.players_panel.widget_for(field_id)
+    index = combo.findData(token)
+    assert index >= 0, token
+    combo.setCurrentIndex(index)
+
+
+def _save_as(window, path: Path, monkeypatch) -> None:
+    import descape.viewer as viewer_module
+
+    monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(path), "")))
+    window.save_as()
+
+
+def _stored_civ(path: Path, player: int = 1):
+    from descape import civ_availability
+
+    return civ_availability.player_civ_value(scenario_io.load_map_and_units(path), player)
+
+
+def test_players_tab_lists_the_mods_civs_and_relabels_ages_on_a_civ_edit(window, side_mods, tmp_path):
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    _menu(window)["Alpha"].trigger()
+    window.mode_combo.setCurrentText("Players")
+    panel = window.players_panel
+    civs = panel.widget_for("civilization")
+    assert civs.currentText() == "Random", "the blank file's Random stays Random"
+    assert [civs.itemText(i) for i in range(civs.count())][-2:] == ["Full Random", "Random"]
+    assert {civs.itemData(i) for i in range(civs.count())} >= {"MOD-A-CIV", "MOD-B-CIV", "CHINESE-CIV"}
+    assert "GAIA" not in {civs.itemData(i) for i in range(civs.count())}
+    ages = panel.widget_for("starting_age")
+    ages.setCurrentIndex(ages.findData(4))
+
+    _pick_civ(window, "CHINESE-CIV")
+    assert panel.widget_for("starting_age") is ages, "relabelled in place, not rebuilt"
+    assert [ages.itemText(i) for i in range(ages.count())] == [f"Base {id_}" for id_ in range(11, 16)]
+    assert ages.currentData() == 4
+    _pick_civ(window, "MOD-A-CIV")
+    assert [ages.itemText(i) for i in range(ages.count())] == [f"Future {id_}" for id_ in range(21, 26)]
+    assert ages.currentData() == 4
+    assert "Dark Age" in ages.toolTip()
+    assert ages.findData(2) == 0, "values stay 2..6"
+
+    panel.select_player(0)
+    gaia_ages = panel.widget_for("starting_age")
+    assert gaia_ages.itemText(0) == "Future 21", "the era most civs share, not GAIA's own base"
+
+    _menu(window)["None (the game's own data)"].trigger()
+    panel.select_player(1)
+    ages = panel.widget_for("starting_age")
+    assert ages.itemText(0) == "Dark Age" and not ages.toolTip()
+    civs = panel.widget_for("civilization")
+    assert civs.findText("Britons") >= 0
+
+
+def test_a_civ_the_mod_lacks_shows_its_first_civ_and_random_and_comes_back_without_it(
+    window, side_mods, tmp_path, monkeypatch
+):
+    window.load_scenario(_scenario(tmp_path, "seed.aoe2scenario"))
+    _pick_civ(window, "HUN-CIV")
+    _pick_civ(window, "HUN-CIV", "architecture")
+    stored = tmp_path / "huns.aoe2scenario"
+    _save_as(window, stored, monkeypatch)
+    settings.set_data_mod_for(stored, data_mods.identity(side_mods.alpha))
+    window.load_scenario(stored)
+    window.mode_combo.setCurrentText("Players")
+    panel = window.players_panel
+    civs, style = panel.widget_for("civilization"), panel.widget_for("architecture")
+    assert (civs.currentText(), civs.currentData()) == ("Alpha Civ", "MOD-A-CIV")
+    assert (style.currentText(), style.currentData()) == ("Random", "RANDOM-CIV")
+    assert not any(civs.itemText(i).startswith("unknown") for i in range(civs.count())), "no extra row"
+    assert "first civilization, Alpha Civ" in civs.toolTip() and "Random is shown" in style.toolTip()
+    assert panel.current_values()["civilization"] == "HUN-CIV"
+    assert not window.edit_history.is_dirty, "shown, not written"
+
+    civs.activated.emit(civs.currentIndex())
+    assert window.option_edits.current_value("player:civilization:1") == "MOD-A-CIV", "re-picking the shown civ writes it"
+    window.undo()
+    assert not window.edit_history.is_dirty
+    _menu(window)["None (the game's own data)"].trigger()
+    civs, style = panel.widget_for("civilization"), panel.widget_for("architecture")
+    assert (civs.currentText(), civs.currentData()) == ("Huns", "HUN-CIV")
+    assert style.currentData() == "HUN-CIV"
+
+
+def test_a_mod_only_civ_still_saves_undoes_and_redoes_after_a_switch_to_none(window, side_mods, tmp_path, monkeypatch):
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    _menu(window)["Alpha"].trigger()
+    _pick_civ(window, "MOD-A-CIV")
+    _menu(window)["None (the game's own data)"].trigger()
+
+    window.undo()
+    window.redo()
+    out = tmp_path / "out.aoe2scenario"
+    _save_as(window, out, monkeypatch)
+    assert _stored_civ(out) == "MOD-A-CIV"
+
+    # The saved file stores it, and this session had the mod, so its Players tab stays writable.
+    window.load_scenario(out)
+    window.mode_combo.setCurrentText("Players")
+    assert window.players_panel.widget_for("food").isEnabled()
+    assert window.players_panel.widget_for("civilization").currentData() == "MOD-A-CIV"
+
+
+def test_stored_building_art_follows_the_mod_on_open_and_on_a_switch(window, side_mods, tmp_path, monkeypatch):
+    window.load_scenario(_scenario(tmp_path, "seed.aoe2scenario"))
+    _pick_civ(window, "CHINESE-CIV")
+    stored = tmp_path / "stored.aoe2scenario"
+    _save_as(window, stored, monkeypatch)
+    assert window.scenario.player_art[1][0] == 6, "AoE2's index with no mod"
+
+    other = tmp_path / "other.aoe2scenario"
+    shutil.copy(stored, other)
+    settings.set_data_mod_for(stored, data_mods.identity(side_mods.alpha))
+    settings.set_data_mod_for(other, None)
+    window.load_scenario(stored)
+    assert game_dataset.data_mod() == side_mods.tables[side_mods.alpha]
+    assert window.scenario.player_art[1][0] == 3, "the mod's list position, on open"
+    window.load_scenario(other)
+    assert game_dataset.data_mod() is None
+    assert window.scenario.player_art[1][0] == 6, "not the previous file's mod"
+
+    drawn = []
+    real = window.refresh_map
+    monkeypatch.setattr(window, "refresh_map", lambda: (drawn.append(window.scenario.player_art[1][0]), real()))
+    _menu(window)["Alpha"].trigger()
+    assert drawn == [3], "updated before the switch's redraw"
+    _menu(window)["None (the game's own data)"].trigger()
+    assert drawn == [3, 6]
+
+
+def test_opening_a_file_ignores_the_previous_documents_pending_civ(window, side_mods, tmp_path):
+    a, b = _scenario(tmp_path, "a.aoe2scenario"), _scenario(tmp_path, "b.aoe2scenario")
+    settings.set_data_mod_for(b, data_mods.identity(side_mods.alpha))
+    window.load_scenario(a)
+    _pick_civ(window, "CHINESE-CIV")
+    assert window.scenario.player_art[1][0] == 6
+    window.load_scenario(b)
+    assert game_dataset.data_mod() == side_mods.tables[side_mods.alpha]
+    assert window.scenario.player_art[1][0] is None, "b stores a random civ, not a's pending one"
