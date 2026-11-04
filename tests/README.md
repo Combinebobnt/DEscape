@@ -7,29 +7,34 @@ for the 44-check inventory and its `family`/`tier` bookkeeping.
 
 ## Running
 
+Two suites, each with a wrapper at the repo root (`.sh` on Linux/Mac, `.bat`
+on Windows):
+
 ```
-./run_all_tests.sh                                  # default tier, in parallel -- ~2.5 min for ~7150 tests, no corpus needed (Linux/Mac)
-run_all_tests.bat                                   # same, for Windows
-./run_all_tests.sh -n 0                             # same tier, serially -- ~29 min
-.venv/bin/python3 -m pytest                         # same tier, invoked directly: serial, see below
-bash tools/ci_parity.sh [tag]                       # same tier plus the test map items, as CI's Linux leg sees them (corpus, install, examples/ hidden); run before every tag
+./run_quick_tests.sh                                # quick suite, in parallel -- 20-30 min on 4 workers, no examples/ needed
+./run_quick_tests.sh -n 0                           # same suite, serially
+.venv/bin/python3 -m pytest                         # same suite, invoked directly: serial, see below
+bash tools/ci_parity.sh [tag]                       # same suite as CI's Linux leg sees it (corpus, install, examples/ hidden); run before every tag
+.venv/bin/python3 -m pytest -m test_map             # the test map items alone
 
-./run_corpus_quick.sh                                # default tier plus the test map and slow items, in parallel; no examples/ needed
-.venv/bin/python3 -m pytest -m "not corpus"          # same thing, invoked directly: serial
-.venv/bin/python3 -m pytest -m test_map              # the test map items alone
+./run_full_tests.sh                                 # full suite: quick plus slow plus the FULL examples/ corpus, in parallel -- ~35 min on 4 workers
+./run_full_tests.sh --maxprocesses 4                # same, on a machine with less RAM
+./run_full_tests.sh --scenario-dir=/path/to/other/examples
 
-./run_corpus_stress.sh                               # corpus/gui tier, the FULL corpus, plus the test map items -- ~27 min
-.venv/bin/python3 -m pytest -m "corpus or slow or test_map" --corpus-full
-
-.venv/bin/python3 -m pytest --scenario-dir=/path/to/other/examples -m "corpus or slow" [--corpus-full]
+.venv/bin/python3 -m pytest -m corpus -k "viewer_pick or copy_paste"   # scoped: corpus items on the corpus subset
 ```
 
-`run_all_tests.sh` / `run_all_tests.bat` (repo root) are thin wrappers
-around the default tier only -- they exist so there's one obvious command
-for "did I break anything," not a shortcut for the corpus tier, which
-still needs the `-m` flag spelled out above.
+The **quick suite** is everything that needs no local data and is not
+`slow`: `pytest.ini`'s default selection, the test map items included. It is
+the one obvious command for "did I break anything", and what CI and
+`tools/ci_parity.sh` run. The **full suite** is every item: the quick suite
+plus the `slow` checks and the corpus items against the complete `examples/`
+(`--corpus-full`), in one run and one summary. Run it before a release or
+after touching rendering or write-path internals. Older text that says
+`run_all_tests` or "default
+tier" means the quick suite.
 
-**Parallel runs.** The wrappers run the tier under pytest-xdist
+**Parallel runs.** The wrappers run the suite under pytest-xdist
 (`requirements-dev.txt`) with `-n auto --maxprocesses 8 --dist loadgroup`:
 one worker per CPU, capped at 8 so the machine stays usable during a run.
 `tools/ci_parity.sh` and CI cap at 16 instead. Arguments you pass come last
@@ -93,25 +98,22 @@ invocation -- this repo has no `pyproject.toml` on purpose and isn't
 pip-installable, so nothing guarantees `pytest` on PATH resolves to this
 venv's install.
 
-**The full corpus/gui tier (`--corpus-full`) takes about 27 minutes**
-against the real 18-file `examples/` corpus (full-canvas render comparisons
-on files up to 480x480, `~30` random rects per file per check, etc.) --
-expensive enough that running it after every routine change was its own
-problem. `conftest.py`'s `QUICK_CORPUS_NAMES` (`2_Joan_coop_1`,
+**The full suite takes about 35 minutes on 4 workers** (2026-11-01, peak
+RSS 5.3 GB for the largest process) with the real 21-file
+`examples/` corpus (full-canvas render comparisons on files up to 480x480,
+`~30` random rects per file per check, etc.) -- expensive enough that
+running it after every routine change is its own problem. The corpus
+items run only there: the quick suite runs no `examples/` file at all.
+`conftest.py`'s `CORPUS_SUBSET_NAMES` (`2_Joan_coop_1`,
 `C2_ElCid_coop_1`, `F7_2_Dos Pilas` -- a small cross-section of real
 map-size bands, including the 480x480 outlier that dominates full-corpus
 runtime the most -- plus the 200x200 scenario-1.37 `0_June_Event_Scenario`,
 the only file the Number of Players gate refuses) is what `-m "corpus or slow"` runs
-when invoked directly with no flag. `F7_3_York` (220x220) was dropped from this set
-2026-08-13; runtime dropped to about 11 minutes (measured: 11m02s), down
-from the old ~15 min (13m40s) figure. Pass `--corpus-full` for the
-complete corpus before a release or after touching rendering/write-path
-internals specifically -- routine feature work only needs the quick
-default. `run_corpus_quick` runs no corpus file at all: the `examples/` maps
-run only in `run_corpus_stress`. When iterating on a change that only touches one or two scripts,
-`-k` narrows further on top of either scope -- e.g. `-m "corpus or slow"
+when invoked directly without `--corpus-full`: the corpus subset, for scoped
+runs. When iterating on a change that only touches one or two scripts,
+`-k` narrows further on top of it -- e.g. `-m "corpus or slow"
 -k "viewer_pick or copy_paste"` re-verifies just the gui-tier tests against
-the quick set in under a minute. Check which modules a change can possibly
+the corpus subset in under a minute. Check which modules a change can possibly
 affect first (e.g. `grep -l "import settings" descape/*.py`) rather than
 assuming the full corpus needs re-running.
 
@@ -119,10 +121,10 @@ assuming the full corpus needs re-running.
 
 | Marker | Contents | Default |
 |---|---|---|
-| _(none)_ | synthetic + fixture-based tests | runs |
-| `corpus` | needs the real `examples/` corpus | deselected; `-m "corpus or slow"` to opt in, restricted to `QUICK_CORPUS_NAMES` (~11 min) unless `--corpus-full` (~27 min) is also passed |
-| `slow` | full-render comparisons, O(pixels) sweeps | deselected |
-| `test_map` | runs on the generated test map or its game resave (see below) | deselected; `run_corpus_quick` and `run_corpus_stress` add it, `-m test_map` runs it alone with no `examples/` |
+| _(none)_ | synthetic + fixture-based tests | quick suite |
+| `corpus` | needs the real `examples/` corpus | full suite (`--corpus-full`); `-m corpus` alone runs the corpus subset `CORPUS_SUBSET_NAMES` |
+| `slow` | full-render comparisons, O(pixels) sweeps | full suite |
+| `test_map` | runs on the generated test map or its game resave (see below) | quick suite; `-m test_map` runs it alone with no `examples/` |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
 | `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms, and the Units, Players, Diplomacy and View info-page minimum-width checks | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
 
@@ -154,9 +156,8 @@ doesn't silently read as full coverage.
 A per-file test (one that takes `scenario_path`) without a `corpus` mark
 runs first on the generated test map and its game resave, as `[map240]`
 and `[test_map_game_resave]` items marked `test_map`, then on each corpus
-file as a `corpus`-marked item. So the default tier runs exactly what it
-ran before the map existed, and `run_corpus_quick` and `run_corpus_stress`
-add the map items. A named-file test's map sibling (see Fixtures), and every test in
+file as a `corpus`-marked item. So the quick suite runs the map items and
+the full suite adds the corpus files. A named-file test's map sibling (see Fixtures), and every test in
 `test_test_map_fixture.py` and `test_test_map_game_resave.py`, carries
 `test_map` itself; `test_test_map_collection.py` fails on a test that reads
 `conftest.TEST_MAP_PATH` or `TEST_MAP_RESAVE_PATH` without it. A test that keeps
@@ -200,7 +201,7 @@ regenerate it on stock zlib.
   the adapter maps to `pytest.skip`, so it is not their input. The generated test map
   (`tests/fixtures/test_map_240x240.aoe2scenario`) has buildings, water
   beside dirt and elevation, so all nine `verify_batch_api` path checks now
-  run on it in the quick and stress tiers (`map240`).
+  run on it in the quick suite (`map240`).
 - `descape/templates/blank_ror_120x120.aoe2scenario`
   (`descape/scenario_io.BLANK_ROR_TEMPLATE_PATH`): the Return of Rome
   donor every Return of Rome `File > New Map…` choice splices from (GH
@@ -312,10 +313,10 @@ regenerate it on stock zlib.
   64,437 bytes. `tests/test_test_map_fixture.py` pins it against a fresh
   build (about 2.6 s), checks it holds every catalog and vocabulary entry,
   and holds each of the generator's `REGIONS` and `SECTIONS` to its one-line
-  "why". Those checks are `test_map`, so the default tier does not notice a
-  stale map (CI and `tools/ci_parity.sh` run them as a second step): after
-  a serialization or `tools/gen_test_map.py` change, run
-  `./run_corpus_quick.sh` (or `-m test_map` alone). The run also writes
+  "why". Those checks are `test_map` and in the quick suite, so a stale map
+  fails it, on CI and in `tools/ci_parity.sh` too: after a serialization or
+  `tools/gen_test_map.py` change, run `./run_quick_tests.sh` (or
+  `-m test_map` alone). The run also writes
   `build/test_map_bisect/` (each risky region or section alone, for an
   in-game check); `--no-bisect` skips that.
   **`REGIONS` is the contract for finding a feature**: a test that needs
@@ -337,14 +338,14 @@ regenerate it on stock zlib.
   `script_name` the map names. DEscape never embeds script content, so to
   open the map in AoE2:DE without an "XS: Error 0354: failed to open file"
   dialog, copy it into the game profile's `resources/_common/xs/` first.
-- `examples/` -- untracked, gitignored, opt-in. The real 18-file corpus
+- `examples/` -- untracked, gitignored, opt-in. The real 21-file corpus
   (a mix of scenario versions, sizes up to 480x480). Absent on a fresh
   clone or worktree; the corpus tier reports why it skipped rather than
-  silently passing. `conftest.py`'s `QUICK_CORPUS_NAMES` is a checked-in
-  list of 3 filenames from within this corpus, not a separate directory or
+  silently passing. `conftest.py`'s `CORPUS_SUBSET_NAMES` is a checked-in
+  list of 4 filenames from within this corpus, not a separate directory or
   fixture -- these are third-party scenario files, not this repo's own
-  content, so nothing under `examples/` itself is ever committed. The quick
-  tier is "the full corpus, filtered by name" rather than its own asset.
+  content, so nothing under `examples/` itself is ever committed. The corpus
+  subset is "the full corpus, filtered by name" rather than its own asset.
 
 ## `config.yaml` isolation
 
@@ -399,12 +400,15 @@ the check itself.
 ## Adding a test
 
 Test logic against synthetic data, or a file from `tests/fixtures/` (copied
-to `tmp_path` before anything writes to it), in the default tier. Mark a test `gui` only for the part
+to `tmp_path` before anything writes to it), in the quick suite. Mark a test `gui` only for the part
 that needs a live `ViewerWindow`, and `corpus` only when it needs the real
 scenario corpus. Rule of thumb: a check
-belongs in the default tier unless it needs the real corpus or takes more
-than a second. A test that reads the test map is marked `test_map` whatever
-its runtime, so it runs in the quick and stress tiers, never the default (see Tiers).
+belongs in the quick suite unless it needs the real corpus or takes more
+than a second (then `slow`, full suite only). A test that reads the test map
+is marked `test_map` whatever its runtime, so `-m test_map` selects it (see Tiers).
+A corpus test that asserts counts or rates measured on `examples/` calls
+`conftest.require_reference_corpus(request.config)` first, so it skips when
+`--scenario-dir` points at someone else's scenarios.
 New `tools/verify_*.py` scripts are not the convention
 going forward.
 

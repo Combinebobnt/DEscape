@@ -156,12 +156,14 @@ def art_set_key(entry: dict) -> tuple[str, ...]:
 
 def town_centre_art_sets(generator) -> dict[tuple[str, ...], tuple[int, dict]]:
     """Every distinct town-centre art set either committed table can draw,
-    keyed by art_set_key(), with one (const, entry) that draws it."""
+    keyed by art_set_key(), with one (const, entry) that draws it. The
+    Satrapy TCs' per-age sets (age_art, TASK-205) included."""
     sets: dict[tuple[str, ...], tuple[int, dict]] = {}
     gm = unit_sprites.graphic_map()
-    per_civ = unit_sprites.building_art().civ_art
+    table = unit_sprites.building_art()
     for unit_const in sorted(generator._TOWN_CENTRE_SCOPE):
-        candidates = [gm.get(unit_const)] + [art.get(unit_const) for art in per_civ.values()]
+        candidates = [gm.get(unit_const)] + [art.get(unit_const) for art in table.civ_art.values()]
+        candidates += [e for by_civ in table.age_art.get(unit_const, {}).values() for e in by_civ.values()]
         for entry in candidates:
             if entry is not None and "pieces" in entry:
                 sets.setdefault(art_set_key(entry), (unit_const, entry))

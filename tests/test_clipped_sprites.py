@@ -331,3 +331,64 @@ def test_a_doodads_sprite_keeps_its_point_and_tile_with_a_footprint(doodad_sprit
     x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (1, 1)
     assert _sprite_positions(style, scn) == with_footprint
+
+
+# -- a static object's footprint does not move its sprite, a flare's does (TASK-277) --
+
+WRECK = 2355  # Catapult Shipwreck, 3x3
+FLARE4 = 697  # invisible, 2x2: its marker is the footprint itself
+
+
+def _one_sprite(monkeypatch, wanted):
+    def pieces(
+        unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
+        wall_alpha=1.0,
+    ):
+        if unit_const != wanted:
+            return []
+        return [unit_sprites.SpritePiece(unit_sprites.SpriteDraw(INK, *HOTSPOT), 0, 0)]
+
+    monkeypatch.setattr(unit_sprites, "sprite_pieces_for", pieces)
+
+
+def _empty_static_spans(monkeypatch):
+    from descape.terrain_palette import STATIC_TILE_SPANS
+
+    for const in list(STATIC_TILE_SPANS):
+        monkeypatch.delitem(STATIC_TILE_SPANS, const)
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("point", [(6.0, 6.0), (6.37, 5.81)], ids=["whole", "free-placed"])
+def test_a_wrecks_sprite_keeps_its_point_and_tile_with_a_footprint(monkeypatch, style, point):
+    """Decision 3: a 3x3 wreck on a whole coordinate (its one corpus placement)
+    or free-placed draws where it did as a 1x1."""
+    _one_sprite(monkeypatch, WRECK)
+    scn = _scenario([[], [Unit(*point, WRECK)]])
+    for (x, y), level in {(5, 5): 1, (6, 5): 2, (6, 6): 1, (7, 7): 1}.items():
+        scn.map_manager.get_tile(x, y).elevation = level
+    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    assert (x1 - x0, y1 - y0) == (3, 3)
+    with_footprint = _sprite_positions(style, scn)
+    assert list(with_footprint) == [(int(point[0]), int(point[1]))]
+
+    _empty_static_spans(monkeypatch)
+    assert _sprite_positions(style, scn) == with_footprint
+
+
+def test_an_off_parity_flares_marker_moves_onto_its_footprint(monkeypatch):
+    """The exception to decision 3: an invisible flare takes the building-like
+    anchor, so its 2x2 marker stays on its outline. All 230 corpus flares sit on
+    whole coordinates, where both anchors agree."""
+    _one_sprite(monkeypatch, FLARE4)
+    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", False)  # one entry per sprite
+
+    def pixel(x, y):
+        (entries,) = _sprite_positions("stepped", _scenario([[], [Unit(x, y, FLARE4)]])).values()
+        return entries[0][:2]
+
+    spanned = pixel(6.0, 6.0), pixel(6.5, 6.5)
+    _empty_static_spans(monkeypatch)
+    assert pixel(6.0, 6.0) == spanned[0]
+    assert pixel(6.5, 6.5) != spanned[1]
+    assert spanned[1] == pixel(7.0, 7.0), "the 2x2 anchored on 6.5 centres on the tile corner 7.0"

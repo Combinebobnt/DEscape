@@ -73,13 +73,35 @@ def test_is_divider_accepts_real_corpus_shapes():
     assert is_divider("---Setup---")
     assert is_divider("--Start--")
     assert is_divider("-" * 20)
+    # TASK-223's marker shapes, one per shape the 2026-10-27 census measured.
+    assert is_divider("--- check in")
+    assert is_divider("----- ambush-setup")
+    assert is_divider("--lost-both-path")
+    assert is_divider("--Difficulty-- no text")
+    assert is_divider("~P2~")
+    assert is_divider("~Part I - Road to Orleans~")
 
 
-def test_is_divider_rejects_near_misses():
-    # From the plan: fails the trailing run.
-    assert not is_divider("--> Attack")
-    # Single '~' delimiters, not a >=2 run.
-    assert not is_divider("~Part I - Road to Orleans~")
+@pytest.mark.parametrize(
+    "name",
+    [
+        # An arrow: the leading run is followed by punctuation.
+        "--> Attack",
+        # Trailing run only, and a single '~' only on one side: emphasis or prose.
+        "Standard ***",
+        "~ Extra Panic ~. => {x}",
+        "~Part I",
+        "Part I~",
+        # Single-character wraps other than '~' read as emphasis.
+        "*Boss*",
+        "-x-",
+        # Nothing but whitespace inside the '~' wrap, and a 1-run lead.
+        "~ ~",
+        "-x",
+    ],
+)
+def test_is_divider_rejects_near_misses(name):
+    assert not is_divider(name)
 
 
 def test_is_divider_rejects_short_bare_run():
@@ -142,6 +164,15 @@ def test_sections_follows_order_not_list_index():
     names = ["--- Setup ---", "First", "Second"]
     order = [0, 2, 1]
     assert sections(names, order) == [Section("--- Setup ---", 0, (2, 1))]
+
+
+def test_sections_partitions_at_marker_style_headers():
+    names = ["a", "----- ambush-setup", "b", "~P2~", "c"]
+    assert sections(names, [0, 1, 2, 3, 4]) == [
+        Section("", None, (0,)),
+        Section("----- ambush-setup", 1, (2,)),
+        Section("~P2~", 3, (4,)),
+    ]
 
 
 def test_sections_respects_a_filtered_subset_of_order():
@@ -368,8 +399,32 @@ def test_divider_format_reads_each_shape(name):
     assert divider_format([name]) == _SHAPES[name][3]
 
 
+# TASK-223's one-sided and single-wrap markers: (prefix, title, suffix).
+_MARKER_SHAPES = {
+    "--- check in": ("--- ", "check in", ""),
+    "----- ambush-setup": ("----- ", "ambush-setup", ""),
+    "----- ambush-setup  ": ("----- ", "ambush-setup", "  "),
+    "--lost-both-path": ("--", "lost-both-path", ""),
+    "--Difficulty-- no text": ("--", "Difficulty-- no text", ""),
+    "~P2~": ("~", "P2", "~"),
+    "~Part I - Road to Orleans~": ("~", "Part I - Road to Orleans", "~"),
+}
+
+
+@pytest.mark.parametrize("name", list(_MARKER_SHAPES))
+def test_split_divider_cuts_marker_shapes_and_divider_format_skips_them(name):
+    assert split_divider(name) == _MARKER_SHAPES[name]
+    assert "".join(_MARKER_SHAPES[name]) == name
+    assert divider_format([name]) == DEFAULT_DIVIDER_FORMAT
+
+
 def test_divider_format_takes_the_mode_and_ignores_non_dividers():
     names = ["--A--", "--- B ---", "--C--", "plain", "------", "--D--"]
+    assert divider_format(names) == DividerFormat("-", 2, 2, False)
+
+
+def test_divider_format_counts_only_two_sided_dividers_beside_markers():
+    names = ["--A--", "--- x", "--- y", "--- z", "~P2~", "~P3~", "~P4~"]
     assert divider_format(names) == DividerFormat("-", 2, 2, False)
 
 
@@ -407,6 +462,11 @@ def test_retitle_divider_keeps_the_decoration_byte_for_byte(name):
     assert retitle_divider(name, "Renamed") == prefix + "Renamed" + suffix
 
 
+def test_retitle_divider_keeps_a_markers_decoration():
+    assert retitle_divider("--- check in", "Renamed") == "--- Renamed"
+    assert retitle_divider("~P2~", "Renamed") == "~Renamed~"
+
+
 def test_retitle_divider_refuses_a_bare_run():
     with pytest.raises(ValueError):
         retitle_divider("------", "X")
@@ -418,6 +478,8 @@ def test_retitle_divider_refuses_a_bare_run():
         ("--- the-end ---", "--- the-end (copy) ---", "the-end (copy)"),
         ("---X---", "---X (copy)---", "X (copy)"),
         ("  == Setup ==  ", "  == Setup (copy) ==  ", "Setup (copy)"),
+        ("--- check in", "--- check in (copy)", "check in (copy)"),
+        ("~P2~", "~P2 (copy)~", "P2 (copy)"),
     ],
 )
 def test_copied_name_puts_the_suffix_inside_a_divider_title(name, expected, title):
@@ -438,6 +500,9 @@ def test_divider_title_error_catches_a_title_merging_into_the_run():
     assert divider_title_error("--- X ---", "X") == ""
     assert divider_title_error("--X--", "")
     assert divider_title_error("--a---", "a-")
+    # Retitling `--lost-both-path` to `>x` gives `-->x`, an arrow, not a header.
+    assert divider_title_error(retitle_divider("--lost-both-path", ">x"), ">x")
+    assert divider_title_error(retitle_divider("--lost-both-path", "x"), "x") == ""
 
 
 def test_section_end_slot_covers_each_section_shape():

@@ -287,6 +287,42 @@ def test_component_counting_is_eight_connected() -> None:
     assert rp.components(mask) == 2
 
 
+# ------------------------------------------------- direction and correlation
+
+
+def _stripes(height: int = 96, width: int = 96, period: float = 12.0, shift: float = 0.0) -> np.ndarray:
+    """Rows of furrows: luma varies down the rows, constant along each row."""
+    rows = 128 + 100 * np.sin(2 * np.pi * (np.arange(height) + shift) / period)
+    return np.repeat(rows[:, None], width, axis=1)
+
+
+def test_coherence_is_high_on_stripes_and_low_on_noise() -> None:
+    assert rp.coherence(_stripes()) > 0.95
+    assert rp.coherence(np.stack([_stripes()] * 3, axis=-1)) > 0.95  # RGB reads through luma
+    noise = np.random.default_rng(0).uniform(0, 255, (96, 96))
+    assert rp.coherence(noise) < 0.1
+
+
+def test_coherence_drops_on_a_checkerboard_of_turned_stripes() -> None:
+    plain = _stripes()
+    turned = plain.copy()
+    for by in range(0, 96, 24):
+        for bx in range(0, 96, 24):
+            if (bx + by) // 24 % 2:
+                turned[by : by + 24, bx : bx + 24] = plain[by : by + 24, bx : bx + 24].T
+    assert rp.coherence(turned) < 0.5 * rp.coherence(plain)
+
+
+def test_masked_correlation_reads_a_shift_against_the_stripe_period() -> None:
+    clean = _stripes()
+    mask = np.zeros(clean.shape, dtype=bool)
+    mask[30:60, 30:60] = True
+    assert rp.masked_correlation(clean, _stripes(shift=6.0), mask) < -0.95  # half a period
+    assert rp.masked_correlation(clean, _stripes(shift=12.0), mask) > 0.95  # a whole one
+    with pytest.raises(rp.PackError, match="empty mask"):
+        rp.masked_correlation(clean, clean, np.zeros(clean.shape, dtype=bool))
+
+
 def test_changed_pixels_requires_matching_shapes() -> None:
     with pytest.raises(rp.PackError, match="shape mismatch"):
         rp.changed_pixels(np.zeros((2, 2, 3), np.uint8), np.zeros((3, 3, 3), np.uint8))

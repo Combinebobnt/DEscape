@@ -4,7 +4,7 @@ them. The library's own 1.41 structure frames the flag byte before
 collide_and_correct; on these files it sits after the 16 views.
 
 Corpus tier, parametrized over the six names directly rather than through
-QUICK_CORPUS_NAMES, so every one runs without --corpus-full. The default-tier
+CORPUS_SUBSET_NAMES, so every one runs without --corpus-full. The default-tier
 shape and wiring tests live in tests/test_library_compat.py.
 """
 

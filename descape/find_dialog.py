@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import find_triggers, object_catalog, player_labels
+from descape import find_triggers, gate_orientation, object_catalog, player_labels
 from descape.constant_picker import CatalogBrowseDialog, CatalogLineEdit
 from descape.find_objects import CATEGORIES, FindCriteria, FindRow, rows_to_csv
 from descape.find_text import FindPatternError, compile_pattern
@@ -58,6 +58,7 @@ from descape.viewer_dialogs import status_text_color
 _KIND_LABELS = (
     ("trees", "Trees"),
     ("eye_candy", "Eye candy"),
+    ("obstacles", "Obstacles"),
     ("walls", "Walls and gates"),
     ("invisible", "Invisible"),
 )
@@ -693,6 +694,9 @@ class _ObjectsTab(QWidget):
             return
         name = object_catalog.display_name(new_const)
         text = f"Replace {ok} objects with {name}? Ctrl+Z undoes."
+        if gate_orientation.is_gate(new_const):
+            # The viewer clears them (GH #339); said before the batch runs.
+            text += " Walls under each new gate are removed."
         if refused:
             text += f"\n{len(refused)} refused, marked in the Note column, are skipped."
         plan, note = callbacks.follow_preview(keys, new_const)
@@ -818,7 +822,8 @@ def _one_line(text: str) -> str:
 def _entry_label(hit: TriggerHit) -> str:
     if hit.kind == "trigger":
         return "Trigger"
-    return f"{hit.kind.title()} #{hit.entry_index} {hit.entry_name.replace('_', ' ')}"
+    # 1-based display position, so it matches the entry's row and the status labels' "condition N".
+    return f"{hit.kind.title()} #{hit.display_slot + 1} {hit.entry_name.replace('_', ' ')}"
 
 
 class _TriggersTab(QWidget):

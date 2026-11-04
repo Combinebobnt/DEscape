@@ -111,6 +111,34 @@ def test_walls_store_literal_indices_frame_0_and_agree_with_their_neighbours(ror
     assert total and agree / total >= 0.95, f"{agree}/{total}"
 
 
+def test_walls_with_at_most_one_neighbour_store_the_tower(ror_files):
+    """The premise of the render's lone-wall rule (unit_sprites.wall_drawn_shape()),
+    which the AoE2 corpus figure does not cover for Return of Rome."""
+    lone = 0
+    bad = []
+    for path in ror_files:
+        loaded = scenario_io.load_map_and_units(path)
+        connectors = unit_sprites.wall_connector_consts()
+        w, h = loaded.map_manager.map_width, loaded.map_manager.map_height
+        tiles = set()
+        for units in loaded.unit_manager.units:
+            for u in units:
+                if u.unit_const in connectors and (occupied := render.unit_occupied_tiles(u, w, h)) is not None:
+                    tiles.update(occupied)
+        for units in loaded.unit_manager.units:
+            for unit in units:
+                bounds = render.unit_tile_bounds(unit, w, h)
+                if not unit_sprites.rotation_variant_eligible(unit.unit_const) or bounds is None:
+                    continue
+                mask = unit_sprites.neighbour_mask(bounds[0], bounds[2], tiles, diagonals=True)
+                if mask & (mask - 1) == 0:
+                    lone += 1
+                    if round(unit.rotation) != unit_sprites.WALL_TOWER:
+                        bad.append((path.name, unit.x, unit.y, unit.rotation))
+    assert lone, "no wall with at most one neighbour"
+    assert bad == [], bad[:10]
+
+
 def test_cliffs_store_their_frame_as_an_integer_rotation(ror_files):
     from descape import cliff_catalog
 

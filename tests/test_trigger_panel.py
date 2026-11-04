@@ -1689,7 +1689,7 @@ def test_move_buttons_are_disabled_while_filtered_in_either_view() -> None:
         window.close()
 
 
-def test_a_raising_move_shows_the_rolled_back_order_not_a_phantom_success(monkeypatch) -> None:
+def test_a_raising_move_shows_the_rolled_back_order_not_a_phantom_success() -> None:
     """The invariant this project holds for exactly this shape of failure: "a UI
     that catches such an error should say so rather than presenting the edit
     as a clean no-op" -- and presenting it as a clean *success* is worse.
@@ -1707,14 +1707,10 @@ def test_a_raising_move_shows_the_rolled_back_order_not_a_phantom_success(monkey
     (list.index() -> ValueError) for a reason move_row()'s own row-bounds
     check cannot see, and confirms *that* divergence is the one this guards.
 
-    QMessageBox.warning() is monkeypatched, same as
-    test_trigger_edit_contract.py's test_a_failed_edit_is_reported_and_still_recorded
-    -- unpatched it raises a real modal that blocks forever offscreen.
+    window._warn is stubbed: the factory's default raises on the expected warning.
     """
-    from descape import viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: None)
     window = _triggers_window()
+    window._warn = lambda title, text: None
     try:
         panel = window.trigger_panel
         before = _tree_order(panel)
@@ -7474,11 +7470,9 @@ def test_gh137_edit_cut_and_ctrl_x_cut_the_selected_triggers() -> None:
 def test_gh137_a_failed_cut_leaves_the_clipboard_alone(monkeypatch) -> None:
     """_trigger_edit reports a raised body instead of re-raising, so the block
     is committed only once the triggers are really gone."""
-    from descape import viewer as viewer_module
-
     warnings = []
-    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
     window = _triggers_window()
+    window._warn = lambda title, text: warnings.append(text)
     try:
         panel = window.trigger_panel
         panel.select_trigger(0)
@@ -8094,11 +8088,9 @@ def test_gh137_an_entry_paste_into_another_file_reports_and_undoes_in_one_step(t
 
 
 def test_gh137_a_failed_entry_cut_leaves_the_clipboard_alone(monkeypatch) -> None:
-    from descape import viewer as viewer_module
-
     warnings = []
-    monkeypatch.setattr(viewer_module.QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
     window = _triggers_window()
+    window._warn = lambda title, text: warnings.append(text)
     try:
         panel = window.trigger_panel
         panel.select_trigger(3)
@@ -8697,6 +8689,7 @@ def test_the_preview_takes_no_focus() -> None:
 
 _REPLACE_OBJECT = 43
 _CASTLE = 82
+_TREBUCHET = 42
 
 
 def _facet_window(type_id: int, *per_entry):
@@ -8727,6 +8720,8 @@ def _form_row_of(form, widget) -> int:
 def test_a_create_object_facet_gets_an_arrow_row_under_it_that_hides_when_unset() -> None:
     from PyQt5.QtWidgets import QApplication
 
+    from descape import unit_sprites
+
     window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _ARCHER, "facet": 4})
     try:
         panel = window.trigger_panel
@@ -8735,7 +8730,7 @@ def test_a_create_object_facet_gets_an_arrow_row_under_it_that_hides_when_unset(
         form = panel.property_form
         assert _form_row_of(form, preview) == _form_row_of(form, spin) + 1, "directly under the facet row"
         assert not preview.isHidden() and preview.arrow_shown
-        assert preview.rotation == pytest.approx(4 * 3.141592653589793 / 8)
+        assert unit_sprites.angle_index(preview.rotation, 16) == 4, "an archer's facet 4 is its stored angle 4"
         assert not preview.sprite_shown, "no install, no sprite"
         _assert_form_rows_do_not_overlap(form)
 
@@ -8746,7 +8741,21 @@ def test_a_create_object_facet_gets_an_arrow_row_under_it_that_hides_when_unset(
         spin.setValue(6)
         QApplication.processEvents()
         preview = _facet_preview(panel)
-        assert not preview.isHidden() and preview.rotation == pytest.approx(6 * 3.141592653589793 / 8)
+        assert not preview.isHidden() and unit_sprites.angle_index(preview.rotation, 16) == 6
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_trebuchets_facet_counts_in_its_own_32_angles() -> None:
+    """GH #167, measured: facet 24 on a Trebuchet is its stored angle 24 of 32."""
+    from descape import unit_sprites
+
+    window, _indices = _facet_window(_CREATE_OBJECT, {"object_list_unit_id": _TREBUCHET, "facet": 24})
+    try:
+        preview = _facet_preview(window.trigger_panel)
+        assert preview.arrow_shown
+        assert unit_sprites.angle_index(preview.rotation, 32) == 24
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -9193,7 +9202,7 @@ def test_the_sprite_comes_from_the_install_and_is_cached_per_facet(monkeypatch) 
     from PyQt5.QtGui import QPixmap
     from PyQt5.QtWidgets import QApplication
 
-    from descape import constant_picker
+    from descape import constant_picker, facet_preview
 
     calls = []
 
@@ -9209,7 +9218,7 @@ def test_the_sprite_comes_from_the_install_and_is_cached_per_facet(monkeypatch) 
         panel = window.trigger_panel
         preview = _facet_preview(panel)
         assert preview.sprite_shown
-        assert calls == [(_ARCHER, pytest.approx(4 * 3.141592653589793 / 8))]
+        assert calls == [(_ARCHER, pytest.approx(facet_preview.facet_rotation(4)))]
         for facet in (5, 4, 5):
             preview._fields["facet"].blockSignals(True)
             preview._fields["facet"].setValue(facet)
@@ -11697,7 +11706,7 @@ def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -
 
 @pytest.mark.test_map
 def test_trigger_status_restyles_the_600_trigger_test_map_without_a_resize_per_row() -> None:
-    """The same 250 ms gate on the generated test map, in the quick tier."""
+    """The same 250 ms gate on the generated test map, in the quick suite."""
     _assert_status_restyle_is_batched(conftest.TEST_MAP_PATH)
 
 

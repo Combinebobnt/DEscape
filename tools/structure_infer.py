@@ -52,7 +52,6 @@ import math
 import struct
 import sys
 import tempfile
-import types
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -108,6 +107,13 @@ BREAK_SHORT = 16  # and half of the next 16, so an isolated rewrite just before 
 REALIGN_RUN = 4
 REALIGN_WITHIN = 32
 SHIFT_RUN = 4  # unless the mismatch opens this many distinctive mismatches in a row (player_data_3[0]: 2)
+# A path mismatching in nearly every instance is a break too, at its first mismatch: a field read
+# from its neighbour's bytes after a wrong insert (frozen re-save, allow_in_fog put before inverted:
+# 476 of 482). Under the truth the frozen re-save's worst per-object path is 0.69 (the game sets
+# capture_flag on 69% of units), next initial_animation_frame at 0.087; per-player paths (8 or 9
+# instances, player_data_3's lists rewritten in all 8) stay under WHOLE_MIN.
+WHOLE_MIN = 16
+WHOLE_RATIO = 0.95
 # An edit that gets further without fitting must make this many more distinctive values match.
 PARTIAL_MIN = 2
 # Scoring: a candidate wins when, against each rival, the rival's mismatch fraction over the
@@ -435,6 +441,22 @@ def first_break(events: Events, before: int | None = None) -> int | None:
     return None
 
 
+def whole_path_break(events: Events) -> int | None:
+    """Index of the first mismatch of any path with at least WHOLE_MIN values
+    that mismatches in WHOLE_RATIO of them, or None. Not its first value: a
+    field before the edit reads right in instance 0 and shifts from instance 1."""
+    best = None
+    n_paths = len(events.paths)
+    if not n_paths or not len(events.matched):
+        return None
+    totals = np.bincount(events.path_index, minlength=n_paths)
+    misses = np.bincount(events.path_index, weights=~events.matched, minlength=n_paths)
+    for k in np.flatnonzero((totals >= WHOLE_MIN) & (misses >= WHOLE_RATIO * totals)).tolist():
+        first = int(np.flatnonzero((events.path_index == k) & ~events.matched)[0])
+        best = first if best is None else min(best, first)
+    return best
+
+
 def _solid_misses(events: Events) -> np.ndarray:
     """Per event: SHIFT_RUN mismatches (any value) from it on before the next
     distinctive match. A shift reads solid garbage until a string happens to
@@ -502,6 +524,7 @@ class Probe:
     delta: int | None
     walk: sw.Walk | None  # the full walk, or the partial one before a failure
     failed: bool
+    stream: int | None = None  # the earliest evidence that misframes what follows (not a whole-path break)
 
 
 def _np_values(walk: sw.Walk, path: tuple[str, ...]) -> tuple[sw.Column, np.ndarray] | None:
@@ -617,7 +640,7 @@ class Position:
     block: tuple[str, ...]
     index: int
     offset: int
-    multiplicity: int
+    multiplicity: int  # instances read: exact on a complete walk, 0 when unknown
 
 
 def positions(compiled: sw.CompiledStructure, walk: sw.Walk, lower: int, upper: int, limit: int | None = MAX_POSITIONS) -> list[Position]:
@@ -642,10 +665,11 @@ def positions(compiled: sw.CompiledStructure, walk: sw.Walk, lower: int, upper: 
                     if inst is not None and len(inst):
                         o, n = inst.offsets[0] + inst.sizes[0], len(inst)
                 if o is None and i > 0:
-                    # Never read: the walk failed on this field, which starts where the previous one ends.
+                    # Never read: the walk failed on this field, which starts where the previous one
+                    # ends. A section has one instance; a struct's count is unknown (0), not the 1 read.
                     prev = walk.columns.get((*prefix, spec.fields[i - 1].name))
                     if prev is not None and len(prev):
-                        o, n = prev.offsets[0] + prev.sizes[0], len(prev)
+                        o, n = prev.offsets[0] + prev.sizes[0], 1 if len(prefix) == 1 else 0
                 if o is not None:
                     off = o if off is None else min(off, o)
                     mult += n
@@ -713,7 +737,7 @@ def candidates(
         raw_sizes: list[int] = []
         if per is not None and 0 < per <= RAW_INSERT_MAX and per not in FIXED_INSERT_TYPES:
             raw_sizes = [per]
-        elif delta is None and rank < RAW_SWEEP_POSITIONS:
+        elif (delta is None or p.multiplicity == 0) and rank < RAW_SWEEP_POSITIONS:
             raw_sizes = [n for n in range(1, RAW_INSERT_MAX + 1) if n not in FIXED_INSERT_TYPES]
         for n in raw_sizes:
             add(0, [(new1, {"type": str(n)})], f"insert raw {n}")
@@ -890,18 +914,25 @@ class SegmentSearch:
             if k is not None:
                 path = events.paths[int(events.path_index[k])]
                 found.append((int(events.offsets[k]), True, f"reference values break at {'.'.join(path)}"))
+        stream = min((f[0] for f in found), default=None)
+        if inp.reference is not None and seen is not None:
+            k = whole_path_break(events)
+            if k is not None:
+                path = events.paths[int(events.path_index[k])]
+                found.append((int(events.offsets[k]), True, f"reference values mismatch in nearly every {'.'.join(path)}"))
         if not found:
             return Probe(None, "", delta, seen, error is not None)
         off, _, why = min(found)
-        return Probe(off, why, delta, seen, error is not None)
+        return Probe(off, why, delta, seen, error is not None, stream)
 
     def _gain(self, probe: Probe, current: Events, inp: SegmentInput, lower: int) -> int:
         """How many more distinctive reference values the candidate matches
         than the current structure, from the edit's position to the
-        candidate's own evidence."""
+        candidate's own stream-level evidence (a whole-path break leaves the
+        values after it framed)."""
         if probe.walk is None:
             return 0
-        upper = probe.evidence if probe.evidence is not None else math.inf
+        upper = probe.stream if probe.stream is not None else math.inf
 
         def ok(events: Events) -> int:
             return int((events.matched & events.distinctive & (events.offsets >= lower) & (events.offsets < upper)).sum())
@@ -1393,11 +1424,7 @@ def divergence_check(path: Path, structure_path: Path) -> Mapping[str, Any]:
     interpreter (tools/map_structure_divergence.py's worker)."""
     from tools import map_structure_divergence as msd
 
-    check = getattr(msd, "clean_check", None)
-    if check is not None:
-        return check(path, structure_path)
-    args = types.SimpleNamespace(structure=structure_path, trace=False, hex_window=msd.DEFAULT_HEX_WINDOW)
-    return msd.run_worker(path, args)
+    return msd.clean_check(path, structure_path)
 
 
 def infer(

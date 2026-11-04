@@ -259,9 +259,10 @@ def test_fish_resolve_to_their_underwater_body_not_the_splash(graphics):
 
 
 def test_only_the_marlin_body_carries_a_frame_offset(graphics):
-    """Its frames 0-4 hold no ink and 5-6 a few px; every other body has a fish at frame 0."""
+    """Its frames 0-4 hold no ink and 5-6 a few px; every other body has a fish at frame 0.
+    DOLP3 452's standing graphic is the Marlin body itself, so the offset goes by graphic."""
     offsets = {int(k): e["frame_offset"] for k, e in graphics.items() if "frame_offset" in e}
-    assert offsets == {450: 7, 451: 7}
+    assert offsets == {450: 7, 451: 7, 452: 7}
 
 
 def test_only_the_perch_body_carries_a_top_level_offset(graphics):
@@ -863,10 +864,54 @@ def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(mon
     assert not gen._ANNEX_TREE_SCOPE
     assert not {1893, 1897} & set(gen._PIECE_SLOTS)
     assert sorted(gen._TOWN_CENTRE_SCOPE) == [71, 109, 141, 142]
+    assert not gen._AGE_ART_SCOPE
     assert 2625 not in gen._UNDERWATER_BODY_CONSTS and 61 not in gen._UNDERWATER_BODY_CONSTS
     assert 53 in gen._UNDERWATER_BODY_CONSTS
     assert not gen._BODY_FRAME_OFFSETS
-    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [155, 446]
+    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [446]
+
+
+def test_a_data_mod_lacking_a_start_tech_gets_a_report_not_a_refusal(monkeypatch, capsys):
+    """TASK-205: a VER 7.7 mod's .dat lacks the Settlement's 1354 and 1469, so
+    _check_start_upgrades()' pinned measurements print for a data mod; the
+    dataset's own .dat still refuses."""
+    import importlib.util
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    path = GRAPHIC_MAP_PATH.parent.parent / "tools" / "gen_unit_graphic_map.py"
+    spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_start_mod", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)  # a private copy: the test flips _DATA_MOD_DAT
+    data = NS(effects=[], civs=[NS(tech_tree_id=-1, team_bonus_id=-1)])
+    measured = gen.StartUpgrades({}, {}, set(gen._START_UPGRADE_TECHS) - {1354, 1469}, set(gen._WAVE_CONFLICT_SLOTS))
+    with pytest.raises(SystemExit, match="re-verify _start_upgrades"):
+        gen._check_start_upgrades(data, set(), measured)
+    monkeypatch.setattr(gen, "_DATA_MOD_DAT", True)
+    gen._check_start_upgrades(data, set(), measured)
+    assert "data mod: techs firing a building upgrade" in capsys.readouterr().out
+
+
+def test_only_a_wall_may_carry_frames_past_its_references_variants(monkeypatch):
+    """GH #329: Greek Fortified Wall art stores 11 frames over the five wall
+    shapes, so a wall's per-civ variant_count may exceed its reference's. Never
+    fewer, never another field, and never for a const that is not a wall."""
+    import importlib.util
+    from types import SimpleNamespace as NS
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    path = GRAPHIC_MAP_PATH.parent.parent / "tools" / "gen_unit_graphic_map.py"
+    spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_walls", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    ref = {"angle_count": 5, "rotation_is_variant": True, "variant_count": 5}
+    wall = NS(class_=gen._WALL_CLASS, clearance_size=(1.0, 1.0))
+    tower = NS(class_=gen._WALL_CLASS + 1, clearance_size=(1.0, 1.0))
+    more = dict(ref, variant_count=11)
+    assert gen._art_invariant_violations("w", more, wall, ref, wall) == []
+    assert gen._art_invariant_violations("w", dict(ref, variant_count=4), wall, ref, wall)
+    assert gen._art_invariant_violations("w", dict(more, angle_count=11), wall, ref, wall)
+    assert gen._art_invariant_violations("t", more, tower, ref, tower)
 
 
 # GH #262: a data mod's .dat breaks invariants measured on the stock one.
@@ -1094,6 +1139,24 @@ def test_building_art_holds_out_a_civ_entry_and_drops_an_age_pair_when_lenient(g
         "civ 0 age 3 11 -> 12: angle_count 8 != reference 1 (dropped from the age table for every civ)",
         "civ 1 const 10: angle_count 8 != reference 1 (drawn with Gaia's art)",
     ], "a lenient hold-out is not a measured one, so the holdout list check stays quiet"
+
+
+@pytest.mark.parametrize("bad", ["GTCA3", "GTAB3", "PGTAA"])  # turned, opened, another family
+def test_a_gate_upgrade_must_keep_its_orientation_code(gen, lenient, monkeypatch, bad):
+    """TASK-205 Slice 3: Fortified Wall upgrades a gate to its own orientation's
+    sibling (GTAA2 -> GTAA3, only the material digits change); one that changes
+    its family, orientation or state is dropped, loudly."""
+    data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
+    gaia_units = data.civs[0].units
+    for const, name in ((11, "GTAA2"), (12, bad), (13, "GTAA3")):
+        gaia_units[const].class_, gaia_units[const].name = gen._GATE_CLASS, name
+    art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    assert art["age_upgrades"] == {"11": {"4": 13}}
+    assert lenient[0] == (
+        f"age table: gate upgrade 11 'GTAA2' -> 12 '{bad}' changes its family, orientation or state "
+        "(dropped from the age table for every civ)"
+    )
+    assert not any("-> 13" in warning for warning in lenient), lenient
 
 
 def test_a_civ_missing_an_age_target_drops_the_pair_when_lenient(gen, lenient, monkeypatch):

@@ -12,6 +12,8 @@ from descape import object_catalog, player_stats, unit_kind
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 
+import conftest
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 UNITS_FIXTURE = FIXTURES / "units_120x120.aoe2scenario"
 TRIGGER_FIXTURE = FIXTURES / "triggers_120x120.aoe2scenario"
@@ -246,6 +248,7 @@ def _remainders(loaded) -> tuple[set[int], set[int]]:
 
 @pytest.mark.corpus
 def test_the_other_remainders_are_pinned(corpus_files, request) -> None:
+    conftest.require_reference_corpus(request.config)
     other_units: set[int] = set()
     other_buildings: set[int] = set()
     for path in corpus_files:

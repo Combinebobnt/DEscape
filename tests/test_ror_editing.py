@@ -210,10 +210,13 @@ def test_ror_civs_index_their_own_dat():
 def test_a_ror_players_barracks_draws_its_civ_and_age_art(tmp_path):
     loaded = scenario_io.load_map_and_units(ror_copy(tmp_path))
     art = civ_art.player_art(loaded, {"civilization": {1: "EGYPTIAN-CIV"}, "architecture": {1: "EGYPTIAN-CIV"}, "starting_age": {1: 4}})
-    assert art[1] == (1, 4)
+    assert art[1] == (1, 4, 1)
     _ror()
     assert unit_sprites.resolve_entry(BARRACKS, 1, 4)["file_name"] == "b_egy_barracks_age3_x1"
     assert unit_sprites.resolve_entry(BARRACKS, 13, 4)["file_name"] == "b_rom_barracks_age3_x1"
+    # The RoR table has no max_age: Post-Iron (6) draws as Iron (5), TASK-205.
+    assert unit_sprites.building_art().max_age == 5
+    assert unit_sprites.resolve_entry(BARRACKS, 1, 6) is unit_sprites.resolve_entry(BARRACKS, 1, 5)
 
 
 def test_a_ror_file_gets_player_art_and_a_mismatched_display_none(tmp_path):

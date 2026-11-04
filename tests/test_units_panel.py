@@ -1781,6 +1781,48 @@ def test_a_group_note_costs_the_inspector_no_line_of_height() -> None:
     assert _group_inspector_height(_BARRACKS_CONST) == _group_inspector_height(_TREBUCHET_CONST)
 
 
+_GROUP = ("group", (_ARCHER_CONST, _BARRACKS_CONST))
+
+
+@pytest.mark.parametrize("height", [380, 500])
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [_GROUP],
+        [("unit", _ARCHER_CONST), _GROUP],
+        [("unit", _TOWER_CONST), _GROUP],
+        [_GROUP, ("unit", _ARCHER_CONST)],
+        [_GROUP, ("none", None)],
+    ],
+    ids=["fresh-group", "unit-group", "tower-group", "group-unit", "group-nothing"],
+)
+def test_the_inspector_height_is_settled_right_after_each_selection(steps, height) -> None:
+    """TASK-339: the fit measured a nested widget's stale layout (the field grid's
+    hidden rows, the card's old contents), leaving 50-71 px of blank scroll under a
+    group. Each call's height must already be what a later event spin and refit give."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, height)
+    panel.show()
+    try:
+        QApplication.processEvents()
+        for kind, arg in steps:
+            if kind == "unit":
+                panel.show_unit(_entry(unit_const=arg))
+            elif kind == "group":
+                panel.show_group([_entry(unit_const=const, reference_id=101 + i) for i, const in enumerate(arg)])
+            else:
+                panel.show_selection_count(0)
+            raw = panel.inspector_host.minimumHeight()
+            QApplication.processEvents()
+            panel._fit_inspector_height()
+            panel._fit_inspector_height()
+            assert raw == panel.inspector_host.minimumHeight(), (kind, arg)
+    finally:
+        panel.close()
+
+
 # --- GH #42: the Garrison block -----------------------------------------
 
 
@@ -2760,6 +2802,97 @@ def test_a_switch_to_return_of_rome_hides_its_own_gaia_only_set() -> None:
     assert not {lion, gazelle} & _listed(panel)
     panel.select_owner(GAIA_PLAYER_ID)
     assert {lion, gazelle} <= _listed(panel)
+
+
+
+# --- GH #265: Settings > Mods hides a data mod's unchanged objects -------------
+
+
+@pytest.fixture
+def data_mod(tmp_path):
+    from descape import game_dataset
+    from testkit import data_mod_fixture
+
+    mod = data_mod_fixture.mod_tables(tmp_path)
+    game_dataset.set_data_mod(mod)
+    return mod
+
+
+def _hide_unchanged(on: bool = True) -> None:
+    from descape import settings
+
+    settings.set_data_mod_hide_unchanged(on)
+
+
+def test_hide_unchanged_lists_only_what_the_data_mod_changed(data_mod) -> None:
+    from descape import data_mods, object_catalog
+    from testkit.data_mod_fixture import NEW_UNIT, SPEARMAN
+
+    _hide_unchanged()
+    panel = _panel()
+    listed = _listed(panel)
+    assert _ARCHER_CONST not in listed and {NEW_UNIT, SPEARMAN} <= listed
+    hidden = sum(1 for entry in object_catalog.objects() if not entry.hidden and entry.id in data_mods.unchanged_ids())
+    assert hidden > 0 and not panel.unchanged_note.isHidden()
+    assert panel.unchanged_note.text() == f"{hidden} unchanged objects hidden (Settings > Mods)"
+
+
+def test_hide_unchanged_does_nothing_without_a_data_mod() -> None:
+    _hide_unchanged()
+    panel = _panel()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+
+
+def test_hide_unchanged_takes_effect_on_refresh_owner_filter(data_mod) -> None:
+    panel = _panel()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert _ARCHER_CONST not in _listed(panel) and not panel.unchanged_note.isHidden()
+    _hide_unchanged(False)
+    panel.refresh_owner_filter()
+    assert _ARCHER_CONST in _listed(panel) and panel.unchanged_note.isHidden()
+
+
+def test_an_unchanged_pick_is_listed_until_something_else_is_picked(data_mod) -> None:
+    from testkit.data_mod_fixture import SPEARMAN
+
+    _hide_unchanged()
+    panel = _panel()
+    assert panel.pick_object(_ARCHER_CONST), "the eyedropper lands on a hidden unchanged object"
+    assert panel.selected_object_const() == _ARCHER_CONST and _ARCHER_CONST in _listed(panel)
+    panel.select_owner(2)
+    assert panel.selected_object_const() == _ARCHER_CONST, "a refresh with the same set keeps it"
+    panel.catalog_view.select(SPEARMAN)
+    assert panel.selected_object_const() == SPEARMAN
+    assert _ARCHER_CONST not in _listed(panel)
+
+
+def test_ticking_the_option_drops_an_unchanged_pick_and_keeps_a_changed_one(data_mod) -> None:
+    """User decision 2026-10-29: like a GAIA-only pick when Owner turns to a player."""
+    from testkit.data_mod_fixture import SPEARMAN
+
+    panel = _panel()
+    panel.select_object(_ARCHER_CONST)
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert panel.selected_object_const() is None and "(none)" in panel.placing_label.text()
+    assert _ARCHER_CONST not in _listed(panel) and panel.catalog_view.current_value() is None
+    _hide_unchanged(False)
+    panel.refresh_owner_filter()
+    panel.select_object(SPEARMAN)
+    _hide_unchanged()
+    panel.refresh_owner_filter()
+    assert panel.selected_object_const() == SPEARMAN
+
+
+def test_a_gaia_only_pick_still_drops_for_a_player_while_unchanged_objects_hide(data_mod) -> None:
+    _hide_unchanged()
+    panel = _panel()
+    assert panel.pick_object(_MACAW) and panel.owner_id() == GAIA_PLAYER_ID
+    assert _MACAW in _listed(panel)
+    panel.select_owner(1)
+    assert panel.selected_object_const() is None and _MACAW not in _listed(panel)
 
 
 def _player_rows_offered(combo) -> dict[int, bool]:

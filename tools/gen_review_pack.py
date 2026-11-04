@@ -576,41 +576,69 @@ def _shadow_band_spec() -> rp.PackSpec:
 
 GROUND_MAP = ROOT / "examples" / "8tp3w9j.aoe2scenario"
 GRASS, FOREST = 0, 10  # GRASS_1, FOREST_OAK
+# FARM_0 (g_fc1.dds): 40 furrows across the texture's rows, constant along its
+# columns, so its frame has a measured direction (coherence 0.60 clean, 0.27
+# turned-cells) that grass lacks (0.09 either way). FARM (7) is the fallback.
+FIELD = 29
 
 # frame id -> (style, tile_px, centre tile, crop (w, h), terrain ids it may show).
 # Regions measured off GROUND_MAP: 18x18 level grass at (122, 92) and an
 # unrelated one at (158, 113), a 14x14 grass hillside (one level per tile at
 # most) at (212, 145), a level forest edge at (15, 189), a sloping one at
-# (39, 136). --check asserts every crop shows only its own terrain, and the
-# level ones no elevation feature, so a map edit cannot quietly change a frame.
+# (39, 136). A FIELD frame renders the map with every GRASS tile repainted to
+# FIELD (the map has no farm terrain of its own). --check asserts every crop
+# shows only its own terrain, and the level ones no elevation feature, so a
+# map edit cannot quietly change a frame.
 _GROUND_FRAMES = {
     "grass_angled": ("stepped", 64, (131, 101), (512, 256), (GRASS,)),
     "grass_angled_near": ("stepped", 128, (131, 101), (720, 360), (GRASS,)),
     "grass_hillside": ("sloped", 64, (219, 152), (384, 192), (GRASS,)),
     "forest_edge_angled": ("stepped", 64, (21, 195), (384, 192), (GRASS, FOREST)),
     "forest_edge_hillside": ("sloped", 64, (45, 142), (384, 192), (GRASS, FOREST)),
+    "field_angled": ("stepped", 64, (131, 101), (384, 192), (FIELD,)),
     "grass_overhead": ("flat", 64, (167, 122), (512, 256), (GRASS,)),
 }
 # Flat blits whole contiguous crops, so no per-cell join can break there.
 _GROUND_SPECIFICITY = "grass_overhead"
+_FIELD_FRAMES = tuple(fid for fid, frame in _GROUND_FRAMES.items() if FIELD in frame[4])
 
-# one-tile-offset's tiles, one inside every angled frame and off-centre;
-# --check asserts each angled frame shows exactly one of them.
-_OFFSET_TILES = frozenset({(129, 102), (217, 153), (23, 197), (47, 141)})
+# one-cell-shift's tile, off-centre inside field_angled. A whole-tile offset
+# is in phase on the furrows (64 texels is 5 periods) and so invisible; the
+# shift is half a furrow across them instead.
+_SHIFT_TILE = (129, 102)
 
-_GROUND_SCENE: dict[str, object] = {}
+_GROUND_SCENES: dict[int | None, tuple] = {}
 
 
-def _ground_scene():
-    """(scenario, elevations), loaded once."""
-    if not _GROUND_SCENE:
-        scenario = load_map_and_units(str(GROUND_MAP))
-        mm = scenario.map_manager
-        elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
-        for tile in mm.terrain:
-            elevations[tile.y, tile.x] = tile.elevation
-        _GROUND_SCENE.update(scenario=scenario, elevations=elevations)
-    return _GROUND_SCENE["scenario"], _GROUND_SCENE["elevations"]
+def _frame_repaint(frame_id: str) -> int | None:
+    return FIELD if frame_id in _FIELD_FRAMES else None
+
+
+def _ground_scenario(repaint: int | None):
+    """A fresh load of GROUND_MAP, every GRASS tile set to `repaint` if given:
+    map-wide, so a crop is as pure as its grass twin's and no blend reaches it."""
+    scenario = load_map_and_units(str(GROUND_MAP))
+    if repaint is not None:
+        for tile in scenario.map_manager.terrain:
+            if tile.terrain_id == GRASS:
+                tile.terrain_id = repaint
+    return scenario
+
+
+def _ground_scene(repaint: int | None = None):
+    """(scenario, elevations), loaded once per repaint. Elevations are the
+    map's own whatever the repaint."""
+    if repaint not in _GROUND_SCENES:
+        scenario = _ground_scenario(repaint)
+        if repaint is None:
+            mm = scenario.map_manager
+            elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
+            for tile in mm.terrain:
+                elevations[tile.y, tile.x] = tile.elevation
+        else:
+            elevations = _ground_scene()[1]
+        _GROUND_SCENES[repaint] = (scenario, elevations)
+    return _GROUND_SCENES[repaint]
 
 
 def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
@@ -619,7 +647,7 @@ def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
     their vertical scale moves a crop."""
     style, tile_px, (cx, cy), (cw, ch), _terrains = _GROUND_FRAMES[frame_id]
     if scenario is None:
-        scenario, elevations = _ground_scene()
+        scenario, elevations = _ground_scene(_frame_repaint(frame_id))
     if style == "flat":
         x0, y0 = (2 * cx + 1) * tile_px // 2 - cw // 2, (2 * cy + 1) * tile_px // 2 - ch // 2
         return render.composite_rect_flat(scenario, x0, y0, x0 + cw, y0 + ch, tile_px, with_units=False)
@@ -657,10 +685,27 @@ _REAL_CROP_OFFSET = render._crop_offset
 _REAL_TEXTURE = asset_source.get_terrain_texture_array
 
 
-def _offset_crop(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
-    if (x, y) in _OFFSET_TILES:
-        return _REAL_CROP_OFFSET(x + 1, y, texture_size, tile_px)
-    return _REAL_CROP_OFFSET(x, y, texture_size, tile_px)
+def _field_texture(tile_px: int) -> np.ndarray | None:
+    return asset_source.terrain_texture_at(FIELD, asset_source.terrain_texture_size(tile_px))
+
+
+def _half_period(tile_px: int) -> int:
+    """Half a furrow of the served FIELD texture, in texels: its row means'
+    FFT peak, so a texture with another furrow density keeps the shift at
+    half a period (6 today: peak bin 40 of 512)."""
+    texture = _field_texture(tile_px)
+    rows = (texture.astype(np.float64) @ np.array([0.299, 0.587, 0.114])).mean(axis=1)
+    spectrum = np.abs(np.fft.rfft(rows - rows.mean()))
+    peak_bin = int(np.argmax(spectrum[1:])) + 1
+    return round(texture.shape[0] / peak_bin / 2)
+
+
+def _shifted_crop(half_period: int):
+    def crop(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
+        ox, oy = _REAL_CROP_OFFSET(x, y, texture_size, tile_px)
+        return (ox, oy + half_period) if (x, y) == _SHIFT_TILE else (ox, oy)
+
+    return crop
 
 
 _TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
@@ -706,32 +751,37 @@ def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int) -> np.
 
 @dataclass(frozen=True)
 class _GroundInject:
-    """`patches(style, tile_px)` lists (object, attribute, replacement) for
-    one frame's render; `bound` is set only on the localized inject."""
+    """`patches(style, tile_px, frame_id)` lists (object, attribute,
+    replacement) for one frame's render; `bound` is set only on the localized
+    inject."""
 
     patches: object
     bound: object = None
 
 
-def _patch_old_basis(_style, _tile_px):
+def _patch_old_basis(_style, _tile_px, _frame_id):
     """COARSE. The pre-TASK-201 render: every cell's crop read in the old
     basis, so no cell's pattern continues into its neighbour's."""
     return [(ig, "_inverse_sample", _legacy_inverse_sample)]
 
 
-def _patch_one_tile_offset(_style, _tile_px):
-    """LOCALIZED. One cell per angled frame takes its right-hand
-    neighbour's crop: the smallest possible break, one cell's worth."""
-    return [(render, "_crop_offset", _offset_crop)]
+def _patch_one_cell_shift(_style, tile_px, frame_id):
+    """LOCALIZED, field frames only. One cell's crop slides half a furrow
+    across the furrows, so they dislocate at its border (clean vs shifted luma
+    correlate -0.52 there). On grass a whole-tile offset scored +0.09 and was
+    not seen, so the grass and forest frames get no shifted cell."""
+    if frame_id not in _FIELD_FRAMES:
+        return []
+    return [(render, "_crop_offset", _shifted_crop(_half_period(tile_px)))]
 
 
-def _patch_unfiltered(style, tile_px):
+def _patch_unfiltered(style, tile_px, _frame_id):
     """COARSE, angled frames only. Point-sampled source with no prefilter,
     on top of the angled views' ~2.8:1 vertical minification."""
     return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("unfiltered", tile_px))]
 
 
-def _patch_turned(style, tile_px):
+def _patch_turned(style, tile_px, _frame_id):
     """COARSE, angled frames only. Every other cell's crop turned 90
     degrees, in a checkerboard."""
     return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("turned", tile_px))]
@@ -739,7 +789,7 @@ def _patch_turned(style, tile_px):
 
 GROUND_INJECTS = {
     "old-basis": _GroundInject(_patch_old_basis),
-    "one-tile-offset": _GroundInject(_patch_one_tile_offset, bound="one-cell"),
+    "one-cell-shift": _GroundInject(_patch_one_cell_shift, bound="one-cell"),
     "unfiltered": _GroundInject(_patch_unfiltered),
     "turned-cells": _GroundInject(_patch_turned),
 }
@@ -762,7 +812,7 @@ def _clear_texture_caches() -> None:
 def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
     images = {}
     for frame_id, (style, tile_px, *_rest) in _GROUND_FRAMES.items():
-        patches = GROUND_INJECTS[inject].patches(style, tile_px) if inject else []
+        patches = GROUND_INJECTS[inject].patches(style, tile_px, frame_id) if inject else []
         saved = [(obj, name, getattr(obj, name)) for obj, name, _new in patches]
         for obj, name, new in patches:
             setattr(obj, name, new)
@@ -779,17 +829,23 @@ def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
 def _ground_texture_spec() -> rp.PackSpec:
     """TASK-201's iso texture continuity, on a real map with real textures.
     Each check's options are written against the injects' measured masks:
-    a break is one cell's border (one-tile-offset is exactly one component
-    per angled frame), a turned cell is a 90-degree turn of the crop, and
-    speckle is the isolated-pixel rate --check measures, ~0.5% on clean
-    angled grass against ~10% unfiltered."""
-    angled = ("grass_angled", "grass_angled_near", "grass_hillside", "forest_edge_angled", "forest_edge_hillside")
+    a break is one cell's border (one-cell-shift is exactly one component,
+    on the field frame, its furrows dislocated half a period), a turned cell
+    is a 90-degree turn of the crop (only the furrowed field has a direction
+    to turn: coherence --check measures), and speckle is the isolated-pixel
+    rate --check measures, ~0.5% on clean angled grass against ~10%
+    unfiltered."""
+    angled = (
+        "grass_angled", "grass_angled_near", "grass_hillside", "forest_edge_angled", "forest_edge_hillside",
+        "field_angled",
+    )
     captions = {
         "grass_angled": "Grassland on level ground, angled view, normal zoom.",
         "grass_angled_near": "The same grassland, angled view, zoomed in.",
         "grass_hillside": "Grassland on a hillside, angled view; the ground slopes across the frame.",
         "forest_edge_angled": "Where grassland meets forest floor, level ground, angled view.",
         "forest_edge_hillside": "Where grassland meets forest floor on a hillside, angled view.",
+        "field_angled": "Ploughed farmland on level ground, angled view.",
         "grass_overhead": (
             "Grassland seen straight from above, same ground texture and same zoom as the first angled "
             "grassland frame. Here each map cell is a square."
@@ -799,8 +855,10 @@ def _ground_texture_spec() -> rp.PackSpec:
     breaks_rule = (
         "- A BREAK is a straight edge, at least one cell long, where the pattern on one side does not "
         "continue on the other: the blades, specks and blotches stop at the line and an unrelated stretch "
-        "of the same kind of ground starts. One such edge anywhere counts, even if every other cell joins "
-        "up, and a single cell whose pattern does not match any of its neighbours counts.\n"
+        "of the same kind of ground starts. Lines or furrows that reach such an edge and carry on beyond it "
+        "shifted sideways, so they no longer line up across it, count as a break too. One such edge "
+        "anywhere counts, even if every other cell joins up, and a single cell whose pattern does not "
+        "match any of its neighbours counts.\n"
     )
     checks = (
         rp.Check(
@@ -812,7 +870,7 @@ def _ground_texture_spec() -> rp.PackSpec:
                 "surface, or can you make out individual cells, and if so, by what (lines, mismatched pattern, "
                 "brightness)?\n\n"
                 "Then the closed question, which is about whether the PATTERN breaks at cell borders within one "
-                "kind of ground (grass, or forest floor), not about brightness.\n"
+                "kind of ground (grass, forest floor, or ploughed farmland), not about brightness.\n"
                 + breaks_rule
                 + "- NOT a break: (1) the border between two different kinds of ground, where grassland meets "
                 "forest floor; that line is expected however sharp it is. (2) On the hillside frames, a change "
@@ -827,19 +885,18 @@ def _ground_texture_spec() -> rp.PackSpec:
         rp.Check(
             id="pattern_direction",
             question=(
-                "Same angled frames. First, in your own words, describe any direction the ground pattern has: "
-                "elongated blades, streaks or blotches, which way they lean, and whether that lean differs "
-                "from one cell to the next.\n\n"
-                "Then the closed question, which is about DIRECTION only. Do neighbouring diamond-shaped cells "
-                "show the same kind of ground with its features turned to visibly different angles from each "
-                "other, so the ground reads as a patchwork of separately turned pieces? Three things are NOT "
-                "that: (1) a cell whose pattern merely fails to continue into its neighbour while its features "
-                "lean the same way; (2) on the hillside frames, a stretch or squash of the pattern where the "
-                "slope changes; (3) the border between grassland and forest floor.\n\n"
-                "Answer TURNED if neighbouring cells show the pattern turned to different angles, ALIGNED if "
-                "within each kind of ground the pattern leans the same way all across the frame."
+                "Look only at the ploughed farmland frame. Its ground is a grid of diamond-shaped map cells "
+                "seen from an angle, each painted with a patch of the farmland texture. First, in your own "
+                "words, describe which way the furrows run, and whether that differs from one cell to the "
+                "next.\n\n"
+                "Then the closed question, which is about DIRECTION only. Do neighbouring cells show furrows "
+                "running at visibly different angles from each other, so the field reads as a patchwork of "
+                "separately turned pieces? NOT that: furrows that keep the same lean on both sides of a cell "
+                "border but do not line up across it.\n\n"
+                "Answer TURNED if neighbouring cells show furrows at visibly different angles, ALIGNED if the "
+                "furrows run the same way all across the frame."
             ),
-            frames=angled,
+            frames=_FIELD_FRAMES,
             answers=("TURNED", "ALIGNED", "CANNOT-TELL"),
         ),
         rp.Check(
@@ -921,9 +978,9 @@ def _ground_purity_failures() -> list[str]:
     the whole map flattened to the frame's level) and require no change."""
     failures = []
     for frame_id, (style, _tile_px, (cx, cy), _size, terrains) in _GROUND_FRAMES.items():
-        base_scn, base_elev = _ground_scene()
+        base_scn, base_elev = _ground_scene(_frame_repaint(frame_id))
         clean = _ground_render(frame_id)
-        scn = load_map_and_units(str(GROUND_MAP))
+        scn = _ground_scenario(_frame_repaint(frame_id))
         for tile in scn.map_manager.terrain:
             if tile.terrain_id not in terrains:
                 tile.terrain_id = 6 if tile.terrain_id != 6 else 14
@@ -939,9 +996,9 @@ def _ground_purity_failures() -> list[str]:
 def _check_ground_texture() -> None:
     """--check for ground_texture: spec coupling, frame band, crop purity,
     each inject's reach (printed), the specificity frame untouched by every
-    inject, one-tile-offset exactly one bounded cell per angled frame and
-    under old-basis' largest delta, and the speckle rates fine_grain's
-    options rest on."""
+    inject, one-cell-shift exactly one bounded cell on the field frames only
+    and under old-basis' largest delta, the speckle rates fine_grain's
+    options rest on, and the field frames' direction and shift gates."""
     reason = _ground_prerequisites()
     if reason:
         raise SystemExit(f"ground_texture: {reason}")
@@ -975,15 +1032,20 @@ def _check_ground_texture() -> None:
             changed = int(np.count_nonzero(mask))
             if changed:
                 touched[frame_id] = (changed, rp.largest_component_px(mask))
-            if inject.bound and frame_id in angled:
+            if inject.bound and frame_id in _FIELD_FRAMES:
                 failures += one_cell.failures(mask, f"inject {name} on {frame_id}")
                 if changed and rp.components(mask) != 1:
                     failures.append(f"inject {name} on {frame_id}: {rp.components(mask)} pieces, not one cell")
         if _GROUND_SPECIFICITY in touched:
             failures.append(f"inject {name}: reached the specificity frame {_GROUND_SPECIFICITY}")
-        missed = [fid for fid in angled if fid not in touched]
+        # The coarse injects bite every angled frame; the localized one exactly the field frames.
+        scope = _FIELD_FRAMES if inject.bound else angled
+        missed = [fid for fid in scope if fid not in touched]
         if missed:
             failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        strays = [fid for fid in touched if fid not in scope]
+        if strays:
+            failures.append(f"inject {name}: reached {', '.join(strays)}, outside its frames")
         reach[name] = touched
         shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
         print(f"reach: {name} -> {shown or 'nothing'}")
@@ -1012,15 +1074,59 @@ def _check_ground_texture() -> None:
             failures.append(f"{frame_id}: unfiltered speckle {noisy_rate:.2%} under {UNFILTERED_SPECKLE_MIN:.0%}")
     print(f"speckle (clean/unfiltered): {', '.join(rates)}")
 
+    failures += _field_failures(clean, injected_by_name)
+
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
         raise SystemExit(f"{len(failures)} check(s) failed")
     print(
         f"OK: ground_texture frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and "
-        f"show only their own terrain; all {len(GROUND_INJECTS)} injects bite every angled frame and none "
-        f"reaches {_GROUND_SPECIFICITY}; one-tile-offset is one bounded cell per angled frame"
+        f"show only their own terrain; the coarse injects bite every angled frame, none reaches "
+        f"{_GROUND_SPECIFICITY}; one-cell-shift is one bounded, anticorrelated cell on {', '.join(_FIELD_FRAMES)} "
+        f"only; the field frames read a direction that turned-cells breaks"
     )
+
+
+# The field frame's gates (measured 2026-10-13, FARM_0 at 64 px): coherence
+# 0.60 clean and 0.27 under turned-cells, so pattern_direction has a direction
+# to lose. Clean vs one-cell-shift luma over the changed cell correlate -0.52;
+# the grass whole-tile offset nobody saw on 2026-10-07 scored +0.09, and a
+# whole-tile offset on the furrows (in phase, 5 periods) +1.00.
+FIELD_COHERENCE_MIN = 0.45
+TURNED_COHERENCE_MAX = 0.35
+SHIFT_CORRELATION_MAX = -0.30
+
+
+def _field_failures(clean: dict, injected_by_name: dict) -> list[str]:
+    """The field frames still pose direction, turned-cells still breaks it,
+    one-cell-shift still dislocates the furrows, and its crop stays inside
+    the texture (_crop_offset slices with no wraparound)."""
+    failures = []
+    for frame_id in _FIELD_FRAMES:
+        tile_px = _GROUND_FRAMES[frame_id][1]
+        half = _half_period(tile_px)
+        size = _field_texture(tile_px).shape[0]
+        _ox, oy = _REAL_CROP_OFFSET(*_SHIFT_TILE, size, tile_px)
+        if half < 1 or oy + half + tile_px > size:
+            failures.append(f"{frame_id}: shifted crop {oy}+{half}+{tile_px} leaves the {size} px texture")
+        scores = {name: rp.coherence(images[frame_id]) for name, images in injected_by_name.items()}
+        print(
+            f"coherence on {frame_id} (half period {half}): clean {rp.coherence(clean[frame_id]):.2f}, "
+            + ", ".join(f"{name} {score:.2f}" for name, score in scores.items())
+        )
+        if rp.coherence(clean[frame_id]) < FIELD_COHERENCE_MIN:
+            failures.append(f"{frame_id}: clean coherence under {FIELD_COHERENCE_MIN}, no direction to judge")
+        if scores["turned-cells"] > TURNED_COHERENCE_MAX:
+            failures.append(f"{frame_id}: turned-cells coherence over {TURNED_COHERENCE_MAX}, no turn to see")
+        shifted = injected_by_name["one-cell-shift"][frame_id]
+        mask = rp.changed_pixels(clean[frame_id], shifted)
+        if np.any(mask):
+            corr = rp.masked_correlation(clean[frame_id], shifted, mask)
+            print(f"one-cell-shift on {frame_id}: bbox {rp.delta_bbox(mask)} at 1:1, correlation {corr:+.2f}")
+            if corr > SHIFT_CORRELATION_MAX:
+                failures.append(f"{frame_id}: one-cell-shift correlation {corr:+.2f} over {SHIFT_CORRELATION_MAX}")
+    return failures
 
 
 def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:

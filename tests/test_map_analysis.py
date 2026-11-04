@@ -49,6 +49,18 @@ def test_headline_counts_clean_findings_and_unavailable() -> None:
     assert report.headline == "Clean on 1 of 3 checks: 2 findings, 1 unavailable"
 
 
+def test_an_uncounted_check_reads_clean_unless_unavailable() -> None:
+    finding = map_analysis.Finding("x", "info")
+    report = map_analysis.AnalysisReport(
+        (
+            map_analysis.CheckResult("a", (finding,), counted=False),
+            map_analysis.CheckResult("b", unavailable="nope", counted=False),
+        )
+    )
+    assert report.finding_count == 0
+    assert report.headline == "Clean on 1 of 2 checks: 0 findings, 1 unavailable"
+
+
 def test_unavailable_is_not_clean() -> None:
     assert not map_analysis.CheckResult("c", unavailable="nope").is_clean
 
@@ -688,6 +700,19 @@ def test_instructions_three_valued() -> None:
 
     _set_instructions(loaded, "Defend the castle.", STRING_ID_UNSET)
     assert map_analysis.check_instructions(loaded).is_clean
+
+
+def test_missing_instructions_alone_leave_the_headline_clean() -> None:
+    """TASK-096: shown in the dialog, but an info-only file reads as clean on every check."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _set_instructions(loaded, "", STRING_ID_UNSET)
+    clean = map_analysis.analyze(loaded)
+    _set_instructions(loaded, "Defend the castle.", STRING_ID_UNSET)
+    with_text = map_analysis.analyze(loaded)
+    instructions = next(r for r in clean.results if r.label == "Scenario instructions")
+    assert len(instructions.findings) == 1, "still shown"
+    assert clean.finding_count == with_text.finding_count
+    assert clean.headline == with_text.headline
 
 
 # -- fill_tools.connected_regions -------------------------------------------------

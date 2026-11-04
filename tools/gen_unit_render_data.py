@@ -5,7 +5,7 @@ by descape/render.py, extracted from the game's own unit table (via
 genieutils-py, which parses empires2_x2_p1.dat) -- not game asset content
 itself, same reasoning as terrain_texture_map.json / tree_unit_ids.json.
 
-Nine tables, eight keyed by unit_const and one ("hero_glow") a sorted list of
+Ten tables, nine keyed by unit_const and one ("hero_glow") a sorted list of
 consts:
 
 - "buildings": [span_x, span_y] -- the footprint's real width and height in
@@ -133,19 +133,23 @@ consts:
   same tile. Its own key rather than more "object_spans" rows, which
   `tests/test_unit_footprints.py` pins to exactly the 96 cliffs.
 
-- "fish_spans": [span_x, span_y] -- the same shape, for exactly the eight
-  deep-water fish in `_FISH_SPAN_CONSTS` (Perch 53, Dolphin 61, Marlin 450,
-  Dorado 455, Salmon 456, Tuna 457, Snapper 458 and Whale 2625, GH #178).
-  Not buildings or cliffs, so they read as 1x1, where the in-game selection
-  box is about 2x2 (3x3 for the Whale). Sourced from `outline_size`, the
-  field the in-game selection box draws, doubled and floored by the same
-  `max(1, round(2 * v))` rule: 1.0 gives 2x2 and the Whale's 1.5 gives 3x3.
-  The generator asserts `clearance_size` agrees for every listed const, so a
-  .dat change fails loudly instead of silently picking one field.
+- "fish_spans": [span_x, span_y] -- the same shape, for exactly the 14
+  fish in `_FISH_SPAN_CONSTS`: the eight visible deep-water fish (Perch 53,
+  Dolphin 61, Marlin 450, Dorado 455, Salmon 456, Tuna 457, Snapper 458 and
+  Whale 2625, GH #178) and the six hidden class-5 ones (DOLP2 451, DOLP3 452,
+  DOLP5 454, FISH5 459, WHAL1 460, WHAL2 461, TASK-277). That is every class-5
+  const plus the class-63 Whale. Not buildings or cliffs, so they read as
+  1x1, where the in-game selection box is about 2x2 (3x3 for the Whale).
+  Sourced from `outline_size`, the field the in-game selection box draws,
+  doubled and floored by the same `max(1, round(2 * v))` rule: 1.0 gives 2x2
+  and the Whale's 1.5 gives 3x3. The generator asserts `clearance_size`
+  agrees for every listed const, so a .dat change fails loudly instead of
+  silently picking one field.
 
   An explicit allowlist, not a class rule: Shore Fish 69, Box Turtles 1141
-  and Oysters 2170 are 0.5, which is 1x1 already, and the other non-buildings
-  the .dat calls bigger than 1x1 are a separate task. A real span also
+  and Oysters 2170 are 0.5, which is 1x1 already. The 24 corpus placements
+  of the hidden fish (451 x21, 459 x3) all sit on whole coordinates, on 2x2
+  parity. A real span also
   anchors newly placed fish where the corpus puts them: 1028 of 1049 corpus
   deep-fish placements sit on whole coordinates (53 417/428, 450 13/13, 455
   29/33, 456 480/482, 457 37/37, 458 52/56), which is where an even span
@@ -190,6 +194,39 @@ consts:
   as multi-tile; a free-placed doodad's footprint quantizes like an off-grid
   building's, up to 0.74 tile from its sprite; and a 1x1 unit under a
   later-painted doodad joins a stack group (+55 corpus-wide).
+
+- "static_spans": [span_x, span_y] -- the same shape, for every non-building
+  whose `type` is in `_STATIC_TYPES` (10, 20, 30), outside class 14
+  ("doodad_spans"), class 34 (cliffs) and class 5 (fish), and outside
+  `_BLOCKER_SPAN_CONSTS` and `_FISH_SPAN_CONSTS` (Whale 2625 is class 63,
+  type 30), whose outline span is above 1x1 (TASK-277). Sourced from
+  `outline_size`, the field the in-game selection box draws, by the same
+  `max(1, round(2 * v))` rule; the doodad rule's collision source would
+  leave the ruins and wrecks 1x1. Measured on 2026-11-03 against build
+  26249352 and the 21 loadable examples/ files, 13 consts:
+
+  - FLARE 112, FLR_R 201, FLARE2 274, FLARE4 697 2x2 and FLARE3 332 4x4,
+    whose collision span equals the outline span. 112, 274, 332 and 697 are
+    invisible editor markers; FLARE4's 230 corpus placements all sit on
+    whole coordinates.
+  - TREBU_D 194, Barracks DARK (Rubble) 1402, Macedonian Command Post
+    (Rubble) 2476 and Catapult Shipwreck 2355 3x3; TownCenter DARK (Rubble)
+    1408 and Leviathan Shipwreck 2353 4x4; Antiquity Transport and Galley
+    Shipwreck 2352/2354 2x2. Collision 1x1, so outline is the only size.
+
+  Not covered, on purpose: every mobile unit (`type == 70`: rams, siege
+  towers, wagons, war chariots, Turtle Ships, NESSIE 1973, The Aeginetan
+  2319, the hidden PILE2-8). Siege and wagons are 2x2 only because outline
+  0.8 doubles to 1.6 and rounds up, and all 48 corpus placements of them
+  sit on tile centres, where a 2x2 would centre on a whole coordinate. And
+  class 14's 132 outline-only consts (grass, plants, Rubble), which are
+  free-placed ground decoration ("doodad_spans" above).
+
+  No refusal guard: data mods run this generator (descape/dat_derive.py), and
+  `tests/test_unit_footprints.py` pins the AoE2 rows instead. Sprites keep
+  their stored point, as doodads do, except the invisible markers, which
+  draw the footprint itself and take the building-like anchor. Its own key,
+  as for "doodad_spans".
 
 - "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
   around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
@@ -259,10 +296,13 @@ _GATE_CLASS = 39
 _CLIFF_CLASS = 34
 # Class-14 blockers with a real multi-tile collision; see the "blocker_spans" docs.
 _BLOCKER_SPAN_CONSTS = (2423, 2424, 2429, 2430)
-# Deep-water fish sized like the in-game selection box; see the "fish_spans" docs.
-_FISH_SPAN_CONSTS = (53, 61, 450, 455, 456, 457, 458, 2625)
+# Fish sized like the in-game selection box; see the "fish_spans" docs.
+_FISH_SPAN_CONSTS = (53, 61, 450, 451, 452, 454, 455, 456, 457, 458, 459, 460, 461, 2625)
 # Scenery, ruins, mountains; the class rule behind "doodad_spans" (see its docs).
 _DOODAD_CLASS = 14
+_FISH_CLASS = 5
+# Unit types the "static_spans" rule covers (eye candy 10, flags 20, dead/fish 30); 70 is mobile.
+_STATIC_TYPES = (10, 20, 30)
 
 
 def _fish_span(unit_const: int, unit) -> list[int] | None:
@@ -293,6 +333,23 @@ def _doodad_span(unit_const: int, unit) -> list[int] | None:
         )
         return None
     return span
+
+
+def _is_static_candidate(unit_const: int, unit) -> bool:
+    """The "static_spans" population: a static non-building outside every other span table."""
+    return (
+        unit.building is None
+        and unit.type in _STATIC_TYPES
+        and unit.class_ not in (_DOODAD_CLASS, _CLIFF_CLASS, _FISH_CLASS)
+        and unit_const not in _BLOCKER_SPAN_CONSTS
+        and unit_const not in _FISH_SPAN_CONSTS
+    )
+
+
+def _static_span(unit) -> list[int] | None:
+    """The outline span when it is above 1x1, else None."""
+    span = [max(1, round(unit.outline_size_x * 2)), max(1, round(unit.outline_size_y * 2))]
+    return None if span == [1, 1] else span
 
 
 # The seven gold HeroGlow graphics; see the "hero_glow" docs above.
@@ -343,7 +400,9 @@ def _gate_tile_offsets(unit, span_x: int, span_y: int) -> list[list[int]] | None
 # Each hand-measured list's RoR value, measured on the RoR .dat (2026-10-17).
 _ROR_VALUES: dict[str, object] = {
     "_BLOCKER_SPAN_CONSTS": (),  # empty slots in RoR
-    "_FISH_SPAN_CONSTS": _FISH_SPAN_CONSTS,  # the same fish, same outlines
+    # The original eight, same outlines; the six hidden fish and the static rule await a RoR re-measure.
+    "_FISH_SPAN_CONSTS": (53, 61, 450, 455, 456, 457, 458, 2625),
+    "_STATIC_TYPES": (),
     "_HERO_GLOW_GRAPHICS": _HERO_GLOW_GRAPHICS,  # 191 RoR heroes use 12218-12224, and glow in game
 }
 
@@ -392,6 +451,7 @@ def main() -> None:
     blocker_spans: dict[str, list[int]] = {}
     fish_spans: dict[str, list[int]] = {}
     doodad_spans: dict[str, list[int]] = {}
+    static_spans: dict[str, list[int]] = {}
     resource_colors: dict[str, list[int]] = {}
     foundation_terrain: dict[str, int] = {}
     hero_glow: list[int] = []
@@ -419,6 +479,10 @@ def main() -> None:
             span = _doodad_span(unit_const, unit)
             if span is not None:
                 doodad_spans[str(unit_const)] = span
+        if _is_static_candidate(unit_const, unit):
+            span = _static_span(unit)
+            if span is not None:
+                static_spans[str(unit_const)] = span
         if unit.building is not None:
             cx, cy = unit.clearance_size
             span_x, span_y = max(1, round(cx * 2)), max(1, round(cy * 2))
@@ -458,6 +522,9 @@ def main() -> None:
                 "doodad_spans": dict(
                     sorted(doodad_spans.items(), key=lambda kv: int(kv[0]))
                 ),
+                "static_spans": dict(
+                    sorted(static_spans.items(), key=lambda kv: int(kv[0]))
+                ),
                 "resource_colors": dict(
                     sorted(resource_colors.items(), key=lambda kv: int(kv[0]))
                 ),
@@ -477,6 +544,7 @@ def main() -> None:
         f"{len(blocker_spans)} blocker_spans, "
         f"{len(fish_spans)} fish_spans, "
         f"{len(doodad_spans)} doodad_spans, "
+        f"{len(static_spans)} static_spans, "
         f"{len(resource_colors)} resource colors, "
         f"{len(foundation_terrain)} foundation terrains and "
         f"{len(hero_glow)} glowing heroes to {out_path}"

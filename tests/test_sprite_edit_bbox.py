@@ -917,3 +917,10 @@ def test_reach_scans_measure_a_piece_where_the_renderer_paints_it():
     assert scan.frame_reach(frame, 10, -50) == (30, 110, 70, 10)  # (left, up, right, down)
     walked = SimpleNamespace(frames=[frame])
     assert unit_sprites._walked_reach(walked, "sld", 10, -50) == (30, 70, 110, 10)  # (left, right, up, down)
+    # The same frame doubled to x2 px; x2_reach() reports x1 px.
+    from descape.sld_decoder import LayerKind
+
+    main2 = SimpleNamespace(kind=LayerKind.MAIN, x1=20, y1=40, width=200, height=240)
+    frame2 = SimpleNamespace(hotspot_x=100, hotspot_y=160, layers=[main2])
+    x2_scan = conftest.load_verify_module("scan_x2_graphics")
+    assert x2_scan.x2_reach(SimpleNamespace(frames=[frame2]), 10, -50) == (30, 70, 110, 10)  # (left, right, up, down)

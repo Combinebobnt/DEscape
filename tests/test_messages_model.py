@@ -158,7 +158,7 @@ def test_header_instructions_mirror_verified_on_york() -> None:
     assert model._header_sync_verified
 
 
-# -- the same branches on the generated test map (quick tier) ----------------
+# -- the same branches on the generated test map (quick suite) ---------------
 
 
 @pytest.mark.test_map

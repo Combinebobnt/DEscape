@@ -10,7 +10,7 @@ render.composite_rect_iso, Stepped, on each file's own terrain and elevation,
 with only the units under review kept so nothing else crowds the crop.
 
 Each style question pairs a scene with two reference frames: the same building
-types on blank ground, drawn with an explicit (art_civ, age), so the reviewer
+types on blank ground, drawn with an explicit (art_civ, age, tech_civ), so the reviewer
 matches styles rather than naming them. References never read the scenario,
 so no inject can move them (`--check` asserts it).
 
@@ -77,16 +77,16 @@ _SCENES = {
     "s6": (OLD_ALLIES, 0, lambda u: u.unit_const == TOWN_CENTRE and abs(u.x - 108.0) < 1 and abs(u.y - 120.0) < 1),
 }
 
-# reference id -> (consts in a row, (art_civ, age)). Each pair's two sets differ.
+# reference id -> (consts in a row, (art_civ, age, tech_civ)). Each pair's two sets differ.
 _REFERENCES = {
-    "r1a": ((HOUSE, BARRACKS, MILL), (4, 3)),       # Teutons Feudal: east
-    "r1b": ((HOUSE, BARRACKS, MILL), (2, 3)),       # Franks Feudal: west
-    "r2a": ((HOUSE, MILL), (12, 3)),                # Mongols Feudal: asia
-    "r2b": ((HOUSE, MILL), (17, 3)),                # Huns Feudal: east
-    "r3a": ((HOUSE, HOUSE), (2, 4)),                # Franks Castle: west age3
-    "r3b": ((HOUSE, HOUSE), (2, 3)),                # Franks Feudal: west age2
-    "r4a": ((HOUSE, HOUSE), (None, 2)),             # the Gaia table
-    "r4b": ((HOUSE, HOUSE), (39, 3)),               # Bohemians Feudal: slav
+    "r1a": ((HOUSE, BARRACKS, MILL), (4, 3, 4)),    # Teutons Feudal: east
+    "r1b": ((HOUSE, BARRACKS, MILL), (2, 3, 2)),    # Franks Feudal: west
+    "r2a": ((HOUSE, MILL), (12, 3, 12)),            # Mongols Feudal: asia
+    "r2b": ((HOUSE, MILL), (17, 3, 17)),            # Huns Feudal: east
+    "r3a": ((HOUSE, HOUSE), (2, 4, 2)),             # Franks Castle: west age3
+    "r3b": ((HOUSE, HOUSE), (2, 3, 2)),             # Franks Feudal: west age2
+    "r4a": ((HOUSE, HOUSE), civ_art.GAIA_ART),      # the Gaia table
+    "r4b": ((HOUSE, HOUSE), (39, 3, 39)),           # Bohemians Feudal: slav
 }
 
 
@@ -94,8 +94,8 @@ _REFERENCES = {
 
 
 def _arch_from_civ(real):
-    def resolve(civilization, architecture, starting_age):
-        return real(civilization, None, starting_age)
+    def resolve(civilization, architecture, starting_age, ror=False):
+        return real(civilization, None, starting_age, ror=ror)
     return resolve
 
 
@@ -109,8 +109,8 @@ TC_MAIN_PART = "main"
 
 
 def _dark_town_centre_annexes(real):
-    def resolve_entry(unit_const, art_civ, age):
-        entry = real(unit_const, art_civ, age)
+    def resolve_entry(unit_const, art_civ, age, tech_civ=None):
+        entry = real(unit_const, art_civ, age, tech_civ)
         if unit_const != TOWN_CENTRE or entry is None or "pieces" not in entry:
             return entry
         out = copy.deepcopy(entry)
@@ -179,9 +179,9 @@ def _unit(const: int, x: float, y: float, ref: int):
     )
 
 
-def _render_units(base, units_by_player: list[list], player_art) -> np.ndarray:
+def _render_units(base, units_by_player: list[list], player_art, headroom: int = 5) -> np.ndarray:
     """Stepped composite of `units_by_player` on `base`'s own terrain, cropped
-    to the units' footprints plus a tile, with headroom above for tall art."""
+    to the units' footprints plus a tile, with `headroom` half-tiles above for tall art."""
     scn = SimpleNamespace(
         map_manager=base.map_manager,
         unit_manager=SimpleNamespace(units=units_by_player),
@@ -208,7 +208,7 @@ def _render_units(base, units_by_player: list[list], player_art) -> np.ndarray:
     xs, ys = [t[0] for t in tiles], [t[1] for t in tiles]
     corners = [(min(xs) - 1, min(ys) - 1), (max(xs) + 1, max(ys) + 1), (min(xs) - 1, max(ys) + 1), (max(xs) + 1, min(ys) - 1)]
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, corners, max_elev)
-    y0 = max(0, y0 - 5 * proj.half_h)
+    y0 = max(0, y0 - headroom * proj.half_h)
     return render.composite_rect_iso(
         scn, x0, y0, x1, y1, elevations, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites,
     )
@@ -333,8 +333,8 @@ def _whole_1_tc_parts(inject: str | None, keep: frozenset[str]) -> np.ndarray:
     with _patched(inject):
         real = unit_sprites.resolve_entry
 
-        def resolve_entry(unit_const, art_civ, age):
-            entry = real(unit_const, art_civ, age)
+        def resolve_entry(unit_const, art_civ, age, tech_civ=None):
+            entry = real(unit_const, art_civ, age, tech_civ)
             if unit_const != TOWN_CENTRE or entry is None or "pieces" not in entry:
                 return entry
             return {**entry, "pieces": [p for p in entry["pieces"] if _tc_part(p) in keep]}

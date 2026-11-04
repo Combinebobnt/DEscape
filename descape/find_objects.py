@@ -34,14 +34,16 @@ __all__ = [
 ]
 
 CATEGORIES = ("Units", "Buildings", "Heroes", "Others")
-KINDS = ("trees", "eye_candy", "walls", "invisible")
+KINDS = ("trees", "eye_candy", "obstacles", "walls", "invisible")
 
 
 def _kind_consts(kind: str) -> frozenset[int]:
     if kind == "trees":
         return TREE_UNIT_IDS
     if kind == "eye_candy":
-        return unit_kind.eye_candy_consts()
+        return unit_kind.passable_eye_candy_consts()
+    if kind == "obstacles":
+        return unit_kind.obstacle_consts()
     if kind == "walls":
         return unit_kind.wall_consts()
     if kind == "invisible":

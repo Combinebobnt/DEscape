@@ -23,6 +23,9 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe
 
 _FISH_SALMON = 456
 _FISH_TUNA = 457
+# 1x1 GAIA objects, for the tile-centre and jitter rules: deep fish snap to the grid since GH #301.
+_ONE_TILE = 69  # Shore Fish
+_ONE_TILE_OTHER = 1141  # Box Turtles
 
 
 class _FakeModel:
@@ -48,7 +51,7 @@ def _scatter(tiles=None, **kwargs):
     kwargs.setdefault("count", 10)
     kwargs.setdefault("seed", RNG_SEED)
     placed = scatter.scatter_units(
-        _fake_scenario(), model, _all_tiles() if tiles is None else tiles, _FISH_SALMON, **kwargs
+        _fake_scenario(), model, _all_tiles() if tiles is None else tiles, _ONE_TILE, **kwargs
     )
     return placed, model
 
@@ -117,24 +120,73 @@ _MARKET = 84  # 4x4
 _BARRACKS = 12  # 3x3
 
 
-@pytest.mark.parametrize("jitter", [0.0, 0.4])
-def test_scattered_buildings_sit_on_the_games_grid(jitter) -> None:
-    """GH #206: an even span takes a whole number (tile + 1), an odd one the
-    tile centre, and neither is jittered."""
-    from descape.terrain_palette import BUILDING_TILE_SPANS
+_DORADO = 455  # 2x2 deep fish
+_CATAPULT_WRECK = 2355  # 3x3 static (TASK-277)
 
-    assert (BUILDING_TILE_SPANS[_MILL], BUILDING_TILE_SPANS[_MARKET], BUILDING_TILE_SPANS[_BARRACKS]) == (
-        (2, 2), (4, 4), (3, 3),
+
+def _block(x0: int, y0: int, sx: int, sy: int) -> set[tuple[int, int]]:
+    return {(x0 + dx, y0 + dy) for dy in range(sy) for dx in range(sx)}
+
+
+def _scatter_every_tile(tiles, const, **kwargs):
+    return scatter.scatter_units(
+        _fake_scenario(), _FakeModel(), tiles, const, count=len(tiles), seed=RNG_SEED, **kwargs
     )
-    for const in (_MILL, _MARKET):
-        placed = scatter.scatter_units(
-            _fake_scenario(), _FakeModel(), [(5, 7)], const, count=1, seed=RNG_SEED, jitter=jitter
-        )
-        assert _positions(placed) == [(6.0, 8.0)]
-    placed = scatter.scatter_units(
-        _fake_scenario(), _FakeModel(), [(5, 7)], _BARRACKS, count=1, seed=RNG_SEED, jitter=jitter
+
+
+@pytest.mark.parametrize("jitter", [0.0, 0.4])
+@pytest.mark.parametrize(
+    ("const", "region", "expected"),
+    [
+        (_MILL, _block(5, 7, 2, 2), (6.0, 8.0)),
+        (_MARKET, _block(4, 6, 4, 4), (6.0, 8.0)),
+        (_BARRACKS, _block(4, 6, 3, 3), (5.5, 7.5)),
+        (_FISH_SALMON, _block(5, 7, 2, 2), (6.0, 8.0)),
+        (_CATAPULT_WRECK, _block(4, 6, 3, 3), (5.5, 7.5)),
+    ],
+    ids=["mill", "market", "barracks", "salmon", "wreck"],
+)
+def test_scattered_multi_tile_objects_sit_on_the_games_grid(const, region, expected, jitter) -> None:
+    """GH #206, GH #301, TASK-277: an even span takes a whole number (tile + 1),
+    an odd one the tile centre, and neither is jittered. The region is exactly
+    one footprint, so every other pick overhangs it and is dropped."""
+    from descape.terrain_palette import tile_span
+
+    assert tile_span(const, (1, 1)) != (1, 1)
+    assert _positions(_scatter_every_tile(region, const, jitter=jitter)) == [expected]
+
+
+@pytest.mark.parametrize("const", [_DORADO, _MILL, _BARRACKS, _CATAPULT_WRECK])
+def test_a_one_tile_region_places_no_multi_tile_object(const) -> None:
+    model = _FakeModel()
+    placed = scatter.scatter_units(_fake_scenario(), model, [(5, 7)], const, count=1, seed=RNG_SEED)
+    assert placed == [] and model.calls == []
+
+
+def test_an_l_shaped_region_never_gets_a_fish_tile_outside_it() -> None:
+    """A "Water only" region's edge: a snapped 2x2 picked on it would put three
+    of its tiles on shore, so that pick is dropped instead."""
+    from descape import render
+
+    tiles = _block(0, 0, 10, 3) | _block(0, 0, 3, 10)
+    placed = _scatter_every_tile(tiles, _DORADO)
+    assert placed
+    for unit in placed:
+        x0, x1, y0, y1 = render.unit_tile_bounds(unit, 20, 20)
+        assert _block(x0, y0, x1 - x0, y1 - y0) <= tiles, (unit.x, unit.y)
+
+
+def test_a_dropped_multi_tile_pick_leaves_the_other_placements_unchanged() -> None:
+    """Every draw happens before the fit check, so the 1x1 units of a mixed
+    scatter land where an all-1x1 scatter with the same seed puts them."""
+    tiles = _all_tiles()
+    kwargs = {"count": 400, "seed": RNG_SEED, "jitter": 0.3, "weights": [1, 1]}
+    mixed = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _BARRACKS], **kwargs)
+    plain = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _ONE_TILE_OTHER], **kwargs)
+    assert len(mixed) < len(plain), "no Barracks pick overhung the map edge, so nothing was dropped"
+    assert _positions(u for u in mixed if u.unit_const == _ONE_TILE) == _positions(
+        u for u in plain if u.unit_const == _ONE_TILE
     )
-    assert _positions(placed) == [(5.5, 7.5)]
 
 
 def test_a_building_in_the_mix_leaves_the_jitter_stream_unchanged() -> None:
@@ -142,18 +194,12 @@ def test_a_building_in_the_mix_leaves_the_jitter_stream_unchanged() -> None:
     it land exactly where an all-fish scatter with the same seed puts them."""
     tiles = _all_tiles()
     kwargs = {"count": 20, "seed": RNG_SEED, "jitter": 0.3, "weights": [1, 1]}
-    mixed = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_FISH_SALMON, _MILL], **kwargs)
-    plain = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_FISH_SALMON, _FISH_TUNA], **kwargs)
+    mixed = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _MILL], **kwargs)
+    plain = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _ONE_TILE_OTHER], **kwargs)
     assert any(u.unit_const == _MILL for u in mixed)
     for m, p in zip(mixed, plain, strict=True):
         if m.unit_const != _MILL:
             assert (m.x, m.y) == (p.x, p.y)
-
-
-def test_scattered_deep_fish_keep_the_tile_centre() -> None:
-    """GH #206 snaps buildings only: a 2x2 deep fish still lands at tile + 0.5."""
-    placed = scatter.scatter_units(_fake_scenario(), _FakeModel(), [(5, 7)], _FISH_SALMON, count=1, seed=RNG_SEED)
-    assert _positions(placed) == [(5.5, 7.5)]
 
 
 def test_oversized_jitter_is_clamped_inside_the_tile() -> None:
@@ -249,7 +295,7 @@ def test_avoid_occupied_skips_tiles_under_existing_units() -> None:
 
     model = UnitEditModel(loaded)
     region = {(x, y) for x in range(4, 14) for y in range(4, 12)}
-    placed = scatter.scatter_units(loaded, model, region, _FISH_SALMON, count=500, avoid_occupied=True, seed=RNG_SEED)
+    placed = scatter.scatter_units(loaded, model, region, _ONE_TILE, count=500, avoid_occupied=True, seed=RNG_SEED)
     placed_tiles = {(int(u.x), int(u.y)) for u in placed}
     assert placed_tiles == region - covered
 
@@ -463,7 +509,9 @@ def test_one_begin_commit_pair_is_one_undo_step() -> None:
     model.begin_unit_edit([0])
     placed = scatter.scatter_units(loaded, model, _pond(loaded), _FISH_SALMON, count=40, seed=RNG_SEED)
     model.commit_unit_edit("Scatter fish", history)
-    assert len(placed) == 40
+    # Fewer than 40: a 2x2 picked on the pond's far edge would overhang it (TASK-277).
+    assert 0 < len(placed) < 40
+    assert len(loaded.unit_manager.units[0]) == len(gaia_before) + len(placed)
     assert len(history.records) == 1
     assert model.next_unit_id > next_id_before
 

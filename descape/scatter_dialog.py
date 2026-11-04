@@ -13,7 +13,9 @@ eligible tiles" count has to be exactly what gets placed, so the map clamp,
 the terrain filter and the avoid-existing-units subtraction all happen here
 and scatter receives a final list with avoid_occupied=False. So does move
 mode's always-on subtraction of other buildings' footprints, which keeps a
-moved building off another one even with Avoid unticked.
+moved building off another one even with Avoid unticked. The one exception
+is place mode's multi-tile objects: scatter_units() skips a pick whose
+footprint overhangs the eligible tiles (TASK-277), so fewer may land.
 
 In move mode "other" means neither selected nor garrisoned in a selected
 unit: a garrison rides with its host, so its tiles are as free as the host's.
@@ -74,7 +76,9 @@ _MOVE_DISABLED_TIP = "Select units in Units mode first. The selection is dropped
 
 _PLACE_NOTE = (
     "Every unit is placed with rotation 0 and animation frame 0: for many "
-    "GAIA objects rotation is a graphic-variant index, not an angle."
+    "GAIA objects rotation is a graphic-variant index, not an angle. "
+    "Objects bigger than one tile snap to the game's grid; one whose "
+    "footprint would cover a tile that isn't eligible is skipped."
 )
 _MOVE_NOTE = (
     "Only the position changes: a moved unit keeps its rotation, elevation and "
@@ -146,7 +150,7 @@ def region_terrain_counts(scenario, region: tuple[int, int, int, int]) -> Counte
 
 @dataclass(frozen=True)
 class ScatterParams:
-    """Exactly what ViewerWindow hands scatter.scatter_units(), or with
+    """Exactly what ViewerWindow hands scatter.plan_scatter_units(), or with
     `move_selected` the tiles/seed/jitter scatter_existing_units() reads."""
 
     tiles: list[tuple[int, int]]

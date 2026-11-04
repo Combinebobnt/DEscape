@@ -239,7 +239,7 @@ def test_the_whitelist_has_zero_counterexamples_on_real_files(corpus_files):
 
     "Zero" means within the same 1e-6 the integer test itself uses, not
     `== 0.0`. The field is stored as a float32 and real files carry values
-    like 2.3e-08 and 4.8e-07 for it (5 units across the quick corpus subset).
+    like 2.3e-08 and 4.8e-07 for it (5 units across the corpus subset).
     Those are 0 at float32 resolution and cannot be a variant index, since
     index 0 IS zero -- an exact-equality check reports them as failures for a
     reason that has nothing to do with the whitelist.

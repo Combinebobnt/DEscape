@@ -49,7 +49,7 @@ units to sprite art, and at least one, so a missing install cannot pass as "no
 difference".
 
 Run:
-    tools/release_render_diff.py                         # the quick corpus in examples/
+    tools/release_render_diff.py                         # the corpus subset in examples/
     tools/release_render_diff.py examples/foo.aoe2scenario --elev-step-pct 25 200
     tools/release_render_diff.py --attribute             # name the tiles, terrains and units under each diff
     tools/release_render_diff.py --frames-dir build/release_frames
@@ -82,9 +82,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BASE_REF = "v0.10"
 STYLES = ("flat", "stepped", "sloped")
 DEFAULT_PCTS = (50, 200)
-# The same four files as tests/conftest.py's QUICK_CORPUS_NAMES.
+# The same four files as tests/conftest.py's CORPUS_SUBSET_NAMES.
 # No examples/ file places town centres 71, 141 or 142, so their art is not compared (decided 2026-10-20, record only).
-QUICK_CORPUS = (
+CORPUS_SUBSET = (
     "0_June_Event_Scenario.aoe2scenario",
     "2_Joan_coop_1_v0_13.aoe2scenario",
     "C2_ElCid_coop_1_v0_16.aoe2scenario",
@@ -100,7 +100,7 @@ JOAN = "2_Joan_coop_1_v0_13.aoe2scenario"
 OLD_ALLIES = "old-allies-final-v2.aoe2scenario"
 LELOI = "R4_LeLoi_4.aoe2scenario"
 DOS_PILAS = "F7_2_Dos Pilas (648).aoe2scenario"
-# Matched by the release gate beside the quick corpus whatever entries exist (tests/test_release_render_diff.py).
+# Matched by the release gate beside the corpus subset whatever entries exist (tests/test_release_render_diff.py).
 EXTRA_MATCH_FILES = (OLD_ALLIES, LELOI)
 STRIP_ROWS = 1024
 # Review frames: crop CROP_W x CROP_H canvas px, upscaled nearest-neighbour to 1200x900 (REVIEW_PACK framing rules).
@@ -159,6 +159,49 @@ def _fixed_sloped_fold() -> None:
 
     _require(iso_geometry, "tile_folds")
     iso_geometry.tile_folds = lambda elevations: np.zeros(elevations.shape, dtype=bool)
+
+
+def _stored_wall_shapes() -> None:
+    """Put the pre-TASK-524 walls back: radian files take the 4-bit table, integer files their stored index."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "wall_drawn_shape", "wall_variant_from_neighbours", "ORTHOGONAL_MASK")
+    table, orthogonal = unit_sprites.wall_variant_from_neighbours, unit_sprites.ORTHOGONAL_MASK
+    unit_sprites.wall_drawn_shape = lambda mask8, stored, radian: table(mask8 & orthogonal) if radian else None
+
+
+def _one_tile_statics_and_hidden_fish() -> None:
+    """Put the pre-TASK-277 spans back: no static_spans, and the eight original fish only."""
+    from descape import terrain_palette
+
+    _require(terrain_palette, "STATIC_TILE_SPANS", "FISH_TILE_SPANS")
+    # In place, never rebound: render.py imports the tables by name.
+    terrain_palette.STATIC_TILE_SPANS.clear()
+    for const in (451, 452, 454, 459, 460, 461):
+        terrain_palette.FISH_TILE_SPANS.pop(const, None)
+
+
+def _no_smoke_and_flame_particles() -> None:
+    """Put the pre-GH #256 Smoke and Flames back: no graphic-map entry, so they draw a coloured mark."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "graphic_map", "_particle_stems")
+    # Built once: the worker never switches dataset, and graphic_map() runs several times per unit.
+    table = {c: e for c, e in unit_sprites.graphic_map().items() if c not in (1308, 1333, 1334, 1335, 1336)}
+    unit_sprites.graphic_map = lambda: table
+    unit_sprites._particle_stems.cache_clear()
+
+
+def _age_techs_only() -> None:
+    """Put the pre-TASK-205 building table back: age techs 101-103 at ages 3..5, no civ rows, no per-age annexes."""
+    from gen_start_upgrade_review_pack import age_techs_only
+
+    from descape import unit_sprites
+
+    _require(unit_sprites, "building_art", "BuildingArt")
+    table = age_techs_only(unit_sprites.building_art())
+    # The lambda has no cache_clear(): safe because the worker never calls unit_sprites.clear_caches().
+    unit_sprites.building_art = lambda: table
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +270,31 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         since="v0.10", control_file=ELCID,
         must_fail=frozenset({("sloped", False), ("sloped", True)}),
         patch=_fixed_sloped_fold,
+    ),
+    Neutralization(
+        "lone-walls",
+        "TASK-524: a wall with at most one neighbour draws as a tower, and radian files draw diagonal walls by their neighbours",
+        since="v0.10", control_file=ELCID, must_fail=SPRITES_ON,
+        patch=_stored_wall_shapes,
+    ),
+    Neutralization(
+        "non-building-spans",
+        "TASK-277 (GH #333): shipwrecks, rubble, flares and the hidden fish draw their real footprint, not 1x1",
+        # Measured 2026-11-03: LeLoi's 230 FLARE4 markers draw only with sprites on.
+        since="v0.10", control_file=LELOI, must_fail=SPRITES_ON,
+        patch=_one_tile_statics_and_hidden_fish,
+    ),
+    Neutralization(
+        "particle-fire",
+        "GH #256 (TASK-454): Smoke and Flames 1-4 draw their fire and smoke, not a coloured mark",
+        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
+        patch=_no_smoke_and_flame_particles,
+    ),
+    Neutralization(
+        "start-upgrades",
+        "TASK-205 (GH #328): buildings draw the upgrades their civilization and starting age have, Post-Imperial included",
+        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
+        patch=_age_techs_only,
     ),
 )
 
@@ -781,7 +849,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, epilog=_registry_help(), formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the quick corpus in examples/)")
+    parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the corpus subset in examples/)")
     parser.add_argument("--base", default=BASE_REF, help=f"Release ref to compare against (default {BASE_REF})")
     parser.add_argument("--elev-step-pct", type=int, nargs="+", default=list(DEFAULT_PCTS), help="Isometric elevation height stops")
     parser.add_argument("--style", choices=STYLES, nargs="+", default=list(STYLES))
@@ -799,7 +867,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    scenarios = args.scenarios or [ROOT / "examples" / name for name in QUICK_CORPUS]
+    scenarios = args.scenarios or [ROOT / "examples" / name for name in CORPUS_SUBSET]
     missing = [str(p) for p in scenarios if not p.is_file()]
     if missing:
         parser.error(f"not found: {', '.join(missing)}")

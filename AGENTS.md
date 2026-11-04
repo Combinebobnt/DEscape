@@ -72,7 +72,13 @@ scope.
   one const per orientation, so "rotating" a gate means swapping the const
   among its four siblings, which changes the footprint. Top-down Flat's
   `unit_sprites.flat_art()` is draw-only, for gates and walls alike: no
-  write path may use it.
+  write path may use it. The building art tables may likewise draw a stone
+  gate with its Fortified Wall sibling's image at a later starting age;
+  that is draw-only too, and orientation, footprint and `set_unit_const()`
+  stay on the placed const. The render draws a wall with at most one
+  neighbour as the tower whatever its stored index, and every wall of a
+  radian-encoded file by its neighbours (`unit_sprites.wall_drawn_shape()`);
+  that is draw-only too, and no write path may use it.
 - **The two exceptions to "a placed unit's `unit_const` never changes".**
   `UnitEditModel.set_unit_const()` and
   `UnitEditModel.replace_type()` are the only code anywhere that may change an
@@ -127,7 +133,7 @@ page shows the live keys); `tests/test_help_guide.py` lints the rest.
 ## Contributing
 
 If you are working on a contribution for a pull request, follow
-`CONTRIBUTING.md`. Run `./run_all_tests.sh` (`run_all_tests.bat` on Windows)
+`CONTRIBUTING.md`. Run `./run_quick_tests.sh` (`run_quick_tests.bat` on Windows)
 and report what it printed before calling a change done. The Hard rules above
 are not negotiable. A contributed PR leaves `CHANGELOG.md` alone.
 

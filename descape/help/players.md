@@ -10,12 +10,12 @@ The selector below it picks the player to edit: GAIA first, then Players 1 to 8.
 
 - **Tribe name**. Every player selector in DEscape shows it after the player's number, as in "P8 - Horde Army", so a tribe name set here labels that player everywhere.
 - **Name string ID** names the player with a game string instead; -2 means none.
-- **Civilization** and **Architecture**. Architecture is the building style, picked by the civilization it comes from.
+- **Civilization** and **Architecture**. Architecture is the building style, picked by the civilization it comes from. The civilization's own bonuses can still change a building whatever the architecture: an Armenian or Georgian player's Monastery draws as a Fortified Church.
 - **Lock civilization** and **Lock personality** are the in-game editor's two lock checkboxes.
 
 ## Start
 
-- **Starting age**. A Return of Rome scenario lists that game's ages.
+- **Starting age**. A Return of Rome scenario lists that game's ages. The map draws the player's buildings as that age has them, with the upgrades a player starting there already has: from Imperial, Guard Towers and Fortified Walls and gates where the civilization has them, and from Post-Imperial, Keeps.
 - **Starting food**, **Starting wood**, **Starting stone** and **Starting gold**.
 - **Population limit**, which can't go below 0.
 - **Colour**.

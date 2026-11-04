@@ -500,7 +500,7 @@ def test_wide_mod_art_widens_the_edit_bbox_to_cover_itself(tmp_path, monkeypatch
         assert bbox._covers(widened, rect)
 
 
-# Two small tree-bearing quick-corpus maps (120x120, 144x144): four full renders in three styles each.
+# Two small tree-bearing corpus subset maps (120x120, 144x144): four full renders in three styles each.
 _IDENTITY_FILES = ("C2_ElCid_coop_1_v0_16.aoe2scenario", "2_Joan_coop_1_v0_13.aoe2scenario")
 
 

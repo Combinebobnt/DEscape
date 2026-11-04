@@ -67,6 +67,7 @@ GROUPS: tuple[tuple[str, str], ...] = (
     ("rect", "Draw Rectangle"),
     ("paste", "Paste Region"),
     ("placement", "Placement"),
+    ("eyedropper", "Eyedropper"),
     ("cliff", "Cliff"),
     ("unit_brush", "Unit Brush"),
     ("convert", "Convert"),
@@ -118,6 +119,7 @@ OPTIONS: tuple[ToolOption, ...] = (
         "last_wall", "Wall", "placement", ID, DEFAULT_WALL_CONST, id_type=int,
         note="a wall unit id",
     ),
+    ToolOption("eyedropper_returns", "Switch back after a pick", "eyedropper", BOOL, False),
     ToolOption(
         "cliff_family", "Cliff family", "cliff", ID, None, id_type=str, nullable=True,
         note="null for the first family, or a cliff graphic name",

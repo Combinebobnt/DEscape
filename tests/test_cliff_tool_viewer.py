@@ -715,6 +715,8 @@ def test_a_unit_change_between_press_and_release_drops_the_stroke():
     try:
         _select_piece(window, _DEFAULT_CLIFF)
         window.cliff_action.setChecked(True)
+        # Under the would-be second node (40..42, 43..45), planted before the run the undo takes back.
+        (tree,) = _plant(window, [(41.5, 44.5)])
         _tall_run(window)
         window.on_edit_stroke_start()
         for y in range(41, 47):
@@ -730,6 +732,120 @@ def test_a_unit_change_between_press_and_release_drops_the_stroke():
         assert len(window.edit_history.records) == records
         assert _last_status(window) == "Cliff: the map's units changed during the drag, so nothing was placed"
         assert window._cliff_stroke is None
+        assert any(u is tree for u in _gaia(window))
+    finally:
+        _close(window)
+
+
+# -- TASK-278: a placed cliff removes the trees under it -------------------------
+
+_TREE = 284
+_GOLD = 66
+
+
+def _plant(window, points, const: int = _TREE, player: int = GAIA_PLAYER_ID) -> list:
+    """One unit of `const` per (x, y) point, owned by `player`, in one record."""
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Plant", [player]):
+        return [model.add(player, const, x, y) for x, y in points]
+
+
+def _trees_on(window, tiles) -> list:
+    return [
+        u for units in window.scenario.unit_manager.units for u in units
+        if u.unit_const == _TREE and (int(u.x), int(u.y)) in tiles
+    ]
+
+
+def _occupied(window, unit) -> set:
+    from descape import render
+
+    mm = window.scenario.map_manager
+    return set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+
+
+def test_a_click_on_a_forest_removes_the_trees_under_the_cliff_in_one_undo_record():
+    """A click at (41, 35) places a 3x3 on (40..42, 34..36): its nine trees
+    go, the tree past its edge and a gold mine on it stay."""
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        footprint = [(x, y) for x in range(40, 43) for y in range(34, 37)]
+        under = _plant(window, [(x + 0.5, y + 0.5) for x, y in footprint])
+        (outside,) = _plant(window, [(43.5, 35.5)])
+        (gold,) = _plant(window, [(41.5, 35.5)], const=_GOLD)
+        records = len(window.edit_history.records)
+
+        _stroke(window, [(41, 35)])
+
+        cliff = _gaia(window)[-1]
+        assert cliff.unit_const == _DEFAULT_CLIFF and _occupied(window, cliff) == set(footprint)
+        assert _trees_on(window, _occupied(window, cliff)) == []
+        assert any(u is outside for u in _gaia(window)) and any(u is gold for u in _gaia(window))
+        assert len(window.edit_history.records) == records + 1
+        assert ", removed 9 tree(s) under it" in _last_status(window)
+
+        window.undo()
+        assert {id(u) for u in _trees_on(window, set(footprint))} == {id(u) for u in under}
+        assert not any(u is cliff for u in _gaia(window))
+        window.redo()
+        assert _trees_on(window, set(footprint)) == []
+    finally:
+        _close(window)
+
+
+def test_a_drag_removes_the_trees_under_every_node_not_only_the_head():
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        middle = {(x, y) for x in range(40, 43) for y in range(37, 40)}
+        _plant(window, [(x + 0.5, y + 0.5) for x, y in sorted(middle)])
+
+        _tall_run(window)
+
+        assert _trees_on(window, middle) == []
+        assert ", removed 9 tree(s) under them" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_player_owned_tree_under_the_cliff_is_removed_and_undo_gives_it_back():
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        (tree,) = _plant(window, [(41.5, 35.5)], player=1)
+
+        _stroke(window, [(41, 35)])
+        assert not any(u is tree for u in window.scenario.unit_manager.units[1])
+
+        window.undo()
+        assert any(u is tree for u in window.scenario.unit_manager.units[1])
+    finally:
+        _close(window)
+
+
+def test_a_tree_a_garrison_names_stays_and_the_cliff_is_still_placed():
+    window = _window()
+    try:
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        named, plain = _plant(window, [(41.5, 35.5), (40.5, 34.5)])
+        (villager,) = _plant(window, [(60.5, 60.5)], const=83, player=1)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Garrison", [1]):
+            model.set_garrisoned_in(villager, named.reference_id)
+        before = _unit_count(window)
+
+        _stroke(window, [(41, 35)])
+
+        assert _gaia(window)[-1].unit_const == _DEFAULT_CLIFF
+        assert any(u is named for u in _gaia(window))
+        assert not any(u is plain for u in _gaia(window))
+        assert _unit_count(window) == before
+        assert ", removed 1 tree(s) under it" in _last_status(window)
     finally:
         _close(window)
 

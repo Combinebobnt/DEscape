@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs the default (fast, no-corpus) pytest tier -- see tests/README.md for
-# what that covers. run_corpus_quick.sh adds the test map; for the
-# examples/ corpus, see run_corpus_stress.sh (~27 min).
+# Runs the quick suite: every test that needs no local data and is not slow,
+# the generated test map's `test_map` items included. This is what CI runs.
+# For the examples/ corpus and the slow checks too, see run_full_tests.sh.
+# See tests/README.md.
 #
 # Parallel via pytest-xdist: one worker per CPU, capped at 8 so the machine
 # stays usable. Arguments come last, so `-n 0` runs serially and

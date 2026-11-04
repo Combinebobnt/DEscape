@@ -26,6 +26,10 @@ def _non_default_look() -> None:
     settings.set_stack_badge_position("top_left")
     settings.set_grid_blend(30)
     settings.set_grid_thickness(3)
+    settings.set_trigger_status_marker("both")
+    settings.set_trigger_status_color("problem", "#aa00aa")
+    settings.set_trigger_status_color_ok_rows(not settings.get_trigger_status_color_ok_rows())
+    settings.set_trigger_status_color_sections(not settings.get_trigger_status_color_sections())
 
 
 def _reset_memos(monkeypatch) -> None:
@@ -98,7 +102,20 @@ def test_the_document_is_look_only() -> None:
         "stack_badge_position",
         "grid_blend",
         "grid_thickness",
+        "trigger_status_marker",
+        "trigger_status_colors",
+        "trigger_status_color_ok_rows",
+        "trigger_status_color_sections",
     }
+
+
+def test_a_theme_carries_every_trigger_status_key_the_settings_file_does() -> None:
+    """TASK-211: all four, so the theme and settings files agree on what trigger status is."""
+    from descape import settings_file
+
+    status_keys = {key for key in settings_file.PORTABLE_KEYS if key.startswith("trigger_status")}
+    assert len(status_keys) == 4
+    assert status_keys <= set(theme_file.build_document())
 
 
 def test_apply_appearance_values_saves_exactly_once(tmp_path, monkeypatch) -> None:
@@ -161,6 +178,16 @@ def test_importing_a_theme_pops_legacy_dark_mode(tmp_path) -> None:
         ({"ui_font": {"size": 99}}, "ui_font.size: 99 is outside", "ui_font_size"),
         ({"ui_font": {"size": "big"}}, "ui_font.size: expected a whole number", "ui_font_size"),
         ({"ui_font": {"family": 12}}, "ui_font.family: expected text", "ui_font_family"),
+        ({"trigger_status_marker": "glow"}, "trigger_status_marker: 'glow' is not one of", "trigger_status_marker"),
+        ({"trigger_status_colors": {"ok": "green"}}, "'green' is not a '#rrggbb'", "trigger_status_colors"),
+        ({"trigger_status_colors": {"warn": "#000000"}}, "unknown id 'warn'", "trigger_status_colors"),
+        ({"trigger_status_colors": "#000000"}, "trigger_status_colors: expected a mapping", "trigger_status_colors"),
+        ({"trigger_status_color_ok_rows": 1}, "trigger_status_color_ok_rows: expected true or false", "trigger_status_color_ok_rows"),
+        (
+            {"trigger_status_color_sections": "yes"},
+            "trigger_status_color_sections: expected true or false",
+            "trigger_status_color_sections",
+        ),
     ],
 )
 def test_each_bad_key_is_reported_and_not_applied(tmp_path, keys, fragment, not_applied) -> None:
@@ -374,6 +401,23 @@ def test_summary_lists_changes_problems_and_notes(tmp_path) -> None:
     assert "Nowhere Sans" in summary.split("Notes:")[1]
 
 
+def test_summary_lists_trigger_status_changes(tmp_path) -> None:
+    doc = _doc(
+        trigger_status_marker="off",
+        trigger_status_colors={"ok": "#010203", "problem": settings.get_trigger_status_color("problem")},
+        trigger_status_color_ok_rows=not settings.get_trigger_status_color_ok_rows(),
+        trigger_status_color_sections=settings.get_trigger_status_color_sections(),
+    )
+    lines = theme_file.describe_changes(theme_file.parse_theme_file(_write(tmp_path / "t.yaml", doc)).values)
+    ok_label = settings.get_trigger_status_color_label("ok")
+    markers = dict(settings.TRIGGER_STATUS_MARKERS)
+    assert lines == [
+        f"Trigger status: {markers[settings.get_trigger_status_marker()]} -> {markers['off']}",
+        f"Mark triggers that pass: {'on' if not settings.get_trigger_status_color_ok_rows() else 'off'}",
+        f"Trigger status colour {ok_label}: {settings.get_trigger_status_color('ok')} -> #010203",
+    ]
+
+
 def test_summary_of_a_no_op_file_says_so(tmp_path) -> None:
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", theme_file.build_document()))
     assert theme_file.format_import_summary(plan).startswith("Nothing in this file differs")
@@ -427,7 +471,14 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
         stack_badge_position="above",
         grid_blend=40,
         grid_thickness=4,
+        trigger_status_marker="icon",
+        trigger_status_colors={"ok": "#0000aa"},
+        trigger_status_color_ok_rows=not settings.get_trigger_status_color_ok_rows(),
+        trigger_status_color_sections=not settings.get_trigger_status_color_sections(),
     )
+    ok_rows, sections = doc["trigger_status_color_ok_rows"], doc["trigger_status_color_sections"]
+    panel = qt_dialog._window.trigger_panel
+    assert panel.tree.isColumnHidden(panel._COL_STATUS), "fixture assumption: the default marker shows no icons"
     shown = _answer_import(monkeypatch, _write(tmp_path / "t.yaml", doc), apply=True)
     saves = []
     real_save = settings._save_config
@@ -447,6 +498,11 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
     assert qt_dialog.stack_badge_position_combo.currentData() == "above"
     assert qt_dialog.grid_blend_slider.value() == 40
     assert qt_dialog.grid_thickness_slider.value() == grid_overlay.thickness_index(4)
+    assert qt_dialog.trigger_status_marker_combo.currentData() == "icon"
+    assert qt_dialog.trigger_status_ok_rows_check.isChecked() is ok_rows
+    assert qt_dialog.trigger_status_sections_check.isChecked() is sections
+    assert qt_dialog._trigger_status_swatches["ok"].toolTip() == "#0000aa"
+    assert not panel.tree.isColumnHidden(panel._COL_STATUS), "the Triggers panel restyled live"
     assert qt_dialog.grid_thickness_value_label.text() == "4 px"
     view = qt_dialog._window.map_view
     assert view._stack_badge_position == "above"

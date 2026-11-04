@@ -1653,7 +1653,7 @@ def test_a_membership_component_over_the_cap_falls_back(style, shared_art_instal
 
 
 def _variant(k: int) -> float:
-    """Wall variant k, radian-encoded, so the file is radian and every wall with a neighbour is re-derived."""
+    """Wall variant k, radian-encoded, so the file is radian and every wall is re-derived from its neighbours."""
     return k * 2 * np.pi / 5
 
 
@@ -1742,20 +1742,20 @@ def test_a_wall_moved_out_of_a_run_reshapes_its_stationary_neighbours(
 
 @pytest.mark.parametrize("sprites", [False, True])
 @pytest.mark.parametrize("style", STYLES)
-def test_a_wall_moved_next_to_a_lone_wall_reshapes_it(style, sprites, run_wall_install, monkeypatch):
-    """The lone wall stores variant 1 and has no neighbour, so it draws 1.
-    The mover lands east of it and the neighbour bit makes it an end (2)."""
+def test_a_wall_moved_next_to_a_run_end_reshapes_it(style, sprites, run_wall_install, monkeypatch):
+    """The end of a two-wall run draws as a tower (2). The mover lands east
+    of it, which makes it a run piece along x (0)."""
     scenario = _scenario()
-    lone = _walls(scenario, [(1, (50, 40))], _variant(1))[0]
+    end = _walls(scenario, [(1, (50, 40)), (1, (49, 40))], _variant(1))[0]
     mover = _walls(scenario, [(1, (55, 45))], _variant(2))[0]
     cache = _make_convert_cache(style, scenario, sprites)
     counts = _call_counts(monkeypatch)
-    assert _shapes(scenario, [lone]) == [None]
+    assert _shapes(scenario, [end]) == [2]
 
     plan = _apply_move_and_check(style, cache, scenario, sprites, counts, _group_move(scenario, 1, [mover], -4.0, -5.0))
 
-    assert _shapes(scenario, [lone, mover]) == [2, 2]
-    assert _in_plan(plan, lone)
+    assert _shapes(scenario, [end, mover]) == [0, 2]
+    assert _in_plan(plan, end)
 
 
 @pytest.mark.parametrize("sprites", [False, True])
@@ -1785,7 +1785,7 @@ def test_a_wall_moved_into_a_gap_changes_its_own_shape_and_its_neighbours(style,
     mover = _walls(scenario, [(1, (40, 46))], _variant(1))[0]
     cache = _make_convert_cache(style, scenario, sprites)
     counts = _call_counts(monkeypatch)
-    assert _shapes(scenario, [mover, run[1], run[2]]) == [None, 2, 2]
+    assert _shapes(scenario, [mover, run[1], run[2]]) == [2, 2, 2]
 
     _apply_move_and_check(style, cache, scenario, sprites, counts, _group_move(scenario, 1, [mover], 0.0, -6.0))
 
@@ -1802,20 +1802,20 @@ def test_a_mixed_group_move_of_walls_a_gate_and_shared_tiles_splices(style, spri
     scenario = _scenario()
     run = _walls(scenario, [(1, (x, 30)) for x in (30, 31, 32, 33, 34)], _variant(1))
     gate = _place(scenario, 1, GATE_CONST, 37.0, 30.5)  # x 35..38
-    under = _walls(scenario, [(1, (30, 31))], _variant(1))[0]
-    past = _walls(scenario, [(2, (40, 30))], _variant(1))[0]
+    under = _walls(scenario, [(1, (30, 31)), (1, (30, 32))], _variant(1))[0]  # a y run with the run's first piece
+    past = _walls(scenario, [(2, (40, 30)), (2, (41, 30))], _variant(1))[0]  # a run end, west of its partner
     lead = _place(scenario, 1, MILL_CONST, 60.0, 60.0)  # x 59..60
     trail = _place(scenario, 1, MILL_CONST, 62.0, 60.0)  # x 61..62
     stays = _place(scenario, 3, MILL_CONST, 45.0, 45.0)
     leaves = _place(scenario, 1, MILL_CONST, 45.0, 45.0)
     cache = _make_convert_cache(style, scenario, sprites)
     counts = _call_counts(monkeypatch)
-    assert _shapes(scenario, [under, past]) == [2, None]
+    assert _shapes(scenario, [under, past]) == [1, 2]
 
     batch = _group_move(scenario, 1, [*run, gate, lead, trail, leaves], 1.0, 0.0)
     plan = _apply_move_and_check(style, cache, scenario, sprites, counts, batch)
 
-    assert _shapes(scenario, [under, past]) == [None, 2], "the stationary walls did not reshape"
+    assert _shapes(scenario, [under, past]) == [2, 0], "the stationary walls did not reshape"
     assert _in_plan(plan, under, past, stays)
 
 
@@ -2192,8 +2192,8 @@ def test_past_the_caps_a_group_move_holding_a_wall_splices_the_visible_level(sty
     scenario = _scenario()
     run = _walls(scenario, [(1, (x, 30)) for x in (30, 31, 32, 33, 34)], _variant(1))
     gate = _place(scenario, 1, GATE_CONST, 37.0, 30.5)
-    under = _walls(scenario, [(1, (30, 31))], _variant(1))[0]
-    past = _walls(scenario, [(2, (40, 30))], _variant(1))[0]
+    under = _walls(scenario, [(1, (30, 31)), (1, (30, 32))], _variant(1))[0]  # a y run with the run's first piece
+    past = _walls(scenario, [(2, (40, 30)), (2, (41, 30))], _variant(1))[0]  # a run end, west of its partner
     lead = _place(scenario, 1, MILL_CONST, 60.0, 60.0)
     trail = _place(scenario, 1, MILL_CONST, 62.0, 60.0)
     _place(scenario, 3, MILL_CONST, 45.0, 45.0)
@@ -2205,7 +2205,7 @@ def test_past_the_caps_a_group_move_holding_a_wall_splices_the_visible_level(sty
     batch = _group_move(scenario, 1, [*run, gate, lead, trail, leaves], 1.0, 0.0)
     _apply_visible(cache, batch)
 
-    assert _shapes(scenario, [under, past]) == [None, 2], "the stationary walls did not reshape"
+    assert _shapes(scenario, [under, past]) == [2, 0], "the stationary walls did not reshape"
     assert cache._levels[0].gen == cache._source_gen
     _assert_visible_like_a_fresh_cache(style, cache, scenario, counts)
 

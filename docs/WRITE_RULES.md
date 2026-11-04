@@ -65,13 +65,19 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   per-const rules), and the release writes it through these same setters,
   in the move's one undo record. Esc, a refused drop and a garrison drop
   write nothing, and a turn that nets a whole cycle for a const leaves its
-  stored value verbatim. On a just-pasted region (GH #197) the Rotate
+  stored value verbatim. A wheel row set to Rotate preview or selection,
+  or to Brush size, rotate preview or selection (GH #356), is a
+  caller as well: with a Units-mode selection and nothing ahead of it, a
+  notch runs the Rotate actions' own `ViewerWindow.on_unit_rotate()`, the
+  same setters and guards, never a committed region in place. On a just-pasted region (GH #197) the Rotate
   actions edit no unit at all: they go through the *Region turn* exception below. On a
   committed Select region with no paste armed (TASK-256) they go through
   the *Selection transform* exception below instead.
 - *Region turn's unit images* (GH #197: Rotate, Edit > Flip Selection
   and, since GH #245, a wheel bound to Rotate preview, or to Brush size or
-  rotate preview where no brush applies, on a just-pasted region,
+  rotate preview where no brush applies, and since GH #356 their "or
+  selection" forms where no Units-mode selection exists, on a
+  just-pasted region,
   all through `ViewerWindow.on_region_transform()`), via
   `region_transform.transform_block()`.
   Scope: only a block being re-pasted in place of the paste it undoes,
@@ -148,8 +154,9 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   because the game re-derives their index from neighbours, so a written
   value would be overridden. It always writes a literal integer index: every
   corpus placement on a cyclable const stores one, never the radian form.
-  Its callers are Cycle Variant, the Rotate actions, the Rotation field and
-  Move's pending turn (GH #280, the *Rotate* bullet above).
+  Its callers are Cycle Variant, the Rotate actions, the Rotation field,
+  Move's pending turn (GH #280) and the wheel's selected-units choices (GH
+  #356), the last two per the *Rotate* bullet above.
 - *Wall shapes re-derived from neighbours*: Place Unit's wall-run
   junction rewrites, its rewrites of the walls
   beside a gate it places (GH #159, which also removes the walls under the
@@ -165,8 +172,16 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   Scatter's move mode takes the shape its new neighbours give it, and a
   wall that stays takes the one its neighbours give it when a tile beside
   it starts or stops holding a connector because a wall moved; a gate's
-  own move reshapes walls only under the GH #194 option). A wall a move or
-  a gate move leaves with no neighbour takes the tower index 2, which all
+  own move reshapes walls only under the GH #194 option), and the rewrites
+  of the walls beside a gate whose orientation cycle (Rotate, the Rotation
+  field) or Replace into a gate const gives it a new footprint (GH #339,
+  always on: the walls under the new footprint are removed first, except
+  a referenced wall or a Replace row the pre-flight refused, and the tiles
+  it leaves are not filled), and a removal's rewrites of the walls left
+  beside a removed wall or gate (GH #340: Delete, Cut Units, Find's Delete
+  and the Eraser brush; only the walls beside a tile no other wall or gate
+  still covers). A wall a move, a gate move, a gate's new footprint or a
+  removal leaves with no neighbour takes the tower index 2, which all
   24 isolated walls in the integer-encoded corpus store and AoE2:DE draws
   for a lone wall. All of these go via
   `UnitEditModel.set_wall_variant()`, only on the wall-family consts (9 in
@@ -248,7 +263,8 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `place_rotation.random_rotation()` rolls per unit (a facing on the
   const's own grid for ANGLE, a variant index for a cyclable const, which
   stays inside the *Cycle Variant* scope; nothing for any other const). It
-  refuses walls, gates and cliffs outright.
+  refuses walls, gates and cliffs outright. The pending state is the same
+  one, and is also turned over the brush's own hover ghost (GH #355).
   `add()` itself stays unvalidated, as with mirroring and paste: the guard
   is `rotation_for()`, pinned by `tests/test_place_rotation.py`.
 - *Terrain planting's variant* (the Terrain tool's Trees and Eye candy,
@@ -274,7 +290,11 @@ ever `0.0` or the junk sentinel `7.0`. A gate's orientation lives in its
 therefore means swapping the const among its four siblings, which changes the
 footprint. Top-down Flat (GH #151) draws a gate with its next orientation
 sibling's art through `unit_sprites.flat_art()`, inside the placed const's
-own footprint; that is draw-only, and no write path may use it.
+own footprint; that is draw-only, and no write path may use it. The building
+art tables may likewise draw a stone gate with its Fortified Wall sibling's
+image at a later starting age (`unit_sprites.resolve_entry()`); that is
+draw-only too, and orientation, footprint and `set_unit_const()` stay on the
+placed const.
 
 ## Walls
 
@@ -288,8 +308,8 @@ angular zero-point offset applied. `unit_sprites.variant_index()` is the only
 correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
 field through verbatim here too, with the exceptions listed above:
 `UnitEditModel.set_wall_variant()`, which writes the value derived from
-the same neighbours the game would read (or, for a wall a move leaves
-with none, the tower index 2); *Replace*
+the same neighbours the game would read (or, for a wall a move or a
+removal leaves with none, the tower index 2); *Replace*
 (`UnitEditModel.replace_type()`, by `unit_model.replaced_rotation()`),
 which keeps a wall's index verbatim when the new const is also a wall and
 writes `0.0` when a non-wall becomes a wall; and the new wall images of
@@ -302,8 +322,12 @@ re-derives. Walls are VARIANT, and Rotate skips them in a unit selection; a
 Region turn re-pastes them as new walls instead, and Flip and Rotate Group
 (the *Selection transform*, TASK-256) carry a selected wall's index through
 `wall_index_image()`, written by `set_wall_variant()`. Top-down Flat (GH #151)
-draws a wall's stored shape with the frame `unit_sprites.flat_art()` picks
-for the square grid; that is draw-only, and no write path may use it.
+draws a wall's shape with the frame `unit_sprites.flat_art()` picks
+for the square grid; that is draw-only, and no write path may use it. Every
+view draws a wall with at most one neighbour as the tower whatever its stored
+index, and every wall of a radian-encoded file by its neighbours
+(`unit_sprites.wall_drawn_shape()`); that is draw-only too, and no write path
+may use it.
 
 ## The two exceptions to "a placed unit's `unit_const` never changes"
 

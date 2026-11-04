@@ -467,11 +467,16 @@ def test_a_terrain_mode_click_still_picks_the_tile() -> None:
 
 def test_the_eyedropper_shows_its_params_in_terrain_mode_only() -> None:
     """Level and the Target combo belong to the tile pick. In Units mode the
-    tool reads a unit into the sidebar and has no toolbar param at all."""
+    tool reads a unit into the sidebar, and its row holds only Switch back
+    after a pick (TASK-287), which shows in both modes."""
+    from PyQt5.QtWidgets import QToolBar
+
     window = _edit_window()
     try:
         assert window.level_param_spin_action.isVisible()
         assert window.terrain_target_param_action.isVisible()
+        assert window.eyedropper_return_param_action.isVisible()
+        assert window.eyedropper_return_check.isEnabled()
 
         window.mode_combo.setCurrentText("Units")
         window.eyedropper_action.setChecked(True)
@@ -480,12 +485,216 @@ def test_the_eyedropper_shows_its_params_in_terrain_mode_only() -> None:
         assert not window.elevation_level_spin.isEnabled()
         assert not window.terrain_target_param_action.isVisible()
         assert not window.terrain_target_combo.isEnabled()
-        assert not window.tool_param_separator_action.isVisible()
+        param_bar = window.tool_options_toolbar
+        assert isinstance(param_bar, QToolBar)
+        # The first action is the row's permanent height spacer, never hidden.
+        shown = [action for action in param_bar.actions()[1:] if action.isVisible()]
+        assert shown == [window.tool_param_separator_action, window.eyedropper_return_param_action]
+        assert window.eyedropper_return_check.isEnabled()
 
         window.mode_combo.setCurrentText("Terrain")
         assert window._current_tool == "eyedropper", "applicable in Terrain too, so it stays"
         assert window.level_param_spin_action.isVisible()
         assert window.terrain_target_param_action.isVisible()
+
+        window.draw_action.setChecked(True)
+        assert not window.eyedropper_return_param_action.isVisible()
+        assert not window.eyedropper_return_check.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# --- TASK-287: Switch back after a pick ------------------------------------------------
+
+_PICK_TILE = (40, 40)
+
+
+def _status_lines(window) -> list[str]:
+    return window.status_log.toPlainText().splitlines()
+
+
+def _switch_back_window(from_tool: str = "draw", ticked: bool = True):
+    """Shown Terrain window: `from_tool`, then the Eyedropper, the box as given,
+    and _PICK_TILE holding _PICK_TERRAIN at _PICK_ELEVATION."""
+    window = conftest.shown_terrain_window()
+    getattr(window, f"{from_tool}_action").setChecked(True)
+    window.eyedropper_action.setChecked(True)
+    assert window._current_tool == "eyedropper"
+    window.eyedropper_return_check.setChecked(ticked)
+    mm = window.scenario.map_manager
+    tile = mm.terrain[_PICK_TILE[1] * mm.map_width + _PICK_TILE[0]]
+    tile.terrain_id = _PICK_TERRAIN
+    tile.elevation = _PICK_ELEVATION
+    return window
+
+
+def _pick(window, modifiers=None) -> None:
+    _press(window.map_view, conftest.polygon_viewport_pos(window.map_view, *_PICK_TILE), modifiers=modifiers)
+
+
+def test_a_pick_with_the_box_ticked_returns_to_the_previous_tool() -> None:
+    window = _switch_back_window()
+    try:
+        _pick(window)
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window.elevation_level_spin.value() == _PICK_ELEVATION
+        assert window._current_tool == "draw" and window.map_view._tool == "draw"
+        assert window.draw_action.isChecked()
+        last_two = _status_lines(window)[-2:]
+        assert last_two[0].startswith("Picked ") and last_two[1] == "Tool changed to draw"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_pick_with_the_box_unticked_stays_on_the_eyedropper() -> None:
+    window = _switch_back_window(ticked=False)
+    try:
+        _pick(window)
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window._current_tool == "eyedropper"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_ctrl_pick_picks_and_stays() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _switch_back_window()
+    try:
+        _pick(window, Qt.ControlModifier)
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window.elevation_level_spin.value() == _PICK_ELEVATION
+        assert window._current_tool == "eyedropper"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(
+    ("bad_terrain", "bad_elevation", "returns"),
+    [(True, True, False), (True, False, True), (False, True, True)],
+)
+def test_only_a_pick_that_changed_nothing_stays(bad_terrain, bad_elevation, returns) -> None:
+    window = _switch_back_window()
+    try:
+        mm = window.scenario.map_manager
+        tile = mm.terrain[_PICK_TILE[1] * mm.map_width + _PICK_TILE[0]]
+        if bad_terrain:
+            tile.terrain_id = 9999
+        if bad_elevation:
+            tile.elevation = 99
+        _pick(window)
+        assert window._current_tool == ("draw" if returns else "eyedropper")
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_pick_that_never_lands_stays() -> None:
+    window = _switch_back_window()
+    try:
+        window.on_click_edit(-1, 0, 0)
+        assert window._current_tool == "eyedropper"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("units_tool", ["place_unit", "select"])
+def test_a_mode_switch_forgets_the_remembered_tool(units_tool) -> None:
+    """Place Unit has no Terrain button at all; Select has one, so only the
+    forgetting keeps it from being restored there."""
+    window = conftest.shown_terrain_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        getattr(window, f"{units_tool}_action").setChecked(True)
+        window.eyedropper_action.setChecked(True)
+        window.eyedropper_return_check.setChecked(True)
+        assert window._eyedropper_return_tool == units_tool
+        window.mode_combo.setCurrentText("Terrain")
+        assert window._current_tool == "eyedropper"
+        _pick(window)
+        assert window.terrain_panel.terrain_id() == window.scenario.map_manager.terrain[0].terrain_id
+        assert window._current_tool == "eyedropper"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_greyed_remembered_tool_stays_on_the_eyedropper() -> None:
+    window = _switch_back_window()
+    try:
+        # The pick's own terrain change re-gates every action, so the grey goes in after each re-gate.
+        real_update = window._update_tool_enabled
+
+        def update_then_grey() -> None:
+            real_update()
+            window.draw_action.setEnabled(False)
+
+        window._update_tool_enabled = update_then_grey
+        update_then_grey()
+        _pick(window)
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert window._current_tool == "eyedropper"
+    finally:
+        conftest.close_window(window)
+
+
+# Inertness: the rest of the switching press's gesture lands on the restored tool and does nothing.
+# The three public helpers are shared with tests/test_place_preview.py's Units-mode half.
+
+def applicable_tools(mode: str) -> list[str]:
+    from descape import settings
+    from descape.viewer_common import tool_applicable
+
+    return [t.tool_id for t in settings.TOOLS if tool_applicable(t.tool_id, mode) and t.tool_id != "eyedropper"]
+
+
+def _event(kind, view, tile, buttons, button=None):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QMouseEvent
+
+    pos = conftest.polygon_viewport_pos(view, *tile)
+    return QMouseEvent(kind, pos, Qt.LeftButton if button is None else button, buttons, Qt.NoModifier)
+
+
+def drive_gesture(view, tile, gesture: str) -> None:
+    """`drag`: press, a held move to the next tile, release. `double`: press,
+    release, the double-click event, release, as Qt sends a fast pair."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view.mousePressEvent(_event(QEvent.MouseButtonPress, view, tile, Qt.LeftButton))
+    if gesture == "drag":
+        view.mouseMoveEvent(_event(QEvent.MouseMove, view, (tile[0] + 1, tile[1]), Qt.LeftButton, Qt.NoButton))
+        view.mouseReleaseEvent(_event(QEvent.MouseButtonRelease, view, (tile[0] + 1, tile[1]), Qt.NoButton))
+    else:
+        view.mouseReleaseEvent(_event(QEvent.MouseButtonRelease, view, tile, Qt.NoButton))
+        view.mouseDoubleClickEvent(_event(QEvent.MouseButtonDblClick, view, tile, Qt.LeftButton))
+        view.mouseReleaseEvent(_event(QEvent.MouseButtonRelease, view, tile, Qt.NoButton))
+
+
+def assert_inert(window, tool: str, records: int, units: int) -> None:
+    from descape import ruler
+
+    view = window.map_view
+    assert window._current_tool == tool and view._tool == tool
+    assert len(window.edit_history.records) == records, "the restored tool must not edit"
+    assert sum(len(u) for u in window.scenario.unit_manager.units) == units
+    assert view._ruler.state == ruler.STATE_IDLE
+    assert view._region is None
+    assert not view._stroke_active
+
+
+@pytest.mark.parametrize("gesture", ["drag", "double"])
+@pytest.mark.parametrize("tool", applicable_tools("terrain"))
+def test_the_switching_gesture_does_nothing_under_the_restored_terrain_tool(tool, gesture) -> None:
+    window = _switch_back_window(from_tool=tool)
+    try:
+        if not getattr(window, f"{tool}_action").isEnabled():
+            pytest.skip(f"{tool} is disabled on the blank template")
+        # Wider than the pick tile, so a stray Draw or Set Elevation stroke would change a neighbour.
+        window.brush_size_spin.setValue(3)
+        records = len(window.edit_history.records)
+        units = sum(len(u) for u in window.scenario.unit_manager.units)
+        drive_gesture(window.map_view, _PICK_TILE, gesture)
+        assert window.terrain_panel.terrain_id() == _PICK_TERRAIN
+        assert_inert(window, tool, records, units)
+    finally:
+        conftest.close_window(window)

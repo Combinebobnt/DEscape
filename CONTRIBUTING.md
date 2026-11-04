@@ -22,9 +22,10 @@ Pull requests are welcome. A small fix (a typo, an obvious bug together with
 its test) can go straight to a PR. Anything larger starts as an issue, so the
 approach is agreed before you write the code. Keep one change per PR.
 
-CI runs the default test tier and then the `test_map` items (below) on Linux,
-macOS and Windows for every PR, so a check can take about an hour. A first-time contributor's run waits for the maintainer to approve
-it. The corpus tier is not in CI, so still say in the PR whether you ran it.
+CI runs the quick test suite on Linux and Windows for every PR, about an hour
+each, and only the native kernel tests on macOS. A first-time contributor's run waits for the
+maintainer to approve it. The corpus tests are not in CI, so still say in the
+PR whether you ran them (below).
 
 ## Setup
 
@@ -40,13 +41,13 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
 
 ## The bar for a PR
 
-- `./run_all_tests.sh` (Linux/macOS) or `run_all_tests.bat` (Windows) passes.
-  It runs the default test tier, which includes ruff through
+- `./run_quick_tests.sh` (Linux/macOS) or `run_quick_tests.bat` (Windows)
+  passes. It runs the quick test suite, which includes ruff through
   `tests/test_lint.py`.
 - `bash tools/ci_parity.sh` reproduces CI's environment on Linux/macOS, if you
   want to rule out something your machine has and CI won't.
-- New behavior comes with a default-tier test. `tests/README.md`, "Adding a
-  test", says which tier a test belongs in.
+- New behavior comes with a quick-suite test. `tests/README.md`, "Adding a
+  test", says which marker a test needs.
 - A change to something the user guide describes updates its topic in
   `descape/help/` in the same PR, and a new menu item, mode or tool gets a
   line in its topic. `tests/test_help_guide.py` checks the guide's style,
@@ -54,20 +55,22 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
 - Never skip or loosen a failing test to get a green run. If a test looks
   wrong, say so in the PR.
 
-## When the corpus tier matters
+## When the full suite matters
 
 Most per-file corpus tests also run on a generated test map
 (`tests/fixtures/test_map_240x240.aoe2scenario`). Those items are marked
-`test_map` and stay out of `run_all_tests`, but CI runs them;
-`./run_corpus_quick.sh` runs the default tier plus them with no setup.
+`test_map` and are part of the quick suite, so they need no setup.
 
-Run the corpus tier for a change to rendering or to anything that writes a scenario. The
-scenario corpus (`examples/`) is not in the repo, so point the tier at your
-own scenarios:
+Run the full suite for a change to rendering or to anything that writes a
+scenario. The scenario corpus (`examples/`) is not in the repo, so point the
+suite at your own scenarios:
 
 ```
-.venv/bin/python3 -m pytest --scenario-dir=/path/to/your/scenarios -m "corpus or slow or test_map"
+./run_full_tests.sh --scenario-dir=/path/to/your/scenarios
 ```
+
+A few corpus checks compare counts measured on the maintainer's own
+scenarios; they skip when `--scenario-dir` points elsewhere.
 
 If you can't run it, say so in the PR. The maintainer runs it before merging.
 

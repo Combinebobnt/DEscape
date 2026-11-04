@@ -392,6 +392,9 @@ class MapView(QGraphicsView):
     # the ghost IS the thing the gesture is about), below UNIT_STACK_Z so a
     # stack badge stays readable through a drag passing under it.
     UNIT_GHOST_Z = 11.55
+    # The fish ring round a place ghost (GH #281): over the translucent body,
+    # below UNIT_STACK_Z for the ghost's own reason. Full opacity, _fish_pen.
+    GHOST_FISH_Z = 11.57
 
     # Tools > Map Analysis' markers, one layer item while the results dialog
     # is open. Above RULER_LABEL_Z (13.0), so a finding never hides under a
@@ -783,6 +786,8 @@ class MapView(QGraphicsView):
         # threshold and cleared on every exit from the drag (release, leave,
         # Escape) -- _update_marquee/_clear_marquee's lifecycle exactly.
         self._unit_ghost_item: UnitGhostItem | None = None
+        # A place ghost's fish ring (GH #281); goes wherever the ghost goes.
+        self._ghost_fish_item: QGraphicsPathItem | None = None
         # The anchor tile from mousePressEvent, and the last tile a move
         # resolved to (frozen, like the Ruler's endpoint, if the drag runs
         # off-map) -- both None outside an in-progress drag. The COMMITTED
@@ -945,6 +950,8 @@ class MapView(QGraphicsView):
         self._iso_elevations: np.ndarray | None = None
         self._iso_proj: iso_geometry.IsoProjection | None = None
         self._tool = "pan"
+        # The tool the last press ran under, so a double-click can tell a switch happened in between.
+        self._press_tool: str | None = None
         # QGraphicsPathItem, not QGraphicsPolygonItem: the edit-mode
         # highlight covers the whole brush footprint (up to
         # brush.BRUSH_SIZE_MAX**2 tiles), built as one QPainterPath with one
@@ -1039,6 +1046,8 @@ class MapView(QGraphicsView):
         self._wheel_paste_query: Callable[[], bool] = lambda: False
         self._on_wheel_paste_turn: Callable[[int], None] = lambda direction: None
         self._paste_wheel_accum = 0
+        # GH #356: set_wheel_selection_query()'s query; a selection turn shares _place_wheel_accum.
+        self._wheel_selection_query: Callable[[], bool] = lambda: False
         self.set_wheel_bindings(settings.get_wheel_bindings())
         self.setMouseTracking(True)
 
@@ -1293,6 +1302,12 @@ class MapView(QGraphicsView):
         self._wheel_paste_query = query
         self._on_wheel_paste_turn = turn
 
+    def set_wheel_selection_query(self, query: Callable[[], bool]) -> None:
+        """GH #356: `query()` says whether the Units-mode selection would turn,
+        for the "_selection" wheel choices. The turn itself goes through
+        set_place_rotate()'s hook, the Rotate keys' router."""
+        self._wheel_selection_query = query
+
     def set_brush(self, size: int, shape: str, thickness: int = brush.BRUSH_THICKNESS_MIN) -> None:
         """Updates the brush the hover-preview highlight (and, via
         ViewerWindow reading these same values back at stroke time, the
@@ -1329,11 +1344,11 @@ class MapView(QGraphicsView):
         self._on_place_preview = fn
 
     def set_place_ghost_query(self, fn: Callable[[], bool]) -> None:
-        """GH #172: `fn()` says whether Place Unit's ghost is showing, so the wheel's rotate binding turns it."""
+        """GH #172: `fn()` says whether Place Unit's or the Unit Brush's ghost is showing, so the wheel's rotate binding turns it."""
         self._place_ghost_query = fn
 
     def set_place_rotate(self, fn: Callable[[int], None]) -> None:
-        """GH #172: `fn(steps)` turns the ghost or a live unit drag (GH #280), +1 per clockwise notch."""
+        """GH #172: `fn(steps)` turns the ghost, a live unit drag (GH #280) or the selection (GH #356), +1 per clockwise notch."""
         self._on_place_rotate = fn
 
     def reset_place_wheel(self) -> None:
@@ -2504,6 +2519,30 @@ class MapView(QGraphicsView):
         if self._unit_ghost_item is not None:
             self.scene().removeItem(self._unit_ghost_item)
             self._unit_ghost_item = None
+        self._clear_ghost_fish_ring()
+
+    def set_unit_ghost_ring(self, entry) -> None:
+        """The place ghost's fish ring (GH #281): `entry` is the ghost's
+        unit_pick.UnitEntry, or None. Ringed only while Fish Outlines is on and
+        the ghost is a fish, as a click there would show it; refused or not."""
+        if entry is None or not self._fish_enabled or entry.unit.unit_const not in unit_kind.fish_consts():
+            self._clear_ghost_fish_ring()
+            return
+        path = self._fish_ring_path((entry,))
+        if path.isEmpty():
+            self._clear_ghost_fish_ring()
+            return
+        item = self._ghost_fish_item
+        if item is None:
+            item = self._ghost_fish_item = self.scene().addPath(path, self._fish_pen)
+            item.setZValue(self.GHOST_FISH_Z)
+        else:
+            item.setPath(path)
+
+    def _clear_ghost_fish_ring(self) -> None:
+        if self._ghost_fish_item is not None:
+            self.scene().removeItem(self._ghost_fish_item)
+            self._ghost_fish_item = None
 
     def _flat_scene_rect_to_tile_rect(self, rect: QRectF) -> tuple[int, int, int, int] | None:
         """Flat only: the exact half-open tile rect under `rect`, clamped to the map."""
@@ -2860,6 +2899,7 @@ class MapView(QGraphicsView):
                 perf_trace.end_drag(self._tool)
 
     def mousePressEvent(self, event) -> None:
+        self._press_tool = self._tool
         if event.button() == Qt.MiddleButton:
             self._middle_drag_active = True
             self._middle_drag_last_pos = event.pos()
@@ -3115,6 +3155,9 @@ class MapView(QGraphicsView):
     def mouseDoubleClickEvent(self, event) -> None:
         # QGraphicsView's default swallows the second press of a fast pair,
         # which would drop a repeat click on a stack (or a second edit click).
+        if self._press_tool not in (None, self._tool):
+            # TASK-287: the first press switched tools (an Eyedropper switch-back); the second belongs to no gesture.
+            return
         self.mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -4925,6 +4968,7 @@ class MapView(QGraphicsView):
         # Same hazard: scene().clear() destroyed the ghost's C++ object, so
         # _clear_unit_ghost()'s removeItem() on the next drag exit would raise.
         self._unit_ghost_item = None
+        self._ghost_fish_item = None
         self._place_hover = None
         self._cliff_hover = None
         # Same hazard as the tick item above, and the same fix: forget the
@@ -5356,6 +5400,7 @@ class MapView(QGraphicsView):
         # commits nothing (see keyPressEvent's Escape branch for the other
         # place that pairing matters).
         self._unit_ghost_item = None
+        self._ghost_fish_item = None
         # A hover point in the old scene's coordinates; the next move sets it again.
         self._place_hover = None
         self._cliff_hover = None
@@ -5992,6 +6037,8 @@ class MapView(QGraphicsView):
         if self._fish_item is not None:
             self._fish_item.setVisible(enabled)
         self.refresh_fish_overlay()
+        # The hover ghost's ring follows with no mouse move (GH #281).
+        self.refresh_place_ghost()
 
     def _add_fish_item(self) -> QGraphicsPathItem:
         item = self.scene().addPath(QPainterPath(), self._fish_pen)
@@ -6006,16 +6053,21 @@ class MapView(QGraphicsView):
         disabled, like the footprint path; set_fish_outlines() rebuilds on enable."""
         if self._fish_item is None or not self._fish_enabled:
             return
-        path = QPainterPath()
+        entries = ()
         if self._unit_index is not None:
             fish = unit_kind.fish_consts()
-            for entry in self._unit_index.entries:
-                if entry.unit.unit_const not in fish:
-                    continue
-                polygons = self._unit_polygons_for(entry)
-                if polygons:
-                    _add_closed_polygons(path, unit_pick.merge_footprint_polygons(polygons))
-        self._fish_item.setPath(path)
+            entries = (entry for entry in self._unit_index.entries if entry.unit.unit_const in fish)
+        self._fish_item.setPath(self._fish_ring_path(entries))
+
+    def _fish_ring_path(self, entries) -> QPainterPath:
+        """One merged ring per entry, from the live height field: the placed
+        fish's rings and a place ghost's (GH #281) share it, so they cannot disagree."""
+        path = QPainterPath()
+        for entry in entries:
+            polygons = self._unit_polygons_for(entry)
+            if polygons:
+                _add_closed_polygons(path, unit_pick.merge_footprint_polygons(polygons))
+        return path
 
     def _refresh_unit_outline_overlays(self) -> None:
         """Every outline overlay built from the unit index: footprints and fish."""
@@ -6333,7 +6385,9 @@ class MapView(QGraphicsView):
 
     def _place_wheel_rotate(self, delta: int) -> None:
         """The wheel's rotate binding (Ctrl+wheel by default) over Place Unit's
-        ghost (GH #172) or a live unit drag (GH #280), one fine step per notch.
+        or the Unit Brush's ghost (GH #172, GH #355), a live unit drag (GH
+        #280) or, under the "_selection" choices, the Units-mode selection
+        (GH #356), one fine step per notch.
         Scroll up is PLACE_WHEEL_DIRECTION."""
         notches, self._place_wheel_accum = self._wheel_notches(self._place_wheel_accum, delta)
         if notches:
@@ -6380,23 +6434,35 @@ class MapView(QGraphicsView):
         resolved, or the internal "paste_turn". The slot is the exact modifier
         set, so any other combination zooms. A tool action with nothing to act
         on is "none", so only a slot bound to zoom zooms (GH #245, user
-        2026-10-25): rotate needs a live unit drag, Place Unit's ghost showing
-        or a just-pasted region, brush_size a tool with a brush. Under
+        2026-10-25): rotate needs a live unit drag, Place Unit's or the Unit
+        Brush's ghost showing or a just-pasted region, brush_size a tool with
+        a brush. Under
         "tool" the brush wins over the paste, so a resize right after a paste
         still resizes. A live drag comes first: it is keyed on state, not the
-        tool, so a keybound switch to Place Unit mid-drag still turns the drag."""
+        tool, so a keybound switch to Place Unit mid-drag still turns the drag.
+        The Unit Brush's ghost turns under "rotate" only (GH #355): under
+        "tool" its brush size wins, as above.
+        "rotate_selection" and "tool_selection" (GH #356) resolve as "rotate"
+        and "tool", then fall back to turning the Units-mode selection through
+        the same hook as the Rotate keys. A committed region never turns by
+        wheel under any choice."""
         action = self._wheel_bindings.get(int(modifiers) & self._WHEEL_MODIFIER_MASK, "zoom")
-        if action in ("tool", "rotate") and self.unit_drag_live():
+        rotates = action in ("rotate", "rotate_selection")
+        tools = action in ("tool", "tool_selection")
+        if (rotates or tools) and self.unit_drag_live():
             return "rotate"
-        if action in ("tool", "rotate") and self._tool == "place_unit" and self._place_ghost_query():
+        ghost_slot = rotates or (tools and self._tool == "place_unit")
+        if ghost_slot and self._tool in _HOVER_GHOST_TOOLS and self._place_ghost_query():
             return "rotate"
-        if action == "rotate" and self._wheel_paste_query():
+        if rotates and self._wheel_paste_query():
             return "paste_turn"
-        if action in ("tool", "brush_size") and self._wheel_brush_query():
+        if (tools or action == "brush_size") and self._wheel_brush_query():
             return "brush_size"
-        if action == "tool" and self._wheel_paste_query():
+        if tools and self._wheel_paste_query():
             return "paste_turn"
-        if action in ("tool", "rotate", "brush_size"):
+        if action in ("rotate_selection", "tool_selection") and self._wheel_selection_query():
+            return "rotate"
+        if rotates or tools or action == "brush_size":
             return "none"
         return action
 

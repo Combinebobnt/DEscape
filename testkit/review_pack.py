@@ -207,6 +207,36 @@ def changed_pixels(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.any(a != b, axis=-1)
 
 
+def _luma(img: np.ndarray) -> np.ndarray:
+    arr = np.asarray(img, dtype=np.float64)
+    return arr @ np.array([0.299, 0.587, 0.114]) if arr.ndim == 3 else arr
+
+
+def coherence(img: np.ndarray) -> float:
+    """Structure-tensor coherence of the image's luma, summed over the whole
+    frame: near 1 when every gradient shares one direction (stripes), near 0
+    for no dominant direction (noise, or stripes turned against each other)."""
+    luma = _luma(img)
+    gx = (luma[1:-1, 2:] - luma[1:-1, :-2]) / 2.0
+    gy = (luma[2:, 1:-1] - luma[:-2, 1:-1]) / 2.0
+    jxx, jyy, jxy = float((gx * gx).sum()), float((gy * gy).sum()), float((gx * gy).sum())
+    total = jxx + jyy
+    return 0.0 if total == 0 else float(np.hypot(jxx - jyy, 2.0 * jxy) / total)
+
+
+def masked_correlation(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    """Pearson correlation of a's and b's luma over the pixels in mask: +1
+    where b repeats a's pattern there, -1 where it inverts it."""
+    if a.shape != b.shape:
+        raise PackError(f"shape mismatch {a.shape} vs {b.shape}")
+    if not np.any(mask):
+        raise PackError("empty mask: nothing to correlate")
+    x, y = _luma(a)[mask], _luma(b)[mask]
+    x, y = x - x.mean(), y - y.mean()
+    denom = float(np.sqrt((x * x).sum() * (y * y).sum()))
+    return 0.0 if denom == 0 else float((x * y).sum() / denom)
+
+
 def delta_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
     ys, xs = np.nonzero(mask)
     if ys.size == 0:

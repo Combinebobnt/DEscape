@@ -47,6 +47,7 @@ def _flag_items() -> dict[str, dict]:
     """One garrison_flags item per distinct flag file, over both tables."""
     art = unit_sprites.building_art()
     entries = [*unit_sprites.graphic_map().values(), *(e for civ in art.civ_art.values() for e in civ.values())]
+    entries += [e for by_age in art.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
     items: dict[str, dict] = {}
     for entry in entries:
         for flag in entry.get("garrison_flags", ()):

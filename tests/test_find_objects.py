@@ -123,6 +123,21 @@ def test_player_category_kind_and_const_facets() -> None:
     buildings = _find(loaded, categories=frozenset({"Buildings"}))
     assert all(find_objects.category_of(r.unit_const) == "Buildings" for r in buildings)
     assert 10 in _refs(buildings) and 11 not in _refs(buildings)
+
+
+def test_obstacles_and_eye_candy_split_the_eye_candy_umbrella() -> None:
+    from descape import unit_kind
+
+    obstacle = min(unit_kind.obstacle_consts())
+    passable = min(unit_kind.passable_eye_candy_consts())
+    loaded = _loaded({0: [_unit(1, obstacle, 2.5, 2.5), _unit(2, passable, 3.5, 2.5), _unit(3, _OAK, 4.5, 2.5)]})
+    assert _refs(_find(loaded, kinds=frozenset({"obstacles"}))) == [1]
+    assert _refs(_find(loaded, kinds=frozenset({"eye_candy"}))) == [2]
+    assert _refs(_find(loaded, kinds=frozenset({"eye_candy", "obstacles"}))) == [1, 2]
+    assert not find_objects._kind_consts("eye_candy") & find_objects._kind_consts("obstacles")
+    umbrella = unit_kind.eye_candy_consts()
+    assert find_objects._kind_consts("eye_candy") | find_objects._kind_consts("obstacles") == umbrella
+    assert "obstacles" in find_objects.KINDS
     assert _OAK in TREE_UNIT_IDS
 
 

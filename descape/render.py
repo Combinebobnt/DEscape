@@ -41,6 +41,7 @@ from descape.terrain_palette import (
     HERO_GLOW_CONSTS,
     PLAYER_COLORS,
     RESOURCE_COLORS,
+    STATIC_TILE_SPANS,
     TREE_COLOR,
     TREE_UNIT_IDS,
     color_for_terrain_id,
@@ -3715,7 +3716,7 @@ def _flat_unit_icon(
     team_index: int,
     bounds: tuple[int, int, int, int],
     tile_px: int,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
     with_farms: bool = False,
 ) -> unit_sprites.SpriteDraw | None:
     """One unit's Flat icon, the per-unit body of _flat_icon_layer_sliced()
@@ -3723,7 +3724,7 @@ def _flat_unit_icon(
     is the unit's position in its player's full list, the key `overrides`
     (wall_variant_rotation_overrides()) uses. Footprint size comes from the
     CLAMPED bounds, matching the rect _flat_unit_bbox() paints. `art` is the
-    owner's player_art_for() pair (GH #48). with_farms: FLAT_DRAPED for a
+    owner's player_art_for() triple (GH #48). with_farms: FLAT_DRAPED for a
     draped const with no icon, where None would keep its rect."""
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
     rotation = stored_rotation(player_id, unit)
@@ -3744,8 +3745,8 @@ def _flat_unit_icon(
     return icon
 
 
-def player_art_for(scenario, player_id: int) -> tuple[int | None, int] | None:
-    """`player_id`'s (art_civ, age) building-art pair (GH #48, civ_art), or
+def player_art_for(scenario, player_id: int) -> tuple[int | None, int, int | None] | None:
+    """`player_id`'s (art_civ, age, tech_civ) building art (GH #48, civ_art), or
     None for today's Gaia-table art: a duck-typed fake scenario carries no
     player_art, and a file shown with the other game's data (GH #67) indexes
     civs the active art tables do not have."""
@@ -4015,7 +4016,8 @@ def _sprite_axis_centre(coord: float, span: int) -> float:
     values, nothing else), and a building is drawn as a half-tile-quantized
     slab on purpose -- see _span_start. A class-14 doodad's footprint is
     quantized the same way, but its sprite is not: _resolve_unit_sprite keeps
-    the stored point for it (_sprite_keeps_own_point, TASK-134).
+    the stored point for it (_sprite_keeps_own_point, TASK-134), and for the
+    visible static objects with a span (shipwrecks, rubble, TASK-277).
 
     Per axis, not per unit: a gate segment is (4, 1) and takes both branches.
     """
@@ -4471,12 +4473,17 @@ def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int],
     conventions), and measured on examples/ (tools/scan_wall_rotation.py),
     45.6% (241/529) of the 0.0-rotation walls in a file that also carries a
     real radian-encoded wall sit on a shape-changing neighbour mask -- far
-    from a rounding error. So a literal integer is only trusted verbatim in a
-    file that never uses the radian convention at all; inside one that does,
-    every wall/gate's rotation goes through the override just like a radian
-    value would. Precondition 4 (non-zero neighbour mask) still applies
-    either way -- an isolated piece's shape is author-chosen, not derivable,
-    regardless of which file it's in."""
+    from a rounding error. So a literal integer is only trusted in a file
+    that never uses the radian convention at all; inside one that does, every
+    wall draws its 8-bit neighbour derivation, diagonal runs included.
+
+    **A lone wall or a run end draws as the tower in every file**: AoE2:DE
+    draws a wall with at most one neighbour as a tower whatever its stored
+    index (a wall moved out of a run by an older editor keeps its run index).
+    In an integer file that is the only override, and it is added only where
+    the stored index is not already the tower, so a game-saved file keeps an
+    empty dict. The per-wall rule is unit_sprites.wall_drawn_shape(); this is
+    draw-only, and no write path reads it."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
 
@@ -4511,16 +4518,15 @@ def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int],
 
     overrides: dict[tuple[int, int], float] = {}
     for player_id, i, unit, rotation in candidates:
-        if unit_sprites.is_literal_variant_index(rotation, 5) and not file_is_radian:
-            continue
         bounds = unit_tile_bounds(unit, tile_w, tile_h)
         if bounds is None:
             continue
         tx, ty = bounds[0], bounds[2]
-        mask = unit_sprites.neighbour_mask(tx, ty, connector_tiles)
-        derived = unit_sprites.wall_variant_from_neighbours(mask)
-        if derived is not None:
-            overrides[(player_id, i)] = float(derived)
+        mask8 = unit_sprites.neighbour_mask(tx, ty, connector_tiles, diagonals=True)
+        # Through the module attribute: tools/release_render_diff.py patches it.
+        drawn = unit_sprites.wall_drawn_shape(mask8, unit_sprites.variant_index(rotation, 5), file_is_radian)
+        if drawn is not None:
+            overrides[(player_id, i)] = float(drawn)
     return overrides
 
 
@@ -5044,10 +5050,15 @@ class _SpriteContribution:
 
 
 def _sprite_keeps_own_point(unit_const: int) -> bool:
-    """A class-14 doodad with a footprint (DOODAD_TILE_SPANS, TASK-134) draws
-    its sprite at its stored point and sorts it at its own tile, as before it
-    had one. Its own tile is inside the footprint, so a splice still clears it."""
-    return unit_const in DOODAD_TILE_SPANS
+    """A class-14 doodad or other static object with a footprint
+    (DOODAD_TILE_SPANS, TASK-134; STATIC_TILE_SPANS, TASK-277) draws its sprite
+    at its stored point and sorts it at its own tile, as before it had one. Its
+    own tile is inside the footprint, so a splice still clears it. An invisible
+    static (the flares) is the exception: its marker is the footprint itself,
+    so it takes the building-like anchor and stays on its outline."""
+    if unit_const in DOODAD_TILE_SPANS:
+        return True
+    return unit_const in STATIC_TILE_SPANS and unit_const not in unit_kind.invisible_consts()
 
 
 # TASK-221: multi-tile sprite pieces paint per screen column (_sprite_columns()).

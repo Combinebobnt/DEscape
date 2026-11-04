@@ -184,6 +184,28 @@ def test_region_area_follows_the_selection() -> None:
         _close(window)
 
 
+def test_the_kind_boxes_cover_every_kind_and_tick_obstacles_apart_from_eye_candy() -> None:
+    from descape.find_objects import KINDS
+
+    window, _boxes = _window()
+    try:
+        tab = _dialog(window).objects_tab
+        assert tuple(tab.kind_boxes) == KINDS
+        assert [box.text() for box in tab.kind_boxes.values()] == [
+            "Trees",
+            "Eye candy",
+            "Obstacles",
+            "Walls and gates",
+            "Invisible",
+        ]
+        tab.kind_boxes["obstacles"].setChecked(True)
+        assert tab.criteria().kinds == frozenset({"obstacles"})
+        tab.kind_boxes["eye_candy"].setChecked(True)
+        assert tab.criteria().kinds == frozenset({"obstacles", "eye_candy"})
+    finally:
+        _close(window)
+
+
 def test_invalid_regex_disables_find_inline() -> None:
     window, _boxes = _window()
     try:
@@ -301,6 +323,128 @@ def test_a_host_refused_only_for_its_dropped_occupants_type_is_replaced() -> Non
         assert replaced == 1 and set(refused) == {(1, _REF_VILLAGER_P1)}
         assert (_unit(window, _REF_HOUSE).unit_const, _unit(window, _REF_VILLAGER_P1).unit_const) == (79, 83)
         assert _unit(window, _REF_VILLAGER_P1).garrisoned_in_id == _REF_HOUSE
+    finally:
+        _close(window)
+
+
+# -- GH #339: Replace into a gate const clears the walls under each new gate --------
+
+_STONE_GATE = 64  # 4 along x: a wall replaced by it covers its own tile and the next three
+_GATE_NOTE = "Walls under each new gate are removed."
+
+
+def _wall_row(window, x0: int, x1: int, y: int, player: int = 1) -> dict[int, object]:
+    """{tile x: wall} for a Stone Wall run on x0..x1 along `y`, each storing its run shape."""
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [player]):
+        return {
+            x: model.add(player, _STONE_WALL, x + 0.5, y + 0.5, rotation=0.0 if x0 < x < x1 else 2.0)
+            for x in range(x0, x1 + 1)
+        }
+
+
+def _walls_at(window, tiles) -> list:
+    return [
+        u for units in window.scenario.unit_manager.units for u in units
+        if u.unit_const == _STONE_WALL and (int(u.x), int(u.y)) in tiles
+    ]
+
+
+def test_a_mid_run_wall_replaced_by_a_gate_clears_the_three_walls_it_now_covers() -> None:
+    window, boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60)
+        wall = row[63]
+        under = {x: row[x] for x in (64, 65, 66)}
+        rotations = {x: u.rotation for x, u in row.items()}
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        tab.run_find()
+        assert {u.reference_id for u in under.values()} <= set(_rows(dialog))
+        _check_only(dialog, {wall.reference_id})
+        tab.replace_edit.set_value(_STONE_GATE)
+        before = window.edit_history.cursor
+
+        tab.replace_button.click()
+
+        assert boxes.confirmed[-1][1].startswith(f"Replace 1 objects with {_dialog_name(_STONE_GATE)}? Ctrl+Z undoes. {_GATE_NOTE}")
+        assert window.edit_history.cursor == before + 1
+        assert (wall.unit_const, wall.x, wall.y) == (_STONE_GATE, 65.0, 60.5)
+        assert _walls_at(window, {(x, 60) for x in range(63, 67)}) == []
+        # The gate is their neighbour, so the walls either side keep their run shape.
+        assert (row[62].rotation, row[67].rotation) == (0.0, 0.0)
+        assert "Replaced 1, replacing 3 walls" in window.status_log.toPlainText().splitlines()[-1]
+        _settle()
+        assert not {u.reference_id for u in under.values()} & set(_rows(dialog)), "rows for the removed walls linger"
+
+        window.undo()
+        assert (wall.unit_const, wall.x, wall.y) == (_STONE_WALL, 63.5, 60.5)
+        assert {id(u) for u in _walls_at(window, {(x, 60) for x in under})} == {id(u) for u in under.values()}
+        assert all(u.rotation == rotations[x] for x, u in row.items())
+    finally:
+        _close(window)
+
+
+def _dialog_name(const: int) -> str:
+    from descape import object_catalog
+
+    return object_catalog.display_name(const)
+
+
+def test_two_adjacent_walls_replaced_by_gates_both_become_gates_and_overlap() -> None:
+    window, _boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60)
+        keys = [(1, row[63].reference_id), (1, row[64].reference_id)]
+        replaced, refused = window._find_replace_keys(keys, _STONE_GATE)
+        assert (replaced, refused) == (2, {})
+        assert (row[63].unit_const, row[64].unit_const) == (_STONE_GATE, _STONE_GATE)
+        assert (row[63].x, row[64].x) == (65.0, 66.0)
+        assert _walls_at(window, {(x, 60) for x in range(63, 68)}) == []
+        assert row[68].unit_const == _STONE_WALL
+    finally:
+        _close(window)
+
+
+def test_a_refused_row_under_a_new_gates_footprint_is_not_removed() -> None:
+    """The wall at map_w - 2 is refused (its own gate would leave the map) but
+    sits inside the footprint of the candidate at map_w - 4: it stays."""
+    window, _boxes = _window()
+    try:
+        map_w = window.scenario.map_manager.map_width
+        row = _wall_row(window, map_w - 6, map_w - 1, 60)
+        candidate, refused_wall = row[map_w - 4], row[map_w - 2]
+        keys = [(1, candidate.reference_id), (1, refused_wall.reference_id)]
+
+        replaced, refused = window._find_replace_keys(keys, _STONE_GATE)
+
+        assert replaced == 1 and set(refused) == {(1, refused_wall.reference_id)}
+        assert candidate.unit_const == _STONE_GATE
+        assert refused_wall.unit_const == _STONE_WALL
+        assert any(u is refused_wall for u in window.scenario.unit_manager.units[1])
+        assert _walls_at(window, {(map_w - 3, 60), (map_w - 1, 60)}) == []
+        assert "replacing 2 walls" in window.status_log.toPlainText().splitlines()[-1]
+    finally:
+        _close(window)
+
+
+def test_a_replace_into_a_non_gate_touches_no_wall_and_its_confirm_says_nothing_of_walls() -> None:
+    window, boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60)
+        count = sum(len(units) for units in window.scenario.unit_manager.units)
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        tab.run_find()
+        _check_only(dialog, {row[63].reference_id})
+        tab.replace_edit.set_value(_BARRACKS)
+
+        tab.replace_button.click()
+
+        assert _GATE_NOTE not in boxes.confirmed[-1][1]
+        assert row[63].unit_const == _BARRACKS
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == count
+        assert len(_walls_at(window, {(x, 60) for x in range(60, 71)})) == 10
     finally:
         _close(window)
 
@@ -906,6 +1050,44 @@ def test_an_object_replace_following_a_paired_effect_is_one_composite_step() -> 
         _close(window)
 
 
+def test_a_gate_replace_following_a_paired_effect_clears_the_walls_in_the_one_composite_step() -> None:
+    """GH #339 on the trigger-follow path (_composite_edit): an archer
+    replaced by a Stone Gate in a wall run, the paired effect retargeted."""
+    from descape.edit_history import CompositeDiffRecord
+
+    window, boxes = _trigger_window()
+    try:
+        archer = _unit(window, _ARCHER_A)
+        tx, ty = int(archer.x), int(archer.y)
+        owner = _owner(window, _ARCHER_A)
+        _wall_row(window, tx - 2, tx - 1, ty, player=owner)
+        row = _wall_row(window, tx + 1, tx + 5, ty, player=owner)
+        under = [row[x] for x in (tx + 1, tx + 2, tx + 3)]
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        tab.run_find()
+        _check_only(dialog, {_ARCHER_A})
+        tab.replace_edit.set_value(_STONE_GATE)
+        boxes.answer = {"paired": True, "filter_only": False}
+        cursor = window.edit_history.cursor
+
+        tab.replace_button.click()
+
+        assert _GATE_NOTE in boxes.confirmed[-1][1]
+        assert window.edit_history.cursor == cursor + 1
+        record = window.edit_history.records[-1]
+        assert isinstance(record, CompositeDiffRecord) and record.kinds() == {"unit", "trigger"}
+        assert archer.unit_const == _STONE_GATE
+        assert _walls_at(window, {(x, ty) for x in range(tx, tx + 4)}) == []
+        assert _triggers(window)[2].effects[0].object_list_unit_id == _STONE_GATE
+        window.undo()
+        assert archer.unit_const == _ARCHER
+        assert {id(u) for u in _walls_at(window, {(x, ty) for x in range(tx, tx + 4)})} == {id(u) for u in under}
+        assert _triggers(window)[2].effects[0].object_list_unit_id == _ARCHER
+    finally:
+        _close(window)
+
+
 def test_a_replace_with_no_trigger_model_omits_the_follow_up(monkeypatch) -> None:
     from descape.edit_history import UnitDiffRecord
 
@@ -925,6 +1107,26 @@ def test_a_replace_with_no_trigger_model_omits_the_follow_up(monkeypatch) -> Non
         _close(window)
 
 
+def test_an_entry_row_is_labelled_by_its_1_based_display_position() -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape.trigger_model import set_entry_order
+
+    window, _boxes = _trigger_window()
+    try:
+        trigger = _triggers(window)[0]
+        count = len(trigger.effects)
+        set_entry_order(trigger, "effect", list(reversed(range(count))))
+        tab = _ttab(window)
+        _tfind(tab, "findCounter", scopes=("xs",))
+        (child,) = [tab.tree.topLevelItem(0).child(j) for j in range(tab.tree.topLevelItem(0).childCount())]
+        assert child.data(0, Qt.UserRole).entry_index == 3
+        # List index 3 of `count` reversed sits in display row count - 3.
+        assert child.text(1).startswith(f"Effect #{count - 3} ")
+    finally:
+        _close(window)
+
+
 def test_jump_lands_on_the_entry_even_with_a_panel_filter() -> None:
     window, _boxes = _trigger_window()
     try:
@@ -937,7 +1139,7 @@ def test_jump_lands_on_the_entry_even_with_a_panel_filter() -> None:
         parent = next(
             tab.tree.topLevelItem(i) for i in range(tab.tree.topLevelItemCount()) if tab.tree.topLevelItem(i).text(0) == "2"
         )
-        target = next(parent.child(j) for j in range(parent.childCount()) if parent.child(j).text(1).startswith("Effect #3"))
+        target = next(parent.child(j) for j in range(parent.childCount()) if parent.child(j).text(1).startswith("Effect #4"))
         tab.tree.itemDoubleClicked.emit(target, 0)
         panel = window.trigger_panel
         assert window.mode == "triggers"
@@ -978,12 +1180,12 @@ def test_space_and_the_context_menu_tick_several_trigger_rows_at_once(monkeypatc
         tab.add_type_const(_ARCHER)
         _tfind(tab)
         parent = tree.topLevelItem(0)
-        every = {"Condition#0", "Effect#0", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5"}
+        every = {"Condition#1", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5", "Effect#6"}
         assert _ticked_hits(tab) == ({2}, every)
 
         _click_row(tree, parent.child(1))
         _click_row(tree, parent.child(4), Qt.ShiftModifier)
-        span = {"Effect#0", "Effect#1", "Effect#2", "Effect#3"}
+        span = {"Effect#1", "Effect#2", "Effect#3", "Effect#4"}
         calls = _count_update_ops(tab, monkeypatch)
         _press_space(tree)
         assert _ticked_hits(tab) == ({2}, every - span)
@@ -1043,7 +1245,7 @@ def test_hits_hidden_under_a_collapsed_trigger_are_never_bulk_ticked() -> None:
         tab.add_type_const(_ARCHER)
         _tfind(tab)
         parent = tree.topLevelItem(0)
-        every = {"Condition#0", "Effect#0", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5"}
+        every = {"Condition#1", "Effect#1", "Effect#2", "Effect#3", "Effect#4", "Effect#5", "Effect#6"}
         tab._set_all_checked(False)
         _click_row(tree, parent)
         _click_row(tree, parent.child(3), Qt.ShiftModifier)

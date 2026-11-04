@@ -35,7 +35,11 @@ class-14 doodad with a footprint (DOODAD_TILE_SPANS: mountains, ruins,
 TASK-134) keeps its clearance box rather than its span: it is the game's own
 rule, equals the span for 35 of the 46, and is what lets mountains overlap as
 real maps have them (a mountain's box is 4x4 inside its 6x6 footprint). The
-terrain rule reads the whole drawn footprint, as for every object.
+other static objects with a footprint (STATIC_TILE_SPANS: shipwrecks, rubble,
+flares, TASK-277) take the same branch: all 13 have obstruction 0 and so no
+box today, but a data mod that makes one solid gets its clearance box, not an
+outline-sized one. The terrain rule reads the whole drawn footprint, as for
+every object.
 
 Unknown data never refuses: a const or a terrain id the catalog lacks passes.
 Units a Filters toggle hides still block, as in wall_run.blocked_tiles(), and
@@ -53,6 +57,7 @@ from descape.terrain_palette import (
     BUILDING_TILE_SPANS,
     DOODAD_TILE_SPANS,
     FOUNDATION_TERRAIN,
+    STATIC_TILE_SPANS,
     name_for_terrain_id,
     tile_span,
 )
@@ -241,7 +246,7 @@ def _shape(unit_const: int):
     offsets = BUILDING_TILE_OFFSETS.get(unit_const)
     if offsets is not None:
         return span, offsets, None
-    if span != render.NON_BUILDING_SPAN and unit_const not in DOODAD_TILE_SPANS:
+    if span != render.NON_BUILDING_SPAN and unit_const not in DOODAD_TILE_SPANS and unit_const not in STATIC_TILE_SPANS:
         # DEscape's span, not clearance: 2 * clearance equals it for 419 of 491 buildings, and gates differ.
         return span, None, (span[0] / 2, span[1] / 2)
     clearance = entry.get("clearance")

@@ -198,8 +198,9 @@ zoom_centered_on_cursor: true
 # Keybinds. Slots: {_WHEEL_SLOTS}.
 # Actions: {_WHEEL_ACTIONS}.
 # "tool" steps the brush size or turns Place Unit's preview, whichever
-# applies; a tool action with nothing to act on zooms, and so does any other
-# modifier combination. Only slots moved off their default are stored, and an
+# applies, and the "_selection" choices also turn the selected units in Units
+# mode. A tool action with nothing to act on does nothing; any other modifier
+# combination zooms. Only slots moved off their default are stored, and an
 # unknown slot or action is ignored.
 # Defaults: {_WHEEL_DEFAULTS}.
 # The value below is only an example.
@@ -260,6 +261,15 @@ tool_options: {{}}
 # Default: [] (no disabled mod's art draws). The value below is only an example.
 # mod_art_included:
 #   - subscribed//67890_Example Disabled Mod
+
+# With a data mod in effect (File > Data Mod), hide from the Units catalog every
+# object the mod did not change (new, repurposed, renamed, other art or stats
+# stay listed), Settings > Mods. Default: false.
+data_mod_hide_unchanged: false
+
+# End the name of an object only the data mod has in "(data mod)", in the
+# catalog and the pickers, Settings > Mods. Default: true.
+data_mod_label_shown: true
 
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.

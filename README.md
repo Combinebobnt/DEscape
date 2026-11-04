@@ -281,7 +281,9 @@ by default); with both, the dialog starts on the region and its **Area** row
 switches to the units. It filters the area to eligible tiles (any tile, water
 only, or one terrain type), optionally skips tiles already under a unit, and
 places a count or a density of randomized copies as one undo step. The live "N
-eligible tiles" line is exactly what will be placed. GAIA-only objects
+eligible tiles" line is exactly what will be placed, except that an object
+bigger than one tile snaps to the game's grid and is skipped where its
+footprint would cover a tile that isn't eligible. GAIA-only objects
 (resources, trees, wild animals and the Others the game's editor lists only for
 GAIA) always go to GAIA, whatever the owner. With no area at all the
 menu item is greyed, and its tooltip says how to get one.
@@ -411,7 +413,10 @@ mod whose `.dat` genieutils-py cannot read logs why when picked, and stays
 greyed out with the reason until DEscape restarts. A mod that differs from
 what DEscape measured on the game's own data still loads: those objects are
 drawn simplified or left out, and the status log lists them once. Data mods
-apply to Age of Empires II data only, not Return of Rome.
+apply to Age of Empires II data only, not Return of Rome. Settings > Mods can
+hide from the Units catalog every object the mod did not change (new,
+repurposed, renamed, or with other art or stats than AoE2's own stay listed),
+and can drop the "(data mod)" label.
 
 Typical Steam install locations, if you need a starting point for Browse…:
 - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\AoE2DE`

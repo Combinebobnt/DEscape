@@ -5,18 +5,20 @@ Two effects carry the field: Create Object (`facet`, unit
 `object_list_unit_id_2`). The preview is observe-only: bind() follows the
 property form's own row widgets and nothing here writes the entry.
 
-What a facet number means is not measured yet. The working hypothesis is
-facet_rotation()'s: facet k is the same radians a placed unit's `rotation`
-holds for facing k of 16. It lives in that one function, so the in-game check
-can change it in one place.
+A facet is the created unit's stored angle index, in the unit's own
+angle_count, written raw (facet_angle_index(), the only place the rule
+lives). Measured 2026-11-02 in AoE2:DE from the GH #167 tester's screenshots
+of a probe scenario, by masked template match of each created unit against
+placed controls of known stored angle: index = facet, not mirrored; a
+Trebuchet counts in its own 32, a Dummy Target in its 8; a facet at or past
+the count faces index 0, not a wrap; every negative facet is random, as
+Unset. The first guess (facet k as facing k of 16 in `rotation` radians) was
+two steps off, the -45 degree zero point unit_sprites applies to `rotation`.
 
 unit_facet_rotation() is the one facing rule the panel's preview and the
 map's trigger ghosts share, so the two cannot disagree. The ghosts read it
-through ghost_rotation(), which draws every ghost at the default facing while
-GHOST_FACING_MEASURED is False: the hypothesis is off by two steps on the GH
-#167 tester's own facet-2 shot, and a map full of wrongly turned units would
-show that error again. The in-game sitting that measures the mapping turns
-the constant on.
+through ghost_rotation(); GHOST_FACING_MEASURED keeps the default-facing
+fallback switchable should a later measurement contradict this one.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from PyQt5.QtCore import QPointF, QSize, Qt
 from PyQt5.QtGui import QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import QAbstractSpinBox, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from descape import constant_picker, iso_geometry, object_catalog, unit_rotation
+from descape import constant_picker, iso_geometry, object_catalog, unit_rotation, unit_sprites
 from descape.value_picker import ValueLineEdit
 
 FACET_STEPS = 16
@@ -40,26 +42,37 @@ _ARROW_REACH = 0.8
 _HEAD_PX = 7.0
 
 
-def facet_rotation(facet: int) -> float | None:
-    """Stored radians for a facet, or None when it is negative (the game picks one).
-    Facet k is taken as facing k of FACET_STEPS, wrapping past it."""
+def facet_angle_index(facet: int, angle_count: int) -> int | None:
+    """The stored angle a created unit with `angle_count` angles faces under
+    `facet`, or None for a negative facet (the game picks one)."""
     if facet < 0:
         return None
-    return unit_rotation.facing_to_rotation(facet, FACET_STEPS)
+    return facet if facet < angle_count else 0
 
 
-# False until the facet mapping is measured in game: every ghost draws the default facing.
-GHOST_FACING_MEASURED = False
+def facet_rotation(facet: int, angle_count: int = FACET_STEPS) -> float | None:
+    """Stored radians that draw facet_angle_index()'s angle, or None for a negative facet."""
+    index = facet_angle_index(facet, angle_count)
+    if index is None:
+        return None
+    return unit_sprites.rotation_for_angle_index(index, angle_count)
+
+
+# Measured 2026-11-02 (GH #167): ghosts take the facet's facing. False draws every ghost at the default.
+GHOST_FACING_MEASURED = True
 
 
 def unit_facet_rotation(unit_const: int, facet: int) -> float | None:
-    """`unit_const`'s stored radians under `facet`, or None for a negative
-    facet or a const object_catalog knows that has no facing (a facet is
-    never written into a variant index). Unknown consts take facet_rotation()."""
+    """`unit_const`'s stored radians under `facet`, in its own angle_count, or
+    None for a negative facet or a const object_catalog knows that has no
+    facing (a facet is never written into a variant index). An unknown or
+    unset const takes FACET_STEPS, the count of most units."""
     if facet < 0:
         return None
-    if unit_const >= 0 and object_catalog.is_known_object(unit_const) and not unit_rotation.rotation_is_angle(unit_const):
-        return None
+    if unit_const >= 0 and object_catalog.is_known_object(unit_const):
+        if not unit_rotation.rotation_is_angle(unit_const):
+            return None
+        return facet_rotation(facet, unit_rotation.angle_count_for(unit_const))
     return facet_rotation(facet)
 
 
@@ -168,7 +181,7 @@ class FacetPreview(QWidget):
         self._read = None
         self._entry = None
         self._on_resize = None
-        self._pixmaps: dict[tuple[int, int], QPixmap | None] = {}
+        self._pixmaps: dict[tuple[int, float], QPixmap | None] = {}
 
     def minimumSizeHint(self) -> QSize:
         return QSize(self.tile.width(), super().minimumSizeHint().height())
@@ -233,7 +246,7 @@ class FacetPreview(QWidget):
         rotation = unit_facet_rotation(unit, facet) if shown else None
         self.rotation = rotation
         if shown:
-            self._show(facet, rotation, unit)
+            self._show(rotation, unit)
         if shown != self._shown:
             # Explicit even the first time: a never-shown row would be shown by the form's fit pass.
             self.setVisible(shown)
@@ -244,7 +257,7 @@ class FacetPreview(QWidget):
             if self._on_resize is not None:
                 self._on_resize()
 
-    def _show(self, facet: int, rotation: float | None, unit: int) -> None:
+    def _show(self, rotation: float | None, unit: int) -> None:
         known = unit >= 0 and object_catalog.is_known_object(unit)
         # unit_facet_rotation() gives None here only for a known const with no facing.
         if rotation is None:
@@ -258,11 +271,12 @@ class FacetPreview(QWidget):
         self.tile.show()
         self.note_label.clear()
         self.note_label.hide()
-        self._set_sprite(self._pixmap(unit, facet, rotation) if known else None)
+        self._set_sprite(self._pixmap(unit, rotation) if known else None)
 
-    def _pixmap(self, unit: int, facet: int, rotation: float) -> QPixmap | None:
-        """Cached per (unit, facet), so stepping the spinbox decodes each frame once."""
-        key = (unit, facet % FACET_STEPS)
+    def _pixmap(self, unit: int, rotation: float) -> QPixmap | None:
+        """Cached per (unit, rotation), so stepping the spinbox decodes each frame once:
+        every facet past the unit's count gives index 0's same rotation, so one key."""
+        key = (unit, rotation)
         if key not in self._pixmaps:
             self._pixmaps[key] = constant_picker.preview_pixmap(unit, rotation)
         return self._pixmaps[key]

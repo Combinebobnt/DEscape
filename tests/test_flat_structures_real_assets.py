@@ -161,14 +161,14 @@ def test_no_gate_loses_its_icon_to_the_turn(tool):
             turned = gate_orientation.cycle_const(const, 1)
             span_x, span_y = terrain_palette.tile_span(const, (1, 1))
             for civ in civs:
-                for age in range(2, 6):
-                    before = unit_sprites.resolve_entry(const, civ, age)
+                for age in range(2, 7):
+                    before = unit_sprites.resolve_entry(const, civ, age, civ)
                     if before is None or unit_sprites.sld_frame_count(_parent_file(before)) is None:
                         continue
                     checked += 1
-                    after = unit_sprites.resolve_entry(turned, civ, age)
+                    after = unit_sprites.resolve_entry(turned, civ, age, civ)
                     icon = unit_sprites.icon_for(
-                        const, 0.0, 0, span_x * GATE_TILE_PX, span_y * GATE_TILE_PX, art=(civ, age)
+                        const, 0.0, 0, span_x * GATE_TILE_PX, span_y * GATE_TILE_PX, art=(civ, age, civ)
                     )
                     if after is None or icon is None:
                         lost.append((const, civ, age))

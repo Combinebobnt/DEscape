@@ -627,13 +627,16 @@ def test_a_sloped_headroom_change_rebuilds_only_the_bboxes(sprite_install, monke
         _assert_bbox_only(cache, scenario, counts, wholesale, pack, headroom)
 
 
-def test_an_empty_component_still_widens_every_bbox(monkeypatch):
+def test_an_empty_component_still_widens_every_bbox(sprite_install, monkeypatch):  # noqa: F811
     """A flat-map raise with no unit within radius 1 splices nothing, but the
-    headroom still moves, so the Mill's bbox must widen anyway."""
+    headroom still moves, so the Mill's bbox must widen anyway. The footprint
+    must set the bbox top, so the Mill is drawn with no art: with real art its
+    sprite reaches higher and the merged top correctly does not move."""
     scenario = _scenario(flat=True)
     _place(scenario, 1, MILL_CONST, 60.0, 60.0)
     cache = _make_cache("sloped", scenario, sprites=True)
     before = dict(cache.building_bboxes)
+    assert not cache._levels[0].sprites.bboxes, "the Mill drew art, so its sprite, not the headroom, sets the bbox top"
     wholesale = _wholesale_calls(monkeypatch)
     calls = _splice_calls(monkeypatch)
     pack = cache._unit_pack

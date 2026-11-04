@@ -2484,7 +2484,7 @@ def test_removing_any_entry_keeps_the_survivors_display_order_across_the_corpus(
     "name", ["8tp3w9j", "C2_ElCid_coop_3_v0_12", "atilla_1_scn_resaved", "old-allies-final-v2"]
 )
 def test_removing_any_entry_keeps_the_survivors_display_order_on_a_non_identity_file(name: str) -> None:
-    """The quick corpus subset holds identity orders only, so the four
+    """The corpus subset holds identity orders only, so the four
     examples/ files that do not are named here."""
     path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
     if not path.exists():
@@ -2509,7 +2509,7 @@ def _quantity_fields(loaded) -> list[list[tuple[bytes, ...]]]:
     "name", ["8tp3w9j", "old-allies-final-v2", "2_Joan_coop_2_v0_15", "C2_ElCid_coop_1_v0_16"]
 )
 def test_resave_keeps_every_effect_quantity_pair(name: str, tmp_path: Path) -> None:
-    """Every trigger dirty, both stored halves byte-equal. QUICK_CORPUS_NAMES
+    """Every trigger dirty, both stored halves byte-equal. CORPUS_SUBSET_NAMES
     holds none of the files with a disagreeing pair, and the last has no float
     field. Other fields differ by design on a dirty trigger."""
     path = Path(__file__).resolve().parent.parent / "examples" / f"{name}.aoe2scenario"
@@ -3007,6 +3007,20 @@ def test_a_renumber_that_fails_in_the_viewer_warns_once_and_changes_nothing(monk
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_a_raise_inside_trigger_edit_fails_fast_on_a_factory_window() -> None:
+    """TASK-077: unstubbed, the failure's QMessageBox blocks forever offscreen."""
+    window = conftest.blank_window()
+    try:
+        model = window._ensure_trigger_edits()
+        with (
+            pytest.raises(conftest.UnexpectedWarning, match="Trigger edit failed: boom"),
+            window._trigger_edit(model, "Boom", refresh="panel"),
+        ):
+            raise RuntimeError("boom")
+    finally:
+        conftest.close_window(window)
 
 
 def test_a_refused_renumber_records_nothing() -> None:

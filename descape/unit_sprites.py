@@ -53,10 +53,11 @@ import json
 import math
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 import numpy as np
@@ -689,6 +690,15 @@ class BuildingArt(NamedTuple):
     age_upgrades: dict[int, dict[int, int]]  # base const -> {age: const drawn}
     civ_art: dict[int, dict[int, dict]]      # civ index -> {const: entry}
     civ_names: dict[int, str]
+    # tech civ -> {base const -> {age: const drawn}}, replacing age_upgrades' row (TASK-205)
+    civ_upgrades: Mapping[int, dict[int, dict[int, int]]] = MappingProxyType({})
+    max_age: int = 5  # a lookup clamps its age to this; a table without the key is 5
+    # const -> {age: {art civ, 0 = Gaia: entry}}, the Satrapy TCs' per-age annexes (TASK-205 Slice 2)
+    age_art: Mapping[int, dict[int, dict[int, dict]]] = MappingProxyType({})
+
+
+def _upgrade_rows(rows: dict) -> dict[int, dict[int, int]]:
+    return {int(base): {int(age): target for age, target in by_age.items()} for base, by_age in rows.items()}
 
 
 @game_dataset.cache(maxsize=1)
@@ -697,15 +707,21 @@ def building_art() -> BuildingArt:
     data = json.loads(game_dataset.table_path(BUILDING_ART_PATH).read_text())
     entries = data["entries"]
     return BuildingArt(
-        age_upgrades={
-            int(base): {int(age): target for age, target in by_age.items()}
-            for base, by_age in data["age_upgrades"].items()
-        },
+        age_upgrades=_upgrade_rows(data["age_upgrades"]),
         civ_art={
             int(civ): {int(const): entries[index] for const, index in art.items()}
             for civ, art in data["civ_art"].items()
         },
         civ_names={int(civ): name for civ, name in data["civ_names"].items()},
+        civ_upgrades={int(civ): _upgrade_rows(rows) for civ, rows in data.get("civ_upgrades", {}).items()},
+        max_age=data.get("max_age", 5),
+        age_art={
+            int(const): {
+                int(age): {int(civ): entries[index] for civ, index in by_civ.items()}
+                for age, by_civ in by_age.items()
+            }
+            for const, by_age in data.get("age_art", {}).items()
+        },
     )
 
 
@@ -728,10 +744,15 @@ def _art_excluded(unit_const: int) -> bool:
     )
 
 
-def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None:
+def resolve_entry(
+    unit_const: int, art_civ: int | None, age: int, tech_civ: int | None = None,
+) -> dict | None:
     """The entry a placed `unit_const` draws for an owner with this
-    (art_civ, age) (descape/civ_art.py): the const the age techs upgrade it to
-    at `age`, in that civ's art if it has its own, else in the Gaia table.
+    (art_civ, age, tech_civ) (descape/civ_art.py): the const the techs a
+    player starting at `age` has fired upgrade it to (`tech_civ`'s own row
+    where its civ differs from the generic one, TASK-205), in that civ's art
+    if it has its own, else in the Gaia table. A Satrapy TC, which no age tech
+    upgrades, draws its age's annexes from `age_art` instead (Slice 2).
     Only the drawn entry changes: every caller still keys rotation, variant,
     footprint and wall/gate logic on the placed const, which the generator's
     invariant asserts make safe. A directly placed age target (463) is never
@@ -740,7 +761,14 @@ def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None
     if _art_excluded(unit_const):
         return graphic_map().get(unit_const)
     art = building_art()
-    drawn = art.age_upgrades.get(unit_const, {}).get(age, unit_const)
+    age = min(age, art.max_age)
+    by_age = art.civ_upgrades.get(tech_civ, {}).get(unit_const)
+    if by_age is None:
+        by_age = art.age_upgrades.get(unit_const, {})
+    drawn = by_age.get(age, unit_const)
+    by_civ = art.age_art.get(drawn, {}).get(age)
+    if by_civ is not None:
+        return by_civ.get(art_civ or 0, by_civ[0])
     if art_civ is not None:
         entry = art.civ_art.get(art_civ, {}).get(drawn)
         if entry is not None:
@@ -748,11 +776,12 @@ def resolve_entry(unit_const: int, art_civ: int | None, age: int) -> dict | None
     return graphic_map().get(drawn)
 
 
-def _entry_for_art(unit_const: int, art: tuple[int | None, int] | None) -> dict | None:
+def _entry_for_art(unit_const: int, art: tuple[int | None, int, int | None] | None) -> dict | None:
     """graphic_map()'s entry when `art` is None (today's art), else resolve_entry()'s."""
     if art is None:
         return graphic_map().get(unit_const)
-    return resolve_entry(unit_const, art[0], art[1])
+    art_civ, age, tech_civ = art  # a leftover (art_civ, age) pair raises rather than drawing generic upgrades
+    return resolve_entry(unit_const, art_civ, age, tech_civ)
 
 
 def _body_offset(entry: dict) -> tuple[int, int]:
@@ -825,9 +854,7 @@ def angle_index(
     # frames are shape variants rather than facings, so rotation_is_variant()
     # diverts them to variant_index() -- but the skip above is general and
     # stays.
-    offset_steps = offset_deg / 360.0 * angle_count
-    if offset_steps != int(offset_steps):
-        offset_steps = 0.0
+    offset_steps = _whole_offset_steps(angle_count, offset_deg)
     # Rounds the SUM, not each term: the offset is exact only when angle_count
     # is a multiple of 8 (16 -> 2.0, 8 -> 1.0), and 25 -> 3.125 is a real case.
     # Rounding once is rounding the final angle, which is the quantity that has
@@ -841,6 +868,23 @@ def angle_index(
     # went to different ones. Half-up is arbitrary too, but uniformly so, which
     # is what keeps distinct facings distinct.
     return math.floor(ANGLE_DIRECTION * steps + offset_steps + 0.5) % angle_count
+
+
+def _whole_offset_steps(angle_count: int, offset_deg: float) -> float:
+    """`offset_deg` in this graphic's steps, or 0.0 where that is not a whole step."""
+    offset_steps = offset_deg / 360.0 * angle_count
+    return offset_steps if offset_steps == int(offset_steps) else 0.0
+
+
+def rotation_for_angle_index(
+    index: int, angle_count: int, offset_deg: float = ANGLE_ZERO_OFFSET_DEG
+) -> float:
+    """The stored radians, in [0, 2*pi), that angle_index() reads as stored angle
+    `index`: its inverse, with the same whole-step guard on the offset."""
+    if angle_count <= 1:
+        return 0.0
+    steps = ANGLE_DIRECTION * ((index % angle_count) - _whole_offset_steps(angle_count, offset_deg))
+    return (steps * 2 * math.pi / angle_count) % (2 * math.pi)
 
 
 # Confirmed 2026-08-25: these
@@ -998,12 +1042,13 @@ def cliff_consts() -> frozenset[int]:
 # scan). The old 98.7%/96.9% figures on record are not re-derivable -- the
 # script behind them was never committed -- and the 96.9% "class == 39
 # rejected" claim was actually a *towers* measurement, never a class-39 one.
-# The corpus rendering delta of this change is exactly 0 override rows across
+# The corpus rendering delta of this change was exactly 0 override rows across
 # all 21 parsed files (control: walls-only against the old hand set gives 76
-# rows), because render.py skips integer-only files outright -- so this fixes
-# live editing (e.g. cycling a palisade gate's orientation no longer reshapes
-# its neighbouring walls, where cycling a stone gate already didn't), not
-# anything visible in the corpus.
+# rows), because render.py then skipped integer-only files outright -- so it
+# fixed live editing (e.g. cycling a palisade gate's orientation no longer
+# reshapes its neighbouring walls, where cycling a stone gate already didn't),
+# not anything visible in the corpus. Integer files now get wall_drawn_shape()'s
+# lone-wall rule, which game-saved files never trigger.
 @game_dataset.cache(maxsize=1)
 def wall_connector_consts() -> frozenset[int]:
     """The set of consts whose tiles count as a "wall neighbour" for
@@ -1043,8 +1088,8 @@ def neighbour_mask(
     """Which of (tx, ty)'s neighbours are in `connector_tiles`, as a bit mask.
 
     One shared implementation for the read side
-    (render.wall_variant_rotation_overrides(), diagonals off) and the write
-    side (wall_run.plan_wall_run(), diagonals on). Extracted rather than
+    (render.wall_variant_rotation_overrides()) and the write side
+    (wall_run.plan_wall_run()), both with diagonals on. Extracted rather than
     written twice because the two would then be free to disagree about which
     bit means which direction, and a sign convention that diverges between
     deriving a shape and storing one fails silently.
@@ -1065,9 +1110,9 @@ def wall_variant_from_neighbours(mask: int) -> int | None:
     - exactly {WEST, EAST}  -> 0 (run along x)   -- 98.9% agreement, n=1835
     - exactly {NORTH, SOUTH} -> 1 (run along y)  -- 99.1% agreement, n=1882
     - any other non-zero mask -> 2 (tower/corner/junction) -- 96-100%, n=1323
-    - no neighbours (mask 0) -> None: an isolated piece's shape is
-      author-chosen, not derivable, and must fall through to the caller's
-      existing (stored-value) resolution rather than being guessed.
+    - no neighbours (mask 0) -> None: the table has no entry for it, and
+      the caller supplies the policy (wall_drawn_shape() and
+      wall_run.plan_wall_run() both draw or place WALL_TOWER).
     """
     if mask == 0:
         return None
@@ -1079,10 +1124,9 @@ def wall_variant_from_neighbours(mask: int) -> int | None:
 
 
 def wall_variant_from_neighbours8(mask: int) -> int | None:
-    """The diagonal-aware superset of wall_variant_from_neighbours(), for the
-    write side (2026-09-19 wall-runs plan). A SEPARATE function, not a change
-    to the 4-bit one: the render side and its pinned zero-changed-tiles corpus
-    guard keep calling that one, untouched by this.
+    """The diagonal-aware superset of wall_variant_from_neighbours(), written
+    for the write side (2026-09-19 wall-runs plan) and since adopted by the
+    render side for radian files through wall_drawn_shape().
 
     Any orthogonal bit set defers to the 4-bit function verbatim, so the
     superset property holds by construction rather than by agreement. The
@@ -1103,9 +1147,10 @@ def wall_variant_from_neighbours8(mask: int) -> int | None:
     - no neighbours at all (mask 0) -> None
 
     Mask 0 stays None even though 24 of 24 isolated corpus walls store 2,
-    so this function's contract is identical to the 4-bit one at every mask
-    -- which is what a later render-side adoption needs. "A lone wall is a
-    tower" is a caller's policy; wall_run.plan_wall_run() supplies the 2.
+    so this function's contract is identical to the 4-bit one at every mask.
+    "A lone wall is a tower" is a caller's policy: wall_run.plan_wall_run()
+    and wall_drawn_shape() (the render side, which adopted this table) each
+    supply WALL_TOWER.
     """
     if mask & ORTHOGONAL_MASK:
         return wall_variant_from_neighbours(mask & ORTHOGONAL_MASK)
@@ -1116,6 +1161,39 @@ def wall_variant_from_neighbours8(mask: int) -> int | None:
     if mask == NW | SE:
         return 3
     return 2
+
+
+# The tower shape: a wall with no neighbour, or ending a run.
+WALL_TOWER = 2
+
+
+def wall_drawn_shape(mask8: int, stored: int, radian: bool) -> int | None:
+    """The shape the render draws a wall as, or None to draw its stored index.
+
+    `mask8` is the wall's 8-bit neighbour mask (neighbour_mask(...,
+    diagonals=True)), `stored` its stored index (variant_index()), `radian`
+    the file's encoding (file_is_radian()). Draw-only: no write path may call
+    this, and the stored index is never rewritten from it.
+
+    - Radian file: every wall draws wall_variant_from_neighbours8(mask8), a
+      lone wall (mask 0) as WALL_TOWER. Radian stored values are flat noise
+      across all five indices, so they carry no shape to keep; the 8-bit
+      table's diagonal cases are calibrated on integer files (987 of 988).
+    - Integer file: a wall with at most one neighbour among its 8 draws as
+      WALL_TOWER, as AoE2:DE draws it whatever the file stores (a wall moved
+      out of a run by an older editor keeps its run index). Only then, and
+      only when it does not already store WALL_TOWER: every integer corpus
+      wall with at most one neighbour stores 2 (530 of 530, 2026-10-29), so
+      no game-saved file draws differently. Every other integer wall draws
+      its stored index, which at 2+ neighbours predicts the game better than
+      the table does.
+    """
+    if radian:
+        shape = wall_variant_from_neighbours8(mask8)
+        return WALL_TOWER if shape is None else shape
+    if mask8 & (mask8 - 1) == 0 and stored != WALL_TOWER:
+        return WALL_TOWER
+    return None
 
 
 def rotation_variant_eligible(unit_const: int) -> bool:
@@ -1138,8 +1216,10 @@ def rotation_variant_eligible(unit_const: int) -> bool:
     Aqueduct. `wall_connector_consts()` (the *neighbour tile* set, which also
     includes every generated gate family) follows the same set.
 
-    Preconditions 3 (not a literal integer index) and 4 (non-zero neighbour
-    mask) are NOT checked here. Measured (tools/scan_wall_rotation.py): of the
+    The file's encoding (radian or literal integer) is NOT checked here, and
+    a zero neighbour mask is no longer a precondition at all
+    (wall_drawn_shape() draws a lone wall as the tower in either encoding).
+    Measured (tools/scan_wall_rotation.py): of the
     literal-0.0-rotation walls in the 7 corpus files that also carry
     radian-encoded wall rotations, 45.6% (241/529) sit on a non-zero mask
     whose derived index isn't 0 -- far more than "a handful", so condition 3
@@ -1613,7 +1693,9 @@ def referenced_entries() -> list[tuple[str, int, int]]:
     entry, each at its own offset from the unit's anchor
     (tools/scan_sprite_reach.py's input)."""
     entries: set[tuple[str, int, int]] = set()
-    per_civ = [e for art in building_art().civ_art.values() for e in art.values()]
+    art_table = building_art()
+    per_civ = [e for art in art_table.civ_art.values() for e in art.values()]
+    per_civ += [e for by_age in art_table.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
     for entry in [*graphic_map().values(), *per_civ]:
         # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
         entries.add((entry["file_name"], *_body_offset(entry)))
@@ -2066,7 +2148,7 @@ def rect_marker_for(category: str, team_index: int, w: int, h: int, half_w: int)
 
 def sprite_for(
     unit_const: int, rotation: float, team_index: int, half_w: int,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
 ) -> SpriteDraw | None:
     """This unit's tinted, scaled sprite, or None to fall back to a mark.
 
@@ -2080,7 +2162,7 @@ def sprite_for(
     this draws only the entry's OWN graphic -- unchanged behavior for every
     existing caller. sprite_pieces_for() is the composite-aware sibling.
 
-    `art` is the owner's (art_civ, age) (GH #48, resolve_entry()); None draws
+    `art` is the owner's (art_civ, age, tech_civ) (GH #48, resolve_entry()); None draws
     today's Gaia-table art.
     """
     entry = _entry_for_art(unit_const, art)
@@ -2094,7 +2176,7 @@ def sprite_for(
 def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
-    art: tuple[int | None, int] | None = None,
+    art: tuple[int | None, int, int | None] | None = None,
     wall_alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
@@ -2153,7 +2235,7 @@ def sprite_pieces_for(
 
 
 def garrison_flag_pieces_for(
-    unit_const: int, team_index: int, half_w: int, art: tuple[int | None, int] | None = None,
+    unit_const: int, team_index: int, half_w: int, art: tuple[int | None, int, int | None] | None = None,
 ) -> list[SpritePiece]:
     """The garrison flag(s) a host shows while it holds units (GH #203): one
     SpritePiece per `garrison_flags` item of the entry its body draws from
@@ -2435,7 +2517,7 @@ def _art_key(entry: dict) -> tuple:
 
 def icon_for(
     unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int,
-    seed: int | None = None, art: tuple[int | None, int] | None = None,
+    seed: int | None = None, art: tuple[int | None, int, int | None] | None = None,
 ) -> SpriteDraw | None:
     """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
     Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the

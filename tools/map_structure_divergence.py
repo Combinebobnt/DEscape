@@ -2,12 +2,14 @@
 """
 Reports where a scenario file stops matching a structure definition.
 
-Why this exists: AoE2ScenarioParser ships structure definitions for DE v1.36 through
-v1.58 only, so older files raise UnknownScenarioStructureError before a single section
+Why this exists: AoE2ScenarioParser ships structure definitions for DE v1.36 onwards
+only, so older files raise UnknownScenarioStructureError before a single section
 is parsed. Supporting one of those versions means authoring a structure.json for it,
 and that is an iterative job: start from the nearest shipped version, find the first
 field that disagrees with the bytes, fix it, repeat. This tool is the measuring
 instrument for that loop, so each round is measured rather than guessed.
+tools/infer_structure.py is the automated form of the loop for a newer version (the
+search is tools/structure_infer.py), and checks its result through clean_check() here.
 
 Point it at a candidate structure with --structure and it reports, per file, the first
 section and retriever that diverges, the byte offset parsing reached, and a hex window
@@ -23,7 +25,10 @@ tools/census_trigger_versions.py does it: AoE2ScenarioParser gates fields with
 Support(since=...) ranges compared against the scenario version, and a load permanently
 swaps class-level properties (e.g. Unit.caption_string_id) for every later scenario in
 the same process. A mixed-version sweep in one interpreter reports load order, not
-files. See tests/README.md's "Process-global hazard" note.
+files. See tests/README.md's "Process-global hazard" note. A misaligned library walk
+can also read a garbage repeat count and build millions of objects before failing, so
+the worker caps its address space (WORKER_ADDRESS_LIMIT) and discards the library's
+chatter instead of buffering it.
 
 Read-only, always. Much of the real corpus lives under a Proton prefix, some of it
 in mods/subscribed/ folders the game's mod manager re-syncs. This script has no output
@@ -64,6 +69,31 @@ STATUS_NOSTRUCT = "NOSTRUCT"  # no structure available for this file's version
 STATUS_READFAIL = "READFAIL"  # not a scenario file, or unreadable
 
 DEFAULT_HEX_WINDOW = 48
+WORKER_TIMEOUT = 600
+# The largest corpus file (a 27 MB body) peaks at 160 MB of address space in the worker.
+WORKER_ADDRESS_LIMIT = 4 << 30
+
+
+class _Discard(io.TextIOBase):
+    """A text sink that keeps nothing: the library's failure dump can run to megabytes."""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        return len(s)
+
+
+def _cap_address_space(limit: int = WORKER_ADDRESS_LIMIT) -> None:
+    """Lower RLIMIT_AS to `limit` where the platform has one (never raises it)."""
+    try:
+        import resource
+    except ImportError:  # Windows
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    caps = [c for c in (soft, hard, limit) if c != resource.RLIM_INFINITY]
+    with contextlib.suppress(ValueError, OSError):
+        resource.setrlimit(resource.RLIMIT_AS, (min(caps), hard))
 
 
 def _annotate(buf: bytes, offset: int) -> dict:
@@ -186,7 +216,7 @@ def measure(path: Path, structure_path: Path | None, hex_width: int, trace: bool
 
     # The library prints a multi-thousand-line hex dump before re-raising, which is
     # exactly the noise this tool exists to replace with one located line.
-    noise = io.StringIO()
+    noise = _Discard()
     sections: list[dict] = []
     stage = "FileHeader"
     buf = raw
@@ -253,12 +283,22 @@ def run_worker(path: Path, args) -> dict:
         cmd.append("--trace")
     cmd += ["--hex-window", str(args.hex_window)]
     # check=False: a worker failure becomes a WORKERFAIL record below.
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=WORKER_TIMEOUT, check=False)
     for line in proc.stdout.splitlines():
         if line.startswith(RECORD_PREFIX):
             return json.loads(line[len(RECORD_PREFIX) :])
     detail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
     return {"path": str(path), "status": "WORKERFAIL", "detail": f"exit {proc.returncode}: {detail}"}
+
+
+def clean_check(path: Path, structure_path: Path) -> dict:
+    """The worker's record for `path` parsed by the library under `structure_path`:
+    CLEAN with `remainder`, or DIVERGE located. A hung worker is a WORKERFAIL record."""
+    args = argparse.Namespace(structure=structure_path, trace=False, hex_window=DEFAULT_HEX_WINDOW)
+    try:
+        return run_worker(path, args)
+    except subprocess.TimeoutExpired:
+        return {"path": str(path), "status": "WORKERFAIL", "detail": "timed out"}
 
 
 def _retriever_rows(retrievers: list[dict], indent: str) -> str:
@@ -336,6 +376,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.one is not None:
+        _cap_address_space()
         record = measure(args.one, args.structure, args.hex_window, args.trace)
         print(RECORD_PREFIX + json.dumps(record))
         return

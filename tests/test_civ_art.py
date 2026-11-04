@@ -1,6 +1,6 @@
 """GH #48: per-civ architecture and per-age building art.
 
-descape/civ_art.py derives each player's (art_civ, age) from the scenario's
+descape/civ_art.py derives each player's (art_civ, age, tech_civ) from the scenario's
 civilization, architecture and starting age; unit_sprites.resolve_entry()
 turns a placed building const into the entry that owner draws; the render
 paths thread it through, and a Players-mode edit re-derives it
@@ -69,7 +69,7 @@ def test_every_concrete_token_agrees_with_its_int_form():
 
 
 @pytest.mark.parametrize(("value", "expected"), [
-    (2, 2), (3, 3), (4, 4), (5, 5), (6, 5), (0, 2), (1, 2), (7, 2), (4294967295, 2), (-1, 2), (None, 2),
+    (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (0, 2), (1, 2), (7, 2), (4294967295, 2), (-1, 2), (None, 2),
 ])
 def test_starting_age_clamps(value, expected):
     assert civ_art.art_age(value) == expected
@@ -85,7 +85,17 @@ def test_starting_age_clamps(value, expected):
     (65537, 65539, None),
 ])
 def test_architecture_falls_through_to_the_civ_then_to_none(civ, arch, expected):
-    assert civ_art.resolve(civ, arch, 3) == (expected, 3)
+    assert civ_art.resolve(civ, arch, 3)[:2] == (expected, 3)
+
+
+@pytest.mark.parametrize(("civ", "arch", "expected"), [
+    (TEUTONS, FRANKS, TEUTONS),            # architecture is art only
+    ("RANDOM-CIV", "MONGOL-CIV", None),    # a random civ uses the generic upgrades
+    ("ROMANS-CIV", "RANDOM-CIV", 43),
+])
+def test_the_tech_civ_is_always_the_civilization(civ, arch, expected):
+    """TASK-205: whose tech tree and auto techs upgrade the building."""
+    assert civ_art.resolve(civ, arch, 3)[2] == expected
 
 
 def _blank_with_options():
@@ -111,8 +121,8 @@ def test_gaia_is_always_today_art_and_pending_edits_override_stored_values():
     model.set_value(player_field_id("starting_age", 2), 6)
     art = civ_art.player_art(loaded, _pending_by_field(model))
     assert art[0] == civ_art.GAIA_ART
-    assert art[1] == (TEUTONS, 2)
-    assert art[2] == (CHINESE, 5)
+    assert art[1] == (TEUTONS, 2, TEUTONS)
+    assert art[2] == (CHINESE, 6, None)  # architecture only: the generic upgrades
     assert art[3:] == (civ_art.GAIA_ART,) * 6
 
 
@@ -123,7 +133,7 @@ def test_a_file_without_architecture_falls_through_to_its_civ(monkeypatch):
         player_fields, "specs_for", lambda lo: tuple(s for s in real(lo) if s.field_id != "architecture")
     )
     model.set_value(player_field_id("civilization", 1), "CHINESE-CIV")
-    assert civ_art.player_art(loaded, _pending_by_field(model))[1] == (CHINESE, 2)
+    assert civ_art.player_art(loaded, _pending_by_field(model))[1] == (CHINESE, 2, CHINESE)
 
 
 @pytest.mark.parametrize("error", [ValueError, TypeError, IndexError])
@@ -140,10 +150,10 @@ def test_surprising_player_data_never_makes_a_file_unopenable(monkeypatch, error
 
 @pytest.mark.corpus
 @pytest.mark.parametrize(("name", "player_id", "expected"), [
-    ("2_Joan_coop_4_v0_13.aoe2scenario", 2, (FRANKS, 4)),        # int path, civ Teutons
-    ("old-allies-final-v2.aoe2scenario", 7, (12, 3)),            # str16, HUN-CIV civ
-    ("old-allies-final-v2.aoe2scenario", 5, (43, 5)),            # RANDOM-CIV architecture
-    ("0_June_Event_Scenario.aoe2scenario", 1, (TEUTONS, 4)),     # 1.37: no architecture_set
+    ("2_Joan_coop_4_v0_13.aoe2scenario", 2, (FRANKS, 4, TEUTONS)),   # int path, civ Teutons
+    ("old-allies-final-v2.aoe2scenario", 7, (12, 3, 17)),            # str16, HUN-CIV civ
+    ("old-allies-final-v2.aoe2scenario", 5, (43, 5, 43)),            # RANDOM-CIV architecture
+    ("0_June_Event_Scenario.aoe2scenario", 1, (TEUTONS, 4, TEUTONS)),  # 1.37: no architecture_set
     ("0_June_Event_Scenario.aoe2scenario", 0, civ_art.GAIA_ART),
 ])
 def test_real_files_resolve_their_measured_players(request, name, player_id, expected):
@@ -181,15 +191,101 @@ def test_a_non_building_const_is_untouched():
 
 
 def test_the_age_table_reads_the_age_techs():
+    """TASK-205: the generic start simulation, ages 2..6; Post-Imperial adds no age tech."""
     ages = unit_sprites.building_art().age_upgrades
-    assert ages[12] == {3: 498, 4: 132, 5: 20}
-    assert ages[HOUSE] == {3: 463, 4: 464, 5: 465}
+    assert ages[12] == {3: 498, 4: 132, 5: 20, 6: 20}
+    assert ages[HOUSE] == {3: 463, 4: 464, 5: 465, 6: 465}
     assert 463 not in ages
 
 
+# --- TASK-205: civ auto techs and Post-Imperial ----------------------------
+
+ARMENIANS, GEORGIANS, POLES, TATARS, CUMANS = 44, 45, 38, 33, 34
+MONASTERY, MILL, SIEGE_WORKSHOP, SETTLEMENT = 104, 68, 49, 2556
+
+
+def _drawn(const, art_civ, age, tech_civ):
+    return unit_sprites.resolve_entry(const, art_civ, age, tech_civ)["file_name"]
+
+
+def test_armenian_and_georgian_monasteries_stay_fortified_churches_through_every_age():
+    """Age 2 is the auto tech's first fire; 3..6 need it to re-fire over the age techs' 104 -> 30 -> 31 -> 32."""
+    for civ in (ARMENIANS, GEORGIANS):
+        for age in range(2, 7):
+            assert _drawn(MONASTERY, civ, age, civ) == "b_medi_fortified_church_x1", (civ, age)
+
+
+def test_the_tech_civ_not_the_architecture_upgrades_the_monastery():
+    franks_with_armenian_art = _drawn(MONASTERY, ARMENIANS, 3, FRANKS)
+    assert franks_with_armenian_art.startswith("b_byza_monastery_"), franks_with_armenian_art
+    assert _drawn(MONASTERY, FRANKS, 3, ARMENIANS) == "b_medi_fortified_church_x1"
+
+
+def test_poles_mills_keep_mill_art_at_every_age():
+    """Decision 1: the Folwark's 3x3 footprint is held out, so Poles' Mill ages as anyone's."""
+    gm = unit_sprites.graphic_map()
+    generic = unit_sprites.building_art().age_upgrades[MILL]
+    for age in range(2, 7):
+        assert unit_sprites.resolve_entry(MILL, None, age, POLES) is gm[generic.get(age, MILL)], age
+
+
+def test_a_settlement_draws_its_age2_art_in_feudal_for_any_civ():
+    for tech_civ in (None, FRANKS, ARMENIANS):
+        assert _drawn(SETTLEMENT, None, 3, tech_civ) == "b_ande_settlement_age2_x1", tech_civ
+    assert _drawn(SETTLEMENT, None, 5, None) == "b_ande_settlement_age3_x1"
+
+
+def test_central_asian_siege_workshops_follow_upgrade_rams():
+    """712 fires at the start for everyone but Cumans, whose 706 waits for Castle Age."""
+    assert _drawn(SIEGE_WORKSHOP, TATARS, 2, TATARS) == "b_ceas_siege_workshop_age3_x1"
+    assert _drawn(SIEGE_WORKSHOP, CUMANS, 3, CUMANS) == "b_ceas_siege_workshop_age2_x1"
+    assert _drawn(SIEGE_WORKSHOP, CUMANS, 4, CUMANS) == "b_ceas_siege_workshop_age3_x1"
+
+
+BRITONS, GOTHS, ATHENIANS = 1, 3, 47
+WATCH_TOWER, FORTIFIED_GATE_NE = 79, 63
+
+
+def test_towers_follow_guard_tower_at_imperial_and_keep_at_post_imperial():
+    """Slice 3: a later start has its earlier ages' generic techs, unless the
+    civ's tech tree disables them (French have no Keep)."""
+    gm = unit_sprites.graphic_map()
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 5, BRITONS) is gm[234]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 6, BRITONS) is gm[235]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 4, BRITONS) is gm[WATCH_TOWER]
+    assert unit_sprites.resolve_entry(WATCH_TOWER, None, 6, FRANKS) is gm[234]
+
+
+def test_walls_and_gates_are_fortified_at_an_imperial_start_where_the_civ_has_it():
+    gm = unit_sprites.graphic_map()
+    assert unit_sprites.resolve_entry(STONE_WALL, None, 5, BRITONS) is gm[FORTIFIED_WALL]
+    assert unit_sprites.resolve_entry(STONE_WALL, None, 5, GOTHS) is gm[STONE_WALL]  # no Fortified Wall
+    assert _drawn(STONE_WALL, ATHENIANS, 5, ATHENIANS) == "b_greek_wall_fortified_x1"  # GH #329's own art
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, None, 5, BRITONS) is gm[FORTIFIED_GATE_NE]
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, None, 5, GOTHS) is gm[STONE_GATE_NE]
+
+
+def test_a_table_without_max_age_clamps_post_imperial_to_imperial(monkeypatch):
+    """Today's RoR table: no max_age key, so age 6 reads its age-5 row."""
+    real = unit_sprites.building_art()
+    old_shape = unit_sprites.BuildingArt(
+        age_upgrades={HOUSE: {3: 463, 4: 464, 5: 465}}, civ_art={}, civ_names=real.civ_names,
+    )
+    assert old_shape.max_age == 5 and old_shape.civ_upgrades == {}
+    monkeypatch.setattr(unit_sprites, "building_art", lambda: old_shape)
+    assert unit_sprites.resolve_entry(HOUSE, None, 6) is unit_sprites.graphic_map()[465]
+
+
+def test_resolve_and_player_art_carry_the_tech_civ():
+    assert civ_art.GAIA_ART == (None, 2, None)
+    assert civ_art.resolve("ARMENIANS-CIV", "FRANKISH-CIV", 6) == (FRANKS, 6, ARMENIANS)
+
+
 # The town centres the age techs reach: Dark Age 109 and its age targets.
-# 2275-2277 (satrapy town centres) are out of scope and keep the .dat's annexes.
+# 2275-2277 (satrapy town centres) draw per age through age_art instead:
+# test_satrapy_town_centres_draw_their_ages_annexes.
 AGE_TOWN_CENTRES = (109, 71, 141, 142)
+SATRAPY_TOWN_CENTRES = (2275, 2276, 2277)
 
 
 def _age_token(file_name: str) -> str:
@@ -213,6 +309,33 @@ def test_every_town_centre_entry_is_one_age():
             assert ages == {_age_token(parent["file_name"])}, (const, [p["file_name"] for p in entry["pieces"]])
             checked += 1
     assert checked > 100
+
+
+def test_satrapy_town_centres_draw_their_ages_annexes():
+    """TASK-205 Slice 2: at each age 3..5 every annex is that age's (a Castle
+    start draws age3 annexes), for Gaia and every civ in age_art, around the
+    const's own Persian age-2 back piece; Post-Imperial draws as Imperial."""
+    age_art = unit_sprites.building_art().age_art
+    assert sorted(age_art) == list(SATRAPY_TOWN_CENTRES)
+    checked = 0
+    for const in SATRAPY_TOWN_CENTRES:
+        by_age = age_art[const]
+        assert sorted(by_age) == [3, 4, 5, 6]
+        assert by_age[6] == by_age[5]
+        for age in (3, 4, 5):
+            assert 0 in by_age[age], (const, age)
+            for civ, entry in by_age[age].items():
+                annexes = [p for p in entry["pieces"] if not p.get("parent")]
+                assert {_age_token(p["file_name"]) for p in annexes} == {str(age - 1)}, (const, age, civ)
+                checked += 1
+    assert checked > 100
+    achaemenids = 46
+    dark = unit_sprites.resolve_entry(2275, achaemenids, 2, achaemenids)
+    castle = unit_sprites.resolve_entry(2275, achaemenids, 4, achaemenids)
+    assert castle is age_art[2275][4][achaemenids]
+    assert dark is not castle
+    assert unit_sprites.resolve_entry(2275, 99, 4) is age_art[2275][4][0]  # no own art: Gaia's
+    assert unit_sprites.resolve_entry(2275, None, 6) is age_art[2275][5][0]
 
 
 def test_a_chinese_castle_age_town_centre_draws_one_asia_age3_set():
@@ -246,18 +369,38 @@ def test_walls_and_gates_draw_their_owners_architecture():
     assert unit_sprites.resolve_entry(PALISADE, 47, 2)["file_name"] == "b_archaic_wall_palisade_x1"
 
 
-def test_gates_carry_no_age_art():
-    for const in unit_sprites.building_art().age_upgrades:
-        assert not gate_orientation.is_gate(const), const
-    assert unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 5) is unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 2)
+def test_a_gate_upgrade_keeps_its_orientation():
+    """TASK-205 Slice 3: Fortified Wall upgrades a stone gate to the fortified
+    sibling at the same place in its group's cycle, in every table."""
+    art = unit_sprites.building_art()
+    tables = [art.age_upgrades, *art.civ_upgrades.values()]
+    gate_rows = 0
+    for table in tables:
+        for base, by_age in table.items():
+            if not gate_orientation.is_gate(base):
+                continue
+            for target in by_age.values():
+                base_group = gate_orientation.orientation_siblings(base)
+                target_group = gate_orientation.orientation_siblings(target)
+                assert target_group is not None, (base, target)
+                assert base_group.index(base) == target_group.index(target), (base, target)
+                gate_rows += 1
+    assert gate_rows, "no gate upgrade at all, so this proves nothing"
+    assert unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 4) is unit_sprites.resolve_entry(STONE_GATE_NE, CHINESE, 2)
 
 
-def test_the_greek_fortified_wall_holdout_keeps_gaia_art_only_where_it_must():
-    """Greek-set Fortified Wall art stores 11 variants, not the 5 the wall logic
-    reads, so those civs keep Gaia's; every other civ keeps its own."""
+def test_the_greek_civs_draw_their_own_fortified_wall_over_the_five_shapes():
+    """Greek-set Fortified Wall art stores 11 frames, and its first five are the
+    western set's five shapes in order (GH #329; the rest scaffolding and rubble
+    no wall index reaches), so those civs draw it as they draw their Greek Stone
+    Wall, under the same five-shape logic."""
     gm = unit_sprites.graphic_map()
     for greek in (47, 48, 54):
-        assert unit_sprites.resolve_entry(FORTIFIED_WALL, greek, 2) is gm[FORTIFIED_WALL]
+        entry = unit_sprites.resolve_entry(FORTIFIED_WALL, greek, 2)
+        assert entry["file_name"] == "b_greek_wall_fortified_x1"
+        assert unit_sprites.resolve_entry(STONE_WALL, greek, 2)["file_name"] == "b_greek_wall_stone_x1"
+        assert (entry["angle_count"], entry["rotation_is_variant"]) == (5, True)
+        assert entry["variant_count"] > gm[FORTIFIED_WALL]["variant_count"] == 5
     assert unit_sprites.resolve_entry(FORTIFIED_WALL, CHINESE, 2)["file_name"] == "b_asia_wall_fortified_x1"
 
 
@@ -283,14 +426,19 @@ def test_every_civs_walls_and_gates_keep_the_hard_rule_shapes():
 
 def test_every_civ_entry_keeps_its_bases_const_logic():
     """The generator's invariant, re-read off the committed file: a drawn entry
-    never changes what the placed const's rotation/variant logic reads."""
+    never changes what the placed const's rotation/variant logic reads. A wall
+    may store frames past its five shapes, never fewer (GH #329)."""
     gm = unit_sprites.graphic_map()
     art = unit_sprites.building_art()
+    walls = set(unit_sprites.wall_family_consts())
     checked = 0
     for civ, consts in art.civ_art.items():
         for const, entry in consts.items():
             base = gm[const]
             for field in ("angle_count", "rotation_is_variant", "variant_count"):
+                if field == "variant_count" and const in walls:
+                    assert entry.get(field) >= base.get(field), (civ, const, field)
+                    continue
                 assert entry.get(field) == base.get(field), (civ, const, field)
             checked += 1
     assert checked > 1000
@@ -371,7 +519,7 @@ def test_an_art_edit_on_a_player_without_buildings_still_reports_a_change():
     loaded, model = _blank_with_options()
     model.set_value(player_field_id("architecture", 3), "MONGOL-CIV")
     assert refresh_player_render_context(loaded, _pending_by_field(model)) is True
-    assert loaded.player_art[3] == (12, 2)
+    assert loaded.player_art[3] == (12, 2, None)
 
 
 def _layer_draw(loaded):
@@ -386,7 +534,7 @@ def test_two_scenarios_player_1_with_different_architectures_never_share_a_draw(
     chinese_scn, _ = _blank_with_options()
     for scn in (gaia_scn, chinese_scn):
         UnitEditModel(scn).add(1, CONST, 4.0, 4.0)
-    chinese_scn.player_art = (civ_art.GAIA_ART, (CHINESE, 2), *(civ_art.GAIA_ART,) * 7)
+    chinese_scn.player_art = (civ_art.GAIA_ART, (CHINESE, 2, None), *(civ_art.GAIA_ART,) * 7)
 
     gaia_draw = _layer_draw(gaia_scn)
     chinese_draw = _layer_draw(chinese_scn)
@@ -397,8 +545,8 @@ def test_two_scenarios_player_1_with_different_architectures_never_share_a_draw(
 
 def test_the_flat_icon_cache_does_not_serve_gaia_art_to_a_chinese_house(art_install):
     gaia = unit_sprites.icon_for(CONST, 0.0, 1, 64, 64)
-    chinese = unit_sprites.icon_for(CONST, 0.0, 1, 64, 64, art=(CHINESE, 2))
-    castle = unit_sprites.icon_for(CONST, 0.0, 1, 64, 64, art=(None, 4))
+    chinese = unit_sprites.icon_for(CONST, 0.0, 1, 64, 64, art=(CHINESE, 2, None))
+    castle = unit_sprites.icon_for(CONST, 0.0, 1, 64, 64, art=(None, 4, None))
     assert gaia is not None and chinese is not None and castle is not None
     assert not np.array_equal(gaia.rgba, chinese.rgba)
     assert not np.array_equal(gaia.rgba, castle.rgba)
@@ -425,7 +573,7 @@ def test_the_flat_oracle_and_the_flat_cache_agree_on_the_owners_art(art_install)
     loaded, _ = _blank_with_options()
     UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
     gaia = render.overlay_units(render.render_terrain(loaded), loaded, with_sprites=True)
-    loaded.player_art = (civ_art.GAIA_ART, (CHINESE, 2), *(civ_art.GAIA_ART,) * 7)
+    loaded.player_art = (civ_art.GAIA_ART, (CHINESE, 2, None), *(civ_art.GAIA_ART,) * 7)
     chinese = render.overlay_units(render.render_terrain(loaded), loaded, with_sprites=True)
     assert not np.array_equal(gaia, chinese)
     mm = loaded.map_manager
@@ -448,7 +596,7 @@ def test_the_viewers_players_edit_tail_rederives_the_art_and_invalidates():
         assert window._cache._mutation_epoch == epoch, "an unchanged tail evicted the canvas"
         window.option_edits.set_value(player_field_id("architecture", 1), "CHINESE-CIV")
         window._after_player_color_change()
-        assert window.scenario.player_art[1] == (CHINESE, 2)
+        assert window.scenario.player_art[1] == (CHINESE, 2, None)
         assert window._cache._mutation_epoch > epoch, "the art edit evicted nothing"
     finally:
         conftest.close_window(window)
@@ -456,7 +604,7 @@ def test_the_viewers_players_edit_tail_rederives_the_art_and_invalidates():
 
 def test_the_place_ghost_draws_the_placing_players_art(art_install):
     loaded, _ = _blank_with_options()
-    loaded.player_art = (civ_art.GAIA_ART, (CHINESE, 2), *(civ_art.GAIA_ART,) * 7)
+    loaded.player_art = (civ_art.GAIA_ART, (CHINESE, 2, None), *(civ_art.GAIA_ART,) * 7)
     unit = UnitEditModel(loaded).add(1, CONST, 4.0, 4.0)
     _, elev, proj = render.render_terrain_iso_with_proj(loaded, with_sprites=True)
     ((p1, _x, _y),) = render.unit_sprite_draws_at(loaded, proj, elev, None, 1, unit)
@@ -478,7 +626,7 @@ def test_a_flat_row_splice_keeps_the_owners_art(art_install, op, monkeypatch):
     )
 
     scenario = _flat_scenario(CONST)
-    scenario.player_art = (civ_art.GAIA_ART, (CHINESE, 2), (CHINESE, 4), *(civ_art.GAIA_ART,) * 6)
+    scenario.player_art = (civ_art.GAIA_ART, (CHINESE, 2, None), (CHINESE, 4, None), *(civ_art.GAIA_ART,) * 6)
     cache = _flat_cache(scenario, sprites=True)
     counts = _flat_counts(monkeypatch)
     splices = _flat_edit(op, scenario, CONST)

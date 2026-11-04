@@ -13,6 +13,8 @@ unit sprites and terrain textures) and the built kernel.
 Sloped covers by a tile's lowest drawn corner: a tile hides an object only
 where its whole surface is above the object's base. The `slope` frame sits
 on that rule, with the object at the top of a ramp that falls away in front.
+The `rise` frame covers the other side of it: Sloped ground higher than the
+object standing in front of it, a sand ramp rising towards the viewer.
 
 Run:
     tools/gen_clipped_sprite_review_pack.py --out-dir /tmp/review
@@ -93,12 +95,21 @@ def _slope(x: int, y: int) -> tuple[int, int]:
     return max(0, min(3, 3 - _depth(x, y))), GRASS
 
 
+def _rise(x: int, y: int) -> tuple[int, int]:
+    """Sand rising one level per depth row in front of the object, grass behind.
+    Under the "max" corner rule the object's own tile is already a ramp, and
+    the depth-2 row is the first whose lowest corner stands above its base."""
+    depth = _depth(x, y)
+    return max(0, min(3, depth)), (SAND if depth >= 1 else GRASS)
+
+
 # frame id -> (object const or None, ground function, style)
 _FRAMES = {
     "open": (MOUNTAIN, _flat, "stepped"),
     "terrace": (MOUNTAIN, _terrace, "stepped"),
     "plateau": (MOUNTAIN, _plateau, "stepped"),
     "slope": (RUINS, _slope, "sloped"),
+    "rise": (MOUNTAIN, _rise, "sloped"),
     "bare": (None, _terrace, "stepped"),
 }
 
@@ -295,25 +306,38 @@ def _spec() -> rp.PackSpec:
             ("terrace", "A large object standing on grass, with an area of raised sandy ground in front of it."),
             ("plateau", "A large object standing at the edge of raised sandy ground, with lower grass in front of it."),
             ("slope", "A large object standing on ground that falls away towards the bottom of the frame."),
+            (
+                "rise",
+                (
+                    "A large object standing on grass, with sandy ground rising towards the bottom of the frame "
+                    "in front of it."
+                ),
+            ),
             ("bare", "Grass with an area of raised sandy ground."),
         )
     )
-    outline = (
-        "Look at the large object in the middle of the frame and follow its outline along its lower half, from its "
-        "left end round the bottom to its right end. First describe that outline: is it irregular like the rest of "
-        "the object, or does any stretch of it run dead straight? Then: is the lower part of the object complete, or "
-        "is part of it sliced away along one or more long, perfectly straight diagonal lines, with plain ground shown "
-        "where the object would otherwise continue? Do not count the object's own shadow, and do not count the "
-        "straight edges of the ground itself where no object reaches them. WHOLE if the lower outline is the "
-        "object's own irregular shape throughout, SLICED if any stretch of it is cut along a straight diagonal line."
+    # Measured: one-tile's hole on open and plateau is a 1024 px tile diamond wholly inside
+    # the object (no hole-edge pixel on ground), edges straight for 17 rows; the mountain's
+    # own green patches run ragged (7 rows at most, twice the hole's perimeter for their area).
+    lower_half = (
+        "Look at the large object in the middle of the frame, and at its lower half in particular: its outline from "
+        "its left end round the bottom to its right end, and everything inside that outline. First describe it: is "
+        "the outline irregular like the rest of the object, and is the surface inside it the object's own material "
+        "throughout, or does any patch of it show plain ground instead? Then the closed question: is any part of the "
+        "object's lower half missing, with plain ground shown in its place over a region bounded by long, "
+        "dead-straight lines, whether that region cuts into the outline or sits inside the object like a window? Do "
+        "not count the object's own shadow; do not count the straight edges of the ground itself where no object "
+        "reaches them; and do not count the object's own patches of green moss or grass, whose edges are ragged and "
+        "irregular and blend into the surrounding rock or stone. WHOLE if no part of the lower half is replaced by "
+        "plain ground along straight lines, SLICED if any part is."
     )
     checks = (
-        rp.Check(id="lower_outline", question=outline, frames=("open",), answers=("WHOLE", "SLICED", "CANNOT-TELL")),
+        rp.Check(id="lower_half", question=lower_half, frames=("open",), answers=("WHOLE", "SLICED", "CANNOT-TELL")),
         rp.Check(
-            id="lower_outline_edge", question=outline, frames=("plateau",), answers=("WHOLE", "SLICED", "CANNOT-TELL"),
+            id="lower_half_edge", question=lower_half, frames=("plateau",), answers=("WHOLE", "SLICED", "CANNOT-TELL"),
         ),
         rp.Check(
-            id="lower_outline_fall", question=outline, frames=("slope",), answers=("WHOLE", "SLICED", "CANNOT-TELL"),
+            id="lower_half_fall", question=lower_half, frames=("slope",), answers=("WHOLE", "SLICED", "CANNOT-TELL"),
         ),
         rp.Check(
             id="raised_overlap",
@@ -326,6 +350,21 @@ def _spec() -> rp.PackSpec:
                 "any of the object lies over the raised ground, BEHIND if none does."
             ),
             frames=("terrace",),
+            answers=("ON-RAISED", "BEHIND", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="rising_overlap",
+            question=(
+                "The lower part of the frame is sandy ground rising towards the viewer. Where it meets the grass "
+                "beyond, its edge runs across the frame as a nearly level, slightly wavy line, with a thin band of "
+                "mixed green and sand colour along it, only a few pixels deep. The large object stands on the grass "
+                "beyond that edge. First describe what you see where the object meets the sandy ground. Then: does "
+                "any part of the object continue past the edge and its thin mixed band, drawn on top of plain sand, "
+                "or does the object stop at the edge, with the sand unbroken in front of it? The object's lowest "
+                "pixels resting on the thin mixed band itself do not count. ON-RAISED if any of the object lies over "
+                "plain sand beyond that band, BEHIND if none does."
+            ),
+            frames=("rise",),
             answers=("ON-RAISED", "BEHIND", "CANNOT-TELL"),
         ),
         rp.Check(
@@ -377,9 +416,40 @@ def generate(out_dir: Path, inject: str | None, replica: int = 0) -> list[Path]:
     return written
 
 
+# Sand in the object-free rise render: red well over green (grass and the mountain never are).
+_SAND_RED_OVER_GREEN = 25
+
+
+def _rise_ground() -> np.ndarray:
+    """The rise frame's ground with no object on it, through the same cache and crop."""
+    _const, ground, style = _FRAMES["rise"]
+    cache = _cache(_scenario(None, ground), style)
+    return cache._composite_rect(0, *_box(cache))
+
+
+def _rise_measure(img: np.ndarray, ground: np.ndarray) -> tuple[str, int]:
+    """(printed line, object px over plain sand). rising_overlap's options rest on these:
+    the object's lowest row against the first row that is mostly sand (rows above it are
+    the mixed fringe), and object px over sand on and past that row."""
+    obj = rp.changed_pixels(img, ground)
+    sand = (ground[..., 0].astype(int) - ground[..., 1].astype(int)) > _SAND_RED_OVER_GREEN
+    first_sand = int(np.argmax(sand.mean(axis=1) > 0.5))
+    over = obj & sand
+    plain = over.copy()
+    plain[:first_sand] = False
+    rows = np.nonzero(obj.any(axis=1))[0]
+    lowest = int(rows[-1]) if rows.size else None
+    line = (
+        f"rise: object's lowest row {lowest}, first plain-sand row {first_sand}, object px over the fringe "
+        f"{int((over & ~plain).sum())}, over plain sand {int(plain.sum())}"
+    )
+    return line, int(plain.sum())
+
+
 def check() -> None:
-    """Spec coupling, frame band, each inject's reach printed per frame, and
-    the kernel against the numpy path on every clean frame."""
+    """Spec coupling, frame band, each inject's reach printed per frame, the
+    kernel against the numpy path on every clean frame, and the rise frame's
+    measures (printed)."""
     failures: list[str] = []
     spec = _spec()
     try:
@@ -397,9 +467,19 @@ def check() -> None:
             rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
         except rp.PackError as exc:
             failures.append(str(exc))
+    rise_ground = _rise_ground()
+    line, plain = _rise_measure(clean["rise"], rise_ground)
+    print(f"measure: clean {line}")
+    # BEHIND and ON-RAISED rest on these: none of the clean object over plain sand, some under no-cover.
+    if plain:
+        failures.append(f"rise: {plain} px of the clean object lie over plain sand")
     reach = {}
     for name in INJECTS:
         injected = _frame_images(name)
+        line, plain = _rise_measure(injected["rise"], rise_ground)
+        print(f"measure: {name} {line}")
+        if name == "no-cover" and not plain:
+            failures.append("rise: no-cover puts none of the object over plain sand")
         touched = {}
         for frame in spec.frames:
             mask = rp.changed_pixels(clean[frame.id], injected[frame.id])
@@ -415,10 +495,10 @@ def check() -> None:
         print(f"reach: {name} -> {shown or 'nothing'}")
     # Each check's own inject must reach its frame, or a clean verdict there is untrusted.
     for name, frame_ids in (
-        ("interleaved", ("open", "plateau", "slope")),
+        ("interleaved", ("open", "plateau", "slope", "rise")),
         ("one-tile", ("open", "plateau", "slope")),
-        ("inverted", ("open", "plateau", "slope", "terrace")),
-        ("no-cover", ("terrace",)),
+        ("inverted", ("open", "plateau", "slope", "terrace", "rise")),
+        ("no-cover", ("terrace", "rise")),
     ):
         failures += [f"inject {name}: did not reach {fid}" for fid in frame_ids if fid not in reach[name]]
     coarse = reach[COARSE_INJECT]

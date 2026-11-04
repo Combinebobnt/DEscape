@@ -156,7 +156,8 @@ _BUILDER_UNIT = 118
 
 
 def _button_slots(locations) -> list[list[int]]:
-    """[building, button] for each (building, button) pair with a building and a real button."""
+    """[building, button] for each (building, button) pair with a building and a real button.
+    Copied as gen_unit_graphic_map.py's _research_buttons(): keep in step."""
     return [[building, button] for building, button in locations if building >= 0 and button >= 1]
 
 
@@ -388,7 +389,8 @@ _DARK_AGE = 2
 
 
 def _add_ages(techs: dict[str, dict], data) -> None:
-    """Sets `age` on every tech with `research`."""
+    """Sets `age` on every tech with `research`. Copied as gen_unit_graphic_map.py's
+    _catalog_age(): keep in step."""
     memo: dict[int, int] = {}
 
     def age(tech_id: int) -> int:

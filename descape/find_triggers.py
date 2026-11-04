@@ -35,6 +35,7 @@ from descape import (
     unit_references,
 )
 from descape.find_text import FindPatternError, compile_pattern, refuse_forbidden_path
+from descape.trigger_model import entry_display_order
 
 TEXT_SCOPES = ("names", "descriptions", "messages", "identifiers", "xs")
 DEFAULT_SCOPES = frozenset({"names", "descriptions", "messages"})
@@ -86,6 +87,7 @@ class TriggerHit:
     found_value: Any
     spans: tuple[tuple[int, int], ...] = ()
     text_mode: str = ""
+    display_slot: int = -1  # the entry's 0-based row in the Triggers pane (GH #213), -1 for the trigger's own fields
 
     @property
     def location(self) -> tuple[int, str, int, str]:
@@ -182,11 +184,17 @@ def find_triggers(loaded, criteria: TriggerFindCriteria) -> list[TriggerHit]:
         if criteria.enabled is not None and enabled != criteria.enabled:
             continue
         name = trigger.name or ""
+        slots: dict[str, dict[int, int]] = {}
 
         def hit(kind, e_index, entry_name, attribute, field_class, display, value, spans=(), mode="", _n=name,
-                _i=t_index, _e=enabled):
+                _i=t_index, _e=enabled, _t=trigger, _slots=slots):
+            slot = -1
+            if kind != "trigger":
+                if kind not in _slots:
+                    _slots[kind] = {index: s for s, index in enumerate(entry_display_order(_t, kind))}
+                slot = _slots[kind].get(e_index, e_index)
             return TriggerHit(_i, _n, _e, kind, e_index, entry_name, attribute, field_class, display, value,
-                              tuple(spans), mode)
+                              tuple(spans), mode, slot)
 
         text_hits: list[TriggerHit] = []
         type_hits: list[TriggerHit] = []

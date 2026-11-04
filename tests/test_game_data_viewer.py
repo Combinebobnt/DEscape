@@ -144,7 +144,7 @@ def test_a_ror_file_saves_its_edits_and_keeps_its_header(window, ror_path, tmp_p
     from descape.trigger_model import TriggerEditModel
 
     assert TriggerEditModel(reloaded).trigger_count == 1
-    assert reloaded.player_art[1] == (1, 4), "Egyptian art at Bronze Age"
+    assert reloaded.player_art[1] == (1, 4, 1), "Egyptian art at Bronze Age"
 
 
 def test_ror_starting_ages_show_ror_names_in_the_players_panel(window, ror_path):

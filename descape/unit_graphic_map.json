@@ -4310,7 +4310,8 @@
       "file_name": "a_fish_marlin1_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 60
+      "frame_count": 60,
+      "frame_offset": 7
     },
     "453": {
       "graphic_id": 3897,

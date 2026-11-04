@@ -321,14 +321,18 @@ def _spec() -> rp.PackSpec:
         rp.Frame("h", "h.png", "raw", caption="Three panels: three consecutive moments of one small animation."),
         rp.Frame("i", "i.png", "raw", caption="Open water, same framing and zoom as the boat frames."),
     )
+    # Measured on the old-table frames: the hull art's own cream cloth (the Transport's deck
+    # tent, the Fire Ship's thin band at the bow) tops out 2-43 px below the hull art's top
+    # edge, where the clean sails rise 31-73 px above it.
     seat = (
-        "A boat's mast is the upright pole rising from its deck, and a sail is the sheet of cloth it "
-        "carries. First, for each boat, describe where its cloth hangs: against which part of the mast, "
-        "and how far its lower edge is from the deck and from the water. Then the closed question. "
-        "SEATED if on every boat the cloth hangs from the upper part of the masts and stays above the "
-        "deck. DROPPED if on any boat cloth hangs low: lying across the side of the hull or reaching the "
-        "water at or below the hull's bottom edge, with bare mast standing above it. NO-CLOTH if no boat "
-        "carries any cloth at all."
+        "A sail is an upright sheet of cloth carried on a mast, the upright pole rising from a boat's deck. "
+        "A cloth roof or tent stretched low over the deck is part of the hull, not a sail: it rises no "
+        "higher than the hull's own woodwork. So are ropes and thin curved bands at the bow or stern. "
+        "First, for each boat, describe where its sails hang: against which part of the mast, and how far "
+        "their lower edge is from the deck and from the water. Then the closed question. SEATED if on "
+        "every boat the sails hang high, their lower edge above the deck. DROPPED if on any boat a sail, "
+        "with or without its mast, hangs across the side of the hull or reaches the water at or below the "
+        "hull's bottom edge. NO-SAIL if no boat carries a sail."
     )
     checks = (
         rp.Check(
@@ -346,7 +350,7 @@ def _spec() -> rp.PackSpec:
             id="q2",
             question=seat,
             frames=SAIL_FRAMES,
-            answers=("SEATED", "DROPPED", "NO-CLOTH", "CANNOT-TELL"),
+            answers=("SEATED", "DROPPED", "NO-SAIL", "CANNOT-TELL"),
         ),
         rp.Check(
             id="q3",
@@ -365,7 +369,7 @@ def _spec() -> rp.PackSpec:
             id="q4",
             question=seat,
             frames=(CONTROL_FRAME,),
-            answers=("SEATED", "DROPPED", "NO-CLOTH", "CANNOT-TELL"),
+            answers=("SEATED", "DROPPED", "NO-SAIL", "CANNOT-TELL"),
         ),
         rp.Check(
             id="q5",

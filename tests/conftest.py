@@ -224,6 +224,19 @@ def rotating_install(tmp_path, monkeypatch):
     unit_sprites.clear_caches()
 
 
+class UnexpectedWarning(AssertionError):
+    """A window factory's _warn: the real QMessageBox blocks forever offscreen (TASK-077)."""
+
+
+def _raise_on_warn(window):
+    def warn(title: str, text: str) -> None:
+        raise UnexpectedWarning(f"{title}: {text}")
+
+    # Tests that expect a warning replace window._warn with their own recorder.
+    window._warn = warn
+    return window
+
+
 def stepped_window(
     path,
     *,
@@ -244,7 +257,7 @@ def stepped_window(
     module for the settings-module-globals rule, the Stepped-combo no-op,
     and the mark_saved()-before-close() requirement."""
     try:
-        return qt_window.stepped_window(
+        window = qt_window.stepped_window(
             path,
             elev_step_pct=elev_step_pct,
             graphics_quality=graphics_quality,
@@ -254,6 +267,7 @@ def stepped_window(
         )
     except qt_window.ScenarioLoadError as exc:
         pytest.skip(str(exc))
+    return _raise_on_warn(window)
 
 
 def shown_window(width: int = 1200, height: int = 800):
@@ -268,7 +282,7 @@ def shown_window(width: int = 1200, height: int = 800):
     from descape.viewer import ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     window.resize(width, height)
     window.show()
     QApplication.processEvents()
@@ -283,7 +297,7 @@ def blank_window(load: bool = True):
     from descape.viewer import ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     if load:
         window.load_scenario(BLANK_TEMPLATE_PATH)
         assert window.scenario is not None, "blank template failed to load"
@@ -321,7 +335,7 @@ def dialog_and_window():
     from descape.viewer import SettingsDialog, ViewerWindow
 
     ensure_qapp()
-    window = ViewerWindow()
+    window = _raise_on_warn(ViewerWindow())
     return SettingsDialog(window), window
 
 
@@ -470,11 +484,9 @@ def pytest_addoption(parser):
         "--corpus-full",
         action="store_true",
         default=False,
-        help="Run the corpus/slow tier against every file in the scenario "
-        "dir (~27 min) instead of the QUICK_CORPUS_NAMES subset (~15 min, "
-        "the default -- see run_corpus_stress.sh). The default is meant for "
-        "routine after-a-feature verification; pass this before a release "
-        "or after touching rendering/write-path internals.",
+        help="Run the corpus/slow items against every file in the scenario "
+        "dir instead of the CORPUS_SUBSET_NAMES subset (the default, for "
+        "scoped runs with -k). run_full_tests passes it.",
     )
 
 
@@ -482,15 +494,15 @@ def pytest_addoption(parser):
 # 168/200/220/240/480 -- see README.md's "File > New Map" section for the
 # full confirmed-size list), including the 480x480 outlier that dominates
 # full-corpus runtime the most (O(pixels) render comparisons). This is the
-# DEFAULT corpus/slow-tier scope (no flag needed) -- pass --corpus-full for
-# the complete corpus. Deliberately small and hand-picked, not "first N
-# files sorted", so it stays a real cross-section rather than an arbitrary
+# scope of a bare `-m corpus` run (no flag needed), the corpus subset for
+# scoped runs -- pass --corpus-full for the complete corpus. Deliberately
+# small and hand-picked, not "first N files sorted", so it stays a real cross-section rather than an arbitrary
 # prefix if examples/ gains or loses files. Update by hand if that
 # cross-section stops feeling representative -- there's no formula
 # generating this list. It also carries one old scenario version: the 1.37
 # file is the only one corpus-wide that the Number of Players gate refuses,
 # which test_verify_player_count_block_across_the_corpus needs.
-QUICK_CORPUS_NAMES = frozenset(
+CORPUS_SUBSET_NAMES = frozenset(
     {
         "0_June_Event_Scenario.aoe2scenario",  # 200x200, scenario 1.37
         "2_Joan_coop_1_v0_13.aoe2scenario",  # 144x144
@@ -500,7 +512,7 @@ QUICK_CORPUS_NAMES = frozenset(
 )
 
 
-# tools/gen_test_map.py's output: the quick/stress-tier (`test_map`) `scenario_path`
+# tools/gen_test_map.py's output: the quick suite's (`test_map`) `scenario_path`
 # param of every per-file test that no longer carries `corpus` (pytest_generate_tests).
 TEST_MAP_PATH = ROOT / "tests" / "fixtures" / "test_map_240x240.aoe2scenario"
 # The same map opened and saved once in the AoE2:DE 1.59 editor; never regenerated.
@@ -518,19 +530,27 @@ def _scenario_dir(config: pytest.Config) -> Path:
 def _corpus_files(config: pytest.Config) -> list[Path]:
     files = sorted(_scenario_dir(config).glob("*.aoe2scenario"))
     if not config.getoption("--corpus-full"):
-        files = [f for f in files if f.name in QUICK_CORPUS_NAMES]
+        files = [f for f in files if f.name in CORPUS_SUBSET_NAMES]
     return files
 
 
 def _corpus_description(config: pytest.Config) -> str:
     """Human-readable source description for skip messages -- distinguishes
-    "the scenario dir itself is empty" from "the default quick filter left
-    nothing, because none of QUICK_CORPUS_NAMES exist here", which look
+    "the scenario dir itself is empty" from "the corpus subset filter left
+    nothing, because none of CORPUS_SUBSET_NAMES exist here", which look
     identical from _corpus_files() alone."""
     base = str(_scenario_dir(config))
     if not config.getoption("--corpus-full"):
-        return f"{base} (quick default: looking for {sorted(QUICK_CORPUS_NAMES)} -- pass --corpus-full for the complete corpus)"
+        return f"{base} (corpus subset: looking for {sorted(CORPUS_SUBSET_NAMES)} -- pass --corpus-full for the complete corpus)"
     return base
+
+
+def require_reference_corpus(config: pytest.Config) -> None:
+    """Skips a check whose counts or thresholds were measured on this repo's
+    examples/ corpus, when --scenario-dir points at other scenarios that
+    cannot be expected to meet them."""
+    if _scenario_dir(config).resolve() != (ROOT / "examples").resolve():
+        pytest.skip(f"counts measured on examples/; --scenario-dir is {_scenario_dir(config)}")
 
 
 @pytest.fixture
@@ -553,8 +573,8 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     only that. Any other test runs first on the generated test map (id
     `map240`) and its game resave (id `test_map_game_resave`), both marked
     `test_map`, then on each corpus file with `corpus` on that param alone,
-    so the default tier is unchanged, `-m corpus` runs the files as before
-    and run_corpus_quick/stress add the map items."""
+    so the quick suite runs the map items and `-m corpus` runs the files
+    as before."""
     if "scenario_path" not in metafunc.fixturenames:
         return
     files = _corpus_files(metafunc.config)
@@ -581,8 +601,8 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items) -> None:
     """Marks `test_map` on any item parametrized with a test map file (a
-    tests/fixtures/ glob, say), before -m deselects, so it stays out of the
-    default tier like the map items pytest_generate_tests makes."""
+    tests/fixtures/ glob, say), before -m deselects, so `-m test_map`
+    selects it like the map items pytest_generate_tests makes."""
     names = {TEST_MAP_PATH.name, TEST_MAP_RESAVE_PATH.name, TEST_MAP_RESAVE_SOURCE_PATH.name}
     for item in items:
         callspec = getattr(item, "callspec", None)
@@ -647,6 +667,16 @@ def _aoe2_dataset():
     if "descape.player_fields" in sys.modules:
         # GH #263: grows for the process by design, so one test's mod tokens must not reach the next.
         sys.modules["descape.player_fields"]._SESSION_MOD_TOKENS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_stubbed_cliff_families_left():
+    """22 tests stub unit_sprites.graphic_map; a window built under one caches
+    cliff_catalog.families() from the fake table (every cliff its own one-piece
+    family) for the rest of the xdist worker. Dropped after every test (~5 ms to refill)."""
+    yield
+    if "descape.cliff_catalog" in sys.modules:
+        sys.modules["descape.cliff_catalog"].families.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -851,6 +881,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     skipped = len(terminalreporter.stats.get("skipped", []))
     if deselected or skipped:
         terminalreporter.write_line(
-            f"tiers: {deselected} deselected (corpus/slow/test_map -- opt in with -m), "
+            f"tiers: {deselected} deselected (by -m/-k; run_full_tests selects every item), "
             f"{skipped} skipped this run (see reasons above; not the same as passing)"
         )

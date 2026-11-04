@@ -12,7 +12,12 @@ Per file, reports:
     index 0 under both conventions and so isn't evidence for either),
   - the neighbour-mask -> today's-resolved-index correlation (sanity check
     against the 98.9/99.1/96-100% figures measured on the integer corpus),
-  - the changed-tile count if the connectivity override were applied,
+  - the changed-tile count the shipped override applies: in a radian file
+    every wall's 8-bit neighbour derivation (unit_sprites.wall_drawn_shape()),
+    in an integer file only a wall with at most one neighbour that does not
+    already store the tower. The integer total must stay 0 on game-saved
+    files; measured 2026-11-02, radian 1,571 (1,082 under the 4-bit
+    override before the lone-wall rule), integer 0,
   - how many 0.0-rotation walls sit on a non-zero mask whose derived index
     isn't 0 -- the question that decides whether a literal-looking 0.0 can
     be trusted verbatim inside a file that also has real radian-encoded
@@ -45,13 +50,15 @@ quoted for this decision predate this script and are not re-derivable; the
 96.9% in particular was a *towers* measurement, never a `class == 39` one.
 Re-measured 2026-09-26 after Aqueduct (231) joined the wall family (GH #110),
 on a larger examples/: `shipped` 99.03% (n=5359; n=5349 just before).
+Re-measured 2026-11-02 on today's examples/: `shipped` 98.99% (n=5172,
+isolated 1,183).
 
 **--diff-sets A B** prints the override rows that differ between two named
-sets. `shipped` against `hand` is **0 rows** by measurement -- the expected
-outcome, not a broken run, because render.py skips integer-only files
-outright and none of examples/'s radian-encoded files places one of the 90
-newly-added consts. `walls-only` against `hand` gives **76** rows across 7
-files, which is the self-check that this mode actually works.
+sets. Before the lone-wall rule `shipped` against `hand` was 0 rows and
+`walls-only` against `hand` 76 rows across 7 files (2026-09-12 corpus). The
+rule makes a smaller set's walls look lone beside a connector it lacks, so on
+the 2026-11-02 corpus `shipped hand` gives 56 rows (old-allies 54,
+Joan_coop_5 2) and `walls-only hand` 380 rows across 19 files.
 """
 
 from __future__ import annotations
@@ -67,6 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from descape import gate_orientation, unit_sprites
 from descape.render import (
+    _wall_variant_rotation_overrides_uncached,
     stored_rotation,
     unit_occupied_tiles,
     unit_tile_bounds,
@@ -291,10 +299,11 @@ def _diff_sets(files: list[Path], set_a: str, set_b: str) -> list[tuple[str, int
             scenario = load_map_and_units(path)
         except Exception:
             continue
+        # Uncached: the memo is keyed on the scenario, so a second set would get the first set's dict.
         with _connector_set(set_a):
-            overrides_a = wall_variant_rotation_overrides(scenario)
+            overrides_a = _wall_variant_rotation_overrides_uncached(scenario)
         with _connector_set(set_b):
-            overrides_b = wall_variant_rotation_overrides(scenario)
+            overrides_b = _wall_variant_rotation_overrides_uncached(scenario)
         for player_id, i in sorted(set(overrides_a) | set(overrides_b)):
             old = overrides_a.get((player_id, i))
             new = overrides_b.get((player_id, i))
@@ -323,8 +332,8 @@ def main() -> None:
     parser.add_argument(
         "--diff-sets", nargs=2, metavar=("SET_A", "SET_B"), choices=sorted(_CONNECTOR_SET_FACTORIES),
         help="Print the override rows that differ between two named connector sets. "
-             "'shipped hand' is 0 rows by measurement (expected, not a broken run); "
-             "'walls-only hand' is 76 rows across 7 files, the self-check that this mode works.",
+             "Measured 2026-11-02: 'shipped hand' 56 rows, 'walls-only hand' 380 rows "
+             "(see the module docstring).",
     )
     args = parser.parse_args()
 

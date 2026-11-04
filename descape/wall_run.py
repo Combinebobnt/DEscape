@@ -31,8 +31,8 @@ _WALL_SPAN = (1, 1)
 # integer-encoded files store 2. wall_variant_from_neighbours8() deliberately
 # answers None there instead, so that "a lone wall is a tower" stays a
 # caller's policy rather than part of that function's contract -- this is the
-# caller, and this is the policy.
-ISOLATED_VARIANT = 2
+# caller, and this is the policy. The render's lone-wall rule draws the same.
+ISOLATED_VARIANT = unit_sprites.WALL_TOWER
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,8 @@ class WallNode:
     """One new piece the drag will add. `variant` is written to `rotation`
     as a literal integer, never a radian re-encoding: the game re-derives
     the index either way, DEscape's own render reads a literal verbatim in
-    an integer-only file and re-derives it in a radian one, and writing a
+    an integer-only file (a lone wall or run end draws the tower) and
+    re-derives it in a radian one, and writing a
     literal cannot flip a file's file_is_radian() classification (that test
     is "any non-literal value anywhere")."""
 
@@ -161,7 +162,9 @@ def blocked_tiles(
 
     Obstacles (rocks, ruins, statues, mountains: unit_kind.obstacle_consts(),
     GH #149) block on their whole footprint: a mountain's is 6x6 through
-    terrain_palette.DOODAD_TILE_SPANS (TASK-134, which closed TASK-209).
+    terrain_palette.DOODAD_TILE_SPANS (TASK-134, which closed TASK-209). So do
+    the shipwrecks, TREBU_D and the invisible flares through
+    STATIC_TILE_SPANS (TASK-277): a Leviathan Shipwreck blocks 16 tiles.
 
     The sparse unit_occupied_tiles() set, the same oracle wall_scene() uses,
     never a bounding rect. A function of its own rather than a third
@@ -234,13 +237,13 @@ def _neighbour_rewrites(
     """(player_id, unit, new_variant) for every existing wall in
     `neighbourhood` but not in `exclude` whose stored shape disagrees with
     the one `all_tiles` derives. Shared by plan_wall_run(),
-    plan_gate_over_walls(), plan_gate_moves() and plan_wall_moves(), so they
-    cannot drift on the compare.
+    plan_gate_over_walls(), plan_gate_moves(), plan_wall_moves() and
+    plan_removal_rewrites(), so they cannot drift on the compare.
 
     A wall left with no neighbour at all derives no shape: it is skipped, or
     compared against `isolated` when that is given. Adding connectors never
-    leaves a wall neighbourless, so only the two move planners pass it
-    (ISOLATED_VARIANT, GH #266)."""
+    leaves a wall neighbourless, so only the move planners and the removal
+    one pass it (ISOLATED_VARIANT, GH #266, GH #340)."""
     rewrites: list[tuple[int, object, int]] = []
     for wall in existing_walls:
         if (wall.tx, wall.ty) not in neighbourhood or (wall.tx, wall.ty) in exclude:
@@ -335,8 +338,10 @@ def gate_run_line(tiles) -> tuple[list[tuple[int, int]], tuple[int, int]] | None
 
 @dataclass(frozen=True)
 class GateMove:
-    """One gate a move carries onto different tiles (GH #194): its sparse
-    render.occupied_tiles_for() footprint before and after."""
+    """One gate whose tiles change (GH #194): its sparse
+    render.occupied_tiles_for() footprint before and after. A move carries
+    it, or a const change gives it a new footprint (an orientation cycle, or
+    Replace into a gate const), scenario_gate_changes()."""
 
     old_tiles: frozenset[tuple[int, int]]
     new_tiles: frozenset[tuple[int, int]]
@@ -347,7 +352,8 @@ class GateMovePlan:
     """What moving gates changes in the walls around them with "Moving a gate
     updates walls" on (GH #194): the walls under each new footprint go, the
     line each gate left is filled with the wall it was set in, and the walls
-    beside both sites are re-derived."""
+    beside both sites are re-derived. A const change plans the same way
+    without the fill (scenario_gate_changes(fill=False)), so `fills` is empty."""
 
     # (player_id, unit) for every stationary wall anchored on a gate's new tile.
     removals: list[tuple[int, object]]
@@ -371,9 +377,12 @@ def plan_gate_moves(
     moved_tiles,
     blocked_tiles=frozenset(),
     removable=None,
+    fill: bool = True,
 ) -> GateMovePlan:
     """Everything moving `gates` (GateMove) changes in the walls that stay
-    put. Pure, like plan_wall_run().
+    put. Pure, like plan_wall_run(). Nothing here cares why a gate's tiles
+    changed: a const change (an orientation cycle, Replace) plans the same
+    way with `fill` off.
 
     `static_tiles`/`static_walls` are wall_scene() WITHOUT the units the move
     carries, `moved_tiles` every moved connector's new footprint, and
@@ -390,6 +399,10 @@ def plan_gate_moves(
     A wall the gate leaves with no neighbour at all becomes a tower
     (ISOLATED_VARIANT), as plan_wall_moves() rules for one a wall leaves
     (GH #266), so the two parts of a move agree on every wall.
+
+    `fill` off (a const change, GH #339) leaves the vacated tiles empty:
+    no fills, `blocked` 0, and the walls beside them re-derive as run ends,
+    since fill tiles also count as neighbours.
     """
     landed = {tile for gate in gates for tile in gate.new_tiles}
     vacated = {tile for gate in gates for tile in gate.old_tiles}
@@ -406,7 +419,7 @@ def plan_gate_moves(
     base = set(static_tiles) | set(moved_tiles)
     sources: dict[tuple[int, int], ExistingWall] = {}
     left_open: set[tuple[int, int]] = set()
-    for gate in gates:
+    for gate in gates if fill else ():
         run = gate_run_line(gate.old_tiles)
         if run is None:
             continue
@@ -464,31 +477,52 @@ def scenario_gate_moves(scenario, map_width: int, map_height: int, moves, *, rem
     keeps the footprint): re-deriving the neighbours there would turn a plain
     move into a wall edit.
     """
-    gates = _gate_moves(moves, map_width, map_height)
+    changes = [(unit, unit.unit_const, x, y) for unit, x, y in moves]
+    return scenario_gate_changes(scenario, map_width, map_height, changes, removable=removable, fill=True)
+
+
+def scenario_gate_changes(
+    scenario, map_width: int, map_height: int, changes, *, removable=None, fill: bool = True
+) -> GateMovePlan | None:
+    """scenario_gate_moves() for `changes`, [(unit, new_const, new_x, new_y),
+    ...]: a unit whose const may change as well as its position. A gate's
+    orientation cycle and Replace into a gate const (GH #339) plan with
+    `fill` off; a move keeps its const and plans with it on.
+
+    A unit counts as a gate by its NEW const, so a wall Replace turns into a
+    gate plans from the wall's one old tile. Every changing unit is left out
+    of the scene, so a wall being replaced is never removed or rewritten
+    here. `blocked_tiles()` is walked only when `fill` is on.
+    """
+    moves = [(unit, x, y) for unit, _const, x, y in changes]
+    consts = {id(unit): const for unit, const, _x, _y in changes}
+    gates = _gate_moves(moves, map_width, map_height, consts)
     if not gates:
         return None
-    moved = frozenset(id(unit) for unit, _x, _y in moves)
+    moved = frozenset(consts)
     static_tiles, static_walls = wall_scene(scenario, map_width, map_height, exclude_ids=moved)
-    blocked = blocked_tiles(scenario, map_width, map_height, exclude_ids=moved)
-    moved_tiles = _moved_connector_tiles(moves, map_width, map_height, blocked)
+    blocked = blocked_tiles(scenario, map_width, map_height, exclude_ids=moved) if fill else None
+    moved_tiles = _moved_connector_tiles(moves, map_width, map_height, blocked, consts)
     return plan_gate_moves(
         gates,
         static_tiles=static_tiles,
         static_walls=static_walls,
         moved_tiles=moved_tiles,
-        blocked_tiles=blocked,
+        blocked_tiles=blocked if blocked is not None else frozenset(),
         removable=removable,
+        fill=fill,
     )
 
 
 def _gate_moves(moves, map_width: int, map_height: int, consts=None) -> list[GateMove]:
-    """A GateMove for every gate among `moves` whose tile set changes.
-    `consts` is scenario_move_plan()'s."""
+    """A GateMove for every unit among `moves` that is a gate by its landing
+    const and whose tile set changes. `consts` is scenario_move_plan()'s or
+    scenario_gate_changes()'s."""
     gates = []
     for unit, x, y in moves:
-        if not gate_orientation.is_gate(unit.unit_const):
-            continue
         const = unit.unit_const if consts is None else consts.get(id(unit), unit.unit_const)
+        if not gate_orientation.is_gate(const):
+            continue
         old = unit_occupied_tiles(unit, map_width, map_height)
         new = occupied_tiles_for(const, x, y, map_width, map_height)
         if old is not None and new is not None and set(old) != set(new):
@@ -563,15 +597,64 @@ def plan_wall_moves(
             moved.append((move.player_id, move.unit, derived))
     triggers = {move.old_tile for move in walls if move.old_tile not in post_tiles}
     triggers |= {move.new_tile for move in walls if move.new_tile not in pre_tiles}
+    return _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles), moved
+
+
+def _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles) -> list[tuple[int, object, int]]:
+    """The rewrites of `staying_walls` beside `triggers`, the tiles whose
+    connector status changed, re-derived over `post_tiles` with the tower
+    rule (ISOLATED_VARIANT). plan_wall_moves()'s and
+    plan_removal_rewrites()'s one trigger rule (GH #266, GH #340)."""
     if not triggers:
-        return [], moved
+        return []
     neighbourhood = {
         (tx + dx, ty + dy)
         for tx, ty in triggers
         for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS
     }
-    rewrites = _neighbour_rewrites(staying_walls, neighbourhood, exclude, post_tiles, isolated=ISOLATED_VARIANT)
-    return rewrites, moved
+    return _neighbour_rewrites(staying_walls, neighbourhood, exclude, post_tiles, isolated=ISOLATED_VARIANT)
+
+
+def plan_removal_rewrites(vacated, *, existing_tiles, existing_walls) -> list[tuple[int, object, int]]:
+    """(player_id, unit, new_variant) for each wall left beside removed
+    walls or gates whose shape changes (GH #340): Delete, Cut Units, Find's
+    Delete and the Eraser. Pure, like plan_wall_run().
+
+    `vacated` is every tile a removed connector occupied, and
+    `existing_tiles`/`existing_walls` the scene after the removal
+    (wall_scene() without the removed units). plan_wall_moves()'s trigger
+    rule with no new tiles: only a vacated tile no other connector still
+    covers (a stacked duplicate, an overlapping gate) changes anyone's mask,
+    so only the walls beside those re-derive, and a wall left with no
+    neighbour takes the tower. A gate is never rewritten: existing_walls
+    holds none."""
+    opened = set(vacated) - set(existing_tiles)
+    return _changed_tile_rewrites(opened, existing_walls, frozenset(), existing_tiles)
+
+
+def scenario_removal_rewrites(scenario, map_width: int, map_height: int, units) -> list[tuple[int, object, int]]:
+    """plan_removal_rewrites() for removing `units`, read off the scenario
+    as it stands BEFORE the removal, so the viewer knows every owner before
+    it opens the undo record. Qt-free, for the viewer and the pair tool.
+
+    [] without a scene walk when no unit is a wall or gate, or none of
+    those is on the map."""
+    connectors = unit_sprites.wall_connector_consts()
+    vacated: set[tuple[int, int]] = set()
+    for unit in units:
+        if unit.unit_const in connectors:
+            vacated.update(unit_occupied_tiles(unit, map_width, map_height) or ())
+    if not vacated:
+        return []
+    tiles, walls = wall_scene(scenario, map_width, map_height, exclude_ids=frozenset(id(unit) for unit in units))
+    return plan_removal_rewrites(vacated, existing_tiles=tiles, existing_walls=walls)
+
+
+def apply_rewrites(model, rewrites) -> None:
+    """set_wall_variant() for each (player_id, unit, new_variant). The caller
+    owns the undo record, opened over the rewritten walls' owners too."""
+    for _player_id, unit, variant in rewrites:
+        model.set_wall_variant(unit, variant)
 
 
 @dataclass(frozen=True)
@@ -759,8 +842,8 @@ def apply_gate_move_plan(model, plan: GateMovePlan) -> list:
     """Adds `plan`'s fills, then rewrites; returns the new walls. The caller
     owns the undo record, opened over gate_move_players(plan) plus the
     movers' owners, and has already run remove_many() on plan.removals (the
-    only step that can refuse, so it goes before anything moves) and set
-    every position."""
+    only step that can refuse, so it goes before anything moves) and made
+    every position or const change. With no fills it only rewrites."""
     by_owner: dict[int, list[WallNode]] = {}
     for player_id, node in plan.fills:
         by_owner.setdefault(player_id, []).append(node)

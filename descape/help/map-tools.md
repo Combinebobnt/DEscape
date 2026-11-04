@@ -36,19 +36,19 @@ Preview applies the mirror and leaves the dialog open, so you can look at the re
 
 Its Train and research buttons check warns when a Change Train Location, Add Train Location or Change Research Location effect's button won't show: a unit the civ can't have, a tech the player's starting age already researched, one hidden by a lower-id unit, a covered tech, or a slot with no button.
 
-Each finding is an Error, a Warning or Info, and a check that could not run says why. Findings are marked on the map while the dialog is open. Double-click one to jump to its tile or unit, and press Refresh to check again after a fix.
+Each finding is an Error, a Warning or Info, and a check that could not run says why. Missing scenario instructions are listed but left out of the summary line's finding count, and a map whose only finding is that one counts as clean on every check: campaign scenarios usually keep their instructions outside the scenario file. Findings are marked on the map while the dialog is open. Double-click one to jump to its tile or unit, and press Refresh to check again after a fix.
 
 ## Find and Replace
 
-**Edit > Find and Replace…** searches every placed object, including ones hidden by the Filters menu, garrisoned or off the map. Its Objects tab searches by name (substring or regex, `#id` for an exact type, optionally captions too), owner, category, kind, specific types and area.
+**Edit > Find and Replace…** searches every placed object, including ones hidden by the Filters menu, garrisoned or off the map. Its Objects tab searches by name (substring or regex, `#id` for an exact type, optionally captions too), owner, category, kind, specific types and area. The kinds match the Filters menu's: Trees, Eye candy (the passable kind, such as grass and flowers), Obstacles (rocks, ruins, statues and other eye candy that blocks units), Walls and gates, and Invisible.
 
-Tick the results to select them on the map, delete them, change their owner, replace them with another object type or export them as CSV. A replaced object keeps its id, so triggers and garrisons that name it still work, and Replace offers to retarget the trigger effects that select it by type, in the same undo step. Double-click a result to centre the map on it. Each operation is one undo step.
+Tick the results to select them on the map, delete them, change their owner, replace them with another object type or export them as CSV. A replaced object keeps its id, so triggers and garrisons that name it still work. Replacing objects with a gate clears the walls under each new gate and reshapes those beside it, in the same undo step. Replace offers to retarget the trigger effects that select it by type, in the same undo step. Double-click a result to centre the map on it. Each operation is one undo step.
 
 The Triggers tab searches and edits trigger text and types; see [Triggers](triggers.md).
 
 ## Scatter Units in Region
 
-**Edit > Scatter Units in Region…** places random copies of the object picked in the Units panel, for the owner you choose. The area is a region drawn with the Select tool in Terrain mode, or the bounding box of the units selected in Units mode, grown by a few tiles. Restrict it to any tile, water only or one terrain, ask for a count or a density, and set the seed, jitter and minimum spacing. The live eligible-tile count is exactly what gets placed. GAIA-only objects always go to GAIA. The dialog opens with your last scatter's settings, except the area and the terrain, until you quit DEscape.
+**Edit > Scatter Units in Region…** places random copies of the object picked in the Units panel, for the owner you choose. The area is a region drawn with the Select tool in Terrain mode, or the bounding box of the units selected in Units mode, grown by a few tiles. Restrict it to any tile, water only or one terrain, ask for a count or a density, and set the seed, jitter and minimum spacing. The live eligible-tile count is exactly what gets placed, except that an object bigger than one tile (a building, a deep fish, a shipwreck, a cliff) snaps to the game's grid and is skipped where its footprint would hang outside the eligible tiles. GAIA-only objects always go to GAIA. The dialog opens with your last scatter's settings, except the area and the terrain, until you quit DEscape.
 
 Its other mode, Move the selected units, moves each selected unit to a random tile of the area instead, keeping every other field.
 

@@ -153,9 +153,16 @@ def _team_index(s):
 
 
 def _player_art(s):
-    # GH #48: player 2's (art_civ, age); the resolver draws by it, so the memo must miss.
+    # GH #48: player 2's (art_civ, age, tech_civ); the resolver draws by it, so the memo must miss.
     art = list(s.player_art)
-    art[2] = (6, 4)
+    art[2] = (6, 4, 6)
+    s.player_art = tuple(art)
+
+
+def _tech_civ(s):
+    # TASK-205: only the tech civ changes (Armenians' Fortified Church), so only the key's third element can miss.
+    art = list(s.player_art)
+    art[2] = (*art[2][:2], 44)
     s.player_art = tuple(art)
 
 
@@ -180,6 +187,7 @@ EDITS = {
     "player_color": (_player_color, 3, 3),
     "team_index": (_team_index, 2, 2),
     "player_art": (_player_art, 2, 2),
+    "tech_civ": (_tech_civ, 2, 2),
     "delete": (_delete, 0, 0),
     "add": (_add, 1, 1),
 }

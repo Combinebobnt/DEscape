@@ -171,6 +171,21 @@ Three rules the pilot learned the hard way:
   are gone, so `no-tip` and `notch-inject` are gone with them: their defects
   are the clean render now. The shadow_band pack has only its coarse inject
   until a localized one is designed against the line-style render.
+- **A localized inject must break a feature the frame measurably has.** The
+  ground_texture pack's first localized inject gave one grass cell its
+  neighbour's crop. The reviewer missed it, and so did a side-by-side search
+  that knew where it was: grass has nothing to dislocate, and its clean vs injected luma
+  correlated +0.09 over that cell. A whole-tile offset is no better on a
+  tile-periodic texture: 64 texels is exactly five furrows of the farmland
+  texture, so the offset lands in phase (+1.00). `one-cell-shift` slides one
+  farmland cell half a furrow across the furrows instead (-0.52), and
+  `--check` asserts that anticorrelation, so a texture change that puts the
+  shift back in phase fails loudly.
+- **A direction question needs a frame with a measured direction.** Grass
+  scored a structure-tensor coherence of 0.09 clean and 0.09 with every other
+  cell turned 90 degrees, so "are the cells turned" came back `CANNOT-TELL`.
+  The furrowed farmland frame scores 0.60 clean against 0.27 turned, and
+  `--check` holds both sides of that gap.
 - **Measure each inject's reach; do not argue it from geometry.** `--check`
   prints, per inject, every frame it touched and by how much. The pilot's
   pre-registration asserted from the geometry that neither inject could reach

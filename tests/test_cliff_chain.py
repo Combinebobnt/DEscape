@@ -1061,6 +1061,30 @@ def test_existing_cliffs_carry_what_a_rewrite_needs():
     assert cliff_chain.ExistingCliff(unit_const=DEFAULT_01, bounds=(0, 3, 0, 3)).unit is None
 
 
+def test_trees_under_reads_anchor_tiles_in_half_open_rects_for_any_owner():
+    """TASK-278: a tree on the rect's last tile is in, one on the tile past
+    its half-open edge is out; a player's tree comes with its player; a gold
+    mine (66) on the rect is not a tree."""
+    from types import SimpleNamespace
+
+    from descape.terrain_palette import TREE_UNIT_IDS
+
+    def unit(const, x, y):
+        return SimpleNamespace(unit_const=const, x=x, y=y)
+
+    tree = 284
+    assert tree in TREE_UNIT_IDS and 66 not in TREE_UNIT_IDS
+    inside, past_edge, gold = unit(tree, 12.5, 12.5), unit(tree, 13.5, 12.5), unit(66, 11.5, 11.5)
+    owned = unit(tree, 10.2, 10.9)
+    scenario = SimpleNamespace(unit_manager=SimpleNamespace(units=[[inside, past_edge, gold], [owned]]))
+
+    found = cliff_chain.trees_under(scenario, [(10, 13, 10, 13)])
+
+    assert found == [(0, inside), (1, owned)]
+    assert cliff_chain.trees_under(scenario, []) == []
+    assert cliff_chain.trees_under(scenario, [(13, 14, 12, 13)]) == [(0, past_edge)]
+
+
 def test_a_prebuilt_index_gives_the_same_run():
     existing = _end_cap(N, True)
     index = cliff_chain.index_cliffs(existing)
