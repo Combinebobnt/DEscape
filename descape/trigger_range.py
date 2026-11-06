@@ -288,8 +288,7 @@ def class_of(unit_const: int) -> int | None:
 def object_type_of(unit_const: int) -> int | None:
     """The trigger object type of a const: its baked .dat `combat_level` when
     1 to 4, else None, which matches no object_type filter rather than a
-    guessed one. Return of Rome's catalog does not carry `combat_level` yet
-    (regenerated without its .dat), so there every const gives None."""
+    guessed one."""
     fields = _catalog_fields().get(unit_const)
     if fields is None:
         return None

@@ -71,7 +71,17 @@
       "file_name": "b_rom_archery_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 10,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 15,
+          "dy": -84
+        }
+      ]
     },
     "11": {
       "graphic_id": 797,
@@ -85,7 +95,25 @@
       "file_name": "b_all_barracks_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 12,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 91,
+          "dy": -66
+        },
+        {
+          "unit_id": 12,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -4,
+          "dy": -15
+        }
+      ]
     },
     "13": {
       "graphic_id": 800,
@@ -99,7 +127,17 @@
       "file_name": "b_rom_archery_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 14,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 15,
+          "dy": -97
+        }
+      ]
     },
     "15": {
       "graphic_id": 803,
@@ -127,21 +165,75 @@
       "file_name": "b_rom_academy_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 18,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -8,
+          "dy": -120
+        },
+        {
+          "unit_id": 18,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 83,
+          "dy": -73
+        }
+      ]
     },
     "19": {
       "graphic_id": 53,
       "file_name": "b_rom_academy_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 19,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -8,
+          "dy": -120
+        },
+        {
+          "unit_id": 19,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 83,
+          "dy": -73
+        }
+      ]
     },
     "20": {
       "graphic_id": 105,
       "file_name": "b_rom_barracks_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 20,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 11,
+          "dy": -9
+        },
+        {
+          "unit_id": 20,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 104,
+          "dy": -54
+        }
+      ]
     },
     "21": {
       "graphic_id": 4013,
@@ -221,21 +313,51 @@
       "file_name": "b_rom_temple_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 30,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 50,
+          "dy": -69
+        }
+      ]
     },
     "31": {
       "graphic_id": 513,
       "file_name": "b_rom_temple_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 31,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 50,
+          "dy": -69
+        }
+      ]
     },
     "32": {
       "graphic_id": 150,
       "file_name": "b_rom_temple_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 32,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 50,
+          "dy": -77
+        }
+      ]
     },
     "33": {
       "graphic_id": 8446,
@@ -258,7 +380,17 @@
       "file_name": "u_sie_battering_ram_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 35,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "36": {
       "graphic_id": 660,
@@ -272,7 +404,17 @@
       "file_name": "u_all_heavy_transport_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 37,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "38": {
       "graphic_id": 932,
@@ -330,7 +472,17 @@
       "file_name": "b_all_dock_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 45,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        }
+      ]
     },
     "46": {
       "graphic_id": 907,
@@ -344,7 +496,17 @@
       "file_name": "b_rom_dock_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 47,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -22
+        }
+      ]
     },
     "48": {
       "graphic_id": 2455,
@@ -358,7 +520,25 @@
       "file_name": "b_rom_siege_workshop_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 49,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 37,
+          "dy": -141
+        },
+        {
+          "unit_id": 49,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -60,
+          "dy": -97
+        }
+      ]
     },
     "50": {
       "graphic_id": 255,
@@ -374,7 +554,17 @@
       "file_name": "b_rom_dock_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 51,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -91
+        }
+      ]
     },
     "52": {
       "graphic_id": 2293,
@@ -638,7 +828,17 @@
       "file_name": "b_rom_granary_age1_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 68,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 1,
+          "dy": -155
+        }
+      ]
     },
     "69": {
       "graphic_id": 3187,
@@ -652,14 +852,34 @@
       "file_name": "b_all_house_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 70,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -17,
+          "dy": -61
+        }
+      ]
     },
     "71": {
       "graphic_id": 435,
       "file_name": "b_all_town_center_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 71,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -30
+        }
+      ]
     },
     "72": {
       "graphic_id": 587,
@@ -696,7 +916,17 @@
       "file_name": "b_rom_tower_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 76,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -135
+        }
+      ]
     },
     "77": {
       "graphic_id": 1154,
@@ -760,7 +990,17 @@
       "file_name": "b_all_tower_watch_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 79,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -105
+        }
+      ]
     },
     "80": {
       "graphic_id": 2108,
@@ -819,7 +1059,25 @@
       "file_name": "b_rom_wonder_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 82,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -8,
+          "dy": -120
+        },
+        {
+          "unit_id": 82,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 83,
+          "dy": -73
+        }
+      ]
     },
     "83": {
       "graphic_id": 1284,
@@ -833,7 +1091,17 @@
       "file_name": "b_all_market_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 84,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -30
+        }
+      ]
     },
     "85": {
       "graphic_id": 2132,
@@ -890,14 +1158,34 @@
       "file_name": "b_rom_stable_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 86,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 10,
+          "dy": -95
+        }
+      ]
     },
     "87": {
       "graphic_id": 12,
       "file_name": "b_rom_archery_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 87,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 15,
+          "dy": -84
+        }
+      ]
     },
     "88": {
       "graphic_id": 2120,
@@ -1154,7 +1442,17 @@
       "file_name": "b_all_stable_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 101,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 65,
+          "dy": -60
+        }
+      ]
     },
     "102": {
       "graphic_id": 1592,
@@ -1170,21 +1468,67 @@
       "file_name": "b_rom_academy_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 103,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -8,
+          "dy": -120
+        },
+        {
+          "unit_id": 103,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 83,
+          "dy": -73
+        }
+      ]
     },
     "104": {
       "graphic_id": 513,
       "file_name": "b_rom_temple_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 104,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 50,
+          "dy": -69
+        }
+      ]
     },
     "105": {
       "graphic_id": 53,
       "file_name": "b_rom_academy_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 105,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -8,
+          "dy": -120
+        },
+        {
+          "unit_id": 105,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 83,
+          "dy": -73
+        }
+      ]
     },
     "106": {
       "graphic_id": 751,
@@ -1207,7 +1551,17 @@
       "file_name": "b_all_town_center_age1_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 109,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
     },
     "110": {
       "graphic_id": 549,
@@ -1253,7 +1607,17 @@
       "file_name": "b_rom_market_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 116,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 18,
+          "dy": -54
+        }
+      ]
     },
     "117": {
       "graphic_id": 2024,
@@ -1362,35 +1726,93 @@
       "file_name": "b_rom_granary_age1_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 129,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 1,
+          "dy": -155
+        }
+      ]
     },
     "130": {
       "graphic_id": 368,
       "file_name": "b_rom_granary_age1_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 130,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 1,
+          "dy": -155
+        }
+      ]
     },
     "131": {
       "graphic_id": 380,
       "file_name": "b_rom_granary_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 131,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 1,
+          "dy": -158
+        }
+      ]
     },
     "132": {
       "graphic_id": 93,
       "file_name": "b_rom_barracks_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 132,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 10,
+          "dy": -9
+        },
+        {
+          "unit_id": 132,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 76,
+          "dy": -46
+        }
+      ]
     },
     "133": {
       "graphic_id": 215,
       "file_name": "b_all_dock_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 133,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        }
+      ]
     },
     "134": {
       "graphic_id": 8422,
@@ -1420,7 +1842,17 @@
       "file_name": "b_rom_market_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 137,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 18,
+          "dy": -54
+        }
+      ]
     },
     "138": {
       "graphic_id": 10227,
@@ -1452,14 +1884,34 @@
       "file_name": "b_rom_town_center_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 141,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 32,
+          "dy": -78
+        }
+      ]
     },
     "142": {
       "graphic_id": 3041,
       "file_name": "b_rom_town_center_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 142,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 7,
+          "dy": -110
+        }
+      ]
     },
     "143": {
       "graphic_id": 472,
@@ -1517,7 +1969,25 @@
       "file_name": "b_rom_siege_workshop_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 150,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 37,
+          "dy": -141
+        },
+        {
+          "unit_id": 150,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -60,
+          "dy": -97
+        }
+      ]
     },
     "151": {
       "graphic_id": 1102,
@@ -1540,7 +2010,17 @@
       "file_name": "b_rom_stable_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 153,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 10,
+          "dy": -95
+        }
+      ]
     },
     "154": {
       "graphic_id": 1116,
@@ -1581,7 +2061,17 @@
       "file_name": "b_rom_tower_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 158,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -135
+        }
+      ]
     },
     "159": {
       "graphic_id": 647,
@@ -2143,21 +2633,51 @@
       "file_name": "b_all_tower_sentry_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 234,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -105
+        }
+      ]
     },
     "235": {
       "graphic_id": 2407,
       "file_name": "b_rom_tower_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 235,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -135
+        }
+      ]
     },
     "236": {
       "graphic_id": 2415,
       "file_name": "b_rom_tower_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 236,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -135
+        }
+      ]
     },
     "237": {
       "graphic_id": 1389,
@@ -3181,7 +3701,17 @@
       "file_name": "u_sie_capped_ram_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 422,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "423": {
       "graphic_id": 1774,
@@ -3331,7 +3861,25 @@
       "file_name": "b_scen_poenari_castle_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 445,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -133,
+          "dy": -383
+        },
+        {
+          "unit_id": 445,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 63,
+          "dy": -398
+        }
+      ]
     },
     "446": {
       "graphic_id": 3404,
@@ -3379,7 +3927,8 @@
       "file_name": "a_fish_marlin1_underwater_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 60
+      "frame_count": 60,
+      "frame_offset": 7
     },
     "453": {
       "graphic_id": 3897,
@@ -3453,21 +4002,51 @@
       "file_name": "b_rom_house_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 463,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 8,
+          "dy": -90
+        }
+      ]
     },
     "464": {
       "graphic_id": 2223,
       "file_name": "b_rom_house_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 464,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 10,
+          "dy": -87
+        }
+      ]
     },
     "465": {
       "graphic_id": 2268,
       "file_name": "b_rom_house_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 465,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 11,
+          "dy": -87
+        }
+      ]
     },
     "466": {
       "graphic_id": 3377,
@@ -3613,7 +4192,17 @@
       "file_name": "b_rom_town_center_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 484,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 32,
+          "dy": -78
+        }
+      ]
     },
     "486": {
       "graphic_id": 8238,
@@ -3886,7 +4475,25 @@
       "file_name": "b_all_barracks_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 498,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 91,
+          "dy": -66
+        },
+        {
+          "unit_id": 498,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -4,
+          "dy": -15
+        }
+      ]
     },
     "499": {
       "graphic_id": 2574,
@@ -4380,7 +4987,17 @@
       "file_name": "u_all_light_transport_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 12,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 545,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "546": {
       "graphic_id": 2804,
@@ -4403,7 +5020,17 @@
       "file_name": "u_sie_siege_ram_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 548,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "549": {
       "graphic_id": 2832,
@@ -4531,7 +5158,17 @@
       "file_name": "b_west_tower_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 566,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -1,
+          "dy": -179
+        }
+      ]
     },
     "567": {
       "graphic_id": 2902,
@@ -4772,7 +5409,17 @@
       "file_name": "b_rom_town_center_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 597,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 7,
+          "dy": -110
+        }
+      ]
     },
     "598": {
       "graphic_id": 3223,
@@ -4916,7 +5563,17 @@
       "file_name": "b_all_town_center_age2_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 617,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -30
+        }
+      ]
     },
     "618": {
       "graphic_id": 435,
@@ -4944,7 +5601,17 @@
       "file_name": "b_all_town_center_age1_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 621,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
     },
     "623": {
       "graphic_id": 3358,
@@ -5915,14 +6582,34 @@
       "file_name": "b_west_tower_scen_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 684,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -6,
+          "dy": -192
+        }
+      ]
     },
     "685": {
       "graphic_id": 301,
       "file_name": "b_west_tower_scen_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 685,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -6,
+          "dy": -192
+        }
+      ]
     },
     "686": {
       "graphic_id": 1929,
@@ -5952,7 +6639,17 @@
       "file_name": "b_scen_pyramid_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 689,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 1,
+          "dy": -209
+        }
+      ]
     },
     "690": {
       "graphic_id": 4108,
@@ -7340,28 +8037,68 @@
       "file_name": "b_all_dock_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 805,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -16
+        }
+      ]
     },
     "806": {
       "graphic_id": 224,
       "file_name": "b_rom_dock_age3_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 806,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -22
+        }
+      ]
     },
     "807": {
       "graphic_id": 236,
       "file_name": "b_rom_dock_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 807,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -91
+        }
+      ]
     },
     "808": {
       "graphic_id": 236,
       "file_name": "b_rom_dock_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 808,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -91
+        }
+      ]
     },
     "809": {
       "graphic_id": 1698,
@@ -7924,7 +8661,17 @@
       "file_name": "u_sie_siege_tower_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 885,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -110
+        }
+      ]
     },
     "886": {
       "graphic_id": 6441,
@@ -9073,7 +9820,17 @@
       "file_name": "b_west_tower_scen_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1102,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -6,
+          "dy": -192
+        }
+      ]
     },
     "1103": {
       "graphic_id": 8628,
@@ -9113,7 +9870,17 @@
       "file_name": "u_sie_siege_tower_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1105,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -110
+        }
+      ]
     },
     "1106": {
       "graphic_id": 9341,
@@ -9764,7 +10531,17 @@
       "file_name": "b_rom_dock_age4_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1189,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 0,
+          "dy": -91
+        }
+      ]
     },
     "1190": {
       "graphic_id": 10273,
@@ -10221,7 +10998,25 @@
       "file_name": "b_slav_krepost_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1251,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": -114,
+          "dy": -175
+        },
+        {
+          "unit_id": 1251,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 79,
+          "dy": -206
+        }
+      ]
     },
     "1252": {
       "graphic_id": 10456,
@@ -10274,7 +11069,17 @@
       "file_name": "u_sie_battering_ram_idleA_x1",
       "angle_count": 16,
       "mirroring_mode": 6,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1258,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 2,
+          "dy": -24
+        }
+      ]
     },
     "1259": {
       "graphic_id": 10406,
@@ -10316,7 +11121,17 @@
       "file_name": "b_scen_shrine_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 90
+      "frame_count": 90,
+      "garrison_flags": [
+        {
+          "unit_id": 1264,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 8,
+          "dy": -160
+        }
+      ]
     },
     "1265": {
       "graphic_id": 3919,
@@ -14250,7 +15065,17 @@
       "file_name": "b_medi_donjon_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1665,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 64,
+          "dy": -243
+        }
+      ]
     },
     "1666": {
       "graphic_id": 5466,
@@ -14573,7 +15398,17 @@
       "file_name": "b_scen_pagan_shrine_x1",
       "angle_count": 1,
       "mirroring_mode": 0,
-      "frame_count": 1
+      "frame_count": 1,
+      "garrison_flags": [
+        {
+          "unit_id": 1712,
+          "file_name": "e_all_garrison_flag_x1",
+          "angle_count": 1,
+          "frame_count": 30,
+          "dx": 15,
+          "dy": -252
+        }
+      ]
     },
     "1713": {
       "graphic_id": 12334,
