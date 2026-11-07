@@ -22,6 +22,9 @@ There is no Intel Mac build; run from source there (see Setup below). The
 (`DEscape.exe` on Windows) inside it, and keep the rest of the folder beside it.
 
 First-run notes:
+- **Windows:** the build is not code-signed, so SmartScreen may show "Windows
+  protected your PC". Choose More info, then Run anyway. A console window opens
+  alongside the editor; that is expected.
 - **Linux AppImage:** make it executable first (`chmod +x DEscape-*.AppImage`,
   or tick "Allow executing" in your file manager's Properties). It is type-2,
   so it also needs `libfuse2` (`sudo apt install libfuse2` on Debian/Ubuntu),
@@ -36,9 +39,6 @@ First-run notes:
   dialog; otherwise Qt's. To keep Qt's dialog anyway, start DEscape with an
   empty `QT_QPA_PLATFORMTHEME=` (for example
   `QT_QPA_PLATFORMTHEME= ./LAUNCH_DEscape_LinuxMac.sh`).
-- **Windows:** the build is not code-signed, so SmartScreen may show "Windows
-  protected your PC". Choose More info, then Run anyway. A console window opens
-  alongside the editor; that is expected.
 - **macOS:** the build is not signed or notarized, so Gatekeeper blocks it on
   first launch. Allow it under System Settings > Privacy & Security > Open
   Anyway, or clear the download flag with
@@ -51,7 +51,7 @@ Everything in this section is for running from source instead of a download.
 ### Quickest way to run it
 
 No command line needed beyond installing Python itself. Double-click:
-- **Windows:** `LAUNCH_DEscape_Windows.bat` (UNTESTED!)
+- **Windows:** `LAUNCH_DEscape_Windows.bat`
 - **Linux:** `LAUNCH_DEscape_LinuxMac.sh` (from a terminal: `./LAUNCH_DEscape_LinuxMac.sh`)
 - **macOS:** `LAUNCH_DEscape_LinuxMac.sh`, but run it from Terminal
   (`./LAUNCH_DEscape_LinuxMac.sh`) — Finder usually opens a plain `.sh` file in a
