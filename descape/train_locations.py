@@ -120,6 +120,8 @@ class PlayerContext:
     edits: tuple[LocationEdit, ...] = ()
     # StartingAge (2..6), or None when unknown.
     start_age: int | None = None
+    # The raw civilization value, for a data mod's age names (GH #263).
+    civ_value: object = None
 
     def missing(self, id_: int, kind: str) -> str:
         return civ_availability.missing(self.civ, self.overrides, id_, kind, self.start_age)
@@ -129,7 +131,9 @@ class PlayerContext:
 
     def missing_text(self, id_: int, kind: str, name: str) -> str:
         """Why `name` gets no button, as a clause ("Spanish can't train Mule Cart"), or ""."""
-        return missing_text(self.missing(id_, kind), kind, name, self.civ_text, self.player, self.start_age)
+        return missing_text(
+            self.missing(id_, kind), kind, name, self.civ_text, self.player, self.start_age, self.civ_value
+        )
 
 
 NO_CONTEXT = PlayerContext()
@@ -152,14 +156,17 @@ def player_context(manager, loaded, player: int, exclude: tuple[int, int] | None
         overrides=civ_availability.file_overrides(manager, loaded, player),
         edits=edits,
         start_age=civ_availability.player_start_age(loaded, player),
+        civ_value=civ_availability.player_civ_value(loaded, player),
     )
 
 
-def missing_text(reason: str, kind: str, name: str, civ_text: str, player: int, start_age: int | None) -> str:
+def missing_text(
+    reason: str, kind: str, name: str, civ_text: str, player: int, start_age: int | None, civ_value: object = None,
+) -> str:
     """civ_availability.missing()'s `reason` as a clause for a tooltip or a finding."""
     if reason == civ_availability.MISSING_START:
-        age = civ_availability.AGE_NAMES.get(start_age, "")
-        return f"player {player} starts in the {age} Age, which already has {name}"
+        age = civ_availability.start_age_text(start_age, civ_value)
+        return f"player {player} starts in {age}, which already has {name}"
     if reason == civ_availability.MISSING_LISTED:
         return f"{name} is in player {player}'s Disables list"
     if reason == civ_availability.MISSING_CIV:
