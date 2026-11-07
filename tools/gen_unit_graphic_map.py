@@ -2558,8 +2558,8 @@ _ROR_VALUES: dict[str, object] = {
     # Same _underwater deltas, except Whale 2625, whose delta is empty there.
     "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
     "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
-    # Smoke and Flames unmeasured on the RoR .dat (absent 2026-10-28). The rest match AoE2's (2026-10-17).
-    "_PARTICLE_CONSTS": frozenset({303, 1608, 1609, 1610}),
+    # The same objects, graphics and effects as AoE2's (Smoke and Flames measured 2026-11-02).
+    "_PARTICLE_CONSTS": _PARTICLE_CONSTS,
     # TASK-205's start simulation is unmeasured on the RoR .dat (absent 2026-11-03): the age techs alone.
     "_START_UPGRADE_TECHS": None,
 }

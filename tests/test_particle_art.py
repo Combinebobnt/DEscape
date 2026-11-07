@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from descape import asset_source, iso_geometry, particle_art, render, unit_sprites
+from descape import asset_source, game_dataset, iso_geometry, particle_art, render, unit_sprites
 
 CONST = 990001
 BLOCK_CONST = 990002
@@ -420,6 +420,21 @@ def test_smoke_and_flames_draw_and_rise_from_their_anchor(unit_const):
     ys, _xs = np.nonzero(piece.draw.rgba[..., 3] > 0)
     above = int((ys < piece.draw.hotspot_y).sum())
     assert above >= 0.2 * len(ys), (unit_const, above, len(ys))
+
+
+def test_return_of_rome_draws_smoke_and_flames_from_aoe2s_effects():
+    """GH #311: the RoR table names AoE2's effects. Drawing always reads the
+    install's AoE2 particle folder while the generator reads RoR's over it, so
+    an effect RoR carries itself would make the two disagree."""
+    _require_install()
+    game_dataset.set_active(game_dataset.ROR)
+    ror_folder = game_dataset.ror_root(asset_source.get_install_path()) / asset_source.PARTICLE_SUBPATH
+    half_w, _half_h = iso_geometry.half_dims(render.SMALL_MAP_TILE_PIXELS)
+    for unit_const, stem in SMOKE_AND_FLAMES.items():
+        assert unit_sprites.graphic_map().get(unit_const, {}).get("file_name") == stem, unit_const
+        assert particle_art.native_frame(stem, 0) is not None, stem
+        assert not (ror_folder / f"{stem}.json").exists(), f"RoR carries its own {stem}"
+        assert len(unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)) == 1, unit_const
 
 
 def test_flame4_is_flame3_mirrored_about_its_hotspot():

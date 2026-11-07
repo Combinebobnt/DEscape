@@ -1203,8 +1203,8 @@ def test_only_the_allowlisted_particle_consts_are_particle_entries(graphics):
 
 
 def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatch):
-    """Smoke and the Flames are unmeasured on the RoR .dat, and main() refuses a
-    run whose emitted set differs from the list."""
+    """GH #311: the RoR .dat gives Smoke and the Flames AoE2's graphics and effects
+    (measured 2026-11-02), and main() refuses a run whose emitted set differs from the list."""
     import importlib.util
 
     monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
@@ -1212,9 +1212,11 @@ def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatc
     spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_ror", path)
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)  # a private copy: _select_dataset rewrites module globals
-    assert 1336 in gen._PARTICLE_CONSTS
+    aoe2 = gen._PARTICLE_CONSTS
+    assert 1336 in aoe2
     gen._select_dataset("ror")
-    assert sorted(gen._PARTICLE_CONSTS) == [303, 1608, 1609, 1610]
+    assert aoe2 == gen._PARTICLE_CONSTS
+    assert sorted(gen._PARTICLE_CONSTS) == [303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610]
 
 
 def _particle_graphic(folder: Path, **effect):
