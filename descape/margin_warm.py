@@ -45,6 +45,7 @@ and ring_chunks() below for how each is used."""
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -301,6 +302,53 @@ def load_warm_parts(
     return centre, ring_chunks(cache, mip, cx0, cy0, cx1, cy1, lead=(0, 0))
 
 
+def _entry_factor(lo: float, hi: float, view_lo: float, view_hi: float, anchor: float) -> float:
+    """The zoom-out factor at which [lo, hi) enters [view_lo, view_hi] on one
+    axis, the view scaling about `anchor`: 1 when it overlaps already."""
+    if lo < view_hi and hi > view_lo:
+        return 1.0
+    if hi <= view_lo:
+        reach = anchor - view_lo
+        return math.inf if reach <= 0 else (anchor - hi) / reach
+    reach = view_hi - anchor
+    return math.inf if reach <= 0 else (lo - anchor) / reach
+
+
+def reach_chunks(
+    cache,
+    mip: int,
+    rng: tuple[int, int, int, int],
+    view: tuple[float, float, float, float],
+    anchor: tuple[float, float],
+    exclude=None,
+) -> list[tuple[int, int]]:
+    """The zoom-out reach's queue (TASK-031.11 D4): the chunks of the
+    inclusive range `rng` at `mip` not has_chunk() and not in `exclude` (a
+    set of (cx, cy)), ordered by the zoom-out factor at which each enters the
+    view, the larger of its two axes. `view` (x0, y0, x1, y1) and `anchor`
+    (x, y) are level-`mip` pixels, unclipped. So the next notch's chunks come
+    first, and an off-centre anchor grows its far side first; a view edge on
+    the anchor never moves, so a chunk past it sorts last (infinity)."""
+    cx0, cy0, cx1, cy1 = rng
+    size = cache.chunk_px
+    vx0, vy0, vx1, vy1 = view
+    ax, ay = anchor
+    ranked: list[tuple[float, int, int]] = []
+    for cx in range(cx0, cx1 + 1):
+        for cy in range(cy0, cy1 + 1):
+            if exclude is not None and (cx, cy) in exclude:
+                continue
+            if cache.has_chunk(mip, cx, cy):
+                continue
+            factor = max(
+                _entry_factor(cx * size, (cx + 1) * size, vx0, vx1, ax),
+                _entry_factor(cy * size, (cy + 1) * size, vy0, vy1, ay),
+            )
+            ranked.append((factor, cx, cy))
+    ranked.sort(key=lambda entry: entry[0])
+    return [(cx, cy) for _factor, cx, cy in ranked]
+
+
 class MarginWarmer(_IdleTimerDriver):
     """Drives one cache's margin-ring warm, a BUDGET_MS worth of get_chunk()
     calls per idle tick -- see this module's own docstring for the
@@ -465,7 +513,7 @@ class MarginWarmer(_IdleTimerDriver):
                     # Same reasoning as LevelWarmer.tick()'s blanket handler: a
                     # margin warm is an optimization, not worth propagating an
                     # exception into the Qt event loop over.
-                    debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
+                    debug_log.log(f"margin warm: dropped a chunk ({exc!r})", level=debug_log.ERROR)
                 slowest = max(slowest, _now() - before)
                 chunks += 1
         if chunks:
@@ -494,7 +542,7 @@ class MarginWarmer(_IdleTimerDriver):
             with perf_trace.phase("margin_install"):
                 self._cache.install_chunk(job, outcome)
         except Exception as exc:  # noqa: BLE001
-            debug_log.log(f"margin warm: dropped a chunk ({exc!r})")
+            debug_log.log(f"margin warm: dropped a chunk ({exc!r})", level=debug_log.ERROR)
         perf_trace.warm_worker(worker_ms)
         if self._queue:
             self._schedule()

@@ -129,6 +129,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "terrain_picker_mode": (_PANELS, "Terrain picker view"),
     "text_box_lines": (_PANELS, "Text box heights"),
     "button_grid_all_triggers": (_PANELS, "Show all triggers' changes"),
+    "debug_log_colors": (_PANELS, "Debug Log colours by level"),
     "language": (_OTHER, "Language"),
 }
 

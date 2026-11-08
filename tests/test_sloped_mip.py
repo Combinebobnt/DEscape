@@ -101,7 +101,7 @@ def _assert_same(got: np.ndarray, want: np.ndarray, what: str) -> None:
 def test_each_level_matches_a_full_render_at_its_own_tile_px(sprite_install, sprites) -> None:  # noqa: F811
     scn = _scenario()
     cache = _cache(scn, sprites=sprites)
-    assert cache.mip_levels() == [-2, -1, 0, 1]
+    assert cache.mip_levels() == [-2, -1, 0, 1, 2]  # 1 is the native tier (96, TASK-599)
     stitched = {mip: _whole(cache, mip) for mip in cache.mip_levels()}
     for mip, got in stitched.items():
         lvl = cache._levels[mip]
@@ -126,11 +126,11 @@ def test_the_levels_really_differ(sprite_install) -> None:  # noqa: F811
 
 @pytest.mark.parametrize("rule", ["max", "average"])
 def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monkeypatch, rule) -> None:
-    """Values under both rules, and the spy: level steps are exact powers of
-    two, so level 0 floor-divided down agrees with the recompute under `max`
-    and `average` alike (floor(floor(a)/n) == floor(a/n)), and only the spy
-    tells recomputing from scaling. It runs once per rebinding of level 0's
-    corner_rise."""
+    """Values under both rules, and the spy: at power-of-two steps level 0
+    floor-divided down agrees with the recompute under `max` and `average`
+    alike (floor(floor(a)/n) == floor(a/n)), and only the spy tells
+    recomputing from scaling; the native tier (96, TASK-599) at 3/2 need not.
+    It runs once per rebinding of level 0's corner_rise."""
     monkeypatch.setattr(render, "SLOPE_CORNER_RULE", rule)
     scn = _scenario(units=False, elevation_of=lambda x, y: (x * 7 + y * 3) % 3 // 2)
     cache = _cache(scn)
@@ -148,12 +148,12 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
         assert np.array_equal(rise, real(cache.elevations, lvl.proj, rule=rule)), f"level {mip}"
         assert cache._level_extra_top(lvl) == render._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
     assert cache._level_corner_rise(cache._levels[0]) is cache.corner_rise
-    assert sorted(calls) == [16, 32, 128], "level 0 shares self.corner_rise; every other level computes its own"
+    assert sorted(calls) == [16, 32, 96, 128], "level 0 shares self.corner_rise; every other level computes its own"
     assert cache._levels[-1].headroom > 0, "a flat field has headroom 0 at every level -- vacuous"
 
     for mip in cache.mip_levels():
         cache._level_corner_rise(cache._levels[mip])
-    assert len(calls) == 3, "re-derived without level 0's corner_rise changing"
+    assert len(calls) == 4, "re-derived without level 0's corner_rise changing"
 
     cache.elevations[3, 3] += 1
     cache.patch((0, 0, *cache.canvas_dims(0)), elevation_changed={(3, 3)})
@@ -505,19 +505,19 @@ def _run_steps(scn, levels, broken=None, sites: _Sites = TEMPLATE) -> list[str]:
     cache = _cache(scn, sprites=True)
     cache.max_bytes *= 8  # every level stays resident: an eviction would hide a stale chunk
     current = {}
-    real_splice, real_patch = cache._splice_level, cache.patch
+    real_splice, real_targets = cache._splice_level, cache._patch_targets
 
     def splice(lvl, *a):
         if broken and current["step"] == broken[0] and lvl is cache._levels[broken[1]]:
             return None
         return real_splice(lvl, *a)
 
-    def patch(bbox, elevation_changed=None, levels=None, rebuild_levels=None):
-        if broken and current["step"] == broken[0] and not current["splices"]:
-            levels = [m for m in cache.resident_levels() if m != broken[1]]
-        return real_patch(bbox, elevation_changed, levels, rebuild_levels=rebuild_levels)
+    def patch_targets(bbox, levels=None, rebuild_levels=None):
+        # Drops the broken level's slices, not its `levels` entry: patch(levels=) evicts the rest (TASK-031.73).
+        drop = broken and current["step"] == broken[0] and not current["splices"]
+        return (t for t in real_targets(bbox, levels, rebuild_levels) if not (drop and t[0] == broken[1]))
 
-    cache._splice_level, cache.patch = splice, patch
+    cache._splice_level, cache._patch_targets = splice, patch_targets
     failures = []
     for name, action, splices in _steps(scn, sites):
         for mip in levels:

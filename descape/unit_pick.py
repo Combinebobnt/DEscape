@@ -941,8 +941,18 @@ def footprint_entries(index: UnitIndex, scope: str) -> list[UnitEntry]:
     if scope == FOOTPRINT_SCOPE_UNITS:
         excluded = unit_kind.building_consts() | unit_kind.wall_consts()
         return [e for e in index.entries if e.unit.unit_const not in excluded]
-    spans = (render.tile_span(e.unit.unit_const, render.NON_BUILDING_SPAN) for e in index.entries)
-    return [e for e, (span_x, span_y) in zip(index.entries, spans, strict=True) if span_x > 1 or span_y > 1]
+    # Memoized per call, not across calls: tile_span() reads its tables live (a data mod, a test's setitem).
+    multi: dict[int, bool] = {}
+    kept = []
+    for e in index.entries:
+        const = e.unit.unit_const
+        is_multi = multi.get(const)
+        if is_multi is None:
+            span_x, span_y = render.tile_span(const, render.NON_BUILDING_SPAN)
+            is_multi = multi[const] = span_x > 1 or span_y > 1
+        if is_multi:
+            kept.append(e)
+    return kept
 
 
 def _unit_segments(polygon) -> list[tuple[tuple[float, float], tuple[float, float]]]:

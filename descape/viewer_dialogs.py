@@ -17,9 +17,11 @@ from PyQt5.QtGui import (
     QImage,
     QPainter,
     QPalette,
+    QTextCharFormat,
 )
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -238,6 +240,10 @@ def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:
         app.setFont(font)
 
 
+LOG_WARNING_COLOR = "#e0a000"
+LOG_ERROR_COLOR = "#e05252"
+
+
 class DebugLogDialog(QDialog):
     """Read-only viewer over debug_log's in-memory buffer. A snapshot at open
     time (and after Refresh), not a live tail -- simplest thing that's useful
@@ -254,6 +260,9 @@ class DebugLogDialog(QDialog):
         # pinned against apply_ui_font(), but the size is left unset so it
         # still follows the user's chrome font size.
         self.text.setFont(QFont("Monospace"))
+        self.color_by_level = QCheckBox("Colour by level")
+        self.color_by_level.setChecked(settings.get_debug_log_colors())
+        self.color_by_level.toggled.connect(self._set_colors)
         self._refresh()
 
         refresh_btn = QPushButton("Refresh")
@@ -264,6 +273,7 @@ class DebugLogDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addWidget(refresh_btn)
         btn_row.addWidget(clear_btn)
+        btn_row.addWidget(self.color_by_level)
         btn_row.addStretch(1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -276,10 +286,26 @@ class DebugLogDialog(QDialog):
         layout.addWidget(buttons)
 
     def _refresh(self) -> None:
-        self.text.setPlainText(debug_log.get_log_text())
+        formats = {level: QTextCharFormat() for level in debug_log.LEVELS}
+        if self.color_by_level.isChecked():
+            background = self.text.palette().color(QPalette.Base).name()
+            for level, color in ((debug_log.WARNING, LOG_WARNING_COLOR), (debug_log.ERROR, LOG_ERROR_COLOR)):
+                formats[level].setForeground(QColor(legible_status_color(color, background)))
+        self.text.clear()
         cursor = self.text.textCursor()
+        rows = debug_log.entries()
+        for index, entry in enumerate(rows):
+            if index:
+                cursor.insertText("\n", formats[entry.level])
+            cursor.insertText(entry.text(), formats[entry.level])
+        if not rows:
+            cursor.insertText("(empty)", QTextCharFormat())
         cursor.movePosition(cursor.End)
         self.text.setTextCursor(cursor)
+
+    def _set_colors(self, enabled: bool) -> None:
+        settings.set_debug_log_colors(enabled)
+        self._refresh()
 
     def _clear(self) -> None:
         debug_log.clear()

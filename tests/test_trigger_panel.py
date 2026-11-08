@@ -9098,6 +9098,37 @@ def test_committing_a_name_of_another_kind_turns_the_row() -> None:
         window.close()
 
 
+@pytest.mark.parametrize("accept", [True, False], ids=["pick", "cancel"])
+def test_a_browse_pick_of_another_kind_turns_the_row(monkeypatch, accept: bool) -> None:
+    """GH #273: Browse shows every category, so its pick can turn the row like a typed name."""
+    from descape.constant_picker import CatalogBrowseDialog
+
+    def fake_exec(dialog):
+        dialog.view.select(_CASTLE)
+        if accept:
+            dialog._accept_current()
+        else:
+            dialog.reject()
+        return dialog.result()
+
+    monkeypatch.setattr(CatalogBrowseDialog, "exec_", fake_exec)
+    window, indices = _object_list_window("kill_object", {})
+    try:
+        panel = window.trigger_panel
+        combo = _list_type_above(panel, "object_list_unit_id")
+        combo.setCurrentText("Heroes")
+        picker = _row_widget(panel, "object_list_unit_id")
+        picker.browse_button.click()
+
+        kind = "Buildings" if accept else "Heroes"
+        assert (_effects0(window)[indices[0]].object_list_unit_id == _CASTLE) == accept
+        assert combo.currentText() == kind
+        assert _suggestions(picker) == _catalog_names(kind)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_replace_object_has_a_type_row_above_each_unit_field() -> None:
     window, _indices = _object_list_window("replace_object", {"object_list_unit_id": _MILITIA, "object_list_unit_id_2": _CASTLE})
     try:

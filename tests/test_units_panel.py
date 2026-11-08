@@ -851,7 +851,8 @@ def test_the_pick_and_the_map_selection_each_show_on_their_own_card() -> None:
 
 
 def test_the_two_cards_share_one_slot_in_the_inspector() -> None:
-    """A selection shows over the pick; the pick shows again once nothing is selected."""
+    """A selection shows over the pick; the pick shows again once nothing is selected, and
+    over the selection after show_pick() until the next show_unit() (GH #357)."""
     panel = _panel()
     panel.select_object(_ARCHER_CONST)
     assert panel.inspector_host.isAncestorOf(panel.placing_card)
@@ -860,11 +861,212 @@ def test_the_two_cards_share_one_slot_in_the_inspector() -> None:
     panel.show_unit(_entry(unit_const=82))
     assert panel.selection_card.isVisibleTo(panel)
     assert not panel.placing_card.isVisibleTo(panel)
+    panel.show_pick()
+    assert panel.placing_card.isVisibleTo(panel)
+    assert not panel.selection_card.isVisibleTo(panel)
+    assert not panel.unit_inspector_grid.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.text() == "1 unit selected"
+    assert panel.show_selection_button.isVisibleTo(panel)
+    panel.show_unit(_entry(unit_const=82))
+    assert panel.selection_card.isVisibleTo(panel)
+    assert not panel.placing_card.isVisibleTo(panel)
+    assert not panel.unit_inspector_empty.isVisibleTo(panel)
+    assert not panel.show_selection_button.isVisibleTo(panel)
     panel.show_group([_entry(unit_const=82), _entry(unit_const=_ARCHER_CONST, reference_id=102)])
     assert not panel.placing_card.isVisibleTo(panel)
     panel.show_selection_count(0)
     assert panel.placing_card.isVisibleTo(panel)
     assert not panel.selection_card.isVisibleTo(panel)
+    panel.show_pick()
+    assert panel.unit_inspector_empty.text() == "No unit selected"
+    assert not panel.show_selection_button.isVisibleTo(panel)
+
+
+# --- GH #357: a catalog pick shows over the selection ---------------------------
+
+_MILITIA_CONST = 74
+
+
+def _laid_out_panel():
+    """At MIN_USEFUL_WIDTH and shown, so the list lays out rows a real click can hit."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _panel()
+    panel.resize(UnitsPanel.MIN_USEFUL_WIDTH, 900)
+    panel.show()
+    QApplication.processEvents()
+    return panel
+
+
+def _catalog_item(panel, const: int):
+    view = panel.catalog_view.list
+    return next(view.item(i) for i in range(view.count()) if view.item(i).data(Qt.UserRole) == const)
+
+
+def _click_row(panel, const: int) -> None:
+    """A real left click on `const`'s row, scrolled into view first."""
+    from PyQt5.QtWidgets import QApplication
+
+    view = panel.catalog_view.list
+    item = _catalog_item(panel, const)
+    assert not item.isHidden()
+    view.scrollToItem(item)
+    QApplication.processEvents()
+    QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier, view.visualItemRect(item).center())
+
+
+def _assert_pick_shown(panel, const: int, count_text: str) -> None:
+    assert panel.selected_object_const() == const
+    assert panel.placing_card.isVisibleTo(panel)
+    assert panel.placing_card.const_label.text() == str(const)
+    assert not panel.selection_block.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.isVisibleTo(panel)
+    assert panel.unit_inspector_empty.text() == count_text
+    assert panel.show_selection_button.isVisibleTo(panel)
+
+
+def _assert_selection_shown(panel) -> None:
+    assert panel.selection_block.isVisibleTo(panel)
+    assert panel.selection_card.isVisibleTo(panel)
+    assert not panel.placing_card.isVisibleTo(panel)
+    assert not panel.show_selection_button.isVisibleTo(panel)
+
+
+@pytest.mark.parametrize("row", ["another", "the current"])
+def test_a_click_on_a_row_shows_that_object_over_the_selection(row) -> None:
+    """The current row is the tester's screenshot: clicking it again changes no current row,
+    so currentItemChanged alone never reports it."""
+    panel = _laid_out_panel()
+    try:
+        panel.select_object(_ARCHER_CONST)
+        panel.show_unit(_entry(unit_const=82))
+        _assert_selection_shown(panel)
+        target = _MILITIA_CONST if row == "another" else _ARCHER_CONST
+        _click_row(panel, target)
+        _assert_pick_shown(panel, target, "1 unit selected")
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize(("mode", "key"), [("names", Qt.Key_Down), ("grid", Qt.Key_Right)])
+def test_a_key_that_moves_the_row_shows_the_new_pick_over_the_selection(mode, key, fake_install) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _laid_out_panel()
+    try:
+        panel.catalog_view.display_buttons[mode].click()
+        assert panel.catalog_view.mode() == mode
+        panel.select_object(_ARCHER_CONST)
+        panel.show_unit(_entry(unit_const=82))
+        QApplication.processEvents()
+        QTest.keyClick(panel.catalog_view.list, key)
+        moved = panel.catalog_view.current_value()
+        assert moved not in (None, _ARCHER_CONST)
+        _assert_pick_shown(panel, moved, "1 unit selected")
+    finally:
+        panel.close()
+
+
+def test_a_click_over_a_group_names_its_count_and_show_group_takes_the_slot_back() -> None:
+    panel = _laid_out_panel()
+    try:
+        group = [_entry(unit_const=82), _entry(unit_const=_ARCHER_CONST, reference_id=102)]
+        panel.show_group(group)
+        _click_row(panel, _MILITIA_CONST)
+        _assert_pick_shown(panel, _MILITIA_CONST, "2 units selected")
+        panel.show_group(group)
+        _assert_selection_shown(panel)
+        assert panel.unit_inspector_empty.text() == "2 units selected"
+    finally:
+        panel.close()
+
+
+def test_show_selection_brings_back_what_the_viewer_showed_before_the_pick() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=_TOWER_CONST))
+    panel.show_garrison([("Archer", "Player 1", 11)], 5)
+    panel.show_trigger_ranges("Trigger 0 sets its range to 12")
+    assert panel.pick_object(_ARCHER_CONST)
+    _assert_pick_shown(panel, _ARCHER_CONST, "1 unit selected")
+    assert not panel.garrison_tree.isVisibleTo(panel)
+    assert not panel.trigger_range_label.isVisibleTo(panel)
+    panel.show_selection_button.click()
+    _assert_selection_shown(panel)
+    for widget in (
+        panel.unit_inspector_grid,
+        panel.garrison_header,
+        panel.garrison_tree,
+        panel.garrison_buttons,
+        panel.trigger_range_label,
+    ):
+        assert widget.isVisibleTo(panel), widget
+    assert not panel.unit_inspector_empty.isVisibleTo(panel)
+
+
+def test_a_pick_over_a_host_disarms_pick_from_map() -> None:
+    """Its garrison block hides under the pick, so map clicks must stop filling the host."""
+    armed = []
+    panel = _panel(on_garrison_pick=armed.append)
+    panel.show_unit(_entry(unit_const=_TOWER_CONST))
+    panel.show_garrison([("Archer", "Player 1", 11)], 5)
+    panel.garrison_pick_button.setChecked(True)
+    assert panel.pick_object(_ARCHER_CONST)
+    assert not panel.garrison_pick_button.isChecked()
+    assert armed == [True, False]
+
+
+def test_browsing_and_programmatic_selects_leave_the_selection_in_the_slot() -> None:
+    """Decision 3: select_object(), a reload, an owner refresh, a category or filter change
+    are not picks; pick_object() (eyedropper, wall button, gate turn) is."""
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=82))
+    panel.select_object(_ARCHER_CONST)
+    panel.reload_catalog()
+    panel.refresh_owner_filter()
+    panel.catalog_view.category_buttons["Buildings"].click()
+    panel.catalog_view.filter_edit.setText("house")
+    _assert_selection_shown(panel)
+    assert panel.pick_object(_MILITIA_CONST)
+    _assert_pick_shown(panel, _MILITIA_CONST, "1 unit selected")
+
+
+def test_activating_a_row_shows_the_pick_after_requesting_placement() -> None:
+    """The place request may refresh the selection (a tool switch); the pick still ends up shown."""
+    received = []
+
+    def place(value) -> None:
+        received.append(value)
+        panel.show_unit(_entry(unit_const=82))
+
+    panel = _panel(on_place_requested=place)
+    panel.show_unit(_entry(unit_const=82))
+    panel.catalog_view.select(_ARCHER_CONST)
+    panel.catalog_view.list.itemActivated.emit(panel.catalog_view.list.currentItem())
+    assert received == [_ARCHER_CONST]
+    _assert_pick_shown(panel, _ARCHER_CONST, "1 unit selected")
+
+
+def test_an_owner_change_that_drops_the_shown_pick_hands_the_slot_back() -> None:
+    panel = _panel()
+    panel.show_unit(_entry(unit_const=82))
+    assert panel.pick_object(_MACAW)
+    assert panel.owner_id() == GAIA_PLAYER_ID
+    _assert_pick_shown(panel, _MACAW, "1 unit selected")
+    panel.select_owner(1)
+    assert panel.selected_object_const() is None
+    _assert_selection_shown(panel)
+
+
+def test_clicking_the_pending_random_row_again_keeps_its_roll() -> None:
+    panel = _random_panel()
+    panel.show_unit(_entry(unit_const=82))
+    item = panel.catalog_view.list.currentItem()
+    rolled = panel.selected_object_const()
+    for _ in range(12):
+        panel.catalog_view.list.itemClicked.emit(item)
+        assert panel.selected_object_const() == rolled
+    assert panel.placing_card.isVisibleTo(panel)
 
 
 def _holed_install(tmp_path):
@@ -1793,8 +1995,10 @@ _GROUP = ("group", (_ARCHER_CONST, _BARRACKS_CONST))
         [("unit", _TOWER_CONST), _GROUP],
         [_GROUP, ("unit", _ARCHER_CONST)],
         [_GROUP, ("none", None)],
+        [("unit", _TOWER_CONST), ("pick", _ARCHER_CONST), ("show", None)],
+        [_GROUP, ("pick", _MILITIA_CONST), ("show", None)],
     ],
-    ids=["fresh-group", "unit-group", "tower-group", "group-unit", "group-nothing"],
+    ids=["fresh-group", "unit-group", "tower-group", "group-unit", "group-nothing", "unit-pick-show", "group-pick-show"],
 )
 def test_the_inspector_height_is_settled_right_after_each_selection(steps, height) -> None:
     """TASK-339: the fit measured a nested widget's stale layout (the field grid's
@@ -1812,6 +2016,10 @@ def test_the_inspector_height_is_settled_right_after_each_selection(steps, heigh
                 panel.show_unit(_entry(unit_const=arg))
             elif kind == "group":
                 panel.show_group([_entry(unit_const=const, reference_id=101 + i) for i, const in enumerate(arg)])
+            elif kind == "pick":
+                assert panel.pick_object(arg)
+            elif kind == "show":
+                panel.show_selection_button.click()
             else:
                 panel.show_selection_count(0)
             raw = panel.inspector_host.minimumHeight()

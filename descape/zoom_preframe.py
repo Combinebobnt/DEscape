@@ -21,15 +21,16 @@ prediction, so there is no copy of it here to drift."""
 
 from __future__ import annotations
 
+import faulthandler
 import os
-import time
+from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt
 from PyQt5.QtGui import QImage, QPainter, QTransform
 from PyQt5.QtWidgets import QGraphicsScene, QGraphicsView
 
-from descape import debug_log, gc_hold, perf_trace
+from descape import debug_log, gc_hold, perf_trace, thread_stats
 from descape.level_warm import _IdleTimerDriver
 
 # Device rows one strip tick draws; Step 1c of the plan sized it.
@@ -41,6 +42,34 @@ SETTLE_MS = 250
 # as it is now, recording any byte difference in check_failures (the suite turns it on, conftest.py).
 CHECK = os.environ.get("DESCAPE_PREFRAME_CHECK") == "1"
 check_failures: list[str] = []
+_stall_dump_file = None
+_stall_dump_checked = False
+
+
+def _arm_stall_dump() -> bool:
+    """Bench-only, process-lifetime handle; never truncate a previous dump."""
+    global _stall_dump_file, _stall_dump_checked
+    if not _stall_dump_checked:
+        _stall_dump_checked = True
+        path = os.environ.get("DESCAPE_STALL_DUMP")
+        if path:
+            from descape.scenario_io import is_workshop_subscribed
+
+            try:
+                dest = Path(path).expanduser()
+                if is_workshop_subscribed(dest):
+                    raise OSError("refusing mods/subscribed diagnostic output")
+                _stall_dump_file = dest.open("a")
+            except (OSError, ValueError, RuntimeError) as exc:
+                debug_log.log(f"preframe stall dump unavailable: {exc}")
+    if _stall_dump_file is None:
+        return False
+    try:
+        faulthandler.dump_traceback_later(0.08, file=_stall_dump_file)
+    except (OSError, ValueError, RuntimeError) as exc:
+        debug_log.log(f"preframe stall dump unavailable: {exc}")
+        return False
+    return True
 
 
 class Frame:
@@ -125,6 +154,7 @@ class FrameJob:
         self._image.fill(Qt.transparent)
         self._next_row = viewport_device.top()
         self.frame: Frame | None = None
+        self.last_fetch: dict | None = None
 
     @property
     def done(self) -> bool:
@@ -139,6 +169,7 @@ class FrameJob:
 
     def step(self) -> bool:
         """One unit of work; False once the frame is finished."""
+        self.last_fetch = None
         if self.frame is not None:
             return False
         if not self._fetched:
@@ -147,6 +178,9 @@ class FrameJob:
                 self._fetched = True
             else:
                 self._blocks.append(block)
+                if perf_trace.is_enabled():
+                    self.last_fetch = {name: getattr(block, name) for name in
+                                       ("render_ms", "convert_ms", "k", "width", "height")}
             return True
         vp = self._viewport
         if self._next_row <= vp.bottom():
@@ -204,6 +238,26 @@ def zoom_about(view: QGraphicsView, factor: float, anchor: QPoint) -> None:
     view.scale(factor, factor)
     drift = view.mapFromScene(before) - anchor
     scroll_view_by(view, drift.x(), drift.y())
+
+
+def snap_to_device_px(view: QGraphicsView, offset: QPoint, dpr: float) -> None:
+    """Nudges `view`'s scrollbars so the scene origin lands on a whole device
+    px of its window, `offset` being the viewport's position there (TASK-599's
+    native stop; the canvas item sits at the scene origin). Scrolling moves in
+    whole logical px, so only a fractional DPR (1.25, 1.5) or an offset that
+    is not whole in device px moves anything. An axis with no whole value in
+    reach (its bar at an end) is left as it is. Part of the wheel zoom's
+    transform, so MapView and ZoomTwin.predict() both run it."""
+    world = view.viewportTransform()
+    for bar, logical in ((view.horizontalScrollBar(), offset.x() + world.dx()),
+                         (view.verticalScrollBar(), offset.y() + world.dy())):
+        # Scrolling by n moves the origin by -n logical px; 8 covers DPR steps of 1/8.
+        for n in sorted(range(-8, 9), key=abs):
+            phys = (logical - n) * dpr
+            if abs(phys - round(phys)) < 1e-6 and bar.minimum() <= bar.value() + n <= bar.maximum():
+                if n:
+                    bar.setValue(bar.value() + n)
+                break
 
 
 def device_transform(world: QTransform, offset: QPoint, dpr: float) -> QTransform:
@@ -271,12 +325,15 @@ class ZoomTwin:
         twin.horizontalScrollBar().setValue(real.horizontalScrollBar().value())
         twin.verticalScrollBar().setValue(real.verticalScrollBar().value())
 
-    def predict(self, factor: float, anchor: QPoint) -> tuple[QTransform, QRect]:
+    def predict(self, factor: float, anchor: QPoint, snap: tuple[QPoint, float] | None = None) -> tuple[QTransform, QRect]:
         """(viewportTransform(), viewport rect) the real view will have after
-        zoom_about(real, factor, anchor), computed on the twin. The real view
-        is not touched."""
+        zoom_about(real, factor, anchor), computed on the twin. `snap`, the
+        real viewport's (offset in its window, DPR), follows it with the
+        native stop's snap_to_device_px(). The real view is not touched."""
         self.sync()
         zoom_about(self._view, factor, anchor)
+        if snap is not None:
+            snap_to_device_px(self._view, *snap)
         return self._view.viewportTransform(), self._viewport_rect()
 
     def _viewport_rect(self) -> QRect:
@@ -403,7 +460,8 @@ class PreframeWarmer(_IdleTimerDriver):
     def tick(self) -> bool:
         if self._held_backoff() or self._overdue_collect():
             return True
-        t0 = time.perf_counter()
+        traced = perf_trace.is_enabled()
+        before = thread_stats.sample() if traced else None
         cache = self._item._cache if self._item is not None else None
         job = self._job
         if job is None:
@@ -412,18 +470,32 @@ class PreframeWarmer(_IdleTimerDriver):
                 gc_hold.idle_soon()
                 return False
             direction = self._pending.pop(0)
-            self._job = self._make_job(direction)
+            armed = _arm_stall_dump() if traced else False
+            try:
+                self._job = self._make_job(direction)
+            finally:
+                if armed:
+                    faulthandler.cancel_dump_traceback_later()
             if self._job is None:
                 self.refused.append(direction)
-            perf_trace.preframe_tick((time.perf_counter() - t0) * 1000, "predict")
+            if traced:
+                stats = thread_stats.delta(before, thread_stats.sample())
+                perf_trace.preframe_tick(stats.wall_ms, "predict", stats)
             return True
         if not cache.stamps_current(job.stamps):
             self._job = None
             return True
         kind = job.next_step
-        job.step()
+        armed = _arm_stall_dump() if traced else False
+        try:
+            job.step()
+        finally:
+            if armed:
+                faulthandler.cancel_dump_traceback_later()
         if job.done:
             self._job = None
             self._item.add_preframe(job.frame)
-        perf_trace.preframe_tick((time.perf_counter() - t0) * 1000, kind)
+        if traced:
+            stats = thread_stats.delta(before, thread_stats.sample())
+            perf_trace.preframe_tick(stats.wall_ms, kind, stats, job.last_fetch)
         return True

@@ -71,7 +71,8 @@ def _diamond_pixel_nearest(tile_px: int, fx: float, fy: float) -> int:
     return int(np.argmin((pfx - fx) ** 2 + (pfy - fy) ** 2))
 
 
-LEVELS = [1, 0, -1, -2]
+# At base 64, level 1 is the native 96 tier and level 2 is 128 (TASK-599).
+LEVELS = [2, 1, 0, -1, -2]
 
 
 def _render_at(scn, mip: int):
@@ -159,7 +160,7 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy,
     the depth walk -- in tests/test_off_grid_placement.py.
     """
     base = render.tile_pixels_for_map(MAP_W, MAP_H)
-    tile_px = base << mip if mip >= 0 else base >> -mip
+    tile_px = ig.mip_tile_px_candidates(base, render.finest_tile_pixels(), native_tier=True)[mip]
     ux, uy = 9, 8
 
     i = _diamond_pixel_nearest(tile_px, want_fx, want_fy)

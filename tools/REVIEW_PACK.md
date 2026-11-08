@@ -23,6 +23,7 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --check --pack sprite_shrink   # needs install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack garrison_flags   # needs examples/ + install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack particle_doodads   # needs install
+.venv/bin/python3 tools/gen_review_pack.py --check --pack native_tier   # needs examples/ + install
 .venv/bin/python3 tools/gen_instruction_box_review_pack.py --check   # needs examples/ + install, drives Qt
 ```
 

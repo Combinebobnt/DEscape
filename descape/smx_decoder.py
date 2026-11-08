@@ -310,7 +310,7 @@ def load_smx(path: str | Path, *, keep_data: bool = True) -> SMXFile | None:
     try:
         return SMXFile.from_file(path, keep_data=keep_data)
     except (SLDError, OSError) as exc:
-        debug_log.log(f"smx: {Path(path).name} not readable ({exc})")
+        debug_log.log(f"smx: {Path(path).name} not readable ({exc})", level=debug_log.WARNING)
         return None
 
 

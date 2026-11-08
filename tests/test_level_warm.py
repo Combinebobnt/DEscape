@@ -553,6 +553,43 @@ def test_on_job_done_does_not_fire_for_a_cancelled_job(sprite_install, mixed_sce
     assert done == []
 
 
+def test_on_drained_fires_once_on_a_drain_never_on_cancel_or_an_empty_start(sprite_install, mixed_scenario) -> None:
+    """TASK-031.11 D8: the reach pumps off it, after the last job (often a
+    pack derive that notifies nobody); a cancel or an empty start never
+    fires it, and the callback is taken before it runs, so a re-entrant
+    start() it makes keeps its own."""
+    cache = _iso_cache(mixed_scenario)
+    warmer = level_warm.LevelWarmer()
+    drained = []
+    warmer.start(cache, [-1, 1], on_job_done=lambda m: drained.append(("job", m)), on_drained=lambda: drained.append("drained"))
+    warmer.run_to_completion()
+    warmer.run_to_completion()
+    assert drained == [("job", -1), ("job", 1), "drained"]
+
+    drained.clear()
+    warmer.start(_iso_cache(mixed_scenario), [1], on_drained=lambda: drained.append("drained"))
+    assert warmer.is_active
+    warmer.cancel()
+    warmer.run_to_completion()
+    flat = _flat_cache(mixed_scenario)
+    flat.set_sprites_enabled(False)
+    warmer.start(flat, [1], on_drained=lambda: drained.append("drained"))
+    assert not warmer.is_active
+    warmer.run_to_completion()
+    assert drained == []
+
+    again = []
+
+    def restart() -> None:
+        again.append("first")
+        warmer.start(_iso_cache(mixed_scenario), [1], on_drained=lambda: again.append("second"))
+
+    warmer.start(_iso_cache(mixed_scenario), [-1], on_drained=restart)
+    warmer.run_to_completion()
+    warmer.run_to_completion()
+    assert again == ["first", "second"]
+
+
 def _hold_mouse(monkeypatch) -> dict:
     """QApplication.mouseButtons() reads LeftButton while held["value"]."""
     from PyQt5.QtCore import Qt
@@ -1036,10 +1073,11 @@ class _StepClock:
 
 
 class _FakeJobsCache:
-    """level_warm_job(mip): a job of `steps` 1ms steps logging (mip, step, tick)."""
+    """level_warm_job(mip): a job of `steps` steps of `step_ms` (1ms) logging (mip, step, tick)."""
 
-    def __init__(self, clock, steps: int) -> None:
+    def __init__(self, clock, steps: int, step_ms: float = 1.0) -> None:
         self.clock, self.steps, self.tick = clock, steps, 0
+        self.step_s = step_ms / 1000.0
         self.log: list[tuple[int, int, int]] = []
 
     def level_warm_job(self, mip: int):
@@ -1048,7 +1086,7 @@ class _FakeJobsCache:
         def gen():
             for step in range(self.steps):
                 self.log.append((mip, step, self.tick))
-                self.clock.t += 0.001
+                self.clock.t += self.step_s
                 yield
 
         return LevelWarmJob(gen=gen(), install=lambda _payload: True)
@@ -1095,7 +1133,7 @@ def test_a_traced_tick_reports_its_steps_by_job_and_its_gc(monkeypatch) -> None:
     ticks = []
     monkeypatch.setattr(
         perf_trace, "level_warm_tick",
-        lambda ms, installs, split, gc_ms, max_step=None: ticks.append((dict(split), gc_ms)),
+        lambda ms, installs, split, gc_ms, max_step=None, budget_ms=None: ticks.append((dict(split), gc_ms)),
     )
     cache = _FakeJobsCache(clock, steps=3)
     real_job = cache.level_warm_job
@@ -1159,7 +1197,7 @@ def test_a_traced_tick_names_its_longest_step_by_the_unit_it_resolved(monkeypatc
     steps = []
     monkeypatch.setattr(
         perf_trace, "level_warm_tick",
-        lambda ms, installs, split, gc_ms, max_step=None: steps.append(
+        lambda ms, installs, split, gc_ms, max_step=None, budget_ms=None: steps.append(
             None if max_step is None else (max_step[0], max_step[1]())
         ),
     )
@@ -1187,6 +1225,85 @@ def test_a_traced_tick_names_its_longest_step_by_the_unit_it_resolved(monkeypatc
         pass
     worst = max((s for s in steps if s is not None), key=lambda s: s[0])
     assert worst == (pytest.approx(20.0), "walk 1 p0 #1 const 1776")
+
+
+# --- the input budget (TASK-031.80) ------------------------------------------------
+
+
+def _first_tick_steps(monkeypatch, stamp_ago_ms: float | None, step_ms: float = 1.0) -> tuple[int, float]:
+    """(steps the first tick made, the budget it picked) for a long job of
+    `step_ms` steps, with the canvas's input stamped `stamp_ago_ms` before it."""
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    if stamp_ago_ms is not None:
+        clock.t -= stamp_ago_ms / 1000.0
+        level_warm.note_input()
+        clock.t += stamp_ago_ms / 1000.0
+    cache = _FakeJobsCache(clock, steps=100, step_ms=step_ms)
+    warmer = level_warm.LevelWarmer()
+    warmer.start(cache, [1])
+    try:
+        assert warmer.tick() is True
+        return len(cache.log), warmer._tick_budget_ms
+    finally:
+        warmer.cancel()
+
+
+@pytest.mark.parametrize(
+    ("stamp_ago_ms", "budget"),
+    [(None, level_warm.BUDGET_MS), (100.0, level_warm.INPUT_BUDGET_MS), (200.0, level_warm.BUDGET_MS)],
+)
+def test_a_tick_picks_its_budget_from_input_recency(monkeypatch, stamp_ago_ms, budget) -> None:
+    """No stamp or one older than INPUT_QUIET_MS: the 12 ms idle budget; a
+    recent one: the 3 ms input budget. 1 ms steps, so steps == budget."""
+    steps, picked = _first_tick_steps(monkeypatch, stamp_ago_ms)
+    assert picked == budget
+    assert steps == budget
+
+
+def test_a_tick_on_the_input_budget_still_makes_one_step(monkeypatch) -> None:
+    steps, picked = _first_tick_steps(monkeypatch, 10.0, step_ms=level_warm.INPUT_BUDGET_MS * 2)
+    assert picked == level_warm.INPUT_BUDGET_MS
+    assert steps == 1
+
+
+def test_run_to_completion_never_reads_the_input_stamp(monkeypatch) -> None:
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    level_warm.note_input()
+    reads = []
+    monkeypatch.setattr(level_warm, "tick_budget_ms", lambda: reads.append(1) or level_warm.INPUT_BUDGET_MS)
+    cache = _FakeJobsCache(clock, steps=30)
+    warmer = level_warm.LevelWarmer()
+    warmer.start(cache, [1])
+    warmer.run_to_completion()
+    assert len(cache.log) == 30, "vacuous: the warm did not run"
+    assert reads == [], "a headless drain read the input stamp"
+    assert warmer._tick_budget_ms == level_warm.BUDGET_MS
+
+
+def test_a_traced_tick_hands_perf_trace_its_budget(monkeypatch) -> None:
+    from descape import perf_trace
+
+    clock = _StepClock()
+    monkeypatch.setattr(level_warm, "_now", clock)
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
+    budgets = []
+    monkeypatch.setattr(
+        perf_trace, "level_warm_tick",
+        lambda ms, installs, split, gc_ms, max_step=None, budget_ms=None: budgets.append(budget_ms),
+    )
+    warmer = level_warm.LevelWarmer()
+    warmer.start(_FakeJobsCache(clock, steps=100), [1])
+    try:
+        warmer.tick()
+        level_warm.note_input()
+        warmer.tick()
+    finally:
+        warmer.cancel()
+    assert budgets == [level_warm.BUDGET_MS, level_warm.INPUT_BUDGET_MS]
 
 
 # --- the warm set follows the view (zoom plan 2026-09-29, Step 2) ----------

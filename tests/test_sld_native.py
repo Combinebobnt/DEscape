@@ -321,6 +321,55 @@ def test_a_kernel_refusal_numpy_also_refuses_raises_the_exact_error_uncounted(mo
     assert sld_decoder.native_disagreements == before
 
 
+# -- native_only (sprite_prefetch's worker, TASK-031.47) ----------------------
+
+
+@pytest.mark.parametrize("name", sorted({**_all_fixtures(), **_window_fixtures()}))
+def test_a_native_only_walk_and_decode_equal_the_default(native_kernel, no_disagreements, name):
+    data = {**_all_fixtures(), **_window_fixtures()}[name]
+    with composite_backend.use_backend("native"):
+        sld = SLDFile(data, keep_data=False)
+        only = SLDFile(data, keep_data=False, native_only=True)
+        assert _index(only) == _index(sld)
+        for index in range(sld.frame_count):
+            for kwargs in ({}, {"kinds": (LayerKind.MAIN, LayerKind.PLAYERCOLOR), "window_to_main": True}):
+                try:
+                    want = "decoded", sld.decode_frame(index, data, **kwargs)
+                except SLDError as exc:
+                    want = "refused", str(exc)
+                try:
+                    got = "decoded", only.decode_frame(index, data, native_only=True, **kwargs)
+                except SLDError as exc:
+                    got = "refused", str(exc)
+                assert got[0] == want[0], (name, index)
+                if got[0] == "decoded":
+                    _assert_same_frame(got[1], want[1])
+
+
+def test_a_refusing_kernel_raises_under_native_only_and_counts_no_disagreement(monkeypatch):
+    data = _walk_fixtures()["every_layer_kind"]
+    with composite_backend.use_backend("numpy"):
+        walked = SLDFile(data)
+    before = sld_decoder.native_disagreements
+    monkeypatch.setattr(composite_backend, "native", _refusing_kernel())
+
+    with pytest.raises(SLDError, match="declined the walk"):
+        SLDFile(data, native_only=True)
+    with pytest.raises(SLDError, match="declined frame"):
+        walked.decode_frame(0, native_only=True)
+    assert sld_decoder.native_disagreements == before
+
+
+def test_native_only_with_no_kernel_raises(monkeypatch):
+    data = _walk_fixtures()["every_layer_kind"]
+    monkeypatch.setattr(composite_backend, "native", None)
+    walked = SLDFile(data)
+    with pytest.raises(SLDError, match="no native kernel"):
+        SLDFile(data, native_only=True)
+    with pytest.raises(SLDError, match="no native kernel"):
+        walked.decode_frame(0, native_only=True)
+
+
 # -- real install ------------------------------------------------------------
 
 

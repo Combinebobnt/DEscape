@@ -481,3 +481,206 @@ def test_flat_boundary_path_has_no_interior_vertices() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# -- TASK-031.37: the fill is the ring, live drags rebuild once per drawn rect ---------
+
+
+def _styled_select_window(style: str, *, bumpy: bool = False, raised_column=None):
+    """A shown Terrain window with Select active whose MapView really draws
+    `style` (the refresh_map() of tests/test_sloped_viewer.py's
+    _bumpy_sloped_window(), which _select_window() lacks). `bumpy` lays its
+    3-level blocked field; `raised_column` (x, y0, y1) adds 4 levels there."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.terrain_edit_window()
+    if bumpy:
+        for tile in window.scenario.map_manager.terrain:
+            tile.elevation = (tile.x // 2 + tile.y // 3) % 3
+            if raised_column is not None:
+                x, y0, y1 = raised_column
+                if tile.x == x and y0 <= tile.y < y1:
+                    tile.elevation += 4
+    # Unchecked while still Stepped, or Flat renders through Flat+Isometric's projection.
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText(style)
+    window.refresh_map()
+    window._on_tool_selected("select")
+    window.show()
+    QApplication.processEvents()
+    assert window.map_view._terrain_style == style.lower(), "the fixture did not switch style"
+    return window
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_the_fill_is_the_ring(style: str) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _styled_select_window(style, bumpy=True)
+    try:
+        map_view = window.map_view
+        _drag(map_view, (20, 20), (31, 28))
+        fill = map_view._region_fill_item.path()
+        assert fill == map_view._region_outline_item.path()
+        assert fill.fillRule() == Qt.WindingFill
+        assert _subpath_count(fill) == 1
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(
+    ("style", "raised_column"), [("Stepped", None), ("Sloped", None), ("Stepped", (25, 21, 27))]
+)
+def test_the_ring_fill_holds_every_tile_centroid_on_a_bumpy_field(style, raised_column) -> None:
+    """A pin for this fixture, not a universal claim: every tile's own polygon
+    centre lies inside the ring fill, a 4-level column inside the rect included."""
+    window = _styled_select_window(style, bumpy=True, raised_column=raised_column)
+    try:
+        map_view = window.map_view
+        _drag(map_view, (20, 20), (31, 28))
+        fill = map_view._region_fill_item.path()
+        tx0, ty0, tx1, ty1 = map_view._region
+        outside = [
+            (tx, ty)
+            for ty in range(ty0, ty1)
+            for tx in range(tx0, tx1)
+            if not fill.contains(map_view._tile_polygon(tx, ty).boundingRect().center())
+        ]
+        assert outside == []
+    finally:
+        conftest.close_window(window)
+
+
+def test_flat_ring_fill_paints_the_pixels_of_the_per_tile_union() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath
+
+    window = _styled_select_window("Flat")
+    try:
+        map_view = window.map_view
+        rect = (6, 9, 19, 14)
+        map_view.set_region(rect)
+        fill = map_view._region_fill_item.path()
+        legacy = QPainterPath()
+        for ty in range(rect[1], rect[3]):
+            for tx in range(rect[0], rect[2]):
+                legacy.addPolygon(map_view._tile_polygon(tx, ty))
+        bounds = legacy.boundingRect().adjusted(-4, -4, 4, 4)
+
+        def raster(path):
+            image = QImage(int(bounds.width()) + 1, int(bounds.height()) + 1, QImage.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.translate(-bounds.left(), -bounds.top())
+            painter.fillPath(path, QBrush(QColor(200, 40, 40, 120)))
+            painter.end()
+            return image
+
+        assert fill.fillRule() == Qt.WindingFill
+        assert raster(fill) == raster(legacy)
+    finally:
+        conftest.close_window(window)
+
+
+def _counting_rebuilds(map_view) -> list:
+    """Counts _update_region_overlay() calls through an instance attribute
+    (deleted by the caller), not monkeypatch.undo(), which reverts autouse patches."""
+    calls: list = []
+    original = map_view._update_region_overlay
+
+    def counted():
+        calls.append(map_view._region_render_rect())
+        original()
+
+    map_view._update_region_overlay = counted
+    return calls
+
+
+def test_a_live_drag_rebuilds_only_when_the_drawn_rect_changes() -> None:
+    window = _styled_select_window("Flat")
+    map_view = window.map_view
+    try:
+        width = window.scenario.map_manager.map_width
+        map_view.set_region((10, 10, 15, 15))
+        map_view.set_region_movable(True)
+        calls = _counting_rebuilds(map_view)
+        _press(map_view, (12, 12))
+        assert map_view._move_anchor == (12, 12) and len(calls) == 1
+        _move(map_view, (12, 12))
+        assert len(calls) == 1, "a move on the press tile rebuilt"
+        _move(map_view, (13, 12))
+        assert len(calls) == 2
+        _move(map_view, (13, 12))
+        assert len(calls) == 2, "a second move on the same tile rebuilt"
+        map_view.keyPressEvent(_escape())
+        # A select drag clamped at the map edge draws one rect for several cursor tiles.
+        map_view.set_region(None)
+        _press(map_view, (width - 4, 30))
+        _move(map_view, (width + 1, 30))
+        before = len(calls)
+        _move(map_view, (width + 2, 30))
+        _move(map_view, (width + 3, 31))
+        assert map_view._select_current == (width + 3, 31)
+        assert len(calls) == before + 1, calls[before:]
+        assert calls[-1] == (width - 4, 30, width, 32)
+        map_view.keyPressEvent(_escape())
+        # A fresh drag after set_region(None) is not served a stale memo.
+        map_view.set_region(None)
+        _press(map_view, (40, 40))
+        before = len(calls)
+        _move(map_view, (41, 40))
+        assert len(calls) == before + 1
+    finally:
+        del map_view._update_region_overlay
+        conftest.close_window(window)
+
+
+def _escape():
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    return QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+
+
+def _loop_ring_path(map_view, rect):
+    """The c2755ec _rect_ring_path loop, verbatim: _tile_edge_points() over _region_edge_walk()."""
+    from PyQt5.QtGui import QPainterPath
+
+    path = QPainterPath()
+    started = False
+    for tx, ty, side in map_view._region_edge_walk(*rect):
+        points = map_view._tile_edge_points(tx, ty, side)
+        if not points:
+            started = False
+            continue
+        if not started:
+            path.moveTo(points[0])
+            started = True
+        for point in points:
+            if point != path.currentPosition():
+                path.lineTo(point)
+    if started:
+        path.closeSubpath()
+    return path
+
+
+def test_the_sloped_ring_equals_the_per_tile_loop_and_hits_the_edge_cache() -> None:
+    from descape import map_view as map_view_module
+
+    window = _styled_select_window("Sloped", bumpy=True)
+    try:
+        map_view = window.map_view
+        width = window.scenario.map_manager.map_width
+        rects = [(30, 30, 31, 31), (30, 30, 31, 36), (30, 30, 36, 31), (30, 30, 42, 39), (width - 7, 50, width, 58)]
+        map_view_module._sloped_edge_points.cache_clear()
+        for rect in rects:
+            got = map_view._rect_ring_path(rect)
+            want = _loop_ring_path(map_view, rect)
+            assert got.elementCount() == want.elementCount() > 0, rect
+            for i in range(want.elementCount()):
+                g, w = got.elementAt(i), want.elementAt(i)
+                assert (g.type, g.x, g.y) == (w.type, w.x, w.y), (rect, i)
+        assert map_view_module._sloped_edge_points.cache_info().hits > 0
+    finally:
+        conftest.close_window(window)

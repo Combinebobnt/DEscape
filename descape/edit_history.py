@@ -131,11 +131,16 @@ class DiffRecord:
 @dataclass
 class TileDiffRecord(DiffRecord):
     """Everything one brush stroke (or other atomic tile edit) changed.
-    changes is a list of (tile_index, old_state, new_state) -- only tiles that
-    actually changed, not the whole map."""
+    changes is a tuple of (tile_index, old_state, new_state) -- only tiles that
+    actually changed, not the whole map. A tuple of int tuples is untracked
+    after a few collections, so a long history costs later full gc walks
+    nothing (TASK-031.18); a list would be walked every time."""
 
-    changes: list[tuple[int, TileState, TileState]]
+    changes: tuple[tuple[int, TileState, TileState], ...]
     kind: ClassVar[str] = "tile"
+
+    def __post_init__(self) -> None:
+        self.changes = tuple(self.changes)
 
     def touched_indices(self) -> list[int]:
         return [i for i, _old, _new in self.changes]

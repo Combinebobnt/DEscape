@@ -83,7 +83,9 @@ them at zoom F instead (QTransform.fromScale, centred like 1:1), e.g. 1.25
 or 2.0 to measure a finer mip level. --level N sets Set elevation's target
 level first (default: the spin box's own). --trees leaves Trees on (Eye
 candy keeps its default, off) instead of forcing both off. --sprites-off
-unticks Show sprites (sprites stay on otherwise). --window WxH
+unticks Show sprites (sprites stay on otherwise). --style Flat-topdown
+(per-brush mode only) unticks Isometric View for the top-down
+FlatChunkCache; plain Flat is Flat + Isometric View. --window WxH
 sizes the main window (default 1600x1000). Per-brush mode prints the debug
 log up to the first drag (the load, the first paint and the paint at the
 bench zoom, with its level build) under `--- settle log`, and each drag's
@@ -108,6 +110,22 @@ over-cap stroke end, which now takes the visible-only splice,
 the default --flow-elev-rows undo above it with margin (slow, coalesced Set
 elevation steps cut row corners and write fewer tiles), so one run covers
 both sides.
+
+--app-window opens the window as the app does (viewer._app_window()):
+placeholder paints, the zoom-out reach warm and pre-rendered zoom frames on. --zoom-after MS[,MS...]
+(per-brush mode, TASK-031.73) runs, per brush and per MS, two drags, each
+from a re-pinned zoom once the warms are idle. After each release it prints
+the chunks under the stroke's union patch bbox that were cached before the
+drag and are gone at release, per level, then crosses into a neighbour
+level MS after the release: `in` is one notch (1.25, the finer level), `out`
+the fourth of four (0.8^4, about 0.41, the coarser level; the first three,
+which stay on the level, are sent at release). For the crossing it prints
+the delay actually reached, the mip change (VOID when there is none), the
+first live paint's selected and drawn level (a placeholder when they
+differ) and pre-rendered frame outcome, the `perf view` lines between
+release and the crossing (the warm's ticks and chunks), and the crossing's
+`perf view`, `perf stall`, placeholder and refine lines. Draw alternates
+two terrains, so a row drawn again still changes every tile.
 
 --root DIR imports descape and testkit from another checkout, so one copy of
 this script drives a baseline worktree and a lane branch alike.
@@ -358,8 +376,10 @@ def _unit_owners(window) -> dict[int, int]:
 def _drag(
     window, record, paints, *, row: int, px: int, delay_ms: float, button: str, profile=None,
     start: tuple[int, int] | None = None, length: int = 1000, timer: _StrokeTimer | None = None,
+    until_release: list | None = None,
 ) -> list[str]:
-    """One horizontal drag of `length` px; `start` is its viewport point (default: row `row` of the 1:1 grid)."""
+    """One horizontal drag of `length` px; `start` is its viewport point (default: row `row` of the 1:1 grid).
+    until_release: pump only until the viewer's stroke end has appended to it (--zoom-after), not 0.3 s."""
     from PyQt5.QtCore import QPoint
     from PyQt5.QtWidgets import QApplication
 
@@ -388,7 +408,12 @@ def _drag(
     t0 = time.perf_counter()
     while proc.poll() is None:
         QApplication.processEvents()
-    _pump(0.3)
+    if until_release is None:
+        _pump(0.3)
+    else:
+        deadline = time.perf_counter() + 2.0
+        while not until_release and time.perf_counter() < deadline:
+            QApplication.processEvents()
     t1 = time.perf_counter()
 
     step_times = sorted(t for t, _ in record)
@@ -454,21 +479,32 @@ def _run(args) -> list[str]:
         profile.install()
 
     paints: list[float] = []
+    # --zoom-after: (time, selected mip, drawn mip, pre-rendered frame outcome) per live canvas paint.
+    paint_log: list[tuple[float, int | None, int | None, str | None]] = []
     original_paint = viewer_canvas.MapCanvasItem.paint
 
-    def timed_paint(self, *a, **k):
-        original_paint(self, *a, **k)
-        paints.append(time.perf_counter())
+    def timed_paint(self, painter, option, widget=None):
+        self._last_preframe = None
+        original_paint(self, painter, option, widget)
+        t = time.perf_counter()
+        paints.append(t)
+        if widget is not None:
+            paint_log.append((t, self._last_mip, getattr(self, "_last_drawn_mip", None), self._last_preframe))
 
     viewer_canvas.MapCanvasItem.paint = timed_paint
 
-    window = qt_window.stepped_window(Path(args.scenario), show=False)
+    window = qt_window.stepped_window(Path(args.scenario), show=False, placeholders=args.app_window)
+    if args.app_window:
+        window.map_view.set_preframes_allowed(True)  # with placeholders above: viewer._app_window()
+        window.set_reach_warm_allowed(True)
     output = []
     try:
         # Convert needs the unit pick index, which only Units mode builds; the Unit Brush is Units-only.
         window.mode_combo.setCurrentText("Units" if args.tool in ("convert", "unit_brush") else "Terrain")
         if args.style != "Stepped":
-            window.terrain_style_combo.setCurrentText(args.style)
+            window.terrain_style_combo.setCurrentText(args.style.removesuffix("-topdown"))
+        if args.style == "Flat-topdown":
+            window.iso_action.setChecked(False)  # FlatChunkCache; plain "Flat" is Flat + Isometric View
         window._on_tool_selected(args.tool)
         if args.tool == "convert" and not window.units_panel.select_owner(args.convert_to):
             raise SystemExit(f"--convert-to {args.convert_to}: no such owner in the Units panel")
@@ -501,6 +537,7 @@ def _run(args) -> list[str]:
         _pump(args.settle)
         settle_log = debug_log.get_log_text().strip()
         fit_rows = _diamond_rows(view, window.scenario.map_manager, 4) if args.fit else None
+        pin = (view.transform().m11(), view.mapToScene(view.viewport().rect().center()))  # --zoom-after's re-pin
 
         # MapView captured the bound callback at construction, so wrap its copy.
         timer = _StrokeTimer(view) if args.tool == "unit_brush" else None
@@ -532,6 +569,15 @@ def _run(args) -> list[str]:
                     rows, span = fit_rows
                     lo, hi = span(rows[row % 4])
                     geometry = {"start": (lo, rows[row % 4]), "length": min(1000, hi - lo)}
+                if args.zoom_after:
+                    for after_ms in args.zoom_after:
+                        for direction in ("in", "out"):
+                            output += _zoom_after(
+                                window, args, record, paints, paint_log, pin, row % 4, delay, after_ms, direction,
+                                profile, timer,
+                            )
+                            row += 1
+                    continue
                 output += _drag(
                     window, record, paints, row=row % 4, px=args.px, delay_ms=delay, button=args.button, profile=profile,
                     timer=timer, **geometry,
@@ -541,6 +587,131 @@ def _run(args) -> list[str]:
         window.edit_history.mark_saved()
         window.close()
     return output
+
+
+_ZOOM_AFTER_TERRAINS = (2, 6)  # BEACH, DIRT_1: --zoom-after's Draw alternates them
+_ZOOM_AFTER_DRAGS = [0]
+
+
+def _settle_warms(window, cap_s: float = 15.0) -> float:
+    """Pumps until no warmer is active and no placeholder pends (at least 0.5 s); seconds waited."""
+    t0 = time.perf_counter()
+    _pump(0.5)
+    while time.perf_counter() - t0 < cap_s:
+        item = window.map_view._canvas_item
+        busy = any(w.is_active for w in (window._level_warmer, window._load_warmer, window._margin_warmer))
+        if not busy and not window._load_warm_queue and (item is None or item.pending_mip() is None):
+            break
+        _pump(0.05)
+    return time.perf_counter() - t0
+
+
+def _zoom_after(
+    window, args, record, paints, paint_log, pin, row: int, delay: float, after_ms: float, direction: str, profile, timer,
+) -> list[str]:
+    """--zoom-after: re-pin 1:1, settle, one drag, then `after_ms` from its
+    release, the notch that crosses into the neighbour level (`in`: one notch,
+    scale 1.25; `out`: the fourth of four, 0.8^4, the first three sent at
+    release). Prints the chunks the stroke evicted per level, the warm between
+    release and the crossing, and the crossing's paint."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtGui import QTransform
+
+    from descape import debug_log, perf_trace
+
+    view = window.map_view
+    scale, centre = pin
+    view.setTransform(QTransform.fromScale(scale, scale))
+    view.centerOn(centre)
+    if args.tool == "draw":
+        # Alternate terrains, so a row drawn again still changes every tile it crosses.
+        terrain = _ZOOM_AFTER_TERRAINS[_ZOOM_AFTER_DRAGS[0] % len(_ZOOM_AFTER_TERRAINS)]
+        if not window.terrain_panel.set_terrain(terrain):
+            raise SystemExit(f"--zoom-after: terrain {terrain} not in the catalog")
+    _ZOOM_AFTER_DRAGS[0] += 1
+    settled = _settle_warms(window)
+    cache = window._cache
+    before = set(cache._cache)
+    bboxes: list = []
+    real_patch = cache.patch
+
+    def patch(bbox, *a, **k):
+        bboxes.append(bbox)
+        return real_patch(bbox, *a, **k)
+
+    cache.patch = patch
+    released: list[float] = []
+    real_end = view._on_stroke_end
+
+    def end(*a, **k):
+        result = real_end(*a, **k)
+        released.append(time.perf_counter())
+        return result
+
+    view._on_stroke_end = end
+    out = [f"--- zoom-after {after_ms:g}ms {direction}, brush {window.brush_size_spin.value()} (settled {settled:.1f}s)"]
+    try:
+        out += _drag(
+            window, record, paints, row=row, px=args.px, delay_ms=delay, button=args.button, profile=profile,
+            timer=timer, until_release=released,
+        )
+    finally:
+        cache.patch = real_patch
+        view._on_stroke_end = real_end
+    if not released:
+        return [*out, "  VOID: no stroke end seen"]
+    t_rel = released[0]
+    gone = Counter()
+    if bboxes:
+        union = (min(b[0] for b in bboxes), min(b[1] for b in bboxes), max(b[2] for b in bboxes), max(b[3] for b in bboxes))
+        for key in before - set(cache._cache):
+            rng = cache.chunk_range_under(union, key[0])
+            if rng is not None and rng[0] <= key[1] <= rng[2] and rng[1] <= key[2] <= rng[3]:
+                gone[key[0]] += 1
+    cached = Counter(key[0] for key in before)
+    out.append(
+        "  evicted under the stroke: "
+        + (", ".join(f"mip {m} {gone[m]} of {cached[m]} cached" for m in sorted(cached)) or "nothing cached")
+    )
+    perf_trace.flush_idle()
+    debug_log.clear()
+    vp = view.viewport()
+    p = vp.mapToGlobal(QPoint(vp.width() // 2, vp.height() // 2))
+    button, pre = ("4", 0) if direction == "in" else ("5", 3)
+    mip0 = _visible_mip(view)
+    if pre:
+        _xdotool(["mousemove", str(p.x()), str(p.y()), *["click", button] * pre])
+        mip0 = _visible_mip(view)
+    else:
+        _xdotool(["mousemove", str(p.x()), str(p.y())])
+    while time.perf_counter() < t_rel + after_ms / 1000:
+        _pump(0.002)
+    perf_trace.flush_idle()
+    waited = debug_log.get_log_text().strip()
+    debug_log.clear()
+    n0 = len(paint_log)
+    t_notch = time.perf_counter()
+    _xdotool(["click", button])
+    mip1 = _visible_mip(view)
+    _pump(1.0)
+    _settle_warms(window, cap_s=5.0)
+    perf_trace.flush_idle()
+    crossed = debug_log.get_log_text().strip()
+    debug_log.clear()
+    first = next((e for e in paint_log[n0:] if e[0] >= t_notch and e[1] == mip1), None)
+    if first is None:
+        verdict = f"no paint selected mip {mip1}"
+    else:
+        _t, sel, drawn, pf = first
+        verdict = f"first paint selected {sel} drew {drawn}{' (placeholder)' if drawn != sel else ''}, pf {pf}"
+    out.append(
+        f"  crossing notch at +{(t_notch - t_rel) * 1000:.0f}ms from release, mip {mip0}->{mip1}"
+        f"{'' if mip1 != mip0 else ' VOID (no mip change)'}; {verdict}"
+    )
+    keep = ("perf view", "perf stall", "placeholder", "refine", "perf op zoom")
+    out += ["  wait: " + ln.strip() for ln in waited.splitlines() if "perf view" in ln]
+    out += ["  cross: " + ln.strip() for ln in crossed.splitlines() if any(k in ln for k in keep)]
+    return out
 
 
 def _select_cliff_piece(window, unit_const: int) -> None:
@@ -1403,7 +1574,7 @@ def _size(text: str) -> tuple[int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", default=str(DEFAULT_SCENARIO))
-    parser.add_argument("--style", default="Stepped", choices=["Flat", "Stepped", "Sloped"])
+    parser.add_argument("--style", default="Stepped", choices=["Flat", "Flat-topdown", "Stepped", "Sloped"])
     parser.add_argument(
         "--tool", default="draw", choices=["draw", "elevation", "set_level", "convert", "cliff", "unit_brush"]
     )
@@ -1427,6 +1598,14 @@ def main() -> None:
     parser.add_argument("--trees", action="store_true", help="leave Trees on (Eye candy stays off)")
     parser.add_argument("--sprites-off", action="store_true", help="per-brush mode: untick Show sprites before the settle")
     parser.add_argument("--window", type=_size, default=(1600, 1000), help="main window size WxH (default 1600x1000)")
+    parser.add_argument(
+        "--app-window", action="store_true",
+        help="placeholders, the zoom-out reach and pre-rendered zoom frames on, as the app (see above)",
+    )
+    parser.add_argument(
+        "--zoom-after", type=_csv(float), metavar="MS[,MS...]",
+        help="per-brush mode: cross into each neighbour level MS after each drag's release (see above)",
+    )
     parser.add_argument("--flow", choices=["gh180"], help="a scripted tester flow (see above)")
     parser.add_argument("--flow-brush", type=int, default=9, help="--flow brush size (default 9)")
     parser.add_argument(
@@ -1462,6 +1641,10 @@ def main() -> None:
         "--undo-plain", action="store_true", help="--undo: the timed undo alone, no probes (for an A/B with --root)"
     )
     args = parser.parse_args()
+    if (args.style == "Flat-topdown" or args.zoom_after) and (args.flow or args.clicks or args.undo):
+        parser.error("--style Flat-topdown and --zoom-after are per-brush mode only")
+    if args.zoom_after and args.fit:
+        parser.error("--zoom-after crosses from 1:1 or --scale, not --fit")
     if not os.environ.get("DISPLAY"):
         sys.exit("needs a real X display (see the Xvfb recipe in --help)")
     root = (args.root or ROOT).resolve()

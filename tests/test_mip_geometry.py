@@ -77,7 +77,12 @@ def test_exactness_matrix(w, h, base_tile_px, pct) -> None:
     # MIP_MIN/MAX_TILE_PIXELS = 16/128 clip the doc's raw table (which
     # includes 4 and 8 at some pct values).
     expected = {tp for tp in _EXPECTED_MATRIX[pct] if iso_geometry.MIP_MIN_TILE_PIXELS <= tp <= iso_geometry.MIP_MAX_TILE_PIXELS}
+    # The native tier (TASK-599) is exact wherever 128 is.
+    if 128 in expected:
+        expected.add(iso_geometry.NATIVE_TILE_PIXELS)
     assert got == expected
+    flat = iso_geometry.mip_projections_for(w, h, base, pct, native_tier=False)
+    assert {p.tile_px for p in flat.values()} == expected - {iso_geometry.NATIVE_TILE_PIXELS}
 
 
 def test_pct10_at_base_16_is_a_singleton() -> None:
@@ -460,8 +465,9 @@ def _invalidate_region_at_the_canvas_high_edge(files) -> bool:
         tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
         elevations, proj = elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px)
-        finer = 1  # tile_px doubled
-        if finer not in cache.mip_levels():
+        # The level with tile_px doubled; read by tile_px, since the native tier (TASK-599) can sit at index 1.
+        finer = next((lvl for lvl in cache.mip_levels() if cache.mip_tile_px(lvl) == 2 * cache.mip_tile_px(0)), None)
+        if finer is None:
             continue
 
         ref_w, ref_h = cache.canvas_dims(0)

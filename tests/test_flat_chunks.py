@@ -51,6 +51,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
 from descape.edit_history import EditHistory
 from descape.render import _flat_unit_draws, composite_rect_flat, flat_dirty_rects, render_scenario, tile_pixels_for_map
@@ -477,3 +478,216 @@ def test_flat_chunks_on_test_map(check_fn) -> None:
 def test_flat_chunks_stitched_matches_full_on_test_map() -> None:
     ok, detail = _check_stitched_matches_full([conftest.TEST_MAP_PATH], require_overlap_evidence=True)
     assert ok, detail
+
+
+# TASK-031.72: level draws derived from mip-independent row columns.
+
+SPAN1_CONST = 4242  # test_unit_sprites.CONST: no .dat span, so 1x1 and off-centre on both axes
+
+
+def _ladder(scenario) -> dict[int, int]:
+    """{mip: tile_px} of a Flat cache on `scenario`."""
+    mm = scenario.map_manager
+    probe = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), with_units=False)
+    return {mip: probe.mip_tile_px(mip) for mip in probe.mip_levels()}
+
+
+def _offcentre_scenario(const: int):
+    """Span-1 units whose paint offset times each level's tile_px is a half
+    (k / (2 * tile_px), k odd, both signs), so the rounding tie is hit at
+    every level; plus a Mill (offset 0), a unit clamped at the map edge and
+    one off the map."""
+    from test_invalidate_units_splice import MILL_CONST, _place, _scenario
+
+    scenario = _scenario()
+    for row, tile_px in enumerate(sorted(set(_ladder(scenario).values()))):
+        for col, k in enumerate((1, 3, -1, -3, 5)):
+            frac = k / (2 * tile_px)
+            _place(scenario, 1 + col % 2, const, 10 + 2 * col + 0.5 + frac, 10 + 2 * row + 0.5 - frac)
+    _place(scenario, 0, MILL_CONST, 30.0, 30.0)
+    _place(scenario, 0, MILL_CONST, 0.5, 0.5)
+    _place(scenario, 2, const, -40.0, -40.0)
+    return scenario
+
+
+def test_flat_unit_bboxes_equal_the_scalar_bbox_at_every_mip() -> None:
+    from descape import render
+
+    scenario = _offcentre_scenario(SPAN1_CONST)
+    tiles, offsets, colors, row_uid, _row_player = render._flat_unit_base_rows(scenario)
+    units = {id(u): u for units in scenario.unit_manager.units for u in units}
+    for mip, tile_px in _ladder(scenario).items():
+        products = offsets * tile_px
+        assert (np.abs(products - np.floor(products)) == 0.5).any(), f"mip {mip}: no rounding tie -- vacuous"
+        got = render.flat_unit_bboxes(tiles, offsets, tile_px)
+        want = [
+            render._flat_unit_bbox(tuple(int(v) for v in t), units[uid], tile_px)
+            for t, uid in zip(tiles, row_uid.tolist(), strict=True)
+        ]
+        assert got.dtype == np.int32 and np.array_equal(got, np.array(want, dtype=np.int32)), f"mip {mip}"
+        bboxes, walk_colors = _scalar_walk(scenario, tile_px)
+        assert np.array_equal(got, bboxes) and np.array_equal(colors, walk_colors), f"mip {mip}"
+
+
+@pytest.mark.parametrize("sprites", [False, True])
+def test_flat_cache_level_draws_equal_the_walk_at_every_mip(sprites, request) -> None:
+    from test_invalidate_units_splice import SPRITE_CONST
+
+    if sprites:
+        request.getfixturevalue("sprite_install")
+    scenario = _offcentre_scenario(SPRITE_CONST)
+    mm = scenario.map_manager
+    cache = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=sprites)
+    for mip in cache.mip_levels():
+        cache._level_icons(mip)  # sprites on: the install path builds the draws first
+        bboxes, colors = cache._level_unit_draws(mip)
+        want_bboxes, want_colors = _scalar_walk(scenario, cache.mip_tile_px(mip))
+        assert np.array_equal(bboxes, want_bboxes) and np.array_equal(colors, want_colors), f"mip {mip}"
+
+
+@pytest.mark.parametrize("wholesale", ["invalidate_units", "sprites_toggle"])
+def test_flat_wholesale_paths_re_walk_the_scenario(wholesale, request) -> None:
+    """A wholesale invalidate_units() and the Show sprites toggle re-walk the
+    live lists, not the old row table: units appended with no unit_gen bump
+    reach every level's draws, and each icon walk agrees with them."""
+    from test_invalidate_units_splice import SPRITE_CONST, Unit
+
+    request.getfixturevalue("sprite_install")
+    scenario = _offcentre_scenario(SPRITE_CONST)
+    mm = scenario.map_manager
+    cache = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    for mip in cache.mip_levels():
+        cache._level_icons(mip)
+    before = len(cache.unit_draws[0])
+    for k in range(3):
+        scenario.unit_manager.units[1].append(Unit(40.0 + k, 40.0, SPRITE_CONST, player=1))
+    if wholesale == "invalidate_units":
+        cache.invalidate_units()
+    else:
+        cache.set_sprites_enabled(False)
+        cache.set_sprites_enabled(True)
+    assert len(cache.unit_draws[0]) == before + 3
+    for mip in cache.mip_levels():
+        cache._level_icons(mip)  # the install's row-count assert fires on a stale row table
+        bboxes, colors = cache._level_unit_draws(mip)
+        want_bboxes, want_colors = _scalar_walk(scenario, cache.mip_tile_px(mip))
+        assert np.array_equal(bboxes, want_bboxes) and np.array_equal(colors, want_colors), f"mip {mip}"
+
+
+def test_flat_mip0_icons_first_built_inside_a_unit_window(request) -> None:
+    """TASK-604: level 0's icon layer first built inside a mutate-now window
+    (Eraser, Convert) pairs with live-walk draws, not the lagging row table;
+    invalidate_units() drops both, leaving unit_draws the up-to-date rows. A
+    level 0 icon layer built before the window keeps the row table's draws."""
+    from test_invalidate_units_splice import SPRITE_CONST, _place
+
+    request.getfixturevalue("sprite_install")
+    scenario = _offcentre_scenario(SPRITE_CONST)
+    mm = scenario.map_manager
+    tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    cache = FlatChunkCache(scenario, tile_px, sprites=True)
+    rows = len(cache.unit_draws[0])
+    _place(scenario, 1, SPRITE_CONST, 40.0, 40.0)  # the model moves, the cache does not yet
+    assert cache._in_unit_window()
+
+    cache._composite_rect(0, 0, 0, 64, 64)  # the paint's order: draws, then icons (the assert)
+    want_bboxes, want_colors = _scalar_walk(scenario, cache.mip_tile_px(0))
+    bboxes, colors = cache._level_unit_draws(0)
+    assert len(bboxes) == rows + 1 and np.array_equal(bboxes, want_bboxes) and np.array_equal(colors, want_colors)
+    assert len(cache.unit_draws[0]) == rows, "the row table moved ahead of invalidate_units()"
+
+    cache.invalidate_units()
+    assert not cache._in_unit_window() and 0 not in cache._level_icon_layers
+    assert cache._level_unit_draws(0) is cache.unit_draws
+    assert np.array_equal(cache.unit_draws[0], want_bboxes)
+    cache._level_icons(0)
+
+    _place(scenario, 1, SPRITE_CONST, 42.0, 40.0)
+    assert cache._in_unit_window()
+    assert cache._level_unit_draws(0) is cache.unit_draws, "a resident level 0 left its row table mid-window"
+    cache._composite_rect(0, 0, 0, 64, 64)
+
+
+@pytest.mark.corpus
+def test_flat_unit_bboxes_equal_the_walk_on_the_corpus(corpus_files) -> None:
+    """Derive equals walk at every level of every corpus map (--corpus-full: all of examples/)."""
+    from descape import render
+
+    rows = offcentre = 0
+    for path in corpus_files:
+        scenario = load_map_and_units(path)
+        tiles, offsets, colors, _uid, _player = render._flat_unit_base_rows(scenario)
+        rows += len(tiles)
+        offcentre += int((offsets != 0).any(axis=1).sum())
+        for mip, tile_px in _ladder(scenario).items():
+            bboxes, walk_colors = _scalar_walk(scenario, tile_px)
+            derived = render.flat_unit_bboxes(tiles, offsets, tile_px)
+            assert np.array_equal(derived, bboxes) and np.array_equal(colors, walk_colors), f"{path.name} mip {mip}"
+    assert rows and offcentre, f"{rows} rows, {offcentre} off-centre -- vacuous"
+
+
+def _scalar_walk(scenario, tile_px: int) -> tuple[np.ndarray, np.ndarray]:
+    """The pre-031.72 per-level walk, _flat_unit_bbox() per unit: the oracle
+    the derive must equal (_flat_unit_draws() derives now)."""
+    from descape import render
+
+    mm = scenario.map_manager
+    bboxes, colors = [], []
+    for player_id, units in enumerate(scenario.unit_manager.units):
+        for unit in units:
+            bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+            if bounds is not None:
+                bboxes.append(render._flat_unit_bbox(bounds, unit, tile_px))
+                colors.append(render._unit_color(unit, scenario.player_colors[player_id]))
+    return np.array(bboxes, dtype=np.int32).reshape(-1, 4), np.array(colors, dtype=np.uint8).reshape(-1, 3)
+
+
+def test_top_down_flat_sprites_off_residency() -> None:
+    """Every level resident on a fresh sprites-off cache. Inside a mutate-now
+    window (the model ahead of the row table), a level first built there is
+    not resident, walks the live lists, and becomes resident once
+    invalidate_units() drops it; a level built before the window stays."""
+    from test_invalidate_units_splice import MILL_CONST, _place
+
+    scenario = _offcentre_scenario(SPAN1_CONST)
+    mm = scenario.map_manager
+    cache = FlatChunkCache(scenario, tile_pixels_for_map(mm.map_width, mm.map_height), sprites=False)
+    mips = cache.mip_levels()
+    assert len(mips) >= 3
+    assert all(cache.is_level_resident(mip) for mip in mips)
+    assert all(cache.paints_without_build(mip) for mip in mips)
+    early, late = [m for m in mips if m != 0][:2]
+    cache._level_unit_draws(early)
+
+    _place(scenario, 1, MILL_CONST, 40.0, 40.0)  # the model moves, the cache does not yet
+    assert cache._in_unit_window()
+    assert cache.is_level_resident(0) and cache.is_level_resident(early)
+    assert not cache.is_level_resident(late)
+    bboxes, _colors = cache._level_unit_draws(late)
+    assert np.array_equal(bboxes, _scalar_walk(scenario, cache.mip_tile_px(late))[0]), "not the live walk"
+    assert not cache.is_level_resident(late), "a level built inside the window reads resident"
+
+    cache.invalidate_units()
+    assert not cache._in_unit_window()
+    assert all(cache.is_level_resident(mip) for mip in mips)
+    for mip in mips:
+        want = _scalar_walk(scenario, cache.mip_tile_px(mip))[0]
+        assert np.array_equal(cache._level_unit_draws(mip)[0], want), f"mip {mip}"
+
+
+def test_top_down_flat_residency_with_sprites_on_or_units_off(request) -> None:
+    """Sprites on keeps the icon-layer rule; units off is resident everywhere."""
+    from test_invalidate_units_splice import SPRITE_CONST
+
+    request.getfixturevalue("sprite_install")
+    scenario = _offcentre_scenario(SPRITE_CONST)
+    mm = scenario.map_manager
+    tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    cache = FlatChunkCache(scenario, tile_px, sprites=True)
+    mip = cache.mip_levels()[0]
+    assert not cache.is_level_resident(mip) and not cache.paints_without_build(mip)
+    cache._level_icons(mip)
+    assert cache.is_level_resident(mip) and cache.paints_without_build(mip)
+
+    off = FlatChunkCache(scenario, tile_px, with_units=False, sprites=True)
+    assert all(off.is_level_resident(m) and off.paints_without_build(m) for m in off.mip_levels())

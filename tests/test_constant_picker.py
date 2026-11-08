@@ -470,15 +470,54 @@ def test_browse_opens_on_the_fields_value_pinned(monkeypatch) -> None:
     assert received == []
 
 
-def test_set_group_narrows_browse_to_that_category(monkeypatch) -> None:
-    built = _accepting_exec(monkeypatch, _CASTLE)
+def _rejected_browse(monkeypatch, group: str, value: int | None):
+    """Browse on a field with `group` and `value`, closed with Cancel. Returns (dialog, commits, widget)."""
+    from descape.constant_picker import CatalogBrowseDialog
+
+    built = []
+    monkeypatch.setattr(CatalogBrowseDialog, "exec_", lambda dialog: built.append(dialog) or dialog.Rejected)
     widget = _line_edit()
-    widget.set_group("Buildings")
+    widget.set_group(group)
+    if value is not None:
+        widget.set_value(value)
+    received = []
+    widget.committed.connect(received.append)
     widget.browse_button.click()
-    view = built[-1].view
-    assert {entry.category for entry in view._entries} == {"Buildings"}
+    return built[-1], received, widget  # the widget owns the dialog
+
+
+def test_set_group_opens_browse_on_that_category_with_every_button(monkeypatch) -> None:
+    """GH #273: a trigger field's Browse keeps the four buttons; the type row only picks where it opens."""
+    dialog, _received, _widget = _rejected_browse(monkeypatch, "Buildings", None)
+    view = dialog.view
+    assert {entry.category for entry in view._entries} == {entry.category for entry in _catalog()}
     assert view.category_buttons["Buildings"].isChecked()
-    assert view.category_block.isHidden()
+    assert not view.category_block.isHidden()
+    assert all(button.isEnabled() for button in view.category_buttons.values())
+
+
+def test_a_value_of_another_group_is_pinned_without_overriding_the_group(monkeypatch) -> None:
+    dialog, received, _widget = _rejected_browse(monkeypatch, "Buildings", _ARCHER)
+    assert dialog.view.category_buttons["Buildings"].isChecked()
+    assert dialog.view.current_value() is None
+    assert dialog.view._pinned == _ARCHER
+    assert received == []
+
+
+def test_a_value_of_the_fields_group_opens_current(monkeypatch) -> None:
+    dialog, _received, _widget = _rejected_browse(monkeypatch, "Buildings", _CASTLE)
+    assert dialog.view.current_value() == _CASTLE
+
+
+def test_a_grouped_fields_browse_commits_a_pick_from_another_category(monkeypatch) -> None:
+    _accepting_exec(monkeypatch, _CASTLE)
+    widget = _line_edit()
+    widget.set_group("Units")
+    received = []
+    widget.committed.connect(received.append)
+    widget.browse_button.click()
+    assert received == [_CASTLE]
+    assert widget.value() == _CASTLE
 
 
 def test_a_tech_fields_browse_stays_the_plain_tree_with_no_preview(monkeypatch) -> None:

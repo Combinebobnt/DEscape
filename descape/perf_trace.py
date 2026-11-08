@@ -72,6 +72,10 @@ still counts as a file. Terrain texture loads (`textures +N files X ms`,
 asset_source) are recorded as they happen instead: files decoded, and X the
 ms a caller was blocked loading one or waiting on a prefetched one, with the
 wait and the prefetch pool's own decodes in parentheses when there were any.
+The sprite prefetch (`sprite prefetch +N files (wait W ms, served S frames,
+unhinted U)`, sprite_prefetch) is recorded the same way: files submitted to
+its pool, ms the GUI thread blocked on a running job, frames the walk took
+from the pool, and frames it decoded with no hint.
 Chunk `composite` (or `prepare`, for a pooled chunk) still includes the blocked time.
 stall() is the event-loop watchdog's report (timer in
 viewer_canvas); it names the op, phase, span or level event that covered the
@@ -114,11 +118,13 @@ from contextlib import nullcontext
 from typing import Self
 
 from descape import composite_backend, debug_log
+from descape.thread_stats import Delta
 
 _enabled = os.environ.get("DESCAPE_PERF_TRACE") == "1"
 _NULL_PHASE = nullcontext()
 # A gen-0/1 collection this long or longer reaches the stall window.
 YOUNG_GC_MIN_MS = 5.0
+SLOW_TICK_MS = 50.0
 # Detail prefix of a span's _recent entry: in a stall's cause, never its covered sum.
 _SPAN = "span "
 
@@ -135,8 +141,8 @@ _warm_ticks: list[tuple[float, int, float]] = []
 # Kernel ms per chunk run on a margin-warm worker thread, timed there and
 # recorded on arrival, so this module stays GUI-thread-only.
 _warm_worker: list[float] = []
-# One (tick_ms, step kind) per PreframeWarmer tick (TASK-031.71).
-_preframe_ticks: list[tuple[float, str]] = []
+# One step's wall time, kind, thread delta and fetch split, never an aggregate duplicate.
+_preframe_ticks: list[tuple[float, str, Delta | None, dict | None]] = []
 _armed_label: str | None = None
 _drag_active = False
 # begin_drag()'s brush text ("9 circle"), printed on the drag header until flush().
@@ -158,8 +164,11 @@ _where_stack: list[str] = []
 _level_events: dict[tuple[str, int, str], _LevelAgg] = {}
 # One (tick_ms, installs, slowest_install_ms) per LevelWarmer tick.
 _level_warm_ticks: list[tuple[float, int, float]] = []
-# The slowest of those ticks: (tick_ms, ms per step label, gc_ms, (max step ms, its name) or None).
-_level_warm_worst: tuple[float, dict[str, float], float | None, tuple[float, str] | None] | None = None
+# The slowest of those ticks: (tick_ms, ms per step label, gc_ms, (max step ms, its name) or None,
+# the budget it ran under or None).
+_level_warm_worst: (
+    tuple[float, dict[str, float], float | None, tuple[float, str] | None, float | None] | None
+) = None
 # Mip transitions seen by paint since the last view line, and the last mip.
 _mip_changes: list[tuple[int, int]] = []
 _view_mip: int | None = None
@@ -192,6 +201,8 @@ _gc_t0: float | None = None
 _gc_total_ms = 0.0
 # (kind, ms) per terrain texture load, wait or prefetch, appended on any thread; see _drain_textures().
 _texture_raw: deque = deque()
+# (kind, amount) per sprite prefetch count (sprite_prefetch_event()), drained beside _texture_raw.
+_sprite_prefetch_raw: deque = deque()
 
 
 def _default_sprite_counts() -> tuple[int, int]:
@@ -392,6 +403,62 @@ def _drain_textures() -> None:
     while _texture_raw:
         kind, ms = _texture_raw.popleft()
         (_top_op.textures if _top_op is not None else _textures_pending).add(kind, ms)
+    while _sprite_prefetch_raw:
+        kind, amount = _sprite_prefetch_raw.popleft()
+        (_top_op.sprite_prefetch if _top_op is not None else _sprite_prefetch_pending).add(kind, amount)
+
+
+# unit_sprites' sprite prefetch counters that reach the trace (TASK-031.47).
+SPRITE_PREFETCH_KINDS = frozenset({"files_submitted", "wait_ms", "frames_served", "unhinted"})
+
+
+class _SpritePrefetchAgg:
+    """`sprite prefetch +N files (wait W ms, served S frames, unhinted U)`:
+    files submitted to the pool, ms the GUI thread blocked on a running job,
+    frames the walk took from the pool, frames it decoded with no hint."""
+
+    __slots__ = ("files", "served", "unhinted", "wait_ms")
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.wait_ms = 0.0
+        self.served = 0
+        self.unhinted = 0
+
+    def add(self, kind: str, amount: float) -> None:
+        if kind == "files_submitted":
+            self.files += int(amount)
+        elif kind == "wait_ms":
+            self.wait_ms += amount
+        elif kind == "frames_served":
+            self.served += int(amount)
+        else:
+            self.unhinted += int(amount)
+
+    def merge(self, other: _SpritePrefetchAgg) -> None:
+        self.files += other.files
+        self.wait_ms += other.wait_ms
+        self.served += other.served
+        self.unhinted += other.unhinted
+
+    def text(self) -> str | None:
+        if not (self.files or self.wait_ms or self.served or self.unhinted):
+            return None
+        return (
+            f"sprite prefetch {self.files:+d} files (wait {self.wait_ms:.1f} ms, "
+            f"served {self.served} frames, unhinted {self.unhinted})"
+        )
+
+
+# Sprite prefetch counts outside any top-level op, owed to the next drag/load/view line.
+_sprite_prefetch_pending = _SpritePrefetchAgg()
+
+
+def sprite_prefetch_event(kind: str, amount: float) -> None:
+    """Records one sprite prefetch count (unit_sprites, GUI thread; the queue
+    keeps it safe anywhere, as texture_load()'s). One bool check when off."""
+    if _enabled:
+        _sprite_prefetch_raw.append((kind, amount))
 
 
 def _record(name: str, elapsed_ms: float) -> None:
@@ -660,7 +727,7 @@ def level(kind: str, mip: int):
 class _PendingOp:
     """One `perf op` line not yet written: a run of same-label ops."""
 
-    __slots__ = ("gc", "label", "levels", "phases", "sprites", "textures", "totals")
+    __slots__ = ("gc", "label", "levels", "phases", "sprite_prefetch", "sprites", "textures", "totals")
 
     def __init__(self, label: str) -> None:
         self.label = label
@@ -670,10 +737,12 @@ class _PendingOp:
         self.sprites = [0, 0]
         self.gc = _GcAgg()
         self.textures = _TexAgg()
+        self.sprite_prefetch = _SpritePrefetchAgg()
 
     def add(self, op: _OpTimer, total_ms: float) -> None:
         self.gc.merge(op.gc)
         self.textures.merge(op.textures)
+        self.sprite_prefetch.merge(op.sprite_prefetch)
         self.totals.append(total_ms)
         for name, ms in op.phases.items():
             self.phases[name] = self.phases.get(name, 0.0) + ms
@@ -696,7 +765,10 @@ class _PendingOp:
         phases = [f"{name} {ms / n:.1f}" for name, ms in self.phases.items()]
         phases.append(f"untimed {untimed / n:.1f}")
         parts = [head, " ".join(phases)]
-        extras = (_sprites_text(*self.sprites), self.textures.text(), _levels_text(self.levels), self.gc.text())
+        extras = (
+            _sprites_text(*self.sprites), self.textures.text(), self.sprite_prefetch.text(),
+            _levels_text(self.levels), self.gc.text(),
+        )
         parts.extend(e for e in extras if e)
         return " | ".join(parts)
 
@@ -715,7 +787,7 @@ def flush_pending_op() -> None:
 
 
 class _OpTimer:
-    __slots__ = ("_sprites0", "_t0", "gc", "label", "levels", "phases", "sprites", "textures", "top")
+    __slots__ = ("_sprites0", "_t0", "gc", "label", "levels", "phases", "sprite_prefetch", "sprites", "textures", "top")
 
     def __init__(self, label: str) -> None:
         self.label = label
@@ -730,6 +802,7 @@ class _OpTimer:
         if self.top:
             self.gc = _GcAgg()
             self.textures = _TexAgg()
+            self.sprite_prefetch = _SpritePrefetchAgg()
             if _pending_op is None or _pending_op.label != self.label:
                 _write_pending_op()
                 if _armed_label is None:
@@ -815,10 +888,11 @@ def view_mip(mip: int) -> None:
 
 def level_warm_tick(
     tick_ms: float, install_ms: Sequence[float], split: dict[str, float] | None = None, gc_ms: float | None = None,
-    max_step: tuple[float, Callable[[], str]] | None = None,
+    max_step: tuple[float, Callable[[], str]] | None = None, budget_ms: float | None = None,
 ) -> None:
     """Records one LevelWarmer tick for the `warm:` bucket, keeping the worst
-    tick's split (ms per step label), its gc ms and its longest single step
+    tick's split (ms per step label), its gc ms, its longest single step and
+    the budget it ran under (level_warm's idle or input budget, TASK-031.80)
     for the line. max_step is (ms, name()), name() called only when this
     tick becomes the worst (it looks the unit up). Same idle-flush restart
     as warm_tick()."""
@@ -828,7 +902,7 @@ def level_warm_tick(
     _level_warm_ticks.append((tick_ms, len(install_ms), max(install_ms, default=0.0)))
     if _level_warm_worst is None or tick_ms > _level_warm_worst[0]:
         step = None if max_step is None else (max_step[0], max_step[1]())
-        _level_warm_worst = (tick_ms, dict(split or {}), gc_ms, step)
+        _level_warm_worst = (tick_ms, dict(split or {}), gc_ms, step, budget_ms)
     _recent.append((time.perf_counter(), tick_ms, _op_label(), "level-warm tick"))
     _schedule_idle()
 
@@ -858,7 +932,7 @@ def _covered_text(
     return text
 
 
-def stall(late_ms: float) -> None:
+def stall(late_ms: float, stats: Delta | None = None) -> None:
     """The watchdog's report: its timer fired `late_ms` late. Attributed to
     the outermost op and the most specific phase, span or level event that
     ended inside the stall and covered at least half of it; then the window's
@@ -908,6 +982,8 @@ def stall(late_ms: float) -> None:
     # Full and its oldest entry inside the window: older ones in it were evicted.
     truncated = len(_recent) == _recent.maxlen and _recent[0][0] > window_start
     cause += f"; {_covered_text(intervals, by_name, late_ms, truncated)}"
+    if stats is not None:
+        cause += f"; thread {stats.kind()}: {stats.text()}"
     debug_log.log(f"perf stall {late_ms:.0f}ms ({cause})")
 
 
@@ -922,13 +998,19 @@ def warm_tick(tick_ms: float, chunks: int, slowest_chunk_ms: float) -> None:
     _schedule_idle()
 
 
-def preframe_tick(tick_ms: float, kind: str) -> None:
+def preframe_tick(tick_ms: float, kind: str, stats: Delta | None = None, fetch: dict | None = None) -> None:
     """Records one pre-rendered zoom frame tick (TASK-031.71): `kind` is
     `predict`, `fetch`, `strip` or `finish`. Same idle-flush restart as warm_tick()."""
     if not _enabled:
         return
-    _preframe_ticks.append((tick_ms, kind))
+    _preframe_ticks.append((tick_ms, kind, stats, fetch))
     _recent.append((time.perf_counter(), tick_ms, _op_label(), f"preframe {kind}"))
+    if tick_ms >= SLOW_TICK_MS:
+        detail = f"{stats.kind()}; {stats.text()}" if stats is not None else "unmeasured"
+        if fetch is not None:
+            detail += (f"; render {fetch['render_ms']:.1f}ms convert {fetch['convert_ms']:.1f}ms"
+                       f" k {fetch['k']} size {fetch['width']}x{fetch['height']}")
+        debug_log.log(f"perf slow tick preframe {kind} {tick_ms:.1f} ms: {detail}")
     _schedule_idle()
 
 
@@ -936,10 +1018,11 @@ def _preframe_summary() -> str:
     """`preframe: N ticks, T ms total (max tick M <kind>), F frames`."""
     p = _preframe_ticks
     worst = max(p, key=lambda t: t[0])
-    frames = sum(1 for _ms, kind in p if kind == "finish")
+    frames = sum(1 for tick in p if tick[1] == "finish")
+    thread_kind = f" {worst[2].kind()}" if worst[2] is not None else ""
     return (
         f"preframe: {len(p)} ticks, {sum(t[0] for t in p):.0f}ms total "
-        f"(max tick {worst[0]:.1f} {worst[1]}), {frames} frames"
+        f"(max tick {worst[0]:.1f} {worst[1]}{thread_kind}), {frames} frames"
     )
 
 
@@ -1036,23 +1119,25 @@ def _worst_tick_text() -> str:
     """The slowest level-warm tick's split: its steps, `other` for the rest
     of the tick, its gc ms, which nests inside the steps, and its longest
     single step with the unit that step resolved (`max step X (walk 1 p0
-    #420 const 1776)`)."""
+    #420 const 1776)`), then the budget it ran under (`budget 3`)."""
     if _level_warm_worst is None:
         return ""
-    tick_ms, split, gc_ms, step = _level_warm_worst
+    tick_ms, split, gc_ms, step, budget_ms = _level_warm_worst
     parts = [f"{name} {ms:.1f}" for name, ms in split.items()]
     parts.append(f"other {max(0.0, tick_ms - sum(split.values())):.1f}")
     if gc_ms is not None:
         parts.append(f"gc {gc_ms:.1f}")
     if step is not None:
         parts.append(f"max step {step[0]:.1f} ({step[1]})")
+    if budget_ms is not None:
+        parts.append(f"budget {budget_ms:g}")
     return " [" + "; ".join(parts) + "]"
 
 
 def _take_extras() -> list[str]:
     """The level events, cold sprites and mip changes owed to the next drag,
     load or view line, cleared once taken."""
-    global _level_events, _mip_changes, _gc_pending, _textures_pending
+    global _level_events, _mip_changes, _gc_pending, _textures_pending, _sprite_prefetch_pending
     _drain_gc()
     _drain_textures()
     extras = []
@@ -1066,6 +1151,10 @@ def _take_extras() -> list[str]:
     if textures:
         extras.append(textures)
     _textures_pending = _TexAgg()
+    prefetch = _sprite_prefetch_pending.text()
+    if prefetch:
+        extras.append(prefetch)
+    _sprite_prefetch_pending = _SpritePrefetchAgg()
     if _mip_changes:
         extras.append("mip " + " ".join(f"{a}->{b}" for a, b in _mip_changes))
     gc_text = _gc_pending.text()
@@ -1285,6 +1374,8 @@ def _fresh_state() -> dict[str, object]:
         "_gc_pending": _GcAgg(),
         "_texture_raw": deque(),
         "_textures_pending": _TexAgg(),
+        "_sprite_prefetch_raw": deque(),
+        "_sprite_prefetch_pending": _SpritePrefetchAgg(),
     }
 
 

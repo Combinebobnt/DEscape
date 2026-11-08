@@ -8,7 +8,7 @@ Where this is in the in-game editor: the Units tab. Convert matches its Converti
 
 The Units, Buildings, Heroes and Other buttons show one category of the catalog. The class dropdown narrows it, the filter box finds an object by name or Unit ID, and Icons, Names and Grid change the view. Tick "Show editor-hidden objects" for objects the game's editor hides. "Villager (Random)" places a male or female villager at random. Double-click an object, or press Enter on it, to switch to Place Unit.
 
-Owner sets who owns what you place. Objects the game's editor lists only for GAIA (wild animals, resources, trees, rocks, relics and more) are hidden while Owner is a player, and always go to GAIA; **Settings > Advanced** can keep them listed. While nothing is selected, the Inspector shows the picked object's portrait, Unit ID and base stats.
+Owner sets who owns what you place. Objects the game's editor lists only for GAIA (wild animals, resources, trees, rocks, relics and more) are hidden while Owner is a player, and always go to GAIA; **Settings > Advanced** can keep them listed. Clicking an object, or moving to it with the arrow keys, shows its portrait, Unit ID and base stats in the Inspector, even with units selected. The selection stays selected, and Delete and the Edit menu still act on it; its fields show again when you select, place or edit units, or click Show selection.
 
 ## Placing objects
 
@@ -48,7 +48,7 @@ With units selected, **Edit > Copy Units** and **Edit > Cut Units** take them an
 
 ## The Inspector
 
-For one selected unit the Inspector shows its portrait, name, Unit ID and stats, then Owner, X, Y, Z, Rotation, Capture Flag, Unit State, Reference ID and Garrisoned in. Each change is one undo step.
+For one selected unit the Inspector shows its portrait, name, Unit ID and stats, then Owner, X, Y, Z, Rotation, Capture Flag, Unit State, Reference ID and Garrisoned in. Each change is one undo step. After you click an object in the catalog, or pick one with the Eyedropper or the Wall button, the Inspector shows that object instead, with how many units are selected and a Show selection button that brings their fields back.
 
 Rotation is a facing number, a variant number for trees and scenery, or a gate's orientation, 0 to 3. Walls and cliffs are read-only, because the game works out their shape; a wall standing alone or at the end of a run is drawn as a tower, as in the game, whatever number the file stores. Click or scroll the dial beside it to turn the unit. Dragging the dial turns a unit as you go, and the whole drag is one undo step; a gate turns when you let go. Capture Flag needs a scenario saved by the September 2026 game update (version 1.59).
 

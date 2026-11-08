@@ -191,7 +191,18 @@ def test_the_idle_collect_is_logged(qapp) -> None:
     _drained_level_warm()
     gc_hold._on_idle()
     assert "warm gc: idle collect" in debug_log.get_log_text()
-    assert " ms, held " in debug_log.get_log_text()
+    # The autouse fake collect returns None, which reads as an unknown count.
+    assert " ms, freed ?, held " in debug_log.get_log_text()
+
+
+def test_the_idle_collect_logs_what_it_freed(qapp, monkeypatch) -> None:
+    """A long walk that frees almost nothing is live objects, not garbage
+    (TASK-031.18): the tester log has to say which."""
+    monkeypatch.setattr(gc_hold, "_collect", lambda: 4)
+    debug_log.clear()
+    _drained_level_warm()
+    gc_hold._on_idle()
+    assert " ms, freed 4, held " in debug_log.get_log_text()
 
 
 def test_engage_is_idempotent(qapp, collects) -> None:
@@ -341,6 +352,143 @@ def test_a_hold_younger_than_the_bound_is_not_collected_by_a_tick(qapp, collects
         assert cache.stepped > 0
     finally:
         warmer.cancel()
+
+
+# --- navigation input (TASK-031.81) -------------------------------------------------
+
+
+def test_note_input_with_no_driver_engages_and_arms_the_idle_collect(qapp, collects) -> None:
+    gc.set_threshold(*ODD)
+    gc_hold.note_input()
+    assert gc_hold.is_engaged()
+    assert gc.get_threshold() == (ODD[0], ODD[1], gc_hold.HELD_THRESHOLD2)
+    assert _idle_armed(), "input engaged a hold nothing will release"
+    assert collects == []
+
+
+def test_the_idle_fire_waits_for_input_to_go_quiet(qapp, collects, clock) -> None:
+    gc.set_threshold(*ODD)
+    gc_hold.note_input()
+    clock["t"] += gc_hold.INPUT_QUIET_S - 0.1
+    gc_hold._on_idle()
+    assert collects == [], "collected between two wheel events"
+    assert gc_hold.is_engaged()
+    assert _idle_armed(), "the idle fire did not re-arm"
+
+    clock["t"] += 0.2
+    gc_hold._on_idle()
+    assert len(collects) == 1
+    assert gc.get_threshold() == ODD
+    assert not gc_hold.is_engaged()
+
+
+def test_repeated_input_neither_restarts_the_timer_nor_the_hold(qapp, clock, monkeypatch) -> None:
+    gc_hold.note_input()
+    since = gc_hold._since
+    assert _idle_armed()
+    starts: list = []
+    real_start = gc_hold._timer.start
+    monkeypatch.setattr(gc_hold._timer, "start", lambda *a: (starts.append(a), real_start(*a)))
+    for _ in range(5):
+        clock["t"] += 0.03
+        gc_hold.note_input()
+    assert starts == [], "every wheel event restarted the idle timer"
+    assert gc_hold._since == since, "a later input re-stamped the hold's start"
+    assert gc_hold._last_input == clock["t"]
+
+
+def test_overdue_waits_for_input_quiet_up_to_the_hard_bound(qapp, clock) -> None:
+    gc_hold.note_input()
+    clock["t"] += gc_hold.HOLD_MAX_S + 1
+    gc_hold.note_input()
+    assert not gc_hold.overdue(), "overdue mid-input before the hard bound"
+
+    clock["t"] += gc_hold.INPUT_QUIET_S + 0.1
+    assert gc_hold.overdue(), "a quiet overdue hold was not collected"
+
+    clock["t"] = gc_hold._since + gc_hold.HOLD_HARD_MAX_S + 1
+    gc_hold.note_input()
+    assert gc_hold.overdue(), "the hard bound waited on input"
+
+
+def test_an_input_only_hold_collects_at_the_hard_bound(qapp, collects, clock) -> None:
+    gc.set_threshold(*ODD)
+    gc_hold.note_input()
+    clock["t"] = gc_hold._since + gc_hold.HOLD_HARD_MAX_S + 1
+    gc_hold.note_input()
+    gc_hold._on_idle()
+    assert len(collects) == 1, "continuous input held gen 2 past the hard bound"
+    assert gc_hold.is_engaged(), "input still arriving, but the hold did not resume"
+    assert _idle_armed()
+    gc_hold.reset()
+    assert gc.get_threshold() == ODD
+
+
+def test_the_hard_bound_never_collects_under_a_held_button(qapp, collects, clock, monkeypatch) -> None:
+    gc_hold.note_input()
+    clock["t"] = gc_hold._since + gc_hold.HOLD_HARD_MAX_S + 1
+    _hold_mouse(monkeypatch)
+    gc_hold._on_idle()
+    assert collects == [], "collected mid-stroke"
+    assert gc_hold.is_engaged()
+    assert _idle_armed()
+
+
+def test_the_hard_bound_resumes_the_hold_for_an_active_warm(qapp, collects, clock) -> None:
+    warmer = level_warm.LevelWarmer()
+    warmer.start(_LevelCache(), [0])
+    try:
+        clock["t"] = gc_hold._since + gc_hold.HOLD_HARD_MAX_S + 1
+        gc_hold._on_idle()
+        assert len(collects) == 1
+        assert gc_hold.is_engaged(), "gen 2 left un-held under an active warm"
+    finally:
+        warmer.cancel()
+
+
+def test_a_quiet_hold_past_the_hard_bound_collects_and_ends(qapp, collects, clock) -> None:
+    gc.set_threshold(*ODD)
+    gc_hold.note_input()
+    clock["t"] = gc_hold._since + gc_hold.HOLD_HARD_MAX_S + 1
+    gc_hold._on_idle()
+    assert len(collects) == 1
+    assert gc.get_threshold() == ODD
+    assert not gc_hold.is_engaged()
+
+
+@pytest.mark.parametrize("end", ["reset", "release"])
+def test_reset_and_release_clear_the_input_stamp(qapp, end) -> None:
+    gc_hold.note_input()
+    assert gc_hold._input_recent()
+    getattr(gc_hold, end)()
+    assert gc_hold._last_input is None
+    assert not gc_hold._input_recent()
+
+
+@pytest.mark.gui
+def test_a_load_after_a_roll_starts_with_no_input_recent(qapp) -> None:
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = conftest.blank_window(load=False)
+    try:
+        gc_hold.note_input()
+        assert gc_hold._input_recent()
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        assert gc_hold._last_input is None, "the load kept the previous roll's input stamp"
+    finally:
+        conftest.close_window(window)
+
+
+def test_without_a_qapplication_note_input_leaves_the_threshold_alone(collects, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: None))
+    gc.set_threshold(*ODD)
+    gc_hold.note_input()
+    assert gc.get_threshold() == ODD
+    assert not gc_hold.is_engaged()
+    assert gc_hold._last_input is None
+    assert collects == []
 
 
 # --- headless and the stroke's own hold -----------------------------------------

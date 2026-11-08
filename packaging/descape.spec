@@ -67,6 +67,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="DEscape",
+    icon=str(ROOT / "descape" / "app_icon.png") if sys.platform == "win32" else None,
     # True (not the GUI-app-conventional False) so --self-check's stdout is
     # reliably captured on every platform, including Windows, where a
     # console=False build detaches stdout -- Stage 2's CI verification

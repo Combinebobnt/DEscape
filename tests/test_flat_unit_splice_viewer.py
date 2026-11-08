@@ -108,7 +108,7 @@ def _count_paths(window, monkeypatch) -> dict[str, int]:
     level nobody has shown yet is not a fallback, so icons are not counted."""
     cache = window._cache
     counts = {"splices": 0, "rows": 0}
-    real_rows, real_splice = render._flat_unit_rows, cache._splice_rows
+    real_rows, real_splice = render._flat_unit_base_rows, cache._splice_rows
 
     def rows(*args, **kwargs):
         counts["rows"] += 1
@@ -118,7 +118,7 @@ def _count_paths(window, monkeypatch) -> dict[str, int]:
         counts["splices"] += 1
         return real_splice(changed)
 
-    monkeypatch.setattr(render, "_flat_unit_rows", rows)
+    monkeypatch.setattr(render, "_flat_unit_base_rows", rows)
     monkeypatch.setattr(cache, "_splice_rows", splice)
     return counts
 

@@ -6498,3 +6498,63 @@ def test_scatter_move_pixels_follow_the_unit_and_undo_restores_them(monkeypatch)
         assert np.array_equal(before, window._cache.get_chunk(0, cx, cy))
     finally:
         _close(window)
+
+
+# --- TASK-031.18: a pruned Erase record undoes through splices ----------------
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_a_gaia_only_erase_keeps_gaia_and_undoes_through_splices(style: str, monkeypatch) -> None:
+    """Erase captures all nine players at press. Pruned at commit to GAIA,
+    the record takes _gaia_membership_diff(), so undo and redo of a mid-list
+    removal splice (unpruned, the tail shape refused it and they repainted
+    wholesale). Each repaint must match a wholesale rebuild of the same cache.
+    Flat gets the diff too, but its cost ratio against this small fixture's
+    unit count repaints wholesale anyway (_if_spliceable())."""
+    scoped = style != "Flat"
+    window = _window() if style == "Flat" else _window_with_style(style)
+    try:
+        window.eraser_action.setChecked(True)
+        window.brush_size_spin.setValue(1)
+        for name, action in window.eraser_target_actions.items():
+            action.setChecked(name == "trees")
+        gaia = window.scenario.unit_manager.units[0]
+        assert [u.reference_id for u in gaia[:3]] == [100, 101, 102], "tree 101 must be mid-list"
+        before = _whole_canvas(window)
+
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tiles([(6, 5)], 0)
+        window.on_edit_stroke_end()
+
+        record = window.edit_history.peek_undo()
+        assert record.label == "Erase object"
+        assert set(record.before.players) == set(record.after.players) == {0}
+        assert [u.reference_id for u in gaia[:2]] == [100, 102]
+        undo_diff = window._membership_diff(record, undo=True)
+        redo_diff = window._membership_diff(record, undo=False)
+        assert undo_diff is not None and redo_diff is not None
+        assert (len(undo_diff[0]), len(undo_diff[1])) == (0, 1)
+        assert (len(redo_diff[0]), len(redo_diff[1])) == (1, 0)
+        erased = _whole_canvas(window)
+        assert not np.array_equal(before, erased), "erasing the tree should change the canvas"
+        assert np.array_equal(erased, _rebuilt_canvas(window))
+
+        changed = []
+        real_after = window._after_unit_mutation
+        monkeypatch.setattr(
+            window, "_after_unit_mutation", lambda c=None, **k: (changed.append(c), real_after(c, **k))[1]
+        )
+        window.undo()
+        assert [u.reference_id for u in gaia[:3]] == [100, 101, 102]
+        assert bool(changed[-1]) is scoped, "the undo took the other repaint path"
+        undone = _whole_canvas(window)
+        assert np.array_equal(undone, before)
+        assert np.array_equal(undone, _rebuilt_canvas(window))
+
+        window.redo()
+        assert bool(changed[-1]) is scoped, "the redo took the other repaint path"
+        redone = _whole_canvas(window)
+        assert np.array_equal(redone, erased)
+        assert np.array_equal(redone, _rebuilt_canvas(window))
+    finally:
+        _close(window)

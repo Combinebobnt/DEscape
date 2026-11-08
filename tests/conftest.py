@@ -700,6 +700,9 @@ def _no_gc_hold_left():
     yield
     if "descape.gc_hold" in sys.modules:
         sys.modules["descape.gc_hold"].reset()
+    # A wheel test's input stamp would put a later tick-counting test on the input budget (TASK-031.80).
+    if "descape.level_warm" in sys.modules:
+        sys.modules["descape.level_warm"]._last_input = None
 
 
 @pytest.fixture(autouse=True)

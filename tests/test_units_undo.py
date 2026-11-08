@@ -19,6 +19,7 @@ Every restore trap these exercise is documented on UnitEditModel.restore().
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 
 import pytest
@@ -449,3 +450,158 @@ def test_merged_field_record_carries_the_clean_flag_of_the_first_before() -> Non
     assert model.has_edits
     history.undo([], None, None, model)
     assert not model.has_edits
+
+
+# -- 6. records stay cheap for every later full gc (TASK-031.18) --------------
+
+
+def _add_gaia(loaded, model, history, x: float = 30.5) -> object:
+    oak = _unit(loaded, _REF_TREE_OAK)
+    model.begin_unit_edit([0])
+    unit = model.add(player=0, unit_const=oak.unit_const, x=x, y=30.5, z=0.0, rotation=oak.rotation)
+    model.commit_unit_edit("Add tree", history)
+    return unit
+
+
+def test_whole_list_snapshots_hold_untracked_blob_and_state_tuples() -> None:
+    """A list is walked by every full collection, an untracked tuple never:
+    blobs are bytes or None, so one collect untracks them. States are tuples
+    of atoms inside a tuple: the first pass untracks the inner ones only (its
+    reachability pass moves them behind the outer), the second the outer.
+    `units` holds tracked Units, so it stays tracked."""
+    loaded, model, history = _open()
+    _add_gaia(loaded, model, history)
+    model.begin_unit_edit([1, 2])
+    model.reassign(_unit(loaded, _REF_ARCHER_P1), 2)
+    model.commit_unit_edit("Reassign archer", history)
+    sides = [side for record in history.records for side in (record.before, record.after)]
+    snapshots = [pls for side in sides for pls in side.players.values()]
+    assert len(snapshots) == 6
+
+    gc.collect()
+    for pls in snapshots:
+        assert type(pls.units) is tuple and type(pls.blobs) is tuple and type(pls.states) is tuple
+        assert pls.blobs and pls.states
+        assert not gc.is_tracked(pls.blobs), "blob slots must not cost a later full collection anything"
+    gc.collect()
+    for pls in snapshots:
+        assert not gc.is_tracked(pls.states), "unit states must not cost a later full collection anything"
+
+
+def test_consecutive_gaia_edits_share_one_units_tuple() -> None:
+    """Record 2's before is record 1's after, so the history holds that list
+    once, not twice."""
+    loaded, model, history = _open()
+    _add_gaia(loaded, model, history)
+    model.begin_unit_edit([0])
+    model.remove(_unit(loaded, _REF_TREE_OAK))
+    model.commit_unit_edit("Delete tree", history)
+
+    first, second = history.records
+    assert second.before.players[0].units is first.after.players[0].units
+    assert second.after.players[0].units is not second.before.players[0].units
+
+
+def test_a_record_whose_membership_did_not_change_holds_one_units_tuple() -> None:
+    loaded, model, history = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    model.begin_unit_edit([1])
+    model.set_position(villager, 40.5, 40.5, 5.0)
+    record = model.commit_unit_edit("Move villager", history)
+
+    assert record.before.players[1].units is record.after.players[1].units
+    assert record.before.players[1].states != record.after.players[1].states
+
+
+def test_a_list_changed_outside_an_edit_is_captured_fresh() -> None:
+    """The shared tuple is reused only while the live list holds the same
+    units in order. A capture that kept a stale one would undo the next edit
+    to a list without the unit added in between."""
+    loaded, model, history = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P1)
+    model.begin_unit_edit([1])
+    model.set_position(villager, 40.5, 40.5, 5.0)
+    model.commit_unit_edit("Move villager", history)
+    added = model.add(player=1, unit_const=83, x=50.5, y=50.5, z=0.0, rotation=0.0)
+
+    model.begin_unit_edit([1])
+    model.set_position(villager, 41.5, 41.5, 5.0)
+    model.commit_unit_edit("Move villager", history)
+    history.undo([], None, None, model)
+
+    assert any(u is added for u in loaded.unit_manager.units[1])
+    assert (villager.x, villager.y) == (40.5, 40.5)
+    model.serialize()
+
+
+def test_an_undo_then_a_new_edit_shares_the_restored_tuple() -> None:
+    loaded, model, history = _open()
+    _add_gaia(loaded, model, history)
+    restored = history.records[0].before.players[0].units
+    history.undo([], None, None, model)
+    _add_gaia(loaded, model, history, x=31.5)
+
+    (record,) = history.records
+    assert record.before.players[0].units is restored
+
+
+def test_a_convert_that_captured_all_nine_keeps_only_the_two_it_touched(tmp_path: Path) -> None:
+    """Convert declares every player at press. The record keeps the source
+    and destination, and still restores the exact index both ways."""
+    loaded, model, history = _open()
+    archer = _unit(loaded, _REF_ARCHER_P1)
+    original_index = _index_of(loaded, 1, archer)
+    assert 0 < original_index < len(loaded.unit_manager.units[1]) - 1, "the archer must be mid-list"
+
+    model.begin_unit_edit(list(range(9)))
+    model.reassign(archer, 2)
+    record = model.commit_unit_edit("Convert unit", history)
+
+    assert set(record.before.players) == set(record.after.players) == {1, 2}
+    history.undo([], None, None, model)
+    assert _index_of(loaded, 1, archer) == original_index
+    assert not any(u is archer for u in loaded.unit_manager.units[2])
+    assert archer._player == 1
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()
+
+    history.redo([], None, None, model)
+    assert loaded.unit_manager.units[2][-1] is archer
+    assert not any(u is archer for u in loaded.unit_manager.units[1])
+    assert archer._player == 2
+
+
+def test_a_state_only_change_with_all_nine_declared_keeps_that_player() -> None:
+    """Membership alone does not make a player unchanged: a moved unit's
+    list keeps its units tuple, and the record must keep it for its state."""
+    loaded, model, history = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P2)
+    original = (villager.x, villager.y, villager.z)
+
+    model.begin_unit_edit(list(range(9)))
+    model.set_position(villager, 40.5, 40.5, 5.0)
+    record = model.commit_unit_edit("Move villager", history)
+
+    assert set(record.after.players) == {2}
+    history.undo([], None, None, model)
+    assert (villager.x, villager.y, villager.z) == original
+    assert not model.has_edits
+
+
+def test_a_same_value_write_keeps_its_player_for_the_blob_slot(tmp_path: Path) -> None:
+    """A write of the value a unit already holds changes no state but drops
+    its blob slot, which undo must put back so the save stays verbatim."""
+    loaded, model, history = _open()
+    villager = _unit(loaded, _REF_VILLAGER_P2)
+
+    model.begin_unit_edit(list(range(9)))
+    model.set_position(villager, villager.x, villager.y, villager.z)
+    record = model.commit_unit_edit("Move villager", history)
+
+    assert set(record.after.players) == {2}
+    history.undo([], None, None, model)
+    assert all(blob is not None for blob in model._blobs[2])
+    out = tmp_path / "undone.aoe2scenario"
+    write_scenario(loaded, out, units=model)
+    assert out.read_bytes() == FIXTURE_PATH.read_bytes()

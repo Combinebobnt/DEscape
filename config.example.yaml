@@ -436,6 +436,7 @@ keybinds:
   map_swap_players: ''
   view_isometric: Ctrl+Shift+I
   view_distance_ticks: ''
+  view_zoom_native: ''
   view_show_sprites: ''
   view_stack_badges: ''
   view_grid_overlay: ''

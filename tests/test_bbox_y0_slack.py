@@ -9,8 +9,8 @@ too-short bbox top leaves a stale strip above the apex.
 Dropping shadow_reach_px alone stays green (the 1-tile dilation ring covers
 the wedge). Dropping it and a tile height more turns the raises red at
 Stepped pct 25/50 and Sloped pct 25; the lowers and Stepped pct 200 stay green.
-The level sibling repeats it at mips -1 and -2 and the finer +1 (both styles
-since TASK-146), the visible level patched in place, and the same break turns
+The level sibling repeats it at mips -1 and -2 and the finer +1 and +2 (both styles
+since TASK-146; +1 is the 96 native tier since TASK-599), the visible level patched in place, and the same break turns
 the same cases red there.
 
 Every ViewerWindow here closes through conftest.close_window().
@@ -135,15 +135,15 @@ def test_viewer_one_level_edit_patches_to_a_fresh_render(monkeypatch, style, pct
     assert not stale.size, f"stale rows {stale.min() + wy0}..{stale.max() + wy0} after the viewer's patch"
 
 
-# Sloped has Stepped's ladder, +1 included, since TASK-146.
-LEVEL_CASES = [(s, p, mip) for s, p in CASES for mip in (-1, -2, 1)]
+# Sloped has Stepped's ladder, the finer levels included, since TASK-146; +1 is 96 and +2 is 128 (TASK-599).
+LEVEL_CASES = [(s, p, mip) for s, p in CASES for mip in (-1, -2, 1, 2)]
 
 
 @pytest.mark.parametrize("delta", DELTAS, ids=["raise_1", "lower_1"])
 @pytest.mark.parametrize("style, pct, mip", LEVEL_CASES, ids=[f"{s}_pct{p}-{m}" for s, p, m in LEVEL_CASES])
 def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypatch, style, pct, delta, mip):
     """The same edit with the window shown and zoomed to another level (out to
-    -1/-2, or in to the finer +1 the viewer picks at max zoom), so _apply_dirty
+    -1/-2, or in to the finer +1/+2 the viewer picks zoomed in), so _apply_dirty
     passes that level as rebuild_levels, as when panning zoomed out.
     Pass conditions, at `mip` in the edit window converted to that level:
     - the level is on the ladder and is the one viewport_chunk_target() picks
@@ -170,7 +170,8 @@ def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypa
         show_and_settle(window, 800)
         cache = window._cache
         assert mip in cache.mip_levels(), cache.mip_levels()
-        window.map_view.setTransform(QTransform.fromScale(2.0**mip, 2.0**mip))
+        ratio = 1.0 / cache.mip_scale(mip)  # a rank, not log2: read the level's own ratio
+        window.map_view.setTransform(QTransform.fromScale(ratio, ratio))
         window.map_view.centerOn(*iso_geometry.tile_screen_origin(*EDIT, ONE_LEVEL_BASE, window._iso_proj))
         target = window.map_view.viewport_chunk_target()
         assert target is not None and target[0] == mip, f"viewport picks {target}, not mip {mip}"

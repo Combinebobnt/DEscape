@@ -494,11 +494,14 @@ def test_pooling_engages_only_where_it_can(native_kernel, sprite_install, fake_f
         n, area = tiles(level, levels=(-1,))
         assert area >= cache.POOL_MIN_PATCH_TILE_AREA
         assert submits(level, levels=(-1,)) >= n // 2, "control: a patch past the gate must pool"
+        _warm(cache)  # that patch(levels=(-1,)) evicted every mip-0 chunk (TASK-031.73)
 
         cache.POOL_MIN_PATCH_TILE_AREA = 0
         with composite_backend.use_backend("numpy"):
+            assert tiles(small)[0] >= 2, "no mip-0 slices left to pool -- vacuous"
             assert submits(small) == 0, "the numpy backend pooled"
         cache.set_chunk_executor(None, 0)
+        assert tiles(small)[0] >= 2, "no mip-0 slices left to pool -- vacuous"
         assert submits(small) == 0, "no executor still pooled"
 
         flat = FlatChunkCache(scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
@@ -571,21 +574,20 @@ def test_no_prepare_writes_the_pack_after_the_first_submit(
             pack = cache._levels[-1].unit_pack
             assert pack is not None and pack.pending().size, "nothing pending -- vacuous"
         copies, writes = [], []
-        real_unshare, real_write = native_composite.UnitPack._unshare, native_composite.UnitPack._write_tiles
+        real_unshare, real_write = native_composite.UnitPack._unshare, native_composite.UnitPack._write_rows
 
         def unshare(self):
             if self._shared:
                 copies.append(len(executor.jobs))
             real_unshare(self)
 
-        def write_tiles(self, tiles):
-            tiles = list(tiles)
-            if tiles:
+        def write_rows(self, tiles, *args):
+            if len(tiles):
                 writes.append(len(executor.jobs))
-            real_write(self, tiles)
+            real_write(self, tiles, *args)
 
         monkeypatch.setattr(native_composite.UnitPack, "_unshare", unshare)
-        monkeypatch.setattr(native_composite.UnitPack, "_write_tiles", write_tiles)
+        monkeypatch.setattr(native_composite.UnitPack, "_write_rows", write_rows)
         if case == "rebuild-small":
             # Two 8 px rects on unit tiles: far more pending than slice area, so the candidates branch.
             cache._refresh_all_units()
@@ -611,7 +613,7 @@ def test_no_prepare_writes_the_pack_after_the_first_submit(
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_the_slice_pre_derive_takes_pending_tiles_or_the_slices_candidates(
-    native_kernel, sprite_install, fake_farm, synthetic_textures, style,  # noqa: F811
+    native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, style,  # noqa: F811
 ):
     """Few pending tiles against the slices' area: every pending tile is
     derived. More pending than that: only the slices' candidates are."""
@@ -622,6 +624,9 @@ def test_the_slice_pre_derive_takes_pending_tiles_or_the_slices_candidates(
         pack = cache._native_units(lvl, 0)
         pending = pack.pending()
         assert pending.size >= 2
+        derived = []
+        real_bulk = pack.derive_pending
+        monkeypatch.setattr(pack, "derive_pending", lambda: (derived.append(pack), real_bulk())[1])
         w = scenario.map_manager.map_width
         x, y = int(pending[0] % w), int(pending[0] // w)
         sx, sy = iso_geometry.tile_screen_origin(x, y, int(cache.elevations[y, x]), cache.proj)
@@ -633,7 +638,9 @@ def test_the_slice_pre_derive_takes_pending_tiles_or_the_slices_candidates(
         idx = candidates[:, 1].astype(np.int64) * w + candidates[:, 0]
         assert pack.ready[idx].all(), "a slice's candidates were left pending"
         assert pack.pending().size, "every pending tile was derived for a 4 px slice"
+        assert derived == [], "a tiny slice bulk derived the level"
         cache._derive_pack_for_slices(0, [(0, 0, *cache.canvas_dims(0))])
+        assert derived == [pack], "a whole-level slice did not use the bulk derive"
         assert pack.pending().size == 0, "a whole-level slice left pending tiles"
 
 

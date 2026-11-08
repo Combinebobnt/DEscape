@@ -7,6 +7,7 @@ The View menu, the Filters button and the look settings change what you see. Non
 The View menu stays open while you tick its entries, so you can switch several in a row. It remembers its choices between launches, except Show sprites and Isometric View, which start on each time.
 
 - **View > Isometric View (game-style)** draws Flat the way the game does: terrain as diamonds and units as upright sprites. Untick it for a plain top-down grid. It is greyed in Stepped and Sloped, which always draw that way.
+- **View > Zoom to Native Sprite Size** zooms so one tile spans 96 screen pixels, where unit sprites are drawn at their own size, pixel for pixel. Zooming with the wheel also stops there on the way past. It needs Graphics quality Default or Enhanced in **Settings > Appearance**, and is greyed in top-down Flat. At Enhanced the stop shows the high-resolution art scaled down by half.
 - **View > Show sprites** draws units as their real game sprites instead of coloured marks. It needs the AoE2:DE install path in **Settings > General**. Turning it on decodes the sprites once, which can take a few seconds.
 - **View > Show Stacked-Unit Badges** puts a count, in Units mode, over every spot where a unit is hidden under another. Grass and other passable eye candy never count. Click the spot repeatedly to cycle through the stack.
 - **View > Colour Selection by Owner** outlines selected units in their owner's colour. GAIA and the box you drag keep the Selection colour from **Settings > Appearance**.

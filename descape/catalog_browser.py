@@ -12,8 +12,9 @@ random rows, and a `mode_store` of its own.
 
 The API the panel and its tests use is ValuePickerView's: `activated(int)`,
 `current_changed(object)`, select(), current_value(), `filter_edit`,
-`show_hidden_checkbox`, pin(); plus `list`, `category_buttons`, `class_combo`,
-`display_buttons` and refresh_thumbnails().
+`show_hidden_checkbox`, pin(); plus `picked(int)` (a user's click on a row,
+the current one included, or a keyboard move in the list: GH #357), `list`,
+`category_buttons`, `class_combo`, `display_buttons` and refresh_thumbnails().
 
 Rows of the active category stay in the list and are hidden by the filter,
 the class combo and the editor-hidden box, so select() can make a filtered-out
@@ -138,10 +139,18 @@ class _CatalogList(QListWidget):
     """Scroll and resize both change which rows are on screen."""
 
     viewport_changed = pyqtSignal()
+    # A key press moved the current row: GH #357's keyboard pick, apart from a programmatic setCurrentItem().
+    key_moved = pyqtSignal()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.viewport_changed.emit()
+
+    def keyPressEvent(self, event) -> None:
+        before = self.currentItem()
+        super().keyPressEvent(event)
+        if self.currentItem() is not before:
+            self.key_moved.emit()
 
 
 class _GridFrameDelegate(QStyledItemDelegate):
@@ -169,6 +178,7 @@ class _GridFrameDelegate(QStyledItemDelegate):
 class CatalogBrowserView(QWidget):
     activated = pyqtSignal(int)  # itemActivated: double-click and Enter, in every mode
     current_changed = pyqtSignal(object)  # int | None
+    picked = pyqtSignal(int)  # a click on a visible row, or a key that moved the current row
 
     def __init__(
         self,
@@ -275,6 +285,9 @@ class CatalogBrowserView(QWidget):
         self.list.itemActivated.connect(self._on_activated)
         item_activation.install(self.list)
         self.list.currentItemChanged.connect(lambda *_: self.current_changed.emit(self.current_value()))
+        # itemClicked, since a click on the current row changes nothing currentItemChanged reports.
+        self.list.itemClicked.connect(self._on_clicked)
+        self.list.key_moved.connect(self._on_key_moved)
         self.list.verticalScrollBar().valueChanged.connect(lambda _value: self._request_viewport())
         self.list.horizontalScrollBar().valueChanged.connect(lambda _value: self._request_viewport())
         self.list.viewport_changed.connect(self._request_viewport)
@@ -569,6 +582,16 @@ class CatalogBrowserView(QWidget):
         if item is None or item.isHidden():
             return
         self.activated.emit(item.data(_VALUE_ROLE))
+
+    def _on_clicked(self, item) -> None:
+        if item is None or item.isHidden():
+            return
+        self.picked.emit(item.data(_VALUE_ROLE))
+
+    def _on_key_moved(self) -> None:
+        value = self.current_value()
+        if value is not None:
+            self.picked.emit(value)
 
     # -- display modes -------------------------------------------------------------
 

@@ -246,7 +246,7 @@ def test_margin_warmer_logs_and_continues_past_a_bad_chunk(monkeypatch) -> None:
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     cache.fail_on.add((0, 2, 2))
     logged = []
-    monkeypatch.setattr(debug_log, "log", logged.append)
+    monkeypatch.setattr(debug_log, "log", lambda message, **kwargs: logged.append(message))
 
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(1, 1), (2, 2), (3, 3)])
@@ -428,7 +428,7 @@ def test_budgeted_tick_logs_a_bad_chunk_and_continues_in_the_same_tick(clock, mo
     cache = _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock)
     cache.fail_on.add((0, 1, 0))
     logged = []
-    monkeypatch.setattr(debug_log, "log", logged.append)
+    monkeypatch.setattr(debug_log, "log", lambda message, **kwargs: logged.append(message))
     warmer = margin_warm.MarginWarmer()
     warmer.start(cache, 0, [(0, 0), (1, 0), (2, 0)])
 
@@ -629,7 +629,7 @@ def test_a_worker_exception_is_logged_and_the_warm_continues(inline_pool, monkey
     from descape import debug_log
 
     logged = []
-    monkeypatch.setattr(debug_log, "log", logged.append)
+    monkeypatch.setattr(debug_log, "log", lambda message, **kwargs: logged.append(message))
     monkeypatch.setattr(_FakeJob, "run", lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
     cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0})
     warmer = margin_warm.MarginWarmer()
@@ -1102,6 +1102,55 @@ def test_load_scenario_warms_both_neighbour_mips_chunks_with_no_pan_or_zoom() ->
         conftest.close_window(window)
 
 
+@pytest.mark.gui
+def test_top_down_flat_sprites_off_warms_both_neighbour_mips_chunks() -> None:
+    """TASK-031.72: the twin above in top-down Flat with Show sprites off.
+    No level job runs there, but every level is resident, so each
+    neighbour's load warm still fills its chunk range (before, the level
+    never read as resident and nothing was warmed)."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.render_cache import FlatChunkCache
+
+    window = conftest.stepped_window(FIXTURE_PATH)
+    try:
+        window._sprites_enabled = False
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        cache = window._cache
+        assert isinstance(cache, FlatChunkCache) and not cache.sprites_enabled
+        levels = cache.mip_levels()
+        assert len(levels) >= 3, f"ladder {levels} has no level with two neighbours"
+        mid = levels[len(levels) // 2]
+        view_scale = 0.75 * 2.0 ** mid
+        factor = view_scale / window.map_view.view_device_scale()
+        window.map_view.scale(factor, factor)
+        QApplication.processEvents()
+        window._cancel_warms()
+        window._start_level_warm()
+        view = window.map_view.viewport_chunk_target()
+        assert view is not None and view[0] == mid
+        mips = level_warm.neighbour_mips_of(cache, view[0])
+        assert len(mips) == 2, f"the view's level has neighbours {mips} -- not both sides"
+        assert not window._level_warmer.is_active, "a sprites-off Flat level queued a job"
+        for _ in range(len(mips) + 1):
+            if not window._load_warmer.is_active and not window._load_warm_queue:
+                break
+            window._load_warmer.run_to_completion()
+        assert not window._load_warmer.is_active and not window._load_warm_queue
+
+        for mip in mips:
+            target = window.map_view.viewport_chunk_target_at(mip)
+            assert target is not None
+            cx0, cy0, cx1, cy1 = window._neighbour_warm_range(mip, target, view)
+            ring = [(cx, cy) for cy in range(cy0, cy1 + 1) for cx in range(cx0, cx1 + 1)]
+            missing = [chunk for chunk in ring if not cache.has_chunk(mip, *chunk)]
+            assert not missing, f"mip {mip}: {len(missing)} of {len(ring)} chunks never warmed"
+            assert cache.is_level_resident(mip)
+    finally:
+        conftest.close_window(window)
+
+
 def _window_with_a_load_warm_in_flight(monkeypatch):
     """A Stepped window whose level warm has drained, so the load-time warm
     is ticking. monkeypatch pins the setting so a slot that writes it can't
@@ -1149,5 +1198,128 @@ def test_a_unit_filter_change_drops_every_in_flight_warm(monkeypatch) -> None:
         assert not window._load_warm_queue
         assert not window._margin_warmer.is_active
         assert not window._level_warmer.is_active
+    finally:
+        conftest.close_window(window)
+
+
+# --- the zoom-out reach (TASK-031.11) ----------------------------------------
+
+
+def _reach_cache() -> _FakeCache:
+    return _FakeCache({0: (60, 60)}, chunk_px=10)
+
+
+def test_reach_chunks_order_by_the_factor_each_enters_the_view_about_a_centred_anchor() -> None:
+    """D4 by hand: view x in [22, 28], anchor 25, so a chunk enters at
+    (anchor - near edge) / 3 on its side; y overlaps everywhere."""
+    chunks = margin_warm.reach_chunks(_reach_cache(), 0, (0, 0, 5, 0), (22, 0, 28, 10), (25, 5))
+    # 2 overlaps (1); 1 and 3 enter at 5/3; 0 and 4 at 5; 5 at 25/3. Ties keep range order.
+    assert chunks == [(2, 0), (1, 0), (3, 0), (0, 0), (4, 0), (5, 0)]
+
+
+def test_reach_chunks_grow_the_far_side_of_an_edge_anchor_first() -> None:
+    """Anchor 27 sits 1 from the right edge: the left edge moves five times
+    as fast. Left reach 5: 1 at 7/5, 0 at 17/5. Right reach 1: 3 at 3, 4 at 13."""
+    chunks = margin_warm.reach_chunks(_reach_cache(), 0, (0, 0, 5, 0), (22, 0, 28, 10), (27, 5))
+    assert chunks == [(2, 0), (1, 0), (3, 0), (0, 0), (4, 0), (5, 0)]
+    far = margin_warm.reach_chunks(_reach_cache(), 0, (0, 0, 5, 0), (22, 0, 28, 10), (23, 5))
+    assert far == [(2, 0), (3, 0), (1, 0), (4, 0), (5, 0), (0, 0)]
+
+
+def test_reach_chunks_past_a_view_edge_on_the_anchor_never_enter() -> None:
+    """The right edge is the anchor: it never moves, so chunks past it sort
+    last, in range order, behind every chunk the left side reaches."""
+    chunks = margin_warm.reach_chunks(_reach_cache(), 0, (0, 0, 5, 0), (22, 0, 28, 10), (28, 5))
+    assert chunks == [(2, 0), (1, 0), (0, 0), (3, 0), (4, 0), (5, 0)]
+
+
+def test_reach_chunks_take_the_larger_axis_and_drop_cached_and_excluded_chunks() -> None:
+    """3x3 around a centre view [12, 18]^2, anchor (13, 15): x reaches 1 left
+    and 5 right, y 3 each way. A chunk enters once both axes do."""
+    cache = _reach_cache()
+    rng, view, anchor = (0, 0, 2, 2), (12, 12, 18, 18), (13, 15)
+    assert margin_warm.reach_chunks(cache, 0, rng, view, anchor) == [
+        (1, 1), (2, 1), (1, 0), (1, 2), (2, 0), (2, 2), (0, 0), (0, 1), (0, 2),
+    ]
+    cache._cache.add((0, 2, 1))
+    assert margin_warm.reach_chunks(cache, 0, rng, view, anchor, exclude={(1, 1), (0, 0)}) == [
+        (1, 0), (1, 2), (2, 0), (2, 2), (0, 1), (0, 2),
+    ]
+
+
+def _reach_window(style: str):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window = conftest.stepped_window(FIXTURE_PATH, size=1360)
+    window.resize(1360, 1030)
+    QApplication.processEvents()
+    if style == "Flat":
+        window.iso_action.setChecked(True)
+        window.terrain_style_combo.setCurrentText("Flat")
+        QApplication.processEvents()
+    for set_policy in (window.map_view.setHorizontalScrollBarPolicy, window.map_view.setVerticalScrollBarPolicy):
+        set_policy(Qt.ScrollBarAlwaysOn)
+    QApplication.processEvents()
+    return window
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("style", ["Stepped", "Flat"])
+@pytest.mark.parametrize(("edge", "level"), [(False, -1), (True, -1), (False, 2)], ids=["centred", "edge", "native"])
+def test_the_reach_holds_the_widest_view_a_zoom_out_shows_at_its_level(style, edge, level) -> None:
+    """D1 against a real view: at residual 0.98, the reach is the chunks a
+    paint reads once a zoom about the anchor reaches the widest view still
+    on the level. Level -1 centred on the map's middle with the anchor at
+    the viewport centre, and past the map's bottom-right corner with the
+    anchor at the top-left, where the scrollbars clamp the zoom-out (level
+    -1, since at level 0 this fixture's overscroll margin outgrows the
+    widest view). Level 2 sits above the native tier (TASK-599), so its
+    widest scale is 1.5, not a power of two. Iso Flat is an IsoChunkCache
+    on zero elevations."""
+    from PyQt5.QtCore import QPoint, QPointF
+
+    from descape import zoom_preframe
+    from descape.render_cache import IsoChunkCache
+
+    window = _reach_window(style)
+    try:
+        view = window.map_view
+        item = view._canvas_item
+        cache = window._cache
+        assert isinstance(cache, IsoChunkCache), "not an iso cache -- the Flat case needs Isometric View"
+        levels = cache.mip_levels()
+        assert levels == [-2, -1, 0, 1, 2], "the fixture's ladder moved"
+        if level == 2:
+            assert 1.0 / cache.mip_scale(level - 1) != 2.0 ** (level - 1), "no native tier -- vacuous"
+        scale = 0.98 / cache.mip_scale(level)
+        factor = scale / view.view_device_scale()
+        view.scale(factor, factor)
+        bounds = item.boundingRect()
+        vp = view.viewport().rect()
+        w, h = vp.width() / scale, vp.height() / scale
+        view.centerOn(bounds.bottomRight() + QPointF(0.3 * w, 0.3 * h) if edge else bounds.center())
+        anchor = QPoint(8, 8) if edge else vp.center()
+        view.set_zoom_anchor_mode(True)
+        view._last_zoom_anchor = anchor
+        start = view.viewport_chunk_target()
+        assert start[0] == level
+        reach = view.viewport_reach_target(level)
+        assert reach is not None
+        assert view.viewport_reach_target(levels[0]) is None, "the coarsest level has a reach"
+
+        widest = 1.0 / cache.mip_scale(level - 1)
+        zoom_preframe.zoom_about(view, widest * 1.001 / view.view_device_scale(), anchor)
+        assert view.viewport_chunk_target()[0] == level, "the zoom left the level"
+        if edge:
+            hbar, vbar = view.horizontalScrollBar(), view.verticalScrollBar()
+            assert hbar.value() == hbar.maximum() and vbar.value() == vbar.maximum(), "no clamp -- vacuous"
+        shown = item.view_chunks(level, view._current_scene_rect(), view.view_device_scale())
+        x0, y0, x1, y1 = reach
+        sx0, sy0, sx1, sy1 = shown
+        assert x0 <= sx0 and y0 <= sy0 and sx1 <= x1 and sy1 <= y1, f"view {shown} outside the reach {reach}"
+        assert sx0 - x0 <= 1 and sy0 - y0 <= 1 and x1 - sx1 <= 1 and y1 - sy1 <= 1, f"reach {reach} loose on {shown}"
+        grown = (x1 - x0 + 1) * (y1 - y0 + 1)
+        assert grown > (start[3] - start[1] + 1) * (start[4] - start[2] + 1), "the reach is no wider than the view"
     finally:
         conftest.close_window(window)

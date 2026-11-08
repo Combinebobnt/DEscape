@@ -115,7 +115,7 @@ def _config_value(key: str) -> str | None:
     try:
         config = yaml.safe_load(asset_source.read_config_text(config_path)) or {}
     except (yaml.YAMLError, OSError) as exc:
-        debug_log.log(f"content roots: config unreadable ({exc!r})")
+        debug_log.log(f"content roots: config unreadable ({exc!r})", level=debug_log.WARNING)
         return None
     raw = config.get(key) if isinstance(config, dict) else None
     return str(raw) if raw else None
@@ -125,7 +125,7 @@ def _explicit_dir(raw: str, source: str) -> Path | None:
     path = Path(raw)
     if path.is_dir():
         return path
-    debug_log.log(f"content roots: {source} profile path {raw!r} is not a folder; no profile")
+    debug_log.log(f"content roots: {source} profile path {raw!r} is not a folder; no profile", level=debug_log.WARNING)
     return None
 
 
@@ -194,7 +194,7 @@ def _sorted_dirs(folder: Path) -> list[Path]:
     try:
         entries = list(folder.iterdir())
     except OSError as exc:
-        debug_log.log(f"content roots: cannot list {folder} ({exc!r})")
+        debug_log.log(f"content roots: cannot list {folder} ({exc!r})", level=debug_log.WARNING)
         return []
     return sorted((p for p in entries if p.is_dir()), key=lambda p: p.name)
 
@@ -242,7 +242,7 @@ def _mod_status(mods_dir: Path) -> _ModStatus:
             if isinstance(workshop, (int, str)) and not isinstance(workshop, bool) and str(workshop) not in ("", "0"):
                 workshop_ids[pair] = str(workshop)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        debug_log.log(f"content roots: {status_path} unreadable, keeping every mod ({exc!r})")
+        debug_log.log(f"content roots: {status_path} unreadable, keeping every mod ({exc!r})", level=debug_log.WARNING)
         return _ModStatus()
     return _ModStatus(frozenset(disabled), priorities, titles, workshop_ids)
 
@@ -358,7 +358,7 @@ def find_resources(
         try:
             entries = list(folder.iterdir())
         except OSError as exc:
-            debug_log.log(f"content roots: cannot list {folder} ({exc!r})")
+            debug_log.log(f"content roots: cannot list {folder} ({exc!r})", level=debug_log.WARNING)
             continue
         found.extend(
             (root, path)

@@ -362,3 +362,84 @@ def test_a_reversed_ctrl_wheel_drops_the_stale_half_notch() -> None:
         assert _facing(window) == 15
     finally:
         conftest.close_window(window)
+
+
+# --- TASK-031.81: navigation input defers the gen-2 collect --------------------------
+
+
+@pytest.mark.parametrize("action", ["zoom", "pan_vertical"])
+def test_a_wheel_event_stamps_the_gc_holds_input(action) -> None:
+    from descape import gc_hold
+
+    window = _window()
+    try:
+        view = window.map_view
+        view.set_wheel_bindings({"plain": action})
+        gc_hold.reset()
+        assert gc_hold._last_input is None
+        _wheel_units(view, 120)
+        assert gc_hold._last_input is not None, f"a {action} wheel event left the gc hold blind to input"
+        assert gc_hold.is_engaged()
+    finally:
+        gc_hold.reset()
+        conftest.close_window(window)
+
+
+def test_a_held_key_pan_tick_stamps_the_gc_holds_input(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from test_pan_keys import _press, _release, _room_to_scroll
+
+    from descape import gc_hold, level_warm
+
+    window = _window()
+    try:
+        view = window.map_view
+        _room_to_scroll(view)
+        _press(view, Qt.Key_Right)
+        gc_hold.reset()
+        warm_calls: list = []
+        monkeypatch.setattr(level_warm, "note_input", lambda: warm_calls.append(1))
+        view._on_pan_tick()
+        assert gc_hold._last_input is not None, "a held-key pan tick left the gc hold blind to input"
+        assert warm_calls == [1], "a held-key pan tick left the level warmer on its idle budget"
+        _release(view, Qt.Key_Right)
+    finally:
+        gc_hold.reset()
+        conftest.close_window(window)
+
+
+# --- TASK-031.80: canvas input puts level-warm ticks on the input budget ---------------
+
+
+def _count_level_warm_input(monkeypatch) -> list:
+    from descape import level_warm
+
+    calls: list = []
+    monkeypatch.setattr(level_warm, "note_input", lambda: calls.append(1))
+    return calls
+
+
+@pytest.mark.parametrize("units", [120, 0])
+def test_a_wheel_event_stamps_the_level_warm_input(monkeypatch, units) -> None:
+    """Before any early return: a 0-delta event (a sideways tilt) counts too."""
+    window = _window()
+    try:
+        calls = _count_level_warm_input(monkeypatch)
+        _wheel_units(window.map_view, units)
+        assert calls == [1], "a wheel event left the level warmer on its idle budget"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_key_press_stamps_the_level_warm_input(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+    from test_pan_keys import _press, _release
+
+    window = _window()
+    try:
+        calls = _count_level_warm_input(monkeypatch)
+        _press(window.map_view, Qt.Key_Right)
+        assert calls == [1], "a key press left the level warmer on its idle budget"
+        _release(window.map_view, Qt.Key_Right)
+    finally:
+        conftest.close_window(window)

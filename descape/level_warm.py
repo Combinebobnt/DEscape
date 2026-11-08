@@ -13,8 +13,9 @@ token -- the live scenario's units and the cache's elevations array are both
 mutated in place, so a throwaway cache instance would not have been enough.
 
 Slicing the same walk across event-loop turns instead gives a BOUNDED
-worst-case stall (BUDGET_MS, overrun by at most one step: one unit's resolve
-or one assembly slice, see BUDGET_MS),
+worst-case stall (BUDGET_MS at idle, INPUT_BUDGET_MS while the canvas is
+taking input, each overrun by at most one step: one unit's resolve or one
+assembly slice, see BUDGET_MS),
 needs none of that machinery, and is race-free by construction: a tick only
 ever resumes between event-loop iterations, and every mutating path cancels
 the warm before it mutates, so a warm slice and a mutation cannot interleave.
@@ -31,9 +32,16 @@ import time
 
 from descape import debug_log, gc_hold, perf_trace
 
-# Wall-clock budget per tick. PROVISIONAL -- to be tuned against the in-app
-# pass, not derived. The measured per-unit slice floor is 10.3ms (one cold
-# .sld decode), which is the lower bound this cannot go under.
+# Wall-clock budget per tick, two of them, picked per tick (TASK-031.80).
+# BUDGET_MS is the idle budget (open-time warm, a settled view): there a long
+# tick costs nobody anything and keeps per-tick overhead and the gc hold short.
+# INPUT_BUDGET_MS applies while the canvas saw input within INPUT_QUIET_MS
+# (MapView's wheel and key handlers call note_input()): Qt can dispatch the
+# 0ms tick while a wheel event is already pending, so the event waits one
+# whole tick, and with 30 ms between roll clicks a 12 ms tick put clicks over
+# G3. Both PROVISIONAL, tuned against the in-app pass, not derived. A tick
+# always makes one step, so neither can go under one cold .sld decode
+# (10.3ms measured) at the coarse levels.
 #
 # The honest worst tick is the budget plus one step. Since the 2026-09-29
 # warm-tick plan a level's assembly is sliced too (render.ASSEMBLY_SLICE),
@@ -45,9 +53,30 @@ from descape import debug_log, gc_hold, perf_trace
 # (a 1x3 blocker's marker), 17-19ms ticks (2026-10-07, after the separable
 # outline; Perf Trace's `max step` names the unit).
 BUDGET_MS = 12
+INPUT_BUDGET_MS = 3
+# 150 ms covers a 30 ms bench roll and a human roll's 50-100 ms detents.
+INPUT_QUIET_MS = 150
 
 # The tick's clock, a module attribute so tests can drive it deterministically.
 _now = time.perf_counter
+
+# When the canvas last saw input; about the user, not a cache, so module-level
+# (a later MarginWarmer budget reads the same stamp).
+_last_input: float | None = None
+
+
+def note_input() -> None:
+    """The canvas saw input: the next INPUT_QUIET_MS of level-warm ticks run
+    on INPUT_BUDGET_MS. Headless code never calls it."""
+    global _last_input
+    _last_input = _now()
+
+
+def tick_budget_ms() -> float:
+    """INPUT_BUDGET_MS while input is recent, else BUDGET_MS."""
+    if _last_input is not None and _now() - _last_input < INPUT_QUIET_MS / 1000.0:
+        return INPUT_BUDGET_MS
+    return BUDGET_MS
 
 
 def neighbour_mips(cache, scale: float) -> list[int]:
@@ -138,13 +167,12 @@ class _IdleTimerDriver:
             pass
 
     def _schedule(self) -> None:
-        """Starts a 0ms QTimer, which Qt fires on event-loop idle -- so a
-        warm makes no progress at all while the user is panning with the
-        keyboard or wheel, by design: the point is to use the idle time
-        after a file opens (or, for MarginWarmer, between poll fires), not
-        to compete with input. A mouse-held pan is different: move events
-        are discrete, so the 0ms timer still fires in the gaps between them
-        unless the tick backs off (both subclasses do, via _held_backoff()).
+        """Starts a 0ms QTimer, which Qt fires on event-loop idle: the point
+        is to use the idle time after a file opens (or, for MarginWarmer,
+        between poll fires), not to compete with input. Wheel and key events
+        are discrete, so the timer still fires between them; LevelWarmer
+        ticks then run on INPUT_BUDGET_MS (TASK-031.80). A mouse-held pan
+        backs off entirely (both subclasses, via _held_backoff()).
 
         Created here rather than in __init__ so a driver can be constructed
         and driven (run_to_completion) with no QApplication at all. With no
@@ -216,6 +244,7 @@ class LevelWarmer(_IdleTimerDriver):
         self._job_mip: int | None = None
         self._job_notify = False
         self._on_job_done = None
+        self._on_drained = None
         # Install ms this tick, for Perf Trace; None while it is off.
         self._tick_installs: list[float] | None = None
         # This tick's ms per step label (`walk -1 setup`, `install`...); None while off.
@@ -226,12 +255,16 @@ class LevelWarmer(_IdleTimerDriver):
         self._job_prev = None
         # The current job has not stepped yet: its first step is unsliced setup.
         self._job_fresh = False
+        # The budget the last tick ran under (tick_budget_ms()), for Perf Trace.
+        self._tick_budget_ms: float = BUDGET_MS
+        # run_to_completion() is draining: full budget, no input stamp read.
+        self._draining = False
 
     @property
     def is_active(self) -> bool:
         return self._job is not None or bool(self._queue)
 
-    def start(self, cache, mips, *, pack_only=(), on_job_done=None) -> set[int]:
+    def start(self, cache, mips, *, pack_only=(), on_job_done=None, on_drained=None) -> set[int]:
         """Queues `mips` on `cache`, replacing any warm already in flight.
 
         Each mip gets its sprite-layer job, then its unit-pack derive
@@ -240,7 +273,9 @@ class LevelWarmer(_IdleTimerDriver):
 
         A job with nothing worth doing is not queued at all -- the cache's
         own level_warm_job()/pack_warm_job() decide that (units off, top-down
-        Flat with sprites off, numpy, or the level already current), and they are asked HERE
+        Flat with sprites off, numpy, or the level already current; such a
+        top-down Flat level is resident already, so its load warm starts at
+        once), and they are asked HERE
         rather than at tick time, so an all-no-op start leaves is_active
         False and schedules no timer at all. That also fixes each job's
         revalidation baseline at warm start, which is the window the plan's
@@ -255,7 +290,11 @@ class LevelWarmer(_IdleTimerDriver):
         never fires for a `pack_only` mip, nor for a mip that got no job at
         all: returns the set of mips it will fire for, and a caller that
         also needs the rest covered checks cache.is_level_resident(mip)
-        itself right after start() returns."""
+        itself right after start() returns.
+
+        `on_drained`, if given, is called with no arguments once the queue
+        drains (TASK-031.11 D8), never on cancel() or an empty start: the
+        last job is often a pack derive that notifies nobody."""
         self.cancel()
         jobs = []
         for mip in mips:
@@ -276,6 +315,7 @@ class LevelWarmer(_IdleTimerDriver):
         self._cache = cache
         self._queue = jobs
         self._on_job_done = on_job_done
+        self._on_drained = on_drained
         self._schedule()
         return {mip for mip, _job, notify in jobs if notify}
 
@@ -297,13 +337,15 @@ class LevelWarmer(_IdleTimerDriver):
         self._queue = []
         self._cache = None
         self._on_job_done = None
+        self._on_drained = None
         self._stop_timer()
         gc_hold.idle_soon()
 
     def tick(self) -> bool:
-        """Advances the current job for up to BUDGET_MS. Returns True while
-        work remains, False once the queue is drained (at which point the
-        timer is stopped).
+        """Advances the current job for up to tick_budget_ms() (BUDGET_MS, or
+        INPUT_BUDGET_MS while input is recent). Returns True while work
+        remains, False once the queue is drained (at which point the timer is
+        stopped).
 
         The budget is checked AFTER at least one step, so a tick always makes
         progress -- a zero-length budget would otherwise spin forever. A job
@@ -335,13 +377,23 @@ class LevelWarmer(_IdleTimerDriver):
             tick_ms = (time.perf_counter() - start) * 1000
             ms, label, unit = self._tick_max
             max_step = (ms, lambda: _step_name(label, cache, unit)) if label else None
-            perf_trace.level_warm_tick(tick_ms, self._tick_installs, self._tick_split, gc_ms, max_step=max_step)
+            perf_trace.level_warm_tick(
+                tick_ms, self._tick_installs, self._tick_split, gc_ms, max_step=max_step, budget_ms=self._tick_budget_ms
+            )
             self._tick_installs = None
             self._tick_split = None
             self._tick_max = None
 
+    def run_to_completion(self) -> None:
+        self._draining = True
+        try:
+            super().run_to_completion()
+        finally:
+            self._draining = False
+
     def _tick(self) -> bool:
-        deadline = _now() + BUDGET_MS / 1000.0
+        self._tick_budget_ms = BUDGET_MS if self._draining else tick_budget_ms()
+        deadline = _now() + self._tick_budget_ms / 1000.0
         # A job's first step only runs at the top of a tick: its setup (the
         # walk's pre-yield work, UnitPack(), a flush) is unsliced.
         if self._job is None and not self._start_next_job():
@@ -368,7 +420,7 @@ class LevelWarmer(_IdleTimerDriver):
                 # event loop. A warm is an optimization; failing one is not
                 # worth a dialog.
                 self._job = None
-                debug_log.log(f"level warm: dropped a level mid-walk ({exc!r})")
+                debug_log.log(f"level warm: dropped a level mid-walk ({exc!r})", level=debug_log.ERROR)
                 self._notify_job_done()
             if self._job is None:
                 # A finished job ends the tick (on_job_done may have run a
@@ -378,11 +430,15 @@ class LevelWarmer(_IdleTimerDriver):
                 return True
 
     def _more(self) -> bool:
-        """True while jobs remain queued; else stops the timer (drained)."""
+        """True while jobs remain queued; else stops the timer (drained) and
+        calls on_drained, taken first: it may start() again (D8)."""
         if self._queue:
             return True
         self._stop_timer()
         gc_hold.idle_soon()
+        callback, self._on_drained = self._on_drained, None
+        if callback is not None:
+            callback()
         return False
 
     def _timed_next(self, job) -> None:
@@ -437,7 +493,7 @@ class LevelWarmer(_IdleTimerDriver):
             # exception here would chain past the sibling handler and reach
             # the event loop. FlatChunkCache's row-count assert is the real
             # candidate.
-            debug_log.log(f"level warm: install failed ({exc!r})")
+            debug_log.log(f"level warm: install failed ({exc!r})", level=debug_log.ERROR)
 
 
 class IdleCall(_IdleTimerDriver):

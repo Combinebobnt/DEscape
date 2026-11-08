@@ -161,7 +161,7 @@ native_disagreements = 0
 def _native_disagreed(what: str) -> None:
     global native_disagreements
     native_disagreements += 1
-    debug_log.log(f"sld: native kernel refused a {what} the numpy path accepts; using numpy's result")
+    debug_log.log(f"sld: native kernel refused a {what} the numpy path accepts; using numpy's result", level=debug_log.WARNING)
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +257,7 @@ class SLDFile:
     access, so compare those by value, never by identity.
     """
 
-    def __init__(self, data: bytes, *, keep_data: bool = True):
+    def __init__(self, data: bytes, *, keep_data: bool = True, native_only: bool = False):
         self.data: bytes | None = data
         self.byte_length = len(data)
         self._frames = array(_INDEX_TYPECODE)
@@ -267,7 +267,7 @@ class SLDFile:
         # which is NOT frames[i - 1]'s layer: 960 frames of the surveyed sample
         # carry SHADOW but no MAIN, so a MAIN chain can step over several frames.
         self._chains = tuple(array(_INDEX_TYPECODE) for _ in _LAYER_ORDER)
-        self._walk()
+        self._walk(native_only)
         if not keep_data:
             self.data = None
 
@@ -310,7 +310,9 @@ class SLDFile:
 
     # -- walk ------------------------------------------------------------
 
-    def _walk(self) -> None:
+    def _walk(self, native_only: bool = False) -> None:
+        # native_only (sprite_prefetch's worker): no Python walk and no _native_disagreed(), so a
+        # kernel decline or a missing kernel raises and the caller re-walks on its own thread.
         data = self.data
         try:
             magic, _version, frame_count, _unknown1, layout_tag = _HEADER_PREFIX.unpack_from(data, 0)
@@ -330,8 +332,12 @@ class SLDFile:
 
         native = composite_backend.native
         if native is None:
+            if native_only:
+                raise SLDError("native_only walk with no native kernel")
             self._walk_frames(data, layout_tag, frame_count)
         elif not self._walk_native(native, data, layout_tag, frame_count):
+            if native_only:
+                raise SLDError("native kernel declined the walk")
             self._walk_frames(data, layout_tag, frame_count)
             _native_disagreed("walk")
 
@@ -439,6 +445,7 @@ class SLDFile:
         *,
         kinds: Collection[LayerKind] | None = None,
         window_to_main: bool = False,
+        native_only: bool = False,
     ) -> DecodedFrame:
         """Decodes every layer of one frame into canvas-space RGBA.
 
@@ -458,7 +465,12 @@ class SLDFile:
         returning None. Also raises it when there are no bytes to decode from,
         or when `data` is not the length the walk saw: the file changed on disk
         since, and every offset in this index may now point at the wrong bytes.
+
+        native_only, as SLDFile's: a layer the kernel declines, or no kernel at
+        all, raises SLDError instead of decoding it in numpy.
         """
+        if native_only and composite_backend.native is None:
+            raise SLDError("native_only decode with no native kernel")
         if data is None:
             data = self.data
             if data is None:
@@ -472,7 +484,7 @@ class SLDFile:
             if kinds is not None and layer.kind not in kinds:
                 continue
             if native is not None and layer.width > 0 and layer.height > 0:
-                arrays[layer.kind] = self._decode_layer_native(native, layer, data, frame.width, frame.height)
+                arrays[layer.kind] = self._decode_layer_native(native, layer, data, frame.width, frame.height, native_only)
                 continue
             image = self._decode_layer_image(layer, data)
             if image is not None:
@@ -496,14 +508,18 @@ class SLDFile:
             playercolor=arrays.get(LayerKind.PLAYERCOLOR),
         )
 
-    def _decode_layer_native(self, native, layer: SLDLayer, data: bytes, width: int, height: int) -> np.ndarray:
+    def _decode_layer_native(
+        self, native, layer: SLDLayer, data: bytes, width: int, height: int, native_only: bool = False
+    ) -> np.ndarray:
         """The layer's whole delta chain, decoded and pasted on its canvas in
         one kernel call. Where the kernel refuses, the numpy path raises the
-        exact SLDError."""
+        exact SLDError, or under native_only this raises one of its own."""
         chain = self._chains[_KIND_POSITION[layer.kind]]
         canvas = np.zeros((height, width, 4), dtype=np.uint8)
         if native.sld_decode_layer(data, self._layers, chain, chain[layer.chain_pos], layer.kind in _BC1_KINDS, canvas):
             return canvas
+        if native_only:
+            raise SLDError(f"native kernel declined frame {layer.frame_index}'s {layer.kind.name} layer")
         image = self._decode_layer_image(layer, data)
         _native_disagreed("decode")
         return _paste_on_canvas(image, layer.x1, layer.y1, width, height)
@@ -617,7 +633,7 @@ def load_sld(path: str | Path, *, keep_data: bool = True) -> SLDFile | None:
     try:
         return SLDFile.from_file(path, keep_data=keep_data)
     except (SLDError, OSError) as exc:
-        debug_log.log(f"sld: {Path(path).name} not readable ({exc})")
+        debug_log.log(f"sld: {Path(path).name} not readable ({exc})", level=debug_log.WARNING)
         return None
 
 

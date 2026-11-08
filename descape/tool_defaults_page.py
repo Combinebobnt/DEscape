@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import cliff_catalog, settings, tool_option_bindings, tool_options
+from descape import cliff_catalog, debug_log, settings, tool_option_bindings, tool_options
 from descape.viewer_common import FocusWheelComboBox, KeepOpenMenu
 
 if TYPE_CHECKING:
@@ -278,7 +278,7 @@ class ToolDefaultsPage(QWidget):
         try:
             settings.set_tool_option_defaults(values)
         except ValueError as e:
-            self._window._log_status(f"Tool default not saved: {e}")
+            self._window._log_status(f"Tool default not saved: {e}", level=debug_log.WARNING)
             return
         self._values.update(values)
         if len(values) == 1:
@@ -301,7 +301,7 @@ class ToolDefaultsPage(QWidget):
         try:
             settings.set_tool_option_defaults(self._window.tool_option_values())
         except ValueError as e:  # read() is canonical, so not expected
-            self._window._log_status(f"Tool defaults not loaded: {e}")
+            self._window._log_status(f"Tool defaults not loaded: {e}", level=debug_log.ERROR)
             return
         self._refresh()
         self._window._log_status("Tool defaults loaded from the toolbar")

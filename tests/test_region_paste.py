@@ -458,7 +458,7 @@ def _paste_record_guard(window):
         del history.build_stroke_record
     oracle = [(i, start[i], tile_state(t)) for i, t in enumerate(mm.terrain) if tile_state(t) != start[i]]
     (record,) = built
-    got = record.changes if record is not None else []
+    got = list(record.changes) if record is not None else []
     assert got == oracle, f"missing {sorted({c[0] for c in oracle} - {c[0] for c in got})[:8]}"
     return got
 
@@ -525,7 +525,7 @@ def test_a_paste_raising_mid_skirt_still_records_every_tile_it_wrote(monkeypatch
         assert len(captured) == 4 and {i for i, _o, _n in oracle} - rect, "the raise came before any skirt write"
         record = window.edit_history.records[-1]
         assert isinstance(record, TileDiffRecord)
-        assert record.changes == oracle
+        assert list(record.changes) == oracle
     finally:
         window.edit_history.mark_saved()
         window.close()

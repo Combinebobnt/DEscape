@@ -114,7 +114,7 @@ def _hp() -> int:
 def _logged(window, monkeypatch) -> list[str]:
     lines: list[str] = []
     real = window._log_status
-    monkeypatch.setattr(window, "_log_status", lambda message: (lines.append(message), real(message)))
+    monkeypatch.setattr(window, "_log_status", lambda message, **kwargs: (lines.append(message), real(message, **kwargs)))
     return lines
 
 

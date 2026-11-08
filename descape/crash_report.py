@@ -203,7 +203,7 @@ def rotate_faulthandler_log(dump_dir: Path) -> Path | None:
         _scrub_file(dest)
     except OSError as exc:
         # Must not block launch; the sweep scrubs the text again before showing it.
-        debug_log.log(f"crash report: could not scrub {dest.name} ({exc!r})")
+        debug_log.log(f"crash report: could not scrub {dest.name} ({exc!r})", level=debug_log.ERROR)
     return dest
 
 

@@ -19,7 +19,7 @@ from libc.string cimport memcpy, memset
 
 # Bump on any signature or semantics change, together with
 # composite_backend.EXPECTED_KERNEL_ABI, so a stale build is never used.
-KERNEL_ABI = 10
+KERNEL_ABI = 11
 
 
 cdef inline bint _gather_scatter(
@@ -794,7 +794,8 @@ cdef int _blend_init(Blend* b, tuple blend, Py_ssize_t n, Py_ssize_t px, list te
         mid = ops[3 * i + 2]
         if kind != BLEND_LAYER and kind != BLEND_NEIGHBOUR or not 0 <= slot < nt or mid >= nm:
             raise ValueError("blend op out of range")
-        need = size if kind == BLEND_LAYER else px
+        # A layer mask is the texture's period, wrap-padded by px where px does not divide it (TASK-599).
+        need = (size + (px if size % px else 0)) if kind == BLEND_LAYER else px
         if mid >= 0 and need and shapes[mid] != (need, need):
             raise ValueError("blend mask is the wrong size")
     b.cand = _p32(cand)
@@ -888,11 +889,24 @@ cdef Units _units(tuple cols):
     return u
 
 
-cdef Src* _sources(list textures, const uint8_t[:, ::1] flat) except NULL:
+cdef Src* _sources(list textures, const uint8_t[:, ::1] flat, const int64_t[::1] tex_size,
+                   Py_ssize_t px) except NULL:
     """One Src per texture slot: a contiguous (T, T, 3) texture, or None for
-    that slot's flat colour. The caller's list keeps every array alive."""
-    cdef Py_ssize_t i, n = len(textures)
+    that slot's flat colour. The caller's list keeps every array alive. A
+    texture must cover its period tex_size plus the px wrap pad where px
+    does not divide it (TASK-599), or a crop reads past it under nogil."""
+    cdef Py_ssize_t i, need, n = len(textures)
     cdef const uint8_t[:, :, ::1] tv
+    if px <= 0 or tex_size.shape[0] < n:
+        raise ValueError("tile_px not positive or a texture without its size")
+    for i in range(n):
+        if textures[i] is not None:
+            tv = textures[i]
+            if tex_size[i] <= 0:
+                raise ValueError("texture size not positive")
+            need = tex_size[i] + (px if tex_size[i] % px else 0)
+            if tv.shape[0] < need or tv.shape[1] < need or tv.shape[2] != 3:
+                raise ValueError("texture smaller than its period plus the crop pad")
     cdef Src* out = <Src*>malloc(max(n, 1) * sizeof(Src))
     if out == NULL:
         raise MemoryError()
@@ -967,7 +981,7 @@ def composite_iso(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
         if blend is not None:
             _blend_init(&bl, blend, n, tile_px, textures[0], tex_size)
             bp = &bl
-        srcs = _sources(textures[0], textures[1])
+        srcs = _sources(textures[0], textures[1], tex_size, tile_px)
         with nogil:
             for k in range(n):
                 tx = cand_x[k]
@@ -1108,7 +1122,7 @@ def composite_sloped(uint8_t[:, :, ::1] img, Py_ssize_t off_x, Py_ssize_t off_y,
         if blend is not None:
             _blend_init(&bl, blend, n, tile_px, textures[0], tex_size)
             bp = &bl
-        srcs = _sources(textures[0], textures[1])
+        srcs = _sources(textures[0], textures[1], tex_size, tile_px)
         with nogil:
             for k in range(n):
                 tx = cand_x[k]

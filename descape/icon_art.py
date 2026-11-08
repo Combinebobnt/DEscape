@@ -633,6 +633,16 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("ring", Role.INK, (8.5, 8.5, 10, 10, 2.0)),
         ("line", Role.INK, (17, 17, 22, 22, 2.6)),
     ),
+    # --- View ---
+    # A magnifier reading 1:1.
+    "view-zoom-native": (
+        ("ring", Role.INK, (2, 2, 15, 15, 2.0)),
+        ("line", Role.INK, (15, 15, 21.5, 21.5, 2.6)),
+        ("line", BLUE, (6.3, 6.5, 6.3, 12.5, 1.8)),
+        ("ellipse", BLUE, (8.8, 7, 1.6, 1.6)),
+        ("ellipse", BLUE, (8.8, 10.4, 1.6, 1.6)),
+        ("line", BLUE, (12.7, 6.5, 12.7, 12.5, 1.8)),
+    ),
     # --- Help ---
     "help-about": (
         ("ellipse", BLUE, (2, 2, 20, 20)),

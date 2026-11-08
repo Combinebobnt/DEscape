@@ -51,9 +51,12 @@ from __future__ import annotations
 
 import json
 import math
+import threading
+import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -71,6 +74,7 @@ from descape import (
     gate_orientation,
     mod_graphics,
     particle_art,
+    perf_trace,
     terrain_palette,
     unit_kind,
     unit_rotation,
@@ -495,6 +499,29 @@ _x2_mismatch_logged: set[str] = set()
 # slice_draw()'s groups: id(parent draw) -> {(c0, c1): [view, {key or None: slice}]}.
 _slice_groups: dict[int, dict[tuple[int, int], list]] = {}
 
+# The sprite prefetch's consume side (TASK-031.47, sprite_prefetch fills it). GUI thread only:
+# workers see none of this. file_name -> (prefetch_generation(), Future) for jobs no _sld_index()
+# miss has taken; the stash holds served files' frames, (file_name, frame_index) -> the value
+# _decoded_install_frame() would return, or _UNSERVED, until _native_frame() pops it.
+_prefetch_lock = threading.Lock()
+_prefetch_pending: dict[str, tuple[tuple, Future]] = {}
+_prefetch_stash: dict[tuple[str, int], object] = {}
+# True from a prefetch's start until discarded: gates the stash read and the counters.
+_prefetch_active = False
+_prefetch_stats: dict[str, float] = {}
+# Files the prefetch left to today's path, so their decodes are not counted as hint misses:
+# already indexed at submit (D8), and submitted but cancelled, stale or unserved.
+_prefetch_indexed: set[str] = set()
+_prefetch_fallback: set[str] = set()
+# Files submitted, owed to Perf Trace at the first take or the discard, so the count lands on
+# the paint's line beside the waits rather than on whichever line the submit preceded.
+_prefetch_trace_files = 0
+# Bumped by clear_caches(), so a prefetch submitted before one is never served.
+_clear_generation = 0
+# A worker's frame it could not compute (D2), and a stash key no worker produced.
+_UNSERVED = object()
+_ABSENT = object()
+
 
 def slice_draw(parent: SpriteDraw, c0: int, c1: int, key: tuple[int, int] | None) -> SpriteDraw:
     """Columns [c0, c1) of `parent` as a draw painting at the same pixels:
@@ -640,7 +667,10 @@ def clear_caches() -> None:
     install path -- a cached array outlives the file it came from otherwise,
     and every one of these remembers MISSES too, so a first-time install
     configuration would keep serving "no sprite" without this."""
-    global _mod_reach
+    global _mod_reach, _clear_generation
+    # Pending sprite prefetches are forgotten, as asset_source._forget_prefetches() does.
+    _clear_generation += 1
+    prefetch_discard()
     _native_cache.clear()
     _sld_index_cache.clear()
     _mod_index_cache.clear()
@@ -1389,13 +1419,24 @@ def _sld_index(file_name: str):
     """The file's walked SLDFile, holding no bytes, or None when there is no
     install or the file won't read. Both answers are cached except "no install",
     which _native_frame() explains. The bytes the walk read go to
-    _sld_bytes_cache for the decodes that follow."""
+    _sld_bytes_cache for the decodes that follow.
+
+    A miss first takes the file's sprite prefetch job (_take_prefetched()): a
+    served walk goes into the index here, where load_sld()'s would, and its
+    frames into the stash; its bytes are not cached (TASK-031.47 D6)."""
     directory = _graphics_dir()
     if directory is None:
         return None
     hit = _sld_index_cache.get_or_none(file_name)
     if hit is not None:
         return None if hit is _MISS else hit
+    served = _take_prefetched(file_name) if _prefetch_pending else None
+    if served is not None:
+        sld, frames = served
+        for frame_index, value in frames.items():
+            _prefetch_stash[(file_name, frame_index)] = value
+        _sld_index_cache.put(file_name, sld)
+        return sld
     sld = load_sld(_sld_path(directory, file_name))
     if sld is not None:
         _sld_bytes_cache.put(file_name, sld.release_data())
@@ -1434,7 +1475,10 @@ def _mod_frame_index(file_name: str, frame_index: int, install_count: int, mod_c
         return 0
     if file_name not in _mod_mismatch_logged:
         _mod_mismatch_logged.add(file_name)
-        debug_log.log(f"mod art: {file_name} has {mod_count} frames against the install's {install_count}; drawing the install's")
+        debug_log.log(
+            f"mod art: {file_name} has {mod_count} frames against the install's {install_count}; drawing the install's",
+            level=debug_log.WARNING,
+        )
     return None
 
 
@@ -1478,6 +1522,102 @@ def _sld_bytes(directory: Path, file_name: str) -> bytes:
     return data
 
 
+def prefetch_generation() -> tuple:
+    """The state a sprite prefetch is keyed to (TASK-031.47 D5): a prefetch
+    submitted under another value is never served."""
+    return (_clear_generation, mod_graphics.generation(), game_dataset.generation(), _hi_res_generation)
+
+
+def _prefetch_begin(indexed: set[str]) -> None:
+    """Drops the previous prefetch (D6: one at a time) and opens a new one;
+    `indexed` is the hinted files D8 leaves unsubmitted."""
+    global _prefetch_active
+    prefetch_discard()
+    _prefetch_stats.clear()
+    _prefetch_indexed.update(indexed)
+    _prefetch_active = True
+
+
+def _prefetch_register(file_name: str, generation: tuple, future: Future) -> None:
+    global _prefetch_trace_files
+    with _prefetch_lock:
+        _prefetch_pending[file_name] = (generation, future)
+    _prefetch_count("files_submitted", trace=False)
+    _prefetch_trace_files += 1
+
+
+def _prefetch_flush_trace() -> None:
+    global _prefetch_trace_files
+    if _prefetch_trace_files:
+        perf_trace.sprite_prefetch_event("files_submitted", _prefetch_trace_files)
+        _prefetch_trace_files = 0
+
+
+def prefetch_discard() -> None:
+    """Forgets every pending sprite prefetch job (a queued one cancelled, a
+    running one finishes unserved) and the stash. The counters stay readable."""
+    global _prefetch_active
+    _prefetch_flush_trace()
+    with _prefetch_lock:
+        pending = list(_prefetch_pending.values())
+        _prefetch_pending.clear()
+        _prefetch_stash.clear()
+        _prefetch_indexed.clear()
+        _prefetch_fallback.clear()
+        _prefetch_active = False
+    for _generation, future in pending:
+        future.cancel()
+
+
+def prefetch_stats() -> dict[str, float]:
+    """The last prefetch's counters, for the bench and tests."""
+    return dict(_prefetch_stats)
+
+
+def _prefetch_count(name: str, amount: float = 1, trace: bool = True) -> None:
+    _prefetch_stats[name] = _prefetch_stats.get(name, 0) + amount
+    if trace and name in perf_trace.SPRITE_PREFETCH_KINDS:
+        perf_trace.sprite_prefetch_event(name, amount)
+
+
+def _take_prefetched(file_name: str):
+    """The prefetch's (walked SLDFile, {frame_index: value}) for a file, or
+    None to run today's load_sld(). D3: a queued job is cancelled rather than
+    waited behind other files, a running one is waited on, a stale one
+    (generation moved) is dropped. A worker that failed returns None, so every
+    log line and negative-cache entry still comes from the synchronous path."""
+    with _prefetch_lock:
+        entry = _prefetch_pending.pop(file_name, None)
+    if entry is None:
+        return None
+    _prefetch_flush_trace()
+    generation, future = entry
+    if generation != prefetch_generation():
+        future.cancel()
+        _prefetch_fallback.add(file_name)
+        _prefetch_count("files_stale")
+        return None
+    if future.cancel():
+        _prefetch_fallback.add(file_name)
+        _prefetch_count("files_cancelled")
+        return None
+    t0 = time.perf_counter()
+    waited = not future.done()
+    try:
+        result = future.result()
+    except Exception:  # noqa: BLE001 -- a worker bug costs speed, never a pixel (D1)
+        result = None
+    if waited:
+        _prefetch_count("wait_ms", (time.perf_counter() - t0) * 1000)
+    if result is None:
+        _prefetch_fallback.add(file_name)
+        _prefetch_count("files_unserved")
+        return None
+    _prefetch_count("files_served")
+    _prefetch_count("frames_hinted", len(result[1]))
+    return result
+
+
 def _native_frame(file_name: str, frame_index: int):
     """(main, playercolor, hotspot_x, hotspot_y) at native resolution, or None.
 
@@ -1516,9 +1656,23 @@ def _native_frame(file_name: str, frame_index: int):
     try:
         frame = _decode_mod_frame(file_name, frame_index, sld.frame_count)
     except (SLDError, OSError) as exc:
-        debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, drawing the install's: {exc}")
+        debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, drawing the install's: {exc}", level=debug_log.WARNING)
         frame = None
-    if frame is None:
+    if frame is None and _prefetch_active:
+        # The prefetch's value for this key is the computation below's (D1); only this key reads it.
+        value = _prefetch_stash.pop(key, _ABSENT)
+        if value is _ABSENT or value is _UNSERVED:
+            if value is _UNSERVED or file_name in _prefetch_fallback:
+                _prefetch_count("frames_unserved")
+            else:
+                # A file D8 left alone is today's path by design; anything else is a hint miss.
+                _prefetch_count("frames_indexed" if file_name in _prefetch_indexed else "unhinted")
+            t0 = time.perf_counter()
+            value = _decoded_install_frame(sld, directory, file_name, frame_index)
+            _prefetch_count("sync_decode_ms", (time.perf_counter() - t0) * 1000)
+        else:
+            _prefetch_count("frames_served")
+    elif frame is None:
         value = _decoded_install_frame(sld, directory, file_name, frame_index)
     else:
         value = None if frame.main is None else _cropped_to_ink(
@@ -1543,7 +1697,7 @@ def _decoded_install_frame(sld, directory: Path, file_name: str, frame_index: in
             window_to_main=True,
         )
     except (SLDError, OSError) as exc:
-        debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}")
+        debug_log.log(f"sprite: {file_name} frame {frame_index} failed to decode: {exc}", level=debug_log.WARNING)
         return None
     # DAMAGE is deliberately not composited: it is a packed mask that BC1
     # happens to carry, not colour. SHADOW and OUTLINE are likewise skipped.
@@ -1645,7 +1799,10 @@ def _decode_x2_frame(file_name: str, x2_name: str, frame_index: int, install_cou
     if sld.frame_count != install_count:
         if file_name not in _x2_mismatch_logged:
             _x2_mismatch_logged.add(file_name)
-            debug_log.log(f"x2 art: {x2_name} has {sld.frame_count} frames against x1's {install_count}; drawing x1")
+            debug_log.log(
+                f"x2 art: {x2_name} has {sld.frame_count} frames against x1's {install_count}; drawing x1",
+                level=debug_log.WARNING,
+            )
         return None
     return sld.decode_frame(
         frame_index,
@@ -1679,7 +1836,7 @@ def _x2_native_frame(file_name: str, frame_index: int):
         try:
             frame = _decode_x2_frame(file_name, x2_name, frame_index, sld.frame_count)
         except (SLDError, OSError) as exc:
-            debug_log.log(f"x2 art: {x2_name} frame {frame_index} failed to decode, drawing x1: {exc}")
+            debug_log.log(f"x2 art: {x2_name} frame {frame_index} failed to decode, drawing x1: {exc}", level=debug_log.WARNING)
             frame = None
         if frame is not None and frame.main is not None:
             value = _cropped_to_ink(frame.main, frame.playercolor, frame.hotspot_x, frame.hotspot_y)
@@ -1931,23 +2088,41 @@ def _frame_for(
     a seed is given; seed=None keeps the rotation dispatch below unchanged.
 
     An entry's optional `frame_offset` (a fish body whose frame 0 is empty,
-    GH #178) is added to whichever frame run the dispatch picked."""
+    GH #178) is added to whichever frame run the dispatch picked.
+
+    The arithmetic is _dispatch(), which sprite_prefetch's workers share."""
+    file_name = str(entry["file_name"])
+    return _dispatch(
+        entry, rotation, angle_offset_deg, seed, piece_index, rotation_is_variant(unit_const),
+        lambda: sld_frame_count(file_name),
+    )
+
+
+def _dispatch(
+    entry: dict, rotation: float, angle_offset_deg: float, seed: int | None, piece_index: int,
+    is_variant: bool, frame_count_of: Callable[[], int | None],
+) -> int:
+    """_frame_for()'s frame index from resolved inputs, pure: `is_variant` is
+    rotation_is_variant() of the piece's own const, and `frame_count_of()` the
+    file's real frame count (None when it won't read), called only on the
+    seeded and variant branches, so an angle const walks nothing. The GUI
+    thread passes sld_frame_count(); a prefetch worker its own walk's count."""
     return _dispatched_frame(
-        unit_const, entry, rotation, angle_offset_deg, seed, piece_index
+        entry, rotation, angle_offset_deg, seed, piece_index, is_variant, frame_count_of
     ) + int(entry.get("frame_offset", 0))
 
 
 def _dispatched_frame(
-    unit_const: int, entry: dict, rotation: float, angle_offset_deg: float,
-    seed: int | None, piece_index: int,
+    entry: dict, rotation: float, angle_offset_deg: float, seed: int | None, piece_index: int,
+    is_variant: bool, frame_count_of: Callable[[], int | None],
 ) -> int:
     angle_count = max(1, int(entry["angle_count"]))
     frame_count = max(1, int(entry["frame_count"]))
     if seed is not None and entry.get("seeded"):
-        real_frames = sld_frame_count(str(entry["file_name"]))
+        real_frames = frame_count_of()
         count = angle_count if real_frames is None else max(1, real_frames // frame_count)
         return seeded_variant(int(seed), piece_index, count) * frame_count
-    if not rotation_is_variant(unit_const):
+    if not is_variant:
         return angle_index(rotation, angle_count, angle_offset_deg) * frame_count
     # The file's real frame count, not the .dat's angle_count, bounds a literal
     # stored index -- see variant_index()'s own note on the two cliff families
@@ -1963,7 +2138,7 @@ def _dispatched_frame(
     # (no install, or the .sld missing here) falls back to angle_count, which
     # is what every caller did before this existed; there is no sprite to draw
     # on that path anyway.
-    real_frames = sld_frame_count(str(entry["file_name"]))
+    real_frames = frame_count_of()
     variant_count = None if real_frames is None else max(1, real_frames // frame_count)
     return variant_index(rotation, angle_count, variant_count) * frame_count
 
@@ -2061,10 +2236,11 @@ def _draw_for_entry(
     # art leaks into a shrunk render and vice versa.
     # hero_glow is keyed for the same reason: the ringed draw is a different image.
     # art_scale too: it comes from the entry, and two entries can share a file.
-    # want_x2 (GH #241): x1 enlarged at Enhanced draws the _x2 art instead.
+    # want_x2 (GH #241): x1 enlarged at Enhanced draws the _x2 art instead, and so does x1 at
+    # exactly 1:1 (the native tier, TASK-599): x2 halved by the box filter on the same pixel grid.
     # blank_mod_fallback: one stem can be a piece (a gap) and a single graphic (the install's art).
     # smooth (GH #254): x1 shrunk at Default and above is box-filtered, so half_w alone collides across qualities.
-    want_x2 = _hi_res and scale > 1.0
+    want_x2 = _hi_res and scale >= 1.0
     smooth = _smooth_shrink and scale < 1.0
     key = (
         entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset,

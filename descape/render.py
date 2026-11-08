@@ -175,23 +175,19 @@ def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, 
     continuity only because iso_geometry._inverse_sample reads the whole
     crop along these same axes (column = x, row = y).
 
-    Relies on texture_size being an exact multiple of tile_px (enforced by the
-    assertion below, checked against the real values every render rather than
-    stated as a fixed pair here since tile_px is now adaptive per map size --
-    see tile_pixels_for_map) so every crop window lands exactly on a tile_px
-    boundary and never straddles the texture's own wrap point -- a plain
-    slice is enough, no explicit wraparound handling needed. Would need
-    revisiting (real modulo/wraparound indexing) if either tile_pixels_for_map
-    return value or asset_source.LOADED_TEXTURE_SIZE ever changed to a
-    non-dividing pair.
+    Where tile_px divides texture_size every crop window lands exactly on a
+    tile_px boundary and never straddles the texture's own wrap point, so a
+    plain slice of the texture is enough. The native tier's 96 on a 512
+    texture (TASK-599) does not divide it: its crops straddle the wrap, so
+    they slice asset_source.crop_source()'s wrap-padded copy instead, with
+    the period still texture_size. Every caller crops from crop_source().
 
     The large-scale repeat this trades away (the same texture region recurring
     every texture_size/tile_px tiles) is deliberate: for noisy ground textures
     (grass, dirt, ...) with no single distinct landmark, that repeat is far
     less visible than a hard seam at every single tile boundary."""
-    assert texture_size % tile_px == 0, (
-        f"_crop_offset requires texture_size ({texture_size}) to be a multiple "
-        f"of tile_px ({tile_px}) to stay seam-free without wraparound handling"
+    assert 0 < tile_px <= texture_size, (
+        f"_crop_offset needs tile_px ({tile_px}) within one texture period ({texture_size})"
     )
     return (x * tile_px) % texture_size, (y * tile_px) % texture_size
 
@@ -226,7 +222,7 @@ def _top_block(
             block = terrain_blend.blended_block(blend, ox, oy, tile_px)
             if block is not None:
                 return block
-        return texture[oy : oy + tile_px, ox : ox + tile_px]
+        return asset_source.crop_source(texture, tile_px)[oy : oy + tile_px, ox : ox + tile_px]
     r, g, b = color_for_terrain_id(terrain_id)
     return np.full((tile_px, tile_px, 3), (r, g, b), dtype=np.uint8)
 
@@ -3601,11 +3597,25 @@ def _flat_unit_rows(
     id(unit) as int64, and row_player, the owning player as int8. Rows are in
     player order, so row_player is non-decreasing, which is what lets
     FlatChunkCache.invalidate_units() find the end of a player's block with
-    one searchsorted. One walk, so the side columns can't disagree with the
-    bboxes about which units have rows."""
+    one searchsorted. One walk (_flat_unit_base_rows()), so the side columns
+    can't disagree with the bboxes about which units have rows."""
+    tiles, offsets, colors, row_uid, row_player = _flat_unit_base_rows(scenario, unit_filter)
+    return flat_unit_bboxes(tiles, offsets, tile_px), colors, row_uid, row_player
+
+
+def _flat_unit_base_rows(
+    scenario: LoadedScenario, unit_filter: UnitFilter = UnitFilter()
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The mip-independent half of _flat_unit_rows()' walk: (tiles (N,4)
+    int32 in unit_tile_bounds()' (x0, x1, y0, y1) order, offsets (N,2)
+    float64 from unit_paint_offset(), colors (N,3) uint8, row_uid int64,
+    row_player int8). flat_unit_bboxes() turns the first two into any
+    level's bboxes, so FlatChunkCache walks the units once per wholesale
+    rebuild rather than once per level."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
-    bboxes = []
+    tiles = []
+    offsets = []
     colors = []
     row_uid = []
     row_player = []
@@ -3617,19 +3627,30 @@ def _flat_unit_rows(
             bounds = unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
-            bboxes.append(_flat_unit_bbox(bounds, unit, tile_px))
+            tiles.append(bounds)
+            offsets.append(unit_paint_offset(unit))
             colors.append(_unit_color(unit, player_color))
             row_uid.append(id(unit))
             row_player.append(player_id)
-    if not bboxes:
+    if not tiles:
         return (
-            np.zeros((0, 4), dtype=np.int32), np.zeros((0, 3), dtype=np.uint8),
-            np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int8),
+            np.zeros((0, 4), dtype=np.int32), np.zeros((0, 2), dtype=np.float64),
+            np.zeros((0, 3), dtype=np.uint8), np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int8),
         )
     return (
-        np.array(bboxes, dtype=np.int32), np.array(colors, dtype=np.uint8),
-        np.array(row_uid, dtype=np.int64), np.array(row_player, dtype=np.int8),
+        np.array(tiles, dtype=np.int32), np.array(offsets, dtype=np.float64),
+        np.array(colors, dtype=np.uint8), np.array(row_uid, dtype=np.int64), np.array(row_player, dtype=np.int8),
     )
+
+
+def flat_unit_bboxes(tiles: np.ndarray, offsets: np.ndarray, tile_px: int) -> np.ndarray:
+    """_flat_unit_bbox() for every row of _flat_unit_base_rows()' columns at
+    once, as (N,4) int32 (x0, y0, x1, y1). np.rint rounds half to even, as
+    round() does on a float, so the two agree on every row."""
+    t = tiles.astype(np.int64) * tile_px
+    off = np.rint(offsets * tile_px).astype(np.int64)
+    ox, oy = off[:, 0], off[:, 1]
+    return np.stack((t[:, 0] + ox, t[:, 2] + oy, t[:, 1] + ox, t[:, 3] + oy), axis=1).astype(np.int32)
 
 
 def _flat_icon_layer(

@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QLabel, QMenu
 
-from descape import asset_source, dat_cache, data_mods, game_dataset, settings
+from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, settings
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
@@ -149,7 +149,7 @@ class DataModMenu(QObject):
         if mod is not None:
             reason = self.unusable_reason(mod)
             if reason is not None:
-                self._window._log_status(f"Data mod {mod.title} cannot be used: {reason}")
+                self._window._log_status(f"Data mod {mod.title} cannot be used: {reason}", level=debug_log.WARNING)
                 return
         self._wanted = mod
         self.remember_current()
@@ -195,11 +195,11 @@ class DataModMenu(QObject):
         title = remembered.get("title") or remembered.get("status_path")
         mod = data_mods.find(remembered, data_mods.discover())
         if mod is None:
-            self._window._log_status(f"Data mod {title} was not found; showing the game's own data")
+            self._window._log_status(f"Data mod {title} was not found; showing the game's own data", level=debug_log.WARNING)
             return None
         reason = self.unusable_reason(mod)
         if reason is not None:
-            self._window._log_status(f"Data mod {mod.title} cannot be used: {reason}; showing the game's own data")
+            self._window._log_status(f"Data mod {mod.title} cannot be used: {reason}; showing the game's own data", level=debug_log.WARNING)
             return None
         return mod
 
@@ -311,7 +311,7 @@ class DataModMenu(QObject):
     def _fail(self, mod: data_mods.DataMod, message: str, from_pick: bool) -> None:
         """A mod that cannot be read: kept out of the menu this session, the current data kept."""
         self._failed[mod.status_path] = message
-        self._window._log_status(f"Data mod {mod.title} cannot be used: {message}")
+        self._window._log_status(f"Data mod {mod.title} cannot be used: {message}", level=debug_log.ERROR)
         if mod == self._wanted:
             self._wanted = self._effective
             if from_pick:
@@ -347,7 +347,7 @@ class DataModMenu(QObject):
                 self._warning_counts[mod.status_path] = len(tables.warnings)
             if tables.warnings and tables.key not in self._warned:
                 self._warned.add(tables.key)
-                self._window._log_status(warning_summary(tables))
+                self._window._log_status(warning_summary(tables), level=debug_log.WARNING)
         return changed
 
 

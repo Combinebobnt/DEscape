@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
+from functools import cache
 from typing import ClassVar
 
 import numpy as np
@@ -36,6 +37,7 @@ from descape import (
     grid_overlay,
     iso_geometry,
     perf_trace,
+    thread_stats,
     zoom_preframe,
 )
 from descape.render_cache import (
@@ -71,23 +73,31 @@ STALL_HEARTBEAT_MS = 50
 STALL_THRESHOLD_MS = 150
 _stall_timer: QTimer | None = None
 _stall_last = 0.0
+_stall_sample: thread_stats.ThreadSample | None = None
 
 
 def _stall_beat() -> None:
-    global _stall_last
-    now = time.perf_counter()
+    global _stall_last, _stall_sample
+    if not perf_trace.is_enabled():
+        _stall_sample = None
+        return
+    current = thread_stats.sample()
+    now = current.wall
     late_ms = (now - _stall_last) * 1000 - STALL_HEARTBEAT_MS
     _stall_last = now
+    stats = thread_stats.delta(_stall_sample, current) if _stall_sample is not None else None
+    _stall_sample = current
     if late_ms > STALL_THRESHOLD_MS:
-        perf_trace.stall(late_ms)
+        perf_trace.stall(late_ms, stats)
 
 
 def set_stall_watchdog(on: bool) -> None:
     """Runs the heartbeat only while Perf Trace is on; wired to its toggle."""
-    global _stall_timer, _stall_last
+    global _stall_timer, _stall_last, _stall_sample
     if QCoreApplication.instance() is None:
         return
     if not on:
+        _stall_sample = None
         if _stall_timer is not None:
             _stall_timer.stop()
         return
@@ -97,8 +107,14 @@ def set_stall_watchdog(on: bool) -> None:
         _stall_timer.setInterval(STALL_HEARTBEAT_MS)
         _stall_timer.timeout.connect(_stall_beat)
     # Seeded here, so the first beat after a start isn't read as a stall.
-    _stall_last = time.perf_counter()
+    _stall_sample = thread_stats.sample() if perf_trace.is_enabled() else None
+    _stall_last = _stall_sample.wall if _stall_sample is not None else time.perf_counter()
     _stall_timer.start()
+
+
+@cache
+def _overlay_base_font() -> QFont:
+    return QFontDatabase.systemFont(QFontDatabase.GeneralFont)
 
 
 def map_overlay_font(px: int) -> QFont:
@@ -112,8 +128,9 @@ def map_overlay_font(px: int) -> QFont:
     label boxes it is measured against. systemFont(GeneralFont) is the base
     rather than a bare QFont() because a bare one inherits whatever
     app.setFont() was last called with at construction time -- stale, not
-    fixed -- and rather than a hardcoded family because this stays portable."""
-    font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+    fixed -- and rather than a hardcoded family because this stays portable.
+    The system font is read once per process and copied per call."""
+    font = QFont(_overlay_base_font())
     font.setPixelSize(px)
     return font
 
@@ -181,15 +198,17 @@ MAX_REDUCTIONS = 3
 PLACEHOLDER_MAX_MISSING = 2
 
 
-def reduction_for(coarsest: int, max_axis_scale: float) -> int:
+def reduction_for(coarsest_octave: int, max_axis_scale: float) -> int:
     """How many times paint() box-reduces the coarsest level (TASK-031.70):
     mip_for_scale()'s ceil(log2(scale)) rule continued below the clamp, so
     the reduced residual lands back in (0.5, 1] where the RGB32 gate already
-    holds. 0 wherever the coarsest level's own residual is already in that
-    band, and at a scale <= 0 (the same guard mip_for_scale() has)."""
+    holds. coarsest_octave is log2 of the coarsest level's tile_px over the
+    reference's (MapCanvasItem.reduction_at()), not its index. 0 wherever
+    the coarsest level's own residual is already in that band, and at a
+    scale <= 0 (the same guard mip_for_scale() has)."""
     if max_axis_scale <= 0:
         return 0
-    return max(0, min(MAX_REDUCTIONS, coarsest - math.ceil(math.log2(max_axis_scale))))
+    return max(0, min(MAX_REDUCTIONS, coarsest_octave - math.ceil(math.log2(max_axis_scale))))
 
 
 def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int, int, int, int] | None:
@@ -249,7 +268,7 @@ class _BlockDraw:
     arguments (the point overload at level 0, else target and source rects),
     clipped to `clip` (the block's unpadded core in scene units) when set."""
 
-    __slots__ = ("_hold", "clip", "point", "qimg", "source", "target")
+    __slots__ = ("_hold", "clip", "convert_ms", "height", "k", "point", "qimg", "render_ms", "source", "target", "width")
 
     def __init__(self, qimg: QImage, hold, *, point=None, target=None, source=None, clip: QRectF | None = None) -> None:
         self.qimg = qimg
@@ -259,6 +278,9 @@ class _BlockDraw:
         self.target = target
         self.source = source
         self.clip = clip
+        self.render_ms = self.convert_ms = 0.0
+        self.k = 0
+        self.width, self.height = qimg.width(), qimg.height()
 
     @property
     def format(self) -> QImage.Format:
@@ -546,8 +568,9 @@ class MapCanvasItem(QGraphicsItem):
         # destination rect in scene units by multiplying back by `scale`.
         # Doing it the other way (tiling in scene units) would round block
         # edges independently per block, so adjacent blocks' destination
-        # rects could fail to abut -- `scale` is an exact power of two, so
-        # this way they always do.
+        # rects could fail to abut -- a block's edge is the same integer
+        # times the same `scale` as its neighbour's, so this way they always
+        # do (exact at a power of two, not at the native tier's 2/3: TASK-599).
         # Past the coarsest non-zero level, blit its box-reduced copy k times smaller (TASK-031.70);
         # "level pixels" below then means reduced-k pixels.
         scale = self._cache.mip_scale(mip) * (1 << k)
@@ -579,10 +602,12 @@ class MapCanvasItem(QGraphicsItem):
                 py0 = max(0, cy0 - self.PAINT_PAD_PX)
                 px1 = min(canvas_w, cx1 + self.PAINT_PAD_PX)
                 py1 = min(canvas_h, cy1 + self.PAINT_PAD_PX)
+                render_start = time.perf_counter()
                 if k:
                     block = self._cache.render_reduced_rect(px0, py0, px1, py1, mip, k)
                 else:
                     block = self._cache.render_rect(px0, py0, px1, py1, mip=mip)
+                convert_start = time.perf_counter()
                 if block.size == 0:
                     continue
                 core = QRectF(cx0 * scale, cy0 * scale, (cx1 - cx0) * scale, (cy1 - cy0) * scale)
@@ -592,6 +617,7 @@ class MapCanvasItem(QGraphicsItem):
                     qimg = QImage(contiguous.data, w, h, 3 * w, QImage.Format_RGB888)
                     if to_rgb32:
                         qimg = qimg.convertToFormat(QImage.Format_RGB32)
+                    convert_end = time.perf_counter()
                     if scale == 1.0:
                         # Level 0 always keeps the point overload (not bit-identical to the scaled
                         # path); at a non-scaling transform its RGB888 source too, for the 1:1 bars.
@@ -616,6 +642,9 @@ class MapCanvasItem(QGraphicsItem):
                             source=QRectF(0, 0, w, h),
                             clip=core,
                         )
+                draw.render_ms = (convert_start - render_start) * 1000
+                draw.convert_ms = (convert_end - convert_start) * 1000
+                draw.k = k
                 yield draw
 
     def frame_plan(self, device: QTransform, rect: QRectF) -> tuple[int, int, tuple[int, int, int, int]] | None:
@@ -643,7 +672,11 @@ class MapCanvasItem(QGraphicsItem):
     def reduction_at(self, mip: int, max_axis_scale: float) -> int:
         """The box reductions paint() applies to level `mip` at a device
         scale: reduction_for() at the coarsest non-zero level, else 0."""
-        return reduction_for(mip, max_axis_scale) if mip == self._cache.mip_levels()[0] != 0 else 0
+        if mip != self._cache.mip_levels()[0] or mip == 0:
+            return 0
+        # The coarse side is power-of-two below the reference, so this ratio is an exact octave.
+        octave = round(-math.log2(self._cache.mip_scale(mip)))
+        return reduction_for(octave, max_axis_scale)
 
     def _level_to_draw(self, mip: int, rect: QRectF, live: bool, device_scale: float) -> int:
         """The level a paint that selected `mip` draws, moving the settled and
@@ -702,6 +735,9 @@ class MapCanvasItem(QGraphicsItem):
 
     def pending_mip(self) -> int | None:
         return self._pending_mip
+
+    def pending_source(self) -> int | None:
+        return self._pending_source
 
     def refine(self, mip: int) -> None:
         """Settles `mip` if it is the pending level and repaints: the viewer
@@ -1098,6 +1134,126 @@ class EdgeTickItem(QGraphicsItem):
             painter.setPen(self.LABEL_COLOR)
             for box, text in labels:
                 painter.drawText(box, Qt.AlignCenter, text)
+
+
+class ChunkedPathItem(QGraphicsItem):
+    """A QGraphicsPathItem split into one QPainterPath per map chunk, so a
+    unit-outline overlay rebuilds only the chunks an edit touched
+    (descape.outline_chunks, TASK-031.42), and paint() strokes only the
+    chunks the exposed rect meets.
+
+    Stroking the subpaths in several drawPath() calls gives the same pixels as
+    one call because the pen is opaque and MapView sets no Antialiasing hint
+    (tests/test_footprint_outlines.py pins byte identity). boundingRect() is
+    QGraphicsPathItem's rule: the control-point rect, padded by half the pen
+    width when it is not 0."""
+
+    # Device-pixel slack on the cull, so a stroke on a chunk rect's edge is never culled.
+    CULL_MARGIN_PX = 2.0
+    # More changed chunk rects than this in one set_chunks() repaint the whole item instead.
+    UPDATE_RECTS_MAX = 32
+
+    def __init__(self, pen: QPen) -> None:
+        super().__init__()
+        self._pen = QPen(pen)
+        self._paths: dict[tuple[int, int], QPainterPath] = {}
+        self._rects: dict[tuple[int, int], QRectF] = {}
+        self._bounds = QRectF()
+        self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption, True)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def pen(self) -> QPen:
+        return QPen(self._pen)
+
+    def setPen(self, pen: QPen) -> None:
+        if pen == self._pen:
+            return
+        width_changed = pen.widthF() != self._pen.widthF()
+        self._pen = QPen(pen)
+        if width_changed:
+            self._rects = {chunk: self._rect_of(path) for chunk, path in self._paths.items()}
+            self._set_bounds()
+        self.update()
+
+    def _rect_of(self, path: QPainterPath) -> QRectF:
+        rect = path.controlPointRect()
+        half = self._pen.widthF() / 2.0
+        return rect.adjusted(-half, -half, half, half) if half else rect
+
+    def _set_bounds(self) -> None:
+        bounds = QRectF()
+        for rect in self._rects.values():
+            bounds = bounds.united(rect)
+        if bounds != self._bounds:
+            self.prepareGeometryChange()
+            self._bounds = bounds
+
+    def set_chunk(self, chunk: tuple[int, int], path: QPainterPath | None) -> None:
+        """Replaces one chunk's path; None or an empty path drops the chunk."""
+        self.set_chunks({chunk: path})
+
+    def set_chunks(self, updates: dict[tuple[int, int], QPainterPath | None]) -> None:
+        """set_chunk() for many chunks, with one bounds update for the lot."""
+        dirty_rects = []
+        for chunk, path in updates.items():
+            old_rect = self._rects.pop(chunk, None)
+            self._paths.pop(chunk, None)
+            if old_rect is not None:
+                dirty_rects.append(old_rect)
+            if path is not None and not path.isEmpty():
+                self._paths[chunk] = path
+                rect = self._rects[chunk] = self._rect_of(path)
+                dirty_rects.append(rect)
+        if not dirty_rects:
+            return
+        self._set_bounds()
+        if len(dirty_rects) > self.UPDATE_RECTS_MAX:
+            # A rebuild of many chunks: one whole-item update, as QGraphicsPathItem.setPath() does.
+            self.update()
+            return
+        for rect in dirty_rects:
+            self.update(rect)
+
+    def clear(self) -> None:
+        if not self._paths:
+            return
+        self.update()
+        self._paths.clear()
+        self._rects.clear()
+        self._set_bounds()
+
+    def chunks(self) -> dict[tuple[int, int], QPainterPath]:
+        return dict(self._paths)
+
+    def chunk_count(self) -> int:
+        return len(self._paths)
+
+    def path(self) -> QPainterPath:
+        """Every chunk's path in one, in chunk order: for tests and the eyeball tools."""
+        union = QPainterPath()
+        for chunk in sorted(self._paths):
+            union.addPath(self._paths[chunk])
+        return union
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(self._bounds)
+
+    def paint(self, painter, option, widget=None) -> None:
+        if not self._paths:
+            return
+        painter.setPen(self._pen)
+        painter.setBrush(Qt.NoBrush)
+        cull = None
+        exposed = getattr(option, "exposedRect", None)
+        if exposed is not None and not exposed.isEmpty():
+            transform = painter.worldTransform()
+            inverse, invertible = transform.inverted()
+            if invertible:
+                pad = self.CULL_MARGIN_PX + self._pen.widthF()
+                cull = inverse.mapRect(transform.mapRect(exposed).adjusted(-pad, -pad, pad, pad))
+        for chunk, path in self._paths.items():
+            if cull is None or self._rects[chunk].intersects(cull):
+                painter.drawPath(path)
 
 
 class GridItem(QGraphicsItem):

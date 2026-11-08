@@ -538,7 +538,7 @@ def _release_record_guard(window, events):
         del history.build_stroke_record
     oracle = [(i, start[i], tile_state(t)) for i, t in enumerate(mm.terrain) if tile_state(t) != start[i]]
     (record,) = built
-    got = record.changes if record is not None else []
+    got = list(record.changes) if record is not None else []
     assert got == oracle, f"missing {sorted({c[0] for c in oracle} - {c[0] for c in got})[:8]}"
     return got
 
