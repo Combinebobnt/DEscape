@@ -797,6 +797,7 @@ def _isolated_settings(tmp_path, monkeypatch):
 
     unit_sprites.set_hi_res(False)
     unit_sprites.set_smooth_shrink(False)
+    unit_sprites.set_background_reach(False)  # GH #272: a window walks it in a thread
     # A window turns it on, and with AOE2DE_INSTALL_PATH set the profile autodetects to this
     # machine's own mods; only a test that names a profile in AOE2DE_PROFILE_PATH gets any.
     real_roots = mod_graphics._candidate_roots

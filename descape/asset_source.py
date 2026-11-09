@@ -631,6 +631,25 @@ def save_profile_path_to_config(path: Path | None) -> None:
     write_config_file(CONFIG_PATH, config)
 
 
+def undrawable_terrain_textures() -> list[str]:
+    """Every texture file the terrain table in effect names that neither the
+    install's terrain/textures/2x (one folder listing) nor an active mod
+    provides, sorted: those terrains draw their flat colour (GH #272's status
+    line). [] without an install or a folder that will not list."""
+    install = get_install_path()
+    if install is None:
+        return []
+    from descape import mod_graphics
+
+    try:
+        with os.scandir(game_dataset.resource_path_in(install, TERRAIN_TEXTURE_SUBPATH)) as entries:
+            have = {entry.name.casefold() for entry in entries}
+    except OSError:
+        return []
+    names = set(_terrain_texture_map().values())
+    return sorted(n for n in names if n.casefold() not in have and mod_graphics.resolve_terrain_texture(n) is None)
+
+
 @lru_cache(maxsize=256)
 def get_terrain_texture_path(terrain_id: int) -> Path | None:
     """Returns the real .dds path for a terrain_id, or None if unavailable --
@@ -705,14 +724,19 @@ _TEXTURE_DECODE_ERRORS = (OSError, ValueError, NotImplementedError, SyntaxError)
 
 def _decode_with_install_fallback(path: Path, decode):
     """decode(path), or for a mod texture that will not decode (TASK-378), the
-    install's file of the same name, logged; an install file's error raises as before."""
+    install's file of the same name, logged. With no install file of that name
+    (a data mod's own texture, GH #272) None, logged, so the terrain draws its
+    flat colour. An install file's error raises as before."""
     try:
         return decode(path)
     except _TEXTURE_DECODE_ERRORS as exc:
         install = get_install_path()
         fallback = None if install is None else install / TERRAIN_TEXTURE_SUBPATH / path.name
-        if fallback is None or fallback == path or not fallback.is_file():
+        if fallback == path:
             raise
+        if fallback is None or not fallback.is_file():
+            debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); the install has none of that name")
+            return None
         debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); drawing the install's")
         return decode(fallback)
 
@@ -761,7 +785,10 @@ def _shrunk_texture(path: Path, size: int):
     import numpy as np
     from PIL import Image
 
-    arr = np.array(Image.fromarray(_terrain_texture_for_path(path)).resize((size, size), Image.BOX))
+    base = _terrain_texture_for_path(path)
+    if base is None:
+        return None
+    arr = np.array(Image.fromarray(base).resize((size, size), Image.BOX))
     arr.flags.writeable = False
     return arr
 
@@ -799,7 +826,8 @@ def _load_texture(path: Path):
             return np.array(rgb)
 
     arr = _decode_with_install_fallback(path, decode)
-    arr.flags.writeable = False
+    if arr is not None:
+        arr.flags.writeable = False
     return arr
 
 

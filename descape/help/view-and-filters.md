@@ -42,7 +42,7 @@ No technology effects are applied, and siege units get no ring.
 - Hero Glow: a gold outline round hero units, as in the game.
 - Fish Outlines: a ring round every fish, so they are easy to find on the water. A deep-water fish, dolphin or whale is ringed round its whole footprint. Fish the Filters hide get no ring, and the colour is set in **Settings > Appearance**. The ring also shows round Place Unit's and the Unit Brush's preview when a fish is picked.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
-- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all.
+- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all. With a data mod picked in **File > Data Mod**, it also draws that mod's own units and terrains from its art mod; the status log names any art file nothing provides.
 - Colour Mood: off by default. On, it tints the map with the scenario's colour mood (Map Options), as the game does, approximately. It covers brightness and tint only, not fog, bloom or shadows, and the water definition is not previewed. DEscape's own overlays keep their colours. To see a mood a trigger would set, pick it in Map Options, look, then undo.
 
 A greyed layer has nothing to do in the current view, and its tooltip says why.

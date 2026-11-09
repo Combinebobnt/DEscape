@@ -990,6 +990,79 @@ def test_a_buildings_multi_delta_shell_is_drawn_as_its_hull_when_lenient(gen, le
     assert ship_kind == "shell_deltas" and len(ship["pieces"]) == 2, "a creatable keeps its sails"
 
 
+def _twin_shell(shadow: str, body: str) -> list:
+    """GH #272: Galactic Battlegrounds' shape, a body's shadow file listed before the body."""
+    return [_graphic(0, "None", deltas=[_delta(1), _delta(2)]), _graphic(1, shadow), _graphic(2, body)]
+
+
+@pytest.mark.parametrize("shadow, body", [
+    ("BCOMDC1_S-C1_x1", "BCOMDC1-C1_x1"),
+    ("OBJ-CARBON3_S_x1", "OBJ-CARBON3_x1"),
+    ("lbld-jabbapals_x1", "lbld-jabbapal_x1"),
+], ids=["s_dash", "underscore_s", "trailing_s"])
+def test_a_shadow_twin_gives_way_to_its_body_when_lenient(gen, lenient, shadow, body):
+    graphics = _twin_shell(shadow, body)
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == body
+    assert [g.file_name for g, _dx, _dy in gen._resolve_all_modern_deltas(graphics, 0)] == [body]
+    assert lenient == []
+
+
+def test_the_shadow_twin_rule_is_off_when_strict(gen):
+    graphics = _twin_shell("BCOMDC1_S-C1_x1", "BCOMDC1-C1_x1")
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "BCOMDC1_S-C1_x1"
+    assert len(gen._resolve_all_modern_deltas(graphics, 0)) == 2
+
+
+def test_a_shadow_like_name_without_a_twin_is_kept(gen, lenient):
+    graphics = _twin_shell("DEBRIS_x1", "obj-kcrater-s_x1")
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "DEBRIS_x1"
+    assert len(gen._resolve_all_modern_deltas(graphics, 0)) == 2
+
+
+def test_a_ships_shadow_twin_leaves_its_hull_and_sails(gen, lenient):
+    graphics = [
+        _graphic(0, "-C1", deltas=[_delta(1), _delta(2), _delta(3, offset_y=-25)]),
+        _graphic(1, "SHIP_S-C1_x1"),
+        _graphic(2, "SHIP-C1_x1"),
+        _graphic(3, "SAIL-C1_x1"),
+    ]
+    entry, kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
+    assert kind == "shell_deltas" and entry["file_name"] == "SHIP-C1_x1"
+    assert [p["file_name"] for p in entry["pieces"]] == ["SHIP-C1_x1", "SAIL-C1_x1"]
+    assert lenient == []
+
+
+def _named_shell(*deltas: str) -> list:
+    """GH #272: GB's Heavy Weapons Factory, a modern-named shell nothing ships over its body and shadow."""
+    names = deltas or ("BHVWEA3_S-C1_x1", "BHVWEA3-C1_x1", "POWER-OFF-C1_x1")
+    shell = _graphic(0, "trainsiege1-c1_x1", deltas=[_delta(i + 1) for i in range(len(names))])
+    return [shell, *(_graphic(i + 1, name) for i, name in enumerate(names))]
+
+
+def test_a_modern_named_shell_over_a_body_and_its_shadow_draws_the_body_when_lenient(gen, lenient):
+    graphics = _named_shell()
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "BHVWEA3-C1_x1"
+    entry, kind = gen._entry_for(_units(45), graphics, Path("no-graphics"), 45, {})
+    assert (entry["graphic_id"], entry["file_name"], kind) == (2, "BHVWEA3-C1_x1", "plain")
+    assert len(lenient) == 1 and lenient[0].endswith("(drawn as 'BHVWEA3-C1_x1' alone)")
+
+
+def test_a_modern_named_shell_draws_itself_when_strict(gen):
+    graphics = _named_shell()
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "trainsiege1-c1_x1"
+    entry, _kind = gen._entry_for(_units(45), graphics, Path("no-graphics"), 45, {})
+    assert entry["file_name"] == "trainsiege1-c1_x1"
+
+
+@pytest.mark.parametrize("deltas", [
+    ("trainsiege1_s-c1_x1", "BHVWEA3_S-C1_x1", "BHVWEA3-C1_x1"),
+    ("BHVWEA3_S-C1_x1", "trainsiege1-c1_x1"),
+    ("BHVWEA3-C1_x1", "POWER-OFF-C1_x1"),
+], ids=["own_shadow", "own_stem", "no_pair"])
+def test_a_modern_named_shell_keeps_itself_without_a_hidden_body(gen, lenient, deltas):
+    assert gen._resolve_modern_graphic(_named_shell(*deltas), 0).file_name == "trainsiege1-c1_x1"
+
+
 @pytest.mark.parametrize("change", [{"copies": 3}, {"delta__display_angle": 2}], ids=["three_deltas", "one_angle_only"])
 def test_a_garrison_shell_outside_the_measured_shape_gives_no_flags_when_lenient(gen, lenient, change):
     unit, graphics = _shell_case(**change)

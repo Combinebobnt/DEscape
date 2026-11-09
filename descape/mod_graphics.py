@@ -18,6 +18,9 @@ Settings > Mods, the status line):
 - **Inside one mod, .sld beats .smx**; stems and folder names match
   case-insensitively. `_x1` names are asked for, and their `_x2` copies at
   Graphics Quality Enhanced (GH #241).
+- **A data mod's own art** (GH #272): while one is in effect, a stem or
+  texture the install lacks is asked for too, so an art mod draws the data
+  mod's new objects and terrains (unit_sprites.drawn_frame_count()).
 - generation() moves on every change, for caches keyed on the active art
   (render's sprite memo); asset_source.clear_art_caches() is the one call
   that drops the art-derived caches when it does.
@@ -30,6 +33,7 @@ functions, since asset_source imports this module back.
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,11 +163,20 @@ def _candidate_roots() -> list:
     return sorted(roots, key=lambda r: (r.priority is None, r.priority or 0, r.mod_id.casefold(), r.profile_id or ""))
 
 
+def _is_file(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_file()
+    except OSError:
+        return False
+
+
 def _listing(folder: Path | None) -> list[Path]:
     if folder is None:
         return []
     try:
-        return sorted(p for p in folder.iterdir() if p.is_file())
+        # scandir's types come with the listing: a stat per file took 54 s over a 7,790-file mod on WSL's /mnt/c (GH #272).
+        with os.scandir(folder) as entries:
+            return sorted(folder / entry.name for entry in entries if _is_file(entry))
     except OSError as exc:
         debug_log.log(f"mod art: cannot list {folder} ({exc!r})")
         return []

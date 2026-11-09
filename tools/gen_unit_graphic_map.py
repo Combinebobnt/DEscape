@@ -151,6 +151,19 @@ real .dat and a real install rather than assumed:
   but its annex TREE reaches modern art, so it gets an entry via
   `_resolve_annex_tree` (see "Pasture annex tree" below). 1894/1898 stay out.
 
+**Shadow twins (GH #272).** A data mod's shell can list a body's shadow file
+before the body itself: Galactic Battlegrounds' Command Center 109 lists
+`BCOMDC1_S-C1_x1`, whose MAIN layer is empty, before `BCOMDC1-C1_x1`. In the
+lenient derive only, `_shell_deltas` drops a delta whose stem, with one shadow
+marker removed (`X_S-C1_x1`, `X_S_x1`, `XS_x1`), is another delta's stem in the
+same shell; a name alone is not enough (`DEBRIS_x1` has no twin and stays).
+Measured on GB against its art mod: 245 consts change body, and every body
+then has ink except four whose own data names a shadow file with no deltas
+(3179, 3180, 3188, 3189). The stock .dat runs strict, so its tables never move.
+Some GB shells also carry a leftover AoE2 name nothing ships, such as the Heavy
+Weapons Factory's `trainsiege1-c1_x1`, over a body and its shadow twin; when no
+delta is the shell's own stem or shadow, `_hidden_body` draws that body instead.
+
 **Composite buildings.** A town centre (and a pasture) is drawn from several
 co-located graphics, not one -- e.g. RTWC's own standing_graphic is
 `b_dark_town_center_age1_back_x1`, note `_back_`, one quarter of the real
@@ -389,6 +402,60 @@ def _looks_modern(file_name: str | None) -> bool:
     return bool(file_name) and file_name != "None" and file_name.endswith("_x1")
 
 
+# Each strips one shadow marker from a casefolded stem; see the module docstring's "Shadow twins".
+_SHADOW_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(.+)_s(-.+)_x1$"), r"\1\2_x1"),
+    (re.compile(r"^(.+)_s_x1$"), r"\1_x1"),
+    (re.compile(r"^(.+)s_x1$"), r"\1_x1"),
+)
+
+
+def _shadowed_stems(stem: str | None) -> set[str]:
+    """The body stems a casefolded shadow stem could belong to, one marker removed."""
+    return {pattern.sub(body, stem) for pattern, body in _SHADOW_MARKERS if stem and pattern.match(stem)}
+
+
+def _delta_stems(graphics: list, deltas) -> list[str | None]:
+    stems = []
+    for delta in deltas:
+        graphic_id = delta.graphic_id
+        graphic = graphics[graphic_id] if graphic_id is not None and 0 <= graphic_id < len(graphics) else None
+        stems.append(graphic.file_name.casefold() if graphic is not None and graphic.file_name else None)
+    return stems
+
+
+def _without_shadow_twins(graphics: list, deltas) -> list:
+    """`deltas` minus each one whose stem, a shadow marker removed, is another
+    delta's stem in the same list: that one is the body, this its shadow."""
+    stems = _delta_stems(graphics, deltas)
+    present = {stem for stem in stems if stem}
+    return [
+        delta for delta, stem in zip(deltas, stems, strict=True)
+        if not _shadowed_stems(stem) & (present - {stem})
+    ]
+
+
+def _hidden_body(graphics: list, shell):
+    """Lenient only (GH #272): the body a modern-named shell's deltas hold with
+    its shadow twin, when no delta is the shell's own stem or shadow, else None."""
+    if not _game_root.lenient() or not _looks_modern(shell.file_name) or not shell.deltas:
+        return None
+    own = shell.file_name.casefold()
+    stems = _delta_stems(graphics, shell.deltas)
+    if own in stems or any(own in _shadowed_stems(stem) for stem in stems):
+        return None
+    shadowed = set().union(*(_shadowed_stems(stem) for stem in stems))
+    for delta, stem in zip(shell.deltas, stems, strict=True):
+        if stem in shadowed and _looks_modern(graphics[delta.graphic_id].file_name):
+            return graphics[delta.graphic_id]
+    return None
+
+
+def _shell_deltas(graphics: list, shell) -> list:
+    """A shell's deltas in .dat order, its shadow twins dropped when lenient (GH #272)."""
+    return _without_shadow_twins(graphics, shell.deltas) if _game_root.lenient() else list(shell.deltas)
+
+
 def _resolve_modern_graphic(graphics: list, graphic_id: int, seen: set[int] | None = None):
     """Find the graphic actually worth rendering for graphic_id: itself if its
     file_name already looks modern, else the first delta descendant that
@@ -402,8 +469,8 @@ def _resolve_modern_graphic(graphics: list, graphic_id: int, seen: set[int] | No
     if graphic is None:
         return None
     if _looks_modern(graphic.file_name):
-        return graphic
-    for delta in graphic.deltas:
+        return _hidden_body(graphics, graphic) or graphic
+    for delta in _shell_deltas(graphics, graphic):
         resolved = _resolve_modern_graphic(graphics, delta.graphic_id, seen)
         if resolved is not None:
             return resolved
@@ -427,7 +494,7 @@ def _resolve_all_modern_deltas(graphics: list, graphic_id: int) -> list[tuple[ob
     if _looks_modern(graphic.file_name):
         return [(graphic, 0, 0)]
     result = []
-    for delta in graphic.deltas:
+    for delta in _shell_deltas(graphics, graphic):
         dg_id = delta.graphic_id
         if dg_id is None or not (0 <= dg_id < len(graphics)):
             continue
@@ -1564,7 +1631,7 @@ def _resolve_shell_delta_pieces(
     Galleon's sails share (0, -25). unit_id is unit_const on every piece, as
     for a wall. See the module docstring's "Ship sails" section."""
     deltas = [
-        d for d in shell.deltas
+        d for d in _shell_deltas(graphics, shell)
         if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
         and graphics[d.graphic_id] is not None
         and _looks_modern(graphics[d.graphic_id].file_name)
@@ -1866,7 +1933,7 @@ def _graphic_entry_for(
             return None, "underwater_body_missing"
         graphic, body_dx, body_dy = underwater
         body_offset = (body_dx, body_dy)
-    elif not _looks_modern(graphic.file_name):
+    elif not _looks_modern(graphic.file_name) or _hidden_body(graphics, graphic) is not None:
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
             if unit_const in _PARTICLE_CONSTS and particles_dir is not None:

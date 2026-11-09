@@ -3876,6 +3876,8 @@ class ViewerWindow(QMainWindow):
         mod_graphics.set_included(settings.get_mod_art_included())
         # GH #241: Enhanced draws the game's x2 unit art where x1 would be enlarged.
         _sync_hi_res()
+        # GH #272: a mod's reach is walked off the GUI thread; an edit repaints the whole map until it lands.
+        unit_sprites.set_background_reach(True)
         asset_source.clear_art_caches()
         # (mod_graphics.generation(), whether any scanned mod ships art), for the row's greying.
         self._mod_art_available: tuple[int, bool] | None = None
@@ -9875,16 +9877,15 @@ class ViewerWindow(QMainWindow):
             return
         self._cancel_warms()
         asset_source.clear_art_caches()
-        t0 = time.perf_counter()
-        # Walks every active mod file once (TASK-378 review): here, not inside the next edit's dirty bbox.
+        # Starts the background walk of every active mod file (GH #272) before the redraw below.
         unit_sprites.sprite_reach()
-        reach_elapsed = time.perf_counter() - t0
         self.refresh_map()
         self.terrain_panel.view.refresh_swatches()
         self.units_panel.refresh_thumbnails()
         if self.scenario is None:
             self._update_tool_enabled()  # refresh_map() re-gates when a map is open
-        self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'} (reach {reach_elapsed:.2f}s)")
+        pending = " (measuring its reach in the background)" if unit_sprites.reach_pending() else ""
+        self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'}{pending}")
 
     def _mod_art_status(self) -> str:
         """"Mod art: N mods" while any mod's art can draw, else "", so a
@@ -22737,7 +22738,7 @@ class ViewerWindow(QMainWindow):
                 self._log_status(mod_line)
             if (grade := self.map_view.colour_grade) is not None:
                 self._log_status(f"Colour mood: {grade.name}, previewed (View > Layers > Colour Mood)")
-            # Walks every active mod file once per mod-art change (cached after): here, not in the first edit.
+            # Starts the background walk of every active mod file once per mod-art change (GH #272).
             unit_sprites.sprite_reach()
             # Only now, with that line printed, may the follow-up drain. No
             # paint at all (a window never shown) means no second line.
