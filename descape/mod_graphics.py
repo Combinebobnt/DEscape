@@ -178,7 +178,7 @@ def _listing(folder: Path | None) -> list[Path]:
         with os.scandir(folder) as entries:
             return sorted(folder / entry.name for entry in entries if _is_file(entry))
     except OSError as exc:
-        debug_log.log(f"mod art: cannot list {folder} ({exc!r})")
+        debug_log.log(f"mod art: cannot list {folder} ({exc!r})", level=debug_log.WARNING)
         return []
 
 
@@ -280,7 +280,7 @@ class _Palettes:
         try:
             text = (folder / PALETTE_CONF).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            debug_log.log(f"mod art: no {PALETTE_CONF} ({exc!r})")
+            debug_log.log(f"mod art: no {PALETTE_CONF} ({exc!r})", level=debug_log.WARNING)
             return
         for raw in text.splitlines():
             number, _, name = raw.split("//", 1)[0].strip().partition(",")
@@ -301,7 +301,7 @@ class _Palettes:
         try:
             return smx_decoder.palette_array(slp_decoder.load_palette_rgba(self.folder / name))
         except (OSError, ValueError, IndexError) as exc:
-            debug_log.log(f"mod art: palette {name} unreadable ({exc!r})")
+            debug_log.log(f"mod art: palette {name} unreadable ({exc!r})", level=debug_log.WARNING)
             return None
 
     def player_shades(self) -> np.ndarray:

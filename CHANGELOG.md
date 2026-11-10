@@ -26,6 +26,12 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Debug Log colours by level** (GH #358): Help > Debug Log marks warnings in
+  amber and errors in red, with a *Colour by level* toggle and tags in copied text.
+- **Sprites at native size**: at Graphics quality Default and Enhanced a new
+  zoom level draws unit sprites at their own size. Default draws the regular
+  art pixel for pixel; Enhanced draws the high-resolution art scaled down by
+  half. View > Zoom to Native Sprite Size jumps to it, and the wheel stops on it.
 - **Mouse wheel rows can turn the selected units** (GH #356): Settings >
   Keybinds adds *Rotate preview or selection* and *Brush size, rotate
   preview or selection*, which turn a Units-mode selection as the
@@ -71,8 +77,10 @@ content, link the doc instead of summarizing it.
 - **Object Browse is now the Units catalog** (GH #273): the "…" on a trigger
   object field, Find's Types… and References type…, Replace's fields and
   Garrison's Add... show category buttons, the class dropdown, a filter,
-  Icons, Names and Grid, and the object's portrait and stats. Technology
-  fields keep their plain list. The Grid view now frames the selected cell,
+  Icons, Names and Grid, and the object's portrait and stats. On a trigger
+  field it opens on the object list type's category, and picking from
+  another category turns that row. Technology fields keep their plain
+  list. The Grid view now frames the selected cell,
   in the Units panel too.
 - **Double-click a trigger to rename it** right in the list (GH #279): Enter
   or clicking away keeps the name, Esc cancels, one undo step. A section
@@ -144,6 +152,14 @@ content, link the doc instead of summarizing it.
 - **File > Data Mod** (GH #58): show a scenario with a data mod's own units,
   stats and names, remembered per scenario; a mod's `.dat` is read once in
   the background and cached. See the README's profile folder section.
+- **A data mod's own civilizations and ages** (GH #263): with a data mod
+  in effect, the Players tab lists the mod's civilizations and age names,
+  and building art, civ filtering and the starting-age wording follow the
+  mod's civ list. (contributed by @teslatankx, #364)
+- **Hide a data mod's unchanged objects** (GH #265): Settings > Mods can
+  list only what the data mod adds or changes in the Units catalog, with a
+  note counting what is hidden, and can turn off the "(data mod)" label.
+  (contributed by @teslatankx, #362)
 - **Wall Circle tool** in Units mode (GH #125): drag a box to place an
   outline ellipse of walls inside it, one undo step per drag; Shift makes it
   a circle. It uses the wall picked in the catalog or with the Wall button,
@@ -224,6 +240,25 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **Faster trigger overlays**: selecting many triggers with large areas, or a
+  whole-map area, no longer stalls the map in Sloped, and is faster in every style.
+  Large selections also redraw faster after a unit or elevation edit.
+- **Moving a pasted region no longer stalls**: dragging a large selection or
+  pasted block is smooth, an idle large selection no longer slows the app, and
+  Stepped's selection tint covers the outlined area evenly.
+- **Outlines no longer slow edits**: with Footprint Outlines or Fish Outlines
+  on, unit edits and elevation drags no longer slow down on large maps (Sloped
+  especially).
+- **No more growing idle pauses**: long editing sessions no longer build up
+  longer and longer pauses.
+- **Faster first open**: opening a unit-heavy map is faster, most of all the
+  first open after a restart: unit sprites now load in the background while
+  the map loads.
+- **Faster terrain strokes**: strokes in Stepped and Sloped no longer repaint
+  every cached zoom level.
+- **Clicking an object in the Units catalog shows it in the Inspector, even
+  with units selected** (GH #357): the selection stays selected, and Show
+  selection or any selection or edit brings its fields back.
 - **Buildings draw the upgrades a player's civilization and starting age
   already have** (GH #328): Armenian and Georgian monasteries draw as
   Fortified Churches, Settlements past the Dark Age and Central Asian siege
@@ -328,7 +363,7 @@ content, link the doc instead of summarizing it.
   off by default.
 - **Settings has a Mods tab** holding the profile folder and the Mod art
   list (GH #244).
-- **Smoother zooming with Show sprites off** in Stepped and Sloped: the
+- **Smoother zooming with Show sprites off** in Stepped, Sloped and top-down Flat: the
   neighbouring zoom levels are prepared in the background, so the first
   visit to a level no longer pauses (GH #181, in part).
 - **Smoother, faster zooming out**: at fit and zoomed out past it, the map
@@ -346,6 +381,14 @@ content, link the doc instead of summarizing it.
   settles, the view one notch in and one notch out is drawn in the
   background, and that notch then shows it at once, with identical pixels
   (GH #181, in part).
+- **Faster zooming out on a fast wheel roll** in Stepped, Sloped and
+  isometric Flat: the wider view a zoom-out reaches, inside the current
+  zoom level and on the next level out, is prepared in idle time, so those
+  steps no longer redraw map tiles while the wheel turns. This needs
+  "Preload neighbouring zoom levels" on (GH #181, in part).
+- **Smoother fast wheel rolls**: zooming no longer waits behind background
+  zoom-level preparation, and no longer pauses partway through a fast roll or
+  between notches while the map's sprites are shown.
 - **Faster redraws when zoomed in**: between detail levels the map draws
   about a third faster, and two to three times faster when zoomed in close
   on the most detailed level, with identical pixels.
@@ -391,6 +434,12 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Windows taskbar and executable icon** (GH #250): source launches, the
+  setup splash and `DEscape.exe` now use DEscape's icon instead of Python's
+  or the default build icon.
+- **Top-down Flat no longer errors on a zoom change mid-erase**: with sprites
+  on, zooming during an Eraser or Convert drag could raise an internal error
+  instead of drawing the units.
 - **Shipwrecks, flares, ruined-building rubble and the editor-hidden dolphins
   and whales cover their in-game size** (GH #333): their mark, click target,
   selection outline and Footprint Outline span 2x2 to 4x4 tiles instead of

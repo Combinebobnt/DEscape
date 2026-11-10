@@ -1483,6 +1483,40 @@ def test_sld_frame_count_and_native_frame_share_one_walk(install, monkeypatch):
     assert len(walks) == 1
 
 
+def test_a_scaled_cache_hit_walks_and_reorders_the_index_only_where_the_dispatch_needs_a_count(install, monkeypatch):
+    """_frame_for() runs before _draw_for_entry()'s _scaled_cache lookup, so the
+    frame count it may ask for is the one place a hit can touch the index. An
+    angle const never asks; a variant const does, through sld_frame_count()'s
+    own 512-entry LRU, which the cache_clear() here models running cold. The
+    index's key order (its LRU eviction order) and the walk count follow from
+    that, which neither the default tier's pixels nor sprite_hash.py see."""
+    angle_file, variant_file = "t_angle_x1", "t_variant_x1"
+    install.write(build_sld(4), angle_file)
+    install.write(build_sld(5), variant_file)
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {
+        CONST: {"graphic_id": 1, "file_name": angle_file, "angle_count": 4, "mirroring_mode": 6, "frame_count": 1},
+        CONST + 1: {"graphic_id": 2, "file_name": variant_file, "angle_count": 5, "mirroring_mode": 6,
+                    "frame_count": 1, "rotation_is_variant": True},
+    })
+    walks = _count_walks(monkeypatch)
+    lookups = []
+    real_index = unit_sprites._sld_index
+    monkeypatch.setattr(unit_sprites, "_sld_index", lambda name: (lookups.append(name), real_index(name))[1])
+
+    assert unit_sprites.sprite_for(CONST, 0.0, 1, 32) is not None
+    assert unit_sprites.sprite_for(CONST + 1, 2.0, 1, 32) is not None
+    assert list(unit_sprites._sld_index_cache) == [angle_file, variant_file]
+    assert len(walks) == 2
+
+    unit_sprites.sld_frame_count.cache_clear()
+    lookups.clear()
+    assert unit_sprites.sprite_for(CONST + 1, 2.0, 1, 32) is not None
+    assert unit_sprites.sprite_for(CONST, 0.0, 1, 32) is not None
+    assert lookups == [variant_file], "a _scaled_cache hit of an angle const reached the index"
+    assert list(unit_sprites._sld_index_cache) == [angle_file, variant_file]
+    assert len(walks) == 2
+
+
 def test_an_unreadable_file_is_negative_cached_in_the_index(install, monkeypatch):
     """Same _MISS reasoning as the native cache, one level down: a native miss
     on another frame of a file already known to be unreadable must not try it

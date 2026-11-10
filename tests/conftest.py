@@ -474,6 +474,13 @@ def pytest_addoption(parser):
         "of its own; this option carries that forward for the whole suite.",
     )
     parser.addoption(
+        "--data-mod-dir",
+        action="store",
+        default=None,
+        help="A data mod's folder (Galactic Battlegrounds Test - Data) for "
+        "tests/test_data_mod_side_corpus.py, which skips without it.",
+    )
+    parser.addoption(
         "--corpus-full",
         action="store_true",
         default=False,
@@ -657,6 +664,9 @@ def _aoe2_dataset():
     yield
     game_dataset.set_active(game_dataset.AOE2)
     game_dataset.set_data_mod(None)
+    if "descape.player_fields" in sys.modules:
+        # GH #263: grows for the process by design, so one test's mod tokens must not reach the next.
+        sys.modules["descape.player_fields"]._SESSION_MOD_TOKENS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -690,6 +700,9 @@ def _no_gc_hold_left():
     yield
     if "descape.gc_hold" in sys.modules:
         sys.modules["descape.gc_hold"].reset()
+    # A wheel test's input stamp would put a later tick-counting test on the input budget (TASK-031.80).
+    if "descape.level_warm" in sys.modules:
+        sys.modules["descape.level_warm"]._last_input = None
 
 
 @pytest.fixture(autouse=True)

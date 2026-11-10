@@ -826,6 +826,67 @@ def test_undo_and_redo_of_a_mirror_map_with_units_and_elevation_run_the_unit_sou
         window.close()
 
 
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_undo_and_redo_of_a_gaia_only_mirror_map_splice_through_the_gaia_diff(style, monkeypatch) -> None:
+    """Mirror Map declares all nine players. Its record pruned to GAIA
+    (TASK-031.18) takes _gaia_membership_diff(), so the undo puts the removed
+    destination tree back mid-list by splice, where the tail shape refused it
+    and repainted wholesale. Pixels match a fresh render after each step."""
+    from descape.edit_history import UnitDiffRecord
+    from descape.mirror_tools import plan_mirror, plan_mirror_units
+
+    _splice_any_batch(monkeypatch)
+    window = _styled_window(style)
+    try:
+        mm = window.scenario.map_manager
+        w = mm.map_width
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [0]):
+            model.add(0, FOREST_OAK_CONST, 10.5, 12.5)
+            doomed = model.add(0, FOREST_OAK_CONST, w - 20.5, w - 30.5)
+            model.add(0, FOREST_OAK_CONST, 14.5, 20.5)
+        plan = plan_mirror(mm, 1, 0, do_terrain=True, do_elevation=False)
+        assert int(doomed.y) * w + int(doomed.x) not in plan.source_indices
+        unit_plan = plan_mirror_units(
+            mm, 1, 0, window.scenario.unit_manager.units, plan.source_indices,
+            referencing=window.unit_edits.referencing,
+        )
+        assert len(unit_plan.removals) == 1 and unit_plan.removals[0] is doomed
+        assert len(unit_plan.images) == 2
+        before = _canvas(window)
+        assert np.array_equal(before, _fresh(window, style))
+        assert window.on_mirror(plan, unit_plan) is not None
+
+        top = window.edit_history.peek_undo()
+        (record,) = [c for c in getattr(top, "children", [top]) if isinstance(c, UnitDiffRecord)]
+        assert set(record.before.players) == set(record.after.players) == {0}
+        after = _canvas(window)
+        assert not np.array_equal(after, before), "the mirror changed nothing on screen"
+        assert np.array_equal(after, _fresh(window, style))
+
+        diffs = []
+        real_gaia = window._gaia_membership_diff
+        monkeypatch.setattr(
+            window, "_gaia_membership_diff", lambda now, then: (diffs.append(real_gaia(now, then)), diffs[-1])[1]
+        )
+        calls = _spy(window, monkeypatch)
+        for step, act, expected in (("undo", window.undo, before), ("redo", window.redo, after)):
+            _canvas(window)
+            act()
+            assert diffs and diffs[-1] is not None, f"{step}: skipped or refused the GAIA diff"
+            assert calls["changed"][-1], f"{step}: took the wholesale unit invalidation"
+            assert calls["wholesale"] == 0, f"{step}: the cache rebuilt its sources wholesale"
+            assert np.array_equal(_canvas(window), _fresh(window, style)), step
+            assert np.array_equal(_canvas(window), expected), step
+            gaia = window.scenario.unit_manager.units[0]
+            assert any(u is doomed for u in gaia) is (step == "undo"), step
+            if step == "undo":
+                assert gaia[1] is doomed, "the undo did not put the destination tree back mid-list"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_paint_can_with_trees_still_takes_the_wholesale_path(monkeypatch) -> None:
     import descape.viewer as viewer_module
 
@@ -1228,6 +1289,24 @@ def test_an_over_cap_flat_stroke_end_stays_wholesale(monkeypatch) -> None:
         window.close()
 
 
+def _drop_other_level_evictions(cache, monkeypatch, broken) -> None:
+    """While broken() holds, both evictions of the levels not in view are
+    dropped: the unit step's invalidate_region(levels=others) and the
+    terrain patch's own (_evict_rects() under patch(levels=), TASK-031.73)."""
+    real_invalidate, real_evict_rects = cache.invalidate_region, cache._evict_rects
+
+    def invalidate(bbox, levels=None, **kwargs):
+        if broken() and levels is not None and 0 not in levels:
+            return None
+        return real_invalidate(bbox, levels=levels, **kwargs)
+
+    def evict_rects(rects, mips):
+        return None if broken() else real_evict_rects(rects, mips)
+
+    monkeypatch.setattr(cache, "invalidate_region", invalidate)
+    monkeypatch.setattr(cache, "_evict_rects", evict_rects)
+
+
 @pytest.mark.parametrize("broken", ["stroke A", "stroke B"])
 def test_the_over_cap_check_names_the_stroke_that_left_a_second_level_stale(
     broken, tree_sprites, monkeypatch
@@ -1239,15 +1318,8 @@ def test_the_over_cap_check_names_the_stroke_that_left_a_second_level_stale(
     try:
         cache = window._cache
         second = _oracle_levels(window)[1]
-        real_evict = cache.invalidate_region
         current = {}
-
-        def evict(bbox, levels=None, **kwargs):
-            if current.get("step") == broken and levels is not None and 0 not in levels:
-                return None
-            return real_evict(bbox, levels=levels, **kwargs)
-
-        monkeypatch.setattr(cache, "invalidate_region", evict)
+        _drop_other_level_evictions(cache, monkeypatch, lambda: current.get("step") == broken)
         with pytest.raises(AssertionError, match=f"{broken}: mip {second} differs"):
             _over_cap_strokes(window, before_step=lambda step: current.update(step=step))
     finally:
@@ -1739,15 +1811,8 @@ def test_the_blended_check_names_the_step_that_left_a_second_level_stale(
         assert render.blend_effective(window._cache.layers)
         cache = window._cache
         second = _oracle_levels(window)[1]
-        real_evict = cache.invalidate_region
         current = {}
-
-        def evict(bbox, levels=None, **kwargs):
-            if current.get("step") == broken and levels is not None and 0 not in levels:
-                return None
-            return real_evict(bbox, levels=levels, **kwargs)
-
-        monkeypatch.setattr(cache, "invalidate_region", evict)
+        _drop_other_level_evictions(cache, monkeypatch, lambda: current.get("step") == broken)
         with pytest.raises(AssertionError, match=f"{broken}: mip {second} differs"):
             _blended_history(window, before_step=lambda step: current.update(step=step))
     finally:

@@ -8,12 +8,62 @@ Splash are always faked or monkeypatched."""
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 import bootstrap
+from descape.win_taskbar import APP_USER_MODEL_ID
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("failure", [None, "identity", "image", "iconphoto"])
+def test_splash_sets_identity_before_window_and_survives_icon_failures(monkeypatch, platform, failure):
+    import ctypes
+
+    events = []
+    root = Mock()
+    root.winfo_screenwidth.return_value = 1920
+    root.winfo_screenheight.return_value = 1080
+
+    def set_identity(app_id):
+        events.append(("identity", app_id))
+        if failure == "identity":
+            raise OSError("no shell")
+        return 0
+
+    def create_root():
+        events.append(("window",))
+        return root
+
+    image = Mock()
+    photo = Mock(return_value=image)
+    if failure == "image":
+        photo.side_effect = RuntimeError("unreadable image")
+    if failure == "iconphoto":
+        root.iconphoto.side_effect = RuntimeError("no icon support")
+    tk = SimpleNamespace(Tk=create_root, PhotoImage=photo, Label=Mock(), StringVar=Mock())
+    monkeypatch.setitem(sys.modules, "tkinter", tk)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(shell32=SimpleNamespace(
+        SetCurrentProcessExplicitAppUserModelID=set_identity,
+    )), raising=False)
+
+    splash = bootstrap.Splash()
+
+    assert bootstrap.APP_USER_MODEL_ID == APP_USER_MODEL_ID
+    assert events == ([("identity", APP_USER_MODEL_ID)] if platform == "win32" else []) + [("window",)]
+    photo.assert_called_once_with(file=str(bootstrap.ROOT / "descape" / "app_icon.png"))
+    if failure != "image":
+        root.iconphoto.assert_called_once_with(True, image)
+    else:
+        root.iconphoto.assert_not_called()
+    splash.set_status("Still working")
+    tk.StringVar.return_value.set.assert_called_once_with("Still working")
 
 
 class _FakeStdout:

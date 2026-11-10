@@ -81,6 +81,79 @@ def terrain_texture_size(tile_px: int) -> int:
         return LOADED_TEXTURE_SIZE
     return LOADED_TEXTURE_SIZE * tile_px // TEXTURE_REFERENCE_TILE_PIXELS
 
+
+def crop_pad(size: int, tile_px: int) -> int:
+    """Rows and columns crop_source() wrap-pads a `size` square by: 0 where
+    tile_px divides it, else tile_px (the native tier's 96 on 512, TASK-599)."""
+    return 0 if size % tile_px == 0 else tile_px
+
+
+# (id(source), pad) -> (weakref to source, padded copy), for crop_source().
+_wrap_padded: dict = {}
+# Reentrant: the weakref and finalize callbacks below can run under GC inside a locked section.
+_wrap_lock = threading.RLock()
+# Live owners hold_wrap_padded() registered; the last one's collection drops the copies.
+_wrap_holders = 0
+
+
+def hold_wrap_padded(owner) -> None:
+    """Keeps crop_source()'s padded copies while `owner` lives (a chunk
+    cache whose ladder has a level, the native tier, that does not divide
+    the texture). Once the last such owner is collected they are dropped,
+    though their sources stay in the texture caches."""
+    import weakref
+
+    global _wrap_holders
+    with _wrap_lock:
+        _wrap_holders += 1
+    weakref.finalize(owner, _release_wrap_padded)
+
+
+def _release_wrap_padded() -> None:
+    global _wrap_holders
+    with _wrap_lock:
+        _wrap_holders -= 1
+        if _wrap_holders == 0:
+            _wrap_padded.clear()
+
+
+def clear_wrap_padded() -> None:
+    with _wrap_lock:
+        _wrap_padded.clear()
+
+
+def crop_source(arr, tile_px: int):
+    """`arr` (a square texture or mask, period arr.shape[0]) as the array a
+    tile_px crop at render._crop_offset()'s origin slices: itself where
+    tile_px divides the period, else a read-only copy extended by tile_px
+    rows and columns of its own wrap, so the crop never runs off the edge.
+    Ground textures tile at their edges, so the wrap is seamless. Cached per
+    source array while it lives, so a stand-in texture (tests, review packs)
+    pads its own pixels, and until the last hold_wrap_padded() owner goes."""
+    pad = crop_pad(arr.shape[0], tile_px)
+    if pad == 0:
+        return arr
+    key = (id(arr), pad)
+    with _wrap_lock:
+        hit = _wrap_padded.get(key)
+        if hit is not None and hit[0]() is arr:
+            return hit[1]
+    import weakref
+
+    import numpy as np
+
+    padded = np.pad(arr, ((0, pad), (0, pad)) + ((0, 0),) * (arr.ndim - 2), mode="wrap")
+    padded.flags.writeable = False
+
+    def _drop(ref, key=key):
+        with _wrap_lock:
+            if _wrap_padded.get(key, (None,))[0] is ref:
+                del _wrap_padded[key]
+
+    with _wrap_lock:
+        _wrap_padded[key] = (weakref.ref(arr, _drop), padded)
+    return padded
+
 # TASK-143 terrain blending. blendomatic_x1.dat holds the neighbour-transition
 # alpha masks; terrain/masks/*.png the layer ("Layering Mode") overlay masks.
 BLENDOMATIC_SUBPATH = "resources/_common/dat/blendomatic_x1.dat"
@@ -228,6 +301,7 @@ def clear_install_caches() -> None:
     get_blend_mask.cache_clear()
     get_terrain_mask_array.cache_clear()
     _sized_terrain_mask.cache_clear()
+    clear_wrap_padded()
     _string_table.cache_clear()
     _data_mod_string_ids.cache_clear()
     _has_ror_strings.cache_clear()
@@ -737,7 +811,7 @@ def _decode_with_install_fallback(path: Path, decode):
         if fallback is None or not fallback.is_file():
             debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); the install has none of that name")
             return None
-        debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); drawing the install's")
+        debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); drawing the install's", level=debug_log.WARNING)
         return decode(fallback)
 
 

@@ -28,6 +28,7 @@ SlopedChunkCache.render_rect() at the coarser levels, sprites included. So does
 ground_borders (TASK-143's terrain blending), over two examples/ maps.
 particle_doodads (TASK-454's Smoke and Flames) needs only the install: a synthetic
 flat scene, written to an `objects/` directory so its paths stay neutral.
+native_tier (TASK-599's 96 px level) needs both, and writes to `zoom_levels/`.
 
 Off-engine throughout (descape.render.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
@@ -1540,9 +1541,14 @@ def _sloped_cache(map_key: str, units: bool, chunk_px: int = SLOPED_CHUNK_PX):
     )
 
 
-def _level_px(n: int, mip: int) -> int:
-    """`n` level-0 pixels at level `mip`: doubled per finer level, halved per coarser one."""
-    return n << mip if mip >= 0 else n >> -mip
+# Graphics quality 3's ladder for a 64 px base (both 240x240 maps): a level index is a rank, not log2.
+_LADDER_64 = ig.mip_tile_px_candidates(64, 128, native_tier=True)
+
+
+def _level_px(n: int, base_px: int, level_px: int) -> int:
+    """`n` base-level pixels at a level of `level_px` per tile, which must come out whole."""
+    assert n * level_px % base_px == 0, f"{n} px at {base_px} is not whole at {level_px}"
+    return n * level_px // base_px
 
 
 def _sloped_box(cache, mip: int, centre, crop_l0=_SLOPED_CROP_L0) -> tuple[int, int, int, int]:
@@ -1550,7 +1556,7 @@ def _sloped_box(cache, mip: int, centre, crop_l0=_SLOPED_CROP_L0) -> tuple[int, 
     lvl = cache._levels[mip]
     cx, cy = centre
     sx, sy = ig.tile_screen_origin(cx, cy, int(cache.elevations[cy, cx]), lvl.proj)
-    cw, ch = (_level_px(n, mip) for n in crop_l0)
+    cw, ch = (_level_px(n, cache.tile_px, lvl.tile_px) for n in crop_l0)
     x0, y0 = sx + lvl.proj.half_w - cw // 2, sy + lvl.proj.half_h - ch // 2
     return x0, y0, x0 + cw, y0 + ch
 
@@ -2005,8 +2011,10 @@ def _check_sloped_mip() -> None:
 # --------------------------------------------------------- sloped_fine pack
 
 
-# TASK-146's finer level (+1, 128 px a tile). One footprint of this many level-0 pixels per scene,
-# so a +1 frame is 1500x750 (inside MAX_LONG_EDGE, never downscaled) and its level-0 twin 750x375.
+# TASK-146's finer level (128 px a tile, twice the base): level 2 since the native tier's 96 sits
+# between (TASK-599). One footprint of this many level-0 pixels per scene, so a fine frame is
+# 1500x750 (inside MAX_LONG_EDGE, never downscaled) and its level-0 twin 750x375.
+_FINE_MIP = next(mip for mip, tile_px in _LADDER_64.items() if tile_px == 128)
 _FINE_CROP_L0 = (750, 375)
 # scene -> (map, centre tile, units and sprites on): sloped_mip's scenes, the level ground moved
 # off the footprint ring its round 2 flagged (elevation 0 for 12 tiles each way: fields, walls, buildings).
@@ -2021,7 +2029,7 @@ _FINE_SCENES = {
 _FINE_FRAMES = {
     f"{scene}_{tag}": (map_key, mip, centre, units)
     for scene, (map_key, centre, units) in _FINE_SCENES.items()
-    for tag, mip in (("a", 0), ("b", 1))
+    for tag, mip in (("a", 0), ("b", _FINE_MIP))
 }
 _FINE_SPECIFICITY = ("level_ground_a", "level_ground_b")
 # block-shift lifts one _FINE_BLOCK_PX square of +1 chunks in each of these frames.
@@ -2142,7 +2150,7 @@ def _fine_block(cache, box) -> set[tuple[int, int, int, int]]:
     x0, y0, x1, y1 = box
     mx, my = (x0 + x1) // 2, (y0 + y1) // 2
     c, half = cache.chunk_px, _FINE_BLOCK_PX // 2
-    tile_px = cache._levels[1].tile_px
+    tile_px = cache._levels[_FINE_MIP].tile_px
     return {
         (id(cache.scenario), tile_px, cx * c, cy * c)
         for cy in range(-(-(my - half) // c), (my + half) // c)
@@ -2380,13 +2388,432 @@ def _check_sloped_fine() -> None:
             print(f"FAIL: {failure}")
         raise SystemExit(f"{len(failures)} check(s) failed")
     with _PinnedSettings():
-        lift = _FINE_LIFT_STEPS * _sloped_cache("farms", True)._levels[1].proj.elev_step
+        lift = _FINE_LIFT_STEPS * _sloped_cache("farms", True)._levels[_FINE_MIP].proj.elev_step
     print(
         f"OK: sloped_fine frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and match "
         f"chunk_px {DEFAULT_CHUNK_PX}; all {len(FINE_INJECTS)} injects bite exactly their own +1 frames "
         f"(a {lift} px lift, at 1x on screen), block-shift inside one {_FINE_BLOCK_PX} px block and under "
         f"{FINE_COARSE_INJECT}, fine-drape moves fields and no object, and none reaches a level-0 twin or "
         f"{' / '.join(_FINE_SPECIFICITY)}"
+    )
+
+
+# --------------------------------------------------------- native_tier pack
+
+
+# TASK-599's 96 px tier, where x1 art is drawn 1:1, between 64 and 128 at Graphics Quality Default.
+NATIVE_MAPS = {"village": ROOT / "examples" / "0_June_Event_Scenario.aoe2scenario", "plateau": GROUND_MAP}
+# One footprint of this many level-0 (64 px) pixels per frame: 1440x864 at 64 (x3) and 96 (x2), 960x576 at 128.
+_NATIVE_CROP_L0 = (480, 288)
+# scene -> (map, style, centre tile, units and sprites on, terrain repaint). village: houses, a town
+# centre, villagers and scouts on level ground; plateau: sloped_mip's buildings on a raised plateau;
+# field and field_slope: ground_texture's level grass and grass hillside repainted to FIELD, whose
+# furrows show a break that grass hides.
+_NATIVE_SCENES = {
+    "village": ("village", "stepped", (101, 21), True, None),
+    "plateau": ("plateau", "sloped", (22, 214), True, None),
+    "field": ("plateau", "stepped", (131, 101), False, FIELD),
+    "field_slope": ("plateau", "sloped", (219, 152), False, FIELD),
+}
+# frame id -> (scene, level tile_px). field_a is the specificity frame: 64 divides the texture, so
+# no crop reads a wrap copy there, and no inject touches a 64 or 128 level.
+_NATIVE_FRAMES = {
+    "village_a": ("village", 64), "village_b": ("village", 96), "village_c": ("village", 128),
+    "plateau_a": ("plateau", 64), "plateau_b": ("plateau", 96), "plateau_c": ("plateau", 128),
+    "field_b": ("field", 96), "field_slope_b": ("field_slope", 96),
+    "field_a": ("field", 64),
+}
+_NATIVE_SPECIFICITY = "field_a"
+_NATIVE_96 = tuple(fid for fid, (_scene, px) in _NATIVE_FRAMES.items() if px == ig.NATIVE_TILE_PIXELS)
+# old-basis is the coarse inject: ground_texture's, at the 96 level only. wrap-seam is the localized
+# one: 6.5% and 5.7% of its frames, largest pieces 18684 and 11501 px (2026-11-04). hotspot-scale is
+# objects_on_ground's matching inject, unbounded: buildings fill most of plateau_b. Sprite detail at
+# 96 is pixel identity with the native frame, countable, so it is asserted (test_x2_sprites.py, the
+# live crop), not asked: round 1's SHARP/SOFT question missed a bilinear resample at 2x.
+NATIVE_INJECTS = {
+    "old-basis": None,
+    "wrap-seam": rp.LocalizedBound(max_changed_fraction=0.15, max_component_px=24000),
+    "hotspot-scale": None,
+}
+NATIVE_COARSE_INJECT = "old-basis"
+_NATIVE_REACH = {
+    "old-basis": _NATIVE_96,
+    "wrap-seam": ("field_b", "field_slope_b"),
+    "hotspot-scale": ("village_b", "plateau_b"),
+}
+# The furrow frames' luma step across 28 px (_shading_step) at which ground reads as a shading change.
+# Measured 2026-11-04: level ground at most 4.4, wrap-seam's strips 6.5, the slope's bends up to 38.
+NATIVE_SHADING_STEP = 12
+
+_NATIVE_SCENARIOS: dict[tuple, object] = {}
+
+
+@contextmanager
+def _native_sprite_state():
+    """Default's sprite switches (viewer._sync_hi_res): x1 art, box-filtered shrink."""
+    from descape import unit_sprites
+
+    was = unit_sprites.hi_res(), unit_sprites.smooth_shrink()
+    unit_sprites.set_hi_res(False)
+    unit_sprites.set_smooth_shrink(True)
+    try:
+        yield
+    finally:
+        unit_sprites.set_hi_res(was[0])
+        unit_sprites.set_smooth_shrink(was[1])
+
+
+def _native_cache(scene: str, chunk_px: int):
+    """A fresh chunk cache over the scene's memoized scenario, so an inject's builds never leak."""
+    from descape.render_cache import IsoChunkCache, SlopedChunkCache
+
+    map_key, style, _centre, units, repaint = _NATIVE_SCENES[scene]
+    if (map_key, repaint) not in _NATIVE_SCENARIOS:
+        scenario = load_map_and_units(str(NATIVE_MAPS[map_key]))
+        if repaint is not None:
+            for tile in scenario.map_manager.terrain:
+                if tile.terrain_id == GRASS:
+                    tile.terrain_id = repaint
+        _NATIVE_SCENARIOS[(map_key, repaint)] = scenario
+    scenario = _NATIVE_SCENARIOS[(map_key, repaint)]
+    if style == "sloped":
+        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        return SlopedChunkCache(
+            scenario, elevations, corner_rise, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units
+        )
+    elevations, proj = render.elevations_and_proj(scenario)
+    return IsoChunkCache(scenario, elevations, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units)
+
+
+def _native_mip(cache, tile_px: int) -> int:
+    for mip in cache.mip_levels():
+        if cache.mip_tile_px(mip) == tile_px:
+            return mip
+    raise SystemExit(f"native_tier: no {tile_px} px level on this cache ({cache.tile_px} px base)")
+
+
+class _NativeInject:
+    """Patches for one known native-tier defect, around a whole run's cache builds and renders."""
+
+    def __init__(self, name: str | None) -> None:
+        self.name = name
+        self.saved: list[tuple] = []
+
+    def __enter__(self):
+        from descape import unit_sprites
+
+        native = ig.NATIVE_TILE_PIXELS
+        if self.name == "old-basis":
+            real = ig._inverse_sample
+
+            def inverse_sample(dst_x, dst_y, half_w, half_h, tile_px):
+                # Every 96 cell's crop in the pre-TASK-201 basis, so no furrow continues into a neighbour.
+                fn = _legacy_inverse_sample if tile_px == native else real
+                return fn(dst_x, dst_y, half_w, half_h, tile_px)
+
+            self.saved.append((ig, "_inverse_sample", real))
+            ig._inverse_sample = inverse_sample
+        elif self.name == "wrap-seam":
+            real = asset_source.crop_source
+            field = _field_texture(native)
+            shift = _half_period(native)
+            memo: dict[int, tuple] = {}
+
+            def crop_source(arr, tile_px):
+                # FIELD's wrap copy past column 512 misregistered by half a furrow across the furrows.
+                out = real(arr, tile_px)
+                if out is arr or arr.shape != field.shape:
+                    return out
+                hit = memo.get(id(arr))
+                if hit is None or hit[0] is not arr:
+                    bad = None
+                    if np.array_equal(arr, field):
+                        size, pad = arr.shape[0], out.shape[1] - arr.shape[1]
+                        rolled = np.roll(arr, -shift, axis=0)[:, :pad]
+                        bad = out.copy()
+                        bad[:, size:] = np.pad(rolled, ((0, pad), (0, 0), (0, 0)), mode="wrap")
+                        bad.flags.writeable = False
+                    hit = memo[id(arr)] = (arr, bad)
+                return out if hit[1] is None else hit[1]
+
+            self.saved.append((asset_source, "crop_source", real))
+            asset_source.crop_source = crop_source
+        elif self.name == "hotspot-scale":
+            import dataclasses
+
+            real = unit_sprites._draw_for_entry
+
+            buildings = unit_kind.building_consts()
+
+            def draw_for_entry(*args, **kwargs):
+                # A building at 96 anchored by the hotspot the 128 level would use, 4/3 of the native one.
+                draw = real(*args, **kwargs)
+                half_w = args[4] if len(args) > 4 else kwargs["half_w"]
+                if draw is None or 2 * half_w != native or args[0] not in buildings:
+                    return draw
+                return dataclasses.replace(
+                    draw, hotspot_x=round(draw.hotspot_x * 4 / 3), hotspot_y=round(draw.hotspot_y * 4 / 3)
+                )
+
+            self.saved.append((unit_sprites, "_draw_for_entry", real))
+            unit_sprites._draw_for_entry = draw_for_entry
+        self._clear()
+        return self
+
+    def __exit__(self, *exc):
+        for obj, name, old in self.saved:
+            setattr(obj, name, old)
+        self._clear()
+
+    @staticmethod
+    def _clear() -> None:
+        from descape import unit_sprites
+
+        _clear_texture_caches()
+        asset_source._wrap_padded.clear()
+        unit_sprites._scaled_cache.clear()
+        unit_sprites.clear_slice_cache()
+
+
+def _native_building_at(cache, tx: int, ty: int) -> bool:
+    buildings = unit_kind.building_consts()
+    return any(u.unit_const in buildings for u, _rest in cache.units_by_tile.get((tx, ty), ()))
+
+
+def _native_box(cache, tile_px: int, scene: str) -> tuple[int, tuple[int, int, int, int]]:
+    mip = _native_mip(cache, tile_px)
+    return mip, _sloped_box(cache, mip, _NATIVE_SCENES[scene][2], _NATIVE_CROP_L0)
+
+
+def _native_frame_images(inject: str | None, chunk_px: int = SLOPED_CHUNK_PX) -> dict[str, np.ndarray]:
+    """Every native_tier frame at 1:1, stitched from fresh caches' chunks through render_rect(mip=...)."""
+    images: dict[str, np.ndarray] = {}
+    with _PinnedSettings(), _native_sprite_state(), _NativeInject(inject):
+        caches = {scene: _native_cache(scene, chunk_px) for scene in _NATIVE_SCENES}
+        for frame_id, (scene, tile_px) in _NATIVE_FRAMES.items():
+            cache = caches[scene]
+            mip, box = _native_box(cache, tile_px, scene)
+            images[frame_id] = cache.render_rect(*box, mip=mip)
+    return images
+
+
+def _native_tier_spec() -> rp.PackSpec:
+    """TASK-599's native tier: objects drawn at 96 px a tile beside the same tiles at 64 and 128, and
+    furrowed ground at 96, where a crop straddles the texture's wrap. The reviewer is told only that
+    each scene appears at several zoom levels."""
+    places = {
+        "village": "Houses and other buildings, people and riders on level ground",
+        "plateau": "A group of buildings on and around a raised plateau",
+    }
+    captions = {}
+    for scene, place in places.items():
+        captions[f"{scene}_a"] = f"{place}."
+        captions[f"{scene}_b"] = "The same ground drawn at a closer zoom level, enlarged less, so it covers the same area."
+        captions[f"{scene}_c"] = "The same ground at a closer zoom level still, not enlarged."
+    captions["field_b"] = "Ploughed farmland on level ground."
+    captions["field_slope_b"] = "Ploughed farmland on a hillside."
+    captions["field_a"] = "Ploughed farmland on level ground, at a further zoom level."
+    frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=captions[fid]) for fid in _NATIVE_FRAMES)
+    furrows = (
+        "First, in your own words, describe how the furrows run across each frame: their direction, their "
+        "spacing, and any place where they look interrupted.\n\n"
+        "Then the closed question, which is about the FURROWS only. The ground is a grid of diamond-shaped map "
+        "cells, and the furrows should run on unbroken from cell to cell. Is there any line, at any angle, across "
+        "which the furrows do not continue: they jump sideways by part of a furrow, break off, or meet the furrows "
+        "on the other side out of step? Any such line counts, however short: one inside a single map cell counts "
+        "as much as one along a whole row of cells. NOT such a line: (1) where the slope bends, the ground turns "
+        "lighter or darker: a lighter stretch meeting a darker one, and any thin pale or dark streak, notch or "
+        "smudge along or between those changes of shading, with the furrows keeping their spacing across it; "
+        "(2) the furrows turning or changing spacing gradually where the ground slopes; (3) a darker or lighter "
+        "patch in the soil with the furrows running straight through it; (4) the frame's own edges.\n\n"
+        "Answer BREAK if at least one such line is visible, CONTINUOUS if the furrows carry on everywhere."
+    )
+    checks = (
+        rp.Check(
+            id="objects_on_ground",
+            question=(
+                "These frames show buildings, people, animals and other objects standing on the ground; each "
+                "scene appears three times, as frames ending _a, _b and _c, at different zoom levels. First, in "
+                "your own words, describe how each kind of object meets the ground under it: where its base is, "
+                "and what ground shows around that base, and whether that changes between a scene's three "
+                "frames.\n\n"
+                "Then the closed question. Does every object sit on its own footprint, the patch of ground "
+                "directly under its base, in every frame? Or does any object, in any frame, look detached from "
+                "it: floating clear above it with ground showing under its base, sunk into it, or standing off "
+                "to one side of the patch it plainly belongs to, so it reads as pasted onto the wrong place? NOT "
+                "detached: (1) a tall object reaching up over the ground and objects behind it, which every tall "
+                "object does; (2) dark shadows beside objects; (3) objects too small to tell where their base "
+                "is.\n\n"
+                "Answer DETACHED if at least one object looks detached, SEATED if every judgeable object sits on "
+                "its own footprint."
+            ),
+            frames=("village_a", "village_b", "village_c", "plateau_a", "plateau_b", "plateau_c"),
+            answers=("DETACHED", "SEATED", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="ground_continuity",
+            question=(
+                "These two frames show ploughed farmland, a ground texture of parallel furrows, on level ground "
+                f"and on a hillside. {furrows}"
+            ),
+            frames=("field_b", "field_slope_b"),
+            answers=("BREAK", "CONTINUOUS", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="far_field",
+            question=f"This frame shows ploughed farmland, a ground texture of parallel furrows, on level ground. {furrows}",
+            frames=(_NATIVE_SPECIFICITY,),
+            answers=("BREAK", "CONTINUOUS", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="native_tier",
+        title="Zoom level review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders from a map editor for an isometric strategy game. Several scenes appear "
+            "more than once, as frames ending _a, _b and _c: the same patch of ground at different zoom levels. "
+            "Each frame is a crop, enlarged by a whole-number factor with no smoothing, so one original pixel "
+            "appears as a square block of pixels; the factor differs between frames. Judge only what you can "
+            "actually see."
+        ),
+        injects=tuple(NATIVE_INJECTS),
+    )
+
+
+def _native_prerequisites() -> str | None:
+    for path in NATIVE_MAPS.values():
+        if not path.is_file():
+            return f"needs {path.relative_to(ROOT)} (the gitignored examples/ corpus)"
+    if asset_source.get_install_path() is None:
+        return "needs a configured AoE2:DE install for the terrain textures and sprites"
+    return None
+
+
+def _shading_step(img: np.ndarray, reach: int = 14, box: int = 6) -> np.ndarray:
+    """Per px, the change in box-mean luma between the two points `reach` px away along the normal
+    of the cell diagonals the furrows' frames break along: where the ground turns lighter or darker."""
+    luma = img[..., :3].astype(np.float64) @ np.array([0.299, 0.587, 0.114])
+    side = 2 * box + 1
+    summed = np.pad(luma, ((box + 1, box), (box + 1, box)), mode="edge").cumsum(0).cumsum(1)
+    mean = (summed[side:, side:] - summed[:-side, side:] - summed[side:, :-side] + summed[:-side, :-side]) / side**2
+    oy, ox = round(reach * 2 / 5**0.5), round(reach / 5**0.5)
+    h, w = mean.shape
+    step = np.zeros_like(mean)
+    step[oy : h - oy, ox : w - ox] = np.abs(mean[: h - 2 * oy, 2 * ox :] - mean[2 * oy :, : w - 2 * ox])
+    return step
+
+
+def _check_native_tier() -> None:
+    """--check for native_tier: spec coupling, frame band, the clean frames byte-identical at the
+    app's chunk size, each object frame's level built sprites, each inject reaching exactly its own
+    frames (printed) and never a 64 or 128 one, wrap-seam bounded, under old-basis's largest delta
+    and clear of every shading change, and hotspot-scale moving buildings by at least half a 96
+    tile's height."""
+    from descape import unit_sprites
+    from descape.render_cache import DEFAULT_CHUNK_PX
+
+    reason = _native_prerequisites()
+    if reason:
+        raise SystemExit(f"native_tier: {reason}")
+    failures: list[str] = []
+    spec = _native_tier_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+
+    clean = _native_frame_images(None)
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+    app_chunks = _native_frame_images(None, DEFAULT_CHUNK_PX)
+    for frame_id, img in clean.items():
+        if not np.array_equal(img, app_chunks[frame_id]):
+            failures.append(f"frame {frame_id}: differs from the same crop stitched at chunk_px {DEFAULT_CHUNK_PX}")
+    lift = 0
+    with _PinnedSettings(), _native_sprite_state():
+        for frame_id, (scene, tile_px) in _NATIVE_FRAMES.items():
+            if not _NATIVE_SCENES[scene][3]:
+                continue
+            cache = _native_cache(scene, SLOPED_CHUNK_PX)
+            lvl = cache._level(_native_mip(cache, tile_px))
+            if not lvl.sprites or not lvl.sprites.by_anchor:
+                failures.append(f"frame {frame_id}: its {tile_px} px level built no sprites")
+            elif tile_px == ig.NATIVE_TILE_PIXELS:
+                # The x1 art at 1:1, so hotspot-scale's shift is a third of each native hotspot.
+                shift = max(
+                    max(round(d.hotspot_x * 4 / 3) - d.hotspot_x, round(d.hotspot_y * 4 / 3) - d.hotspot_y)
+                    for (tx, ty), draws in lvl.sprites.by_anchor.items()
+                    if _native_building_at(cache, tx, ty)
+                    for d, *_rest in draws
+                )
+                lift = max(lift, shift)
+                if shift < ig.half_dims(tile_px)[1] // 2:
+                    failures.append(f"frame {frame_id}: hotspot-scale moves no building over {shift} px")
+        unit_sprites._scaled_cache.clear()
+
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    injected_by_name: dict[str, dict[str, np.ndarray]] = {}
+    for name, bound in NATIVE_INJECTS.items():
+        injected = injected_by_name[name] = _native_frame_images(name)
+        touched, shown = {}, []
+        for frame_id in _NATIVE_FRAMES:
+            mask = rp.changed_pixels(clean[frame_id], injected[frame_id])
+            if bound is not None and frame_id in _NATIVE_REACH[name]:
+                failures += bound.failures(mask, f"inject {name} on {frame_id}")
+            if mask.any():
+                touched[frame_id] = (int(np.count_nonzero(mask)), rp.largest_component_px(mask))
+                delta = np.abs(clean[frame_id].astype(np.int16) - injected[frame_id]).sum(axis=-1).max()
+                shown.append(
+                    f"{frame_id} {touched[frame_id][0]}px bbox {rp.delta_bbox(mask)} largest "
+                    f"{touched[frame_id][1]}px max delta {delta}"
+                )
+        want = set(_NATIVE_REACH[name])
+        if missed := sorted(want - set(touched)):
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        if stray := sorted(set(touched) - want):
+            failures.append(f"inject {name}: reached {', '.join(stray)}, outside its frames")
+        reach[name] = touched
+        print(f"reach: {name} -> {'; '.join(shown) or 'nothing'}")
+
+    coarse = reach[NATIVE_COARSE_INJECT]
+    for name, bound in NATIVE_INJECTS.items():
+        if bound is None:
+            continue
+        for frame_id, (_px, comp) in sorted(reach[name].items()):
+            if frame_id in coarse and comp >= coarse[frame_id][1]:
+                failures.append(
+                    f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
+                    f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
+                )
+    # ground_continuity excludes changes of shading by name, so wrap-seam must break evenly lit ground.
+    for frame_id in _NATIVE_REACH["wrap-seam"]:
+        step = _shading_step(clean[frame_id])
+        mask = rp.changed_pixels(clean[frame_id], injected_by_name["wrap-seam"][frame_id])
+        shaded = step > NATIVE_SHADING_STEP
+        print(
+            f"{frame_id}: shading changes on {shaded.mean():.1%}, max step {step.max():.0f}; "
+            f"wrap-seam's max step {step[mask].max():.0f}"
+        )
+        if (mask & shaded).any():
+            failures.append(f"{frame_id}: wrap-seam reaches a shading change, which ground_continuity excludes")
+    if not (_shading_step(clean["field_slope_b"]) > NATIVE_SHADING_STEP).any():
+        failures.append("field_slope_b: no shading change left for ground_continuity's exclusion to name")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: native_tier frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and match "
+        f"chunk_px {DEFAULT_CHUNK_PX}; all {len(NATIVE_INJECTS)} injects bite exactly their own 96 px frames, "
+        f"wrap-seam bounded, under {NATIVE_COARSE_INJECT} and on evenly lit ground, hotspot-scale moving buildings "
+        f"up to {lift} px, and none reaches a 64 or 128 px frame or {_NATIVE_SPECIFICITY}"
     )
 
 
@@ -3820,9 +4247,10 @@ PACKS = {
     "ground_borders": _ground_borders_spec,
     "garrison_flags": _garrison_flags_spec,
     "particle_doodads": _particle_doodads_spec,
+    "native_tier": _native_tier_spec,
 }
 # The directory a pack's runs land in, where its id alone would name the subject in REVIEW.md's paths.
-_PACK_DIRS = {"particle_doodads": "objects"}
+_PACK_DIRS = {"particle_doodads": "objects", "native_tier": "zoom_levels"}
 
 
 # ---------------------------------------------------------------- rendering
@@ -3927,6 +4355,7 @@ def _pack_injects(pack_id: str) -> dict:
         "ground_borders": BORDER_INJECTS,
         "garrison_flags": GARRISON_INJECTS,
         "particle_doodads": PARTICLE_INJECTS,
+        "native_tier": NATIVE_INJECTS,
     }.get(pack_id, INJECTS)
 
 
@@ -3945,6 +4374,8 @@ def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
         return _garrison_frame_images(inject)
     if pack_id == "particle_doodads":
         return _particle_frame_images(inject)
+    if pack_id == "native_tier":
+        return _native_frame_images(inject)
     return _frame_images(inject)
 
 
@@ -3955,13 +4386,15 @@ def _frame_tile_px(pack_id: str, frame_id: str) -> int:
         return _GROUND_FRAMES[frame_id][1]
     if pack_id in ("sloped_mip", "sloped_fine"):
         # Graphics quality 3 puts both 240x240 maps at 64 px per tile at level 0.
-        return _level_px(64, (_SLOPED_FRAMES if pack_id == "sloped_mip" else _FINE_FRAMES)[frame_id][1])
+        return _LADDER_64[(_SLOPED_FRAMES if pack_id == "sloped_mip" else _FINE_FRAMES)[frame_id][1]]
     if pack_id == "ground_borders":
         return BORDER_TILE_PX
     if pack_id == "garrison_flags":
         return GARRISON_TILE_PX
     if pack_id == "particle_doodads":
         return _PARTICLE_TILE_PX
+    if pack_id == "native_tier":
+        return _NATIVE_FRAMES[frame_id][1]
     return TILE_PX
 
 
@@ -3983,6 +4416,8 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
         raise SystemExit(f"garrison_flags: {reason}")
     if pack_id == "particle_doodads" and (reason := _particle_prerequisites()):
         raise SystemExit(f"particle_doodads: {reason}")
+    if pack_id == "native_tier" and (reason := _native_prerequisites()):
+        raise SystemExit(f"native_tier: {reason}")
 
     pack_name = _PACK_DIRS.get(pack_id, pack_id)
     pack_dir = out_dir / pack_name / _run_token(pack_id, inject, replica)
@@ -4055,6 +4490,8 @@ def check(pack_id: str = "shadow_band") -> None:
         _check_garrison_flags()
     elif pack_id == "particle_doodads":
         _check_particle_doodads()
+    elif pack_id == "native_tier":
+        _check_native_tier()
     else:
         _check_shadow_band()
 
@@ -4160,7 +4597,7 @@ def main() -> None:
         "--inject",
         choices=sorted({
             *INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *FINE_INJECTS, *BORDER_INJECTS, *SHRINK_INJECTS,
-            *GARRISON_INJECTS, *PARTICLE_INJECTS,
+            *GARRISON_INJECTS, *PARTICLE_INJECTS, *NATIVE_INJECTS,
         }),
         help="Render the pack with one known defect applied",
     )

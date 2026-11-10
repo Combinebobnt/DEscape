@@ -142,12 +142,14 @@ def test_flat_variant_sprites_are_unaffected_by_the_flat_facing_offset(facing_re
     """
     window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
     try:
-        window.terrain_style_combo.setCurrentText("Flat")
-        window.iso_action.setChecked(False)
+        # Before the Flat switch: a live Flat cache never sees units appended behind its row table.
         tiles = [(_ANCHOR_TX + i, _ANCHOR_TY) for i in range(len(_VARIANT_CONSTS))]
         units = window.scenario.unit_manager.units[1]
         for (tx, ty), const in zip(tiles, _VARIANT_CONSTS, strict=True):
             units.append(_Unit(float(tx), float(ty), const, _RADIAN_INDEX_2))
+        window.scenario.unit_gen += 1  # as UnitEditModel does
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.iso_action.setChecked(False)
         window.refresh_map()
 
         rect = _flat_capture_rect(window, tiles)

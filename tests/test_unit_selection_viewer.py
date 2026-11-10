@@ -2618,3 +2618,74 @@ def test_the_two_selection_toggles_ring_a_mixed_selection_independently() -> Non
         assert len(_ring_paths(mv)) == 1
     finally:
         _close(window)
+
+
+# --- GH #357: a catalog pick shows over the selection ------------------------
+
+
+def _catalog_item(panel, const: int):
+    from PyQt5.QtCore import Qt
+
+    view = panel.catalog_view.list
+    return next(view.item(i) for i in range(view.count()) if view.item(i).data(Qt.UserRole) == const)
+
+
+def _pick_shown(window, const: int) -> bool:
+    panel = window.units_panel
+    return (
+        panel.placing_card.isVisibleTo(window.left_stack)
+        and panel.placing_card.const_label.text() == str(const)
+        and not panel.selection_block.isVisibleTo(window.left_stack)
+        and panel.show_selection_button.isVisibleTo(window.left_stack)
+    )
+
+
+def test_a_catalog_pick_shows_over_the_selection_until_the_next_placement() -> None:
+    """A click on a row shows that object and keeps the selection, a double-click arms Place
+    Unit and shows it too, the placement's own selection takes the slot back, and the
+    Eyedropper's pick shows over the selection as well."""
+    from PyQt5.QtCore import QPointF, Qt
+
+    window = _window(with_units=False)
+    try:
+        mv = window.map_view
+        panel = window.units_panel
+        window.iso_action.setChecked(False)
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.mode_combo.setCurrentText("Units")
+        panel.select_object(_HOUSE_CONST)
+        panel.select_owner(1)
+        window.place_unit_action.setChecked(True)
+        tp = mv._tile_pixels
+        window.on_unit_place(QPointF(20 * tp + tp // 2, 20 * tp + tp // 2), Qt.NoModifier)
+        (house_key,) = window._selection
+        window.select_action.setChecked(True)
+
+        panel.catalog_view.category_buttons["Units"].click()
+        assert panel.selection_block.isVisibleTo(window.left_stack), "browsing is not a pick"
+        archer = _catalog_item(panel, _ARCHER_CONST)
+        # The signals a click sends (current row on press, itemClicked on release); real clicks: test_units_panel.py.
+        panel.catalog_view.list.setCurrentItem(archer)
+        panel.catalog_view.list.itemClicked.emit(archer)
+        assert _pick_shown(window, _ARCHER_CONST)
+        assert window._selection == [house_key] and mv._unit_select_keys == [house_key]
+        assert panel.unit_inspector_empty.text() == "1 unit selected"
+
+        panel.catalog_view.list.itemClicked.emit(archer)  # a double-click's signals, in order
+        panel.catalog_view.list.itemActivated.emit(archer)
+        assert window.place_unit_action.isChecked()
+        assert _pick_shown(window, _ARCHER_CONST)
+        assert window._selection == [house_key]
+
+        window.on_unit_place(QPointF(30 * tp + tp // 2, 30 * tp + tp // 2), Qt.NoModifier)
+        (archer_key,) = window._selection
+        assert archer_key != house_key
+        assert panel.selection_block.isVisibleTo(window.left_stack)
+        assert not panel.placing_card.isVisibleTo(window.left_stack)
+        assert panel.unit_field_labels["unit_const"].text() == str(_ARCHER_CONST)
+
+        window.pick_unit_value(mv._unit_index.entry_for_key(house_key), (20, 20), Qt.NoModifier)
+        assert _pick_shown(window, _HOUSE_CONST)
+        assert window._selection == [archer_key]
+    finally:
+        _close(window)

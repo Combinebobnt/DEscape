@@ -66,6 +66,36 @@ def _system_family() -> str:
     return QFontDatabase.systemFont(QFontDatabase.GeneralFont).family()
 
 
+def test_map_overlay_font_returns_equal_independent_copies() -> None:
+    from PyQt5.QtGui import QFontDatabase
+
+    from descape.viewer_canvas import map_overlay_font
+
+    expected = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+    expected.setPixelSize(14)
+    first, second = map_overlay_font(14), map_overlay_font(14)
+    assert first == second == expected
+    assert first is not second
+    first.setBold(True)
+    assert not second.bold()
+    assert map_overlay_font(14) == expected
+    map_overlay_font(20)
+    assert second.pixelSize() == 14
+
+
+def test_map_overlay_font_reads_the_system_base_once() -> None:
+    from descape.viewer_canvas import _overlay_base_font, map_overlay_font
+
+    _overlay_base_font.cache_clear()
+    try:
+        for px in range(12, 17):
+            assert map_overlay_font(px).pixelSize() == px
+        info = _overlay_base_font.cache_info()
+        assert (info.misses, info.hits, info.currsize) == (1, 4, 1)
+    finally:
+        _overlay_base_font.cache_clear()
+
+
 def test_settings_round_trip(tmp_path, monkeypatch) -> None:
     assert (settings.get_ui_font_family(), settings.get_ui_font_size()) == ("", None)
 

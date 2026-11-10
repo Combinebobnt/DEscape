@@ -94,6 +94,7 @@ MEMOIZED_GLOBALS = (
     "_trigger_status_color_sections",
     "_toolbar_style",
     "_button_grid_all_triggers",
+    "_debug_log_colors",
     "_terrain_style",
     "_view_layers",
     "_mod_art_excluded",

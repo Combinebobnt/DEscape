@@ -16,6 +16,7 @@ import time
 import numpy as np
 import pytest
 from test_level_warm import MAP_W, Unit, _scenario, _warm
+from test_native_composite import native_backend, native_kernel  # noqa: F401 -- fixtures
 
 from descape import render
 from descape.render_cache import _ChunkCacheBase
@@ -331,7 +332,8 @@ CROSSING_SCALE = 0.66
 def _crossed(window, scale: float = CROSSING_SCALE) -> int:
     """Zooms onto level 0 from a drained fit; returns it. The grab is the caller's."""
     cache = window._cache
-    assert cache.mip_levels() == [-2, -1, 0, 1], "the fixture's ladder moved"
+    # 1 is the native tier (96, TASK-599), 2 is 128.
+    assert cache.mip_levels() == [-2, -1, 0, 1, 2], "the fixture's ladder moved"
     assert not cache.is_level_resident(0), "level 0 already built -- vacuous"
     _set_device_scale(window, scale)
     target = window.map_view.viewport_chunk_target()
@@ -466,8 +468,8 @@ def test_a_scene_render_capture_never_takes_a_placeholder() -> None:
 
 @pytest.mark.gui
 def test_no_placeholder_where_no_warm_would_resolve_it(monkeypatch) -> None:
-    """T2e (D5): units off, and top-down Flat with sprites off, have no level
-    job, so the crossed level builds in the paint as today."""
+    """T2e (D5): units off has no level job, so the crossed level builds in
+    the paint as today."""
     window = _window()
     try:
         monkeypatch.setattr(window._cache, "with_units", False)
@@ -480,6 +482,12 @@ def test_no_placeholder_where_no_warm_would_resolve_it(monkeypatch) -> None:
     finally:
         conftest.close_window(window)
 
+
+@pytest.mark.gui
+def test_top_down_flat_sprites_off_crossing_draws_a_placeholder() -> None:
+    """T2e flipped (TASK-031.72): top-down Flat with sprites off has no level
+    job, but every level is resident (its draws derive in ~0.1 ms), so a
+    crossing onto a level whose chunks are uncached draws a placeholder."""
     from descape.render_cache import FlatChunkCache
 
     window = conftest.stepped_window(FIXTURE_PATH, size=NARROW, placeholders=True)
@@ -494,13 +502,17 @@ def test_no_placeholder_where_no_warm_would_resolve_it(monkeypatch) -> None:
         target = window.map_view.viewport_chunk_target()
         finer = target[0] + 2
         assert finer in cache.mip_levels()
-        assert not cache.level_warmable(finer)
+        assert not cache.level_warmable(finer) and cache.is_level_resident(finer)
+        _hold_warms(window)
         _set_device_scale(window, 0.75 * 2.0 ** finer)
         assert window.map_view.viewport_chunk_target()[0] == finer
+        assert not any(key[0] == finer for key in cache._cache), "the crossed level is cached -- vacuous"
         _grab(window)
         item = window.map_view._canvas_item
-        assert item._last_drawn_mip == finer and item.pending_mip() is None and item._settled_mip == finer
+        assert item.pending_mip() == finer and item._last_drawn_mip != finer
+        assert cache.is_level_resident(item._last_drawn_mip)
     finally:
+        _hold_warms(window)
         conftest.close_window(window)
 
 
@@ -719,10 +731,23 @@ def _elevate(window, tile) -> None:
     window.on_edit_stroke_end()
 
 
+def _draw(window, tile) -> None:
+    mm = window.scenario.map_manager
+    window._on_tool_selected("draw")
+    window.terrain_panel.set_terrain(2 if mm.get_tile(*tile).terrain_id != 2 else 15)
+    window.brush_size_spin.setValue(3)
+    window.on_edit_stroke_start()
+    window.on_edit_stroke_tile(*tile, 0)
+    window.on_edit_stroke_end()
+
+
 @pytest.mark.gui
-def test_an_elevation_edit_while_pending_shows_no_stale_pixels(monkeypatch) -> None:
+@pytest.mark.parametrize("edit", ["elevate", "draw"])
+def test_an_elevation_edit_while_pending_shows_no_stale_pixels(edit, monkeypatch) -> None:
     """T3e: a level an edit makes non-resident drops out of D4, so the grab
-    after the edit equals a fresh edited window's at the level it drew."""
+    after the edit equals a fresh edited window's at the level it drew.
+    TASK-031.73 T3p, the Draw case: the placeholder's source level counts
+    as visible, so its chunks are patched in place (the same objects)."""
     window = _window()
     fresh = _window(placeholders=False)
     try:
@@ -731,11 +756,23 @@ def test_an_elevation_edit_while_pending_shows_no_stale_pixels(monkeypatch) -> N
         _crossed(fresh)
         _grab(window)
         assert item.pending_mip() == 0
+        source = item.pending_source()
+        assert source is not None and source != 0
         tile = _view_centre_tile(window)
-        before = window.scenario.map_manager.get_tile(*tile).elevation
-        _elevate(window, tile)
-        _elevate(fresh, tile)
-        assert window.scenario.map_manager.get_tile(*tile).elevation != before, "the stroke changed nothing"
+        mm = window.scenario.map_manager
+        before = (mm.get_tile(*tile).elevation, mm.get_tile(*tile).terrain_id)
+        held = {key: chunk for key, chunk in window._cache._cache.items() if key[0] == source}
+        pixels = {key: chunk.copy() for key, chunk in held.items()}
+        assert held, "the placeholder source holds no chunks -- vacuous"
+        act = _elevate if edit == "elevate" else _draw
+        act(window, tile)
+        act(fresh, tile)
+        assert (mm.get_tile(*tile).elevation, mm.get_tile(*tile).terrain_id) != before, "the stroke changed nothing"
+        assert item.pending_mip() == 0 and item.pending_source() == source
+        if edit == "draw":
+            cache = window._cache
+            assert all(cache._cache.get(key) is chunk for key, chunk in held.items()), "a source chunk was evicted"
+            assert any(not np.array_equal(held[key], pixels[key]) for key in held), "no source chunk under the brush"
         edited = _grab(window)
         drawn = item._last_drawn_mip
         monkeypatch.setattr(fresh.map_view._canvas_item, "_level_to_draw", lambda *_args: drawn)
@@ -947,6 +984,84 @@ def test_a_wheel_notch_across_a_level_lands_sharp_wherever_the_view_sits(on_curs
         conftest.close_window(window)
 
 
+def _zoom_out_roll(start_scale: float, notches: int, edge: bool, reach: bool) -> dict:
+    """TASK-031.11's roll: a real wheel notch at the anchor first (it records
+    the roll's cursor), a settle at `start_scale` with every warm drained,
+    then `notches` real zoom-out notches at that anchor, no drain between.
+    Per notch: (level, composited in its paint, placeholder frame, clamped)."""
+    from PyQt5.QtCore import QPoint, QPointF
+
+    window = _window(size=1360, height=1030)
+    try:
+        window.set_reach_warm_allowed(reach)
+        view = window.map_view
+        item = view._canvas_item
+        cache = window._cache
+        assert cache.pools_chunks(), "no worker path -- the reach is off by design (D1)"
+        view.set_zoom_anchor_mode(True)
+        vp = view.viewport().rect()
+        anchor = QPoint(8, 8) if edge else vp.center()
+        _wheel_at(view, anchor)
+        _set_device_scale(window, start_scale)
+        bounds = item.boundingRect()
+        w = vp.width() / start_scale
+        # Edge: the map's right edge just inside the view, the anchor at its top-left, so the roll
+        # grows down into the map and right into the overscroll margin, where the scrollbars clamp.
+        view.centerOn(QPointF(bounds.right() + 0.3 * w, bounds.center().y()) if edge else bounds.center())
+        _grab(window)
+        window._cancel_warms()
+        window._on_viewport_changed()
+        _drain(window)
+        assert item.pending_mip() is None
+        settled = view.viewport_chunk_target()[0]
+        out = {"settled": settled, "keys": window._reach_keys, "notches": []}
+        hbar = view.horizontalScrollBar()
+        for _ in range(notches):
+            _wheel_at(view, anchor, up=False)
+            level = view.viewport_chunk_target()[0]
+            keys = set(cache._cache)
+            _grab(window)
+            placeholder = item._last_drawn_mip != item._last_mip or item.pending_mip() is not None
+            out["notches"].append((level, set(cache._cache) != keys, placeholder, hbar.value() == hbar.maximum()))
+        return out
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.usefixtures("native_backend")
+def test_a_zoom_out_roll_inside_a_level_composites_nothing_once_the_reach_is_warm() -> None:
+    """TASK-031.11 Step 3, beside T3i: settled at level 0 near residual 1
+    (and at the finest level near 2) with every warm drained, real zoom-out
+    notches down to residual ~0.51, then a crossing onto the coarser level
+    and the notches inside it, composite nothing in their paints and draw no
+    placeholder (D1, D2). Centre and edge-cursor anchors; the edge one sits
+    at the viewport's top-left with the map's right edge in view, so the
+    coarser level's widest notch is clamped by the scrollbars. Both reach
+    entries are queued, not budget-dropped (D5). Control, the same rolls with
+    the reach off: at least one notch composites (on this small map the
+    depth-1 ring covers a centred roll, so it is the edge roll's)."""
+    composited_off = []
+    for start_scale, notches, inside in ((0.99, 6, 2), (1.98, 3, 1)):
+        for edge in (False, True):
+            name = f"{'edge' if edge else 'centre'} from {start_scale}"
+            on = _zoom_out_roll(start_scale, notches, edge, reach=True)
+            settled = on["settled"]
+            assert [mip for mip, _rng in on["keys"]] == [settled, settled - 1], f"{name}: reach entries {on['keys']}"
+            levels = [n[0] for n in on["notches"]]
+            assert levels[0] == settled and levels == sorted(levels, reverse=True), f"{name}: levels {levels}"
+            assert levels.count(settled - 1) == inside + 1, f"{name}: the roll's levels {levels}"
+            for i, (level, composited, placeholder, _clamped) in enumerate(on["notches"]):
+                assert not placeholder, f"{name}: notch {i + 1} (level {level}) drew a placeholder"
+                assert not composited, f"{name}: notch {i + 1} (level {level}) composited in its paint"
+            if edge and start_scale < 1:
+                assert on["notches"][-1][3], f"{name}: the last notch was not clamped -- the D1 clamp unexercised"
+            off = _zoom_out_roll(start_scale, notches, edge, reach=False)
+            assert [n[0] for n in off["notches"]] == levels and off["keys"] == (), f"{name}: the control rolled another way"
+            composited_off += [(name, i + 1) for i, n in enumerate(off["notches"]) if n[1]]
+    assert composited_off, "with the reach off nothing composited -- the test is vacuous"
+
+
 @pytest.mark.gui
 def test_the_widened_finer_warm_never_evicts_the_settled_view() -> None:
     """Review fold: on a window where the finer neighbour's widened patch
@@ -1006,19 +1121,20 @@ def test_perf_trace_carries_the_placeholder_and_refine_events(monkeypatch) -> No
 
 @pytest.mark.gui
 def test_only_the_apps_window_allows_placeholders_and_zoom_frames() -> None:
-    """Placeholders (D8) and pre-rendered zoom frames (TASK-031.71) share the opt-in."""
+    """Placeholders (D8), the zoom-out reach (TASK-031.11 D9) and pre-rendered
+    zoom frames (TASK-031.71) share the opt-in."""
     from testkit.qt_window import ensure_qapp
 
     ensure_qapp()
     from descape import viewer
 
-    assert viewer.LIVE_PLACEHOLDERS is False
+    assert viewer.LIVE_PLACEHOLDERS is False and viewer.REACH_WARM is False
     assert "_app_window" in viewer.main.__code__.co_names
     plain = viewer.ViewerWindow()
     app = viewer._app_window()
     try:
-        assert not plain._placeholders_allowed
-        assert app._placeholders_allowed and app._placeholders_on()
+        assert not plain._placeholders_allowed and not plain._reach_warm_allowed
+        assert app._placeholders_allowed and app._placeholders_on() and app._reach_warm_allowed
         assert not plain.map_view._preframes_allowed
         assert app.map_view._preframes_allowed
     finally:

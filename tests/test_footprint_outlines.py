@@ -1015,7 +1015,8 @@ def test_a_player_colour_edit_recolours_the_owner_outlines() -> None:
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_one_index_rebuild_builds_the_owner_coloured_overlay_once(monkeypatch) -> None:
     """_rebuild_unit_index pushes colours, then set_unit_index refreshes synchronously:
-    a colour-push hook would queue a second build, which processEvents() would run."""
+    a colour-push hook would queue a second refresh, which processEvents() would run.
+    An unchanged index rebuilds no chunk (TASK-031.42), so refreshes are counted there."""
     from PyQt5.QtWidgets import QApplication
 
     window = _owner_window()
@@ -1026,9 +1027,13 @@ def test_one_index_rebuild_builds_the_owner_coloured_overlay_once(monkeypatch) -
         in_scope = len(unit_pick.footprint_entries(view._unit_index, view._footprint_scope))
         assert in_scope >= 6
         calls = _count_footprint_builds(monkeypatch, view)
+        refreshes = []
+        real_refresh = view.refresh_footprint_overlay
+        monkeypatch.setattr(view, "refresh_footprint_overlay", lambda: refreshes.append(1) or real_refresh())
         window._rebuild_unit_index()
         QApplication.processEvents()
-        assert len(calls) == in_scope
+        assert len(refreshes) == 1
+        assert calls == []
         calls.clear()
         _change_player_colour(window, 2)
         QApplication.processEvents()
@@ -1437,5 +1442,516 @@ def test_closing_a_map_then_toggling_fish_outlines_does_not_touch_a_deleted_item
         view.set_fish_outlines(True)
         view.apply_overlay_colors()
         view.schedule_footprint_refresh()
+    finally:
+        conftest.close_window(window)
+
+
+# --- TASK-031.42: only the chunks an edit touched are rebuilt -----------------
+
+# outline_chunks.CHUNK_TILES in these tests, so a small fixture spans several chunks.
+_CHUNK = 4
+_GATE_NE = 64
+
+
+def _subpaths(path) -> list[tuple]:
+    """The path's subpaths as a sorted multiset of point tuples: a stale or dropped copy counts."""
+    from PyQt5.QtGui import QPainterPath
+
+    subpaths: list[list] = []
+    for i in range(path.elementCount()):
+        element = path.elementAt(i)
+        if element.type == QPainterPath.MoveToElement:
+            subpaths.append([])
+        subpaths[-1].append((round(element.x, 3), round(element.y, 3)))
+    return sorted(tuple(points) for points in subpaths)
+
+
+def _fresh_groups(view) -> dict:
+    """Each owner group's subpaths built from scratch, as the unchunked overlay did."""
+    from PyQt5.QtGui import QPainterPath
+
+    from descape.map_view import _add_closed_polygons
+
+    groups = {None: QPainterPath()}
+    for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope):
+        polygons = view._unit_polygons_for(entry)
+        if not polygons:
+            continue
+        if view._footprint_merged:
+            polygons = unit_pick.merge_footprint_polygons(polygons)
+        key = view._owner_group_key(entry.player_id, view._footprint_by_owner)
+        _add_closed_polygons(groups.setdefault(key, QPainterPath()), polygons)
+    return {key: _subpaths(path) for key, path in groups.items()}
+
+
+def _assert_fresh(view, step: str) -> None:
+    fresh = _fresh_groups(view)
+    drawn = {key: _subpaths(item.path()) for key, item in view._footprint_items.items()}
+    assert set(drawn) == set(fresh), f"{step}: groups"
+    for key, subpaths in fresh.items():
+        assert drawn[key] == subpaths, f"{step}: group {key} differs from a fresh build"
+
+
+def _chunk_elements(view) -> dict:
+    """Every item's chunks as ordered path elements: subpath order changes stroked pixels at low zoom."""
+    return {
+        key: {
+            chunk: [(e.type, e.x, e.y) for e in (path.elementAt(i) for i in range(path.elementCount()))]
+            for chunk, path in item.chunks().items()
+        }
+        for key, item in view._footprint_items.items()
+    }
+
+
+def _assert_same_as_a_full_rebuild(view, step: str) -> None:
+    """Each chunk's path, in order, equals what a full rebuild writes (TASK-031.42 M check)."""
+    incremental = _chunk_elements(view)
+    view._footprint_chunks.reset()
+    view.refresh_footprint_overlay()
+    assert incremental == _chunk_elements(view), f"{step}: a chunk's path differs from a full rebuild's"
+
+
+def _chunked_window(monkeypatch, style: str = "Stepped", merged: bool = False, by_owner: bool = False):
+    """Blank template, Units mode, outlines on at scope All, free placement, small chunks."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import outline_chunks
+
+    monkeypatch.setattr(outline_chunks, "CHUNK_TILES", _CHUNK)
+    window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
+    if style != "Stepped":
+        window.terrain_style_combo.setCurrentText(style)
+        window.refresh_map()
+        QApplication.processEvents()
+    view = window.map_view
+    if style == "Flat":
+        # Offscreen, a restyle never reaches MapView (GOTCHAS); safe for geometry-only checks.
+        view._terrain_style = "flat"
+    assert view._terrain_style == style.lower()
+    window.footprint_action.setChecked(True)
+    window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_ALL].setChecked(True)
+    window.footprint_merged_action.setChecked(merged)
+    window.footprint_by_owner_action.setChecked(by_owner)
+    window.unrestricted_check.setChecked(True)
+    window.mode_combo.setCurrentText("Units")
+    window.show()
+    QApplication.processEvents()
+    return window
+
+
+def _keys(window) -> set:
+    return {(pid, u.reference_id) for pid, units in enumerate(window.scenario.unit_manager.units) for u in units}
+
+
+def _place_for(window, owner: int, const: int, tile: tuple[int, int]) -> tuple[int, int]:
+    from PyQt5.QtWidgets import QApplication
+
+    before = _keys(window)
+    window.units_panel.select_owner(owner)
+    assert window.units_panel.pick_object(const), const
+    window.on_unit_place(window.map_view._tile_polygon(*tile).boundingRect().center(), None)
+    QApplication.processEvents()
+    (key,) = _keys(window) - before
+    return key
+
+
+def _deselect(window) -> None:
+    window._selection = []
+    window.map_view.set_unit_selection([])
+
+
+def _select_key(window, key) -> None:
+    window._selection = [key]
+    window._refresh_selection_view()
+
+
+# (name, owner, const, tile). The three villagers sit on the tiles around corner (44, 44),
+# where four chunks meet; the stroke at tile (44, 44) moves that corner.
+_CHUNKED_FIXTURE = (
+    ("town centre", 1, _TOWN_CENTRE, (50, 50)),
+    ("house", 2, _HOUSE, (58, 50)),
+    ("gate", 1, _GATE_NE, (60, 40)),
+    ("villager 1", 1, _VILLAGER, (43, 43)),
+    ("villager 2", 2, _VILLAGER, (44, 43)),
+    ("tree", 0, _TREE, (43, 44)),
+    # Indexed after villager 1 but earlier in its chunk's tile scan, so member order is tested.
+    ("villager 3", 1, _VILLAGER, (42, 42)),
+)
+
+
+def _populate(window, view) -> dict:
+    keys = {}
+    for name, owner, const, tile in _CHUNKED_FIXTURE:
+        keys[name] = _place_for(window, owner, const, tile)
+        _assert_fresh(view, f"place {name}")
+    _deselect(window)
+    return keys
+
+
+def _stroke(window, tile: tuple[int, int], size: int) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window.mode_combo.setCurrentText("Terrain")
+    window._on_tool_selected("elevation")
+    window.brush_size_spin.setValue(size)
+    window.on_edit_stroke_start()
+    window.on_edit_stroke_tile(*tile, Qt.NoModifier)
+    window.on_edit_stroke_end()
+    QApplication.processEvents()
+    window.mode_combo.setCurrentText("Units")
+    QApplication.processEvents()
+
+
+def _move_across_a_chunk(window, keys) -> None:
+    view = window.map_view
+    entry = view._unit_index.entry_for_key(keys["town centre"])
+    dx = _CHUNK - entry.own_x % _CHUNK
+    window._move_units(window._ensure_unit_edits(), [entry], float(dx), 0.0, "Move unit")
+    moved = view._unit_index.entry_for_key(keys["town centre"])
+    assert moved.own_x // _CHUNK != entry.own_x // _CHUNK, "the move stayed in its chunk"
+
+
+def _delete_house(window, keys) -> None:
+    from PyQt5.QtCore import Qt
+
+    _select_key(window, keys["house"])
+    window.on_unit_delete(Qt.NoModifier)
+    assert window.map_view._unit_index.entry_for_key(keys["house"]) is None, "the delete did not happen"
+
+
+def _rotate_gate(window, keys) -> None:
+    before = window.map_view._unit_index.entry_for_key(keys["gate"]).unit.unit_const
+    _select_key(window, keys["gate"])
+    window.on_unit_rotate(1)
+    assert window.map_view._unit_index.entry_for_key(keys["gate"]).unit.unit_const != before, "no const change"
+
+
+def _convert_villager(window, keys) -> None:
+    entry = window.map_view._unit_index.entry_for_key(keys["villager 1"])
+    window.units_panel.select_owner(2)
+    window.brush_size_spin.setValue(1)
+    window._begin_convert_stroke()
+    window._convert_stroke_tile(entry.own_x, entry.own_y)
+    window._end_convert_stroke()
+    assert window.map_view._unit_index.entry_for_key(keys["villager 1"]) is None, "the convert did not happen"
+
+
+def _raise_under_the_town_centre(window, keys) -> None:
+    entry = window.map_view._unit_index.entry_for_key(keys["town centre"])
+    _stroke(window, (entry.own_x, entry.own_y), 3)
+
+
+def _raise_the_chunk_corner(window, keys) -> None:
+    view = window.map_view
+    entry = view._unit_index.entry_for_key(keys["villager 2"])
+    before = view._unit_polygons_for(entry)
+    _stroke(window, (44, 44), 1)
+    if view._terrain_style == "sloped":
+        assert view._unit_polygons_for(entry) != before, "the corner stroke moved no corner unit"
+
+
+_CHUNKED_STEPS = (
+    ("move across a chunk boundary", _move_across_a_chunk),
+    ("delete", _delete_house),
+    ("gate rotate", _rotate_gate),
+    ("convert", _convert_villager),
+    ("elevation stroke", _raise_under_the_town_centre),
+    ("stroke at a chunk corner", _raise_the_chunk_corner),
+)
+
+
+@pytest.mark.parametrize("by_owner", [False, True], ids=["one-colour", "by-owner"])
+@pytest.mark.parametrize("merged", [False, True], ids=["per-tile", "merged"])
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_every_edit_and_its_undo_leave_each_group_equal_to_a_fresh_build(
+    monkeypatch, style: str, merged: bool, by_owner: bool
+) -> None:
+    """The oracle: after every step each group item's subpaths, as a multiset,
+    equal a from-scratch build of the same group."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _chunked_window(monkeypatch, style, merged, by_owner)
+    try:
+        view = window.map_view
+        keys = _populate(window, view)
+        if by_owner:
+            assert len(view._footprint_items) == 3, "no owner groups to keep apart"
+        for step, run in _CHUNKED_STEPS:
+            run(window, keys)
+            QApplication.processEvents()
+            _assert_fresh(view, step)
+            _assert_same_as_a_full_rebuild(view, step)
+            _deselect(window)
+            window.undo()
+            QApplication.processEvents()
+            _assert_fresh(view, f"undo {step}")
+            _assert_same_as_a_full_rebuild(view, f"undo {step}")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_one_unit_move_computes_only_its_old_and_new_chunks(monkeypatch) -> None:
+    window = _chunked_window(monkeypatch)
+    try:
+        view = window.map_view
+        keys = _populate(window, view)
+        calls = _count_footprint_builds(monkeypatch, view)
+        view.refresh_footprint_overlay()
+        assert calls == [], "an unchanged refresh computed geometry"
+        entry = view._unit_index.entry_for_key(keys["town centre"])
+        old_chunk = (entry.own_x // _CHUNK, entry.own_y // _CHUNK)
+        _move_across_a_chunk(window, keys)
+        moved = view._unit_index.entry_for_key(keys["town centre"])
+        chunks = {old_chunk, (moved.own_x // _CHUNK, moved.own_y // _CHUNK)}
+        in_scope = unit_pick.footprint_entries(view._unit_index, view._footprint_scope)
+        members = [e for e in in_scope if (e.own_x // _CHUNK, e.own_y // _CHUNK) in chunks]
+        assert len(calls) == len(members) < len(in_scope)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_dataset_switch_rebuilds_every_chunk(monkeypatch) -> None:
+    """A data mod changes tile_span and the drape test for the same const, so its generation is context."""
+    from descape import game_dataset
+
+    window = _chunked_window(monkeypatch)
+    try:
+        view = window.map_view
+        _populate(window, view)
+        calls = _count_footprint_builds(monkeypatch, view)
+        monkeypatch.setattr(game_dataset, "_generation", game_dataset.generation() + 1)
+        view.refresh_footprint_overlay()
+        assert len(calls) == len(unit_pick.footprint_entries(view._unit_index, view._footprint_scope))
+    finally:
+        conftest.close_window(window)
+
+
+def _chunks_holding(view) -> set:
+    return {chunk for item in view._footprint_items.values() for chunk in item.chunks()}
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_unit_deleted_with_outlines_off_leaves_no_stale_chunk_once_they_are_enabled(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _chunked_window(monkeypatch)
+    try:
+        view = window.map_view
+        keys = _populate(window, view)
+        house = view._unit_index.entry_for_key(keys["house"])
+        chunk = (house.own_x // _CHUNK, house.own_y // _CHUNK)
+        assert [e for e in view._unit_index.entries if (e.own_x // _CHUNK, e.own_y // _CHUNK) == chunk] == [house]
+        assert chunk in _chunks_holding(view)
+        window.footprint_action.setChecked(False)
+        _select_key(window, keys["house"])
+        window.on_unit_delete(Qt.NoModifier)
+        window.footprint_action.setChecked(True)
+        assert chunk not in _chunks_holding(view), "the deleted house's outline is still drawn"
+        _assert_fresh(view, "enabled after a hidden delete")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_scope_change_that_drops_a_chunks_last_member_clears_that_chunk(monkeypatch) -> None:
+    window = _chunked_window(monkeypatch)
+    try:
+        view = window.map_view
+        keys = _populate(window, view)
+        villager = view._unit_index.entry_for_key(keys["villager 2"])
+        chunk = (villager.own_x // _CHUNK, villager.own_y // _CHUNK)
+        assert chunk in _chunks_holding(view)
+        window.footprint_scope_actions[unit_pick.FOOTPRINT_SCOPE_MULTITILE].setChecked(True)
+        assert view._footprint_scope == unit_pick.FOOTPRINT_SCOPE_MULTITILE
+        assert chunk not in _chunks_holding(view), "the villager's outline outlived its scope"
+        _assert_fresh(view, "scope change")
+    finally:
+        conftest.close_window(window)
+
+
+def _render(scene, source, scale: float):
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QImage, QPainter
+
+    image = QImage(max(1, int(source.width() * scale)), max(1, int(source.height() * scale)), QImage.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    scene.render(painter, QRectF(image.rect()), source)
+    painter.end()
+    return image
+
+
+def _assert_same_pixels_as_one_path_item(scene, item, source, label: str) -> None:
+    from PyQt5.QtWidgets import QGraphicsPathItem
+
+    reference = QGraphicsPathItem(item.path())
+    reference.setPen(item.pen())
+    reference.setZValue(item.zValue())
+    for scale in (1.0, 0.37):
+        chunked = _render(scene, source, scale)
+        item.setVisible(False)
+        scene.addItem(reference)
+        single = _render(scene, source, scale)
+        scene.removeItem(reference)
+        item.setVisible(True)
+        blank = _render(scene, source, scale)
+        blank.fill(0)
+        assert single != blank, f"{label} at {scale}: the reference drew nothing, so this proves nothing"
+        assert chunked == single, f"{label} at {scale}: chunked pixels differ from one path item's"
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_chunked_outlines_paint_the_pixels_one_path_item_would(monkeypatch, style: str) -> None:
+    """Every other scene item hidden, so only the outline is compared. The
+    first check runs right after a Place outside the old bounds, through
+    scene().render(), which culls by boundingRect(): before any visibility
+    toggle of the item, which would re-index it."""
+    window = _chunked_window(monkeypatch, style)
+    try:
+        view = window.map_view
+        _populate(window, view)
+        scene = view.scene()
+        item = view._footprint_items[None]
+        assert item.chunk_count() > 3
+        old_bounds = item.boundingRect()
+        old_chunks = set(item.chunks())
+        _place_for(window, 1, _TOWN_CENTRE, (100, 100))
+        _deselect(window)
+        (new_chunk,) = set(item.chunks()) - old_chunks
+        new_rect = item.chunks()[new_chunk].controlPointRect().adjusted(-4, -4, 4, 4)
+        assert not new_rect.intersects(old_bounds), "the Place stayed inside the old bounds"
+        shown = [other for other in scene.items() if other is not item and other.isVisible()]
+        for other in shown:
+            other.setVisible(False)
+        _assert_same_pixels_as_one_path_item(scene, item, new_rect, "after an outside Place")
+        source = item.boundingRect().adjusted(-8, -8, 8, 8)
+        _assert_same_pixels_as_one_path_item(scene, item, source, "the fixture")
+        for other in shown:
+            other.setVisible(True)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_a_chunk_outside_the_old_bounds_is_found_by_the_scene_index() -> None:
+    """A deep BSP index, so the new chunk lands in another leaf than the old
+    bounds: without prepareGeometryChange() the scene would never paint it."""
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QColor, QPainterPath, QPen
+    from PyQt5.QtWidgets import QGraphicsScene
+
+    from descape.viewer_canvas import ChunkedPathItem
+
+    conftest.ensure_qapp()
+    scene = QGraphicsScene(0, 0, 100000, 100000)
+    scene.setBspTreeDepth(10)
+    item = ChunkedPathItem(QPen(QColor(255, 0, 0), 0))
+    scene.addItem(item)
+    near, far = QPainterPath(), QPainterPath()
+    near.addRect(10, 10, 10, 10)
+    far.addRect(90000, 90000, 10, 10)
+    item.set_chunk((0, 0), near)
+    assert scene.items(QRectF(5, 5, 20, 20)) == [item]
+    item.set_chunk((9, 9), far)
+    assert scene.items(QRectF(89995, 89995, 20, 20)) == [item]
+    item.set_chunk((0, 0), None)
+    assert scene.items(QRectF(5, 5, 20, 20)) == []
+    item.clear()
+    assert item.boundingRect().isEmpty() and scene.items(QRectF(89995, 89995, 20, 20)) == []
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_paint_strokes_only_the_chunks_the_exposed_rect_meets() -> None:
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
+    from PyQt5.QtWidgets import QStyleOptionGraphicsItem
+
+    from descape.viewer_canvas import ChunkedPathItem
+
+    conftest.ensure_qapp()
+
+    class _Recording(QPainter):
+        def __init__(self, device) -> None:
+            super().__init__(device)
+            self.drawn: list = []
+
+        def drawPath(self, path) -> None:
+            self.drawn.append(path.controlPointRect().left())
+            super().drawPath(path)
+
+    item = ChunkedPathItem(QPen(QColor(255, 0, 0), 0))
+    left, right = QPainterPath(), QPainterPath()
+    left.addRect(0, 0, 10, 10)
+    right.addRect(100, 0, 10, 10)
+    item.set_chunks({(0, 0): left, (1, 0): right})
+    assert item.boundingRect() == QRectF(0, 0, 110, 10)
+    image = QImage(200, 50, QImage.Format_ARGB32)
+    for exposed, expected in (
+        (QRectF(0, 0, 10, 10), [0.0]),
+        (QRectF(110, 0, 20, 10), [100.0]),  # only touches the right chunk's edge
+        (QRectF(111.5, 0, 20, 10), [100.0]),  # inside the 2 px stroke margin
+        (QRectF(120, 0, 20, 10), []),
+        (QRectF(0, 0, 200, 50), [0.0, 100.0]),
+    ):
+        painter = _Recording(image)
+        option = QStyleOptionGraphicsItem()
+        option.exposedRect = exposed
+        item.paint(painter, option)
+        painter.end()
+        assert sorted(painter.drawn) == expected, exposed
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.gui
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+def test_fish_rings_stay_equal_to_a_fresh_build_through_chunked_edits(monkeypatch, style: str) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import outline_chunks, unit_kind
+
+    monkeypatch.setattr(outline_chunks, "CHUNK_TILES", _CHUNK)
+    window = _window_with_fish(style)
+    try:
+        view = window.map_view
+
+        def check(step: str) -> None:
+            fish = unit_kind.fish_consts()
+            entries = [e for e in view._unit_index.entries if e.unit.unit_const in fish]
+            drawn = _subpaths(view._fish_item.path())
+            assert drawn == _subpaths(view._fish_ring_path(entries)), step
+            assert drawn, step
+
+        check("built")
+        units = window.scenario.unit_manager.units[0]
+        (whale,) = [u for u in units if u.unit_const == _WHALE]
+        whale.x += 3
+        window._after_unit_mutation()
+        check("move across a chunk")
+        units.remove(next(u for u in units if u.unit_const == _DORADO))
+        window._after_unit_mutation()
+        check("remove")
+        before = _subpaths(view._fish_item.path())
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(int(whale.x), int(whale.y), Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        assert _subpaths(view._fish_item.path()) != before, "the stroke moved no ring"
+        check("elevation stroke")
     finally:
         conftest.close_window(window)

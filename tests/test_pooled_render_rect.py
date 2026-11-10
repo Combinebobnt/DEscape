@@ -559,16 +559,16 @@ def test_a_batch_shares_one_elevations_snapshot_and_never_copies_the_pack(
 
         monkeypatch.setattr(native_composite.UnitPack, "_unshare", unshare)
         derived_by: dict[int, int] = {}
-        real_write = native_composite.UnitPack._write_tiles
+        real_write = native_composite.UnitPack._write_rows
         calls = []
 
-        def write_tiles(self, tiles):
-            tiles = list(tiles)
-            calls.append(len(executor.jobs))
-            derived_by[len(executor.jobs)] = derived_by.get(len(executor.jobs), 0) + len(tiles)
-            real_write(self, tiles)
+        def write_rows(self, tiles, *args):
+            if len(tiles):
+                calls.append(len(executor.jobs))
+                derived_by[len(executor.jobs)] = derived_by.get(len(executor.jobs), 0) + len(tiles)
+            real_write(self, tiles, *args)
 
-        monkeypatch.setattr(native_composite.UnitPack, "_write_tiles", write_tiles)
+        monkeypatch.setattr(native_composite.UnitPack, "_write_rows", write_rows)
 
         _canvas(cache, -1)
         jobs = executor.jobs
@@ -591,6 +591,57 @@ def test_a_batch_shares_one_elevations_snapshot_and_never_copies_the_pack(
 
 
 # --- T9: a margin-warm job in flight --------------------------------------------------
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("whole", [True, False], ids=["whole-canvas", "small-batch"])
+def test_a_pooled_batch_bulk_derives_only_when_its_bounding_area_covers_pending(
+    native_kernel, sprite_install, fake_farm, synthetic_textures, monkeypatch, style, whole,  # noqa: F811
+):
+    with composite_backend.use_backend("native"):
+        cache = _make(style, _scenario_for(style))
+        executor = _NeverStarts()
+        cache.set_chunk_executor(executor, WORKERS)
+        mip = -1 if whole else 0
+        if not whole:
+            cache.chunk_px = 32
+        lvl = cache._level(mip)
+        pack = cache._native_units(lvl, mip)
+        pending = pack.pending().size
+        assert pending > 0
+        derived, scanned = [], []
+        real_bulk, real_over, real_candidates = pack.derive_pending, cache._derive_pack_over, render._rect_candidates
+        inside = False
+
+        def over(*args):
+            nonlocal inside
+            inside = True
+            try:
+                return real_over(*args)
+            finally:
+                inside = False
+
+        def candidates(*args, **kwargs):
+            if inside:
+                scanned.append(args[1:5])
+            return real_candidates(*args, **kwargs)
+
+        monkeypatch.setattr(pack, "derive_pending", lambda: (derived.append(pack), real_bulk())[1])
+        monkeypatch.setattr(cache, "_derive_pack_over", over)
+        monkeypatch.setattr(render, "_rect_candidates", candidates)
+        if whole:
+            _canvas(cache, mip)
+            assert 2 <= len(executor.inputs) <= cache.POOL_BATCH, "not one pooled opening batch"
+            assert derived == [pack], "the opening batch did not bulk derive exactly once"
+            assert scanned == [], "whole-canvas pre-derive scanned candidates"
+            assert not pack.pending().size
+        else:
+            key = _chunk_of_tile(cache, EDIT_X, EDIT_Y)
+            keys = [key, (mip, key[1] + 1, key[2])]
+            assert pending > 2 * cache.chunk_px**2 / lvl.tile_px**2
+            assert len(list(cache._pooled_chunks(mip, keys))) == len(executor.inputs) == 2
+            assert derived == [] and len(scanned) == 1, "small batch skipped the candidate path"
+            assert pack.pending().size, "small batch derived the whole level"
 
 
 def test_a_margin_warm_result_for_a_chunk_the_paint_built_is_refused(

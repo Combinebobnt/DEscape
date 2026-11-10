@@ -36,6 +36,8 @@ from collections.abc import Mapping
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld
 
+from descape import data_mod_side
+
 Art = tuple[int | None, int, int | None]
 """(art_civ, age, tech_civ), one player's building art."""
 
@@ -65,11 +67,15 @@ PLAYER_COUNT = 9
 def civ_index(value: object, ror: bool = False) -> int | None:
     """The .dat civ index a raw civilization/architecture value names, or None
     when it names no concrete civ (GAIA, a random choice, an unknown token).
-    `ror`: the value comes from a Return of Rome file (GH #67)."""
+    `ror`: the value comes from a Return of Rome file (GH #67). Otherwise a data
+    mod's civilizations.json decides, when one is in effect (GH #263)."""
     if isinstance(value, bool):
         return None
     if ror:
         return _ror_civ_index(value)
+    if data_mod_side.civilizations() is not None:
+        civ = data_mod_side.find_civ(value)
+        return civ.index if civ is not None and civ.index >= 1 else None
     if isinstance(value, int):
         return value if 1 <= value <= MAX_CIV_INDEX else None
     if not isinstance(value, str):

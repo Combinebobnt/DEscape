@@ -610,6 +610,352 @@ def test_a_whole_map_outline_is_o_perimeter_not_o_area() -> None:
             conftest.close_window(window)
 
 
+# -- TASK-355: the numpy ring build is the per-tile walk, element for element -------
+
+_RING_RECTS = [
+    (0, 0, 120, 120),  # whole map
+    (0, 0, 1, 1),  # 1x1 in a corner
+    (7, 12, 8, 30),  # 1xN
+    (7, 12, 30, 13),  # Nx1
+    (14, 18, 41, 37),  # interior
+    (95, 22, 120, 47),  # touches the right edge
+    (22, 96, 47, 120),  # touches the bottom edge
+]
+# Border tiles of the rects above, raised so Sloped borders cross several corner shapes.
+_RAISED_TILES = [(0, 0), (7, 15), (20, 12), (14, 25), (30, 18), (40, 30), (100, 22), (119, 30), (30, 119), (22, 100)]
+
+
+def _reference_ring_path(view, rect):
+    """The pre-TASK-355 builder, verbatim: _tile_edge_points() over _region_edge_walk()."""
+    from PyQt5.QtGui import QPainterPath
+
+    path = QPainterPath()
+    started = False
+    for tx, ty, side in view._region_edge_walk(*rect):
+        points = view._tile_edge_points(tx, ty, side)
+        if not points:
+            started = False
+            continue
+        if not started:
+            path.moveTo(points[0])
+            started = True
+        for point in points:
+            if point != path.currentPosition():
+                path.lineTo(point)
+    if started:
+        path.closeSubpath()
+    return path
+
+
+def _elements(path):
+    return [(path.elementAt(i).type, path.elementAt(i).x, path.elementAt(i).y) for i in range(path.elementCount())]
+
+
+def _raise_tiles(window, tiles):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window.mode_combo.setCurrentText("Terrain")
+    window._on_tool_selected("elevation")
+    window.on_edit_stroke_start()
+    for tile in tiles:
+        window.on_edit_stroke_tile(*tile, Qt.NoModifier)
+    window.on_edit_stroke_end()
+    QApplication.processEvents()
+    for tile in tiles:
+        assert window.scenario.map_manager.get_tile(*tile).elevation > 0, tile
+
+
+def _normalized_keys(view, rect):
+    rise = view._sloped_cache().corner_rise
+    keys = set()
+    for tx, ty, _side in view._region_edge_walk(*rect):
+        corners = (rise[ty, tx], rise[ty, tx + 1], rise[ty + 1, tx], rise[ty + 1, tx + 1])
+        keys.add(tuple(int(c - min(corners)) for c in corners))
+    return keys
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_the_ring_is_element_identical_to_the_per_tile_walk(style: str) -> None:
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        _raise_tiles(window, _RAISED_TILES)
+        if style == "Sloped":
+            for rect in _RING_RECTS[1:]:
+                if rect != (0, 0, 1, 1):
+                    assert len(_normalized_keys(view, rect)) >= 2, rect
+        for rect in _RING_RECTS:
+            expected = _elements(_reference_ring_path(view, rect))
+            assert expected, (style, rect)
+            assert _elements(view._rect_ring_path(rect)) == expected, (style, rect)
+    finally:
+        conftest.close_window(window)
+
+
+def test_region_edge_chains_match_the_walk() -> None:
+    from descape.map_view import MapView
+
+    for rect in _RING_RECTS:
+        chained = [
+            (int(x), int(y), side)
+            for xs, ys, side in MapView._region_edge_chains(*rect)
+            for x, y in zip(xs, ys, strict=True)
+        ]
+        walked = list(MapView._region_edge_walk(None, *rect))
+        assert chained == walked, rect
+
+
+# -- TASK-603: trigger rings memoise geometry, never stale heights -----------------
+
+
+def _assert_memo_fresh(view) -> None:
+    assert view._trigger_ring_memo, "the cross-check needs live memo entries"
+    for rect in view._trigger_ring_memo:
+        path = view._memo_ring_path(rect)
+        assert path is not None and not path.isEmpty(), rect
+        assert _elements(path) == _elements(view._rect_ring_path(rect)), f"stale ring: {rect}"
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+def test_a_trigger_refresh_reuses_ring_objects_and_exact_outline_elements(style: str) -> None:
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        before = {rect: view._memo_ring_path(rect) for rect in view._trigger_ring_memo}
+        assert len(before) > 1
+        outlines = {
+            role: _elements(item.path())
+            for role, item in _items_by_role(view).items()
+            if role.startswith(("outline_", "units_"))
+        }
+        window._refresh_trigger_overlay()
+        assert set(view._trigger_ring_memo) == set(before)
+        assert all(view._memo_ring_path(rect) is path for rect, path in before.items())
+        assert {
+            role: _elements(item.path())
+            for role, item in _items_by_role(view).items()
+            if role.startswith(("outline_", "units_"))
+        } == outlines
+        _assert_memo_fresh(view)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_ring_memo_is_bounded_by_used_rects_but_deselect_keeps_it_warm() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        assert len(view._trigger_ring_memo) > 1
+        (area,) = [s for s in view._trigger_shapes if s.shape == "area" and s.entry_ref == CONDITION_AREA]
+        locations = [s for s in view._trigger_shapes if s.shape == "location"]
+        assert locations
+        rect = view._trigger_area_rect(area.coords)
+        path = view._memo_ring_path(rect)
+        view.show_trigger_overlay([area], None)
+        assert set(view._trigger_ring_memo) == {rect}
+        assert view._memo_ring_path(rect) is path
+        view.clear_trigger_overlay()
+        assert set(view._trigger_ring_memo) == {rect}
+        assert view._memo_ring_path(rect) is path
+        view.show_trigger_overlay([area], None)
+        assert view._memo_ring_path(rect) is path
+        view.show_trigger_overlay(locations, None)
+        assert set(view._trigger_ring_memo) == {rect}
+        assert view._memo_ring_path(rect) is path
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_restyle_rebuilds_every_memo_ring_and_close_drops_them() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        for style in ("Sloped", "Flat", "Stepped"):
+            before = {rect: view._memo_ring_path(rect) for rect in view._trigger_ring_memo}
+            window.iso_action.setChecked(False)
+            window.terrain_style_combo.setCurrentText(style)
+            assert view._terrain_style == style.lower()
+            _assert_memo_fresh(view)
+            assert all(view._memo_ring_path(rect) is not path for rect, path in before.items())
+        window.close_scenario()
+        assert view._trigger_ring_memo == {}
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_ring_fingerprints_follow_real_border_corner_neighbour_and_interior_strokes(style: str) -> None:
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*CONDITION_AREA)
+        x1, y1, x2, y2 = _gen().GEOMETRY_CONDITION_AREA
+        rect = view._trigger_area_rect((x1, y1, x2, y2))
+        before = view._memo_ring_path(rect)
+        _raise_tiles(window, [(x1, y1)])
+        _assert_memo_fresh(view)
+        border = view._memo_ring_path(rect)
+        assert border is not before, "the border stroke must invalidate the ring"
+        _raise_tiles(window, [(x2 + 1, y2 + 1)])
+        _assert_memo_fresh(view)
+        neighbour = view._memo_ring_path(rect)
+        if style == "Sloped":
+            assert neighbour is not border, "the diagonal neighbour shares a Sloped border corner"
+        else:
+            assert neighbour is border, "Stepped reads no tile outside its border"
+        _raise_tiles(window, [(x1 + 3, y1 + 3)])
+        _assert_memo_fresh(view)
+        assert view._memo_ring_path(rect) is neighbour, "an interior edit cannot change the border ring"
+    finally:
+        conftest.close_window(window)
+
+
+def test_flat_ring_memo_survives_an_elevation_stroke() -> None:
+    window = _window(style="Flat")
+    try:
+        view = window.map_view
+        window.iso_action.setChecked(False)
+        assert view._terrain_style == "flat"
+        before = {rect: view._memo_ring_path(rect) for rect in view._trigger_ring_memo}
+        assert before
+        _raise_tiles(window, [_gen().GEOMETRY_CONDITION_AREA[:2]])
+        view._rebuild_trigger_overlay()
+        _assert_memo_fresh(view)
+        assert all(view._memo_ring_path(rect) is path for rect, path in before.items())
+    finally:
+        conftest.close_window(window)
+
+
+def test_an_empty_sloped_ring_is_never_memoised(monkeypatch) -> None:
+    window = _window(style="Sloped")
+    try:
+        view = window.map_view
+        rects = set(view._trigger_ring_memo)
+        assert rects
+        with monkeypatch.context() as patch:
+            patch.setattr(view, "_sloped_cache", lambda: None)
+            view._rebuild_trigger_overlay()
+            assert not view._trigger_ring_memo
+            assert all(view._memo_ring_path(rect) is None for rect in rects)
+        view._rebuild_trigger_overlay()
+        assert set(view._trigger_ring_memo) == rects
+        _assert_memo_fresh(view)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_injected_skipped_ring_fingerprint_is_caught_by_the_fresh_path_check(style: str) -> None:
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*CONDITION_AREA)
+        _assert_memo_fresh(view)
+        validate = view._ring_fingerprint_matches
+        view._ring_fingerprint_matches = set
+        try:
+            _raise_tiles(window, [_gen().GEOMETRY_CONDITION_AREA[:2]])
+            with pytest.raises(AssertionError, match="stale ring"):
+                _assert_memo_fresh(view)
+        finally:
+            view._ring_fingerprint_matches = validate
+        view._rebuild_trigger_overlay()
+        _assert_memo_fresh(view)
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_ring_fingerprint_reads_are_batched_and_sloped_rebinds_are_revalidated(monkeypatch, style: str) -> None:
+    window = _window(style=style)
+    try:
+        view = window.map_view
+        assert len(view._trigger_ring_memo) > 1
+        take = np.take
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return take(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(np, "take", counted)
+            view._rebuild_trigger_overlay()
+            assert len(calls) == (0 if style == "Sloped" else 1)
+            if style == "Sloped":
+                cache = view._sloped_cache()
+                cache.corner_rise = cache.corner_rise.copy()
+                view._rebuild_trigger_overlay()
+                assert len(calls) == 1, "all rebound border reads must share one np.take"
+                view._rebuild_trigger_overlay()
+                assert len(calls) == 1, "matching entries must remember the new array identity"
+        _assert_memo_fresh(view)
+    finally:
+        conftest.close_window(window)
+
+
+def test_region_ring_builds_do_not_populate_the_trigger_memo() -> None:
+    window = _window()
+    try:
+        view = window.map_view
+        rect = (1, 2, 4, 6)
+        assert view._memo_ring_path(rect) is None
+        assert not view._rect_ring_path(rect).isEmpty()
+        assert view._memo_ring_path(rect) is None
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("strong", [True, False])
+def test_a_duplicated_area_draws_like_one(strong: bool) -> None:
+    """Decision 3: a repeated rect paints exactly the pixels a single one does,
+    under the dim pen and at 50% overlay opacity alike."""
+    from PyQt5.QtWidgets import QApplication
+
+    gen = _gen()
+    window = _window(style="Sloped")
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*CONDITION_AREA)
+        (area,) = [s for s in view._trigger_shapes if s.shape == "area" and s.entry_ref == CONDITION_AREA]
+        emphasis = None if strong else {PATROL}
+        view.apply_overlay_opacity({"trigger_area": 50})
+        suffix = "strong" if strong else "dim"
+
+        def capture(shapes):
+            view.show_trigger_overlay(shapes, emphasis)
+            QApplication.processEvents()
+            count = _items_by_role(view)[f"outline_{suffix}"].path().elementCount()
+            return _area_capture(view, gen.GEOMETRY_CONDITION_AREA), count
+
+        once, once_count = capture([area])
+        twice, twice_count = capture([area, area])
+        assert twice_count == once_count
+        assert np.array_equal(once, twice)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_location_mark_is_bit_identical_to_the_pointwise_scale() -> None:
+    from PyQt5.QtGui import QPolygonF
+
+    window = _window(style="Sloped")
+    try:
+        view = window.map_view
+        tile = (14, 25)
+        _raise_tiles(window, [tile, (15, 25)])
+        polygon = view._tile_polygon(*tile)
+        centre = polygon.boundingRect().center()
+        s = view.TRIGGER_LOCATION_SCALE
+        expected = QPolygonF([centre + (p - centre) * s for p in polygon])
+        got = view._location_mark(tile)
+        assert polygon.size() > 4
+        assert [(p.x(), p.y()) for p in got] == [(p.x(), p.y()) for p in expected]
+    finally:
+        conftest.close_window(window)
+
+
 # -- pixels ----------------------------------------------------------------------
 
 

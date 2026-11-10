@@ -240,8 +240,20 @@ def test_a_scoped_stroke_with_captures_records_exactly_the_full_diff() -> None:
     end = [(t.terrain_id, t.elevation, t.layer) for t in tiles]
     oracle = [(i, start[i], end[i]) for i in range(len(tiles)) if end[i] != start[i]]
     assert [i for i, _o, _n in oracle] == [2, 9, 10]
-    assert record.changes == oracle
+    assert list(record.changes) == oracle
     assert not hist.in_stroke
+
+
+def test_a_tile_records_changes_are_an_untracked_tuple() -> None:
+    """Every later full gc walks a list's items, never an untracked tuple's:
+    a 500-record history must not grow the walk (TASK-031.18). Each collect
+    untracks one nesting level, innermost first (its reachability pass moves
+    an inner tuple behind its holder): states, then entries, then the outer."""
+    record = TileDiffRecord("paint", changes=[(i, (0, 0, -1), (5, i % 3, -1)) for i in range(50)])
+    assert type(record.changes) is tuple
+    for _ in range(3):
+        gc.collect()
+    assert not gc.is_tracked(record.changes)
 
 
 def test_stroke_capture_raises_on_an_unscoped_stroke_and_with_no_stroke() -> None:

@@ -17,13 +17,13 @@ route through `render.` so a future patch target cannot break either.
 
 from __future__ import annotations
 
-import math
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from descape import (
+    asset_source,
     composite_backend,
     debug_log,
     iso_geometry,
@@ -70,6 +70,11 @@ REDUCED_MAX_BYTES = 64 << 20
 STAMP_PRUNE_EVERY = 1024
 # A reduced entry's stamp for a parent chunk that was not cached when it was built: never valid.
 _NEVER_STAMP = -1
+
+# Relative slack _ChunkCacheBase.mip_for_scale() allows: a view landed on a
+# level's own ratio by a float multiply can sit an ulp or two above it.
+# MapView's native stop tests use the same one, so "at the stop" picks it.
+MIP_SCALE_SLACK = 1e-12
 
 
 def _box_reduce2_numpy(src: np.ndarray) -> np.ndarray:
@@ -1059,7 +1064,7 @@ def join_chunk_jobs(submitted: list) -> list[bool]:
             try:
                 painted[tail] = job.run()
             except Exception as exc:  # noqa: BLE001
-                debug_log.log(f"pooled paint: chunk {job.key} raised inline ({exc!r})")
+                debug_log.log(f"pooled paint: chunk {job.key} raised inline ({exc!r})", level=debug_log.ERROR)
         tail -= 1
     for i in range(tail + 1):
         job, future = submitted[i]
@@ -1068,7 +1073,7 @@ def join_chunk_jobs(submitted: list) -> list[bool]:
         try:
             painted[i] = future.result() is True
         except Exception as exc:  # noqa: BLE001
-            debug_log.log(f"pooled paint: chunk {job.key} raised on a worker ({exc!r})")
+            debug_log.log(f"pooled paint: chunk {job.key} raised on a worker ({exc!r})", level=debug_log.ERROR)
     return painted
 
 
@@ -1163,15 +1168,18 @@ class _ChunkCacheBase:
         already be fixed before that test's ground-truth call gets its
         tile_pixels_for_map() monkeypatched.
 
-        Level index L means tile_px = reference_tile_px * 2**L: POSITIVE L
-        is FINER (mip-up), NEGATIVE L is COARSER (mip-down) -- the only
-        reading consistent with mip_for_scale()'s
-        clamp(ceil(log2(scale)), ...) rule, since zooming in raises scale
-        and must raise the selected level."""
+        Level indices are contiguous and ordered by tile_px: POSITIVE L is
+        FINER (mip-up), NEGATIVE L is COARSER (mip-down), since zooming in
+        raises scale and must raise the selected level. An index is a rank,
+        not log2 of the ratio: the iso ladders' native tier (96, TASK-599)
+        sits between two octaves, so read the ratio from mip_tile_px()."""
         assert tile_px_by_level.get(0) == self.tile_px, (
             f"level 0 must be the reference tile_px ({self.tile_px}), got {tile_px_by_level.get(0)!r}"
         )
         self._mip_tile_px: dict[int, int] = dict(sorted(tile_px_by_level.items()))
+        # The native tier crops wrap-padded texture copies; they live while a cache that may build it does.
+        if any(asset_source.crop_pad(asset_source.terrain_texture_size(px), px) for px in self._mip_tile_px.values()):
+            asset_source.hold_wrap_padded(self)
 
     def mip_levels(self) -> list[int]:
         """Every enumerated level index, ascending. Always contains 0.
@@ -1185,24 +1193,27 @@ class _ChunkCacheBase:
 
     def mip_scale(self, mip: int = 0) -> float:
         """Scene-space scale factor for this level: reference_tile_px /
-        level_tile_px == 2**-mip. Both operands are always powers of two in
-        [MIP_MIN_TILE_PIXELS, MIP_MAX_TILE_PIXELS], so this division is
-        exactly representable in binary float -- mip_scale(0) == 1.0 is an
-        EXACT comparison, which is what Phase B-D-c's "keep the point
-        overload at S == 1.0" safety branch relies on."""
+        level_tile_px. mip_scale(0) == 1.0 is an EXACT comparison (x / x),
+        which is what Phase B-D-c's "keep the point overload at S == 1.0"
+        safety branch relies on. Not always a power of two: the native tier
+        (TASK-599) gives 2/3 at base 64 and 1/3 at base 32."""
         return self._mip_tile_px[0] / self._mip_tile_px[mip]
 
     def mip_for_scale(self, scale: float) -> int:
         """The coarsest level whose own scene-to-device magnification stays
-        <= 1 (never magnify past what's actually resident): clamp(ceil(
-        log2(scale)), min(mip_levels()), max(mip_levels())). Residual
-        magnification lands in (0.5, 1.0] whenever the derived level is
-        actually available -- exactly 1.0 at a power-of-two scale (no
-        resampling at all), which is what keeps a unit device transform on
-        the reference level (see mip_scale()'s own docstring). scale <= 0
-        is guarded by returning the coarsest available level rather than
-        raising -- a defensive floor for a degenerate transform, not a
-        case Phase B-D-c's real callers are expected to hit.
+        <= 1 (never magnify past what's actually resident): the coarsest
+        level whose mip_tile_px() / reference tile_px >= scale, else the
+        finest. On a power-of-two ladder that is clamp(ceil(log2(scale)),
+        coarsest, finest); with the native tier (TASK-599) at base 64,
+        scales in (1.0, 1.5] pick 96 and (1.5, 2.0] pick 128. Residual
+        magnification lands in (0.5, 1.0] (or (2/3, 1.0] beside the native
+        tier) whenever the derived level is available -- exactly 1.0 at a
+        level's own ratio (no resampling at all), which is what keeps a unit
+        device transform on the reference level (see mip_scale()'s own
+        docstring). scale <= 0 is guarded by returning the coarsest
+        available level rather than raising -- a defensive floor for a
+        degenerate transform, not a case Phase B-D-c's real callers are
+        expected to hit.
 
         2026-08-28: ceil, not the naively-symmetric floor(log2(scale)) + 1
         -- they agree everywhere except exact powers of two, where ceil
@@ -1210,12 +1221,18 @@ class _ChunkCacheBase:
         level 0 exactly. That exactness is load-bearing: testkit.
         qt_capture.scene_rect_to_array's whole 1:1 byte-identity contract
         depends on a unit device transform always landing on the reference
-        level, and floor(...) + 1 would break it."""
+        level, and floor(...) + 1 would break it. MIP_SCALE_SLACK keeps a
+        view landed on a level's ratio (MapView's native sprite stop) on
+        that level when the multiply leaves it an ulp above."""
         levels = self.mip_levels()
         if scale <= 0:
             return levels[0]
-        raw = math.ceil(math.log2(scale))
-        return max(levels[0], min(levels[-1], raw))
+        t0 = self._mip_tile_px[0]
+        bound = scale * (1.0 - MIP_SCALE_SLACK)
+        for level in levels:
+            if self._mip_tile_px[level] >= bound * t0:
+                return level
+        return levels[-1]
 
     def _bbox_to_level(self, mip: int, bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         """A REFERENCE-canvas-pixel bbox converted to level `mip` pixels.
@@ -1646,9 +1663,9 @@ class _ChunkCacheBase:
 
     def paints_without_build(self, mip: int) -> bool:
         """Whether a composite at `mip` builds nothing level-wide: what a
-        pre-rendered zoom frame needs (TASK-031.71). is_level_resident(),
-        except on Flat, whose predicate stays False for a level with no icon
-        layer to build."""
+        pre-rendered zoom frame needs (TASK-031.71). is_level_resident() on
+        every class: Flat's counts a level with no icon layer to build as
+        resident too (TASK-031.72)."""
         return self.is_level_resident(mip)
 
     def level_warmable(self, mip: int) -> bool:
@@ -1732,6 +1749,22 @@ class _ChunkCacheBase:
         MarginWarmer.is_active stays honest about remaining work instead of
         counting a chunk that needs no warming at all."""
         return (mip, cx, cy) in self._cache
+
+    def level_chunk_count(self, mip: int, outside: tuple[int, int, int, int] | None = None) -> int:
+        """How many of level `mip`'s chunks are cached, no LRU touch; with
+        `outside` (an inclusive cx0, cy0, cx1, cy1), only those not in it."""
+        if outside is None:
+            return sum(1 for key in self._cache if key[0] == mip)
+        x0, y0, x1, y1 = outside
+        return sum(1 for m, cx, cy in self._cache if m == mip and not (x0 <= cx <= x1 and y0 <= cy <= y1))
+
+    def touch_level(self, mip: int) -> None:
+        """Moves level `mip`'s cached chunks to the LRU's warm end, in their
+        order, as a read of each would: what a warm that must not evict them
+        calls before it inserts (TASK-031.11 D5, the coarsest level)."""
+        cache = self._cache
+        for key in [key for key in cache if key[0] == mip]:
+            cache.move_to_end(key)
 
     def chunk_stamps(self, mip: int, cx0: int, cy0: int, cx1: int, cy1: int) -> tuple | None:
         """The pixel stamp (_stamp()) of every chunk in the inclusive LEVEL-`mip`
@@ -1909,11 +1942,16 @@ class _ChunkCacheBase:
         self._chunk_executor = executor if workers > 0 else None
         self._chunk_workers = workers if executor is not None else 0
 
+    def pools_chunks(self) -> bool:
+        """Whether a missing chunk composites on a worker: a pool is set and
+        the cache has a job path (Stepped, Sloped and iso Flat on the native
+        backend). The viewer warms the zoom-out reach only then (TASK-031.11 D1)."""
+        return self._chunk_executor is not None and self._has_unit_pack and composite_backend.native is not None
+
     def _pools(self, keys: list[tuple[int, int, int]]) -> bool:
-        """Whether render_rect() takes _pooled_chunks() for `keys`: a pool is
-        set, the cache has a job path (Stepped and Sloped, native backend),
-        and at least POOL_MIN_MISSING of them are uncached."""
-        if self._chunk_executor is None or not self._has_unit_pack or composite_backend.native is None:
+        """Whether render_rect() takes _pooled_chunks() for `keys`:
+        pools_chunks(), and at least POOL_MIN_MISSING of them are uncached."""
+        if not self.pools_chunks():
             return False
         missing = 0
         for key in keys:
@@ -1957,8 +1995,8 @@ class _ChunkCacheBase:
         order and passes 1-2 insert nothing, so evictions match; a chunk
         evicted by a later install still paints from its scratch. The batch
         shares one heights snapshot (_heights_snapshot()) and derives the
-        pack first (_derive_pack_over()): every chunk's candidates are a
-        subset of the batch rect's, so no prepare writes the pack while a job
+        pack first (_derive_pack_over()), all pending tiles or the batch's
+        bounding candidates, so no prepare writes the pack while a job
         may read it, and no _unshare() copy is stranded per job. The one
         in-place pack write with no copy, UnitPack._slot() on addrs/dims,
         stays safe because every slot is assigned before the first submit."""
@@ -1980,7 +2018,7 @@ class _ChunkCacheBase:
                         try:
                             future = executor.submit(job.run)
                         except Exception as exc:  # noqa: BLE001
-                            debug_log.log(f"pooled paint: submit failed for chunk {job.key} ({exc!r})")
+                            debug_log.log(f"pooled paint: submit failed for chunk {job.key} ({exc!r})", level=debug_log.ERROR)
                             future = None
                         jobs[i] = job
                         submitted.append((i, job, future))
@@ -2146,8 +2184,9 @@ class _ChunkCacheBase:
         self, bbox: tuple[int, int, int, int], elevation_changed: set | None = None, levels=None, rebuild_levels=None
     ) -> None:
         """"Patch, don't drop": for every chunk CURRENTLY cached, at every
-        RESIDENT mip level (only those in `levels`, when given: a unit edit
-        patches its visible level alone), that bbox (REFERENCE canvas pixels) overlaps
+        RESIDENT mip level (only those in `levels`, when given, and every
+        other resident level drops its chunks under bbox: the viewer passes
+        the level in view, TASK-031.73), that bbox (REFERENCE canvas pixels) overlaps
         once converted to that level, recomposites just the intersected
         sub-rect via self._composite_rect() and writes it into the
         existing chunk array in place -- the cached chunk stays valid
@@ -2226,10 +2265,17 @@ class _ChunkCacheBase:
 
     def patch_composite(self, bbox: tuple[int, int, int, int], levels=None, rebuild_levels=None) -> None:
         """patch()'s composite half, after patch_sources(): recomposites bbox
-        in every cached chunk of the resident levels (`levels` only, when
-        given), or evicts it where a level outside rebuild_levels went stale
-        or has deferred work. With a chunk pool set, enough slices composite
-        on it (_composite_patch_targets())."""
+        in every cached chunk of the resident levels, or evicts it where a
+        level outside rebuild_levels went stale or has deferred work. With a
+        chunk pool set, enough slices composite on it (_composite_patch_targets()).
+
+        `levels` given: only those levels are patched, and every other
+        resident level drops its chunks under bbox first (_evict_rects(),
+        TASK-031.73), so no level is left stale. It relies on the caller's
+        patch_sources() epoch bump to void a margin-warm job prepared before
+        the edit, as patch_composite_rects() does."""
+        if levels is not None:
+            self._evict_rects([bbox], [mip for mip in self.resident_levels() if mip not in levels])
         self._composite_patch_targets(list(self._patch_targets(bbox, levels, rebuild_levels)))
 
     def _patch_targets(self, bbox: tuple[int, int, int, int], levels=None, rebuild_levels=None):
@@ -2353,7 +2399,7 @@ class _ChunkCacheBase:
                     try:
                         future = executor.submit(job.run)
                     except Exception as exc:  # noqa: BLE001
-                        debug_log.log(f"pooled patch: submit failed for chunk {job.key} ({exc!r})")
+                        debug_log.log(f"pooled patch: submit failed for chunk {job.key} ({exc!r})", level=debug_log.ERROR)
                         future = None
                     jobs[i] = job
                     submitted.append((i, job, future))
@@ -2430,13 +2476,16 @@ class _ChunkCacheBase:
         passes the level in view, TASK-338), only those are patched, and every
         other resident level drops its cached chunks under each rect, so no
         level is left stale. The level warm refills the neighbour levels at
-        idle; the others recomposite on demand."""
+        idle; the others recomposite on demand. The eviction and its
+        resident_levels() scan run once per call, not once per rect
+        (TASK-031.63's 12,100 one-tile rects), so the rects composite through
+        _patch_targets() directly rather than patch_composite()."""
         live = [rect for rect in rects if self.patch_sources(rect)]
         self._fill_blend_keys(live)
         if levels is not None:
             self._evict_rects(live, [mip for mip in self.resident_levels() if mip not in levels])
         for rect in live:
-            self.patch_composite(rect, levels)
+            self._composite_patch_targets(list(self._patch_targets(rect, levels)))
 
     def _evict_rects(self, rects, mips) -> None:
         """Drops the cached chunks at each of `mips` that any of `rects`
@@ -2529,7 +2578,9 @@ class _ChunkCacheBase:
         patch_rects()' two passes: a blended tile reads its neighbours' mirror
         entries, which a later rect may be the one refreshing.
 
-        levels and rebuild_levels as in patch_composite(): a level outside
+        levels and rebuild_levels as in patch_composite(), except that
+        `levels` here evicts nothing at the other levels: its one caller
+        evicts those under the larger reach bbox first. A level outside
         rebuild_levels that went stale, or one with deferred work, evicts the
         chunks under each rect instead. A stale level inside rebuild_levels
         rebuilds here, in the first composite, not at the next paint. A chunk
@@ -3535,12 +3586,18 @@ class _LeveledChunkCache(_ChunkCacheBase):
         # Resolves the level (a build or deferred flush) and pack the first prepare would.
         lvl = self._level(mip)
         pack = native_composite._units_of(self._native_units(lvl, mip))
-        if pack is None or not self.with_units or not rects or not pack.pending().size:
+        if pack is None or not self.with_units or not rects:
+            return
+        pending = pack.pending()
+        if not pending.size:
             return
         x0, y0 = min(r[0] for r in rects), min(r[1] for r in rects)
         x1, y1 = max(r[2] for r in rects), max(r[3] for r in rects)
         # A serial composite derives these inside `composite`; the level and pack resolve above stay outside.
         with perf_trace.repaint_phase("prepare"):
+            if pending.size <= (x1 - x0) * (y1 - y0) / lvl.tile_px**2:
+                pack.derive_pending()
+                return
             # Each rect's candidates are a subset of the bounding rect's: pack_warm_job()'s ensure(), called earlier.
             candidates = render._rect_candidates(
                 self.scenario, x0, y0, x1, y1, lvl.proj, self.with_units, lvl.building_bboxes, lvl.bystander_grid
@@ -3565,7 +3622,7 @@ class _LeveledChunkCache(_ChunkCacheBase):
         tiles = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects) / lvl.tile_px**2
         with perf_trace.repaint_phase("prepare"):
             if pending.size <= tiles:
-                pack.ensure(pending)
+                pack.derive_pending()
                 return
             w = self.scenario.map_manager.map_width
             idx = []
@@ -3864,12 +3921,12 @@ class FlatChunkCache(_ChunkCacheBase):
         # two mip_tile_px_candidates() finds is a real exact level, unlike
         # Stepped's mip_projections_for() which must filter through a real
         # exactness check. Must precede _init_max_chunks(), which reads
-        # canvas_dims().
+        # canvas_dims(). No native tier: top-down Flat draws footprint-fitted
+        # icons, which have no native size (TASK-599 Decision 5).
         self._init_mip_levels(iso_geometry.mip_tile_px_candidates(tile_px, render.finest_tile_pixels()))
-        # Per-level unit_draws (Phase B-D: "Flat's real
-        # per-level work is unit_draws"). Level 0's draws live in
-        # self.unit_draws (unchanged attribute, still read directly by
-        # tests/test_flat_chunks.py); other levels are built lazily here.
+        # Per-level unit_draws. Level 0's draws live in self.unit_draws (still
+        # read directly by tests/test_flat_chunks.py); other levels are derived
+        # lazily here from the mip-independent row columns (_derive_bboxes()).
         self._level_draws: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
         # P3-g7's per-level icon layers. Level 0 lives in here TOO, unlike
         # _level_draws -- see _level_icons().
@@ -3887,8 +3944,9 @@ class FlatChunkCache(_ChunkCacheBase):
         # count intact while shifting the icons' meaning. A row splice leaves
         # the layer present but re-keyed, which the counter covers too.
         self._unit_gen = 0
-        # _refresh_source_caches() also sets self._row_uid/_row_player, one
-        # entry per row of every level's draws (identical across levels).
+        # _refresh_source_caches() also sets the row columns (_row_tiles,
+        # _row_offsets, _row_colors, _row_uid, _row_player), one entry per row
+        # of every level's draws (identical across levels).
         # _rows_unit_gen is the scenario.unit_gen they describe; _window_built
         # names each lazy level layer built while the model was ahead of it.
         self._rows_unit_gen = self._model_unit_gen()
@@ -3910,14 +3968,18 @@ class FlatChunkCache(_ChunkCacheBase):
         set_unit_filter) rebuild it with the draws."""
         if not hasattr(self, "unit_draws"):
             if self.with_units:
-                bboxes, colors, self._row_uid, self._row_player = render._flat_unit_rows(
-                    self.scenario, self.tile_px, self.unit_filter
+                self._row_tiles, self._row_offsets, self._row_colors, self._row_uid, self._row_player = (
+                    render._flat_unit_base_rows(self.scenario, self.unit_filter)
                 )
-                self.unit_draws = (bboxes, colors)
+                self.unit_draws = (self._derive_bboxes(0), self._row_colors)
             else:
                 self.unit_draws = None
-                self._row_uid = self._row_player = None
+                self._row_tiles = self._row_offsets = self._row_colors = self._row_uid = self._row_player = None
             self._rebuild_farm_tiles()
+
+    def _derive_bboxes(self, mip: int) -> np.ndarray:
+        """Level mip's bboxes from the row columns, about 0.1 ms on 13k rows."""
+        return render.flat_unit_bboxes(self._row_tiles, self._row_offsets, self._mip_tile_px[mip])
 
     def _rebuild_farm_tiles(self) -> None:
         """_farm_tiles (flat_farm_tiles()' by_tile, mip-independent) and
@@ -3988,10 +4050,15 @@ class FlatChunkCache(_ChunkCacheBase):
         self._refresh_source_caches()
         self._rows_unit_gen = self._model_unit_gen()
 
+    def _in_unit_window(self) -> bool:
+        """Whether the model is ahead of the row table: a mutate-now,
+        repaint-later tool's window (the Eraser's, Convert's, the Unit Brush's)."""
+        return self._model_unit_gen() != self._rows_unit_gen
+
     def _note_level_build(self, kind: str, mip: int) -> None:
         """Records a lazy "draws" or "icons" build made while the model is
         ahead of the row table, for invalidate_units() to drop."""
-        if self._model_unit_gen() != self._rows_unit_gen:
+        if self._in_unit_window():
             self._window_built.add((kind, mip))
 
     def _drop_window_built(self) -> None:
@@ -4051,15 +4118,17 @@ class FlatChunkCache(_ChunkCacheBase):
         return True
 
     def _splice_rows(self, changed: list[UnitSplice]) -> None:
-        """The row splice itself, applied to every resident level's draws and
-        icon layer plus the row_uid/row_player side table. Overrides are
-        _splice_overrides()': the real dict when a reassigned wall's icon
-        reads it, else {} (_flat_splice_eligible() refuses a moved one)."""
+        """The row splice itself, applied to the row columns (tiles, offsets,
+        colours, row_uid, row_player) and every resident level's icon layer;
+        then unit_draws and every cached level's draws are re-derived from the
+        columns (_derive_bboxes()), all sharing the one colours array.
+        Overrides are _splice_overrides()': the real dict when a reassigned
+        wall's icon reads it, else {} (_flat_splice_eligible() refuses a
+        moved one)."""
         scenario = self.scenario
         mm = scenario.map_manager
         w, h = mm.map_width, mm.map_height
         overrides = _splice_overrides(scenario, changed)
-        draws = {0: self.unit_draws, **self._level_draws}
         icon_layers = {mip: icons for mip, icons in self._level_icon_layers.items() if icons is not None}
         moves = [s for s in changed if self._is_row_move(s)]
         removals = [s for s in changed if not self._is_row_move(s) and s.old_own_tile is not None]
@@ -4071,10 +4140,9 @@ class FlatChunkCache(_ChunkCacheBase):
             if row is None:
                 continue
             bounds = render.unit_tile_bounds(s.unit, w, h)
-            color = render._unit_color(s.unit, scenario.player_colors[s.player_id])
-            for mip, (bboxes, colors) in draws.items():
-                bboxes[row] = render._flat_unit_bbox(bounds, s.unit, self._mip_tile_px[mip])
-                colors[row] = color
+            self._row_tiles[row] = bounds
+            self._row_offsets[row] = render.unit_paint_offset(s.unit)
+            self._row_colors[row] = render._unit_color(s.unit, scenario.player_colors[s.player_id])
             team_index = scenario.team_indices[s.player_id]
             for mip, icons in icon_layers.items():
                 icon = render._flat_unit_icon(
@@ -4091,8 +4159,10 @@ class FlatChunkCache(_ChunkCacheBase):
         if removed.size:
             keep = np.ones(len(self._row_uid), dtype=bool)
             keep[removed] = False
+            self._row_tiles, self._row_offsets, self._row_colors = (
+                self._row_tiles[keep], self._row_offsets[keep], self._row_colors[keep]
+            )
             self._row_uid, self._row_player = self._row_uid[keep], self._row_player[keep]
-            draws = {mip: (bboxes[keep], colors[keep]) for mip, (bboxes, colors) in draws.items()}
             for mip, icons in icon_layers.items():
                 keys = np.fromiter(icons.keys(), dtype=np.int64, count=len(icons))
                 survivors = keep[keys]
@@ -4123,14 +4193,11 @@ class FlatChunkCache(_ChunkCacheBase):
 
             self._row_uid = grow(self._row_uid, [id(s.unit) for _p, s, _b in added])
             self._row_player = grow(self._row_player, [s.player_id for _p, s, _b in added])
-            colors_new = [render._unit_color(s.unit, scenario.player_colors[s.player_id]) for _p, s, _b in added]
-            draws = {
-                mip: (
-                    grow(bboxes, [render._flat_unit_bbox(b, s.unit, self._mip_tile_px[mip]) for _p, s, b in added]),
-                    grow(colors, colors_new),
-                )
-                for mip, (bboxes, colors) in draws.items()
-            }
+            self._row_tiles = grow(self._row_tiles, [b for _p, _s, b in added])
+            self._row_offsets = grow(self._row_offsets, [render.unit_paint_offset(s.unit) for _p, s, _b in added])
+            self._row_colors = grow(
+                self._row_colors, [render._unit_color(s.unit, scenario.player_colors[s.player_id]) for _p, s, _b in added]
+            )
             sorted_positions = positions[order]
             for mip, icons in icon_layers.items():
                 keys = np.fromiter(icons.keys(), dtype=np.int64, count=len(icons))
@@ -4146,8 +4213,9 @@ class FlatChunkCache(_ChunkCacheBase):
                         rekeyed[row] = icon
                 icon_layers[mip] = rekeyed
 
-        self.unit_draws = draws.pop(0)
-        self._level_draws.update(draws)
+        self.unit_draws = (self._derive_bboxes(0), self._row_colors)
+        for mip in self._level_draws:
+            self._level_draws[mip] = (self._derive_bboxes(mip), self._row_colors)
         self._level_icon_layers.update(icon_layers)
         # A farm moved, added, removed, recoloured or replaced to or from a
         # draping const: the drape is rebuilt whole. A unit merely on a farm is not.
@@ -4184,15 +4252,27 @@ class FlatChunkCache(_ChunkCacheBase):
         which is also why set_unit_filter() routes through invalidate_units()
         rather than rebuilding self.unit_draws alone: these per-level draws
         must honour the new filter too, or hidden units would keep painting
-        at every zoom level except the one that happened to be resident."""
+        at every zoom level except the one that happened to be resident.
+
+        A new level derives from the row columns (_derive_bboxes()), except
+        inside a mutate-now window, where the columns lag the model: there it
+        walks the live lists, as the icon layer built beside it does, so the
+        two agree row for row, and invalidate_units() drops it. Level 0 keeps
+        self.unit_draws (the row table itself) unless its icon layer is absent
+        inside the window: that layer will walk the live lists, so level 0 does
+        too, held in _level_draws[0] until invalidate_units() drops it (TASK-604)."""
         if not self.with_units:
             return None
-        if mip == 0:
-            return self.unit_draws
         draws = self._level_draws.get(mip)
+        live_mip0 = self.sprites_enabled and self._in_unit_window() and 0 not in self._level_icon_layers
+        if mip == 0 and draws is None and not live_mip0:
+            return self.unit_draws
         if draws is None:
             with perf_trace.level("flat-draws", mip):
-                draws = render._flat_unit_draws(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+                if self._in_unit_window():
+                    draws = render._flat_unit_draws(self.scenario, self._mip_tile_px[mip], self.unit_filter)
+                else:
+                    draws = (self._derive_bboxes(mip), self._row_colors)
             self._level_draws[mip] = draws
             self._note_level_build("draws", mip)
         return draws
@@ -4248,9 +4328,10 @@ class FlatChunkCache(_ChunkCacheBase):
         predicate (see self._unit_gen's own comment in __init__ for why
         "absent from _level_icon_layers" cannot be the whole test here).
 
-        _flat_unit_draws (measured 14.1ms) is not sliced and runs whole
-        inside the install, same as Stepped's _building_bboxes_iso: only the
-        icon walk (~727ms cold) is worth resuming.
+        The level's draws are derived from the row columns inside the
+        install (about 0.1 ms, TASK-031.72), so only the icon walk (~727ms
+        cold) is worth resuming. With sprites off there is no job at all: such
+        a level is resident already (is_level_resident()).
 
         scenario.unit_gen (_model_unit_gen()) is compared too, ahead of the
         row-count assert: an Eraser or Convert mutation moves only the model
@@ -4281,18 +4362,27 @@ class FlatChunkCache(_ChunkCacheBase):
         return self.with_units and self.sprites_enabled and mip not in self._level_icon_layers
 
     def is_level_resident(self, mip: int) -> bool:
-        """Flat's own predicate -- "absent from _level_icon_layers" IS a
-        complete staleness test here (unlike level_warm_job(), which needs
-        self._unit_gen to distinguish "never built" from "invalidated mid-
-        warm", see __init__'s own comment on that counter): a chunk warm
-        only ever calls this synchronously, with no warm in flight to have
-        invalidated anything between the check and the get_chunk() call it
-        gates."""
-        return mip in self._level_icon_layers
+        """Whether a composite at mip builds nothing costly (TASK-031.72).
+        Units off: always. Sprites on: the icon layer is built (its install
+        builds the draws first, so icons imply draws). Sprites off: the
+        draws derive from the row columns in about 0.1 ms, so every level is
+        resident, except inside a mutate-now window, where a level not built
+        before it would walk the live lists (and one built in it is dropped
+        at invalidate_units()): only level 0 and levels built earlier count.
 
-    def paints_without_build(self, mip: int) -> bool:
-        """Built, or with no icon layer to build (units or sprites off)."""
-        return mip in self._level_icon_layers or not (self.with_units and self.sprites_enabled)
+        "Absent" is a complete staleness test here (unlike level_warm_job(),
+        which needs self._unit_gen to distinguish "never built" from
+        "invalidated mid-warm", see __init__'s own comment on that counter):
+        a chunk warm only ever calls this synchronously, with no warm in
+        flight to have invalidated anything between the check and the
+        get_chunk() call it gates."""
+        if not self.with_units:
+            return True
+        if self.sprites_enabled:
+            return mip in self._level_icon_layers
+        if not self._in_unit_window():
+            return True
+        return mip == 0 or (mip in self._level_draws and ("draws", mip) not in self._window_built)
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Turns real .sld icons on or off on a LIVE cache (P3-g7).
@@ -4419,7 +4509,7 @@ class SlopedChunkCache(_LeveledChunkCache):
     a level depends on elevations and its own proj only, never on level 0's
     array, at the same cost as scaling. (At exact power-of-two levels a
     recomputed corner_rise equals level 0's scaled down under every rule, so
-    only a spy tells them apart.) Level 0 shares
+    only a spy tells them apart; the native tier at 3/2, TASK-599, need not.) Level 0 shares
     self.corner_rise and _target_headroom, which stay eager and scene-space
     (pick planes, overlays, unit_pick); reading them never builds a level.
 

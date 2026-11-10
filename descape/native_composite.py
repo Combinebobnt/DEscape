@@ -283,9 +283,9 @@ class UnitPack:
 
     Rows live in an append-only arena: index[t] = (start, count). A tile is
     derived lazily, the first time a composite's candidates include it
-    (ensure()), so a new pack costs nothing up front and a whole-map build
-    (20-170ms on the corpus) never lands in one frame. A level warm may
-    derive them earlier, in idle-time slices of pending() through the same
+    (ensure()), so a new pack costs nothing up front. A pooled batch covering
+    enough tiles derives all pending() tiles source-wise (derive_pending()).
+    A level warm may derive them earlier, in idle-time slices through
     ensure() (render_cache's pack_warm_job). refresh() just marks tiles for
     re-derivation, orphaning their old rows until a compaction.
 
@@ -373,6 +373,67 @@ class UnitPack:
         if self.garbage > max(self.n - self.garbage, 65536):
             self._compact()
 
+    def derive_pending(self) -> None:
+        """Derives dense pending sets source-wise, sparse refreshes by tile lookup."""
+        need = self.pending()
+        if not need.size:
+            return
+        sprites = self._sprites
+        source_tiles = len(self._ubt)
+        if sprites is not None:
+            source_tiles += len(sprites.by_anchor) + len(sprites.farm_by_tile)
+        # Bound the source scan to four entries per pending tile; sparse edits keep tile-local lookups.
+        if 4 * need.size < source_tiles:
+            self.ensure(need)
+            return
+        pending = np.zeros(self.w * self.h, dtype=bool)
+        pending[need] = True
+        w, h = self.w, self.h
+        skip = sprites.skip_ids if sprites is not None else frozenset()
+        keys, gathered = [], []
+        mark_row = self._mark_row
+        for (x, y), units in self._ubt.items():
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            t = y * w + x
+            if pending[t]:
+                for unit, color in units:
+                    if id(unit) not in skip:
+                        keys.append(t * 2)
+                        gathered.append(mark_row(unit, color, (x, y)))
+        farm_ts, farm_vals = [], []
+        if sprites is not None:
+            for (x, y), draws in sprites.by_anchor.items():
+                if not (0 <= x < w and 0 <= y < h):
+                    continue
+                t = y * w + x
+                if pending[t]:
+                    for draw, ax, ay, rise in draws:
+                        keys.append(t * 2 + 1)
+                        gathered.append((ROW_SPRITE, ay - draw.hotspot_y, ax - draw.hotspot_x, draw.rgba, rise))
+            for (x, y), farm in sprites.farm_by_tile.items():
+                if 0 <= x < w and 0 <= y < h and pending[y * w + x]:
+                    farm_ts.append(y * w + x)
+                    farm_vals.append(farm)
+        keys = np.asarray(keys, dtype=np.int64)
+        counts = np.bincount(keys // 2, minlength=w * h)[need]
+        rows = []
+        slot_of = self._slots.get
+        # Stable tile/phase order also pins first-use slot ids to ensure()'s order.
+        for i in np.argsort(keys, kind="stable").tolist():
+            row = gathered[i]
+            if row[0] == ROW_SPRITE:
+                rgba = row[3]
+                slot = slot_of(id(rgba))
+                if slot is None:
+                    slot = self._slot(rgba)
+                row = (row[0], row[1], row[2], slot, row[4])
+            rows.append(row)
+        self._write_rows(need, counts, rows, farm_ts, farm_vals)
+        self.ready[need] = True
+        if self.garbage > max(self.n - self.garbage, 65536):
+            self._compact()
+
     def _slot(self, rgba: np.ndarray) -> int:
         slot = self._slots.get(id(rgba))
         if slot is None:
@@ -391,21 +452,22 @@ class UnitPack:
             self.dims[2 * slot + 1] = flat.shape[1]
         return slot
 
+    def _mark_row(self, unit, color, key) -> tuple:
+        packed = (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
+        if self.sloped:
+            base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights, self._fold)
+        else:
+            base = render._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
+            rise = render._unit_mark_rise_iso(unit, self.proj, self._heights)
+        if base is None:
+            return ROW_CONFORM, 0, 0, packed, rise
+        return ROW_MARK, base[0], base[1], packed, rise
+
     def _tile_rows(self, key, skip, ubt_get, anchor_get, rows: list) -> None:
         """Appends tile `key`'s rows to `rows`: marks, then sprites."""
         for unit, color in ubt_get(key, ()):
-            if id(unit) in skip:
-                continue
-            packed = (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
-            if self.sloped:
-                base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights, self._fold)
-            else:
-                base = render._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
-                rise = render._unit_mark_rise_iso(unit, self.proj, self._heights)
-            if base is None:
-                rows.append((ROW_CONFORM, 0, 0, packed, rise))
-            else:
-                rows.append((ROW_MARK, base[0], base[1], packed, rise))
+            if id(unit) not in skip:
+                rows.append(self._mark_row(unit, color, key))
         slot_of = self._slots.get
         for draw, ax, ay, rise in anchor_get(key, ()):
             rgba = draw.rgba
@@ -442,11 +504,15 @@ class UnitPack:
             if farm is not None:
                 farm_ts.append(t)
                 farm_vals.append(farm)
-        if not ts:
+        self._write_rows(ts, counts, rows, farm_ts, farm_vals)
+
+    def _write_rows(self, ts, counts, rows, farm_ts, farm_vals) -> None:
+        """Appends gathered rows and replaces each tile's index and farm data."""
+        if len(ts) == 0:
             return
         self._unshare()
-        t_arr = np.array(ts, dtype=np.int64)
-        c_arr = np.array(counts, dtype=np.int64)
+        t_arr = np.asarray(ts, dtype=np.int64)
+        c_arr = np.asarray(counts, dtype=np.int64)
         self.garbage += int(self.index[2 * t_arr + 1].sum())
         starts = np.zeros(c_arr.size, dtype=np.int64)
         np.cumsum(c_arr[:-1], out=starts[1:])
@@ -562,10 +628,11 @@ def _textures(
             flat[i] = render.color_for_terrain_id(tid)
             arrays.append(None)
             continue
-        render._crop_offset(0, 0, tex.shape[0], tile_px)  # the numpy path's own divisibility assert
+        render._crop_offset(0, 0, tex.shape[0], tile_px)  # the numpy path's own bound assert
         if tex.ndim != 3 or tex.shape[0] != tex.shape[1] or tex.shape[2] != 3:
             return None
-        arrays.append(np.ascontiguousarray(tex, dtype=np.uint8))
+        # The kernel crops at (x * tile_px) % size, size the period, stride the padded width.
+        arrays.append(np.ascontiguousarray(asset_source.crop_source(tex, tile_px), dtype=np.uint8))
         sizes[i] = tex.shape[0]
     return slots.astype(np.int32).reshape(-1), (arrays, flat, sizes), uniq
 
@@ -623,6 +690,7 @@ def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridd
         if layer_tid >= 0:
             name = terrain_blend.layer_mask_name(layer_tid)
             mask = asset_source.terrain_mask_at(name, asset_source.terrain_texture_size(tile_px))
+            mask = None if mask is None else asset_source.crop_source(mask, tile_px)
             ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), mask)))
         for n_tid, mode, tile in entries:
             ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id((mode, tile), asset_source.get_blend_mask(mode, tile, tile_px))))
@@ -631,8 +699,9 @@ def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridd
         return UNCOMPOSABLE
     if size:
         (tsize,) = size
+        padded = tsize + asset_source.crop_pad(tsize, tile_px)
         for kind, _slot, mid in ops:
-            want = (tsize, tsize) if kind == BLEND_LAYER else (tile_px, tile_px)
+            want = (padded, padded) if kind == BLEND_LAYER else (tile_px, tile_px)
             if mid >= 0 and masks[mid].shape != want:
                 return UNCOMPOSABLE
     return (

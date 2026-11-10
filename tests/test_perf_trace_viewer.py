@@ -172,6 +172,65 @@ def test_a_pan_with_no_drag_prints_its_own_view_line(traced_window):
     assert "perf drag" not in debug_log.get_log_text()
 
 
+def _region_mouse(map_view, kind, tile) -> None:
+    from PyQt5.QtCore import QEvent, Qt
+
+    pos = conftest.polygon_viewport_pos(map_view, *tile)
+    if kind == "press":
+        map_view.mousePressEvent(conftest.mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+    elif kind == "move":
+        map_view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, pos, Qt.NoButton, Qt.LeftButton))
+    else:
+        map_view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+
+
+def test_a_live_region_move_is_one_drag_line_naming_region_overlay(traced_window):
+    """TASK-031.37: press, three moves over two tiles, release on a movable
+    region: one `select-move` drag of 2 steps (the press and the one new tile),
+    closed before the move callback runs."""
+    window = traced_window
+    window._on_tool_selected("select")
+    map_view = window.map_view
+    map_view.set_region((20, 20, 26, 26))
+    map_view.set_region_movable(True)
+    moved = []
+    map_view._on_region_move = lambda dx, dy: moved.append((dx, dy, perf_trace._drag_active))
+    debug_log.clear()
+    _region_mouse(map_view, "press", (22, 22))
+    for tile in ((22, 22), (23, 22), (23, 22)):
+        _region_mouse(map_view, "move", tile)
+    _region_mouse(map_view, "release", (23, 22))
+
+    assert moved == [(1, 0, False)]
+    text = debug_log.get_log_text()
+    assert text.count("perf drag select-move:") == 1, text
+    drag = text[text.index("perf drag select-move:") :]
+    assert drag.startswith("perf drag select-move: 2 steps"), drag
+    assert "region_overlay " in drag, drag
+
+
+def test_escape_mid_select_drag_closes_its_drag_line(traced_window):
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    window = traced_window
+    window._on_tool_selected("select")
+    map_view = window.map_view
+    debug_log.clear()
+    _region_mouse(map_view, "press", (30, 30))
+    _region_mouse(map_view, "move", (33, 32))
+    map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+    assert not perf_trace._drag_active
+    assert map_view._region_drag_label is None
+    text = debug_log.get_log_text()
+    assert text.count("perf drag select:") == 1, text
+    window._on_tool_selected("draw")
+    _region_mouse(map_view, "press", (40, 40))
+    _region_mouse(map_view, "release", (40, 40))
+    assert "perf drag paint-terrain:" in debug_log.get_log_text()
+
+
 # --- perf op / level events through the real viewer (perf-trace-coverage plan) --
 
 UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"

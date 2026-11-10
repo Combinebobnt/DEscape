@@ -14,7 +14,7 @@ from AoE2ScenarioParser.datasets.terrains import TerrainId
 from descape import asset_source, iso_geometry, terrain_blend
 
 MASK_COUNT = 26
-TILE_PX_LADDER = (8, 16, 32, 64, 128)
+TILE_PX_LADDER = (8, 16, 32, 64, 96, 128)  # 96: the native tier (TASK-599)
 
 
 def _require_install():

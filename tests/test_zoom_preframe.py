@@ -115,6 +115,271 @@ def test_a_cancelled_warmer_holds_no_canvas_item():
     assert ref() is None, "a cancelled warmer still holds the canvas item"
 
 
+@pytest.fixture
+def diagnostic_warmer(monkeypatch):
+    from types import SimpleNamespace
+
+    from descape import perf_trace, thread_stats
+    from descape import zoom_preframe as zp
+
+    warmer = zp.PreframeWarmer()
+    monkeypatch.setattr(warmer, "_held_backoff", lambda: False)
+    monkeypatch.setattr(warmer, "_overdue_collect", lambda: False)
+    warmer._item = SimpleNamespace(_cache=SimpleNamespace(stamps_current=lambda stamps: True), add_preframe=lambda frame: None)
+    job = SimpleNamespace(stamps=(), next_step="fetch", done=False, last_fetch=None)
+    job.step = lambda: None
+    warmer._job = job
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    monkeypatch.setattr(zp, "_stall_dump_checked", False)
+    monkeypatch.setattr(zp, "_stall_dump_file", None)
+    monkeypatch.delenv("DESCAPE_STALL_DUMP", raising=False)
+    monkeypatch.setattr(thread_stats, "sample", lambda: thread_stats.ThreadSample(1, 0, 0, 0))
+    records = []
+    monkeypatch.setattr(perf_trace, "preframe_tick", lambda *args: records.append(args))
+    return warmer, job, records
+
+
+def test_preframe_sampling_off_does_no_io_or_dump_work(diagnostic_warmer, monkeypatch):
+    from descape import perf_trace, thread_stats
+    from descape import zoom_preframe as zp
+
+    warmer, job, records = diagnostic_warmer
+
+    def forbidden():
+        raise AssertionError("disabled trace did diagnostic work")
+
+    monkeypatch.setattr(perf_trace, "_enabled", False)
+    monkeypatch.setattr(thread_stats, "sample", forbidden)
+    monkeypatch.setattr(zp, "_arm_stall_dump", forbidden)
+    assert warmer.tick()
+    warmer._job = None
+    warmer._pending = [1]
+    warmer._make_job = lambda direction: job
+    assert warmer.tick()
+    assert not records
+
+
+def test_preframe_tick_samples_predict_and_each_steps_own_delta(diagnostic_warmer, monkeypatch):
+    from descape import thread_stats
+    from descape import zoom_preframe as zp
+
+    warmer, job, records = diagnostic_warmer
+    samples = iter([thread_stats.ThreadSample(1, 1000000, 2000000, 0, 0, 0, 0),
+                    thread_stats.ThreadSample(1.1, 4000000, 52000000, 1, 2, 3, 4)])
+    monkeypatch.setattr(zp.thread_stats, "sample", lambda: next(samples))
+    job.last_fetch = {"render_ms": 90, "convert_ms": 2, "k": 0, "width": 4, "height": 8}
+    warmer.tick()
+    ms, kind, stats, fetch = records[0]
+    assert kind == "fetch" and fetch is job.last_fetch
+    assert ms == stats.wall_ms == pytest.approx(100)
+    assert stats.cpu_ms == 3 and stats.runq_ms == 50 and stats.maj == 1
+    monkeypatch.setattr(zp.thread_stats, "sample", lambda: thread_stats.ThreadSample(2, 0))
+    warmer._job = None
+    warmer._pending = [1]
+    warmer._make_job = lambda direction: job
+    warmer.tick()
+    assert records[-1][1] == "predict" and len(records[-1]) == 3
+
+
+def test_ending_reader_latency_keeps_a_tick_in_the_slow_population(monkeypatch):
+    from types import SimpleNamespace
+
+    from descape import perf_trace, thread_stats
+    from descape import zoom_preframe as zp
+
+    clock = SimpleNamespace(t=1.0, reads=0)
+    usage = SimpleNamespace(ru_majflt=0, ru_minflt=0, ru_nvcsw=0, ru_nivcsw=0)
+    real_sample = thread_stats.sample
+
+    def reader(path):
+        clock.reads += 1
+        if clock.reads == 2:
+            clock.t += 0.06
+        return "1000000 0 1"
+
+    monkeypatch.setattr(thread_stats.sys, "platform", "linux")
+    monkeypatch.setattr(thread_stats, "resource", SimpleNamespace(RUSAGE_THREAD=99, getrusage=lambda scope: usage))
+    monkeypatch.setattr(thread_stats.time, "perf_counter", lambda: clock.t)
+    monkeypatch.setattr(thread_stats, "sample", lambda: real_sample(reader))
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    records = []
+    monkeypatch.setattr(perf_trace, "preframe_tick", lambda *args: records.append(args))
+    monkeypatch.setattr(zp, "_arm_stall_dump", lambda: False)
+    warmer = zp.PreframeWarmer()
+    monkeypatch.setattr(warmer, "_held_backoff", lambda: False)
+    monkeypatch.setattr(warmer, "_overdue_collect", lambda: False)
+    warmer._item = SimpleNamespace(_cache=SimpleNamespace(stamps_current=lambda stamps: True))
+    warmer._job = SimpleNamespace(stamps=(), next_step="fetch", done=False, last_fetch=None, step=lambda: None)
+    assert warmer.tick()
+    ms, kind, stats, _fetch = records[0]
+    assert kind == "fetch" and ms == pytest.approx(60) and ms >= perf_trace.SLOW_TICK_MS
+    assert stats.sampling_ms == pytest.approx(60) and stats.kind() == "uncertain" and not stats.eligible()
+
+
+@pytest.mark.parametrize("kind", ["predict", "fetch", "strip", "finish"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_stall_dump_opens_once_arms_every_step_and_cancels_even_on_exception(
+    diagnostic_warmer, monkeypatch, tmp_path, kind, raises
+):
+    from descape import zoom_preframe as zp
+
+    warmer, job, _records = diagnostic_warmer
+    dest = tmp_path / "stacks.txt"
+    monkeypatch.setenv("DESCAPE_STALL_DUMP", str(dest))
+    calls = []
+    monkeypatch.setattr(zp.faulthandler, "dump_traceback_later", lambda delay, file: calls.append((delay, file)))
+    monkeypatch.setattr(zp.faulthandler, "cancel_dump_traceback_later", lambda: calls.append("cancel"))
+    job.next_step = kind
+
+    def step():
+        assert calls[-1][0] == 0.08
+        if raises:
+            raise RuntimeError("step failed")
+
+    job.step = step
+    if kind == "predict":
+        warmer._job = None
+        warmer._pending = [1, -1]
+        warmer._make_job = lambda direction: step() or job
+    try:
+        for _ in range(2):
+            if kind == "predict":
+                warmer._job = None
+            if raises:
+                with pytest.raises(RuntimeError, match="step failed"):
+                    warmer.tick()
+            else:
+                warmer.tick()
+        assert len(calls) == 4 and calls[1] == calls[3] == "cancel"
+        assert calls[0][1] is calls[2][1] is zp._stall_dump_file
+        assert calls[0][1].mode == "a" and dest.exists()
+    finally:
+        if zp._stall_dump_file is not None:
+            zp._stall_dump_file.close()
+
+
+def test_stall_dump_unset_or_unwritable_does_not_arm(diagnostic_warmer, monkeypatch, tmp_path):
+    from descape import zoom_preframe as zp
+
+    warmer, _job, _records = diagnostic_warmer
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dump armed without a usable output")
+
+    monkeypatch.setattr(zp.faulthandler, "dump_traceback_later", forbidden)
+    warmer.tick()
+    assert zp._stall_dump_file is None
+    monkeypatch.setattr(zp, "_stall_dump_checked", False)
+    monkeypatch.setenv("DESCAPE_STALL_DUMP", str(tmp_path / "missing" / "stacks.txt"))
+    warmer.tick()
+    assert zp._stall_dump_file is None
+
+
+def test_stall_dump_failed_arming_does_not_cancel_an_unowned_timer(diagnostic_warmer, monkeypatch, tmp_path):
+    from descape import zoom_preframe as zp
+
+    warmer, _job, records = diagnostic_warmer
+    monkeypatch.setenv("DESCAPE_STALL_DUMP", str(tmp_path / "stacks.txt"))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("arming failed")
+
+    def forbidden():
+        raise AssertionError("cancelled without arming")
+
+    monkeypatch.setattr(zp.faulthandler, "dump_traceback_later", fail)
+    monkeypatch.setattr(zp.faulthandler, "cancel_dump_traceback_later", forbidden)
+    try:
+        assert warmer.tick() and len(records) == 1
+    finally:
+        zp._stall_dump_file.close()
+
+
+def test_stall_dump_symlink_loop_is_nonfatal(diagnostic_warmer, monkeypatch, tmp_path):
+    from descape import zoom_preframe as zp
+
+    warmer, _job, records = diagnostic_warmer
+    loop = tmp_path / "loop"
+    loop.symlink_to("loop", target_is_directory=True)
+    monkeypatch.setenv("DESCAPE_STALL_DUMP", str(loop / "stacks.txt"))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dump armed for an unresolvable destination")
+
+    monkeypatch.setattr(zp.faulthandler, "dump_traceback_later", forbidden)
+    assert warmer.tick() and len(records) == 1
+    assert zp._stall_dump_file is None and zp._stall_dump_checked
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_stall_dump_refuses_subscribed_paths_as_written_and_resolved(diagnostic_warmer, monkeypatch, tmp_path, symlink):
+    from descape import zoom_preframe as zp
+
+    warmer, _job, _records = diagnostic_warmer
+    subscribed = tmp_path / "MoDs" / "SuBsCrIbEd"
+    subscribed.mkdir(parents=True)
+    dest = subscribed / "stacks.txt"
+    if symlink:
+        alias = tmp_path / "alias"
+        alias.symlink_to(subscribed, target_is_directory=True)
+        dest = alias / "stacks.txt"
+    monkeypatch.setenv("DESCAPE_STALL_DUMP", str(dest))
+    warmer.tick()
+    assert zp._stall_dump_file is None and not dest.exists()
+
+
+@pytest.mark.parametrize("k", [0, 1])
+def test_fetch_step_keeps_render_and_conversion_split_for_its_own_block(monkeypatch, k):
+    from types import SimpleNamespace
+
+    from PyQt5.QtCore import QRect, QRectF
+    from PyQt5.QtGui import QImage, QPainter, QTransform
+
+    from descape import perf_trace
+    from descape import viewer_canvas as vc
+    from descape import zoom_preframe as zp
+
+    clock = SimpleNamespace(t=1.0)
+    calls = []
+    pixels = np.zeros((8, 8, 3), np.uint8)
+
+    def render(*args, **kwargs):
+        calls.append((args, kwargs))
+        clock.t += 0.003
+        return pixels
+
+    real_contiguous = np.ascontiguousarray
+
+    def convert(array):
+        clock.t += 0.002
+        return real_contiguous(array)
+
+    class TimedImage(QImage):
+        def convertToFormat(self, fmt):
+            clock.t += 0.004
+            return super().convertToFormat(fmt)
+
+    monkeypatch.setattr(vc.time, "perf_counter", lambda: clock.t)
+    monkeypatch.setattr(vc.np, "ascontiguousarray", convert)
+    monkeypatch.setattr(vc, "QImage", TimedImage)
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    monkeypatch.setattr(perf_trace, "_where_stack", [])
+    cache = SimpleNamespace(mip_scale=lambda mip: 1, canvas_dims=lambda mip: (8, 8),
+                            reduced_dims=lambda mip, k: (8, 8), render_rect=render, render_reduced_rect=render)
+    rect = QRectF(0, 0, 8 << k, 8 << k)
+    item = SimpleNamespace(_cache=cache, _bounding_rect=rect, PAINT_BLOCK_PX=8, PAINT_PAD_PX=1)
+    item._level_blocks = lambda *args: vc.MapCanvasItem._level_blocks(item, *args)
+    job = zp.FrameJob(item, (), QTransform(), rect, (0, k, (0, 0, 8, 8)), QRect(0, 0, 8, 8), QPainter.RenderHints(), 1)
+    assert job.step()
+    assert job.last_fetch == {"render_ms": pytest.approx(3), "convert_ms": pytest.approx(6 if k else 2),
+                              "k": k, "width": 8, "height": 8}
+    expected = [((0, 0, 8, 8, 0, 1), {})] if k else [((0, 0, 8, 8), {"mip": 0})]
+    assert calls == expected
+    assert job.step() and job.last_fetch is None, "exhausting the iterator reused the previous block's split"
+    assert job.step() and job.last_fetch is None, "a strip reused the previous block's split"
+    assert not job.step() and job.last_fetch is None, "finish reused the previous block's split"
+
+
 # --- Step 5: real windows -------------------------------------------------------
 
 

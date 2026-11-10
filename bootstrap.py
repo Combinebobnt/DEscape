@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 VENV_SENTINEL = VENV_DIR / ".bootstrap_complete"
 READY_TIMEOUT = 30.0
+# Bootstrap runs before dependencies exist, so it cannot import descape.win_taskbar.
+APP_USER_MODEL_ID = "DEscape.ScenarioEditor"
 
 _TERMINAL_CANDIDATES = [
     ("x-terminal-emulator", ["-e"]),
@@ -65,8 +67,20 @@ class Splash:
     def __init__(self) -> None:
         import tkinter as tk
 
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+            except Exception:
+                pass
         self.root = tk.Tk()
         self.root.title("DEscape")
+        try:
+            self._icon = tk.PhotoImage(file=str(ROOT / "descape" / "app_icon.png"))
+            self.root.iconphoto(True, self._icon)
+        except Exception:
+            pass
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)

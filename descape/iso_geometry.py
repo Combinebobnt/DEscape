@@ -176,6 +176,11 @@ MAX_ELEVATION = 15
 MIP_MIN_TILE_PIXELS = 16
 MIP_MAX_TILE_PIXELS = 128
 
+# The one non-power-of-two tier (TASK-599): x1 sprite art is drawn for a 96 px
+# tile (unit_sprites.NATIVE_TILE_W), so only a level of exactly this tile_px
+# draws it 1:1. Iso ladders add it between 64 and 128; top-down Flat does not.
+NATIVE_TILE_PIXELS = 96
+
 
 def half_dims(tile_px: int) -> tuple[int, int]:
     """(half_w, half_h) for one tile's diamond footprint at this tile_px.
@@ -375,14 +380,19 @@ def mip_projection(
     return candidate if is_exact_mip(base, candidate) else None
 
 
-def mip_tile_px_candidates(base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PIXELS) -> dict[int, int]:
-    """Level index -> tile_px, for every power-of-two tile_px in
-    [MIP_MIN_TILE_PIXELS, max_tile_px] reachable from
-    base_tile_px by a power-of-two ratio (tile_px = base_tile_px * 2**L,
-    L any integer). Level 0 (tile_px == base_tile_px) is always present,
-    even when base_tile_px itself falls outside [MIN, MAX] -- D2: scene
-    space is pinned to the reference level regardless of where it falls
-    on the mip ladder.
+def mip_tile_px_candidates(
+    base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PIXELS, native_tier: bool = False
+) -> dict[int, int]:
+    """Level index -> tile_px, for every tile_px in [MIP_MIN_TILE_PIXELS,
+    max_tile_px] reachable from base_tile_px by a power-of-two ratio, plus
+    NATIVE_TILE_PIXELS when `native_tier` is set and it is base_tile_px
+    times 3/2 or 3 (TASK-599). Indices are contiguous and ordered by tile_px,
+    level 0 (tile_px == base_tile_px) always present, even when
+    base_tile_px itself falls outside [MIN, MAX] -- D2: scene space is
+    pinned to the reference level regardless of where it falls on the mip
+    ladder. POSITIVE L is FINER, NEGATIVE L is COARSER. The index is a rank,
+    not log2 of the ratio: with the native tier at base 64, level 1 is 96
+    and level 2 is 128, so a caller reads the ratio from tile_px, never 2**L.
 
     Pure integer arithmetic throughout -- no float, no log2. Geometry-free:
     Flat has no projection (canvas_dims() is a bare multiply, exact at
@@ -394,14 +404,17 @@ def mip_tile_px_candidates(base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PI
 
     `max_tile_px` is render.finest_tile_pixels(), the graphics quality's own
     finest level (GH #241); it never removes level 0."""
-    out = {0: base_tile_px}
-    tile_px, level = base_tile_px, 1
-    while True:
+    ceiling = min(max_tile_px, MIP_MAX_TILE_PIXELS)
+    finer = []
+    tile_px = base_tile_px
+    while tile_px * 2 <= ceiling:
         tile_px *= 2
-        if tile_px > min(max_tile_px, MIP_MAX_TILE_PIXELS):
-            break
-        out[level] = tile_px
-        level += 1
+        finer.append(tile_px)
+    native = NATIVE_TILE_PIXELS
+    if native_tier and native <= ceiling and native > base_tile_px and native * 2 in (base_tile_px * 3, base_tile_px * 6):
+        finer = sorted({*finer, native})
+    out = {0: base_tile_px}
+    out.update(enumerate(finer, start=1))
     tile_px, level = base_tile_px, -1
     while tile_px % 2 == 0:
         tile_px //= 2
@@ -414,13 +427,14 @@ def mip_tile_px_candidates(base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PI
 
 def mip_projections_for(
     w: int, h: int, base: IsoProjection, elev_step_pct: int, corner_headroom_steps: int = 0,
-    max_tile_px: int = MIP_MAX_TILE_PIXELS,
+    max_tile_px: int = MIP_MAX_TILE_PIXELS, native_tier: bool = True,
 ) -> dict[int, IsoProjection]:
     """Level index -> IsoProjection, for every exact mip of `base` among
-    mip_tile_px_candidates(base.tile_px) (see is_exact_mip). Level L means
-    tile_px = base.tile_px * 2**L: POSITIVE L is FINER (mip-up), NEGATIVE L
-    is COARSER (mip-down) -- the scene-space scale factor a caller needs is
-    base.tile_px / level.tile_px == 2**-L.
+    mip_tile_px_candidates(base.tile_px, native_tier=native_tier) (see
+    is_exact_mip), renumbered after that filter so the indices stay
+    contiguous: POSITIVE L is FINER (mip-up), NEGATIVE L is COARSER
+    (mip-down), and the scene-space scale factor a caller needs is
+    base.tile_px / level.tile_px, never 2**-L (the native tier, TASK-599).
 
     Level 0 is always present and IS `base` itself (not a reconstructed
     copy) -- and doubles as the self-check on elev_step_pct: the identity
@@ -450,10 +464,12 @@ def mip_projections_for(
         elev_step_pct 50, 150           -> {8, 16, 32, 64, 128}
         elev_step_pct 100, 200          -> {4, 8, 16, 32, 64, 128}, 4 excluded by MIP_MIN
 
-    The set is BASE-RELATIVE, not absolute: at elev_step_pct=10 with base
-    16 it is the singleton {16}."""
-    out: dict[int, IsoProjection] = {}
-    for level, tile_px in mip_tile_px_candidates(base.tile_px, max_tile_px).items():
+    The native tier (96) is exact wherever 128 is (TASK-599, measured on the
+    same sizes plus 240x240 and 252x252, every pct above). The set is
+    BASE-RELATIVE, not absolute: at elev_step_pct=10 with base 16 it is the
+    singleton {16}."""
+    exact: dict[int, IsoProjection] = {}
+    for level, tile_px in mip_tile_px_candidates(base.tile_px, max_tile_px, native_tier).items():
         if level == 0:
             identity = canvas_size_and_origin(
                 w, h, tile_px, base.min_elev, base.max_elev, elev_step_pct=elev_step_pct,
@@ -464,11 +480,16 @@ def mip_projections_for(
                 f"`base` exactly -- elev_step_pct={elev_step_pct} is probably not the value "
                 f"`base` was itself built with"
             )
-            out[0] = base
+            exact[0] = base
             continue
         candidate = mip_projection(w, h, tile_px, base, elev_step_pct, corner_headroom_steps=corner_headroom_steps)
         if candidate is not None:
-            out[level] = candidate
+            exact[level] = candidate
+    coarser = sorted((lvl for lvl in exact if lvl < 0), reverse=True)
+    finer = sorted(lvl for lvl in exact if lvl > 0)
+    out = {0: exact[0]}
+    out.update({-rank: exact[lvl] for rank, lvl in enumerate(coarser, start=1)})
+    out.update({rank: exact[lvl] for rank, lvl in enumerate(finer, start=1)})
     return out
 
 
@@ -477,7 +498,10 @@ def tile_screen_origin(x: int, y: int, elevation: int, proj: IsoProjection) -> t
     bounding box at the given elevation, in canvas pixel space -- exact
     integer arithmetic throughout (x, y, elevation, and every IsoProjection
     field are ints), no rounding involved. See canvas_size_and_origin's
-    docstring for the derivation this is the forward half of."""
+    docstring for the derivation this is the forward half of.
+
+    Elementwise on int64 numpy arrays too (MapView._rect_ring_path's Stepped
+    chains); cast a uint8 elevation grid first, or the product wraps."""
     sx = proj.origin_x + (x + y) * proj.half_w
     sy = proj.origin_y + (y - x) * proj.half_h - elevation * proj.elev_step
     return sx, sy

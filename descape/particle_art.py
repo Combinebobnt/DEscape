@@ -147,7 +147,7 @@ def native_frame(effect_name: str, index: int):
             return None
         cut = _cut(pixels, frames[first + index])
     except _FAILURES as exc:
-        debug_log.log(f"particle: {effect_name} frame {index} failed to read: {exc}")
+        debug_log.log(f"particle: {effect_name} frame {index} failed to read: {exc}", level=debug_log.WARNING)
         return None
     if cut is None:
         return None

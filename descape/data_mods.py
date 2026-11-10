@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from descape import content_roots, dat_cache, game_dataset
+from descape import content_roots, dat_cache, data_mod_side, game_dataset
 
 DAT_DIR = "dat"
 DAT_NAME = "empires2_x2_p1.dat"
@@ -107,7 +107,8 @@ def tables_for(mod: DataMod, key: str) -> game_dataset.DataModTables | None:
     entry = dat_cache.lookup(key)
     if entry is None:
         return None
-    return game_dataset.DataModTables(key, entry.path, mod.root, mod.title, entry.mod_only_ids, entry.warnings)
+    side_key = data_mod_side.fingerprint(data_mod_side.side_dir(mod.root))
+    return game_dataset.DataModTables(key, entry.path, mod.root, mod.title, entry.mod_only_ids, entry.warnings, side_key)
 
 
 def entry_dir(key: str) -> Path:

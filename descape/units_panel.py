@@ -330,6 +330,11 @@ class UnitsPanel(QWidget):
         # GH #130: what the owner combos show, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
+        # GH #357: the inspector's one slot shows what was touched last, the selection or a
+        # catalog pick (_apply_slot). The selection's own count, for the count line.
+        self._has_selection = False
+        self._pick_in_slot = False
+        self._selection_count = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -352,7 +357,7 @@ class UnitsPanel(QWidget):
         # The default split is set in pixels on the first show (_default_split, TASK-420).
         self._split_sized = False
 
-        self._show_inspector_fields(False)
+        self._apply_slot()
         self._sync_team_colors()
         self.refresh_owner_filter()
 
@@ -371,6 +376,7 @@ class UnitsPanel(QWidget):
         # way back to it.
         self.catalog_view = CatalogBrowserView(loader=self.thumb_loader)
         self.catalog_view.current_changed.connect(self._on_catalog_current_changed)
+        self.catalog_view.picked.connect(self._on_catalog_picked)
         self.catalog_view.activated.connect(self._on_catalog_activated)
         pane_layout.addWidget(self.catalog_view, stretch=1)
         self.unchanged_note = QLabel("")
@@ -403,9 +409,19 @@ class UnitsPanel(QWidget):
             return
         self._set_pending_object(value)
 
+    def _on_catalog_picked(self, value: int) -> None:
+        """GH #357: a user's click on a row, the current one included, or a key
+        that moved it, shows the pick in the inspector over any selection.
+        Re-picking the pending row keeps a random pick's roll."""
+        if value != self._pending_object_const:
+            self._set_pending_object(value)
+        self.show_pick()
+
     def _on_catalog_activated(self, value: int) -> None:
         self._set_pending_object(value)
         self._on_place_requested(value)
+        # After the tool switch, so nothing it refreshes can take the slot back.
+        self.show_pick()
 
     def _set_pending_object(self, value: int) -> None:
         changed = value != self._pending_object_const
@@ -465,7 +481,8 @@ class UnitsPanel(QWidget):
         row, by ticking the show-hidden box, or on a GAIA-only row hidden for a
         player owner, by setting Owner to GAIA (GH #32), or on a data mod's
         unchanged object, by listing it while it is the pick (GH #265). True if `const` is now the pending
-        object; False, changing nothing, for a const the catalog doesn't list."""
+        object, which then shows in the inspector over any selection (GH #357);
+        False, changing nothing, for a const the catalog doesn't list."""
         view = self.catalog_view
         entry = object_catalog.entry(object_catalog.objects(), const)
         if entry is None:
@@ -485,7 +502,10 @@ class UnitsPanel(QWidget):
         # A row that became current while hidden emits nothing when the filter unhides it.
         if view.current_value() == const and self._pending_object_const != const:
             self._set_pending_object(const)
-        return self.selected_object_const() == const
+        took = self.selected_object_const() == const
+        if took:
+            self.show_pick()
+        return took
 
     def owner_id(self) -> int:
         return self.owner_combo.currentData()
@@ -566,17 +586,38 @@ class UnitsPanel(QWidget):
         self.inspector_host = QWidget()
         self.inspector_layout = QVBoxLayout(self.inspector_host)
 
+        # The count line, and GH #357's way back from a pick to the selection beside it.
+        # The row hides whole: a shown, empty row would still take a layout gap.
+        self.count_row = QWidget()
+        count_layout = QHBoxLayout(self.count_row)
+        count_layout.setContentsMargins(0, 0, 0, 0)
         self.unit_inspector_empty = QLabel("No unit selected")
         self.unit_inspector_empty.setWordWrap(True)
-        self.inspector_layout.addWidget(self.unit_inspector_empty)
+        count_layout.addWidget(self.unit_inspector_empty, stretch=1)
+        self.show_selection_button = QPushButton("Show selection")
+        self.show_selection_button.setFlat(True)
+        # NoFocus, like the catalog's buttons: the map keeps the focus its arrow-key nudge needs.
+        self.show_selection_button.setFocusPolicy(Qt.NoFocus)
+        self.show_selection_button.setToolTip("Show the selected units' portrait and fields again")
+        self.show_selection_button.clicked.connect(lambda *_: self._show_selection_clicked())
+        count_layout.addWidget(self.show_selection_button)
+        self.inspector_layout.addWidget(self.count_row)
 
         # GH #148's follow-up: the pick's portrait, Unit ID and base stats. It
-        # shares one slot with the selection card below, shown only while
-        # nothing is selected, so the two never compete for the pane's height.
+        # shares one slot with the selection block below, so the two never
+        # compete for the pane's height: it shows while nothing is selected, or
+        # over a selection after a catalog pick (GH #357, _apply_slot).
         self.placing_card = UnitCard(stable=True, loader=self.thumb_loader)
         self.placing_card.clear("Placing: (none)")
         self.placing_label = self.placing_card.name_label
         self.inspector_layout.addWidget(self.placing_card)
+
+        # Everything about the selection, hidden whole while the pick has the slot, so each
+        # child keeps the visibility the viewer gave it. Default spacing: the same style metric as inspector_layout's.
+        self.selection_block = QWidget()
+        selection_layout = QVBoxLayout(self.selection_block)
+        selection_layout.setContentsMargins(0, 0, 0, 0)
+        self.inspector_layout.addWidget(self.selection_block)
 
         self.unit_field_labels: dict[str, QLabel] = {}
         self.unit_field_editors: dict[str, QWidget] = {}
@@ -590,14 +631,14 @@ class UnitsPanel(QWidget):
         self.unit_field_labels["name"] = self.selection_card.name_label
         self.unit_field_labels["unit_const"] = self.selection_card.const_label
         self.unit_field_captions["unit_const"] = self.selection_card.const_caption
-        self.inspector_layout.addWidget(self.selection_card)
+        selection_layout.addWidget(self.selection_card)
         # GH #49 slice 2: what the triggers set a selected building's range to,
         # filled by the viewer (show_trigger_ranges), hidden otherwise.
         self.trigger_range_label = QLabel("")
         self.trigger_range_label.setWordWrap(True)
         self.trigger_range_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.trigger_range_label.setVisible(False)
-        self.inspector_layout.addWidget(self.trigger_range_label)
+        selection_layout.addWidget(self.trigger_range_label)
 
         self.unit_inspector_grid = QWidget()
         grid = QGridLayout(self.unit_inspector_grid)
@@ -699,14 +740,14 @@ class UnitsPanel(QWidget):
                 grid.addWidget(spin, row, 1)
                 self.unit_field_editors[spec.field_id] = spin
                 self._mixed_sentinels[spec.field_id] = None
-        self.inspector_layout.addWidget(self.unit_inspector_grid)
+        selection_layout.addWidget(self.unit_inspector_grid)
 
         # A separate grid (GH #42), on the stats grid's own pattern and for
         # the same reason: a garrison is a list of OTHER units, not a field of
         # the selected one. The panel stays model-free -- show_garrison() is
         # handed finished rows by the viewer, which owns the model.
         self.garrison_header = QLabel("<b>Garrison</b>")
-        self.inspector_layout.addWidget(self.garrison_header)
+        selection_layout.addWidget(self.garrison_header)
 
         self.garrison_tree = QTreeWidget()
         self.garrison_tree.setHeaderLabels(["Unit", "Owner"])
@@ -719,11 +760,11 @@ class UnitsPanel(QWidget):
         )
         self.garrison_tree.itemSelectionChanged.connect(self._garrison_selection_changed)
         self.garrison_tree.itemDoubleClicked.connect(self._garrison_double_clicked)
-        self.inspector_layout.addWidget(self.garrison_tree)
+        selection_layout.addWidget(self.garrison_tree)
 
         self.garrison_note = QLabel("")
         self.garrison_note.setWordWrap(True)
-        self.inspector_layout.addWidget(self.garrison_note)
+        selection_layout.addWidget(self.garrison_note)
 
         # Three rows of at most three (GH #115; GH #204 regrouped them around Cut): a fourth
         # button overflows the inspector at MIN_USEFUL_WIDTH or leaves 8 px (measured offscreen).
@@ -775,7 +816,7 @@ class UnitsPanel(QWidget):
                 row.layout().addWidget(widget)
             row.layout().addStretch(1)
         self._set_garrison_row_actions_enabled(False)
-        self.inspector_layout.addWidget(self.garrison_buttons)
+        selection_layout.addWidget(self.garrison_buttons)
         self.hide_garrison()
 
         self.inspector_layout.addStretch(1)
@@ -826,6 +867,10 @@ class UnitsPanel(QWidget):
         self.placing_card.clear("Placing: (none)")
         self.placing_label.setToolTip("")
         self._on_pending_changed()
+        if self._pick_in_slot:
+            # A pick that went away (an owner filter, a dataset switch) hands the slot back.
+            self._pick_in_slot = False
+            self._apply_slot()
 
     def refresh_thumbnails(self) -> None:
         """After an install change: the list's thumbnails and modes, and both cards' stat icons and portraits."""
@@ -834,17 +879,46 @@ class UnitsPanel(QWidget):
         self.placing_card.refresh_thumbnails()
         self.selection_card.refresh_thumbnails()
 
-    def _show_inspector_fields(self, visible: bool) -> None:
-        self.unit_header.setVisible(visible)
-        self.placing_card.setVisible(not visible)
-        self.unit_inspector_grid.setVisible(visible)
-        self.unit_inspector_empty.setVisible(not visible)
+    def _apply_slot(self) -> None:
+        """The one slot under the count line (GH #357): the selection block, or
+        the placing card while nothing is selected or a catalog pick holds the
+        slot. The selection stays selected under a pick, so the count line
+        names it and Show selection brings it back."""
+        pick_shown = self._has_selection and self._pick_in_slot
+        self.selection_block.setVisible(self._has_selection and not pick_shown)
+        self.placing_card.setVisible(not self._has_selection or pick_shown)
+        count = self._selection_count
+        if not self._has_selection:
+            self.unit_inspector_empty.setText("No unit selected")
+        elif pick_shown or count > 1:
+            self.unit_inspector_empty.setText("1 unit selected" if count == 1 else f"{count} units selected")
+        # One unit's own card stands in for its count line.
+        self.count_row.setVisible(not self._has_selection or pick_shown or count > 1)
+        self.show_selection_button.setVisible(pick_shown)
+        self._fit_inspector_height()
+
+    def show_pick(self) -> None:
+        """A user's catalog pick takes the slot over the selection until the next
+        show_unit()/show_group() or Show selection (GH #357). With nothing
+        selected the placing card already has the slot: no-op."""
+        if not self._has_selection:
+            return
+        # Pick from map would keep filling a host whose garrison block just hid.
+        self.garrison_pick_button.setChecked(False)
+        self._pick_in_slot = True
+        self._apply_slot()
+
+    def _show_selection_clicked(self) -> None:
+        self._pick_in_slot = False
+        self._apply_slot()
 
     def show_unit(self, entry) -> None:
         """Populates every field from `entry` (a unit_pick index entry), or
-        blanks and hides the grid for None -- the "nothing selected" state.
-        Never touches unit_inspector_empty's text; pair a None call with
-        show_selection_count() when the caller has a count to report."""
+        blanks and hides the grid for None -- the "nothing selected" state,
+        whose count line reads "No unit selected"; follow a None call with
+        show_selection_count() when the caller has another count to report.
+        Either way the selection takes the slot back from a pick (GH #357)."""
+        self._pick_in_slot = False
         # Undo any group-mode state first: the "(mixed)" combo item, the
         # widened spin ranges, the hidden per-unit rows and the reworded note.
         self._populating = True
@@ -855,13 +929,14 @@ class UnitsPanel(QWidget):
         # The viewer follows with show_trigger_ranges() for a building it has a line for.
         self.trigger_range_label.setVisible(False)
         if entry is None:
-            self._show_inspector_fields(False)
+            self._has_selection = False
+            self._selection_count = 0
             for label in self.unit_field_labels.values():
                 label.setText("")
             self.unit_field_labels["rotation"].setToolTip("")
             self.selection_card.clear()
             self.hide_garrison()
-            self._fit_inspector_height()
+            self._apply_slot()
             return
         unit = entry.unit
         # The viewer follows a show_unit() with show_garrison() when the
@@ -894,8 +969,9 @@ class UnitsPanel(QWidget):
         finally:
             self._populating = False
         self.selection_card.show_const(unit.unit_const)
-        self._show_inspector_fields(True)
-        self._fit_inspector_height()
+        self._has_selection = True
+        self._selection_count = 1
+        self._apply_slot()
 
     def show_group(self, entries) -> None:
         """2+ selected units (GH #71): the same grid, each field showing the
@@ -904,7 +980,8 @@ class UnitsPanel(QWidget):
         X, Y or Z shifts every member by that step (GH #154, reported through
         on_unit_field_step), as does a step on a "(mixed)" Rotation, which
         turns every member by it (TASK-548). Reference ID and Garrisoned in are
-        per-unit only, so their rows are hidden."""
+        per-unit only, so their rows are hidden. Takes the slot back from a pick (GH #357)."""
+        self._pick_in_slot = False
         # A garrison is per-host, so the block has nothing to say about a
         # 2+ selection (GH #42), like Reference ID and Garrisoned in.
         self.hide_garrison()
@@ -938,14 +1015,12 @@ class UnitsPanel(QWidget):
             self._apply_conditional_fields(units)
         finally:
             self._populating = False
-        self._show_inspector_fields(True)
         for field_id in ("reference_id", "garrisoned_in_id"):
             self.unit_field_captions[field_id].setVisible(False)
             self.unit_field_labels[field_id].setVisible(False)
-        # _show_inspector_fields(True) hid the count line; group mode keeps it.
-        self.unit_inspector_empty.setText(f"{len(entries)} units selected")
-        self.unit_inspector_empty.setVisible(True)
-        self._fit_inspector_height()
+        self._has_selection = True
+        self._selection_count = len(entries)
+        self._apply_slot()
 
     def _leave_group_mode(self) -> None:
         """Restores single-unit state. Caller holds the populating guard:

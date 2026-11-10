@@ -70,11 +70,32 @@ lands); --no-preframes keeps them off. Each row's `fmt` is the canvas blit's for
 and its reason (`none` rendered, `key` mismatch, `stale` chunks). A `preframes` line
 per pass counts the G1 population's first-frame hits and names each over-gate miss.
 
+The window warms the zoom-out reach as the app does (TASK-031.11: the chunks the
+widest view at a level reads, zoomed out about the wheel anchor); --no-reach keeps it
+off. A `reach` line per pass counts the accepted zoom-out clicks that stay on one level
+and whose first frame did chunk work (prepare, join or composite) over 1 ms dev, those
+whose first frame was a placeholder apart, the same at the coarsest level, and the
+accepted clicks over G3 whose latency signature is a margin-warm tick (the reach ticks
+on a margin warmer, so it is counted there).
+
+Level-warm ticks run on a short budget while the canvas takes input, as in the app
+(TASK-031.80); --no-input-budget keeps every tick on the idle budget. Each tick is judged
+against the budget it ran under: a walk-dominant tick over it by more than 1 ms is the
+step tail, one at the idle budget inside a roll the first notch (no input seen yet).
+Under G3's signatures, a `queue holders` line per over-gate click names everything that
+held its queue, not only the largest, and the part no holder covers.
+
 --profile-paint N wraps MapCanvasItem.paint in cProfile and prints the N
 slowest paints' top 25 by cumtime (cProfile inflates every figure; read it for
 shares, never for gates). --profile-frame N does the same for whole frames and
 adds their top 15 by tottime, where Qt's own C++ (item traversal, the backing
 store flush) shows as QMainWindow.event's self time. The two are exclusive.
+--profile-warm N independently keeps the N slowest margin chunks, keyed by mip,
+cx, cy, path and warmer. A sync fallback includes both prepare and get, once.
+--json PATH writes each process's GATES data, including every margin chunk and
+tick (load included), click timestamps and pass bounds, not just the maxima.
+`diagnostics` holds process-wide stalls and individual slow preframe ticks, with
+thread counters and fetch splits; `runtime` identifies the child's actual libraries.
 
 One shell command, Xvfb on TCP (works where Unix-socket X access isn't
 available), killed by its own PID. Never `pkill -f "Xvfb :N"`: that also
@@ -99,6 +120,7 @@ this script drives a baseline worktree and a lane branch alike.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -106,7 +128,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 try:  # imported as tools.bench_gui_zoom (the tests)
@@ -122,10 +144,21 @@ G3_DEV_MS = 25.0
 X4 = 4
 # A frame shorter than this is a hover trickle, not the zoom's repaint (click-to-quiet).
 QUIET_FRAME_MS = 2.0
-# level_warm.BUDGET_MS, restated so this module stays importable without descape.
+# level_warm.BUDGET_MS, restated so this module stays importable without descape; a
+# tick recorded without its own budget is judged against it.
 LEVEL_WARM_BUDGET_MS = 12.0
+# A walk-dominant level-warm tick's classes (TASK-031.80 D5).
+LEVEL_WARM_STEP_TAIL = "level-warm walk step over budget (TASK-031.80 step tail)"
+LEVEL_WARM_FIRST_NOTCH = "level-warm full-budget tick before input was seen (TASK-031.80 first notch)"
+LEVEL_WARM_TICK = "level-warm tick"
 DEBUG_LOG_LINES = 1000
 CHUNK_PHASES = ("composite", "prepare", "join")
+# A margin warmer's tick (the navigation ring, the load chain and the zoom-out reach): its signature.
+MARGIN_TICK = "TASK-031.10/031.11 margin-warm tick"
+# margin_warm.BUDGET_MS; the live recorder replaces it with the imported value.
+MARGIN_WARM_BUDGET_MS = 8.0
+# A full collection holding a click: its signature (TASK-031.18 is Done, so a recurrence routes here).
+GC_GEN2 = "gc gen2 (TASK-031.81)"
 
 
 # --- Qt-free bookkeeping (tests/test_bench_gui_zoom.py) ---------------------
@@ -193,8 +226,39 @@ _STALL = re.compile(r"perf stall (\d+)ms \((.*)\)$")
 
 
 def parse_stall(line: str) -> tuple[int, str] | None:
+    """Keep the full cause, including the optional `; thread <kind>: ...` suffix."""
     m = _STALL.search(line)
     return (int(m.group(1)), m.group(2)) if m else None
+
+
+def parse_thread(cause: str) -> dict | None:
+    """Optional thread suffix in new stall logs; old logs remain unclassified."""
+    match = re.search(r"; thread ([\w-]+): (.*)$", cause)
+    if match is None:
+        return None
+    kind, text = match.groups()
+    stats = {"kind": kind, "text": text}
+    for name, value, unit in re.findall(r"(cpu|runq|maj|min|vcsw|ivcsw) ([\d.]+)(ms)?", text):
+        stats[name + "_ms" if unit else name] = float(value) if unit else int(value)
+    bounds = re.search(r"sample ([\d.]+)ms maj_bounds ([\d?]+)\.\.([\d?]+) kinds ([\w,-]+)", text)
+    if bounds:
+        span, lo, hi, kinds = bounds.groups()
+        stats.update(sampling_ms=float(span), maj_bounds=[None if v == "?" else int(v) for v in (lo, hi)],
+                     possible_kinds=kinds.split(","))
+    return stats
+
+
+def thread_record(stats) -> dict | None:
+    """Keep D1 baseline counters without qualifying their unbounded attribution."""
+    if stats is None:
+        return None
+    if not all(callable(getattr(stats, name, None)) for name in ("nominal_kind", "possible_kinds", "eligible")):
+        return {**asdict(stats), "kind": "unqualified", "nominal_kind": stats.kind(),
+                "qualified": False, "eligible": False, "text": stats.text()}
+    return {
+        **asdict(stats), "kind": stats.kind(), "nominal_kind": stats.nominal_kind(),
+        "possible_kinds": stats.possible_kinds(), "qualified": True, "eligible": stats.eligible(), "text": stats.text(),
+    }
 
 
 def logged_counts(lines: list[str]) -> tuple[int, int]:
@@ -271,6 +335,23 @@ class Frame:
 
 
 @dataclass
+class WarmChunk:
+    start: float
+    end: float
+    mip: int
+    cx: int
+    cy: int
+    path: str
+    ms: float
+    warmer: str = ""
+    first_at_level: bool = False
+
+    @property
+    def identity(self) -> str:
+        return f"mip {self.mip} ({self.cx},{self.cy}) {self.path} {self.warmer}".rstrip()
+
+
+@dataclass
 class Activity:
     """Something that held the GUI thread: kind is level, level-warm,
     margin-warm, gc or stall; detail is its text."""
@@ -281,6 +362,14 @@ class Activity:
     detail: str = ""
     split: dict[str, float] = field(default_factory=dict)
     where: str = ""
+    budget_ms: float | None = None  # a level-warm tick's own budget (TASK-031.80 D3)
+    warmer: str = ""
+    chunks: list[WarmChunk] = field(default_factory=list)
+    textures: list[tuple[str, float]] = field(default_factory=list)
+    levels: list[LevelEvent] = field(default_factory=list)
+    thread: dict | None = None
+    fetch: dict | None = None
+    raw: str = ""
 
     @property
     def ms(self) -> float:
@@ -409,16 +498,35 @@ def bracket_signature(frame: Frame, mip: int | None, canvas_only: bool = False) 
     return ("Qt backing-store flush and window repaint outside the viewport paint (C++)", "flush", ms)
 
 
-def activity_signature(act: Activity) -> tuple[str, str, float]:
+def level_warm_totals(activities: list[Activity], start: float, end: float) -> dict:
+    """A pass's level-warm ticks: count, summed ms and count per budget (TASK-031.80 V4)."""
+    ticks = [a for a in activities if a.kind == "level-warm" and start <= a.start < end]
+    by_budget: dict[str, int] = {}
+    for a in ticks:
+        key = f"{LEVEL_WARM_BUDGET_MS if a.budget_ms is None else a.budget_ms:g}"
+        by_budget[key] = by_budget.get(key, 0) + 1
+    return {"ticks": len(ticks), "ms": round(sum(a.ms for a in ticks), 1), "by_budget": by_budget}
+
+
+def activity_signature(act: Activity, sweep: str = "") -> tuple[str, str, float]:
     if act.kind == "gc":
-        return ("TASK-031.18 gc gen2" if act.detail == "gen2" else f"gc {act.detail}", "gc", act.ms)
+        return (GC_GEN2 if act.detail == "gen2" else f"gc {act.detail}", "gc", act.ms)
     if act.kind == "level-warm":
         walk = sum(ms for k, ms in act.split.items() if k.startswith("walk"))
-        if act.ms > LEVEL_WARM_BUDGET_MS and walk >= act.ms / 2:
-            return ("TASK-031.40 recurrence (level-warm walk slice over budget): new TASK-031 child", "level-warm walk", act.ms)
-        return ("level-warm tick", "level-warm", act.ms)
+        budget = LEVEL_WARM_BUDGET_MS if act.budget_ms is None else act.budget_ms
+        if walk >= act.ms / 2:
+            if act.ms > budget + 1.0:
+                return (LEVEL_WARM_STEP_TAIL, "level-warm walk", act.ms)
+            # Inside a roll every tick after the first click runs on the input budget (D5).
+            if sweep == "roll" and budget >= LEVEL_WARM_BUDGET_MS:
+                return (LEVEL_WARM_FIRST_NOTCH, "level-warm walk", act.ms)
+        return (LEVEL_WARM_TICK, "level-warm", act.ms)
     if act.kind == "margin-warm":
-        return ("TASK-031.10/031.11 margin-warm tick", "margin-warm", act.ms)
+        chunk = max(act.chunks, key=lambda c: c.ms, default=None)
+        budget = MARGIN_WARM_BUDGET_MS if act.budget_ms is None else act.budget_ms
+        if chunk is not None and chunk.ms > budget:
+            return (f"{MARGIN_TICK} (TASK-031.82 slow chunk, mip {chunk.mip} {chunk.path})", "margin-warm", act.ms)
+        return (MARGIN_TICK, "margin-warm", act.ms)
     if act.kind == "level":
         return (f"level event {act.detail}", act.detail, act.ms)
     return (act.kind, act.detail, act.ms)
@@ -444,20 +552,47 @@ def frame_signature(frame: Frame, activities: list[Activity], sweep: str) -> tup
     return bracket_signature(frame, frame.mip)
 
 
+def holders(t0: float, t1: float, frames: list[Frame], activities: list[Activity], sweep: str = ""):
+    """Everything that held the GUI thread inside [t0, t1): [(signature, overlap ms, (lo, hi))],
+    largest first, (lo, hi) the overlap's own span."""
+    out = []
+    spans = [(f, f.start, f.end) for f in frames]
+    spans += [(a, a.start, a.end) for a in activities
+              # A stall is a report, not a holder; a level in a paint is inside a frame.
+              if not (a.kind == "stall" or (a.kind == "level" and a.where == "repaint"))]
+    for item, start, end in spans:
+        ov = _overlap(t0, t1, start, end) * 1000
+        if ov > 0:
+            sig = frame_signature(item, activities, sweep) if isinstance(item, Frame) else activity_signature(item, sweep)
+            out.append((sig, ov, (max(t0, start), min(t1, end))))
+    return sorted(out, key=lambda h: -h[1])
+
+
 def _blocker(t0: float, t1: float, frames: list[Frame], activities: list[Activity], sweep: str = ""):
     """What held the GUI thread most of [t0, t1): (signature, overlap ms) or None."""
-    best = None
-    for f in frames:
-        ov = _overlap(t0, t1, f.start, f.end) * 1000
-        if ov > 0 and (best is None or ov > best[1]):
-            best = (frame_signature(f, activities, sweep), ov)
-    for a in activities:
-        if a.kind == "stall" or (a.kind == "level" and a.where == "repaint"):
-            continue  # a stall is a report, not a holder; a level in a paint is inside a frame
-        ov = _overlap(t0, t1, a.start, a.end) * 1000
-        if ov > 0 and (best is None or ov > best[1]):
-            best = (activity_signature(a), ov)
-    return best
+    found = holders(t0, t1, frames, activities, sweep)
+    return found[0][:2] if found else None
+
+
+def _union_ms(spans: list[tuple[float, float]]) -> float:
+    total, end = 0.0, None
+    for lo, hi in sorted(spans):
+        if end is None or lo > end:
+            total += hi - lo
+            end = hi
+        elif hi > end:
+            total += hi - end
+            end = hi
+    return total * 1000
+
+
+def queue_holders_text(click: Click, st: ClickStats, frames: list[Frame], activities: list[Activity]) -> str:
+    """An over-gate click's queue with every holder in it, not only the largest (TASK-031.80
+    Step 3); `untraced` is the queue no holder covers (nested holders counted once)."""
+    found = holders(click.t_click, click.t_entry, frames, activities, click.sweep)
+    named = "; ".join(f"{cand} [{phase} {ov:.1f}]" for (cand, phase, _ms), ov, _span in found) or "nothing traced"
+    rest = st.queue_ms - _union_ms([span for _sig, _ov, span in found])
+    return f"{click.sweep} #{click.index} queue {st.queue_ms:.1f} ms: {named}; untraced {max(0.0, rest):.1f}"
 
 
 def latency_signature(click: Click, st: ClickStats, frames, activities) -> tuple[str, str, float]:
@@ -468,7 +603,7 @@ def latency_signature(click: Click, st: ClickStats, frames, activities) -> tuple
         gc2 = sum(a.ms for a in activities if a.kind == "gc" and a.detail == "gen2"
                   and _overlap(st.first.start, st.first.end, a.start, a.end) > 0)
         if gc2 >= st.first.ms / 2:
-            return ("TASK-031.18 gc gen2", "frame: gc", gc2)
+            return (GC_GEN2, "frame: gc", gc2)
         cand, phase, ms = frame_signature(st.first, activities, click.sweep)
         return (cand, f"frame: {phase}", ms)
     if name == "handler":
@@ -494,6 +629,7 @@ class GateResult:
     met: bool | None
     dev_ms: float | None
     signatures: list[str]
+    holders: list[str] = field(default_factory=list)  # G3: each over-gate click's queue holders
 
 
 def _sig_text(click: Click, sig: tuple[str, str, float]) -> str:
@@ -614,7 +750,8 @@ def gates(clicks: list[Click], frames: list[Frame], activities: list[Activity]) 
         unpainted = sum(1 for c in roll if c.accepted) - len(acc)
         value = (f"worst click-to-frame {ms:.1f} ms over {len(acc)} accepted ({refused} refused, {unpainted} accepted"
                  f" with no frame after, {len(over)} over {G3_DEV_MS:g}), {len(builds)} builds in paint")
-        out.append(GateResult(3, gate_line(3, value, ms, met), met, ms, sigs))
+        held = [queue_holders_text(c, stats[id(c)], frames, activities) for c in over]
+        out.append(GateResult(3, gate_line(3, value, ms, met), met, ms, sigs, held))
     else:
         out.append(GateResult(3, gate_line(3, "no roll pass", None, None), None, None, []))
     return out
@@ -745,6 +882,53 @@ def placeholder_lines(p: PlaceholderStats) -> list[str]:
     return out
 
 
+# A first frame's chunk phases past this mean the zoom-out composited in its paint (TASK-031.11).
+REACH_CHUNK_MS = 1.0
+
+
+@dataclass
+class ReachStats:
+    """One pass's zoom-out reach figures (TASK-031.11 Step 4): accepted zoom-out
+    clicks that stay on one level, split at the coarsest level, as (clicks,
+    clicks whose first frame did chunk work over REACH_CHUNK_MS)."""
+
+    name: str
+    same_level: tuple[int, int]
+    pending: int  # same-level zoom-outs whose first frame was a placeholder: R1 leaves them out
+    coarsest: tuple[int, int]
+    margin_tick_over: int  # accepted clicks over G3 whose latency signature is a margin-warm tick
+
+
+def reach_stats(name: str, clicks: list[Click], frames: list[Frame], activities: list[Activity],
+                coarsest: int | None) -> ReachStats:
+    same, same_hit, pending, low, low_hit, ticks = 0, 0, 0, 0, 0, 0
+    for c in clicks:
+        if not c.accepted:
+            continue
+        st = click_stats(c, frames, activities)
+        if st.to_frame_ms is not None and st.to_frame_ms > G3_DEV_MS:
+            ticks += MARGIN_TICK in latency_signature(c, st, frames, activities)[0]
+        if c.direction >= 0 or c.mip_before is None or c.mip_before != c.mip_after:
+            continue
+        first = st.first
+        hit = first is not None and sum(first.bracket.get(k, 0.0) for k in CHUNK_PHASES) > REACH_CHUNK_MS
+        if c.mip_before == coarsest:
+            low, low_hit = low + 1, low_hit + hit
+        elif first is not None and first.placeholder:
+            pending += 1
+        else:
+            same, same_hit = same + 1, same_hit + hit
+    return ReachStats(name, (same, same_hit), pending, (low, low_hit), ticks)
+
+
+def reach_line(r: ReachStats) -> str:
+    """The `reach` line of one pass: R1's compose count, R2's coarsest count, R3's tick count."""
+    (n, hit), (cn, chit) = r.same_level, r.coarsest
+    return (f"reach {r.name}: {hit} of {n} same-level zoom-out clicks' first frame with chunk work over"
+            f" {REACH_CHUNK_MS:g} ms dev ({r.pending} more from a pending level); coarsest level {chit} of {cn};"
+            f" {r.margin_tick_over} over-G3 clicks with a margin-warm tick signature")
+
+
 def _f(v: float | None, fmt: str = ".1f") -> str:
     return "-" if v is None else format(v, fmt)
 
@@ -787,12 +971,16 @@ def format_row(click: Click, st: ClickStats) -> str:
     if st.levels:
         extras.append("levels " + ", ".join(f"{a.detail} {a.ms:.1f}" for a in st.levels))
     if st.stalls:
-        extras.append("stalls " + " ".join(f"{a.ms:.0f}" for a in st.stalls))
+        extras.append("stalls " + "; ".join(
+            f"{a.ms:.0f}" + (f" thread {a.thread['kind']}: {a.thread['text']}" if a.thread else "") for a in st.stalls
+        ))
     if st.gc2_ms:
         extras.append(f"gc2 {st.gc2_ms:.1f}")
     if st.warm:
         w = max(st.warm, key=lambda a: a.ms)
         extras.append(f"warm {len(st.warm)} ticks max {w.ms:.1f} ({w.kind})")
+        if w.kind == "margin-warm":
+            extras.append(w.detail)
     if st.markers:
         kinds: dict[str, int] = {}
         for a in st.markers:
@@ -819,9 +1007,10 @@ class _Recorder:
     """Class-level wrappers installed before the window exists: wheel handling,
     top-level frames, canvas paint brackets, level events, warm ticks, stalls, gc."""
 
-    def __init__(self, profile_paint: int = 0, profile_frame: int = 0) -> None:
+    def __init__(self, profile_paint: int = 0, profile_frame: int = 0, profile_warm: int = 0) -> None:
         self.frames: list[Frame] = []
         self.activities: list[Activity] = []
+        self.slow_preframe_ticks: list[Activity] = []
         self.wheel: list[dict] = []
         self.offsets: list[float] = []  # handler entry minus X timestamp, ms
         self._canvas_acc: dict[str, float] = {}
@@ -839,8 +1028,15 @@ class _Recorder:
         self._gc_t0: dict[int, float] = {}
         self.profile_paint = profile_paint
         self.profile_frame = profile_frame
+        self.profile_warm = profile_warm
         self.profiles: list[tuple[float, object]] = []
         self.all_profiles: list[object] = []
+        self.warm_profiles: list[tuple[WarmChunk, object]] = []
+        self.margin_chunks: list[WarmChunk] = []
+        self._margin_levels: set[int] = set()
+        self._margin_tick: Activity | None = None
+        self._chunk_active: WarmChunk | None = None
+        self._chunk_pending: tuple[object, WarmChunk, object] | None = None
 
     def _wrap(self, owner, name: str, wrapper) -> None:
         own = not isinstance(owner, type) or name in owner.__dict__
@@ -864,13 +1060,19 @@ class _Recorder:
         """An X timestamp on the perf_counter clock (seconds), by the smallest offset seen."""
         return (x_ms + min(self.offsets)) / 1000
 
-    def keep_profile(self, ms: float, prof, keep: int) -> None:
+    def keep_profile(self, ms: float, prof, keep: int, chunk: WarmChunk | None = None) -> None:
+        if chunk is not None:
+            self.warm_profiles = [(c, p) for c, p in self.warm_profiles if c is not chunk]
+            self.warm_profiles.append((chunk, prof))
+            self.warm_profiles.sort(key=lambda p: -p[0].ms)
+            del self.warm_profiles[keep:]
+            return
         self.all_profiles.append(prof)
         self.profiles.append((ms, prof))
         self.profiles.sort(key=lambda p: -p[0])
         del self.profiles[keep:]
 
-    def profile_texts(self) -> list[tuple[float, str]]:
+    def profile_texts(self, warm: bool = False) -> list[tuple[float, str]]:
         """The kept profiles, top 25 by cumtime, plus top 15 by tottime for a frame
         (Qt's own C++ painting and flush show as QMainWindow.event's tottime).
         The first entry (ms -1) is every profiled paint or frame summed."""
@@ -878,6 +1080,12 @@ class _Recorder:
         import pstats
 
         out = []
+        if warm:
+            for chunk, prof in self.warm_profiles:
+                buf = io.StringIO()
+                pstats.Stats(prof, stream=buf).sort_stats("cumulative").print_stats(25)
+                out.append((chunk.ms, f"{chunk.identity}; first at level {chunk.first_at_level}\n{buf.getvalue()}"))
+            return out
         if self.all_profiles:
             total = pstats.Stats(self.all_profiles[0])
             for prof in self.all_profiles[1:]:
@@ -895,16 +1103,101 @@ class _Recorder:
             out.append((ms, buf.getvalue()))
         return out
 
+    def watch_margin_warmers(self, window) -> None:
+        """Before any timer connects tick: distinguish the navigation ring from load/reach."""
+        from itertools import islice
+
+        from descape import margin_warm, perf_trace
+
+        def tick(original, name):
+            def wrapper():
+                previous = self._margin_tick
+                act = Activity(0.0, 0.0, "margin-warm", budget_ms=margin_warm.BUDGET_MS, warmer=name)
+                texture0 = len(perf_trace._texture_raw)
+                self._margin_tick = act
+                self._chunk_pending = None
+                try:
+                    return original()
+                finally:
+                    act.textures = list(islice(perf_trace._texture_raw, texture0, None))
+                    self._chunk_pending = None
+                    self._margin_tick = previous
+            return wrapper
+
+        for name in ("_margin_warmer", "_load_warmer"):
+            self._wrap(getattr(window, name), "tick", lambda original, name=name: tick(original, name))
+
+    def margin_data(self, clicks: list[Click], bounds: dict) -> dict:
+        """Raw process-wide attribution, including first chunks warmed during load."""
+        return {
+            "chunks": [asdict(c) for c in self.margin_chunks],
+            "ticks": [dict(asdict(a), ms=a.ms) for a in self.activities if a.kind == "margin-warm"],
+            "clicks": [asdict(c) for c in clicks],
+            "passes": {name: {"start": start, "end": end} for name, (start, end, _pending) in bounds.items()},
+        }
+
+    def diagnostics(self) -> dict:
+        """Process-wide raw events, not repeated in every overlapping click window."""
+        groups = {"stalls": [a for a in self.activities if a.kind == "stall"],
+                  "slow_preframe_ticks": self.slow_preframe_ticks}
+        return {
+            **{name: [dict(asdict(a), ms=a.ms) for a in rows] for name, rows in groups.items()},
+            "counts": {name: {"raw": len(rows), "eligible": sum(bool(a.thread and a.thread.get("eligible")) for a in rows)}
+                       for name, rows in groups.items()},
+        }
+
     def install(self) -> None:
         import cProfile
         import gc
 
         from PyQt5.QtCore import QEvent
 
-        from descape import map_view, perf_trace, viewer, viewer_canvas
+        from descape import map_view, perf_trace, render_cache, viewer, viewer_canvas
 
         rec = self
         now = time.perf_counter
+
+        def chunk_call(original, prepare):
+            def wrapper(cache, mip, cx, cy, *a, **k):
+                if not perf_trace._where_stack or perf_trace._where_stack[-1] != "margin-warm":
+                    return original(cache, mip, cx, cy, *a, **k)
+                # A nested prepare/get belongs to the outer call's timer and profile.
+                if rec._chunk_active is not None:
+                    return original(cache, mip, cx, cy, *a, **k)
+                pending, rec._chunk_pending = rec._chunk_pending, None
+                if (not prepare and pending is not None and pending[0] is cache
+                        and (pending[1].mip, pending[1].cx, pending[1].cy) == (mip, cx, cy)):
+                    chunk, prof = pending[1:]
+                else:
+                    path = "flat" if isinstance(cache, render_cache.FlatChunkCache) else "sync"
+                    chunk = WarmChunk(now(), 0.0, mip, cx, cy, path, 0.0,
+                                      rec._margin_tick.warmer if rec._margin_tick else "", mip not in rec._margin_levels)
+                    rec._margin_levels.add(mip)
+                    rec.margin_chunks.append(chunk)
+                    if rec._margin_tick is not None:
+                        rec._margin_tick.chunks.append(chunk)
+                    prof = cProfile.Profile() if rec.profile_warm else None
+                rec._chunk_active = chunk
+                result = None
+                t0 = now()
+                try:
+                    if prof is not None:
+                        prof.enable()
+                    result = original(cache, mip, cx, cy, *a, **k)
+                    return result
+                finally:
+                    if prof is not None:
+                        prof.disable()
+                    chunk.end = now()
+                    chunk.ms += (chunk.end - t0) * 1000
+                    if prepare and result is not None:
+                        chunk.path = "pooled"
+                    if prepare and result is None:
+                        rec._chunk_pending = (cache, chunk, prof)
+                    rec._chunk_active = None
+                    if prof is not None:
+                        rec.keep_profile(chunk.ms, prof, rec.profile_warm, chunk)
+            return wrapper
 
         def wheel(original):
             def wrapper(view, event):
@@ -1037,30 +1330,66 @@ class _Recorder:
                 where = perf_trace._where_stack[-1] if perf_trace._where_stack else "other"
                 t = now()
                 rec.activities.append(Activity(t - ms / 1000, t, "level", f"{mip} {kind} ({where})", dict(split or {}), where))
+                if where == "margin-warm" and rec._margin_tick is not None:
+                    rec._margin_tick.levels.append(LevelEvent(mip, kind, ms, split=dict(split or {}), where=where))
                 return original(kind, mip, ms, tiles, split)
             return wrapper
 
         def level_warm_tick(original):
-            def wrapper(tick_ms, install_ms, split=None, gc_ms=None, max_step=None):
+            def wrapper(tick_ms, install_ms, split=None, gc_ms=None, max_step=None, budget_ms=None):
                 t = now()
-                rec.activities.append(Activity(t - tick_ms / 1000, t, "level-warm", "", dict(split or {})))
-                return original(tick_ms, install_ms, split, gc_ms, max_step)
+                rec.activities.append(
+                    Activity(t - tick_ms / 1000, t, "level-warm", "", dict(split or {}), budget_ms=budget_ms)
+                )
+                return original(tick_ms, install_ms, split, gc_ms, max_step, budget_ms=budget_ms)
             return wrapper
 
         def warm_tick(original):
             def wrapper(tick_ms, chunks, slowest_chunk_ms):
                 t = now()
-                rec.activities.append(Activity(t - tick_ms / 1000, t, "margin-warm", f"{chunks} chunks"))
+                act = rec._margin_tick or Activity(0.0, 0.0, "margin-warm")
+                act.start, act.end = t - tick_ms / 1000, t
+                act.detail = f"{chunks} chunks {act.warmer}".rstrip()
+                slow = max(act.chunks, key=lambda c: c.ms, default=None)
+                if slow is not None:
+                    act.detail += f"; slowest {slow.identity} {slow.ms:.1f} ms; first at level {slow.first_at_level}"
+                rec.activities.append(act)
+                rec._chunk_pending = None
                 return original(tick_ms, chunks, slowest_chunk_ms)
             return wrapper
 
         def stall(original):
-            def wrapper(late_ms):
+            def wrapper(late_ms, stats=None):
                 t = now()
-                rec.activities.append(Activity(t - late_ms / 1000, t, "stall", ""))
-                original(late_ms)
-                text = perf_trace.debug_log._lines[-1] if perf_trace.debug_log._lines else ""
-                rec.activities[-1].detail = strip_ts(text).removeprefix("perf stall ")
+                act = Activity(t - late_ms / 1000, t, "stall", thread=thread_record(stats))
+                rec.activities.append(act)
+                if stats is None:  # --root can select a baseline with the old callback signature.
+                    original(late_ms)
+                else:
+                    original(late_ms, stats)
+                entries = perf_trace.debug_log.entries()
+                text = entries[-1].text() if entries else ""
+                act.raw = strip_ts(text)
+                act.detail = act.raw.removeprefix("perf stall ")
+                if act.thread is None:
+                    parsed = parse_stall(act.raw)
+                    act.thread = parse_thread(parsed[1]) if parsed else None
+            return wrapper
+
+        def preframe_tick(original):
+            def wrapper(tick_ms, kind, stats=None, fetch=None):
+                t = now()
+                act = Activity(t - tick_ms / 1000, t, "preframe", kind, thread=thread_record(stats), fetch=fetch)
+                rec.activities.append(act)
+                if stats is None and fetch is None:
+                    original(tick_ms, kind)
+                else:
+                    original(tick_ms, kind, stats, fetch)
+                if tick_ms >= getattr(perf_trace, "SLOW_TICK_MS", 50.0):
+                    entries = perf_trace.debug_log.entries()
+                    text = strip_ts(entries[-1].text()) if entries else ""
+                    act.raw = text if text.startswith("perf slow tick preframe ") else ""
+                    rec.slow_preframe_ticks.append(act)
             return wrapper
 
         self._wrap(map_view.MapView, "wheelEvent", wheel)
@@ -1071,6 +1400,9 @@ class _Recorder:
         self._wrap(perf_trace, "level_warm_tick", level_warm_tick)
         self._wrap(perf_trace, "warm_tick", warm_tick)
         self._wrap(perf_trace, "stall", stall)
+        self._wrap(perf_trace, "preframe_tick", preframe_tick)
+        self._wrap(render_cache._ChunkCacheBase, "get_chunk", lambda original: chunk_call(original, False))
+        self._wrap(render_cache._ChunkCacheBase, "prepare_chunk_job", lambda original: chunk_call(original, True))
         gc.callbacks.append(self._on_gc)
 
     def _on_gc(self, phase: str, info: dict) -> None:
@@ -1255,22 +1587,56 @@ class _Bench:
         self.output.append(f"--- roll: {len(clicks)} clicks, {accepted} accepted (perf op zoom count {ops})")
 
 
+def runtime_metadata() -> dict:
+    """Child interpreter versions and raw sysctl context, not a runq capability predicate."""
+    import numpy
+    from PyQt5.QtCore import PYQT_VERSION_STR, QT_VERSION_STR, qVersion
+
+    try:
+        sched_schedstats = Path("/proc/sys/kernel/sched_schedstats").read_text().strip()
+    except OSError:
+        sched_schedstats = "unavailable"
+    return {"qt": qVersion(), "qt_compiled": QT_VERSION_STR, "pyqt": PYQT_VERSION_STR,
+            "numpy": numpy.__version__, "interpreter": sys.executable, "python": sys.version,
+            "sched_schedstats": sched_schedstats}
+
+
+def _finish_report(output, frozen, rec, bench, bounds) -> None:
+    """Freeze verdicts, then keep the quiet tail as raw evidence without rescoring."""
+    from descape import gc_hold
+
+    gate = copy.deepcopy(frozen)
+    gate["gate_boundary"] = time.perf_counter()
+    _pump(gc_hold.INPUT_QUIET_S + 1.0)
+    output.append("--- tail: input quiet, after the gates")
+    output += [f"  {ln}" for ln in bench.flush()]
+    gate["margin_warm"] = rec.margin_data(bench.clicks, bounds)
+    gate["diagnostics"] = rec.diagnostics()
+    output.append("GATES " + json.dumps(gate))
+
+
 def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     from PyQt5.QtWidgets import QApplication
 
-    from descape import composite_backend, debug_log, perf_trace, viewer
+    from descape import composite_backend, debug_log, level_warm, perf_trace, viewer
     from testkit.qt_window import ScenarioLoadError
 
     if composite_backend.active_backend() != "native" and not args.allow_numpy:
         raise SystemExit(f"composite backend is {composite_backend.describe()}; build the native kernel or --allow-numpy")
+    # The level warmer's input budget (TASK-031.80 D1); --no-input-budget is the A arm.
+    if args.no_input_budget:
+        level_warm.INPUT_BUDGET_MS = level_warm.BUDGET_MS
     perf_trace.enable(True)  # before the window: its constructor starts the stall watchdog and gc hook
-    rec = _Recorder(args.profile_paint, args.profile_frame)
+    rec = _Recorder(args.profile_paint, args.profile_frame, args.profile_warm)
     rec.install()
     window = viewer.ViewerWindow()
+    rec.watch_margin_warmers(window)
     # The app's opt-in (TASK-031.25 D8); --no-placeholders is the A arm.
     window.set_placeholders_allowed(not args.no_placeholders)
     # And to pre-rendered zoom frames (TASK-031.71); --no-preframes is the A arm.
     window.map_view.set_preframes_allowed(not args.no_preframes)
+    # And to the zoom-out reach warm (TASK-031.11 D9); --no-reach is the A arm.
+    window.set_reach_warm_allowed(not args.no_reach)
     output: list[str] = []
     try:
         if style != "Stepped":
@@ -1304,7 +1670,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f" sprites {getattr(cache, 'sprites_enabled', None)}),"
             f" trees {window.paint_trees_check.isChecked()}, eye candy {window.paint_eye_candy_check.isChecked()},"
             f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'},"
-            f" preframes {'off' if args.no_preframes else 'on'}"
+            f" preframes {'off' if args.no_preframes else 'on'}, reach {'off' if args.no_reach else 'on'},"
+            f" input budget {'off' if args.no_input_budget else 'on'}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1314,6 +1681,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f" {max(rec.offsets) - min(rec.offsets):.1f} ms over {len(rec.offsets)} calibration events"
         )
         output.append(composite_backend.describe())
+        runtime = runtime_metadata()
+        output.append("runtime " + json.dumps(runtime, sort_keys=True))
         output.append("--- load log (context)")
         output += [f"  {ln}" for ln in load_lines]
         bounds: dict[str, tuple[float, float, str]] = {}
@@ -1357,9 +1726,11 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
         for g in results:
             output.append(g.line)
             output += [f"    signature: {s}" for s in g.signatures]
+            output += [f"    queue holders: {s}" for s in g.holders]
         pf_lines, pf_json = preframe_summary(bench.clicks, frames, acts)
         output += pf_lines
-        ph_json = {}
+        ph_json, reach_json, warm_json = {}, {}, {}
+        coarsest = cache.mip_levels()[0]
         for name, (start, end, pending) in bounds.items():
             cl = per_pass.get(name, [])
             in_pass = [f for f in frames if start <= f.start < end]
@@ -1374,17 +1745,35 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
                 "stalls": p.stalls, "pending_at_end": pending, "crossing_cold": p.crossing_cold,
                 "crossing_warm": p.crossing_warm, "seen": p.seen_paints, "logged": p.logged,
             }
+            r = reach_stats(name, cl, frames, acts, coarsest)
+            output.append(reach_line(r))
+            reach_json[name] = {
+                "same_level": r.same_level, "pending": r.pending, "coarsest": r.coarsest,
+                "margin_tick_over": r.margin_tick_over,
+            }
+            warm_json[name] = {"pass_s": round(end - start, 2), **level_warm_totals(acts, start, end)}
         if rec.profiles:
             what = "frames" if args.profile_frame else "canvas paints"
             output.append(f"=== profile: {len(rec.profiles)} slowest {what} (cProfile-inflated)")
             for ms, text in rec.profile_texts():
                 output.append(f"--- {what[:-1]} {ms:.1f} ms")
                 output.append(text)
-        output.append("GATES " + json.dumps({
+        if rec.warm_profiles:
+            output.append(f"=== profile: {len(rec.warm_profiles)} slowest margin chunks (cProfile-inflated)")
+            for ms, text in rec.profile_texts(warm=True):
+                output.append(f"--- margin chunk {ms:.1f} ms")
+                output.append(text)
+        _finish_report(output, {
             "style": style, "sprites": sprites, "passes": passes, "placeholders": not args.no_placeholders,
-            "gates": {g.n: {"met": g.met, "dev_ms": g.dev_ms, "line": g.line, "signatures": g.signatures} for g in results},
+            "gates": {
+                g.n: {"met": g.met, "dev_ms": g.dev_ms, "line": g.line, "signatures": g.signatures, "holders": g.holders}
+                for g in results
+            },
             "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
-        }))
+            "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
+            "level_warm_passes": warm_json,
+            "runtime": runtime,
+        }, rec, bench, bounds)
     finally:
         if window.scenario is not None:
             window.edit_history.mark_saved()
@@ -1410,7 +1799,7 @@ def _child(args) -> None:
     print("\n".join(output))
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", default=str(DEFAULT_SCENARIO))
     parser.add_argument("--style", type=_csv(str), default=["Stepped", "Sloped", "Flat"], help="comma-separated styles")
@@ -1424,6 +1813,8 @@ def main() -> None:
     profile = parser.add_mutually_exclusive_group()
     profile.add_argument("--profile-paint", type=int, default=0, metavar="N", help="cProfile the N slowest canvas paints")
     profile.add_argument("--profile-frame", type=int, default=0, metavar="N", help="cProfile the N slowest whole frames")
+    parser.add_argument("--profile-warm", type=int, default=0, metavar="N", help="cProfile the N slowest margin chunks separately")
+    parser.add_argument("--json", type=Path, help="write GATES data, raw warm/stall diagnostics and runtime versions to JSON")
     parser.add_argument("--out-dir", type=Path, help="also write each process's output to <dir>/<style>_<sprites>_<passes>.txt")
     parser.add_argument("--root", type=Path, help="DEscape checkout to import descape and testkit from")
     parser.add_argument("--allow-numpy", action="store_true", help="run on the numpy fallback (figures not comparable)")
@@ -1431,45 +1822,88 @@ def main() -> None:
                         help="the window keeps placeholder paints off (TASK-031.25's A arm; the app's default is on)")
     parser.add_argument("--no-preframes", action="store_true",
                         help="the window keeps pre-rendered zoom frames off (TASK-031.71's A arm; the app's default is on)")
+    parser.add_argument("--no-reach", action="store_true",
+                        help="the window keeps the zoom-out reach warm off (TASK-031.11's A arm; the app's default is on)")
+    parser.add_argument("--no-input-budget", action="store_true",
+                        help="level-warm ticks keep the idle budget during input (TASK-031.80's A arm; the app's default is on)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
+    return parser
+
+
+def child_command(args, style: str, sprites: str, passes: list[str]) -> list[str]:
+    """The child process's command line for one (style, sprites) combination."""
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--child", f"{style},{sprites}", "--pass", ",".join(passes)]
+    for flag in ("scenario", "notch_gap", "roll_delay", "settle", "profile_paint", "profile_frame", "profile_warm"):
+        cmd += [f"--{flag.replace('_', '-')}", str(getattr(args, flag))]
+    cmd += ["--window", f"{args.window[0]}x{args.window[1]}"]
+    if args.root:
+        cmd += ["--root", str(args.root)]
+    for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget"):
+        if getattr(args, flag):
+            cmd.append(f"--{flag.replace('_', '-')}")
+    return cmd
+
+
+def _validate_outputs(args, runs, parser) -> None:
+    paths = [p for p in (args.json, args.out_dir) if p is not None]
+    if args.out_dir:
+        paths += [args.out_dir / f"{style}_{sprites}_{'-'.join(passes)}.txt" for style, sprites, passes in runs]
+    if not paths:
+        return
+    try:
+        root = (args.root or ROOT).resolve()
+        loaded = sys.modules.get("descape")
+        if loaded is not None and Path(loaded.__file__).resolve().parent != root / "descape":
+            parser.error("cannot validate outputs with descape imported from another checkout")
+        sys.path.insert(0, str(root))
+        try:
+            from descape import scenario_io
+        finally:
+            sys.path.pop(0)
+        if Path(scenario_io.__file__).resolve() != root / "descape" / "scenario_io.py":
+            parser.error("cannot validate outputs with scenario_io imported from another checkout")
+        for path in paths:
+            if scenario_io.is_workshop_subscribed(path):
+                parser.error(f"refusing mods/subscribed output: {path}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        parser.error(f"cannot validate output destination: {exc}")
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
     for p in args.passes:
         if p not in ("notch", "revisit", "roll"):
             parser.error(f"unknown pass {p!r}")
-    if not os.environ.get("DISPLAY"):
-        sys.exit("needs a real X display (see the Xvfb recipe in --help)")
-    if args.child:
-        _child(args)
-        return
     runs = []
     for style in args.style:
         for sprites in args.sprites:
             runs.append((style, sprites, args.passes))
             if args.cold_roll == "on" and "roll" in args.passes and args.passes[0] != "roll":
                 runs.append((style, sprites, ["roll"]))
+    _validate_outputs(args, runs, parser)
+    if not os.environ.get("DISPLAY"):
+        sys.exit("needs a real X display (see the Xvfb recipe in --help)")
+    if args.child:
+        _child(args)
+        return
     table = []
     for style, sprites, passes in runs:
-        cmd = [sys.executable, str(Path(__file__).resolve()), "--child", f"{style},{sprites}", "--pass", ",".join(passes)]
-        for flag in ("scenario", "notch_gap", "roll_delay", "settle", "profile_paint", "profile_frame"):
-            cmd += [f"--{flag.replace('_', '-')}", str(getattr(args, flag))]
-        cmd += ["--window", f"{args.window[0]}x{args.window[1]}"]
-        if args.root:
-            cmd += ["--root", str(args.root)]
-        if args.allow_numpy:
-            cmd.append("--allow-numpy")
-        if args.no_placeholders:
-            cmd.append("--no-placeholders")
-        if args.no_preframes:
-            cmd.append("--no-preframes")
+        _validate_outputs(args, runs, parser)
+        cmd = child_command(args, style, sprites, passes)
         env ={**os.environ, "DESCAPE_REQUIRE_NATIVE": "1"}
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
         text = proc.stdout + (f"\n--- stderr (exit {proc.returncode})\n{proc.stderr}" if proc.returncode else "")
         print(text, flush=True)
         if args.out_dir:
+            _validate_outputs(args, runs, parser)
             args.out_dir.mkdir(parents=True, exist_ok=True)
             (args.out_dir / f"{style}_{sprites}_{'-'.join(passes)}.txt").write_text(text)
         gate = next((ln for ln in proc.stdout.splitlines() if ln.startswith("GATES ")), None)
         table.append((style, sprites, passes, json.loads(gate[6:]) if gate else None, proc.returncode))
+    if args.json:
+        _validate_outputs(args, runs, parser)
+        args.json.write_text(json.dumps([gate for _style, _sprites, _passes, gate, _code in table], indent=2) + "\n")
     print(f"=== gate table ({Path(args.scenario).name}; loadavg {_loadavg()})")
     for style, sprites, passes, gate, code in table:
         if gate is None:
@@ -1487,6 +1921,9 @@ def main() -> None:
         pf = gate.get("preframe_g1") or {}
         if pf:
             cells.append(f"PF {pf['hits']}/{pf['notches']} hit, {pf['over_hits']} of {pf['over']} over-G1 hits")
+        for name, r in gate.get("reach_passes", {}).items():
+            (n, hit), (cn, chit) = r["same_level"], r["coarsest"]
+            cells.append(f"RE {name} {hit}/{n} compose, coarsest {chit}/{cn}, ticks {r['margin_tick_over']}")
         print(f"{style:8} sprites {sprites:3} {','.join(passes):20} " + "; ".join(cells))
 
 

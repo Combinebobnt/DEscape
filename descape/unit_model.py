@@ -70,6 +70,7 @@ commit's readback), from raising regardless of which document loaded last.
 
 from __future__ import annotations
 
+import operator
 import struct
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -494,6 +495,12 @@ def new_unit(
 UnitState = tuple[float, float, float, float, int, int, int, int, int | None]
 
 
+def _same_items(a: Sequence, b: Sequence) -> bool:
+    """Same length and the same object at every index, by identity: Unit's
+    value equality would let a distinct but equal unit answer for another."""
+    return len(a) == len(b) and all(map(operator.is_, a, b))
+
+
 def _capture_flag_or_none(unit: Unit) -> int | None:
     """`unit.capture_flag` raw, or None where the link is unsupported (it
     raises) or the attribute is absent (a pre-1.59 unit after a depoison()).
@@ -547,22 +554,42 @@ class PlayerListSnapshot:
     O(bytes) cost to worry about capturing more than strictly needed, since
     a UnitState is four floats and five small ints (const, garrison link,
     animation frame, status, capture flag).
+
+    Tuples, never lists (TASK-031.18): every later full gc walks a list's
+    items, but `blobs` (bytes or None) and `states` (tuples of atoms) are
+    untracked after a collection or two, so 500 records cost no walk.
+    `units` stays tracked and is shared between captures whose membership
+    did not change (UnitEditModel._capture()), so it must stay immutable.
     """
 
-    units: list = field(default_factory=list)
-    blobs: list = field(default_factory=list)
-    states: list = field(default_factory=list)
+    units: tuple = ()
+    blobs: tuple = ()
+    states: tuple = ()
 
 
 @dataclass
 class UnitSnapshot:
     """One side of a unit undo record. `players` holds only the player
     indices the edit actually touched -- 1 for move/add/remove, 2 for
-    reassign -- never all 9."""
+    reassign. A press that declares all 9 (Convert, Erase) is pruned to
+    those at commit (_drop_unchanged_players())."""
 
     players: dict[int, PlayerListSnapshot] = field(default_factory=dict)
     next_unit_id: int = 0
     dirty: bool = False
+
+
+def _drop_unchanged_players(before: UnitSnapshot, after: UnitSnapshot) -> None:
+    """Removes from both sides every player the edit left as it was: the same
+    units in order, the same blob slots, equal states (TASK-031.18). Convert
+    and Erase capture all nine players because the touched set is unknown at
+    press. Restoring an unchanged player writes what is already there, so a
+    pruned record restores the same document."""
+    for player in list(before.players):
+        then, now = before.players[player], after.players[player]
+        if _same_items(then.units, now.units) and _same_items(then.blobs, now.blobs) and then.states == now.states:
+            del before.players[player]
+            del after.players[player]
 
 
 @dataclass
@@ -686,6 +713,9 @@ class UnitEditModel:
         # begin_unit_edit() and its commit (Batch D's D6), a whole-list
         # UnitSnapshot otherwise.
         self._pending: UnitSnapshot | UnitFieldSnapshot | None = None
+        # Per player, the units tuple of its last capture or restore, which
+        # _capture() reuses while the live list still holds the same units in order.
+        self._last_units: dict[int, tuple] = {}
         # True inside batch_adds(), which has already depoisoned the classes.
         self._batch_depoisoned = False
 
@@ -1654,10 +1684,15 @@ class UnitEditModel:
         capture_flag = self.supports_capture_flag
         snapshots = {}
         for p in players:
+            live = manager.units[p]
+            units = self._last_units.get(p)
+            if units is None or not _same_items(units, live):
+                units = tuple(live)
+                self._last_units[p] = units
             snapshots[p] = PlayerListSnapshot(
-                units=list(manager.units[p]),
-                blobs=list(self._blobs[p]),
-                states=[unit_state(u, capture_flag) for u in manager.units[p]],
+                units=units,
+                blobs=tuple(self._blobs[p]),
+                states=tuple([unit_state(u, capture_flag) for u in units]),
             )
         return UnitSnapshot(players=snapshots, next_unit_id=self._next_unit_id, dirty=self._dirty)
 
@@ -1677,6 +1712,7 @@ class UnitEditModel:
             for unit, state in zip(pls.units, pls.states, strict=True):
                 _set_unit_state(unit, state)
             self._tracked[player][:] = list(pls.units)
+            self._last_units[player] = pls.units
         # Trap 1 (plan): restore _player by direct assignment or
         # update_unit_player_values(), never the banned `player` property.
         manager.update_unit_player_values()
@@ -1760,6 +1796,7 @@ class UnitEditModel:
             after = self._capture_field_delta_after(before)
         else:
             after = self._capture(list(before.players))
+            _drop_unchanged_players(before, after)
         record = UnitDiffRecord(label, before, after)
         if push:
             history.push_unit_record(record)

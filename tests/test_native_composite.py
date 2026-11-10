@@ -23,6 +23,7 @@ import pytest
 from test_clipped_sprites import INK_H, INK_W, MARK_CONST, UX, UY, chunk_cache, ink_sprite, scenario_map  # noqa: F401
 from test_farm_terrain import FAKE_FARM_CONST, fake_farm  # noqa: F401 -- fake_farm is a fixture
 from test_sprite_chunks import CHUNK, MAP_H, MAP_W
+from test_sprite_columns import DIAGONAL_GATE, art  # noqa: F401 -- art is a fixture
 from test_sprite_edit_bbox import CONST, EDIT_X, EDIT_Y, Unit, _fixture_scenario, sprite_install  # noqa: F401
 
 from descape import (
@@ -40,13 +41,15 @@ from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 from descape.view_layers import DEFAULT_LAYERS, LayerState
 
+import conftest
+
 TEXTURE_SIZE = 512
 # A spread of real ids, so the textures-off branch gets distinct flat colours too.
 TERRAIN_IDS = (0, 1, 2, 3, 6, 9, 10, 13)
 FARM_X, FARM_Y = 40, 80
 PLAIN_UNIT_CONST = 4  # no sprite in sprite_install's graphic map, so it draws a mark
 RISES = range(1, iso_geometry.MAX_ELEVATION + 1)
-TILE_PX_LADDER = (16, 32, 64, 128)
+TILE_PX_LADDER = (16, 32, 64, 96, 128)  # 96: the native tier (TASK-599), padded texture crops
 
 
 @pytest.fixture
@@ -309,6 +312,45 @@ def test_native_path_is_actually_taken_at_coarse_mips(native_kernel, sprite_inst
         cache._level(mip)
         calls = _count_native_calls(lambda *r, c=cache: c._composite_rect(mip, *r), cache.canvas_dims(mip))
         assert calls == {entry: 3}, (cache.style, calls)
+
+
+class _UnpaddingKernel:
+    """Hands composite_iso/_sloped each texture cut back to its 512 period,
+    the unpadded shape a 96 crop would read past."""
+
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        fn = getattr(self._module, name)
+        if name not in ("composite_iso", "composite_sloped"):
+            return fn
+
+        def unpadded(*args):
+            args = list(args)
+            (i,) = [i for i, a in enumerate(args) if isinstance(a, tuple) and len(a) == 3 and isinstance(a[0], list)]
+            arrays, flat, sizes = args[i]
+            cut = [None if a is None else np.ascontiguousarray(a[: int(s), : int(s)]) for a, s in zip(arrays, sizes, strict=False)]
+            assert any(c is not None and c.shape != a.shape for c, a in zip(cut, arrays, strict=True)), "nothing padded -- vacuous"
+            args[i] = (cut, flat, sizes)
+            return fn(*args)
+
+        return unpadded
+
+
+def test_the_kernel_refuses_an_unpadded_texture_at_the_native_tier(native_kernel, sprite_install, fake_farm, synthetic_textures):  # noqa: F811
+    """A crop at 96 on an unpadded 512 texture would read past it under
+    nogil; the kernel raises instead (TASK-599)."""
+    mm = _cliff_scenario().map_manager
+    _scenario, stepped, sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    for cache in (stepped, sloped):
+        (mip,) = [m for m in cache.mip_levels() if cache.mip_tile_px(m) == 96]
+        cache._level(mip)
+        w, h = cache.canvas_dims(mip)
+        with composite_backend.use_backend("native"):
+            composite_backend.native = _UnpaddingKernel(composite_backend.native)  # use_backend restores it on exit
+            with pytest.raises(ValueError, match="crop pad"):
+                cache._composite_rect(mip, w // 2 - 256, h // 2 - 256, w // 2 + 256, h // 2 + 256)
 
 
 def test_per_tile_path_backends_agree(native_kernel, sprite_install, fake_farm, synthetic_textures):  # noqa: F811
@@ -748,7 +790,174 @@ def _pack_rows(pack) -> dict[int, list[tuple]]:
     }
 
 
-def test_unit_pack_compaction_keeps_every_tiles_rows(sprite_install, fake_farm):  # noqa: F811
+def _assert_packs_equal(bulk, tilewise):
+    for name in ("index", "farm_tid", "farm_mask", "farm_rgb", "ready"):
+        assert np.array_equal(getattr(bulk, name), getattr(tilewise, name)), name
+    assert np.array_equal(bulk.rows[: bulk.n], tilewise.rows[: tilewise.n]), "rows (including slot ids)"
+    assert (bulk.n, bulk.garbage, bulk.has_farms) == (tilewise.n, tilewise.garbage, tilewise.has_farms)
+    assert len(bulk._rgbas) == len(tilewise._rgbas)
+    for got, want in zip(bulk._rgbas, tilewise._rgbas, strict=True):
+        assert got[0] is want[0], "slot source identity/order"
+        assert np.array_equal(got[1], want[1]), "contiguous slot pixels"
+
+
+def _test_map_packs(style, sprites):
+    scenario = load_map_and_units(conftest.TEST_MAP_PATH)
+    cache = _edit_cache(style, scenario, sprites)
+    lvl = cache._level(0)
+    mm = scenario.map_manager
+    packs = [
+        native_composite.UnitPack(
+            style == "sloped", mm.map_width, mm.map_height, lvl.proj, cache.units_by_tile, lvl.sprites,
+            0, cache._level_heights(lvl), cache._level_fold(),
+        ) for _ in range(2)
+    ]
+    return cache, packs[0], packs[1]
+
+
+@pytest.mark.test_map
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
+def test_bulk_pending_matches_tilewise_on_the_test_map(native_backend, art, style, sprites):  # noqa: F811
+    _cache, bulk, tilewise = _test_map_packs(style, sprites)
+    ubt = dict(reversed(list(bulk._ubt.items())))
+    unit_color = next(entries[0] for entries in ubt.values() if entries)
+    t = int(bulk.pending()[0])
+    x, y = t % bulk.w, t // bulk.w
+    # Each off-map coordinate aliases a pending flat index if the bounds check is lost.
+    offmap = [(x - bulk.w, y + 1), (x + bulk.w, y - 1), (t + bulk.w, -1), (t - bulk.w * bulk.h, bulk.h)]
+    ubt.update({key: [unit_color] for key in offmap})
+    layer = bulk._sprites
+    if sprites:
+        assert layer.by_anchor and layer.farm_by_tile, "no sprite/farm source -- vacuous"
+        anchors = dict(reversed(list(layer.by_anchor.items())))
+        draws = next(iter(anchors.values()))
+        anchors.update(dict.fromkeys(offmap, draws))
+        farms = dict(layer.farm_by_tile)
+        farms.update(dict.fromkeys(offmap, next(iter(farms.values()))))
+        layer = dataclasses.replace(layer, by_anchor=anchors, farm_by_tile=farms)
+    for pack in (bulk, tilewise):
+        pack.refresh([], ubt, layer, 1, pack._heights, pack._fold)
+    tilewise.ensure(tilewise.pending())
+    bulk.derive_pending()
+    _assert_packs_equal(bulk, tilewise)
+    kinds = set(bulk.rows[: bulk.n, 0])
+    assert native_composite.ROW_MARK in kinds
+    if style == "sloped":
+        assert native_composite.ROW_CONFORM in kinds, "no conforming marks -- vacuous"
+    if sprites:
+        assert native_composite.ROW_SPRITE in kinds and bulk.has_farms
+        assert len(bulk._rgbas) > 1, "slot order was not exercised"
+    else:
+        assert not bulk._rgbas and not bulk.has_farms
+    shared = bulk.kernel_units(share=True)
+    frozen = [a.copy() for a in shared]
+    bulk.derive_pending()
+    assert bulk._shared, "nothing pending still unshared the pack"
+    for held, now, was in zip(shared, bulk.kernel_units(), frozen, strict=True):
+        assert np.shares_memory(held, now) and np.array_equal(now, was), "nothing pending wrote an array"
+    _assert_packs_equal(bulk, tilewise)
+
+
+@pytest.mark.test_map
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_bulk_pending_refresh_keeps_derived_tiles_and_shared_inputs(native_backend, art, monkeypatch, style):  # noqa: F811
+    cache, bulk, tilewise = _test_map_packs(style, True)
+    bulk.derive_pending()
+    tilewise.ensure(tilewise.pending())
+    _assert_packs_equal(bulk, tilewise)
+    building = next(u for units in cache.scenario.unit_manager.units for u in units if u.unit_const == DIAGONAL_GATE)
+    tiles = set(render.unit_occupied_tiles(building, bulk.w, bulk.h))
+    layer = bulk._sprites
+    sprite_tiles = tiles & layer.by_anchor.keys()
+    assert len(sprite_tiles) > 1, "no multi-tile sprite -- vacuous"
+    farms = dict(layer.farm_by_tile)
+    farm_tiles = list(farms)[:2]
+    assert len(farm_tiles) == 2
+    farms.pop(farm_tiles[0])
+    farms[farm_tiles[1]] = (17, (23, 45, 67), render.EDGE_LEFT)
+    tiles.update(farm_tiles)
+    anchors = dict(layer.by_anchor)
+    for key in sprite_tiles:
+        anchors[key] = [
+            (dataclasses.replace(draw, rgba=draw.rgba.copy()), ax + 7, ay - 3, rise)
+            for draw, ax, ay, rise in anchors[key]
+        ]
+    cleared = next(iter(sprite_tiles))
+    anchors.pop(cleared)
+    farms.pop(cleared, None)
+    ubt = dict(bulk._ubt)
+    ubt[cleared] = []
+    layer = dataclasses.replace(layer, by_anchor=anchors, farm_by_tile=farms)
+    source_tiles = len(ubt) + len(anchors) + len(farms)
+    occupied = np.flatnonzero(bulk.has)
+    tiles.update((int(t % bulk.w), int(t // bulk.w)) for t in occupied[: (source_tiles + 3) // 4])
+    before_index, before_rows = bulk.index.copy(), bulk.rows[: bulk.n].copy()
+    old_slots = len(bulk._rgbas)
+    shared = bulk.kernel_units(share=True)
+    frozen = [a.copy() for a in shared]
+    for pack in (bulk, tilewise):
+        pack.refresh(tiles, ubt, layer, 1, pack._heights, pack._fold)
+    pending = bulk.pending()
+    assert pending.size == len(tiles) and bulk.ready.any(), "not a partial refresh"
+    assert 4 * pending.size >= source_tiles, "not dense enough to exercise the source-wise refresh"
+    tilewise.ensure(tilewise.pending())
+    monkeypatch.setattr(bulk, "ensure", lambda _idx: pytest.fail("a dense refresh fell back to tile lookups"))
+    bulk.derive_pending()
+    _assert_packs_equal(bulk, tilewise)
+    assert bulk.garbage > 0 and bulk.n > len(before_rows), "no orphaned/appended rows"
+    keep = np.ones(bulk.w * bulk.h, dtype=bool)
+    keep[pending] = False
+    assert np.array_equal(bulk.index.reshape(-1, 2)[keep], before_index.reshape(-1, 2)[keep])
+    assert np.array_equal(bulk.rows[: len(before_rows)], before_rows)
+    t = cleared[1] * bulk.w + cleared[0]
+    assert (bulk.index[2 * t : 2 * t + 2] == 0).all(), "cleared tile kept a row index"
+    t = farm_tiles[0][1] * bulk.w + farm_tiles[0][0]
+    assert bulk.farm_tid[t] == -1 and bulk.farm_mask[t] == 0 and not bulk.farm_rgb[3 * t : 3 * t + 3].any()
+    for i, (held, was) in enumerate(zip(shared, frozen, strict=True)):
+        limit = old_slots if i == 2 else 2 * old_slots if i == 3 else held.size
+        assert np.array_equal(held[:limit], was[:limit]), "bulk derive wrote a shared kernel input"
+    assert bulk.index is not shared[0] and bulk.farm_mask is not shared[4] and bulk.farm_rgb is not shared[5]
+
+
+@pytest.mark.test_map
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
+def test_a_sparse_pending_refresh_never_scans_whole_level_sources(native_backend, art, style, sprites):  # noqa: F811
+    class TileLookupsOnly(dict):
+        def items(self):
+            pytest.fail("a sparse refresh scanned a whole source")
+
+    _cache, bulk, tilewise = _test_map_packs(style, sprites)
+    bulk.derive_pending()
+    tilewise.ensure(tilewise.pending())
+    ubt = TileLookupsOnly(bulk._ubt)
+    layer = bulk._sprites
+    if sprites:
+        farms = TileLookupsOnly(layer.farm_by_tile)
+        key = next(iter(farms))
+        farms[key] = (17, (23, 45, 67), render.EDGE_LEFT)
+        layer = dataclasses.replace(layer, by_anchor=TileLookupsOnly(layer.by_anchor), farm_by_tile=farms)
+    else:
+        key = next(key for key, units in bulk._ubt.items() if units)
+        ubt[key] = [(unit, (23, 45, 67)) for unit, _color in ubt[key]]
+    for pack in (bulk, tilewise):
+        pack.refresh([key], ubt, layer, 1, pack._heights, pack._fold)
+    assert bulk.pending().size == 1 and len(ubt) > 100, "not a sparse refresh of a large source"
+    before = bulk.rows[: bulk.n].copy()
+    tilewise.ensure(tilewise.pending())
+    bulk.derive_pending()
+    _assert_packs_equal(bulk, tilewise)
+    if sprites:
+        t = key[1] * bulk.w + key[0]
+        assert bulk.farm_tid[t] == 17 and bulk.farm_mask[t] == render.EDGE_LEFT
+        assert bulk.farm_rgb[3 * t : 3 * t + 3].tolist() == [23, 45, 67]
+    else:
+        assert bulk.garbage > 0 and bulk.n > len(before), "refresh did not rewrite occupied rows"
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["tilewise", "bulk"])
+def test_unit_pack_compaction_keeps_every_tiles_rows(sprite_install, fake_farm, bulk):  # noqa: F811
     """refresh() orphans a rewritten tile's old rows; _compact() must drop
     exactly those, keeping every live tile's rows in order."""
     scenario = _sloped_scenario()
@@ -760,19 +969,37 @@ def test_unit_pack_compaction_keeps_every_tiles_rows(sprite_install, fake_farm):
         False, mm.map_width, mm.map_height, lvl.proj, cache.units_by_tile, lvl.sprites, 0, cache.elevations,
     )
     everything = np.arange(mm.map_width * mm.map_height)
-    pack.ensure(everything)
+    derive = pack.derive_pending if bulk else lambda: pack.ensure(everything)
+    derive()
     before = _pack_rows(pack)
     assert before, "fixture has no unit rows"
     tiles = {(t % mm.map_width, t // mm.map_width) for t in before}
     for _ in range(3):
         pack.refresh(tiles, cache.units_by_tile, lvl.sprites, 0, cache.elevations)
         assert not pack.ready[list(before)].any()
-        pack.ensure(everything)
+        derive()
     assert pack.garbage > 0
     assert _pack_rows(pack) == before
     pack._compact()
     assert pack.garbage == 0 and pack.n == sum(len(v) for v in before.values())
     assert _pack_rows(pack) == before
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["tilewise", "bulk"])
+def test_unit_pack_automatically_compacts_when_all_rows_become_garbage(bulk):
+    cache = _edit_cache("stepped", _sloped_scenario(), False)
+    unit = Unit(1.25, 1.75, PLAIN_UNIT_CONST)
+    pack = native_composite.UnitPack(
+        False, cache.scenario.map_manager.map_width, cache.scenario.map_manager.map_height, cache.proj,
+        {(1, 1): [(unit, (12, 34, 56))] * 65537}, None, 0, cache.elevations,
+    )
+    derive = pack.derive_pending if bulk else lambda: pack.ensure(pack.pending())
+    derive()
+    assert pack.n == 65537 and pack.garbage == 0
+    pack.refresh([(1, 1)], {}, None, 1, cache.elevations)
+    derive()
+    assert pack.n == pack.garbage == 0 and not pack.index.any()
+    assert pack.ready[pack.w + 1] and not pack.pending().size
 
 
 # --- worker-thread chunk jobs (Batch F T2) ----------------------------------

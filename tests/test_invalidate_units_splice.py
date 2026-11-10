@@ -673,10 +673,11 @@ def _flat_cache(scenario, sprites: bool = False, unit_filter: UnitFilter = UnitF
 
 
 def _flat_counts(monkeypatch):
-    """Counts the two wholesale Flat walks. _flat_unit_draws and
-    _flat_icon_layer both go through these, so zero means no rebuild at all."""
+    """Counts the two wholesale Flat walks. _flat_unit_draws, the cache's row
+    columns and _flat_icon_layer all go through these, so zero means no
+    rebuild at all."""
     counts = {"rows": 0, "icons": 0}
-    real_rows, real_icons = render._flat_unit_rows, render._flat_icon_layer_sliced
+    real_rows, real_icons = render._flat_unit_base_rows, render._flat_icon_layer_sliced
 
     def counted_rows(*args, **kwargs):
         counts["rows"] += 1
@@ -686,7 +687,7 @@ def _flat_counts(monkeypatch):
         counts["icons"] += 1
         return real_icons(*args, **kwargs)
 
-    monkeypatch.setattr(render, "_flat_unit_rows", counted_rows)
+    monkeypatch.setattr(render, "_flat_unit_base_rows", counted_rows)
     monkeypatch.setattr(render, "_flat_icon_layer_sliced", counted_icons)
     return counts
 

@@ -147,6 +147,7 @@ from descape import (
     scatter,
     settings,
     settings_file,
+    sprite_prefetch,
     terrain_classes,
     terrain_target,
     terrain_units,
@@ -172,6 +173,7 @@ from descape import (
     view_layers,
     viewer_canvas,
     wall_run,
+    win_taskbar,
 )
 from descape.analysis_dialog import AnalysisDialog
 from descape.autosave_dialog import RecoverAutosaveDialog
@@ -552,6 +554,8 @@ _UNIT_SELECTION_LIVE_MODES = frozenset({"units", "terrain"})
 # Placeholder paints across a level change (TASK-031.25 D8): a new window's default.
 # Only main() turns it on, so tests and tools that build a ViewerWindow measure the real level.
 LIVE_PLACEHOLDERS = False
+# The zoom-out reach warm (TASK-031.11 D9): a new window's default, opted in beside placeholders.
+REACH_WARM = False
 # How long a placeholder may wait with no warm active before the watchdog settles it.
 PLACEHOLDER_STUCK_MS = 1500
 
@@ -1389,15 +1393,15 @@ class SettingsDialog(QDialog):
         try:
             settings_file.write_settings_file(path, settings_file.build_document())
         except settings_file.SettingsWriteBlockedError as e:
-            self._window._log_status(f"Settings export blocked: {e}")
+            self._window._log_status(f"Settings export blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Export blocked", str(e))
             return
         except settings_file.ConfigUnreadable as e:
-            self._window._log_status(f"Settings export failed: {e}")
+            self._window._log_status(f"Settings export failed: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Settings unreadable", f"{e}\n\nNothing was exported.")
             return
         except OSError as e:
-            self._window._log_status(f"Settings export failed: {e}")
+            self._window._log_status(f"Settings export failed: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Export failed", str(e))
             return
         self._window._log_status(f"Settings exported to {path}")
@@ -1414,7 +1418,7 @@ class SettingsDialog(QDialog):
         try:
             plan = settings_file.parse_settings_file(path, installed_families=QFontDatabase().families())
         except settings_file.SettingsFileRefused as e:
-            self._window._log_status(f"Settings import refused: {e}")
+            self._window._log_status(f"Settings import refused: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Import refused", f"{path}\n\n{e}")
             return
         # The summary is against config.yaml, so a slider still on its apply timer is saved first.
@@ -1422,7 +1426,7 @@ class SettingsDialog(QDialog):
         try:
             summary = settings_file.format_import_summary(plan)
         except (settings_file.ConfigUnreadable, OSError) as e:
-            self._window._log_status(f"Settings import refused: {e}")
+            self._window._log_status(f"Settings import refused: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Import refused", f"{e}\n\nAn import would replace it, so nothing was staged.")
             return
         if not self._confirm_settings_import(summary):
@@ -1431,12 +1435,15 @@ class SettingsDialog(QDialog):
         try:
             settings_file.stage_import(plan, path)
         except OSError as e:
-            self._window._log_status(f"Settings import failed: {e}")
+            self._window._log_status(f"Settings import failed: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Import failed", str(e))
             return
         self._refresh_pending_import_row()
         skipped = f", {len(plan.problems)} skipped" if plan.problems else ""
-        self._window._log_status(f"Settings from {path} staged{skipped}: they apply the next time DEscape starts")
+        self._window._log_status(
+            f"Settings from {path} staged{skipped}: they apply the next time DEscape starts",
+            level=debug_log.WARNING if plan.problems else debug_log.INFO,
+        )
         if self._ask_quit_after_import():
             self._quit_for_import()
 
@@ -1481,7 +1488,7 @@ class SettingsDialog(QDialog):
         try:
             settings_file.discard_pending_import()
         except OSError as e:
-            self._window._log_status(f"Discarding the staged settings import failed: {e}")
+            self._window._log_status(f"Discarding the staged settings import failed: {e}", level=debug_log.ERROR)
             QMessageBox.warning(self, "Discard failed", str(e))
             return
         self._refresh_pending_import_row()
@@ -2213,11 +2220,11 @@ class SettingsDialog(QDialog):
         try:
             theme_file.write_theme_file(path, theme_file.build_document())
         except theme_file.ThemeWriteBlockedError as e:
-            self._window._log_status(f"Theme export blocked: {e}")
+            self._window._log_status(f"Theme export blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Export blocked", str(e))
             return
         except OSError as e:
-            self._window._log_status(f"Theme export failed: {e}")
+            self._window._log_status(f"Theme export failed: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Export failed", str(e))
             return
         self._window._log_status(f"Theme exported to {path}")
@@ -2231,7 +2238,7 @@ class SettingsDialog(QDialog):
         try:
             plan = theme_file.parse_theme_file(path, installed_families=QFontDatabase().families())
         except theme_file.ThemeFileRefused as e:
-            self._window._log_status(f"Theme import refused: {e}")
+            self._window._log_status(f"Theme import refused: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Import refused", f"{path}\n\n{e}")
             return
         if not self._confirm_theme_import(theme_file.format_import_summary(plan)):
@@ -2239,7 +2246,7 @@ class SettingsDialog(QDialog):
             return
         self._apply_imported_appearance(plan.values)
         skipped = f", {len(plan.problems)} skipped" if plan.problems else ""
-        self._window._log_status(f"Theme imported from {path}{skipped}")
+        self._window._log_status(f"Theme imported from {path}{skipped}", level=debug_log.WARNING if plan.problems else debug_log.INFO)
 
     def _confirm_theme_import(self, summary: str) -> bool:
         """Modal Apply/Cancel over the parsed file's summary. Its own method so
@@ -2835,7 +2842,7 @@ class SettingsDialog(QDialog):
             settings.set_autosave_dir(path)
         except ValueError as e:
             self._set_autosave_dir_status(str(e), ok=False)
-            self._window._log_status(f"Autosave folder refused: {e}")
+            self._window._log_status(f"Autosave folder refused: {e}", level=debug_log.WARNING)
             return
         stored = settings.get_autosave_dir()
         self.autosave_dir_edit.setText(stored)
@@ -3146,7 +3153,7 @@ class SettingsDialog(QDialog):
         ok, message = asset_source.validate_install_path(Path(text))
         if not ok:
             self._set_install_status(message, ok=False)
-            self._window._log_status(f"Install path rejected ({text}): {message}")
+            self._window._log_status(f"Install path rejected ({text}): {message}", level=debug_log.WARNING)
             return
 
         path = Path(text)
@@ -3418,7 +3425,7 @@ class SettingsDialog(QDialog):
                 "(the one named 0 or after your Steam ID). Nothing saved."
             )
             self._set_profile_status(message, ok=False)
-            self._window._log_status(f"Profile folder rejected ({text})")
+            self._window._log_status(f"Profile folder rejected ({text})", level=debug_log.WARNING)
             return
         asset_source.save_profile_path_to_config(path)
         self._window._apply_mod_art_change(f"Profile folder set to {path}", rescan=True)
@@ -4015,6 +4022,12 @@ class ViewerWindow(QMainWindow):
         self._load_warm_queue: list[tuple[int, list[tuple[int, int]]]] = []
         # The neighbour levels of the last level warm's anchor, pending level or not (TASK-031.25).
         self._warm_set: list[int] = []
+        # The zoom-out reach (TASK-031.11): allowed per process (D9). Its (mip, range) entries
+        # run on _load_warmer below every load entry (D3); _reach_keys is the last arm's set (D6).
+        self._reach_warm_allowed = REACH_WARM
+        self._reach_queue: list[tuple[int, tuple[int, int, int, int]]] = []
+        self._reach_running: tuple[int, tuple[int, int, int, int]] | None = None
+        self._reach_keys: tuple = ()
         # Placeholder paints (TASK-031.25): allowed per process (D8), and live only with preload on.
         self._placeholders_allowed = LIVE_PLACEHOLDERS
         # The canvas item that last reported a new pending level; both timers no-op for any other.
@@ -4562,7 +4575,7 @@ class ViewerWindow(QMainWindow):
         try:
             autosave.prune_stale()
         except OSError as e:
-            debug_log.log(f"Autosave prune skipped: {type(e).__name__}: {e}")
+            debug_log.warning(f"Autosave prune skipped: {type(e).__name__}: {e}")
         self._reset_autosave_timer()
 
         # Connected only now that self.map_view exists, then set to match
@@ -4892,6 +4905,13 @@ class ViewerWindow(QMainWindow):
             "do there and is disabled while Elevation View = Stepped."
         )
         view_menu.addAction(self.iso_action)
+
+        # TASK-599: the zoom stop where one tile spans 96 device px, so x1 sprites draw 1:1.
+        self.zoom_native_action = QAction("Zoom to &Native Sprite Size", self)
+        self.zoom_native_action.setEnabled(False)  # re-gated by _update_zoom_native_action()
+        self.zoom_native_action.triggered.connect(lambda checked=False: self._zoom_to_native())
+        view_menu.addAction(self.zoom_native_action)
+        view_menu.aboutToShow.connect(self._update_zoom_native_action)
 
         # P3-g. Lives in View, not Filters, because it is not a filter: it
         # changes HOW units are drawn (real .sld sprites instead of coloured
@@ -5397,7 +5417,7 @@ class ViewerWindow(QMainWindow):
                 if gaia_only:
                     # The Owner field already shows the refused player: put it back.
                     self._update_unit_inspector_from_selection()
-                    self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}")
+                    self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}", level=debug_log.WARNING)
                 return
             suffix = f" ({carried} garrisoned)" if carried else ""
             suffix += _gaia_only_refused_note(gaia_only)
@@ -5453,7 +5473,7 @@ class ViewerWindow(QMainWindow):
             if drag is not None:
                 drag.skipped = skipped
             elif skipped:
-                self._log_status(f"{label} ({skipped} skipped: not rotatable)")
+                self._log_status(f"{label} ({skipped} skipped: not rotatable)", level=debug_log.WARNING)
             return
 
         if spec.kind == unit_fields.CHOICE:
@@ -5681,9 +5701,12 @@ class ViewerWindow(QMainWindow):
                 with self._unit_edit(model, label, sorted(players), splices, fields_only=True):
                     write(splices)
             skipped = len(entries) - len(writable)
-            self._log_status(f"{status} ({skipped} skipped: not rotatable)" if skipped else status)
+            self._log_status(
+                f"{status} ({skipped} skipped: not rotatable)" if skipped else status,
+                level=debug_log.WARNING if skipped else debug_log.INFO,
+            )
         if blocked:
-            self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)")
+            self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)", level=debug_log.WARNING)
             # A blocked notch writes nothing, so nothing else repaints the field.
             self._update_unit_inspector_from_selection()
 
@@ -5710,7 +5733,7 @@ class ViewerWindow(QMainWindow):
         with self._unit_edit(model, label, sorted({e.player_id for e in changes}), splices, fields_only=True):
             self._write_variants(model, changes, lambda _unit: float(variant), splices)
         if skipped:
-            self._log_status(f"{label} ({skipped} skipped: not rotatable)")
+            self._log_status(f"{label} ({skipped} skipped: not rotatable)", level=debug_log.WARNING)
 
     def _set_gate_field(self, model, entries, index: int, single: bool) -> None:
         """The Rotation field's gate mode (GH #61): every member, all gates, takes
@@ -5739,7 +5762,7 @@ class ViewerWindow(QMainWindow):
                 with self._unit_edit(model, label, sorted(players), splices, fields_only=True):
                     self._write_gate_consts(model, turned, steps_for, splices)
         if blocked:
-            self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)")
+            self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)", level=debug_log.WARNING)
             # The field still shows the typed index; put it back to what the gates hold.
             self._update_unit_inspector_from_selection()
 
@@ -6332,7 +6355,7 @@ class ViewerWindow(QMainWindow):
         owner = "GAIA" if player_id == GAIA_PLAYER_ID else f"Player {player_id}"
         if not changing:
             if gaia_only:
-                self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}")
+                self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}", level=debug_log.WARNING)
             return
         model = self._ensure_unit_edits()
         if model is None:
@@ -7422,7 +7445,7 @@ class ViewerWindow(QMainWindow):
             self._log_status("Wall: Place Unit is unavailable here")
             return
         if not self.units_panel.pick_object(const):
-            self._log_status(f"Wall: could not pick {_unit_name(const)} in the catalog")
+            self._log_status(f"Wall: could not pick {_unit_name(const)} in the catalog", level=debug_log.WARNING)
             return
         if self._current_tool not in _WALL_TOOLS:
             self.place_unit_action.setChecked(True)
@@ -8239,7 +8262,7 @@ class ViewerWindow(QMainWindow):
                 replaced = self._gate_move_replaced(planned[1])
                 refused = self._group_move_refusal(selected, dx, dy, replaced, stand_ins, judged)
                 if refused is not None:
-                    self._log_status(refused)
+                    self._log_status(refused, level=debug_log.WARNING)
                     return
             gate_plan = self._move_units(model, entries, dx, dy, label, planned, stand_ins=stand_ins)
         clauses = self._gate_move_clauses(gate_plan, [e.unit for e in entries])
@@ -9231,7 +9254,7 @@ class ViewerWindow(QMainWindow):
             return
         model = self._ensure_unit_edits()
         if model is None:
-            self._log_status("Cut Units: units are read-only for this file")
+            self._log_status("Cut Units: units are read-only for this file", level=debug_log.WARNING)
             return
         entries, removable, cascaded_ids = self._delete_preflight(model, entries)
         if not removable:
@@ -9320,7 +9343,7 @@ class ViewerWindow(QMainWindow):
         done = _REMOVE_VERB_PAST[verb]
         blocked = len(entries) - len(removable)
         if not removable:
-            self._log_status(f"{verb} failed: referenced by a garrison")
+            self._log_status(f"{verb} failed: referenced by a garrison", level=debug_log.WARNING)
             self._warn(
                 f"Cannot {verb.lower()} unit" if len(entries) == 1 else f"Cannot {verb.lower()} units",
                 "Referenced by another unit's garrison." if len(entries) == 1
@@ -9334,7 +9357,7 @@ class ViewerWindow(QMainWindow):
         if reshaped:
             carried += f", reshaping {reshaped} adjacent"
         if blocked:
-            self._log_status(f"{done} {len(removable)}{carried}; {blocked} refused (garrison reference)")
+            self._log_status(f"{done} {len(removable)}{carried}; {blocked} refused (garrison reference)", level=debug_log.WARNING)
             self._warn(
                 f"Some units not {done.lower()}",
                 f"{blocked} unit(s) are referenced by another unit's garrison and were not {done.lower()}.",
@@ -11099,6 +11122,7 @@ class ViewerWindow(QMainWindow):
             "analysis_run": self.analysis_action,
             "view_isometric": self.iso_action,
             "view_distance_ticks": self.distance_ticks_action,
+            "view_zoom_native": self.zoom_native_action,
             "view_show_sprites": self.show_sprites_action,
             "view_stack_badges": self.stack_badges_action,
             "view_grid_overlay": self.grid_action,
@@ -12258,7 +12282,7 @@ class ViewerWindow(QMainWindow):
             with self._option_edit(model, spec.field_id, f"Set {spec.label}"):
                 model.set_value(spec.field_id, value)
         except (KeyError, ValueError) as e:
-            self._log_status(f"Map option {spec.field_id} not set: {e}")
+            self._log_status(f"Map option {spec.field_id} not set: {e}", level=debug_log.WARNING)
             self._repopulate_map_options()
             return
         if spec.field_id == _SCRIPT_NAME_FIELD:
@@ -12283,7 +12307,7 @@ class ViewerWindow(QMainWindow):
         try:
             self.option_edits = OptionsEditModel(self.scenario)
         except OptionEditsUnavailableError as e:
-            self._log_status(f"Map options are read-only for this file: {e}")
+            self._log_status(f"Map options are read-only for this file: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Map options are read-only", str(e))
             return None
         return self.option_edits
@@ -12322,7 +12346,7 @@ class ViewerWindow(QMainWindow):
             finally:
                 QApplication.restoreOverrideCursor()
         except UnitEditsUnavailableError as e:
-            self._log_status(f"Units are read-only for this file: {e}")
+            self._log_status(f"Units are read-only for this file: {e}", level=debug_log.WARNING)
             self._warn("Units are read-only", str(e))
             return None
         return self.unit_edits
@@ -12359,11 +12383,11 @@ class ViewerWindow(QMainWindow):
             with perf_trace.op("unit_model_prebuild"):
                 model = UnitEditModel(self.scenario)
         except UnitEditsUnavailableError as e:
-            debug_log.log(f"Unit model prebuild skipped, units are read-only for this file: {e}")
+            debug_log.warning(f"Unit model prebuild skipped, units are read-only for this file: {e}")
             return
         except Exception as e:  # noqa: BLE001
             # Never into the crash dialog from idle: the first real edit's sync build raises it in context.
-            debug_log.log(f"Unit model prebuild failed: {type(e).__name__}: {e}")
+            debug_log.error(f"Unit model prebuild failed: {type(e).__name__}: {e}")
             return
         self.unit_edits = model
 
@@ -12477,7 +12501,7 @@ class ViewerWindow(QMainWindow):
         undo/redo replays the cached bytes."""
         model = self._ensure_option_edits()
         if model is None or not model.personality_supported:
-            self._log_status("AI personality cannot be written back for this file.")
+            self._log_status("AI personality cannot be written back for this file.", level=debug_log.WARNING)
             return
         if key == STORED_PERSONALITY:
             choice = model.original_personality(player_id)
@@ -12491,7 +12515,7 @@ class ViewerWindow(QMainWindow):
                 choice = ai_scripts.resolve(choice, self._ai_roots)
             except ai_scripts.AiResolveError as e:
                 self._ai_unresolvable[key] = f"Cannot be used: {e}"
-                self._log_status(f"P{player_id} Personality not set: {e}")
+                self._log_status(f"P{player_id} Personality not set: {e}", level=debug_log.WARNING)
                 return
         field_id = player_fields.personality_field_id(player_id)
         original = model.original_personality(player_id)
@@ -12502,7 +12526,7 @@ class ViewerWindow(QMainWindow):
             with self._option_edit(model, field_id, f"Set P{player_id} Personality: {label}"):
                 model.set_personality(player_id, choice)
         except (KeyError, ValueError) as e:
-            self._log_status(f"P{player_id} Personality not set: {e}")
+            self._log_status(f"P{player_id} Personality not set: {e}", level=debug_log.WARNING)
 
     def _editable_player_fields(self) -> frozenset[str]:
         """Which Players mode field ids (bare, not "player:<field>:<player>")
@@ -12686,7 +12710,7 @@ class ViewerWindow(QMainWindow):
             ):
                 model.set_value(player_fields.PLAYER_COUNT_FIELD_ID, value)
         except (KeyError, ValueError) as e:
-            self._log_status(f"Number of players not set: {e}")
+            self._log_status(f"Number of players not set: {e}", level=debug_log.WARNING)
             self._repopulate_players()
             return
         self._repopulate_players()
@@ -12716,7 +12740,7 @@ class ViewerWindow(QMainWindow):
             with self._option_edit(model, field_id, f"Set {who} {spec.label}"):
                 model.set_value(field_id, value)
         except (KeyError, ValueError) as e:
-            self._log_status(f"Player field {field_id} not set: {e}")
+            self._log_status(f"Player field {field_id} not set: {e}", level=debug_log.WARNING)
             self._repopulate_players()
             return
         # After the _option_edit block, never inside it: set_value() runs in
@@ -12816,7 +12840,7 @@ class ViewerWindow(QMainWindow):
                 before = model.current_value(field_id)
                 model.set_value(field_id, value)
             except (KeyError, ValueError) as e:
-                self._log_status(f"Player field {field_id} not set: {e}")
+                self._log_status(f"Player field {field_id} not set: {e}", level=debug_log.WARNING)
                 continue
             if model.current_value(field_id) == before:
                 continue
@@ -12961,7 +12985,7 @@ class ViewerWindow(QMainWindow):
                 before = model.current_value(field_id)
                 model.set_value(field_id, ids)
             except (KeyError, ValueError) as e:
-                self._log_status(f"Disabled {category} for P{player_id} not set: {e}")
+                self._log_status(f"Disabled {category} for P{player_id} not set: {e}", level=debug_log.WARNING)
                 continue
             if model.current_value(field_id) == before:
                 continue
@@ -13366,7 +13390,7 @@ class ViewerWindow(QMainWindow):
             with self._option_edit(model, cell_id, f"Set {_diplomacy_field_label(cell_id)}"):
                 model.set_value(cell_id, value)
         except (KeyError, ValueError) as e:
-            self._log_status(f"Diplomacy field {cell_id} not set: {e}")
+            self._log_status(f"Diplomacy field {cell_id} not set: {e}", level=debug_log.WARNING)
             self._repopulate_diplomacy()
 
     def _repopulate_diplomacy(self) -> None:
@@ -13427,7 +13451,7 @@ class ViewerWindow(QMainWindow):
             with self._messages_edit(model, field_id, f"Set {_message_field_label(field_id)}"):
                 model.set_value(field_id, value)
         except (KeyError, ValueError) as e:
-            self._log_status(f"Message field {field_id} not set: {e}")
+            self._log_status(f"Message field {field_id} not set: {e}", level=debug_log.WARNING)
             self._repopulate_messages()
 
     @contextmanager
@@ -13461,7 +13485,7 @@ class ViewerWindow(QMainWindow):
         try:
             self.message_edits = MessagesEditModel(self.scenario)
         except MessageEditsUnavailableError as e:
-            self._log_status(f"Messages are read-only for this file: {e}")
+            self._log_status(f"Messages are read-only for this file: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Messages are read-only", str(e))
             return None
         return self.message_edits
@@ -13548,6 +13572,31 @@ class ViewerWindow(QMainWindow):
         if not self._paste_armed() or self.mode == "triggers":
             return False
         return not (self.mode == "units" and (self._selection or self._place_rotate_armed()))
+
+    def _update_zoom_native_action(self) -> None:
+        """Greys View > Zoom to Native Sprite Size where the live ladder has no
+        native level (TASK-599), with a tooltip saying why."""
+        available = self.map_view.native_zoom_factor() is not None
+        self.zoom_native_action.setEnabled(available)
+        quality = settings.get_graphics_quality()
+        if available:
+            tip = "Zoom so one tile spans 96 screen pixels: unit sprites drawn at their native size, pixel for pixel"
+        elif self.scenario is None:
+            tip = "Open a map first"
+        elif quality < settings.GRAPHICS_QUALITY_DEFAULT:
+            label = settings.GRAPHICS_QUALITY_LABELS[quality]
+            tip = (
+                f"Needs Graphics quality Default or Enhanced (Settings > Appearance); it is {label}, "
+                "which never draws sprites at native size"
+            )
+        else:
+            tip = "Not in top-down Flat: turn on Isometric View, or use Elevation View Stepped or Sloped"
+        self.zoom_native_action.setToolTip(tip)
+
+    def _zoom_to_native(self) -> None:
+        self._update_zoom_native_action()
+        if not self.map_view.zoom_to_native():
+            self.statusBar().showMessage(self.zoom_native_action.toolTip(), 5000)
 
     def _update_tool_enabled(self) -> None:
         # Tools (and Close/Save As) have nothing to act on before a map is
@@ -13731,6 +13780,7 @@ class ViewerWindow(QMainWindow):
                 "turning this on decodes them once and can take a few seconds"
             )
         self.show_sprites_action.setToolTip(sprite_tip)
+        self._update_zoom_native_action()
 
         # View > Layers, one loop over the registry. Greying deliberately
         # does NOT uncheck an action, for the same reason Show sprites above
@@ -14174,7 +14224,7 @@ class ViewerWindow(QMainWindow):
         leaves its control at the schema default, and the stored value stays."""
         skipped = self._apply_tool_options(settings.get_tool_option_defaults(), changed_only=True)
         if skipped:
-            debug_log.log(f"Tool defaults not shown this session: {', '.join(skipped)}")
+            debug_log.warning(f"Tool defaults not shown this session: {', '.join(skipped)}")
 
     def apply_tool_option_default(self, name: str, value) -> bool:
         """Settings > Tools' live apply: an edited default reaches its row control at once."""
@@ -14780,7 +14830,7 @@ class ViewerWindow(QMainWindow):
 
         model = self._ensure_unit_edits()
         if model is None:
-            self._log_status("Trees/eye candy skipped -- units are read-only for this file")
+            self._log_status("Trees/eye candy skipped -- units are read-only for this file", level=debug_log.WARNING)
             return tile_record, None
 
         gaia = self.scenario.unit_manager.units[GAIA_PLAYER_ID]
@@ -15767,7 +15817,7 @@ class ViewerWindow(QMainWindow):
                 self.message_edits,
             )
         except (RuntimeError, ValueError) as exc:
-            self._log_status(f"Jump refused: {exc}")
+            self._log_status(f"Jump refused: {exc}", level=debug_log.WARNING)
             return
         if target == start:
             self._log_status("Already at that history entry")
@@ -15827,7 +15877,7 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None or block is None:
             return
         if refusal := self._cross_game_refusal(block):
-            self._log_status(f"Paste refused: {refusal}")
+            self._log_status(f"Paste refused: {refusal}", level=debug_log.WARNING)
             return
         # A coalesced move still pending would leave _hover_tile one tile behind the cursor.
         self.map_view.flush_pending_move()
@@ -15874,7 +15924,7 @@ class ViewerWindow(QMainWindow):
         else:
             self._log_status(f"Pasted {label} at ({tx0}, {ty0})")
         if units_skipped:
-            self._log_status(_PASTE_UNITS_SKIPPED)
+            self._log_status(_PASTE_UNITS_SKIPPED, level=debug_log.WARNING)
 
     def _paste_units(self, block) -> None:
         """Paste Units (GH #192): a clipboard entry without tiles, centred on
@@ -15896,7 +15946,7 @@ class ViewerWindow(QMainWindow):
         tx0, ty0 = clamp_paste_anchor(block, *centred, mm.map_width, mm.map_height)
         _record, _parts, units_skipped, added = self._paste_block_at(block, tx0, ty0, False, False, True)
         if units_skipped:
-            self._log_status(_PASTE_UNITS_SKIPPED)
+            self._log_status(_PASTE_UNITS_SKIPPED, level=debug_log.WARNING)
             return
         top_level = [(player_id, unit) for player_id, unit in added if unit.garrisoned_in_id == -1]
         hidden = 0
@@ -16145,7 +16195,7 @@ class ViewerWindow(QMainWindow):
         Region's rule) plus what they hold; `tiles` is its tiles-only block."""
         refusal = self._region_write_refusal(verb)
         if refusal is not None:
-            self._log_status(refusal)
+            self._log_status(refusal, level=debug_log.WARNING)
             return None
         mm = self.scenario.map_manager
         tx0, ty0, tx1, ty1 = rect = self._region
@@ -16341,7 +16391,7 @@ class ViewerWindow(QMainWindow):
         )
         refusal = self._lift_refusal(state, plan, verb)
         if refusal is not None:
-            self._log_status(refusal)
+            self._log_status(refusal, level=debug_log.WARNING)
             return
         model = self._ensure_unit_edits() if state.members else None
         if state.members and model is None:
@@ -16914,7 +16964,7 @@ class ViewerWindow(QMainWindow):
         if self.scenario is None or self._busy:
             return None
         if unit_plan is not None and unit_plan.blocked:
-            self._log_status(self._mirror_unit_refusal(unit_plan))
+            self._log_status(self._mirror_unit_refusal(unit_plan), level=debug_log.WARNING)
             return None
         if plan.elevation_violations:
             width = self.scenario.map_manager.map_width
@@ -17088,7 +17138,11 @@ class ViewerWindow(QMainWindow):
         full _render_current() keeps correctness even if that assumption is
         ever violated (e.g. a hand-edited file loaded with an elevation
         already out of range), at the cost of one full re-render instead of
-        an instant patch for that one stroke tile.
+        an instant patch for that one stroke tile. Only the level in view is
+        patched (and the level a placeholder draws, while one is pending);
+        every other resident level drops its chunks under the bbox, and the
+        load warm refills the neighbours once the mouse button is released
+        (TASK-031.73). With no viewport target every level is patched.
 
         Sloped mode (Track C4's Step 3): structurally the same two-part path
         as Stepped, through dirty_screen_bbox_sloped() instead. The one thing
@@ -17221,8 +17275,7 @@ class ViewerWindow(QMainWindow):
                     f"re-rendered full map (prepared in {elapsed:.2f}s)"
                 )
             else:
-                # A gen bump (an elevation splice that can't prove itself safe) rebuilds the
-                # visible level only; other resident levels evict the bbox, and _start_level_warm rebuilds them.
+                # Only the level in view patches or rebuilds; the others evict the bbox (TASK-031.73).
                 target = self.map_view.viewport_chunk_target()
                 rebuild_levels = None if target is None else (target[0],)
                 if deferred is not None and not elevation_changed:
@@ -17232,7 +17285,10 @@ class ViewerWindow(QMainWindow):
                     deferred.append(bbox)
                     return False
                 with perf_trace.phase("patch"):
-                    self._cache.patch(bbox, elevation_changed=elevation_changed, rebuild_levels=rebuild_levels)
+                    self._cache.patch(
+                        bbox, elevation_changed=elevation_changed, levels=self._visible_levels(target),
+                        rebuild_levels=rebuild_levels,
+                    )
                 # The draped grid reads the elevations the bbox call above
                 # mutated. Only on an edit that moved one: a terrain-only
                 # stroke cannot move a grid line. Qt coalesces the resulting
@@ -17282,7 +17338,7 @@ class ViewerWindow(QMainWindow):
                 # above just mutated, before compositing anything -- see
                 # SlopedChunkCache._refresh_source_caches(). It REBINDS the
                 # array, so the grid overlay has to be handed the new one.
-                # rebuild_levels as in the Stepped branch: the visible level splices or rebuilds, the others defer.
+                # As in the Stepped branch: only the level in view patches or rebuilds (TASK-031.73).
                 target = self.map_view.viewport_chunk_target()
                 rebuild_levels = None if target is None else (target[0],)
                 if deferred is not None and not elevation_changed:
@@ -17292,7 +17348,10 @@ class ViewerWindow(QMainWindow):
                     deferred.append(bbox)
                     return False
                 with perf_trace.phase("patch"):
-                    self._cache.patch(bbox, elevation_changed=elevation_changed, rebuild_levels=rebuild_levels)
+                    self._cache.patch(
+                        bbox, elevation_changed=elevation_changed, levels=self._visible_levels(target),
+                        rebuild_levels=rebuild_levels,
+                    )
                 if elevation_changed:
                     with perf_trace.phase("overlays"):
                         self.map_view.refresh_elevation_overlays()
@@ -17439,7 +17498,7 @@ class ViewerWindow(QMainWindow):
         try:
             self.trigger_edits = TriggerEditModel(self.scenario)
         except TriggerEditsUnavailableError as e:
-            self._log_status(f"Triggers are read-only for this file: {e}")
+            self._log_status(f"Triggers are read-only for this file: {e}", level=debug_log.WARNING)
             self._warn("Triggers are read-only", str(e))
             return None
         return self.trigger_edits
@@ -17493,7 +17552,7 @@ class ViewerWindow(QMainWindow):
             if trig_model is not None:
                 self._after_trigger_edit(label, None, "panel")
             if error is not None:
-                self._log_status(f"{label} failed: {type(error).__name__}: {error}")
+                self._log_status(f"{label} failed: {type(error).__name__}: {error}", level=debug_log.ERROR)
                 self._warn(
                     f"{label} failed",
                     f"{error}\n\nWhat was changed before the failure is one undo step; Ctrl+Z reverts it.",
@@ -17593,7 +17652,7 @@ class ViewerWindow(QMainWindow):
         # A failed structural edit leaves the document correct and saveable but
         # without its minimal-diff guarantee, so it must not read as a clean
         # no-op.
-        self._log_status(f"{label} failed: {type(error).__name__}: {error}")
+        self._log_status(f"{label} failed: {type(error).__name__}: {error}", level=debug_log.ERROR)
         self._warn(
             "Trigger edit failed",
             f"{error}\n\nThe document is still correct and can be saved, but this file's "
@@ -18301,7 +18360,7 @@ class ViewerWindow(QMainWindow):
         if op == "renumber":
             reason = renumber_refusal(manager)
             if reason:
-                self._log_status(f"Cannot renumber trigger IDs: {reason}")
+                self._log_status(f"Cannot renumber trigger IDs: {reason}", level=debug_log.WARNING)
                 return
         # move_up/move_down's signed display slots; 0 for every other op.
         move = 0
@@ -18322,7 +18381,7 @@ class ViewerWindow(QMainWindow):
             reason = self._trigger_paste_refusal()
             if reason:
                 if block is not None:
-                    self._log_status(f"Cannot paste these triggers: {reason}")
+                    self._log_status(f"Cannot paste these triggers: {reason}", level=debug_log.WARNING)
                 return
         paste_results: list = []
         # Paste's anchor: the block lands directly below it in display order.
@@ -18562,7 +18621,7 @@ class ViewerWindow(QMainWindow):
         where = "top" if top else "bottom"
         reason = section_edge_refusal(order, parts, indices, top)
         if reason:
-            self._log_status(f"Cannot move to the {where}: {reason}")
+            self._log_status(f"Cannot move to the {where}: {reason}", level=debug_log.WARNING)
             return
         moved = moved_to_section_edge(order, parts, indices, top)
         count = len(indices)
@@ -18631,7 +18690,7 @@ class ViewerWindow(QMainWindow):
             return
         reason = id_order_refusal(manager, id_order)
         if reason:
-            self._log_status(f"Cannot move trigger IDs: {reason}")
+            self._log_status(f"Cannot move trigger IDs: {reason}", level=debug_log.WARNING)
             return
         current = self.trigger_panel.current_trigger_index()
         lead = manager.triggers[current] if current in indices else None
@@ -18860,7 +18919,7 @@ class ViewerWindow(QMainWindow):
             return
         reason = self._paste_refusal(block)
         if reason:
-            self._log_status(f"Cannot paste these conditions/effects: {reason}")
+            self._log_status(f"Cannot paste these conditions/effects: {reason}", level=debug_log.WARNING)
             return
         results: list = []
 
@@ -19042,7 +19101,7 @@ class ViewerWindow(QMainWindow):
             if not name:
                 return
             if len(manager.variables) >= self._MAX_VARIABLES:
-                self._log_status(f"Add variable failed: all {self._MAX_VARIABLES} variable ids are in use")
+                self._log_status(f"Add variable failed: all {self._MAX_VARIABLES} variable ids are in use", level=debug_log.WARNING)
                 QMessageBox.warning(
                     self,
                     "No variable id available",
@@ -19615,8 +19674,22 @@ class ViewerWindow(QMainWindow):
             return
         target = self.map_view.viewport_chunk_target()
         with perf_trace.phase("patch"):
-            self._cache.patch_composite(terrain_bbox, rebuild_levels=None if target is None else (target[0],))
+            self._cache.patch_composite(
+                terrain_bbox, levels=self._visible_levels(target),
+                rebuild_levels=None if target is None else (target[0],),
+            )
         self.map_view.invalidate_region(terrain_bbox)
+
+    def _visible_levels(self, target) -> tuple[int, ...] | None:
+        """The levels a terrain patch composites in place (TASK-031.73), the
+        rest evicting under its bbox: None with no viewport target (every
+        level patches), else the level in view, plus the level a placeholder
+        draws while one is pending, so its chunks under the brush stay."""
+        if target is None:
+            return None
+        item = self.map_view._canvas_item
+        source = None if item is None or item.pending_mip() is None else item.pending_source()
+        return (target[0],) if source is None or source == target[0] else (target[0], source)
 
     def _repaint_unit_edit_split(
         self, changed: list[UnitSplice], bbox: tuple[int, int, int, int], elevation_changed: set,
@@ -20381,7 +20454,7 @@ class ViewerWindow(QMainWindow):
         reason = self.game_data_lock_reason()
         if reason is None:
             return False
-        self._log_status(f"Save refused. {reason}")
+        self._log_status(f"Save refused. {reason}", level=debug_log.WARNING)
         QMessageBox.information(self, "Read-only", reason)
         return True
 
@@ -20389,7 +20462,7 @@ class ViewerWindow(QMainWindow):
         """True (and says why) when an edit model is asked for on a locked document."""
         reason = self.game_data_lock_reason()
         if reason is not None:
-            self._log_status(f"Edit refused. {reason}")
+            self._log_status(f"Edit refused. {reason}", level=debug_log.WARNING)
         return reason is not None
 
     def set_game_data(self, choice: str) -> None:
@@ -20421,6 +20494,8 @@ class ViewerWindow(QMainWindow):
         self._close_find_dialog()
         if self.scenario is None:
             return  # Settings > Advanced with no document open
+        # GH #263: the stored building art follows the data mod's civ list; refresh_map() draws it.
+        refresh_player_render_context(self.scenario, self._pending_player_values())
         self.refresh_map()
         if self.map_view._unit_index is not None:
             self._rebuild_unit_index()
@@ -20612,7 +20687,10 @@ class ViewerWindow(QMainWindow):
                 self._autosave_fallback_logged = None
             elif fallback != self._autosave_fallback_logged:
                 self._autosave_fallback_logged = fallback
-                self._log_status(f"Autosave folder {fallback[0]} can't hold autosaves: {fallback[1]}; wrote to the default folder")
+                self._log_status(
+                    f"Autosave folder {fallback[0]} can't hold autosaves: {fallback[1]}; wrote to the default folder",
+                    level=debug_log.WARNING,
+                )
             # Never for a custom folder: a vanished one falls back above rather than reappearing.
             if slot.parent != central or central == autosave.autosave_dir():
                 slot.parent.mkdir(parents=True, exist_ok=True)
@@ -20623,7 +20701,7 @@ class ViewerWindow(QMainWindow):
             # Swallowed to a log line, never a modal. An autosave that pops a
             # QMessageBox mid-edit is worse than one that quietly fails; the
             # user's real file is untouched either way.
-            self._log_status(f"Autosave failed: {type(e).__name__}: {e}")
+            self._log_status(f"Autosave failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             return
         autosave.record(
             key, slot, str(self.scenario.path), untitled=self._untitled, data_mod=self.data_mod_menu.identity()
@@ -20651,11 +20729,11 @@ class ViewerWindow(QMainWindow):
                 **self._edit_model_kwargs(),
             )
         except WriteBlockedError as e:
-            self._log_status(f"Save blocked: {e}")
+            self._log_status(f"Save blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Save blocked", str(e))
             return
         except Exception as e:  # noqa: BLE001 -- GUI boundary, reports below
-            self._log_status(f"Save failed: {type(e).__name__}: {e}")
+            self._log_status(f"Save failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Save failed", f"{type(e).__name__}: {e}")
             return
         self.edit_history.mark_saved()
@@ -20695,11 +20773,11 @@ class ViewerWindow(QMainWindow):
                 **self._edit_model_kwargs(),
             )
         except WriteBlockedError as e:
-            self._log_status(f"Save blocked: {e}")
+            self._log_status(f"Save blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Save blocked", str(e))
             return
         except Exception as e:  # noqa: BLE001 -- GUI boundary, reports below
-            self._log_status(f"Save failed: {type(e).__name__}: {e}")
+            self._log_status(f"Save failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Save failed", f"{type(e).__name__}: {e}")
             return
         # Save As always retargets the open document to the file just written,
@@ -21068,7 +21146,7 @@ class ViewerWindow(QMainWindow):
             return None
         self._commit_focused_field()
         if parse_triggers(self.scenario) is None or not self.scenario.trigger_write_supported:
-            self._log_status("Find and Replace: this file's triggers are read-only")
+            self._log_status("Find and Replace: this file's triggers are read-only", level=debug_log.WARNING)
             return None
         return self._ensure_trigger_edits()
 
@@ -21374,12 +21452,12 @@ class ViewerWindow(QMainWindow):
         line_height = self.status_log.fontMetrics().lineSpacing()
         self.status_log.setMinimumHeight(max(settings.MIN_LOG_PANE, line_height * 2 + 12))
 
-    def _log_status(self, message: str) -> None:
+    def _log_status(self, message: str, level: str = debug_log.INFO) -> None:
         self.status_log.appendPlainText(message)
         cursor = self.status_log.textCursor()
         cursor.movePosition(cursor.End)
         self.status_log.setTextCursor(cursor)
-        debug_log.log(message)
+        debug_log.log(message, level=level)
 
     @property
     def _render_style(self) -> str:
@@ -21452,6 +21530,9 @@ class ViewerWindow(QMainWindow):
         self._margin_warmer.cancel()
         self._load_warmer.cancel()
         self._load_warm_queue = []
+        self._reach_queue = []
+        self._reach_running = None
+        self._reach_keys = ()
         self._last_viewport_chunk_target = None
         # A pre-rendered zoom frame's own stamps void it; this re-renders it once the edit settles.
         self.map_view.retarget_preframes()
@@ -21475,6 +21556,13 @@ class ViewerWindow(QMainWindow):
         in; tests and tools stay out unless they ask)."""
         self._placeholders_allowed = allowed
         self.sync_canvas_placeholders()
+
+    def set_reach_warm_allowed(self, allowed: bool) -> None:
+        """Opts this window in or out of the zoom-out reach warm (TASK-031.11
+        D9: the app opts in; tests and tools stay out unless they ask)."""
+        self._reach_warm_allowed = allowed
+        if not allowed:
+            self._drop_reach()
 
     def sync_canvas_placeholders(self) -> None:
         """Pushes _placeholders_on() to the canvas; off settles a pending level."""
@@ -21640,8 +21728,14 @@ class ViewerWindow(QMainWindow):
             ]
         # A re-anchor's old (mip, chunks) are stale. Safe before start(): its cancel never fires on_job_done.
         self._load_warm_queue = list(keep)
+        # TASK-031.11 D3: a re-anchor preempts a running reach entry; a pending anchor's reach comes after refine.
+        if self._pending_level() == anchor:
+            self._drop_reach()
+        else:
+            self._preempt_reach()
         notifying = self._level_warmer.start(
             self._cache, mips, pack_only=pack_only, on_job_done=self._queue_load_warm,
+            on_drained=self._on_level_drained,
         )
         # A mip with no queued job fires no on_job_done at all -- check its
         # residency here, once, rather than the callback ever having to
@@ -21651,6 +21745,9 @@ class ViewerWindow(QMainWindow):
         for mip in mips:
             if mip not in notifying:
                 self._queue_load_warm(mip)
+        # A pending anchor gets its reach once refine calls this again (D2, D6 of TASK-031.25).
+        if self._pending_level() != anchor:
+            self._queue_reach()
 
     def _queue_load_warm(self, mip: int) -> None:
         """Queues the load-time chunk warm for one neighbour mip once its
@@ -21699,6 +21796,7 @@ class ViewerWindow(QMainWindow):
         if not chunks:
             return
         self._load_warm_queue.append((mip, chunks))
+        self._preempt_reach()
         self._pump_load_warm()
 
     def _neighbour_warm_range(self, mip: int, target, view) -> tuple[int, int, int, int]:
@@ -21736,34 +21834,52 @@ class ViewerWindow(QMainWindow):
     def _patch_footprint(self, mip: int, cx0: int, cy0: int, cx1: int, cy1: int) -> int:
         """Chunks a load warm of [cx0, cx1] x [cy0, cy1] can cache at `mip`:
         the range plus its depth-1 ring, clipped to the level's grid."""
+        x0, y0, x1, y1 = self._footprint_rect(mip, cx0, cy0, cx1, cy1)
+        return max(0, x1 - x0 + 1) * max(0, y1 - y0 + 1)
+
+    def _footprint_rect(self, mip: int, cx0: int, cy0: int, cx1: int, cy1: int) -> tuple[int, int, int, int]:
+        """_patch_footprint()'s inclusive chunk rect; empty when x1 < x0 or y1 < y0."""
         cache = self._cache
         canvas_w, canvas_h = cache.canvas_dims(mip)
         max_cx, max_cy = (canvas_w - 1) // cache.chunk_px, (canvas_h - 1) // cache.chunk_px
-        w = min(cx1 + 1, max_cx) - max(cx0 - 1, 0) + 1
-        h = min(cy1 + 1, max_cy) - max(cy0 - 1, 0) + 1
-        return max(0, w) * max(0, h)
+        return max(cx0 - 1, 0), max(cy0 - 1, 0), min(cx1 + 1, max_cx), min(cy1 + 1, max_cy)
 
     def _fits_chunk_budget(self, view, mip: int, rng) -> bool:
         """Whether a finer neighbour's warm of `rng` fits the chunk LRU beside
         the settled view (and its ring) and the coarser neighbour's patch,
         both warmed or painted no earlier, so it cannot evict the view's chunks."""
-        cache = self._cache
-        if cache.max_chunks is not None:
-            budget = cache.max_chunks
-        elif cache.max_bytes is not None:
-            budget = cache.max_bytes // (cache.chunk_px * cache.chunk_px * 3)
-        else:
+        budget = self._chunk_budget()
+        if budget is None:
             return True
         used = self._patch_footprint(view[0], *view[1:]) + self._patch_footprint(mip, *rng)
-        coarser = view[0] - 1
-        if coarser >= cache.mip_levels()[0]:
-            raw = self.map_view.viewport_chunk_target_at(coarser)
-            if raw is not None:
-                span_w, span_h = self.map_view.viewport_chunk_span(cache, coarser)
-                used += self._patch_footprint(
-                    coarser, *margin_warm.bounded_chunk_range(*raw, span_w + 1, span_h + 1)
-                )
-        return used <= budget
+        return used + self._coarser_patch_footprint(view[0]) <= budget
+
+    def _chunk_budget(self) -> int | None:
+        """The chunk LRU's size in whole chunks, or None when unbounded."""
+        cache = self._cache
+        if cache.max_chunks is not None:
+            return cache.max_chunks
+        if cache.max_bytes is not None:
+            return cache.max_bytes // (cache.chunk_px * cache.chunk_px * 3)
+        return None
+
+    def _coarser_patch_footprint(self, mip: int) -> int:
+        """_patch_footprint() of the coarser neighbour's crossing patch (the
+        span plus one, centred) for a view at `mip`; 0 with none."""
+        rng = self._coarser_patch_range(mip)
+        return 0 if rng is None else self._patch_footprint(mip - 1, *rng)
+
+    def _coarser_patch_range(self, mip: int) -> tuple[int, int, int, int] | None:
+        """The coarser neighbour's crossing patch range for a view at `mip`, or None."""
+        cache = self._cache
+        coarser = mip - 1
+        if coarser < cache.mip_levels()[0]:
+            return None
+        raw = self.map_view.viewport_chunk_target_at(coarser)
+        if raw is None:
+            return None
+        span_w, span_h = self.map_view.viewport_chunk_span(cache, coarser)
+        return margin_warm.bounded_chunk_range(*raw, span_w + 1, span_h + 1)
 
     def _queue_pending_load_warm(self, mip: int) -> None:
         """The load warm of the level a placeholder waits on (TASK-031.25 D3,
@@ -21784,6 +21900,8 @@ class ViewerWindow(QMainWindow):
         centre, ring = margin_warm.load_warm_parts(self._cache, mip, *view)
         self._load_warm_queue = [entry for entry in self._load_warm_queue if entry[0] != mip]
         self._load_warm_queue[:0] = [(mip, chunks) for chunks in (centre, ring) if chunks]
+        # A busy reach entry goes back to _reach_queue, not through _queue_load_warm() (TASK-031.11 D3).
+        self._preempt_reach()
         busy = self._load_warmer.mip if self._load_warmer.is_active else None
         if busy is not None:
             self._load_warmer.cancel()
@@ -21802,16 +21920,161 @@ class ViewerWindow(QMainWindow):
         Chained off _load_warmer's own on_drained callback, so the second
         mip's chunks start the moment the first mip's queue empties, with
         no polling. A placeholder's level refines here once its view entry
-        has drained (_maybe_refine(), TASK-031.25)."""
+        has drained (_maybe_refine(), TASK-031.25).
+
+        The zoom-out reach (TASK-031.11 D3) comes last: an entry of
+        _reach_queue starts only once no load entry is queued or running, no
+        level is pending and the level and margin warmers are idle."""
         self._maybe_refine()
         if self._load_warmer.is_active:
             return
         if not self._load_warm_queue:
             # Every queued level is warm: a zoom frame refused across a level change may render now.
             self.map_view.retry_refused_preframes()
+            self._start_reach()
             return
         mip, chunks = self._load_warm_queue.pop(0)
         self._load_warmer.start(self._cache, mip, chunks, on_drained=self._pump_load_warm)
+
+    # --- the zoom-out reach (TASK-031.11) ----------------------------------
+
+    def _reach_on(self) -> bool:
+        """Whether this window warms the reach: allowed (D9), preload on, and
+        a cache whose chunks composite on a worker (D1)."""
+        cache = self._cache
+        return (
+            self._reach_warm_allowed and cache is not None and settings.get_preload_zoom_levels()
+            and cache.pools_chunks()
+        )
+
+    def _queue_reach(self) -> None:
+        """Arms the reach (D7): both entries recomputed (D2, D5), replacing
+        any queued ones, then a pump, since a re-anchor whose other warms
+        queue nothing would otherwise never start them."""
+        entries = self._reach_entries() if self._reach_on() else []
+        self._reach_queue = list(entries)
+        self._reach_keys = tuple(entries)
+        if entries:
+            self._pump_load_warm()
+
+    def _reach_entries(self) -> list[tuple[int, tuple[int, int, int, int]]]:
+        """The settled level's reach, then the coarser neighbour's (D2), each
+        taken whole while the total fits the chunk LRU (D5): the settled view
+        or its reach, the finer neighbour's chosen D3b range, the coarser
+        neighbour's crossing patch or its reach, and the coarsest level's
+        resident chunks. Stops at the first that does not fit."""
+        cache = self._cache
+        view = self.map_view.viewport_chunk_target()
+        if view is None:
+            return []
+        mip = view[0]
+        levels = cache.mip_levels()
+        budget = self._chunk_budget()
+        finer = 0
+        raw = self.map_view.viewport_chunk_target_at(mip + 1) if mip + 1 <= levels[-1] else None
+        if raw is not None:
+            finer = self._patch_footprint(mip + 1, *self._neighbour_warm_range(mip + 1, raw, view))
+        coarser = self._coarser_patch_footprint(mip)
+        # A coarser patch at the coarsest level is already counted: its chunks are not counted twice.
+        patch = self._coarser_patch_range(mip) if mip - 1 == levels[0] else None
+        outside = None if patch is None else self._footprint_rect(mip - 1, *patch)
+        coarsest = cache.level_chunk_count(levels[0], outside=outside)
+        settled = self._patch_footprint(mip, *view[1:])
+        entries = []
+        for level in (mip, mip - 1):
+            rng = self.map_view.viewport_reach_target(level) if level >= levels[0] else None
+            if rng is None:
+                break
+            footprint = self._patch_footprint(level, *rng)
+            if level == mip:
+                total = footprint + finer + coarser + coarsest
+            else:
+                total = settled + finer + footprint + coarsest
+            if budget is not None and total > budget:
+                break
+            if level == mip:
+                settled = footprint
+            entries.append((level, rng))
+        return entries
+
+    def _reach_chunks(self, mip: int, rng) -> list[tuple[int, int]]:
+        """An entry's queue, recomputed whenever it starts (D3): the settled
+        level's less the view and its depth-1 ring (the paint's and the margin
+        warmer's), ordered about the zoom anchor (D4)."""
+        view_map = self.map_view
+        target = view_map.viewport_chunk_target()
+        exclude = None
+        if target is not None and target[0] == mip:
+            _mip, cx0, cy0, cx1, cy1 = target
+            exclude = {(cx, cy) for cx in range(cx0 - 1, cx1 + 2) for cy in range(cy0 - 1, cy1 + 2)}
+        scale = self._cache.mip_scale(mip)
+        rect = view_map.mapToScene(view_map.viewport().rect()).boundingRect()
+        anchor = view_map.zoom_anchor_scene()
+        view = (rect.left() / scale, rect.top() / scale, rect.right() / scale, rect.bottom() / scale)
+        return margin_warm.reach_chunks(
+            self._cache, mip, rng, view, (anchor.x() / scale, anchor.y() / scale), exclude=exclude,
+        )
+
+    def _start_reach(self) -> None:
+        """D3's gate, then the first reach entry with anything left to warm."""
+        if self._reach_running is not None or self._load_warmer.is_active or self._load_warm_queue:
+            return
+        if self._level_warmer.is_active or self._margin_warmer.is_active or self._pending_level() is not None:
+            return
+        while self._reach_queue:
+            entry = self._reach_queue.pop(0)
+            chunks = self._reach_chunks(*entry)
+            if chunks:
+                # D5: the coarsest level's chunks, the LRU's oldest after a roll in, must outlive the reach.
+                self._cache.touch_level(self._cache.mip_levels()[0])
+                self._reach_running = entry
+                self._load_warmer.start(self._cache, entry[0], chunks, on_drained=self._on_reach_drained)
+                if self._load_warmer.is_active:
+                    return
+                self._reach_running = None
+
+    def _on_reach_drained(self) -> None:
+        """A reach entry cached its chunks: the one-notch-out frame refused for
+        them may render now (D10, the pump's empty branch retries it); then the
+        next entry. Not recomputed (D7)."""
+        self._reach_running = None
+        self._pump_load_warm()
+
+    def _preempt_reach(self) -> None:
+        """Cancels a running reach entry and puts it back at the head of
+        _reach_queue, to be recomputed when it resumes (D3)."""
+        if self._reach_running is None:
+            return
+        self._load_warmer.cancel()
+        self._reach_queue.insert(0, self._reach_running)
+        self._reach_running = None
+
+    def _drop_reach(self) -> None:
+        """Cancels a running reach entry and clears the reach's state."""
+        if self._reach_running is not None:
+            self._load_warmer.cancel()
+        self._reach_queue = []
+        self._reach_running = None
+        self._reach_keys = ()
+
+    def _on_level_drained(self) -> None:
+        """LevelWarmer's on_drained (D8): the reach may start now. Only with
+        one queued, so a window without the reach pumps as before (D9)."""
+        if self._reach_queue:
+            self._pump_load_warm()
+
+    def _refresh_reach(self) -> None:
+        """D6 on a same-level poll fire: recomputes both entries and re-arms
+        only when their (mip, range) keys changed, so a roll about a still
+        cursor keeps the warm's progress."""
+        entries = self._reach_entries() if self._reach_on() else []
+        if tuple(entries) == self._reach_keys:
+            return
+        self._drop_reach()
+        self._reach_queue = list(entries)
+        self._reach_keys = tuple(entries)
+        if entries:
+            self._pump_load_warm()
 
     def _on_viewport_changed(self) -> None:
         """The margin warm's entry point (2026-09-07 plan's A2.5/A3) -- wired
@@ -21869,12 +22132,23 @@ class ViewerWindow(QMainWindow):
             )
         ring = margin_warm.ring_chunks(self._cache, mip, cx0, cy0, cx1, cy1, lead=lead)
         self._margin_warmer.start(self._cache, mip, ring, on_drained=self._on_margin_drained)
+        # TASK-031.11 D3: the reach never ticks beside a ring; it resumes once the ring drains.
+        if self._margin_warmer.is_active:
+            self._preempt_reach()
+        if prev is not None and prev[0] == mip and mip != self._pending_level():
+            self._refresh_reach()
+        # A fire whose ring is cached cancels the old ring and its drain callback: resume a parked reach here.
+        if self._reach_queue and self._reach_running is None and not self._margin_warmer.is_active:
+            self._pump_load_warm()
 
     def _on_margin_drained(self) -> None:
         """The margin warm cached its ring: the pending level may settle, and
-        a zoom frame refused for uncached chunks may render now."""
+        a zoom frame refused for uncached chunks may render now. The reach
+        may start (TASK-031.11 D3)."""
         self._maybe_refine()
         self.map_view.retry_refused_preframes()
+        if self._reach_queue:
+            self._pump_load_warm()
 
     def _on_canvas_paint_timed(self, elapsed: float, mip: int) -> None:
         """MapCanvasItem's per-paint stopwatch callback (installed by
@@ -21892,6 +22166,8 @@ class ViewerWindow(QMainWindow):
         ready, so a paint that fires synchronously inside _render_current()'s
         own processEvents() (which does dispatch zero-delay timers) still
         accumulates but cannot print ahead of the load's own line."""
+        # The opening level is built by now: drop what the sprite prefetch has left (TASK-031.47 D6).
+        sprite_prefetch.discard()
         report = self._pending_paint_report
         if report is None:
             return
@@ -21946,6 +22222,20 @@ class ViewerWindow(QMainWindow):
             ids.extend(tid for tid in map(render._terrain_overlay_for, consts) if tid is not None)
         return ids
 
+    def _start_sprite_prefetch(self) -> None:
+        """A load's sprite prefetch (TASK-031.47): the opening Stepped or Sloped
+        level's frames, decoded on a pool from right after the parse, since the
+        level builds 260-540 ms later (Step 0). Off with sprites off or in
+        top-down Flat. The fit's tile half-width is at most the viewport's width
+        over the map's diamond span, which bounds whether x2 can draw."""
+        if not (self._sprites_enabled and self._render_style in ("stepped", "sloped")):
+            sprite_prefetch.discard()
+            return
+        mm = self.scenario.map_manager
+        span = mm.map_width + mm.map_height
+        max_fit_half_w = max(0, self.map_view.viewport().width() - 4) / span if span > 0 else None
+        sprite_prefetch.prefetch_level_sprites(self.scenario, self._unit_filter, max_fit_half_w)
+
     def _render_current(self, *, reset_view: bool = True, op_label: str | None = None) -> tuple[float, int]:
         # op_label: the style switches name themselves; otherwise load or re-render.
         with perf_trace.op(op_label or ("load" if reset_view else "re-render")):
@@ -21996,6 +22286,9 @@ class ViewerWindow(QMainWindow):
         # sliders, the Isometric View toggle and a re-entrant load in one
         # place, rather than one call per caller.
         self._cancel_warms()
+        # A re-render's caches are not the load's: its sprite prefetch is load_scenario()'s alone.
+        if not reset_view:
+            sprite_prefetch.discard()
         self._stop_placeholder_timers()
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -22104,6 +22397,8 @@ class ViewerWindow(QMainWindow):
             # this scenario's. One call covers load, New Map, a map resize
             # and a style switch.
             self._refresh_camera_markers()
+            # A quality change or style switch can add or remove the native level.
+            self._update_zoom_native_action()
             return time.perf_counter() - t0, tile_px
         finally:
             QApplication.restoreOverrideCursor()
@@ -22406,7 +22701,7 @@ class ViewerWindow(QMainWindow):
             generate_elapsed = time.perf_counter() - t_generate0
         except (MapSizeError, BlankFillError, BlankGenerationError) as e:
             self.statusBar().clearMessage()
-            self._log_status(f"New Map failed: {type(e).__name__}: {e}")
+            self._log_status(f"New Map failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "New Map failed", str(e))
             return
         self.load_scenario(UNTITLED_PATH, untitled=True, data=data, generate_elapsed=generate_elapsed)
@@ -22489,7 +22784,7 @@ class ViewerWindow(QMainWindow):
                 messages=self.message_edits,
             )
         except (ResizeRefusedError, WriteBlockedError, UnitEditsUnavailableError, TriggerEditsUnavailableError) as e:
-            self._log_status(f"Resize failed: {type(e).__name__}: {e}")
+            self._log_status(f"Resize failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Resize failed", str(e))
             return
         self.load_scenario(old.path, untitled=self._untitled, data=result.data, loaded=result.loaded)
@@ -22588,13 +22883,13 @@ class ViewerWindow(QMainWindow):
                 # v1.32/v1.35 file is unopenable by design, not a broken file.
                 self.statusBar().clearMessage()
                 self._log_status(
-                    f"Failed to load {path}: unsupported scenario version {e.scenario_version}"
+                    f"Failed to load {path}: unsupported scenario version {e.scenario_version}", level=debug_log.ERROR
                 )
                 QMessageBox.critical(self, "Failed to load", str(e))
                 return
             except Exception as e:  # noqa: BLE001 -- GUI boundary, reports below
                 self.statusBar().clearMessage()
-                self._log_status(f"Failed to load {path}: {type(e).__name__}: {e}")
+                self._log_status(f"Failed to load {path}: {type(e).__name__}: {e}", level=debug_log.ERROR)
                 QMessageBox.critical(self, "Failed to load", f"{type(e).__name__}: {e}")
                 return
             finally:
@@ -22612,6 +22907,11 @@ class ViewerWindow(QMainWindow):
                 switched = True
             if switched:
                 self._refresh_game_lists()
+                # GH #263: the file parsed under the previous data mod's civ list. No pending
+                # edits: self.option_edits still belongs to the previous document here.
+                refresh_player_render_context(self.scenario, {})
+            # After the data switch, whose generation bump would discard it (TASK-031.47).
+            self._start_sprite_prefetch()
             if untitled:
                 self.scenario.path = UNTITLED_PATH
             else:
@@ -22749,7 +23049,8 @@ class ViewerWindow(QMainWindow):
                 self._log_status(
                     f"Warning: {display_name}'s terrain block failed load-time verification -- "
                     "Terrain mode's terrain/elevation tools and Save/Save As are disabled for "
-                    "this file (still fully viewable)."
+                    "this file (still fully viewable).",
+                    level=debug_log.WARNING,
                 )
             elif not self.scenario.map_is_square:
                 # Non-square is NOT actually supported today, despite what this message
@@ -22762,7 +23063,8 @@ class ViewerWindow(QMainWindow):
                 # index instead of these library properties.
                 self._log_status(
                     f"Note: {display_name} is a non-square map ({mm.map_width}x{mm.map_height}) -- "
-                    "non-square maps are not supported and will likely fail to render."
+                    "non-square maps are not supported and will likely fail to render.",
+                    level=debug_log.WARNING,
                 )
         finally:
             self._busy = False
@@ -23101,7 +23403,7 @@ def _handle_exception(exc_type, exc_value, exc_tb) -> None:
         if not _crash_rate_limiter.should_write(fingerprint):
             # Without this a raising paintEvent would write a dump and open
             # a dialog on every repaint.
-            debug_log.log(f"Crash re-raised, already reported: {exc_type.__name__}")
+            debug_log.error(f"Crash re-raised, already reported: {exc_type.__name__}")
             return
         dump_dir = _crash_dump_dir()
         text = crash_report.build_report(
@@ -23115,7 +23417,7 @@ def _handle_exception(exc_type, exc_value, exc_tb) -> None:
         )
         dump_path = crash_report.write_report(text, dump_dir)
         crash_report.prune(dump_dir)
-        debug_log.log(f"Crash report written to {dump_path}")
+        debug_log.error(f"Crash report written to {dump_path}")
         summary = f"{exc_type.__name__}: {exc_value}"
         if _crash_host() is not None:
             # Queued, never inline: this hook can fire from inside Qt's own
@@ -23165,9 +23467,9 @@ def _sweep_pending_crash_reports() -> None:
         return
     host = _crash_host()
     names = ", ".join(p.name for p in pending)
-    debug_log.log(f"Crash report(s) found from a previous session: {names}")
+    debug_log.warning(f"Crash report(s) found from a previous session: {names}")
     if host is not None:
-        host._log_status(f"Crash report(s) found from a previous session: {names}")
+        host._log_status(f"Crash report(s) found from a previous session: {names}", level=debug_log.WARNING)
     for path in pending:
         # Scrubbed here too: a failed rotation scrub, or a dump from before scrubbing existed.
         text = crash_report.scrub_user_paths(path.read_text(encoding="utf-8", errors="replace"))
@@ -23184,9 +23486,11 @@ def _sweep_pending_crash_reports() -> None:
 
 def _app_window() -> ViewerWindow:
     """The app's window: the one ViewerWindow that allows placeholder paints
-    (TASK-031.25 D8) and pre-rendered zoom frames (TASK-031.71)."""
+    (TASK-031.25 D8), the zoom-out reach warm (TASK-031.11 D9) and
+    pre-rendered zoom frames (TASK-031.71)."""
     window = ViewerWindow()
     window.set_placeholders_allowed(True)
+    window.set_reach_warm_allowed(True)
     window.map_view.set_preframes_allowed(True)
     return window
 
@@ -23215,6 +23519,9 @@ def main() -> None:
     theme_line = qt_platform.apply_default_theme()
     if theme_line is not None:
         debug_log.log(theme_line)
+    taskbar_line = win_taskbar.set_app_user_model_id()
+    if taskbar_line is not None:
+        debug_log.log(taskbar_line)
     qt_messages.install()
     app = QApplication(sys.argv)
     debug_log.log(f"Qt platform: {QApplication.platformName()}")
@@ -23241,6 +23548,7 @@ def main() -> None:
     QTimer.singleShot(0, _sweep_pending_crash_reports)
     code = app.exec_()
     asset_source.shutdown_prefetch_pool()
+    sprite_prefetch.shutdown_pool()
     catalog_thumbs.shutdown_thumb_pool()
     sys.exit(code)
 

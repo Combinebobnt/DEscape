@@ -553,7 +553,7 @@ def clear_caches() -> None:
 
 
 def _crop(arr: np.ndarray, ox: int, oy: int, tile_px: int) -> np.ndarray:
-    return arr[oy : oy + tile_px, ox : ox + tile_px]
+    return asset_source.crop_source(arr, tile_px)[oy : oy + tile_px, ox : ox + tile_px]
 
 
 def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:

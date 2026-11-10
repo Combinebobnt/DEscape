@@ -209,6 +209,10 @@ class CatalogBrowseDialog(QDialog):
         self.view.pin(value)
         self.view.select(value)
 
+    def pin(self, value: int) -> None:
+        """Keeps `value` pickable without switching to its category, unlike select()."""
+        self.view.pin(value)
+
     def selected_id(self) -> int | None:
         return self._selected_id
 
@@ -248,8 +252,8 @@ class CatalogLineEdit(ValueLineEdit):
     Browse until INTERNAL_TECHS_LABEL is ticked; a typed name still matches
     them, as it matches editor-hidden objects.
 
-    Browse is CatalogBrowseDialog for an object catalog, narrowed by
-    set_group(), and the base class's plain tree for a tech one.
+    Browse is CatalogBrowseDialog for an object catalog, opening on
+    set_group()'s category, and the base class's plain tree for a tech one.
     """
 
     def __init__(
@@ -277,9 +281,13 @@ class CatalogLineEdit(ValueLineEdit):
         if any(row.category == "Techs" for row in self._catalog):
             super()._browse()
             return
-        rows = [row for row in self._catalog if row.category == self._group] if self._group else self._catalog
-        dialog = CatalogBrowseDialog(rows, self._group or self._default_category, parent=self)
+        # The whole catalog, so every category button shows (GH #273); a pick elsewhere turns the type row.
+        dialog = CatalogBrowseDialog(self._catalog, self._group or self._default_category, parent=self)
         if self._value is not None:
-            dialog.select(self._value)
+            # select() would switch to the value's category and override the row.
+            if not self._group or self.group_of(self._value) == self._group:
+                dialog.select(self._value)
+            else:
+                dialog.pin(self._value)
         if dialog.exec_() == QDialog.Accepted and dialog.selected_id() is not None:
             self.commit_value(dialog.selected_id())

@@ -52,8 +52,8 @@ def test_sloped_mip_pack_check_passes() -> None:
 
 @pytest.mark.corpus
 def test_sloped_fine_pack_check_passes() -> None:
-    """Needs examples/ and the real install: the same maps stitched at level +1
-    beside level 0 (TASK-146)."""
+    """Needs examples/ and the real install: the same maps stitched at the
+    128 px level beside level 0 (TASK-146)."""
     gen = conftest.load_verify_module("gen_review_pack")
     reason = gen._sloped_prerequisites()
     if reason:
@@ -102,6 +102,17 @@ def test_particle_doodads_pack_check_passes() -> None:
     if reason:
         pytest.skip(reason)
     gen.check("particle_doodads")
+
+
+@pytest.mark.corpus
+def test_native_tier_pack_check_passes() -> None:
+    """Needs examples/ and the real install: the 96 px tier beside 64 and 128,
+    and furrowed ground whose crops straddle the texture's wrap (TASK-599)."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._native_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("native_tier")
 
 
 @pytest.mark.corpus

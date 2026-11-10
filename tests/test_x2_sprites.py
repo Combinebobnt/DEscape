@@ -88,11 +88,45 @@ def test_on_draws_x2_where_x1_would_be_enlarged_at_x1s_size_and_hotspot(install)
     assert abs(x2.hotspot_x - x1.hotspot_x) <= 1 and abs(x2.hotspot_y - x1.hotspot_y) <= 1
 
 
-@pytest.mark.parametrize("half_w", [NATIVE, SHRUNK])
-def test_on_draws_x1_where_x1_is_not_enlarged(install, half_w):  # noqa: F811
+def test_on_draws_x1_where_x1_is_shrunk(install):  # noqa: F811
     _pair(install)
     unit_sprites.set_hi_res(True)
-    assert _draw(half_w).rgba[0, 0, 0] == _red(X1_BASE, 0)
+    assert _draw(SHRUNK).rgba[0, 0, 0] == _red(X1_BASE, 0)
+
+
+def _tinted_frame(file_name: str, x2: bool):
+    native = unit_sprites._x2_native_frame(file_name, 0) if x2 else unit_sprites._drawn_frame(file_name, 0)
+    main, playercolor, _hx, _hy = native
+    return unit_sprites._tinted(main, playercolor, unit_sprites.TEAM_COLORS[0])
+
+
+def test_native_size_draws_x1_pixel_for_pixel_without_hi_res(install):  # noqa: F811
+    """TASK-599: the 96 px tier draws x1 1:1, no resample (Default)."""
+    _pair(install)
+    got = _draw(NATIVE)
+    assert np.array_equal(got.rgba, _tinted_frame(FILE_NAME, x2=False))
+    _main, _pc, hx, hy = unit_sprites._drawn_frame(FILE_NAME, 0)
+    assert (got.hotspot_x, got.hotspot_y) == (hx, hy)
+
+
+def test_on_draws_x2_box_halved_at_native_size(install):  # noqa: F811
+    """TASK-599 Decision 4: Enhanced at the 96 px tier draws x2 at exactly 0.5 through the
+    box filter, on x1's pixel grid and hotspot."""
+    _pair(install)
+    x1 = _draw(NATIVE)
+    unit_sprites.set_hi_res(True)
+    got = _draw(NATIVE)
+    x2 = _tinted_frame(FILE_NAME, x2=True)
+    want = unit_sprites._box_resize_rgba(x2, x2.shape[1] // 2, x2.shape[0] // 2)
+    assert got.rgba.shape == x1.rgba.shape
+    assert np.array_equal(got.rgba, want)
+    assert (got.hotspot_x, got.hotspot_y) == (x1.hotspot_x, x1.hotspot_y)
+
+
+def test_on_without_an_x2_file_draws_x1_pixel_for_pixel_at_native_size(install):  # noqa: F811
+    _pair(install, x2=False)
+    unit_sprites.set_hi_res(True)
+    assert np.array_equal(_draw(NATIVE).rgba, _tinted_frame(FILE_NAME, x2=False))
 
 
 def test_x2_draws_the_frame_x1s_dispatch_picks(install):  # noqa: F811
@@ -124,7 +158,7 @@ def test_no_x2_file_draws_x1(install):  # noqa: F811
 def test_a_frame_count_mismatch_draws_x1_and_logs_once(install, monkeypatch):  # noqa: F811
     _pair(install, x2_frames=5)
     logged = []
-    monkeypatch.setattr(debug_log, "log", logged.append)
+    monkeypatch.setattr(debug_log, "log", lambda message, **kwargs: logged.append(message))
     unit_sprites.set_hi_res(True)
     assert _draw(ENLARGED).rgba[0, 0, 0] == _red(X1_BASE)
     assert _draw(ENLARGED, 1.6).rgba[0, 0, 0] == _red(X1_BASE, _frame_index(1.6))
@@ -147,7 +181,7 @@ def test_a_particle_stem_never_gets_x2(install, monkeypatch):  # noqa: F811
 
 def test_clear_caches_empties_every_x2_cache(install, monkeypatch):  # noqa: F811
     _pair(install, x2_frames=5)
-    monkeypatch.setattr(debug_log, "log", lambda _m: None)
+    monkeypatch.setattr(debug_log, "log", lambda _m, **kwargs: None)
     unit_sprites.set_hi_res(True)
     _draw(ENLARGED)
     assert unit_sprites._x2_index_cache and unit_sprites._native_x2_cache and unit_sprites._x2_mismatch_logged

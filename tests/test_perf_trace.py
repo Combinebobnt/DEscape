@@ -36,6 +36,121 @@ def test_disabled_by_default():
     assert perf_trace.is_enabled() is False
 
 
+def test_slow_preframe_tick_keeps_its_own_stats_not_an_aggregate(clock):
+    from descape.thread_stats import Delta
+
+    fetch = {"render_ms": 96.0, "convert_ms": 2.0, "k": 1, "width": 1024, "height": 768}
+    stats = Delta(100, 3, 2, 1, 7, 4, 2)
+    perf_trace.preframe_tick(100, "fetch", stats, fetch)
+    perf_trace.preframe_tick(2, "strip", Delta(2, 2, 0, 0))
+    assert _lines() == [
+        ("perf slow tick preframe fetch 100.0 ms: fault; cpu 3.0ms runq 2.0ms maj 1 min 7 vcsw 4 ivcsw 2; "
+         "render 96.0ms convert 2.0ms k 1 size 1024x768")
+    ]
+    assert perf_trace._preframe_ticks[0] == (100, "fetch", stats, fetch)
+    assert [entry[3] for entry in perf_trace._recent] == ["preframe fetch", "preframe strip"]
+    perf_trace.flush_idle()
+    assert "(max tick 100.0 fetch fault)" in _lines()[-1]
+    assert sum("perf slow tick" in line for line in _lines()) == 1
+
+
+def test_slow_preframe_threshold_is_inclusive_and_tracing_off_records_nothing(clock):
+    from descape.thread_stats import Delta
+
+    assert perf_trace.SLOW_TICK_MS == 50
+    stats = Delta(50, 1, 40, 0)
+    perf_trace.preframe_tick(49.999, "fetch", stats)
+    assert not debug_log.entries()
+    perf_trace.preframe_tick(50, "fetch", stats)
+    assert _lines() == ["perf slow tick preframe fetch 50.0 ms: runq; cpu 1.0ms runq 40.0ms maj 0"]
+    perf_trace.enable(False)
+    before = list(perf_trace._recent)
+    perf_trace.preframe_tick(500, "fetch", stats)
+    perf_trace.stall(500, stats)
+    assert len(_lines()) == 1 and len(perf_trace._preframe_ticks) == 2
+    assert list(perf_trace._recent) == before
+
+
+def test_stall_appends_thread_kind_and_full_counters_without_fragmenting_coverage(clock):
+    from descape.thread_stats import Delta
+
+    perf_trace.preframe_tick(225, "fetch", Delta(225, 3, 2, 0))
+    perf_trace.stall(225, Delta(275, 4, 3, 0, 7, 1, 2))
+    assert _lines()[-1] == (
+        "perf stall 225ms (in preframe fetch; covered 225 of 225: preframe fetch 225; "
+        "thread blocked: cpu 4.0ms runq 3.0ms maj 0 min 7 vcsw 1 ivcsw 2)"
+    )
+
+
+def test_watchdog_samples_each_heartbeat_and_uses_the_previous_sample(monkeypatch):
+    from types import SimpleNamespace
+
+    from descape import thread_stats
+    from descape import viewer_canvas as vc
+
+    samples = iter([thread_stats.ThreadSample(1.05, 1000000, 0, 0),
+                    thread_stats.ThreadSample(1.35, 4000000, 250000000, 0)])
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    monkeypatch.setattr(vc, "_stall_last", 1.0)
+    monkeypatch.setattr(vc, "_stall_sample", thread_stats.ThreadSample(1, 0, 0, 0))
+    monkeypatch.setattr(thread_stats, "sample", lambda: next(samples))
+    clock = SimpleNamespace(t=1.05)
+    monkeypatch.setattr(vc.time, "perf_counter", lambda: clock.t)
+    seen = []
+    monkeypatch.setattr(perf_trace, "stall", lambda late, stats: seen.append((late, stats)))
+    vc._stall_beat()
+    assert not seen
+    clock.t = 1.35
+    vc._stall_beat()
+    assert seen[0][0] == pytest.approx(250)
+    assert seen[0][1].wall_ms == pytest.approx(300)
+    assert seen[0][1].cpu_ms == 3 and seen[0][1].kind() == "runq"
+    perf_trace.enable(False)
+    vc._stall_beat()  # exhausted sample iterator proves tracing off does no I/O
+    assert vc._stall_sample is None
+
+
+def test_watchdog_lateness_includes_the_ending_reader(monkeypatch):
+    from types import SimpleNamespace
+
+    from descape import thread_stats as ts
+    from descape import viewer_canvas as vc
+
+    clock = SimpleNamespace(t=1.05)
+    usage = SimpleNamespace(ru_majflt=0, ru_minflt=0, ru_nvcsw=0, ru_nivcsw=0)
+
+    def read():
+        clock.t += 0.2
+        return "1000000 0 1"
+
+    monkeypatch.setattr(ts.sys, "platform", "linux")
+    monkeypatch.setattr(ts, "resource", SimpleNamespace(RUSAGE_THREAD=99, getrusage=lambda scope: usage))
+    monkeypatch.setattr(ts, "SCHEDSTAT", SimpleNamespace(read_text=read))
+    monkeypatch.setattr(ts.time, "perf_counter", lambda: clock.t)
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    monkeypatch.setattr(vc, "_stall_last", 1.0)
+    monkeypatch.setattr(vc, "_stall_sample", ts.ThreadSample(1, 0, 0, 0))
+    seen = []
+    monkeypatch.setattr(perf_trace, "stall", lambda late, stats: seen.append((late, stats)))
+    vc._stall_beat()
+    assert seen[0][0] == pytest.approx(200)
+    assert seen[0][1].wall_ms == pytest.approx(250)
+    assert seen[0][1].sampling_ms == pytest.approx(200)
+    assert not seen[0][1].eligible()
+
+
+def test_uncertain_faults_and_sampling_bounds_remain_in_slow_tick_and_stall_logs(clock):
+    from descape import thread_stats as ts
+
+    stats = ts.delta(ts.ThreadSample(.001, 0, 0, 0, start=0, maj_before=0),
+                     ts.ThreadSample(.2, 2000000, 0, 1, start=.199, maj_before=0))
+    perf_trace.preframe_tick(stats.wall_ms, "fetch", stats)
+    perf_trace.stall(200, stats)
+    assert "200.0 ms: uncertain;" in _lines()[0]
+    assert "thread uncertain:" in _lines()[1]
+    assert all("sample 2.000ms maj_bounds 0..1 kinds blocked,fault" in line for line in _lines())
+
+
 def test_phase_is_a_true_no_op_while_disabled():
     with perf_trace.phase("bbox"):
         pass
@@ -527,6 +642,15 @@ def test_the_worst_level_warm_tick_names_its_max_step(clock):
     perf_trace.flush_idle()
     assert "max tick 58.5 [walk 1 58.0; other 0.5; gc 0.3; max step 46.2 (walk 1 p0 #420 const 1776)]" in _lines()[0]
     assert named == ["walk 1 p0 #420 const 1776"]
+
+
+def test_the_worst_level_warm_tick_names_its_budget(clock):
+    """TASK-031.80 D3: the worst tick's budget beside its max step, so a 3 ms
+    input-budget tick and a 12 ms idle one read apart."""
+    perf_trace.level_warm_tick(4.1, [], {"walk 1": 4.0}, 0.0, max_step=(1.2, lambda: "walk 1"), budget_ms=3)
+    perf_trace.level_warm_tick(2.0, [], {"walk 1": 1.9}, 0.0, budget_ms=12)
+    perf_trace.flush_idle()
+    assert "max tick 4.1 [walk 1 4.0; other 0.1; gc 0.0; max step 1.2 (walk 1); budget 3]" in _lines()[0]
 
 
 def test_cold_sprite_deltas_split_between_the_op_and_the_view_line(clock, monkeypatch):

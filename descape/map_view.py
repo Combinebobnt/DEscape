@@ -11,10 +11,10 @@ import math
 import time
 from collections.abc import Callable, Collection, Sequence
 from functools import lru_cache
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 import numpy as np
-from PyQt5.QtCore import QElapsedTimer, QEvent, QLineF, QPointF, QRectF, Qt, QTimer
+from PyQt5.QtCore import QElapsedTimer, QEvent, QLineF, QPoint, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -42,8 +42,12 @@ from PyQt5.QtWidgets import (
 from descape import (
     brush,
     colour_mood,
+    game_dataset,
+    gc_hold,
     grid_overlay,
     iso_geometry,
+    level_warm,
+    outline_chunks,
     perf_trace,
     range_overlay,
     region_clipboard,
@@ -60,6 +64,7 @@ from descape import (
 from descape.instruction_overlay import InstructionOverlay
 from descape.render import SMALL_MAP_TILE_PIXELS
 from descape.render_cache import (
+    MIP_SCALE_SLACK,
     FlatChunkCache,
     IsoChunkCache,
     SlopedChunkCache,
@@ -75,6 +80,7 @@ from descape.unit_filter import GAIA_PLAYER_ID
 from descape.viewer_canvas import (
     AnalysisMarkerItem,
     CameraMarkerItem,
+    ChunkedPathItem,
     EdgeTickItem,
     GridItem,
     MapCanvasItem,
@@ -106,6 +112,21 @@ _UNIT_BRUSH_TOOLS = frozenset({"convert", "eraser", "unit_brush"})
 _HOVER_GHOST_TOOLS = frozenset({"place_unit", "unit_brush"})
 
 
+class _RingEntry(NamedTuple):
+    path: QPainterPath
+    indices: tuple[np.ndarray, ...] = ()
+    values: np.ndarray | None = None
+    rise: np.ndarray | None = None
+
+
+def _scroll_clamp(start: float, low: float, extent: float, size: float) -> float:
+    """One axis of QGraphicsView's scroll clamp: the visible span's start,
+    centred on a scene narrower than the viewport, else kept inside it."""
+    if extent <= size:
+        return low - (size - extent) / 2
+    return min(max(start, low), low + extent - size)
+
+
 def _add_closed_polygons(path, polygons) -> None:
     """Appends each polygon to `path` as its own CLOSED subpath.
     addPolygon() leaves the subpath open, so stroking it draws only 3 of a
@@ -124,6 +145,56 @@ def _sloped_outline_polygon(tile_px: int, nw: int, ne: int, sw: int, se: int, co
     the returned polygon; _tile_polygon hands out a translated() copy."""
     outline_fn = iso_geometry.sloped_tile_outline_coarse if coarse else iso_geometry.sloped_tile_outline
     return QPolygonF([QPointF(px, py) for px, py in outline_fn(tile_px, nw, ne, sw, se)])
+
+
+@lru_cache(maxsize=1024)
+def _sloped_edge_points(tile_px: int, side: str, nw: int, ne: int, sw: int, se: int) -> np.ndarray:
+    """One Sloped tile edge's tile-local points as a read-only float64 (N, 2)
+    array, keyed on the -d_min-normalized corners like _sloped_outline_polygon
+    (TASK-355). Never empty: half_w >= 2, so each side keeps a column."""
+    points = np.asarray(iso_geometry.sloped_tile_edge_outline(tile_px, side, nw, ne, sw, se), dtype=np.float64)
+    points = np.ascontiguousarray(points.reshape(-1, 2))
+    points.setflags(write=False)
+    return points
+
+
+def _polygon_from_points(points: np.ndarray) -> QPolygonF:
+    """A QPolygonF holding a float64 (N, 2) array's rows, written in one copy
+    through the polygon's own buffer (the sip voidptr route zoom_preframe.py
+    uses for QImage bits). Relies on qreal being double, as on every desktop
+    PyQt5 build."""
+    points = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 2)
+    polygon = QPolygonF(len(points))
+    if len(points):
+        buffer = polygon.data()
+        buffer.setsize(points.nbytes)
+        np.frombuffer(buffer, dtype=np.float64).reshape(-1, 2)[:] = points
+    return polygon
+
+
+def _points_from_polygon(polygon: QPolygonF) -> np.ndarray:
+    """The reverse of _polygon_from_points: a float64 (N, 2) copy of the points."""
+    count = polygon.size()
+    if not count:
+        return np.zeros((0, 2), dtype=np.float64)
+    buffer = polygon.data()
+    buffer.setsize(count * 2 * np.dtype(np.float64).itemsize)
+    return np.frombuffer(buffer, dtype=np.float64).reshape(count, 2).copy()
+
+
+def _ring_path_from_points(points: np.ndarray) -> QPainterPath:
+    """One closed subpath through `points`, consecutive duplicates dropped as
+    the old per-point loop's currentPosition() check did. No points, empty path."""
+    path = QPainterPath()
+    if not len(points):
+        return path
+    # One complex per row: an exact (x, y) compare in a single ufunc call.
+    rows = np.ascontiguousarray(points, dtype=np.float64).view(np.complex128).ravel()
+    keep = np.ones(len(rows), dtype=bool)
+    keep[1:] = rows[1:] != rows[:-1]
+    path.addPolygon(_polygon_from_points(points[keep]))
+    path.closeSubpath()
+    return path
 
 
 class MapView(QGraphicsView):
@@ -505,16 +576,19 @@ class MapView(QGraphicsView):
         self._grid_follow_elevation = settings.get_grid_follow_elevation()
         # A Settings > Appearance slider drag in progress: see begin_grid_preview().
         self._grid_previewing = False
-        # View > Footprint Outlines, same lifetime again. One path item per colour group
+        # View > Footprint Outlines, same lifetime again. One ChunkedPathItem per colour group
         # (_owner_group_key); the None group exists exactly while a map is loaded.
         self._footprint_items: dict = {}
+        # Which chunks of each outline overlay an edit made stale (TASK-031.42).
+        self._footprint_chunks = outline_chunks.OutlineChunks()
+        self._fish_chunks = outline_chunks.OutlineChunks()
         self._footprint_enabled = settings.get_footprint_outlines()
         self._footprint_scope = settings.get_footprint_scope()
         self._footprint_merged = settings.get_footprint_merged()
         self._footprint_by_owner = settings.get_footprint_by_owner()
         self._footprint_refresh_pending = False
         # View > Layers > Fish Outlines: one path item while a map is loaded; ViewerWindow pushes the flag.
-        self._fish_item: QGraphicsPathItem | None = None
+        self._fish_item: ChunkedPathItem | None = None
         self._fish_enabled = False
         # Stacked-unit badges: groups recomputed on every index swap, item
         # rebuilt per set_source() like _edge_tick_item.
@@ -543,6 +617,7 @@ class MapView(QGraphicsView):
         self._trigger_shapes: list = []
         self._trigger_emphasis: frozenset[tuple[str, int]] | None = None
         self._trigger_items: list[QGraphicsItem] = []
+        self._trigger_ring_memo: dict[tuple[int, int, int, int], _RingEntry] = {}
         self._trigger_overlay_enabled = settings.get_trigger_overlay()
         # GH #167: the trigger_geometry.CreatedUnit records the selected triggers would place,
         # kept like the shapes; the two ghost items (strong, dim) go with every scene().clear().
@@ -812,6 +887,10 @@ class MapView(QGraphicsView):
         # The overlay's scene-space bounds, remembered whenever the boundary
         # path is rebuilt. See _region_on_screen(), which gates the ants.
         self._region_scene_rect: QRectF | None = None
+        # The rect the overlay last drew, for the live-drag memo (_refresh_live_region()).
+        self._region_overlay_rect: tuple[int, int, int, int] | None = None
+        # The open Perf Trace drag's label ("select" or "select-move"), None with none open.
+        self._region_drag_label: str | None = None
         self._region_ant_offset = 0.0
         self._region_ant_timer = QTimer(self)
         self._region_ant_timer.setInterval(self.REGION_SELECT_ANT_TICK_MS)
@@ -2689,6 +2768,7 @@ class MapView(QGraphicsView):
             self._select_current = None
             self._move_anchor = None
             self._move_current = None
+            self._close_region_drag_trace()
             self._update_region_overlay()
         # Cancel, never commit -- a shape the user never released is not a
         # shape they asked to paint. Unconditional rather than gated on the
@@ -2992,13 +3072,19 @@ class MapView(QGraphicsView):
                 pos = self.mapToScene(event.pos())
                 if self._pos_on_map(pos):
                     tile = self._pick_tile(pos)
+                    # A press left open by a lost release closes first, so drags never nest.
+                    self._close_region_drag_trace()
                     if self._region_movable and self._tile_in_region(tile):
                         self._move_anchor = tile
                         self._move_current = tile
+                        self._region_drag_label = "select-move"
                     else:
                         self._select_anchor = tile
                         self._select_current = tile
-                    self._update_region_overlay()
+                        self._region_drag_label = "select"
+                    # A Perf Trace drag like a stroke's: the press is its first step.
+                    perf_trace.begin_drag(None)
+                    self._traced_region_rebuild()
             return
         # The Eyedropper in Units mode picks a unit, above the Units branch, which would place one on
         # any click_only tool's click. Left button, inside the canvas; Terrain mode goes on below.
@@ -3215,6 +3301,8 @@ class MapView(QGraphicsView):
                 anchor, current = self._move_anchor, self._move_current
                 self._move_anchor = None
                 self._move_current = None
+                # Before the callback, so the move's undo and paste keep their own op lines.
+                self._close_region_drag_trace()
                 self._update_region_overlay()
                 dx, dy = current[0] - anchor[0], current[1] - anchor[1]
                 # A zero-delta press-release inside the selection is a no-op
@@ -3226,6 +3314,7 @@ class MapView(QGraphicsView):
                 anchor, current = self._select_anchor, self._select_current
                 self._select_anchor = None
                 self._select_current = None
+                self._close_region_drag_trace()
                 region = region_clipboard.normalize_region(
                     anchor, current, self._map_width or 0, self._map_height or 0
                 )
@@ -3354,6 +3443,8 @@ class MapView(QGraphicsView):
         nudge-or-delete flow works; Right-click and starting the next ruler
         measurement both still clear it.
         """
+        # Any key: the short level-warm budget, as wheelEvent; _on_pan_tick covers a held pan (TASK-031.80).
+        level_warm.note_input()
         # A pending coalesced move lands first, so the key sees the last cursor tile.
         self._flush_pending_move()
         # Pick from map first: arming forced Pan, so no other Escape owner is live.
@@ -3396,11 +3487,13 @@ class MapView(QGraphicsView):
         if event.key() == Qt.Key_Escape and self._move_anchor is not None:
             self._move_anchor = None
             self._move_current = None
+            self._close_region_drag_trace()
             self._update_region_overlay()
             return
         if event.key() == Qt.Key_Escape and self._select_anchor is not None:
             self._select_anchor = None
             self._select_current = None
+            self._close_region_drag_trace()
             self._update_region_overlay()
             return
         # TASK-256: a live flip or turn reverts before the selection or region it acted on clears.
@@ -3529,6 +3622,10 @@ class MapView(QGraphicsView):
         self._pan_accum_y = 0.0
 
     def _on_pan_tick(self) -> None:
+        # A held-key pan holds no mouse button: defer the gen-2 collect past it (TASK-031.81), and keep
+        # the short level-warm budget before auto-repeat starts (TASK-031.80).
+        gc_hold.note_input()
+        level_warm.note_input()
         dt_ms = min(float(self._pan_elapsed.restart()), self.PAN_MAX_DT_MS)
         self._pan_step(dt_ms)
 
@@ -3629,7 +3726,7 @@ class MapView(QGraphicsView):
             return None
         if self._preframe_twin is None:
             self._preframe_twin = zoom_preframe.ZoomTwin(self)
-        world, vp_rect = self._preframe_twin.predict(factor, anchor)
+        world, vp_rect = self._preframe_twin.predict(factor, anchor, self._twin_snap(factor))
         dpr = vp.devicePixelRatioF()
         offset = zoom_preframe.viewport_offset(vp)
         if not zoom_preframe.device_aligned(offset, vp_rect.size(), dpr):
@@ -3646,6 +3743,15 @@ class MapView(QGraphicsView):
         key = zoom_preframe.paint_key(device, rect, vp_rect.size(), offset, self.renderHints(), dpr, bounding)
         viewport_device = zoom_preframe.viewport_device_rect(vp, vp_rect.size())
         return zoom_preframe.FrameJob(item, key, device, rect, plan, viewport_device, self.renderHints(), dpr, stamps)
+
+    def _twin_snap(self, factor: float) -> tuple[QPoint, float] | None:
+        """ZoomTwin.predict()'s `snap` for a notch by `factor`: wheelEvent()
+        snaps a notch that lands on the native stop (_snap_to_device_px()),
+        so the twin must too, else that notch never hits its frame."""
+        native = self.native_zoom_factor()
+        if native is None or abs(factor / native - 1.0) > MIP_SCALE_SLACK:
+            return None
+        return zoom_preframe.viewport_offset(self.viewport()), self.devicePixelRatioF()
 
     def _scroll_by(self, dx: int, dy: int) -> None:
         """The one place that moves the scrollbars. Shared by middle-drag and
@@ -3736,6 +3842,7 @@ class MapView(QGraphicsView):
             self._select_current = None
             self._move_anchor = None
             self._move_current = None
+            self._close_region_drag_trace()
             self._update_region_overlay()
 
     def center_on_tile(self, tile_x: int, tile_y: int) -> None:
@@ -3826,9 +3933,11 @@ class MapView(QGraphicsView):
 
         coarse (draw-perf plan item 3): Sloped only, and only for
         _update_highlight's brush footprint -- selects sloped_tile_outline_
-        coarse() instead of the exact staircase. Every other caller
-        (Pan's static outline, ruler, region select) leaves this False and
-        must keep getting the pixel-exact outline."""
+        coarse() instead of the exact staircase. Every other caller (Pan's
+        static outline, ruler) leaves this False and must keep getting the
+        pixel-exact outline. Region select no longer calls this: its fill is
+        its ring (_rect_ring_path), which is pinned element for element to
+        _tile_edge_points, which indexes this outline's exact corners."""
         if self._terrain_style == "stepped":
             if self._iso_elevations is None or self._iso_proj is None:
                 return None
@@ -4100,6 +4209,8 @@ class MapView(QGraphicsView):
         if not self._region_movable and self._move_anchor is not None:
             self._move_anchor = None
             self._move_current = None
+            # Only a move drag ends here: a paste disarmed mid-select-drag keeps that drag's trace.
+            self._close_region_drag_trace()
         self._update_region_overlay()
 
     def _tile_in_region(self, tile) -> bool:
@@ -4146,6 +4257,19 @@ class MapView(QGraphicsView):
         for y in range(ty1 - 1, ty0 - 1, -1):
             yield tx0, y, "left"
 
+    @staticmethod
+    def _region_edge_chains(tx0: int, ty0: int, tx1: int, ty1: int) -> list[tuple[np.ndarray, np.ndarray, str]]:
+        """_region_edge_walk()'s four chains as (xs, ys, side) int64 arrays, in
+        the same order; see its docstring for the order and why the ring closes."""
+        xs = np.arange(tx0, tx1, dtype=np.int64)
+        ys = np.arange(ty0, ty1, dtype=np.int64)
+        return [
+            (xs, np.full_like(xs, ty0), "up_left"),
+            (np.full_like(ys, tx1 - 1), ys, "up_right"),
+            (xs[::-1], np.full_like(xs, ty1 - 1), "right"),
+            (np.full_like(ys, tx0), ys[::-1], "left"),
+        ]
+
     def _region_render_rect(self) -> tuple[int, int, int, int] | None:
         """What the overlay should show right now: the live anchor-to-current
         preview during a drag, else the committed region -- so starting a new
@@ -4169,30 +4293,27 @@ class MapView(QGraphicsView):
     def _update_region_overlay(self) -> None:
         """Rebuilds the region's outline/ants/fill from _region_render_rect().
         Outline and ants share one QPainterPath: a single continuous ring
-        traced edge by edge along _region_edge_walk(), so it conforms to
+        built in numpy by _rect_ring_path() in _region_edge_walk()'s order, so it conforms to
         Stepped columns and Sloped warping while landing ink only on the
         selection's true silhouette. Adding each perimeter tile's WHOLE
         polygon instead would stroke every seam between two adjacent boundary
         tiles, which is what the ants used to crawl along. Still O(perimeter),
         never O(area).
 
-        The fill is a separate O(area) path over every tile in the rect --
-        TODO(descape#region-select-perf): revisit if this lags on a whole-map
-        Select All."""
+        The fill is that same ring under Qt.WindingFill (TASK-031.37), so it
+        is O(perimeter) to build and to paint, which matters because every 80
+        ms ants tick repaints the ring's bounding rect. It is the trigger-area
+        previews' existing look: in Stepped it tints the risers inside the
+        outline evenly, where a per-tile union under OddEvenFill punched holes
+        wherever neighbouring diamonds overlap. WindingFill keeps every lobe
+        tinted if extreme elevation makes the ring cross itself."""
         rect = self._region_render_rect()
-        boundary_path = QPainterPath()
-        fill_path = QPainterPath()
-        if rect is not None:
-            boundary_path = self._rect_ring_path(rect)
-            tx0, ty0, tx1, ty1 = rect
-            for ty in range(ty0, ty1):
-                for tx in range(tx0, tx1):
-                    polygon = self._tile_polygon(tx, ty)
-                    if polygon is not None:
-                        fill_path.addPolygon(polygon)
+        boundary_path = QPainterPath() if rect is None else self._rect_ring_path(rect)
         if boundary_path.isEmpty():
             self._clear_region_overlay()
             return
+        boundary_path.setFillRule(Qt.WindingFill)
+        fill_path = boundary_path
         if self._region_fill_item is None:
             scene = self.scene()
             self._region_fill_item = scene.addPath(fill_path, QPen(Qt.NoPen), QBrush(self._region_fill_color))
@@ -4209,6 +4330,7 @@ class MapView(QGraphicsView):
         # The items sit at the scene origin untransformed, so the path's own
         # bounds are already scene-space.
         self._region_scene_rect = boundary_path.boundingRect()
+        self._region_overlay_rect = rect
         self._sync_region_ant_timer()
 
     def _clear_region_overlay(self) -> None:
@@ -4221,7 +4343,28 @@ class MapView(QGraphicsView):
             self._region_outline_item = None
             self._region_ants_item = None
         self._region_scene_rect = None
+        self._region_overlay_rect = None
         self._region_ant_timer.stop()
+
+    def _refresh_live_region(self) -> None:
+        """A live Select drag's move: rebuilds only when the drawn rect changed
+        (a move clamped at the map edge draws the same rect for several tiles),
+        as one Perf Trace step. Every other caller rebuilds unconditionally."""
+        if self._region_render_rect() == self._region_overlay_rect:
+            return
+        self._traced_region_rebuild()
+
+    def _traced_region_rebuild(self) -> None:
+        with perf_trace.span("step"), perf_trace.phase("region_overlay"):
+            self._update_region_overlay()
+        perf_trace.step()
+
+    def _close_region_drag_trace(self) -> None:
+        """Ends a live Select drag's Perf Trace drag once; a no-op with none open."""
+        label = self._region_drag_label
+        if label is not None:
+            self._region_drag_label = None
+            perf_trace.end_drag(label)
 
     def _region_on_screen(self) -> bool:
         """Whether the region overlay's own scene rect intersects the visible
@@ -4448,24 +4591,114 @@ class MapView(QGraphicsView):
     def _rect_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath:
         """A half-open tile rect's outer boundary as one closed ring that
         follows each border tile's own edge, so it climbs Stepped risers and
-        Sloped warping. O(perimeter): _region_edge_walk visits only the border."""
-        path = QPainterPath()
-        started = False
-        for tx, ty, side in self._region_edge_walk(*rect):
-            points = self._tile_edge_points(tx, ty, side)
-            if not points:
-                # Defensive only (no projection snapshot yet): break the chain.
-                started = False
-                continue
-            if not started:
-                path.moveTo(points[0])
-                started = True
-            for point in points:
-                if point != path.currentPosition():
-                    path.lineTo(point)
-        if started:
-            path.closeSubpath()
+        Sloped warping. O(perimeter): only the border is visited.
+
+        Built in numpy (TASK-355) and element-identical to walking
+        _tile_edge_points() over _region_edge_walk(), which stays the spec
+        (tests/test_trigger_overlay_viewer.py pins the two together). Empty
+        before a projection snapshot (and, for Sloped, a cache) exists."""
+        points = self._rect_ring_points(rect)
+        return QPainterPath() if points is None else _ring_path_from_points(points)
+
+    def _memo_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath | None:
+        entry = self._trigger_ring_memo.get(rect)
+        return None if entry is None else entry.path
+
+    def _trigger_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath:
+        entry = self._trigger_ring_memo.get(rect)
+        if entry is not None:
+            return entry.path
+        path = self._rect_ring_path(rect)
+        if path.isEmpty():
+            return path
+        entry = _RingEntry(path)
+        if self._terrain_style in _ELEVATED_STYLES:
+            chains = self._region_edge_chains(*rect)
+            xs = np.concatenate([c[0] for c in chains])
+            ys = np.concatenate([c[1] for c in chains])
+            rise = self._sloped_cache().corner_rise if self._terrain_style == "sloped" else self._iso_elevations
+            nw = ys * rise.shape[1] + xs
+            indices = (nw, nw + 1, nw + rise.shape[1], nw + rise.shape[1] + 1) if self._terrain_style == "sloped" else (nw,)
+            # An elevation edit changes a ring only through these border values.
+            values = np.take(rise, np.concatenate(indices))
+            entry = _RingEntry(path, indices, values, rise if self._terrain_style == "sloped" else None)
+        self._trigger_ring_memo[rect] = entry
         return path
+
+    def _ring_fingerprint_matches(self, entries: dict[tuple[int, int, int, int], _RingEntry]) -> set[tuple[int, int, int, int]]:
+        """Valid rects, with one batched height read for all entries needing a check."""
+        if self._terrain_style == "flat":
+            return set(entries)
+        sloped = self._terrain_style == "sloped"
+        cache = self._sloped_cache() if sloped else None
+        rise = (None if cache is None else cache.corner_rise) if sloped else self._iso_elevations
+        if rise is None:
+            return set()
+        valid = {rect for rect, entry in entries.items() if sloped and entry.rise is rise}
+        check = [(rect, entry) for rect, entry in entries.items() if rect not in valid]
+        if check:
+            current = np.take(rise, np.concatenate([index for _rect, entry in check for index in entry.indices]))
+            expected = np.concatenate([entry.values for _rect, entry in check])
+            starts = np.cumsum([0, *(entry.values.size for _rect, entry in check[:-1])])
+            matches = np.add.reduceat(current != expected, starts) == 0
+            for (rect, entry), match in zip(check, matches, strict=True):
+                if match:
+                    valid.add(rect)
+                    if sloped:
+                        entries[rect] = entry._replace(rise=rise)
+        return valid
+
+    def _rect_ring_points(self, rect: tuple[int, int, int, int]) -> np.ndarray | None:
+        """_rect_ring_path()'s float64 (N, 2) points, before its consecutive-
+        duplicate drop, or None with no geometry to place them on."""
+        if self._terrain_style == "sloped":
+            return self._sloped_ring_points(rect)
+        parts = []
+        if self._terrain_style == "stepped":
+            proj, elevations = self._iso_proj, self._iso_elevations
+            if proj is None or elevations is None:
+                return None
+            local = np.array(unit_pick.diamond_points(0, 0, proj.half_w, proj.half_h), dtype=np.float64)
+            table = self._STEPPED_EDGE_VERTICES
+            for xs, ys, side in self._region_edge_chains(*rect):
+                ox, oy = iso_geometry.tile_screen_origin(xs, ys, elevations[ys, xs].astype(np.int64), proj)
+                parts.append((side, np.stack([ox, oy], axis=1)))
+        else:
+            tp = self._tile_pixels
+            local = np.array([(0, 0), (tp, 0), (tp, tp), (0, tp)], dtype=np.float64)
+            table = self._FLAT_EDGE_VERTICES
+            for xs, ys, side in self._region_edge_chains(*rect):
+                parts.append((side, np.stack([xs * tp, ys * tp], axis=1)))
+        # Each side's two local points are constant, so a chain is one broadcast add.
+        return np.concatenate(
+            [
+                (local[list(table[side])][None, :, :] + origins[:, None, :]).reshape(-1, 2)
+                for side, origins in parts
+            ]
+        )
+
+    def _sloped_ring_points(self, rect: tuple[int, int, int, int]) -> np.ndarray | None:
+        """Sloped's ring points: per border tile, the cached tile-local edge for
+        its normalized corners (_sloped_edge_points), offset exactly as
+        _sloped_tile_base() places the tile."""
+        cache = self._sloped_cache()
+        proj = self._iso_proj
+        if cache is None or proj is None:
+            return None
+        rise = cache.corner_rise
+        tile_px = self._tile_pixels
+        chains = self._region_edge_chains(*rect)
+        xs = np.concatenate([c[0] for c in chains])
+        ys = np.concatenate([c[1] for c in chains])
+        sides = [side for chain_xs, _ys, side in chains for _ in range(len(chain_xs))]
+        corners = np.stack([rise[ys, xs], rise[ys, xs + 1], rise[ys + 1, xs], rise[ys + 1, xs + 1]]).astype(np.int64)
+        d_min = corners.min(axis=0)
+        nw, ne, sw, se = (corners - d_min).tolist()
+        # The per-tile part: one cache lookup per border tile, in _region_edge_walk()'s order.
+        arrays = [_sloped_edge_points(tile_px, *key) for key in zip(sides, nw, ne, sw, se, strict=True)]
+        ox, oy = iso_geometry.tile_screen_origin(xs, ys, 0, proj)
+        offsets = np.stack([ox, oy - d_min], axis=1).astype(np.float64)
+        return np.concatenate(arrays) + np.repeat(offsets, [len(a) for a in arrays], axis=0)
 
     def _trigger_area_rect(self, coords) -> tuple[int, int, int, int] | None:
         """An inclusive trigger area as a half-open rect clamped to the map, or
@@ -4495,8 +4728,9 @@ class MapView(QGraphicsView):
         if polygon is None:
             return None
         centre = polygon.boundingRect().center()
-        s = self.TRIGGER_LOCATION_SCALE
-        return QPolygonF([centre + (p - centre) * s for p in polygon])
+        c = np.array([centre.x(), centre.y()], dtype=np.float64)
+        # Same operation order as the per-point centre + (p - centre) * s, so bit-identical.
+        return _polygon_from_points(c + (_points_from_polygon(polygon) - c) * self.TRIGGER_LOCATION_SCALE)
 
     def _location_mark_path(self, tile: tuple[int, int]) -> QPainterPath:
         path = QPainterPath()
@@ -4513,7 +4747,8 @@ class MapView(QGraphicsView):
     def _rebuild_trigger_overlay(self) -> None:
         """Rebuilds every trigger item from the snapshot against the CURRENT
         projection: on a push, after set_source(), on an elevation edit and on
-        a colour change. Items never touch the chunk cache."""
+        a colour change. Items never touch the chunk cache.
+        Rings use a per-rect memo, cleared by set_source() and checked against border heights on every rebuild."""
         scene = self.scene()
         if scene is None:
             return
@@ -4522,12 +4757,23 @@ class MapView(QGraphicsView):
         self._trigger_items = []
         if not self._trigger_shapes:
             return
+        rects = {
+            rect for shape in self._trigger_shapes
+            if shape.shape in (trigger_geometry.SHAPE_AREA, trigger_geometry.SHAPE_UNIT)
+            and (rect := self._trigger_area_rect(shape.coords)) is not None
+        }
+        if rects:
+            entries = {rect: entry for rect, entry in self._trigger_ring_memo.items() if rect in rects}
+            valid = self._ring_fingerprint_matches(entries)
+            # Only what this selection draws stays cached; deselecting keeps it warm.
+            self._trigger_ring_memo = {rect: entries[rect] for rect in valid}
         rings = {True: QPainterPath(), False: QPainterPath()}
         units = {True: QPainterPath(), False: QPainterPath()}
         marks = {True: QPainterPath(), False: QPainterPath()}
         runs: list[tuple[QPointF, str]] = []
         # Keyed on the trigger too: two triggers' ("effect", 1) must never pair into one run (GH #168).
         by_entry: dict[tuple[int, tuple[str, int]], list] = {}
+        seen: set[tuple[bool, bool, tuple[int, int, int, int]]] = set()
         for shape in self._trigger_shapes:
             by_entry.setdefault((shape.trigger_index, shape.entry_ref), []).append(shape)
         for key, shapes in by_entry.items():
@@ -4539,9 +4785,12 @@ class MapView(QGraphicsView):
                 if shape.shape in (trigger_geometry.SHAPE_AREA, trigger_geometry.SHAPE_UNIT):
                     # A unit's footprint is a tile rect too: the same O(perimeter) ring, outline only.
                     rect = self._trigger_area_rect(shape.coords)
-                    if rect is not None:
-                        target = rings if shape.shape == trigger_geometry.SHAPE_AREA else units
-                        target[strong].addPath(self._rect_ring_path(rect))
+                    is_area = shape.shape == trigger_geometry.SHAPE_AREA
+                    # Once per bucket: a repeat adds no fill, only a darker antialiased outline.
+                    if rect is not None and (is_area, strong, rect) not in seen:
+                        seen.add((is_area, strong, rect))
+                        target = rings if is_area else units
+                        target[strong].addPath(self._trigger_ring_path(rect))
                 elif self._on_map(shape.coords):
                     polygon = self._location_mark(shape.coords)
                     if polygon is not None:
@@ -4925,6 +5174,7 @@ class MapView(QGraphicsView):
         self._drop_pending_move()
         self.scene().clear()
         self._canvas_item = None
+        self._trigger_ring_memo.clear()
         self._map_rect = None
         self._map_width = None
         self._map_height = None
@@ -4946,6 +5196,8 @@ class MapView(QGraphicsView):
         self._grid_item = None
         self._footprint_items = {}
         self._fish_item = None
+        self._footprint_chunks.reset()
+        self._fish_chunks.reset()
         self._stack_badge_item = None
         self._stack_groups = {}
         # Same hazard, and the pushed list goes too: File > Close leaves no
@@ -5025,11 +5277,13 @@ class MapView(QGraphicsView):
         self._select_current = None
         self._move_anchor = None
         self._move_current = None
+        self._close_region_drag_trace()
         self._region = None
         self._region_fill_item = None
         self._region_outline_item = None
         self._region_ants_item = None
         self._region_scene_rect = None
+        self._region_overlay_rect = None
         self._region_ant_timer.stop()
         self.resume_stroke_gc()
         self._stroke_active = False
@@ -5195,6 +5449,48 @@ class MapView(QGraphicsView):
         x0, y0, x1, y1 = level_rect
         return cache.chunk_index_range(mip, x0, y0, x1, y1)
 
+    def zoomed_scene_rect(self, factor: float, anchor: QPointF) -> QRectF:
+        """The scene rect the viewport would show after a wheel zoom by
+        `factor` about scene point `anchor` (zoom_preframe.zoom_about()),
+        unclipped. The scrollbars' clamp is modelled where Qt applies it: in
+        the transformed space, against the mapped sceneRect(), centred when
+        the scene is narrower (AlignCenter). Sized at maximumViewportSize(),
+        so a scrollbar the zoom hides cannot widen the view past it."""
+        size = self.maximumViewportSize()
+        width, height = size.width(), size.height()
+        scaled = QTransform(self.transform())
+        scaled.scale(factor, factor)
+        origin = scaled.map(anchor) - self.viewportTransform().map(anchor)
+        bounds = scaled.mapRect(self.sceneRect())
+        x = _scroll_clamp(origin.x(), bounds.left(), bounds.width(), width)
+        y = _scroll_clamp(origin.y(), bounds.top(), bounds.height(), height)
+        inverse, _ok = scaled.inverted()
+        return inverse.mapRect(QRectF(x, y, width, height))
+
+    def viewport_reach_target(self, mip: int) -> tuple[int, int, int, int] | None:
+        """(cx0, cy0, cx1, cy1), the zoom-out reach of level `mip` (TASK-031.11
+        D1): the chunks a paint reads (MapCanvasItem.view_chunks()) at the
+        widest view `mip` shows, a zoom about zoom_anchor_scene() down to the
+        device scale where the next coarser level takes over. The current
+        view for a level finer than the view's. None for the coarsest level
+        (the fit paint composites all of it), with no item or an empty rect."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        cache = item._cache
+        levels = cache.mip_levels()
+        if mip not in levels or mip == levels[0]:
+            return None
+        scale = self.view_device_scale()
+        if scale <= 0:
+            return None
+        widest = 1.0 / cache.mip_scale(mip - 1)
+        rect = self.zoomed_scene_rect(min(1.0, widest / scale), self.zoom_anchor_scene())
+        rect = rect.intersected(item.boundingRect())
+        if rect.isEmpty():
+            return None
+        return item.view_chunks(mip, rect, widest)
+
     def viewport_chunk_span(self, cache, mip: int) -> tuple[int, int]:
         """(chunks_wide, chunks_tall) -- how many chunks a REAL viewport at
         `mip` would cover, sized from THIS view's own on-screen dimensions
@@ -5326,6 +5622,7 @@ class MapView(QGraphicsView):
         self._terrain_style = terrain_style
         self._iso_elevations = elevations
         self._iso_proj = proj
+        self._trigger_ring_memo.clear()
         # Tile-count dims (not cache.canvas_dims()'s pixel dims) for clipping
         # the hover-preview brush footprint the same way
         # ViewerWindow.on_edit_stroke_tile clips a stroke's own footprint.
@@ -5420,12 +5717,14 @@ class MapView(QGraphicsView):
         self._select_current = None
         self._move_anchor = None
         self._move_current = None
+        self._close_region_drag_trace()
         if reset_view:
             self._region = None
         self._region_fill_item = None
         self._region_outline_item = None
         self._region_ants_item = None
         self._region_scene_rect = None
+        self._region_overlay_rect = None
         self._region_ant_timer.stop()
 
         self._canvas_item = MapCanvasItem(cache, placeholders=placeholders, on_placeholder=on_placeholder)
@@ -5496,6 +5795,8 @@ class MapView(QGraphicsView):
 
         self._footprint_items = {None: self._add_footprint_item(self._footprint_pen)}
         self._fish_item = self._add_fish_item()
+        self._footprint_chunks.reset()
+        self._fish_chunks.reset()
 
         # Empty until the caller installs an index via set_unit_index().
         tile_extent = 2 * proj.half_w if iso_proj is not None else tile_pixels
@@ -5839,6 +6140,10 @@ class MapView(QGraphicsView):
         raw_max = self.MAX_ZOOM_MULTIPLE_OF_FIT * baseline
         self._min_linear_scale = max(raw_min / self._coarsest_mip_scale(), raw_min)
         self._max_linear_scale = min(raw_max / self._finest_mip_scale(), raw_max)
+        # TASK-599: never below the native sprite stop, which 64x fit misses on a big map in a small window.
+        native = self.native_zoom_factor()
+        if native is not None:
+            self._max_linear_scale = max(self._max_linear_scale, abs(self.transform().determinant()) ** 0.5 * native)
         self._repad_edge_ticks()
         # Covers every path that reaches here: set_isometric()/set_source()
         # resetting the transform (readout returns to ~100%), and resizeEvent
@@ -5961,6 +6266,8 @@ class MapView(QGraphicsView):
         this evicts no chunk cache: the outlines are a scene item, never
         baked into canvas pixels."""
         self._footprint_enabled = enabled
+        if not enabled:
+            self._footprint_chunks.reset()
         for item in self._footprint_items.values():
             item.setVisible(enabled)
         self.refresh_footprint_overlay()
@@ -5985,23 +6292,52 @@ class MapView(QGraphicsView):
         if self._footprint_by_owner:
             self.refresh_footprint_overlay()
 
-    def _add_footprint_item(self, pen: QPen) -> QGraphicsPathItem:
+    def _add_footprint_item(self, pen: QPen) -> ChunkedPathItem:
         # Not an opacity group, unlike the selection: the configured pen has always drawn opaque.
-        item = self.scene().addPath(QPainterPath(), pen)
+        item = ChunkedPathItem(pen)
         item.setZValue(self.FOOTPRINT_Z)
         item.setVisible(self._footprint_enabled)
+        self.scene().addItem(item)
         return item
 
+    def _outline_context(self) -> tuple:
+        """Every input of unit_polygons() that is not per unit or a height field (outline_chunks)."""
+        return (
+            self._terrain_style,
+            self._tile_pixels,
+            self._map_width,
+            self._map_height,
+            self._iso_proj,
+            self._farms_draped(),
+            game_dataset.generation(),
+        )
+
+    def _outline_heights(self) -> tuple:
+        """The height fields _unit_polygons_for() reads in the live style."""
+        if self._terrain_style == "stepped" and self._iso_elevations is not None:
+            return (outline_chunks.HeightField(self._iso_elevations),)
+        cache = self._sloped_cache()
+        if cache is None or cache.corner_rise is None:
+            return ()
+        fields = [outline_chunks.HeightField(cache.corner_rise, corners=True)]
+        if cache.fold is not None:
+            fields.append(outline_chunks.HeightField(cache.fold))
+        return tuple(fields)
+
+    def _outline_plan(self, planner, entries, context) -> outline_chunks.OutlinePlan:
+        index = self._unit_index if self._unit_index is not None else unit_pick.UnitIndex()
+        return planner.plan(entries, index, (context, self._outline_context()), self._outline_heights())
+
     def refresh_footprint_overlay(self) -> None:
-        """Rebuilds the outline path from the live index and height field.
+        """Rebuilds the outlines of the chunks an edit made stale, from the
+        live index and height field (outline_chunks says what makes a chunk
+        stale); a toggle, scope, merge, colour or style change rebuilds all.
 
         While enabled it runs in every mode: it is live in Terrain mode while
         the elevations under it change, as the kept unit selection now is
         too (TASK-359; both ride _flush_footprint_refresh()).
 
-        While disabled it is skipped: the path of every multi-tile footprint
-        cost 26 ms (Stepped) / 109 ms (Sloped) per unit edit on old-allies,
-        for an item nobody could see.
+        While disabled it is skipped, and enabling rebuilds every chunk.
 
         Colour by Owner splits the path into one item per owner colour (at
         most 9), added and removed here like _draw_unit_selection's groups;
@@ -6012,52 +6348,83 @@ class MapView(QGraphicsView):
         # set_footprint_outlines(), which rebuilds right after enabling.
         if not self._footprint_enabled:
             return
-        paths: dict = {None: QPainterPath()}
+        entries = []
         if self._unit_index is not None:
-            for entry in unit_pick.footprint_entries(self._unit_index, self._footprint_scope):
+            entries = unit_pick.footprint_entries(self._unit_index, self._footprint_scope)
+        by_owner, merged = self._footprint_by_owner, self._footprint_merged
+        colours = self._team_colors if by_owner else None
+        plan = self._outline_plan(self._footprint_chunks, entries, (self._footprint_scope, merged, by_owner, colours))
+        items = self._footprint_items
+        if plan.full:
+            for item in items.values():
+                item.clear()
+        updates: dict = {key: {} for key in items}
+        for chunk in plan.emptied:
+            for key in items:
+                updates[key][chunk] = None
+        owner_key = self._owner_group_key
+        for chunk, members in plan.dirty.items():
+            paths: dict = {}
+            for entry in members:
                 polygons = self._unit_polygons_for(entry)
                 if not polygons:
                     continue
-                if self._footprint_merged:
+                if merged:
                     polygons = unit_pick.merge_footprint_polygons(polygons)
-                key = self._owner_group_key(entry.player_id, self._footprint_by_owner)
-                _add_closed_polygons(paths.setdefault(key, QPainterPath()), polygons)
-        for key in [k for k in self._footprint_items if k not in paths]:
-            self.scene().removeItem(self._footprint_items.pop(key))
-        for key, path in paths.items():
-            item = self._footprint_items.get(key)
+                key = owner_key(entry.player_id, True) if by_owner else None
+                path = paths.get(key)
+                if path is None:
+                    path = paths[key] = QPainterPath()
+                _add_closed_polygons(path, polygons)
+            for key, group in updates.items():
+                group[chunk] = paths.pop(key, None)
+            for key, path in paths.items():
+                updates[key] = {chunk: path}
+        for key, group in updates.items():
+            item = items.get(key)
             if item is None:
-                item = self._footprint_items[key] = self._add_footprint_item(QPen(QColor(*key), 0))
-            item.setPath(path)
+                item = items[key] = self._add_footprint_item(QPen(QColor(*key), 0))
+            item.set_chunks(group)
+        for key in [k for k, item in items.items() if k is not None and not item.chunk_count()]:
+            self.scene().removeItem(items.pop(key))
 
     def set_fish_outlines(self, enabled: bool) -> None:
         """Shows or hides View > Layers > Fish Outlines (TASK-499). A scene
         item like set_footprint_outlines()'s, so no chunk cache is evicted."""
         self._fish_enabled = enabled
+        if not enabled:
+            self._fish_chunks.reset()
         if self._fish_item is not None:
             self._fish_item.setVisible(enabled)
         self.refresh_fish_overlay()
         # The hover ghost's ring follows with no mouse move (GH #281).
         self.refresh_place_ghost()
 
-    def _add_fish_item(self) -> QGraphicsPathItem:
-        item = self.scene().addPath(QPainterPath(), self._fish_pen)
+    def _add_fish_item(self) -> ChunkedPathItem:
+        item = ChunkedPathItem(self._fish_pen)
         item.setZValue(self.FISH_OUTLINE_Z)
         item.setVisible(self._fish_enabled)
+        self.scene().addItem(item)
         return item
 
     def refresh_fish_overlay(self) -> None:
-        """Rebuilds the fish rings from the live index and height field: one
-        merged ring per unit_kind.fish_consts() member the filter shows,
+        """Rebuilds the fish rings of the stale chunks, as refresh_footprint_overlay()
+        does: one merged ring per unit_kind.fish_consts() member the filter shows,
         whatever Footprint Outlines' scope and Merge tiles say. Skipped while
         disabled, like the footprint path; set_fish_outlines() rebuilds on enable."""
         if self._fish_item is None or not self._fish_enabled:
             return
-        entries = ()
+        entries = []
         if self._unit_index is not None:
             fish = unit_kind.fish_consts()
-            entries = (entry for entry in self._unit_index.entries if entry.unit.unit_const in fish)
-        self._fish_item.setPath(self._fish_ring_path(entries))
+            entries = [entry for entry in self._unit_index.entries if entry.unit.unit_const in fish]
+        plan = self._outline_plan(self._fish_chunks, entries, "fish")
+        if plan.full:
+            self._fish_item.clear()
+        updates: dict = dict.fromkeys(plan.emptied)
+        for chunk, members in plan.dirty.items():
+            updates[chunk] = self._fish_ring_path(members)
+        self._fish_item.set_chunks(updates)
 
     def _fish_ring_path(self, entries) -> QPainterPath:
         """One merged ring per entry, from the live height field: the placed
@@ -6227,11 +6594,10 @@ class MapView(QGraphicsView):
 
         The grid needs nothing here: it is baked into the chunks, and the
         edit's own cache.patch() already recomposited them. The footprint
-        path is built eagerly, and on the largest example file at All units
-        in Sloped that is ~1s. So this defers it to the event loop: one
-        8-step Set Elevation drag touches 131 tiles per _apply_dirty's own
-        comment, and rebuilding per touch would be unusable. The always-on
-        ring layer (GH #153 / #155) rides the same deferral."""
+        and fish outlines rebuild only the chunks under the changed heights,
+        and are still deferred to one flush per event-loop turn: one 8-step
+        Set Elevation drag touches 131 tiles per _apply_dirty's own comment.
+        The always-on ring layer (GH #153 / #155) rides the same deferral."""
         self.schedule_footprint_refresh()
         # Not deferred: at most 8 items, each one _ruler_anchor lookup, and
         # unlike the footprint path there is no per-unit walk behind it.
@@ -6328,6 +6694,72 @@ class MapView(QGraphicsView):
         scale = _max_axis_scale(device_transform) * self.devicePixelRatioF()
         return item._cache.mip_for_scale(scale * factor)
 
+    def native_zoom_factor(self) -> float | None:
+        """The zoom factor that draws the native sprite level (TASK-599: one
+        tile spans iso_geometry.NATIVE_TILE_PIXELS device px, so x1 sprites
+        are 1:1) at exactly one device px per level px, DPR folded in as
+        _mip_for_zoom_factor() does. None where the ladder has no such level:
+        no canvas item, Potato and below, top-down Flat."""
+        item = self._canvas_item
+        if item is None:
+            return None
+        cache = item._cache
+        native = next(
+            (lvl for lvl in cache.mip_levels() if cache.mip_tile_px(lvl) == iso_geometry.NATIVE_TILE_PIXELS), None
+        )
+        if native is None:
+            return None
+        scale = _max_axis_scale(item.deviceTransform(self.viewportTransform())) * self.devicePixelRatioF()
+        if scale <= 0:
+            return None
+        return 1.0 / cache.mip_scale(native) / scale
+
+    def at_native_stop(self) -> bool:
+        """Whether the view sits on the native stop: within mip_for_scale()'s
+        own slack of it, so the level it picks there is the native one."""
+        native = self.native_zoom_factor()
+        return native is not None and abs(native - 1.0) <= MIP_SCALE_SLACK
+
+    def _native_landing(self, factor: float) -> float:
+        """`factor`, or the native stop's factor where a wheel step would cross
+        it (TASK-599), so the wheel lands on the stop from either direction.
+        A view already at the stop (native factor 1.0) moves on by `factor`."""
+        native = self.native_zoom_factor()
+        if native is None:
+            return factor
+        # A view landed on the stop by a float multiply is at it, so the start never counts.
+        slack = MIP_SCALE_SLACK
+        if factor > 1.0:
+            crosses = 1.0 + slack < native <= factor * (1.0 + slack)
+        else:
+            crosses = factor * (1.0 - slack) <= native < 1.0 - slack
+        return native if crosses else factor
+
+    def zoom_to_native(self) -> bool:
+        """View > Zoom to Native Sprite Size (TASK-599): zooms about the
+        viewport centre onto the native stop. False, and nothing changes,
+        where the ladder has no native level."""
+        factor = self.native_zoom_factor()
+        if factor is None:
+            return False
+        self._end_wheel_gesture()
+        with perf_trace.op("zoom"):
+            zoom_preframe.zoom_about(self, factor, self.viewport().rect().center())
+            self._snap_to_device_px()
+            self._preframe_dir = 1 if factor > 1.0 else -1
+            self._note_viewport_changed()
+            self._on_zoom_changed()
+        return True
+
+    def _snap_to_device_px(self) -> None:
+        """Keeps the native stop pixel-exact: zoom_preframe.snap_to_device_px()
+        with this viewport's offset in its window. A later pan at a fractional
+        DPR is not re-snapped."""
+        if self._canvas_item is None:
+            return
+        offset = zoom_preframe.viewport_offset(self.viewport())
+        zoom_preframe.snap_to_device_px(self, offset, self.devicePixelRatioF())
+
     def _end_wheel_gesture(self) -> None:
         """Drops the sub-notch residual, the running direction and the
         current gesture's mip budget, so the next wheel event starts a
@@ -6342,8 +6774,10 @@ class MapView(QGraphicsView):
         """The zoom factor for a pending notch count, reduced until it is
         inside the floor/ceiling AND at most one mip level from the budget's
         anchor. A step that would overshoot a bound lands exactly on it
-        instead, so the readout can reach 50% and 6400%. None refuses the
-        whole event: already at the bound, or every step crosses the budget."""
+        instead, so the readout can reach 50% and 6400%, and one that would
+        cross the native sprite stop lands on it (_native_landing()). None
+        refuses the whole event: already at the bound, or every step crosses
+        the budget."""
         step = 1.25 if notches > 0 else 0.8
         current = abs(self.transform().determinant()) ** 0.5
         while notches != 0:
@@ -6357,6 +6791,7 @@ class MapView(QGraphicsView):
                 moves = factor > 1.0 + 1e-9 if notches > 0 else factor < 1.0 - 1e-9
                 if not moves:
                     return None
+            factor = self._native_landing(factor)
             if not self._crosses_wheel_mip_budget(factor):
                 return factor
             notches += -1 if notches > 0 else 1
@@ -6492,9 +6927,13 @@ class MapView(QGraphicsView):
         WHEEL_GESTURE_GAP_S has passed since the last crossing: a rate limit
         of one level per gap, never a stop (it used to refuse until the wheel
         went idle, 2026-09-30 stress log)."""
+        # Level-warm ticks run on the short input budget while the user drives the canvas (TASK-031.80).
+        level_warm.note_input()
         delta = self._wheel_delta(event)
         if delta == 0:
             return
+        # Every wheel action, refused notches included, defers the gen-2 collect (TASK-031.81).
+        gc_hold.note_input()
         action = self._wheel_action(event.modifiers())
         # Every other action returns before the gesture state, so it spends no zoom budget (GH #172).
         if action != "zoom":
@@ -6545,6 +6984,8 @@ class MapView(QGraphicsView):
         with perf_trace.op("zoom"):
             # Shared with the pre-rendered frames' twin, which predicts this transform (TASK-031.71).
             zoom_preframe.zoom_about(self, factor, anchor)
+            if self.at_native_stop():
+                self._snap_to_device_px()
             self._preframe_dir = 1 if factor > 1.0 else -1
             self._note_viewport_changed()
             self._on_zoom_changed()
@@ -6756,13 +7197,13 @@ class MapView(QGraphicsView):
                 # drag below -- a move legitimately runs off the map edge and
                 # back, and the block is re-pasted at an unclipped anchor.
                 self._move_current = tile
-                self._update_region_overlay()
+                self._refresh_live_region()
             elif self._select_anchor is not None and tile is not None:
                 # Same "hold the last valid tile" convention as the Ruler
                 # above: an off-map move mid-drag must not collapse the
                 # preview, since the drag legitimately runs off the edge.
                 self._select_current = tile
-                self._update_region_overlay()
+                self._refresh_live_region()
             # Advertises the gesture. _apply_tool_cursor() stays the
             # tool/mode-level default and is deliberately not touched.
             if self._move_anchor is not None or (self._region_movable and self._tile_in_region(tile)):

@@ -1370,6 +1370,7 @@ _trigger_status_color_ok_rows: bool | None = None
 _trigger_status_color_sections: bool | None = None
 # GH #230: the button grid's "Show all triggers' changes" checkbox.
 _button_grid_all_triggers: bool | None = None
+_debug_log_colors: bool | None = None
 
 
 def get_trigger_status_color_label(status_id: str) -> str:
@@ -1491,6 +1492,23 @@ def set_trigger_status_color_sections(enabled: bool) -> None:
     _trigger_status_color_sections = bool(enabled)
     config = _load_config()
     config["trigger_status_color_sections"] = bool(enabled)
+    _save_config(config)
+
+
+def get_debug_log_colors() -> bool:
+    """Whether Help > Debug Log colours warnings and errors by level."""
+    global _debug_log_colors
+    if _debug_log_colors is None:
+        raw = _load_config().get("debug_log_colors", True)
+        _debug_log_colors = raw if isinstance(raw, bool) else True
+    return _debug_log_colors
+
+
+def set_debug_log_colors(enabled: bool) -> None:
+    global _debug_log_colors
+    _debug_log_colors = bool(enabled)
+    config = _load_config()
+    config["debug_log_colors"] = bool(enabled)
     _save_config(config)
 
 
@@ -2406,6 +2424,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Kept adjacent to view_isometric so _build_keybinds_tab does not emit a
     # second "View" header.
     ("view_distance_ticks", "Distance Ticks", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above (TASK-599).
+    ("view_zoom_native", "Zoom to Native Sprite Size", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_show_sprites", "Show Sprites", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.

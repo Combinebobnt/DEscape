@@ -164,14 +164,15 @@ class _StubPainter:
 
 
 class _StubCache:
-    """The three members _select_mip and MapView's zoom-out floor touch,
-    over an arbitrary level set. The selection RULE itself is bound
+    """The members _select_mip, MapView's zoom-out floor and its native stop
+    touch, over an arbitrary level set. The selection RULE itself is bound
     straight off _ChunkCacheBase rather than restated here: Phase B-D-d
     moved it wholly onto the cache (tested in tests/test_mip_cache.py), so
     a copy here would only be able to disagree with the real one."""
 
     mip_levels = _ChunkCacheBase.mip_levels
     mip_scale = _ChunkCacheBase.mip_scale
+    mip_tile_px = _ChunkCacheBase.mip_tile_px
     mip_for_scale = _ChunkCacheBase.mip_for_scale
 
     def __init__(self, levels, reference_tile_px: int = 32):
