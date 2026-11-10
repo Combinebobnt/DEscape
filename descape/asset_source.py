@@ -809,7 +809,7 @@ def _decode_with_install_fallback(path: Path, decode):
         if fallback == path:
             raise
         if fallback is None or not fallback.is_file():
-            debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); the install has none of that name")
+            debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); the install has none of that name", level=debug_log.WARNING)
             return None
         debug_log.log(f"mod art: texture {path} unreadable ({exc!r}); drawing the install's", level=debug_log.WARNING)
         return decode(fallback)

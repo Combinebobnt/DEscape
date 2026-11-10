@@ -2041,7 +2041,7 @@ def _uncached_reach(key, entries, hi_res: bool, directory: Path | None, data_mod
             _mod_reach = (key, reach)
             debug_log.log(f"mod art: reach {reach} over {len(walked)} files in {time.perf_counter() - t0:.2f}s")
     except Exception as exc:  # noqa: BLE001 -- a worker must not die silently; sprite_reach() then walks in place
-        debug_log.log(f"mod art: background reach walk failed: {exc!r}")
+        debug_log.log(f"mod art: background reach walk failed: {exc!r}", level=debug_log.WARNING)
     finally:
         if _reach_walk is not None and _reach_walk[0] == key:
             _reach_walk = None
