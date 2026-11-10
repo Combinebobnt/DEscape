@@ -186,6 +186,11 @@ data_mod_hide_unchanged: false
 # catalog and the pickers, Settings > Mods. Default: true.
 data_mod_label_shown: true
 
+# List the data mod's own terrains (new, or changed from the game's) in one
+# "Mod terrains" group at the top of the Terrain panel instead of in their
+# categories, Settings > Mods. Default: false.
+data_mod_terrain_group: false
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false

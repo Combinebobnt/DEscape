@@ -154,6 +154,25 @@ class TerrainPanel(QWidget):
             self.terrain_changed.emit(terrain_id)
         return True
 
+    def reload_catalog(self) -> None:
+        """Rebuilds the picker from the catalog in effect (GH #271). A terrain
+        the catalog no longer lists (a data mod's, after switching it off)
+        gives way to default_terrain_id(), with one terrain_changed; one it
+        now hides ticks the show-hidden box, as set_terrain() does."""
+        self._syncing = True
+        try:
+            self.view.reload()
+            entry = next((e for e in terrain_catalog.terrains() if e.id == self._terrain_id), None)
+            if entry is not None:
+                if entry.hidden and self.view.show_hidden_checkbox is not None:
+                    self.view.show_hidden_checkbox.setChecked(True)
+                # Also covers a heading that was current before the reload. A filter stays as typed.
+                self.view.select(self._terrain_id)
+        finally:
+            self._syncing = False
+        if entry is None:
+            self.set_terrain(default_terrain_id())
+
     # -- presentation ----------------------------------------------------------
 
     def display_mode(self) -> str:

@@ -512,6 +512,25 @@ def set_data_mod_label_shown(enabled: bool) -> None:
     _save_config(config)
 
 
+# GH #271, Settings > Mods: list a data mod's own terrains in one Terrain panel group (off).
+_data_mod_terrain_group: bool | None = None
+
+
+def get_data_mod_terrain_group() -> bool:
+    global _data_mod_terrain_group
+    if _data_mod_terrain_group is None:
+        _data_mod_terrain_group = bool(_load_config().get("data_mod_terrain_group", False))
+    return _data_mod_terrain_group
+
+
+def set_data_mod_terrain_group(enabled: bool) -> None:
+    global _data_mod_terrain_group
+    _data_mod_terrain_group = enabled
+    config = _load_config()
+    config["data_mod_terrain_group"] = enabled
+    _save_config(config)
+
+
 # View > Distance Ticks: the ruler strip of tick marks drawn in the void
 # just outside the map's own border, with two persisted halves (whether it
 # is drawn at all, and how many tiles apart the minor ticks sit). Unlike

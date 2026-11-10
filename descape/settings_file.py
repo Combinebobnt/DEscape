@@ -64,6 +64,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "mod_art_included": (_MODS, "Mod art ticked while disabled in game"),
     "data_mod_hide_unchanged": (_MODS, "Hide a data mod's unchanged objects"),
     "data_mod_label_shown": (_MODS, "Show the \"(data mod)\" label"),
+    "data_mod_terrain_group": (_MODS, "List a data mod's own terrains in one group"),
     "theme": (_APPEARANCE, "Theme"),
     "theme_colors": (_APPEARANCE, "Chrome colours"),
     "dark_mode": (_APPEARANCE, "Theme"),

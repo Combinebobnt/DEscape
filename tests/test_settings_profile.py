@@ -418,19 +418,23 @@ def _catalog_listed(window) -> set[int]:
 def test_the_data_mod_checkboxes_sit_on_the_mods_tab_with_their_defaults(opened) -> None:
     dialog, _window, _rescans = opened
     mods = _select_tab(dialog, "Mods")
-    for check in (dialog.data_mod_hide_unchanged_check, dialog.data_mod_label_check):
+    for check in (dialog.data_mod_hide_unchanged_check, dialog.data_mod_label_check, dialog.data_mod_terrain_group_check):
         assert mods.isAncestorOf(check)
     assert not dialog.data_mod_hide_unchanged_check.isChecked() and dialog.data_mod_label_check.isChecked()
+    assert not dialog.data_mod_terrain_group_check.isChecked()
 
 
 def test_the_data_mod_checkboxes_start_from_config() -> None:
     from descape import asset_source
 
     asset_source.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    asset_source.CONFIG_PATH.write_text(yaml.safe_dump({"data_mod_hide_unchanged": True, "data_mod_label_shown": False}))
+    asset_source.CONFIG_PATH.write_text(
+        yaml.safe_dump({"data_mod_hide_unchanged": True, "data_mod_label_shown": False, "data_mod_terrain_group": True})
+    )
     dialog, window = conftest.dialog_and_window()
     try:
         assert dialog.data_mod_hide_unchanged_check.isChecked() and not dialog.data_mod_label_check.isChecked()
+        assert dialog.data_mod_terrain_group_check.isChecked()
     finally:
         dialog.close()
         conftest.close_window(window)
@@ -469,3 +473,34 @@ def test_the_label_toggle_renames_the_catalog_and_keeps_a_mod_only_pick(data_mod
     dialog.data_mod_label_check.setChecked(True)
     assert row_text().endswith(object_catalog.DATA_MOD_TAG)
     assert panel.selected_object_label().endswith(object_catalog.DATA_MOD_TAG)
+
+
+def test_the_terrain_group_toggle_writes_config_and_reloads_the_terrain_panel(tmp_path) -> None:
+    """GH #271."""
+    from descape import game_dataset, terrain_catalog
+    from descape.value_picker import GROUP_ROLE
+    from testkit import data_mod_fixture
+
+    mod = data_mod_fixture.mod_tables(tmp_path)
+    data_mod_fixture.add_terrains(mod)
+    game_dataset.set_data_mod(mod)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tree = window.terrain_panel.view.tree
+
+        def first_group() -> str:
+            return tree.topLevelItem(0).data(0, GROUP_ROLE)
+
+        assert first_group() != terrain_catalog.CATEGORY_MOD_GROUP
+        emitted: list[int] = []
+        window.terrain_panel.terrain_changed.connect(emitted.append)
+        dialog.data_mod_terrain_group_check.setChecked(True)
+        assert _config()["data_mod_terrain_group"] is True
+        assert first_group() == terrain_catalog.CATEGORY_MOD_GROUP
+        dialog.data_mod_terrain_group_check.setChecked(False)
+        assert _config()["data_mod_terrain_group"] is False
+        assert first_group() != terrain_catalog.CATEGORY_MOD_GROUP
+        assert emitted == [], "the armed terrain stays listed, so the toggle never re-arms"
+    finally:
+        dialog.close()
+        conftest.close_window(window)

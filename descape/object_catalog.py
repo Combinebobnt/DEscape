@@ -162,6 +162,30 @@ def dat_terrains() -> dict[int, dict]:
     return {int(k): dict(v) for k, v in _dat_table().get("terrains", {}).items()}
 
 
+def is_aoe2_terrain(terrain_id: int) -> bool:
+    """Whether the committed AoE2 table has terrain_id, whatever dataset or data mod is in effect."""
+    return str(terrain_id) in _aoe2_dat_table().get("terrains", {})
+
+
+@game_dataset.cache(maxsize=1)
+def data_mod_terrain_ids() -> frozenset[int]:
+    """The active data mod's own terrains (GH #271): ids the committed AoE2
+    table lacks, or whose row differs from it in code or string_id, or whose
+    string_id the mod's strings files define. Empty with no data mod."""
+    if game_dataset.data_mod() is None:
+        return frozenset()
+    from descape import asset_source
+
+    aoe2 = _aoe2_dat_table().get("terrains", {})
+    renamed = asset_source.data_mod_string_ids()
+    def changed(key: str, row: dict) -> bool:
+        old = aoe2.get(key)
+        return old is None or (old.get("code"), old.get("string_id")) != (row.get("code"), row.get("string_id"))
+
+    rows = _dat_table().get("terrains", {})
+    return frozenset(int(key) for key, row in rows.items() if changed(key, row) or row.get("string_id") in renamed)
+
+
 def dat_terrain_restrictions() -> dict[int, frozenset[int]]:
     """restriction id -> the terrain ids that .dat restriction row passes, for
     every id an object's `restriction` key names plus the Beach row 2

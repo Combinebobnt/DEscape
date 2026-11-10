@@ -3309,7 +3309,7 @@ class SettingsDialog(QDialog):
         self._window._apply_mod_art_change(f"Mod art from {title}: {'on' if drawn else 'off'}")
 
     def _add_data_mod_section(self, layout: QVBoxLayout) -> None:
-        """GH #265: two Units catalog options for a data mod in effect, applied at once."""
+        """GH #265: two Units catalog options for a data mod in effect, and GH #271's Terrain panel one, applied at once."""
         layout.addWidget(QLabel("Data mods (File > Data Mod):"))
         self.data_mod_hide_unchanged_check = QCheckBox("Hide unchanged objects in the Units catalog")
         self.data_mod_hide_unchanged_check.setToolTip(
@@ -3328,12 +3328,28 @@ class SettingsDialog(QDialog):
         self.data_mod_label_check.setChecked(settings.get_data_mod_label_shown())
         self.data_mod_label_check.toggled.connect(self._on_data_mod_label_toggled)
         layout.addWidget(self.data_mod_label_check)
+        self.data_mod_terrain_group_check = QCheckBox("List the data mod's own terrains in one group")
+        self.data_mod_terrain_group_check.setToolTip(
+            'In the Terrain panel, a "Mod terrains" group at the top holds every terrain the data mod '
+            "adds or changes, instead of each in its category."
+        )
+        self.data_mod_terrain_group_check.setChecked(settings.get_data_mod_terrain_group())
+        self.data_mod_terrain_group_check.toggled.connect(self._on_data_mod_terrain_group_toggled)
+        layout.addWidget(self.data_mod_terrain_group_check)
 
     def _on_data_mod_hide_unchanged_toggled(self, hide: bool) -> None:
         settings.set_data_mod_hide_unchanged(hide)
         self._window.units_panel.refresh_owner_filter()
         shown = "hidden from" if hide else "listed in"
         self._window._log_status(f"Objects a data mod did not change: {shown} the Units catalog")
+
+    def _on_data_mod_terrain_group_toggled(self, grouped: bool) -> None:
+        settings.set_data_mod_terrain_group(grouped)
+        self._window.terrain_panel.reload_catalog()
+        if self._window.mode == "terrain":
+            self._window._apply_left_pane_floor()
+        where = "in one group" if grouped else "in their categories"
+        self._window._log_status(f"A data mod's own terrains: listed {where} in the Terrain panel")
 
     def _on_data_mod_label_toggled(self, shown: bool) -> None:
         settings.set_data_mod_label_shown(shown)
@@ -20475,10 +20491,13 @@ class ViewerWindow(QMainWindow):
 
     def _refresh_game_lists(self) -> None:
         """Every long-lived list built from game data: the Units catalog and its
-        thumbnails, the terrain swatches, the wall and cliff menus, the AI list."""
+        thumbnails, the terrain picker and its swatches, the wall and cliff menus, the AI list."""
         self.units_panel.reload_catalog()
         self.units_panel.refresh_thumbnails()
-        self.terrain_panel.view.refresh_swatches()
+        # Fresh rows and cells: no refresh_swatches() pass needed after it.
+        self.terrain_panel.reload_catalog()
+        if self.mode == "terrain":
+            self._apply_left_pane_floor()  # a mod's names can be wider
         self._refresh_unit_tool_menus()
         self._ai_choices = None
         self._ai_roots = None

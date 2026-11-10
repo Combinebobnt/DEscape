@@ -41,6 +41,8 @@ from descape import item_activation
 # Past Qt.UserRole (which already holds the row's value on column 0).
 _HIDDEN_ROLE = Qt.UserRole + 1
 _SEARCH_ROLE = Qt.UserRole + 2
+# On a group heading: the group's name, without the "(N)" count (GH #271).
+GROUP_ROLE = Qt.UserRole + 3
 
 _PREVIEW_BOX_PX = 64
 
@@ -198,6 +200,7 @@ class ValuePickerView(QWidget):
             by_group.setdefault(item.group, []).append(item)
         for group, members in by_group.items():
             heading = QTreeWidgetItem([f"{group} ({len(members)})"])
+            heading.setData(0, GROUP_ROLE, group)
             self.tree.addTopLevelItem(heading)
             for item in sorted(members, key=lambda i: i.label):
                 heading.addChild(self._make_row(item))
