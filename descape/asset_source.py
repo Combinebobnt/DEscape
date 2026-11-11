@@ -628,16 +628,21 @@ def read_unit_icon_in(
     layers: tuple[Path, ...] | None = None,
 ):
     """get_unit_icon() under a passed install and portrait layers, uncached and
-    thread-safe when layers is given, downscaled to fit px x px when px is given; or None."""
+    thread-safe when layers is given, downscaled to fit px x px when px is given; or None.
+    Colour and alpha are downscaled apart: an RGBA resize premultiplies, which
+    would lose the shading DE keeps under a portrait's transparent player-colour
+    region (catalog_thumbs.tinted(), GH #372)."""
     arr = _read_rgba(unit_icon_path_in(install, icon, building, layers))
     if arr is None or px is None:
         return arr
     import numpy as np
     from PIL import Image
 
-    image = Image.fromarray(np.asarray(arr))
-    image.thumbnail((px, px), Image.LANCZOS)
-    return np.array(image)
+    rgb = Image.fromarray(np.ascontiguousarray(arr[..., :3]), "RGB")
+    alpha = Image.fromarray(np.ascontiguousarray(arr[..., 3]), "L")
+    rgb.thumbnail((px, px), Image.LANCZOS)
+    alpha.thumbnail((px, px), Image.LANCZOS)
+    return np.dstack((np.array(rgb), np.array(alpha)))
 
 
 # A byte mask of an uncompressed DDS pixel format -> the byte it selects.

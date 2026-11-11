@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     button_grid,
+    civ_art,
     library_compat,
     messages_fields,
     object_catalog,
@@ -2603,7 +2604,8 @@ class TriggerPanel(QWidget):
             layout.deleteLater()
 
     def refresh_portraits(self) -> None:
-        """GH #363: redraws the open form's button grid and instruction preview after the portrait files change."""
+        """GH #363: redraws the open form's button grid and instruction preview after the portrait files change,
+        or a player's portrait civ (GH #372)."""
         if self._button_grid is not None:
             self._button_grid.refresh()
         if self._instruction_preview is not None:
@@ -2870,7 +2872,8 @@ class TriggerPanel(QWidget):
         names = [] if manager is None else [label for label, _id in object_catalog.variable_choices(manager)]
         fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
         preview.bind(
-            fields, entry, self._read, names, self._player_colors, self._fit_property_height, self._emit_instruction_view
+            fields, entry, self._read, names, self._player_colors, self._fit_property_height, self._emit_instruction_view,
+            portrait_civ_for=lambda player: civ_art.player_portrait_civ(self._loaded, player),
         )
         self._instruction_preview = preview
 

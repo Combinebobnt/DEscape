@@ -227,12 +227,24 @@ def derived_category(dat_entry: dict) -> str:
     return "Others"
 
 
-def icon_for(object_id: int) -> int | None:
-    """The .dat's icon index for an object (GH #140's unit portrait), or None
-    for -1 or an id the committed catalog lacks."""
+def icon_for(object_id: int, civ: int | None = None) -> int | None:
+    """The .dat's icon index for an object (GH #140's unit portrait), civ's own
+    copy's when its row has one (GH #372's `civ_icons`), or None for -1 or an
+    id the committed catalog lacks."""
     entry = _dat_entry("objects", object_id)
-    icon = None if entry is None else entry.get("icon")
+    if entry is None:
+        return None
+    icon = entry.get("icon")
+    if civ is not None:
+        icon = entry.get("civ_icons", {}).get(str(civ), icon)
     return icon if isinstance(icon, int) and icon >= 0 else None
+
+
+def portrait_civ_key(object_id: int, civ: int | None) -> int | None:
+    """civ when object_id's row has its own icon for it, else None: two civs
+    showing the same portrait share one cache entry (GH #372)."""
+    entry = _dat_entry("objects", object_id)
+    return civ if civ is not None and entry is not None and str(civ) in entry.get("civ_icons", {}) else None
 
 
 def is_building(object_id: int) -> bool:
@@ -247,10 +259,10 @@ def is_building(object_id: int) -> bool:
 _BUILDING_PORTRAIT_CONSTS = frozenset({1089})
 
 
-def portrait_for(object_id: int) -> tuple[int | None, bool]:
-    """(icon_for(), is_building() or a _BUILDING_PORTRAIT_CONSTS member):
-    asset_source.get_unit_icon()'s arguments."""
-    return icon_for(object_id), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
+def portrait_for(object_id: int, civ: int | None = None) -> tuple[int | None, bool]:
+    """(icon_for(object_id, civ), is_building() or a _BUILDING_PORTRAIT_CONSTS
+    member): asset_source.get_unit_icon()'s arguments."""
+    return icon_for(object_id, civ), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
 
 
 def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str) -> bool:

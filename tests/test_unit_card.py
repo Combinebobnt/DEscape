@@ -436,3 +436,55 @@ def test_refresh_thumbnails_shows_the_slot_with_an_install_and_hides_it_without(
     card.refresh_thumbnails()
     assert not card.portrait.isVisibleTo(card)
     assert card.minimumSizeHint().width() == no_install_width
+
+
+# -- GH #372: the owner's civ picks the portrait --------------------------------------
+
+_BLUE = conftest.CIV_PORTRAIT_BLUE
+
+
+def test_set_civ_swaps_the_shown_portrait(archer_civ_portrait) -> None:
+    card, executor = _manual_card(stable=True)
+    card.show_const(_ARCHER)
+    executor.run(0)
+    _pump(lambda: card.portrait_source is not None)
+    assert _portrait_centre(card) == _UNIT_RED
+    card.set_civ(archer_civ_portrait)
+    assert card.portrait_source is None, "blank while the civ's portrait decodes"
+    executor.run(1)
+    _pump(lambda: card.portrait_source is not None)
+    assert _portrait_centre(card) == _BLUE
+    card.set_civ(1)
+    assert _portrait_centre(card) == _UNIT_RED, "GAIA's, from the memo"
+    card.set_civ(2)
+    assert len(executor.submitted) == 2, "another civ without its own portrait re-shows nothing"
+
+
+def test_two_cards_on_one_loader_show_their_own_owners(archer_civ_portrait) -> None:
+    from descape.catalog_thumbs import ThumbLoader
+
+    executor = ManualExecutor()
+    loader = ThumbLoader(executor=executor)
+    inspector, placing = _card(loader=loader), _card(stable=True, loader=loader)
+    placing.set_civ(archer_civ_portrait)
+    inspector.show_const(_ARCHER)
+    placing.show_const(_ARCHER)
+    for index in range(2):
+        _pump(lambda index=index: len(executor.submitted) > index)
+        executor.run(index)
+    _pump(lambda: inspector.portrait_source is not None and placing.portrait_source is not None)
+    assert _portrait_centre(inspector) == _UNIT_RED
+    assert _portrait_centre(placing) == _BLUE
+
+
+def test_a_late_portrait_for_the_previous_owner_is_ignored(archer_civ_portrait) -> None:
+    card, executor = _manual_card(stable=True)
+    card.set_civ(archer_civ_portrait)
+    card.show_const(_ARCHER)
+    card.set_civ(None)
+    executor.run(0)  # the civ's portrait, asked for before the owner changed
+    _pump(lambda: len(executor.submitted) == 2)
+    assert card.portrait_source is None
+    executor.run(1)
+    _pump(lambda: card.portrait_source is not None)
+    assert _portrait_centre(card) == _UNIT_RED

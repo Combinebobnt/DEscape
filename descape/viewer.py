@@ -99,6 +99,7 @@ from descape import (
     autosave,
     brush,
     catalog_thumbs,
+    civ_art,
     cliff_catalog,
     cliff_chain,
     clipboard_history,
@@ -4434,6 +4435,8 @@ class ViewerWindow(QMainWindow):
             on_garrison_duplicate=self._on_garrison_duplicate,
             # GH #186: a pull like map_size, never the lazily built unit_edits model.
             codec_field_supported=lambda name: self.scenario is None or unit_field_supported(self.scenario, name),
+            # GH #372: pulled too, so an unsaved Players edit shows at once.
+            portrait_civ_for=lambda player_id: civ_art.player_portrait_civ(self.scenario, player_id),
         )
         self.terrain_panel = TerrainPanel(
             display_mode=settings.get_terrain_picker_mode(), swatch_px=settings.get_terrain_grid_swatch_px()
@@ -13499,6 +13502,9 @@ class ViewerWindow(QMainWindow):
         # Colours, team indices and GH #48's building art (civ, architecture, age).
         if not refresh_player_render_context(self.scenario, self._pending_player_values()):
             return
+        # GH #372: a civilization or architecture edit changes the owners' portraits.
+        self.units_panel.refresh_portrait_civs()
+        self.trigger_panel.refresh_portraits()
         # A live selection coloured by owner follows the recolour.
         self.map_view.set_team_colors(_team_colors(self.scenario))
         self.map_view.refresh_unit_highlight()
@@ -20937,6 +20943,7 @@ class ViewerWindow(QMainWindow):
         if self.map_view._unit_index is not None:
             self._rebuild_unit_index()
         self._refresh_player_labels()
+        self.units_panel.refresh_portrait_civs()
         self.trigger_panel.refresh_portraits()
         self._update_info()
 
@@ -23428,6 +23435,7 @@ class ViewerWindow(QMainWindow):
             mm = self.scenario.map_manager
             # Before _update_info(), whose stats combo rebuild reads these labels.
             self._refresh_player_labels()
+            self.units_panel.refresh_portrait_civs()
             self._update_info()
             # Only when the panel is actually on screen -- otherwise opening a
             # map would parse a Triggers section nobody asked to see.
@@ -23565,6 +23573,7 @@ class ViewerWindow(QMainWindow):
             self._set_info_children(title, [])
         self._repopulate_stats_players()  # scenario is None: clears and disables the combo
         self._refresh_player_labels()  # back to the bare defaults, with no swatches
+        self.units_panel.refresh_portrait_civs()  # GAIA's portraits, with no document
         self.trigger_panel.clear_document()
         self.map_options_panel.clear_document()
         self.players_panel.clear_document()

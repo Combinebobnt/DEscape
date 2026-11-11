@@ -148,13 +148,15 @@ CROSSBOWMAN, LONGBOWMAN, KNIGHT, MILITIA, BARRACKS = 7, 8, 38, 74, 12
 
 def _edit_rows(mod: game_dataset.DataModTables) -> None:
     """Militia repurposed and a Knight with another icon (both changed); a Longbowman
-    other only in civs, a Crossbowman only in graphic_id, Barracks only in its garrison flag (all unchanged)."""
+    other only in civs, an Archer only in civ_icons (GH #372), a Crossbowman only in
+    graphic_id, Barracks only in its garrison flag (all unchanged)."""
     folder = mod.tables_dir
     catalog = data_mod_fixture.load(folder, "object_catalog.json")
     objects = catalog["objects"]
     objects[str(MILITIA)]["code"] = "MODWORKER"
     objects[str(KNIGHT)]["icon"] = 999
     objects[str(LONGBOWMAN)]["civs"] = [99]
+    objects[str(ARCHER)]["civ_icons"] = {"3": 777}
     data_mod_fixture.save(folder, "object_catalog.json", catalog)
     graphics = data_mod_fixture.load(folder, "unit_graphic_map.json")
     graphics["graphics"][str(CROSSBOWMAN)]["graphic_id"] += 1000

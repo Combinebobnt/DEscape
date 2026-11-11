@@ -178,6 +178,34 @@ def fake_install(tmp_path):
     yield
     asset_source.set_install_path_override(None)
 
+# GH #372: the Archer's own portrait for one civ, a blue one beside GAIA's red 017.
+CIV_PORTRAIT_CIV = 46
+CIV_PORTRAIT_ICON = 613
+CIV_PORTRAIT_BLUE = (10, 10, 200, 255)
+
+
+@pytest.fixture()
+def archer_civ_portrait(fake_install, monkeypatch):
+    """The fake install plus a portrait 613 that the Archer (4) shows for civ 46 only."""
+    from PIL import Image
+
+    from descape import asset_source, object_catalog
+
+    units = asset_source.get_install_path() / "widgetui" / "textures" / "ingame" / "units"
+    Image.new("RGBA", (32, 32), CIV_PORTRAIT_BLUE).save(units / f"{CIV_PORTRAIT_ICON}_50730.DDS", format="DDS")
+    asset_source.clear_install_caches()
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        if section == "objects" and id_ == 4:
+            row = {**row, "civ_icons": {str(CIV_PORTRAIT_CIV): CIV_PORTRAIT_ICON}}
+        return row
+
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    return CIV_PORTRAIT_CIV
+
+
 # Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
 # sites keep working; the implementation now lives in testkit/ so tools/
 # scripts, which can't import conftest, can share it. See that module for

@@ -12401,3 +12401,59 @@ def test_the_execution_order_row_stays_editable_after_a_trigger_edit(
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+@pytest.mark.parametrize("source_player, red", [(1, 200), (0, 100)], ids=["player", "gaia"])
+def test_the_preview_portrait_follows_the_source_players_civ(monkeypatch, source_player, red) -> None:
+    """GH #372: a freshly built form's preview takes the source player's civ, GAIA's for GAIA."""
+    import numpy as np
+
+    from descape import asset_source, civ_art, object_catalog
+
+    def portrait(icon, _building):
+        return np.full((8, 8, 4), (200 if icon == 999 else 100, 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        return {**row, "civ_icons": {"46": 999}} if section == "objects" and id_ == 4 else row
+
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    monkeypatch.setattr(civ_art, "player_portrait_civ", lambda _scenario, pid: 46 if pid == 1 else None)
+    window = _instruction_window(object_list_unit_id=4, source_player=source_player)
+    try:
+        preview = _preview(window.trigger_panel)
+        assert preview._icon_pixmap.toImage().pixelColor(4, 4).red() == red
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_preview_portrait_fills_its_player_colour_region(monkeypatch) -> None:
+    """GH #372: the source player's colour, the same one the icon frame takes."""
+    import numpy as np
+
+    from descape import asset_source
+
+    def portrait(*_args):
+        arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
+        arr[2:6, 2:6] = (255, 255, 255, 0)  # DE's transparent region, full-bright shading
+        return arr
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window = _instruction_window(object_list_unit_id=4, source_player=2)
+    try:
+        view = _preview(window.trigger_panel).view
+        image = view.icon.toImage()
+        from descape import catalog_thumbs
+
+        assert view.tint == tuple(window.scenario.player_colors[2][:3])
+        expected = catalog_thumbs.tinted(np.array([[[255, 255, 255, 0]]], np.uint8), view.tint)[0, 0, :3].tolist()
+        assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

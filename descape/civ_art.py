@@ -21,6 +21,10 @@ module derives that triple from the scenario's own player fields. Qt-free.
   tokens through `player_fields.ROR_CIVILIZATIONS` (its PERSIAN-CIV is RoR 9,
   not AoE2's Persians). Its ages are stored 2..6 like AoE2's; its table has
   no `max_age`, so Post-Iron draws as Iron.
+- A player's unit and building portraits follow `art_civ` too (GH #372,
+  `portrait_civ()`): in play AoE2 shows the architecture civ's portrait,
+  though its own editor mostly shows the civilization's. Return of Rome
+  measured mixed and follows the same rule (user decision).
 
 Civilization values are ints below scenario version 1.56 (CivilizationOld,
 equal to the .dat civ index) and str16 tokens such as 'HUN-CIV' from 1.56 on
@@ -150,3 +154,18 @@ def player_art(
                 values.append(None)
         result.append(resolve(*values, ror=ror))
     return tuple(result)
+
+
+def portrait_civ(art: Art | None) -> int | None:
+    """The civ whose portraits a player shows (GH #372): `art_civ`, the
+    architecture else the civilization; None for GAIA and for no art."""
+    return None if art is None else art[0]
+
+
+def player_portrait_civ(scenario, player_id: int) -> int | None:
+    """portrait_civ() of player_id's art on scenario, through
+    render.player_art_for(): None for a file shown with the other game's data
+    or a scenario with no player_art (or None)."""
+    from descape import render
+
+    return portrait_civ(render.player_art_for(scenario, player_id))

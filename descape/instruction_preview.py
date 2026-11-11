@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, constant_picker, message_markup, object_catalog
+from descape import asset_source, catalog_thumbs, constant_picker, message_markup, object_catalog
 from descape.instruction_overlay import ICON_PX, SLOT_OFFSETS, InstructionView
 from descape.value_picker import ValueLineEdit
 from descape.viewer_common import pixmap_from_rgba
@@ -70,27 +70,35 @@ class InstructionPreview(QWidget):
         self._flags: dict[str, object] = {}
         self._variable_names: tuple[str, ...] = ()
         self._player_colors = None
+        # GH #372: player id -> the civ whose portraits it shows, or None for GAIA's.
+        self._portrait_civ_for = None
         self._on_resize = None
         self._on_view = None
         self._icon_key = object()
         self._icon_pixmap: QPixmap | None = None
+        # The portrait at full size, for its player-colour region (GH #372), and its last tint.
+        self._icon_arr = None
+        self._tinted: tuple[object, QPixmap | None] = (None, None)
         self._last_height = None
 
     # -- wiring --------------------------------------------------------------
 
     def bind(
-        self, fields: dict, entry, read, variable_names=(), player_colors=None, on_resize=None, on_view=None
+        self, fields: dict, entry, read, variable_names=(), player_colors=None, on_resize=None, on_view=None,
+        portrait_civ_for=None,
     ) -> None:
         """Follow `fields` (field name -> its row widget) for `entry`. `read`
         is the panel's own getattr; `on_resize` runs when the preview's height
         for its width changes, so the form can re-fit; `on_view` takes each
-        rebuilt InstructionView."""
+        rebuilt InstructionView; `portrait_civ_for` names the source player's
+        portrait civ (GH #372), GAIA's portrait without it."""
         self._fields = dict(fields)
         self._entry = entry
         self._read = read
         self._flags = {name: read(entry, name) for name in _ENTRY_FLAGS}
         self._variable_names = tuple(variable_names)
         self._player_colors = player_colors
+        self._portrait_civ_for = portrait_civ_for
         self._on_resize = on_resize
         self._on_view = on_view
         for widget in self._fields.values():
@@ -184,7 +192,10 @@ class InstructionPreview(QWidget):
         self.note_label.setVisible(bool(notes))
 
         icon = self._icon(self._int(self._value("object_list_unit_id")))
-        self.view = InstructionView(message_markup.to_html(runs, colors["WHITE"]), slot, icon, self._tint(runs))
+        tint = self._tint(runs)
+        if icon is not None and self.icon_source == "icon" and tint is not None:
+            icon = self._tinted_icon(tint)
+        self.view = InstructionView(message_markup.to_html(runs, colors["WHITE"]), slot, icon, tint)
 
         self.footer_label.setText(f"{self._shows_for()}  |  {self._sound()}")
         self.updateGeometry()
@@ -193,21 +204,34 @@ class InstructionPreview(QWidget):
             self._on_view(self.view)
 
     def _icon(self, unit_id: int) -> QPixmap | None:
+        civ = object_catalog.portrait_civ_key(unit_id, self._source_civ())
         # The generation moves on a data mod switch or a Mod Art toggle (GH #363).
-        key = (unit_id, asset_source.install_generation())
+        key = (unit_id, civ, asset_source.install_generation())
         if key != self._icon_key:
             self._icon_key = key
-            self._icon_pixmap, self.icon_source = None, None
+            self._icon_pixmap, self.icon_source, self._icon_arr = None, None, None
             if unit_id >= 0:
-                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_id))
+                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_id, civ))
                 if arr is not None:
-                    self._icon_pixmap, self.icon_source = pixmap_from_rgba(arr, ICON_PX), "icon"
+                    self._icon_pixmap, self.icon_source, self._icon_arr = pixmap_from_rgba(arr, ICON_PX), "icon", arr
                 else:
                     sprite = constant_picker.preview_pixmap(unit_id)
                     if sprite is not None:
                         scaled = sprite.scaled(ICON_PX, ICON_PX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                         self._icon_pixmap, self.icon_source = scaled, "sprite"
         return self._icon_pixmap
+
+    def _tinted_icon(self, tint: tuple[int, int, int]) -> QPixmap:
+        """The portrait with its player-colour region in `tint`, as the game draws it; kept until either changes."""
+        key = (self._icon_key, tint)
+        if self._tinted[0] != key:
+            self._tinted = (key, pixmap_from_rgba(catalog_thumbs.tinted(self._icon_arr, tint), ICON_PX))
+        return self._tinted[1]
+
+    def _source_civ(self) -> int | None:
+        """The source player's portrait civ, as the game shows it (GH #372)."""
+        player = self._int(self._value("source_player"))
+        return None if self._portrait_civ_for is None or player < 0 else self._portrait_civ_for(player)
 
     def _tint(self, runs) -> tuple[int, int, int] | None:
         """The leading tag colour when use_tag_color_for_icon is 1, else the

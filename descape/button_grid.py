@@ -39,7 +39,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import asset_source, civ_availability, command_buttons, object_catalog, settings, train_locations
+from descape import (
+    asset_source,
+    catalog_thumbs,
+    civ_availability,
+    command_buttons,
+    object_catalog,
+    settings,
+    train_locations,
+)
 from descape.command_buttons import TECH, UNIT, building_name
 from descape.train_locations import (  # noqa: F401 -- callers read the effect names here
     ADD_TRAIN,
@@ -605,18 +613,24 @@ class ButtonGrid(QWidget):
         return QIcon(canvas)
 
     def _icon(self, id_: int, kind: str) -> QPixmap | None:
-        """A unit's portrait or a tech's icon, cached per id until the install generation moves."""
+        """A unit's portrait in the player's civ (GH #372), its player-colour region
+        in the player's colour, or a tech's icon; cached per id, folded civ and
+        colour until the install generation moves."""
         if id_ < 0:
             return None
         generation = asset_source.install_generation()
         if generation != self._icons_generation:  # GH #363: a data mod switch or a Mod Art toggle
             self._icons, self._icons_generation = {}, generation
-        key = (id_, kind)
+        civ = None if kind == TECH else object_catalog.portrait_civ_key(id_, self.context.portrait_civ)
+        rgb = None if kind == TECH else self.context.team_rgb
+        key = (id_, kind, civ, rgb)
         if key not in self._icons:
             if kind == TECH:
                 arr = asset_source.get_tech_icon(command_buttons.catalog_row(id_, TECH).get("icon"))
             else:
-                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(id_))
+                arr = asset_source.get_unit_icon(*object_catalog.portrait_for(id_, civ))
+            if arr is not None and rgb is not None:
+                arr = catalog_thumbs.tinted(arr, rgb)
             self._icons[key] = None if arr is None else pixmap_from_rgba(arr, ICON_PX)
         return self._icons[key]
 

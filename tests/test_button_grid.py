@@ -722,3 +722,64 @@ def test_a_tech_the_starting_age_has_gets_a_red_cell_and_leaves_the_grid(monkeyp
         assert (222, "tech") not in _cell(grid, 2, 1).items, "Man-At-Arms is already researched"
     finally:
         _close(window)
+
+
+@pytest.mark.parametrize("player, red", [(1, 200), (-1, 100)], ids=["player", "every_player"])
+def test_a_unit_portrait_follows_the_players_civ(monkeypatch, player, red) -> None:
+    """GH #372: player 1's civ has its own Spearman portrait (icon 999); "every player" shows GAIA's."""
+    import numpy as np
+
+    from descape import asset_source, civ_art, object_catalog
+
+    def portrait(icon, _building):
+        return np.full((8, 8, 4), (200 if icon == 999 else 100, 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        return {**row, "civ_icons": {"46": 999}} if section == "objects" and id_ == _SPEARMAN else row
+
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    monkeypatch.setattr(civ_art, "player_portrait_civ", lambda _scenario, pid: 46 if pid == 1 else None)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": player},
+    )
+    try:
+        grid = _grid(window)
+        assert grid._icon(_SPEARMAN, "unit").toImage().pixelColor(4, 4).red() == red
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("player", [1, -1], ids=["player", "every_player"])
+def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> None:
+    """GH #372: DE leaves the region transparent for the game to fill; "every player" gets GAIA's colour."""
+    import numpy as np
+
+    from descape import asset_source
+
+    def portrait(*_args):
+        arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
+        arr[2:6, 2:6] = (255, 255, 255, 0)  # DE's transparent region, full-bright shading
+        return arr
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": player},
+    )
+    try:
+        image = _grid(window)._icon(_SPEARMAN, "unit").toImage()
+        from descape import catalog_thumbs
+
+        rgb = tuple(window.scenario.player_colors[max(player, 0)][:3])
+        expected = catalog_thumbs.tinted(np.array([[[255, 255, 255, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
+        assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+        assert image.pixelColor(0, 0).getRgb()[:3] == (0, 0, 0), "the opaque art stays"
+    finally:
+        _close(window)

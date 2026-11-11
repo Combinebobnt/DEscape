@@ -83,6 +83,11 @@ Castle 102, Imperial 103) among its required techs, else the highest age of
 those it requires. Measured in game (2026-10-16, Spanish): a player starting
 in a later age already has every generic tech of an earlier one (Loom at a
 Feudal start, Bloodlines at Imperial, Chemistry only at Post-Imperial).
+An object's `civ_icons` key (GH #372) maps a civ index (as a string) to the
+`icon_id` of that civ's own copy, present only for the civs whose copy exists
+and differs from GAIA's, disabled copies included (scenarios place the monk,
+which every civ has disabled). object_catalog.icon_for() reads it for the
+player's architecture civ. Omitted when no civ differs.
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -108,7 +113,18 @@ def _blank_graphic_ids(graphics: list) -> frozenset[int]:
     return frozenset(i for i, g in enumerate(graphics) if g is not None and g.name.strip().upper() == "BLANK")
 
 
-def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
+def _civ_icons(unit_const: int, icon: int, civs) -> dict[str, int]:
+    """{civ index: icon} for each civ whose copy of the const has another icon
+    than GAIA's; a civ whose unit list stops short of the const is skipped."""
+    icons: dict[str, int] = {}
+    for civ_index, civ in enumerate(civs[1:], start=1):
+        unit = civ.units[unit_const] if unit_const < len(civ.units) else None
+        if unit is not None and unit.icon_id != icon:
+            icons[str(civ_index)] = unit.icon_id
+    return icons
+
+
+def _object_entries(units: list, blank_ids: frozenset[int], civs=()) -> dict[str, dict]:
     entries: dict[str, dict] = {}
     for unit_const, unit in enumerate(units):
         if unit is None or not unit.name:
@@ -125,6 +141,9 @@ def _object_entries(units: list, blank_ids: frozenset[int]) -> dict[str, dict]:
         # Omitted when false, so the committed diff is only the ~200 consts that need it.
         if unit.standing_graphic[0] == -1 or unit.standing_graphic[0] in blank_ids:
             entries[str(unit_const)]["no_graphic"] = True
+        civ_icons = _civ_icons(unit_const, unit.icon_id, civs)
+        if civ_icons:
+            entries[str(unit_const)]["civ_icons"] = civ_icons
         resources = _resources(unit.resource_storages)
         if resources:
             entries[str(unit_const)]["resources"] = resources
@@ -472,7 +491,7 @@ def main() -> None:
             "No BLANK graphic in the .dat; the no_graphic rule needs re-checking",
             "only objects with no standing graphic are marked no_graphic",
         )
-    objects = _object_entries(data.civs[0].units, blank_ids)
+    objects = _object_entries(data.civs[0].units, blank_ids, data.civs)
     techs = _tech_entries(data.techs)
     availability = _civ_availability(data)
     _add_civs(objects, "train", availability, lambda sets: sets[1])

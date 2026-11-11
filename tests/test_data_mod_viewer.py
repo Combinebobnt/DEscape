@@ -577,6 +577,26 @@ def test_players_tab_lists_the_mods_civs_and_relabels_ages_on_a_civ_edit(window,
     assert civs.findText("Britons") >= 0
 
 
+def test_a_mod_civs_player_shows_that_civs_own_portrait(window, side_mods, tmp_path):
+    """GH #372: a mod's civ_icons are keyed by its own civ ids (civilizations.json's order)."""
+    from descape import civ_art
+
+    folder = side_mods.tables[side_mods.alpha].tables_dir
+    catalog = json.loads((folder / "object_catalog.json").read_text())
+    catalog["objects"][str(ARCHER)]["civ_icons"] = {"2": 4242}
+    (folder / "object_catalog.json").write_text(json.dumps(catalog))
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    _menu(window)["Alpha"].trigger()
+    _pick_civ(window, "MOD-B-CIV")
+    assert civ_art.player_portrait_civ(window.scenario, 1) == 2
+    assert object_catalog.icon_for(ARCHER, 2) == 4242
+    window.units_panel.select_owner(1)
+    assert window.units_panel.placing_card._civ == 2, "the Players edit reached the units panel"
+    _pick_civ(window, "MOD-A-CIV")
+    assert window.units_panel.placing_card._civ == 1
+    assert object_catalog.icon_for(ARCHER, 1) == object_catalog.icon_for(ARCHER), "no portrait of its own"
+
+
 def test_a_civ_the_mod_lacks_shows_its_first_civ_and_random_and_comes_back_without_it(
     window, side_mods, tmp_path, monkeypatch
 ):

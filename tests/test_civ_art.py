@@ -136,6 +136,32 @@ def test_a_file_without_architecture_falls_through_to_its_civ(monkeypatch):
     assert civ_art.player_art(loaded, _pending_by_field(model))[1] == (CHINESE, 2, CHINESE)
 
 
+def test_the_portrait_civ_is_the_architecture_else_the_civilization():
+    """GH #372: portraits follow art_civ, as the game does in play."""
+    loaded, model = _blank_with_options()
+    model.set_value(player_field_id("civilization", 1), "CHINESE-CIV")
+    model.set_value(player_field_id("architecture", 1), "TEUTONIC-CIV")
+    model.set_value(player_field_id("civilization", 2), "CHINESE-CIV")
+    refresh_player_render_context(loaded, _pending_by_field(model))
+    assert civ_art.player_portrait_civ(loaded, 1) == TEUTONS
+    assert civ_art.player_portrait_civ(loaded, 2) == CHINESE, "a random architecture falls through to the civ"
+    assert civ_art.player_portrait_civ(loaded, 0) is None, "GAIA"
+    assert civ_art.player_portrait_civ(loaded, 3) is None, "RANDOM-CIV"
+    assert civ_art.portrait_civ(None) is None
+    assert civ_art.player_portrait_civ(None, 1) is None, "no open document"
+
+
+def test_a_file_shown_with_the_other_games_data_has_no_portrait_civ():
+    from descape import game_dataset
+
+    loaded, model = _blank_with_options()
+    model.set_value(player_field_id("civilization", 1), "CHINESE-CIV")
+    refresh_player_render_context(loaded, _pending_by_field(model))
+    assert civ_art.player_portrait_civ(loaded, 1) == CHINESE
+    game_dataset.set_active(game_dataset.ROR)
+    assert civ_art.player_portrait_civ(loaded, 1) is None
+
+
 @pytest.mark.parametrize("error", [ValueError, TypeError, IndexError])
 def test_surprising_player_data_never_makes_a_file_unopenable(monkeypatch, error):
     def boom(*_a, **_k):
@@ -640,6 +666,39 @@ def test_the_viewers_players_edit_tail_rederives_the_art_and_invalidates():
         window._after_player_color_change()
         assert window.scenario.player_art[1] == (CHINESE, 2, None)
         assert window._cache._mutation_epoch > epoch, "the art edit evicted nothing"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_the_units_panel_portraits_follow_a_players_edit_a_data_switch_and_close(monkeypatch):
+    """GH #372: the viewer pushes the owners' portrait civs on every path that changes them."""
+    import conftest
+
+    if not conftest.PYQT5_AVAILABLE:
+        pytest.skip("PyQt5 not importable")
+    window = conftest.blank_window()
+    try:
+        panel = window.units_panel
+        panel.select_owner(1)
+        assert panel.placing_card._civ is None, "the template's players are all RANDOM-CIV"
+        refreshed = []
+        monkeypatch.setattr(window.trigger_panel, "refresh_portraits", lambda: refreshed.append(True))
+        spec = {s.field_id: s for s in player_fields.specs_for(window.scenario)}["architecture"]
+        window.set_player_field(spec, 1, "CHINESE-CIV")
+        assert panel.placing_card._civ == panel.catalog_view._civ == CHINESE
+        assert refreshed, "an open button grid or instruction preview redraws in the new civ"
+        window.undo()
+        assert panel.placing_card._civ is None, "the edit undone"
+        assert len(refreshed) == 2
+        monkeypatch.setattr(civ_art, "player_portrait_civ", lambda _scenario, pid: TEUTONS if pid == 1 else None)
+        window._refresh_game_assets()
+        assert panel.placing_card._civ == TEUTONS, "a data mod or game data switch re-syncs"
+        monkeypatch.undo()
+        window.option_edits.set_value(player_field_id("architecture", 1), "CHINESE-CIV")
+        window._after_player_color_change()
+        window.close_scenario()
+        assert panel.placing_card._civ is None, "no document: GAIA's portraits"
     finally:
         conftest.close_window(window)
 

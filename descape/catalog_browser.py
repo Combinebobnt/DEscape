@@ -209,6 +209,8 @@ class CatalogBrowserView(QWidget):
         self._pinned: int | None = None
         # Behind a portrait's player-colour region: the Owner combo's, pushed by set_team_color().
         self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
+        # The Owner combo's portrait civ (GH #372), pushed by set_civ(); None shows GAIA's.
+        self._civ: int | None = None
         # GH #32: consts set_excluded() hides, and the row values that hides.
         self._excluded: frozenset[int] = frozenset()
         self._excluded_rows: frozenset[int] = frozenset()
@@ -405,6 +407,14 @@ class CatalogBrowserView(QWidget):
         self._team_rgb = tuple(rgb)
         self._request_viewport()
 
+    def set_civ(self, civ: int | None) -> None:
+        """The Owner's portrait civ (GH #372): re-requests the rows on screen; a
+        row scrolled back into view takes the new civ's from the memo."""
+        if civ == self._civ:
+            return
+        self._civ = civ
+        self._request_viewport()
+
     # -- category, class, filter -------------------------------------------------
 
     def _set_category(self, category: str) -> None:
@@ -553,16 +563,17 @@ class CatalogBrowserView(QWidget):
             return
         wanted = []
         for value in self._visible_values():
-            hit, icon = self._loader.cached(_thumb_const(value), px)
+            hit, icon = self._loader.cached(_thumb_const(value), px, self._civ)
             if hit:
                 self._set_icon(value, icon, px)
             else:
                 wanted.append(_thumb_const(value))
         if wanted:
-            self._loader.request(wanted, px, client=self)
+            self._loader.request(wanted, px, client=self, civ=self._civ)
 
-    def _on_thumb_ready(self, const: int, px: int, icon) -> None:
-        if px != self._icon_px():
+    def _on_thumb_ready(self, const: int, px: int, icon, civ: int | None = None) -> None:
+        # Another owner's portrait (a card's, or from before an Owner switch) never lands on a row.
+        if px != self._icon_px() or civ != object_catalog.portrait_civ_key(const, self._civ):
             return
         for value in (const, *place_random.RANDOM_PICKS):
             if value in self._items and _thumb_const(value) == const:
@@ -570,13 +581,15 @@ class CatalogBrowserView(QWidget):
 
     def _set_icon(self, value: int, icon, px: int) -> None:
         item = self._items[value]
-        icon = catalog_thumbs.team_filled(icon, self._loader.source(_thumb_const(value), px), self._team_rgb, px)
+        const = _thumb_const(value)
+        source = self._loader.source(const, px, self._civ)
+        icon = catalog_thumbs.team_filled(icon, source, self._team_rgb, px, self._loader.art(const, px, self._civ))
         if place_random.is_random(value):
             icon = _random_badge(icon, px)
-        if icon is None and self.mode() == "grid":
-            icon = _glyph(self._by_id[value].name, px)
-        if icon is not None:
-            item.setIcon(icon)
+        if icon is None:
+            # The placeholder, not nothing: the row may still show another owner's portrait (GH #372).
+            icon = _glyph(self._by_id[value].name, px) if self.mode() == "grid" else self._placeholder(px)
+        item.setIcon(icon)
 
     def _on_activated(self, item) -> None:
         if item is None or item.isHidden():

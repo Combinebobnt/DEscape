@@ -16,6 +16,7 @@ from AoE2ScenarioParser.datasets.effects import EffectId
 from descape import civ_art, civ_availability, command_buttons
 from descape.civ_availability import NO_OVERRIDES, Item, Overrides
 from descape.command_buttons import TECH, UNIT
+from descape.terrain_palette import PLAYER_COLORS
 
 CHANGE_TRAIN = "change_train_location"
 ADD_TRAIN = "add_train_location"
@@ -122,6 +123,10 @@ class PlayerContext:
     start_age: int | None = None
     # The raw civilization value, for a data mod's age names (GH #263).
     civ_value: object = None
+    # The civ whose unit portraits the player shows (GH #372, civ_art.portrait_civ()), None for GAIA's.
+    portrait_civ: int | None = None
+    # Behind a portrait's player-colour region: the player's colour, GAIA's without one player.
+    team_rgb: tuple[int, int, int] = tuple(PLAYER_COLORS[0])
 
     def missing(self, id_: int, kind: str) -> str:
         return civ_availability.missing(self.civ, self.overrides, id_, kind, self.start_age)
@@ -143,7 +148,7 @@ def player_context(manager, loaded, player: int, exclude: tuple[int, int] | None
     """`player`'s PlayerContext, leaving out the effect at `exclude`
     ((trigger id, effect index): the one being edited)."""
     if not 1 <= player < civ_art.PLAYER_COUNT:
-        return PlayerContext(player=player)
+        return PlayerContext(player=player, team_rgb=team_rgb(loaded, player))
     edits = tuple(
         edit
         for edit in for_player(location_edits(manager), player)
@@ -157,7 +162,15 @@ def player_context(manager, loaded, player: int, exclude: tuple[int, int] | None
         edits=edits,
         start_age=civ_availability.player_start_age(loaded, player),
         civ_value=civ_availability.player_civ_value(loaded, player),
+        portrait_civ=civ_art.player_portrait_civ(loaded, player),
+        team_rgb=team_rgb(loaded, player),
     )
+
+
+def team_rgb(loaded, player: int) -> tuple[int, int, int]:
+    """`player`'s colour as edited (the scenario's player_colors), GAIA's for any other value."""
+    colors = getattr(loaded, "player_colors", None) or PLAYER_COLORS
+    return tuple(colors[player if 0 <= player < len(colors) else 0][:3])
 
 
 def missing_text(

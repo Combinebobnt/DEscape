@@ -271,6 +271,7 @@ class UnitsPanel(QWidget):
         on_garrison_cut=None,
         on_garrison_duplicate=None,
         codec_field_supported=None,
+        portrait_civ_for=None,
         rng=None,
         on_unit_field_step=None,
         on_rotation_drag=None,
@@ -287,6 +288,8 @@ class UnitsPanel(QWidget):
         self._map_size = map_size or (lambda: None)
         # GH #186: does the loaded file store this Unit field? Pulled at populate time too.
         self._codec_field_supported = codec_field_supported or (lambda _name: True)
+        # GH #372: a player's portrait civ (civ_art.player_portrait_civ()), None for GAIA's portraits.
+        self._portrait_civ_for = portrait_civ_for or (lambda _player_id: None)
         # No-op defaults so the panel stays constructible on its own, the
         # same contract MapOptionsPanel/TriggerPanel/PlayersPanel's
         # callbacks have.
@@ -563,11 +566,25 @@ class UnitsPanel(QWidget):
         return colors[GAIA_PLAYER_ID if player_id is None else player_id]
 
     def _sync_team_colors(self) -> None:
-        """Portrait fills: the Owner combo's for the pick and the list, the inspector Owner's for the selection."""
+        """Portrait fills: the Owner combo's for the pick and the list, the inspector Owner's for the selection.
+        The portrait civs follow the same owners."""
         placing = self._team_rgb(self.owner_combo.currentData())
         self.placing_card.set_team_color(placing)
         self.catalog_view.set_team_color(placing)
         self.selection_card.set_team_color(self._team_rgb(self.unit_field_editors["player"].currentData()))
+        self.refresh_portrait_civs()
+
+    def refresh_portrait_civs(self) -> None:
+        """GH #372: each portrait in its owner's civ, the Owner combo's for the pick and
+        the list, the inspector Owner's for the selection (GAIA's for a mixed group).
+        The viewer calls it when a player's civ can change without a label or colour."""
+        placing = self._portrait_civ(self.owner_combo.currentData())
+        self.placing_card.set_civ(placing)
+        self.catalog_view.set_civ(placing)
+        self.selection_card.set_civ(self._portrait_civ(self.unit_field_editors["player"].currentData()))
+
+    def _portrait_civ(self, player_id) -> int | None:
+        return self._portrait_civ_for(player_id) if isinstance(player_id, int) else None
 
     def select_owner(self, player_id: int) -> bool:
         index = self.owner_combo.findData(player_id)
