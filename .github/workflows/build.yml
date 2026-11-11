@@ -7,19 +7,23 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # Linux and Windows only. macOS outgrew a hosted job's 360 min, so its leg is
-  # build-macos.yml, dispatched by hand, which attaches its tarball to the draft.
+  # macOS runs only the native kernel oracle tests: its full quick suite outgrew
+  # a hosted job's 360 min. build-macos.yml (dispatched by hand) runs it in full.
+  # Keep the macOS pytest-args identical to test.yml's.
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {runner: ubuntu-22.04, label: linux-x86_64,   suite-minutes: 180, job-minutes: 210}
-          - {runner: windows-2025, label: windows-x86_64, suite-minutes: 180, job-minutes: 210}
+          - {runner: ubuntu-22.04, label: linux-x86_64,   suite-minutes: 180, job-minutes: 210, pytest-args: ''}
+          - {runner: windows-2025, label: windows-x86_64, suite-minutes: 180, job-minutes: 210, pytest-args: ''}
+          - {runner: macos-15,     label: macos-arm64,    suite-minutes: 20,  job-minutes: 45,
+             pytest-args: 'tests/test_native_composite.py tests/test_sld_native.py'}
     uses: ./.github/workflows/build-leg.yml
     with:
       runner: ${{ matrix.runner }}
       label: ${{ matrix.label }}
+      pytest-args: ${{ matrix.pytest-args }}
       suite-minutes: ${{ matrix.suite-minutes }}
       job-minutes: ${{ matrix.job-minutes }}
 

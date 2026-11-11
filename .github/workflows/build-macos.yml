@@ -1,30 +1,18 @@
 name: build-macos
-# The macOS leg, out of build.yml since its full quick suite outgrew a hosted
-# job's 360 min. Dispatched by hand; on a v* tag ref an oracle run attaches its
-# tarball to the draft release that build.yml's tag build made.
+# The macOS leg with its whole quick suite, which outgrew a hosted job's 360 min
+# inside build.yml (whose macOS leg runs only the native kernel oracle tests).
+# Dispatched by hand; it gates nothing and publishes nothing.
 on:
   workflow_dispatch:
-    inputs:
-      suite:
-        description: oracle = the native kernel oracle tests only; full = the whole quick suite (about 5.5 h on 2026-11-11, may time out and then builds no bundle)
-        type: choice
-        options: [oracle, full]
-        default: oracle
 concurrency:
-  # The suite is in the group so a full run never cancels the oracle run that gates a tag.
-  group: build-macos-${{ github.ref }}-${{ inputs.suite }}
+  group: build-macos-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   build:
-    permissions:
-      contents: write
     uses: ./.github/workflows/build-leg.yml
     with:
       runner: macos-15
       label: macos-arm64
-      # Keep the oracle list identical to test.yml's macOS pytest-args.
-      # The non-empty value must sit after &&: `x && '' || y` always yields y.
-      pytest-args: ${{ inputs.suite == 'oracle' && 'tests/test_native_composite.py tests/test_sld_native.py' || '' }}
-      suite-minutes: ${{ inputs.suite == 'oracle' && 20 || 330 }}
-      job-minutes: ${{ inputs.suite == 'oracle' && 45 || 350 }}
-      release-upload: ${{ inputs.suite == 'oracle' }}
+      # About 5.5 h on 2026-11-11; a suite timeout builds no bundle.
+      suite-minutes: 330
+      job-minutes: 350

@@ -9,8 +9,8 @@ concurrency:
 jobs:
   # The same three runners and test steps as build-leg.yml, minus the bundle.
   # macOS runs only the native kernel oracle tests: its full quick suite outgrew
-  # 180 min on 3 workers. build-macos.yml dispatched with suite: full runs it in full.
-  # Keep the macOS pytest-args identical to build-macos.yml's oracle list.
+  # 180 min on 3 workers. build-macos.yml (dispatched by hand) runs it in full.
+  # Keep the macOS pytest-args identical to build.yml's.
   tier:
     strategy:
       fail-fast: false

@@ -1,6 +1,6 @@
 name: build-leg
 # One platform's build leg: test, freeze, verify, package, upload. Called by
-# build.yml (Linux, Windows) and build-macos.yml (macOS, dispatched by hand).
+# build.yml (all three, macOS on its oracle tests) and build-macos.yml (macOS full suite).
 on:
   workflow_call:
     inputs:
@@ -20,10 +20,6 @@ on:
         description: Test paths or extra pytest arguments; empty runs the whole quick suite.
         type: string
         default: ''
-      release-upload:
-        description: On a v* tag ref, attach the tarball to that tag's draft release.
-        type: boolean
-        default: false
 jobs:
   leg:
     runs-on: ${{ inputs.runner }}
@@ -64,8 +60,8 @@ jobs:
       # one place the MSVC and arm64 clang builds are compared byte for byte
       # against numpy (the native kernel oracle tests run inside the suite).
       # macOS arm64's full quick suite took 88 min on its first run and over
-      # 5 h by 2026-11, so build-macos.yml runs only its oracle tests unless
-      # dispatched with suite: full.
+      # 5 h by 2026-11, so build.yml runs only its oracle tests and
+      # build-macos.yml the full suite.
       - uses: ./.github/actions/quick-suite
         timeout-minutes: ${{ inputs.suite-minutes }}
         with:
@@ -122,17 +118,3 @@ jobs:
             DEscape-${{ env.VERSION }}-${{ inputs.label }}.zip
             DEscape-*.AppImage
           retention-days: 14
-
-      # The caller grants contents: write; the draft must already exist (build.yml's tag build makes it).
-      - name: Attach to the tag's draft release
-        if: inputs.release-upload && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft)" \
-            || { echo "::error::gh release view $GITHUB_REF_NAME failed (stderr above); a missing release means build.yml's tag build has not made the draft yet"; exit 1; }
-          [ "$draft" = true ] \
-            || { echo "::error::$GITHUB_REF_NAME is already published; refusing to replace its macOS asset"; exit 1; }
-          gh release upload "$GITHUB_REF_NAME" "DEscape-$VERSION-${{ inputs.label }}.tar.gz" --clobber
