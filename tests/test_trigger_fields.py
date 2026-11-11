@@ -1059,6 +1059,8 @@ _EXPECTED_CAPTIONS = {
     ("change_research_location", "object_list_unit_id_2"): "researched at",
     **{(name, "button_location"): "button slot" for name in _LOCATION_TYPES},
 }
+# Captioned in every type, conditions included, that lists the field (TASK-621).
+_FIELD_WIDE_CAPTIONS = trigger_fields._FIELD_CAPTIONS
 
 
 def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> None:
@@ -1067,6 +1069,7 @@ def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> No
     list, so each version's list has to be asked."""
     assert len(_SOURCE_UNIT_TYPES) == 47
     found = set()
+    field_wide = set()
     unit_types = set()
     offenders = []
     for version, kind, raw in _every_shipped_vocabulary():
@@ -1087,7 +1090,11 @@ def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> No
             for spec in trigger_fields.field_specs(entry, presentation, type_attribute):
                 if spec.name in _UNIT_FIELDS:
                     unit_types.add((kind, entry.name))
-                if spec.label != spec.name.replace("_", " "):
+                if spec.name in _FIELD_WIDE_CAPTIONS:
+                    field_wide.add(spec.name)
+                    if spec.label != _FIELD_WIDE_CAPTIONS[spec.name]:
+                        offenders.append(f"{version}/{kind}/{entry.name}: {spec.name} captioned {spec.label!r}")
+                elif spec.label != spec.name.replace("_", " "):
                     captioned[(entry.name, spec.name)] = spec.label
         expected = (
             {pair: caption for pair, caption in _EXPECTED_CAPTIONS.items() if pair[0] in names}
@@ -1101,6 +1108,7 @@ def test_the_captioned_fields_are_exactly_the_named_set_in_every_version() -> No
     assert offenders == [], f"wrong captions: {offenders}"
     # Every named pair reaches a real spec in at least one shipped version.
     assert found == set(_EXPECTED_CAPTIONS)
+    assert field_wide == set(_FIELD_WIDE_CAPTIONS)
     # And every type with a unit field is accounted for by name, the uncaptioned ones too.
     named = _SOURCE_UNIT_TYPES | _UNCAPTIONED_UNIT_TYPES | _LOCATION_TYPES | {"replace_object"}
     assert unit_types == {("effects", name) for name in named}

@@ -17,6 +17,7 @@ from PyQt5.QtGui import (
     QImage,
     QPainter,
     QPalette,
+    QTextBlockFormat,
     QTextCharFormat,
 )
 from PyQt5.QtWidgets import (
@@ -242,6 +243,8 @@ def apply_ui_font(app: QApplication, family: str, size: int | None) -> None:
 
 LOG_WARNING_COLOR = "#e0a000"
 LOG_ERROR_COLOR = "#e05252"
+# A tinted line band, not ink alone: on the parchment presets the legible ink is as dark as the text.
+LOG_BAND_AMOUNT = 0.35
 
 
 class DebugLogDialog(QDialog):
@@ -286,18 +289,24 @@ class DebugLogDialog(QDialog):
         layout.addWidget(buttons)
 
     def _refresh(self) -> None:
-        formats = {level: QTextCharFormat() for level in debug_log.LEVELS}
+        styles = {level: (QTextBlockFormat(), QTextCharFormat()) for level in debug_log.LEVELS}
         if self.color_by_level.isChecked():
-            background = self.text.palette().color(QPalette.Base).name()
+            base = self.text.palette().color(QPalette.Base).name()
             for level, color in ((debug_log.WARNING, LOG_WARNING_COLOR), (debug_log.ERROR, LOG_ERROR_COLOR)):
-                formats[level].setForeground(QColor(legible_status_color(color, background)))
+                band = themes.blend(base, color, LOG_BAND_AMOUNT)
+                block_format, char_format = styles[level]
+                block_format.setBackground(QColor(band))
+                char_format.setForeground(QColor(legible_status_color(color, band)))
         self.text.clear()
         cursor = self.text.textCursor()
         rows = debug_log.entries()
         for index, entry in enumerate(rows):
+            block_format, char_format = styles[entry.level]
             if index:
-                cursor.insertText("\n", formats[entry.level])
-            cursor.insertText(entry.text(), formats[entry.level])
+                cursor.insertBlock(block_format, char_format)
+            else:
+                cursor.setBlockFormat(block_format)
+            cursor.insertText(entry.text(), char_format)
         if not rows:
             cursor.insertText("(empty)", QTextCharFormat())
         cursor.movePosition(cursor.End)

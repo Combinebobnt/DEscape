@@ -115,8 +115,20 @@ def _block_formats(dialog):
     return formats
 
 
+def _block_backgrounds(dialog):
+    block = dialog.text.document().firstBlock()
+    backgrounds = []
+    while block.isValid():
+        fmt = block.blockFormat()
+        backgrounds.append(fmt.background().color().name() if fmt.hasProperty(QTextFormat.BackgroundBrush) else None)
+        block = block.next()
+    return backgrounds
+
+
 @pytest.mark.gui
-@pytest.mark.parametrize("preset", ["light", "dark", "high_contrast_light", "high_contrast_dark"])
+@pytest.mark.parametrize(
+    "preset", [themes.THEME_DEFAULT, "light", "dark", "high_contrast_light", "high_contrast_dark"]
+)
 def test_dialog_colors_are_legible_and_toggle_persists_without_changing_text(preset):
     assert preset in themes.PRESETS
     with conftest.restoring_app_theme() as app:
@@ -134,15 +146,21 @@ def test_dialog_colors_are_legible_and_toggle_persists_without_changing_text(pre
             assert warning.foreground() == continuation.foreground()
             assert warning.foreground() != error.foreground()
             assert not info.hasProperty(QTextFormat.ForegroundBrush)
-            for fmt in (warning, error):
+            # A band, not ink alone: the default parchment's legible ink matched its text (2026-11-11).
+            warning_band, continuation_band, error_band, info_band = _block_backgrounds(dialog)
+            assert info_band is None
+            assert continuation_band == warning_band
+            assert len({warning_band, error_band, base}) == 3
+            for fmt, band in ((warning, warning_band), (error, error_band)):
                 floor = 7 if preset in themes.HIGH_CONTRAST_PRESETS else 4.5
-                assert themes.contrast_ratio(fmt.foreground().color().name(), base) >= floor
+                assert themes.contrast_ratio(fmt.foreground().color().name(), band) >= floor
             dialog.text.selectAll()
             dialog.text.copy()
             assert QApplication.clipboard().text() == debug_log.get_log_text()
             dialog.color_by_level.setChecked(False)
             assert not settings.get_debug_log_colors()
             assert all(not fmt.hasProperty(QTextFormat.ForegroundBrush) for fmt in _block_formats(dialog))
+            assert _block_backgrounds(dialog) == [None] * 4
             assert dialog.text.toPlainText() == debug_log.get_log_text()
             settings._debug_log_colors = None
             reopened = viewer_dialogs.DebugLogDialog(None)

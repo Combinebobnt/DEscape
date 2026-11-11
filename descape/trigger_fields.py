@@ -450,9 +450,19 @@ _FIELD_TOOLTIPS: Mapping[str, Mapping[str, str]] = {
 }
 
 
+# Captions for every type a field appears in, where the name-derived one is too wide for the
+# Triggers pane's floor at the largest UI font (TASK-621: it bound own_objects at 0 px slack).
+_FIELD_CAPTIONS: Mapping[str, str] = {
+    "include_changeable_weapon_objects": "include changeable weapons",
+}
+_FIELD_CAPTION_TOOLTIPS: Mapping[str, str] = {
+    attribute: f"The field's full name: {attribute.replace('_', ' ')}." for attribute in _FIELD_CAPTIONS
+}
+
+
 def field_tooltip(entry: VocabularyEntry, attribute: str) -> str:
     """The per-type form tooltip of one (type, field) pair, or ""."""
-    return _FIELD_TOOLTIPS.get(entry.name, {}).get(attribute, "")
+    return _FIELD_TOOLTIPS.get(entry.name, {}).get(attribute, "") or _FIELD_CAPTION_TOOLTIPS.get(attribute, "")
 
 
 def field_caption(entry: VocabularyEntry, attribute: str) -> str:
@@ -475,7 +485,7 @@ def field_caption(entry: VocabularyEntry, attribute: str) -> str:
         and "object_list_unit_id_2" not in entry.attributes
     ):
         return SOURCE_UNIT_CAPTION
-    return ""
+    return _FIELD_CAPTIONS.get(attribute, "")
 
 
 def field_label(entry: VocabularyEntry | None, attribute: str) -> str:

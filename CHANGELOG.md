@@ -486,7 +486,12 @@ content, link the doc instead of summarizing it.
   it silently.
 - **Triggers mode's left pane can no longer be dragged narrower than the
   Triggers panel**: below it, condition and effect fields sat past the pane's
-  edge with no scrollbar to reach them.
+  edge with no scrollbar to reach them. To fit it at the largest UI font, the
+  include changeable weapon objects checkbox is now captioned "include
+  changeable weapons".
+- **Debug Log level colours stand out on every theme** (GH #358): warning and
+  error lines get a tinted band behind them, so they no longer blend into the
+  normal text on the default parchment themes.
 - **The trigger form's item id row** follows a changed source unit, technology
   or tribute.
 - **Terrain mode's List view**: the Name column and the selected row's
