@@ -4146,6 +4146,27 @@ def snapped_anchor(
     return out[0], out[1]
 
 
+def created_unit_point(unit_const: int, tile_x: int, tile_y: int) -> tuple[float, float]:
+    """The (x, y) the game gives a unit a trigger creates on `(tile_x,
+    tile_y)` (Create Object, Place Foundation), for its map ghost (GH #369).
+
+    Per axis, buildings only: an even span centres on the tile's low corner,
+    the whole number `tile`, so a 4x4 castle covers `tile-2..tile+1`; an odd
+    span stays at `tile + 0.5`. Measured in game on 1.59: castle (Place
+    Foundation), house, barracks and a (4, 1) gate each spawned inside a
+    palisade ring round exactly that footprint. `tile + 0.5` for an even
+    span would round half up in `_span_start` and draw it one tile high on
+    both axes. Every non-building keeps `tile + 0.5`: unmeasured.
+    """
+    if unit_const not in BUILDING_TILE_SPANS:
+        return tile_x + 0.5, tile_y + 0.5
+    span_x, span_y = tile_span(unit_const, NON_BUILDING_SPAN)
+    return (
+        float(tile_x) if span_x % 2 == 0 else tile_x + 0.5,
+        float(tile_y) if span_y % 2 == 0 else tile_y + 0.5,
+    )
+
+
 def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int] | None:
     """(tile_x0, tile_x1, tile_y0, tile_y1) -- the tile-space bounding box
     _draw_unit() would paint for this unit, half-open like Python ranges.

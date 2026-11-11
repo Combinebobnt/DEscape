@@ -239,6 +239,7 @@ from descape.players_panel import STORED_PERSONALITY, PersonalityOptions, Player
 from descape.render import (
     NON_BUILDING_SPAN,
     _unit_gen_cached,
+    created_unit_point,
     dirty_screen_bbox_iso,
     dirty_screen_bbox_sloped,
     dirty_screen_bboxes_iso_grouped,
@@ -12181,8 +12182,9 @@ class ViewerWindow(QMainWindow):
 
     def _resolve_trigger_ghost(self, record: trigger_geometry.CreatedUnit, sprites: bool) -> tuple[list, tuple | None]:
         """MapView's resolver for one trigger-created unit (GH #167): its
-        sprite draws, else its coloured mark, at (x + 0.5, y + 0.5), built by
-        new_unit() and never add()ed. Nothing for an off-map tile or a player
+        sprite draws, else its coloured mark, where the game puts it
+        (render.created_unit_point(), GH #369), built by new_unit() and
+        never add()ed. Nothing for an off-map tile or a player
         with no colour slot. `sprites` False is the count cap: the mark.
         No depoison() of its own: MapView calls prepare_trigger_ghost_resolve() once per rebuild."""
         loaded = self.scenario
@@ -12193,8 +12195,9 @@ class ViewerWindow(QMainWindow):
         if not (0 <= x < mm.map_width and 0 <= y < mm.map_height) or not 0 <= record.player < len(loaded.player_colors):
             return [], None
         rotation = facet_preview.ghost_rotation(record.unit_const, record.facet)
+        gx, gy = created_unit_point(record.unit_const, x, y)
         ghost = new_unit(
-            loaded._scenario.uuid, record.player, record.unit_const, x + 0.5, y + 0.5, reference_id=-1, rotation=rotation, depoison=False
+            loaded._scenario.uuid, record.player, record.unit_const, gx, gy, reference_id=-1, rotation=rotation, depoison=False
         )
         draws = self._ghost_sprite_draws(record.player, ghost) if sprites else []
         if draws:

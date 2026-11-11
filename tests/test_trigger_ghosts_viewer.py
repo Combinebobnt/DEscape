@@ -165,6 +165,22 @@ def test_a_place_foundation_added_through_the_panel_ghosts_its_const_on_its_loca
         _close(window)
 
 
+def test_an_even_sized_building_ghost_centres_on_the_location_tiles_low_corner(monkeypatch) -> None:
+    """GH #369: a 4x4 castle the game spawns on 68..71 for location 70, not 69..72."""
+    from descape import viewer
+
+    built: list = []
+    real = viewer.new_unit
+    monkeypatch.setattr(viewer, "new_unit", lambda *a, **k: (built.append(a[2:5]), real(*a, **k))[1])
+    window = _window()
+    try:
+        _set(window, CREATE, object_list_unit_id=_CASTLE, source_player=1)
+        assert (_CASTLE, 70.0, 80.0) in built
+        assert _strong(window.map_view).sceneBoundingRect().contains(_tile_centre(window.map_view, CREATE_TILE))
+    finally:
+        _close(window)
+
+
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_the_ghost_stands_where_place_unit_puts_the_same_const_on_that_tile(sprite_install, style) -> None:
     """The position oracle: a Place Unit click on the location tile."""
