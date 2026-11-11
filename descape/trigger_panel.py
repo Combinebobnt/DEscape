@@ -926,7 +926,7 @@ class TriggerPanel(QWidget):
         # GH #279. NoEditTriggers, or the rows' editable flag makes any typed key open an
         # editor and loses keyboard search; only request_trigger_rename() opens one.
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._name_delegate = _TriggerNameDelegate(self._trigger_name, self._ROLE_COL, self.tree)
+        self._name_delegate = _TriggerNameDelegate(self._name_editor_text, self._ROLE_COL, self.tree)
         self.tree.setItemDelegateForColumn(self._COL_NAME, self._name_delegate)
         # After the line above, so the view's own closeEditor slot has dropped the editor first.
         self._name_delegate.closeEditor.connect(self._apply_trigger_rename)
@@ -1908,24 +1908,43 @@ class TriggerPanel(QWidget):
         if current is not None and current[0] == "trigger":
             self._populate_property_form()
 
-    def _trigger_name(self, index: int) -> str:
-        return self._read(self._manager().triggers[index], "name") or ""
+    def _name_editor_text(self, index: int) -> str:
+        """What the inline editor edits: a section header's title alone (GH #370), else the whole name."""
+        name = self._read(self._manager().triggers[index], "name") or ""
+        parts = trigger_organize.split_divider(name)
+        return name if parts is None else parts[1]
 
     def request_trigger_rename(self, item) -> None:
         """GH #279: the double-clicked row's inline editor, for one selected
         trigger on an editable document. A section header with members keeps
-        double-click for collapse, and has Rename Section… for its title."""
+        double-click for collapse, and has the menu's Rename (GH #370) and
+        Rename Section… for its title."""
         index = item.data(self._ROLE_COL, Qt.UserRole)
-        if index is None or item.childCount() or not self._can_edit_now():
+        if index is None or item.childCount():
             return
-        if self.selected_trigger_indices() != [index]:
+        self._open_name_editor(index)
+
+    def _open_name_editor(self, index: int) -> None:
+        """The inline name editor on trigger `index`'s row, for it alone
+        selected on an editable document; any row, section headers included,
+        which edit their title and keep their dashes."""
+        item = self._item_for_index.get(index)
+        if item is None or not self._can_edit_now() or self.selected_trigger_indices() != [index]:
             return
+        self.tree.scrollToItem(item)
         self.tree.editItem(item, self._COL_NAME)
 
     def _apply_trigger_rename(self, *_closed) -> None:
         pending, self._name_delegate.pending = self._name_delegate.pending, None
-        if pending is not None:
-            self.rename_trigger(*pending)
+        manager = self._manager()
+        if pending is None or manager is None or not 0 <= pending[0] < len(manager.triggers):
+            return
+        index, text = pending
+        if trigger_organize.split_divider(self._read(manager.triggers[index], "name") or "") is None:
+            self.rename_trigger(index, text)
+        # As the Rename Section dialog reads its title: stripped, and an empty one changes nothing.
+        elif title := text.strip():
+            self.rename_section(index, title)
 
     def request_move_to_section(self, header_index: int | None) -> None:
         if not self._editable or self._section_view_reason() or self._move_blocker():
@@ -3868,7 +3887,9 @@ class TriggerPanel(QWidget):
 
         GH #137's Cut/Copy act on the selection as the right-click left it.
         Paste lands below the clicked row, never the current one; the
-        synthetic leading header has no trigger to land below."""
+        synthetic leading header has no trigger to land below.
+        GH #370's Rename opens the GH #279 inline editor on any row, a section header with members too,
+        where it edits the title alone."""
         menu = QMenu(self.tree)
         menu.setToolTipsVisible(True)
         can_edit = self._can_edit_now()
@@ -3886,6 +3907,15 @@ class TriggerPanel(QWidget):
         paste.setToolTip(self._clipboard_reason or "Paste the copied triggers below this one, or below a collapsed section's end")
         paste.setEnabled(can_edit and self._clipboard_ready and index is not None)
         paste.triggered.connect(lambda _=False, i=index: self._on_trigger_structural("paste", [self._paste_anchor_index(i)]))
+        alone = index is not None and self.selected_trigger_indices() == [index]
+        rename = menu.addAction("Rename")
+        rename.setToolTip(
+            "Rename this trigger in the list (a section header's title, its dashes kept)"
+            + ("" if alone or index is None else " (select only this trigger)")
+        )
+        rename.setEnabled(can_edit and alone)
+        # Queued, so the editor opens after the menu has closed and handed focus back.
+        rename.triggered.connect(lambda _=False, i=index: QTimer.singleShot(0, lambda: self._open_name_editor(i)))
         # GH #211: the ▲▼ verbs and their Ctrl+click, on the selection, each under its own gate.
         of_section = " of Section" if self._grouped else ""
         up, down = self._trigger_move_reasons()

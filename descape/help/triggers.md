@@ -10,7 +10,7 @@ Type in **Filter triggers…** to show only the triggers whose names match. The 
 
 Click a trigger to edit it. Ctrl+click and Shift+click select several; the lower pane then shows only a count, and the buttons act on all of them. **Edit > Select All** selects every trigger the filter shows.
 
-Double-click a trigger to rename it right in the list. Enter or clicking away keeps the new name, Esc cancels, and each rename is one undo step. A section header with triggers under it keeps collapsing on a double-click; rename it from the **Sections** button.
+Double-click a trigger, or right-click it and choose **Rename**, to rename it right in the list. Enter or clicking away keeps the new name, Esc cancels, and each rename is one undo step. On a section header you edit only its title, and its dashes stay as they are; change those in the trigger's Name field. A section header with triggers under it keeps collapsing on a double-click, so rename it from the right-click menu or the **Sections** button.
 
 **Sections.** A trigger whose name starts and ends with a run of dashes or similar characters, such as `--- Setup ---`, is a section header. So is one that starts with such a run followed by a space, letter or digit (`----- Ambush`), and one wrapped in a single `~` on each side (`~Part I~`). A section header DEscape adds always has a run on both sides, in the file's most common style. In Display order the triggers below it, up to the next header, sit under it and collapse with it. The **Sections** button adds a section header at the end of the current trigger's section, renames the selected one, moves the selected triggers into another section, collapses or expands every section and jumps to any of them. A collapsed header stands for its whole section: Copy, Cut, Duplicate and Delete take the section with it.
 
@@ -31,7 +31,7 @@ In File order (trigger ID) view the same moves change trigger IDs instead: the s
 
 In Triggers mode the Edit menu reads **Edit > Cut Triggers**, **Edit > Copy Triggers** and **Edit > Paste Triggers**, unless a text field or the condition and effect list has focus. In a text field its plain **Edit > Cut**, **Edit > Copy** and **Edit > Paste** act on the text. A cut trigger pasted back keeps its name and the links other triggers held to it. Copied triggers also paste into another scenario of the same version: copy, open the other file and paste. Links to triggers outside the block and placed-unit references are cleared then, since they name the first file's triggers and units.
 
-Right-click a trigger for Cut, Copy, Paste below it, the four moves, **Renumber IDs to Display Order**, and **Select Section** or **Select Tag**. The Move Trigger/Condition/Effect commands make the same moves from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys.
+Right-click a trigger for Cut, Copy, Paste below it, **Rename**, the four moves, **Renumber IDs to Display Order**, and **Select Section** or **Select Tag**. The Move Trigger/Condition/Effect commands make the same moves from the keyboard; [Keyboard and Mouse](keyboard-and-mouse.md) lists their keys.
 
 ## Conditions and effects
 

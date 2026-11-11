@@ -5559,17 +5559,17 @@ def test_a_rename_across_the_divider_predicate_repartitions_by_enter_and_by_a_cl
         assert panel.current_trigger_index() == 5
         assert panel.tree.state() == QAbstractItemView.NoState
 
-        panel.select_trigger(5)
-        _double_click(panel, panel._item_for_index[5])
+        panel.select_trigger(3)
+        _double_click(panel, panel._item_for_index[3])
         editor = _name_editor(panel)
-        _type_into(editor, "plain again")
+        _type_into(editor, "--By Click--")
         # The row above: one below the renamed row can shift when the tree rebuilds.
         above = panel.tree.visualItemRect(panel._item_for_index[0]).center()
         QTest.mouseClick(panel.tree.viewport(), Qt.LeftButton, Qt.NoModifier, above)
         QApplication.processEvents()
         assert _name_editor(panel) is None
-        assert _names(window)[5] == "plain again"
-        assert len(panel._sections) == sections
+        assert _names(window)[3] == "--By Click--"
+        assert len(panel._sections) == sections + 2
         assert panel.current_trigger_index() == 0
         assert panel.selected_trigger_indices() == [0]
         assert panel.tree.state() == QAbstractItemView.NoState
@@ -5677,6 +5677,222 @@ def test_rename_is_off_on_a_bare_run_divider() -> None:
         panel = window.trigger_panel
         panel.select_trigger(2)
         assert not panel.section_rename_action.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- GH #370: Rename in the trigger list's right-click menu --------------------
+
+
+def _menu_rename(panel, index: int) -> None:
+    """Trigger the menu's Rename on trigger `index`'s row and let its queued open run."""
+    from PyQt5.QtWidgets import QApplication
+
+    _action(panel.trigger_context_menu(panel._item_for_index[index]), "Rename").trigger()
+    QApplication.processEvents()
+
+
+def test_gh370_menu_rename_opens_the_inline_editor_in_one_undo_step() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        before_name = _names(window)[0]
+        before = _record_count(window)
+
+        _menu_rename(panel, 0)
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == before_name and editor.hasFocus()
+        _type_into(editor, "Renamed from the menu")
+        _editor_key(editor, Qt.Key_Return)
+        assert _name_editor(panel) is None
+        assert _names(window)[0] == "Renamed from the menu"
+        assert _record_count(window) == before + 1
+
+        window.undo()
+        assert _names(window)[0] == before_name
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_menu_rename_reaches_a_section_header_with_members() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window(_sectioned_window())
+    try:
+        panel = window.trigger_panel
+        sections = len(panel._sections)
+        header = panel._item_for_index[2]
+        assert header.childCount() and header.isExpanded(), "fixture: an expanded header with members"
+        panel.select_trigger(2)
+
+        before = _record_count(window)
+        _menu_rename(panel, 2)
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == "RISK!!!", "the title alone"
+        _type_into(editor, "Renamed")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[2] == "--Renamed--", "its own dashes kept"
+        assert _record_count(window) == before + 1
+        assert len(panel._sections) == sections
+        assert panel._item_for_index[2].isExpanded()
+
+        panel._item_for_index[2].setExpanded(False)
+        panel.select_trigger(2)
+        _menu_rename(panel, 2)
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == "Renamed"
+        _type_into(editor, "Collapsed")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[2] == "--Collapsed--"
+        assert not panel._item_for_index[2].isExpanded(), "a collapsed header stays collapsed"
+
+        window.undo()
+        assert _names(window)[2] == "--Renamed--"
+
+        header = panel._item_for_index[6]
+        assert _names(window)[6] == "------" and header.childCount(), "fixture: a bare run with a member"
+        panel.select_trigger(6)
+        _menu_rename(panel, 6)
+        editor = _name_editor(panel)
+        assert editor.text() == "------", "no title slot: the whole name"
+        _type_into(editor, "plain six")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[6] == "plain six"
+        assert len(panel._sections) == sections - 1, "no longer a divider: its section merges up"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_a_header_title_reads_like_the_rename_section_dialog(monkeypatch) -> None:
+    from PyQt5.QtCore import Qt
+
+    from descape import trigger_panel
+
+    warned = []
+    monkeypatch.setattr(trigger_panel.QMessageBox, "warning", staticmethod(lambda *args: warned.append(args)))
+    window = _rename_window(_divided_window())
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        before = _record_count(window)
+        for text in ("x-", "", "   "):
+            _menu_rename(panel, 2)
+            _type_into(_name_editor(panel), text)
+            _editor_key(_name_editor(panel), Qt.Key_Return)
+            assert _names(window)[2] == "--A--"
+        assert len(warned) == 1 and "would not read back" in warned[0][2], "a blank title changes nothing, silently"
+        assert _record_count(window) == before
+
+        _menu_rename(panel, 2)
+        _type_into(_name_editor(panel), "  Spaced  ")
+        _editor_key(_name_editor(panel), Qt.Key_Return)
+        assert _names(window)[2] == "--Spaced--"
+        assert _record_count(window) == before + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_double_click_on_a_header_without_members_edits_its_title() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _rename_window(_divided_window(at=3))
+    try:
+        panel = window.trigger_panel
+        header = panel._item_for_index[3]
+        assert header.parent() is None and not header.childCount(), "fixture: the last trigger, a header alone"
+        panel.select_trigger(3)
+        _double_click(panel, header)
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == "A"
+        _type_into(editor, "B")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[3] == "--B--"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_menu_rename_is_off_where_it_is_not_a_rename() -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _sectioned_window()
+    try:
+        panel = window.trigger_panel
+        synthetic = panel.tree.topLevelItem(0)
+        assert synthetic.data(panel._ROLE_COL, Qt.UserRole) is None
+        rename = _action(panel.trigger_context_menu(synthetic), "Rename")
+        assert not rename.isEnabled()
+        assert "select only" not in rename.toolTip(), "no trigger there to select"
+
+        panel.select_triggers([0, 3])
+        rename = _action(panel.trigger_context_menu(panel._item_for_index[3]), "Rename")
+        assert not rename.isEnabled()
+        assert rename.toolTip().endswith(" (select only this trigger)")
+
+        panel.select_trigger(0)
+        assert _action(panel.trigger_context_menu(panel._item_for_index[0]), "Rename").isEnabled()
+        panel._editable = False
+        assert not _action(panel.trigger_context_menu(panel._item_for_index[0]), "Rename").isEnabled()
+        panel._editable = True
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_a_right_click_selects_the_row_so_rename_is_on() -> None:
+    """The gate relies on Qt's right press selecting an unselected row alone."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        item = panel._item_for_index[1]
+        pos = panel.tree.visualItemRect(item).center()
+        QTest.mouseClick(panel.tree.viewport(), Qt.RightButton, Qt.NoModifier, pos)
+        QApplication.processEvents()
+        assert panel.selected_trigger_indices() == [1]
+        assert _action(panel.trigger_context_menu(item), "Rename").isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_gh370_the_editor_survives_the_menu_closing() -> None:
+    """Clicked in the running menu, as a user does: the menu closes after the click."""
+    from PyQt5.QtCore import Qt, QTimer
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _rename_window()
+    try:
+        panel = window.trigger_panel
+        panel.select_trigger(0)
+        item = panel._item_for_index[0]
+        menu = panel.trigger_context_menu(item)
+        rename = _action(menu, "Rename")
+        QTimer.singleShot(0, lambda: QTest.mouseClick(menu, Qt.LeftButton, Qt.NoModifier, menu.actionGeometry(rename).center()))
+        QTimer.singleShot(2000, menu.close)  # a missed click must not hang the run
+        menu.exec_(panel.tree.viewport().mapToGlobal(panel.tree.visualItemRect(item).center()))
+        QApplication.processEvents()
+        editor = _name_editor(panel)
+        assert editor is not None, "opened inside the menu, the editor closes with it"
+        # Offscreen leaves the closed menu active; a desktop hands activation back itself.
+        window.activateWindow()
+        QApplication.processEvents()
+        assert editor.hasFocus()
+        _type_into(editor, "After the menu")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[0] == "After the menu"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -7327,7 +7543,7 @@ def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
         panel.select_trigger(1)
         menu = panel.trigger_context_menu(panel._item_for_index[1])
         assert _texts(menu) == [
-            "Cut", "Copy", "Paste", "Move Up", "Move Down", "Move to Top", "Move to Bottom",
+            "Cut", "Copy", "Paste", "Rename", "Move Up", "Move Down", "Move to Top", "Move to Bottom",
             "Renumber IDs to Display Order", "", "Select Section", "Select Tag",
         ]
         assert menu.toolTipsVisible()
