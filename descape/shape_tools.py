@@ -303,3 +303,129 @@ def snap_square_delta(dx: int, dy: int) -> tuple[int, int]:
     dragged rather than snapping back toward the anchor."""
     side = max(abs(dx), abs(dy))
     return (side if dx >= 0 else -side), (side if dy >= 0 else -side)
+
+
+def ellipse_tiles(
+    x0: int, y0: int, x1: int, y1: int, map_width: int, map_height: int, *, filled: bool
+) -> list[tuple[int, int]]:
+    """ellipse_perimeter_tiles(), or with `filled` each of its rows filled
+    from the ring's min x to its max x: clipped, row-major, no duplicates."""
+    if not filled:
+        return ellipse_perimeter_tiles(x0, y0, x1, y1, map_width, map_height)
+    left, top, right, bottom = rect_bounds(x0, y0, x1, y1)
+    # Rasterized in the box's own frame, which holds the whole ring, so nothing clips before the fill.
+    ring = ellipse_perimeter_tiles(0, 0, right - left, bottom - top, right - left + 1, bottom - top + 1)
+    return _scanline_fill(((x + left, y + top) for x, y in ring), map_width, map_height)
+
+
+TRIANGLE = "triangle"
+RIGHT_TRIANGLE = "right_triangle"
+
+
+def _half_toward(delta: int) -> int:
+    """floor(|delta| / 2), carrying delta's sign."""
+    return abs(delta) // 2 if delta >= 0 else -(abs(delta) // 2)
+
+
+def triangle_vertices(x0: int, y0: int, x1: int, y1: int, kind: str) -> tuple[tuple[int, int], ...]:
+    """The three corners for a drag from anchor (x0, y0) to (x1, y1).
+
+    TRIANGLE (isosceles, GH #360's sketch): the base lies on the box edge
+    through the anchor, along the box's longer axis (x on a tie), and the
+    apex is the middle of the opposite edge, floor(base / 2) from the
+    anchor's end. RIGHT_TRIANGLE: the right angle is the anchor and the legs
+    run along the two box edges through it."""
+    if kind == RIGHT_TRIANGLE:
+        return (x0, y0), (x1, y0), (x0, y1)
+    if kind != TRIANGLE:
+        raise ValueError(f"unknown triangle kind {kind!r}")
+    if abs(x1 - x0) >= abs(y1 - y0):
+        return (x0, y0), (x1, y0), (x0 + _half_toward(x1 - x0), y1)
+    return (x0, y0), (x0, y1), (x1, y0 + _half_toward(y1 - y0))
+
+
+def _touches(tile: tuple[int, int], tiles: set) -> bool:
+    x, y = tile
+    return any((x + dx, y + dy) in tiles for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy)
+
+
+def _band(edge: list[tuple[int, int]], side: set, axis: set) -> set:
+    """The tiles a sloped edge, rasterized from a vertex on the axis edge
+    `side`, drops where it runs beside it: of the run of tiles in or
+    touching `side` from the vertex, every tile but the last that is not on
+    an axis edge, the last being kept as the leg's one connector."""
+    j = 0
+    for i, tile in enumerate(edge):
+        if tile in side:
+            continue
+        if not _touches(tile, side):
+            break
+        j = i
+    return {tile for tile in edge[1:j] if tile not in axis}
+
+
+def _scanline_fill(outline, map_width: int, map_height: int) -> list[tuple[int, int]]:
+    """Each row of a convex outline filled from its min x to its max x, clipped, row-major."""
+    rows: dict[int, list[int]] = {}
+    for x, y in outline:
+        span = rows.setdefault(y, [x, x])
+        span[0], span[1] = min(span[0], x), max(span[1], x)
+    return [
+        (x, y)
+        for y in sorted(rows)
+        if 0 <= y < map_height
+        for x in range(max(rows[y][0], 0), min(rows[y][1], map_width - 1) + 1)
+    ]
+
+
+def triangle_tiles(
+    x0: int, y0: int, x1: int, y1: int, map_width: int, map_height: int, *, kind: str, filled: bool
+) -> list[tuple[int, int]]:
+    """A TRIANGLE or RIGHT_TRIANGLE (triangle_vertices()) for a drag from
+    anchor (x0, y0): three 8-connected line_tiles() edges, or with `filled`
+    their rows filled. Clipped, row-major, no duplicates. A box under 3
+    tiles on either axis is rect_tiles().
+
+    The axis-aligned edges draw whole, corners included. Each sloped edge is
+    rasterized from an axis vertex (a TRIANGLE's legs from their base
+    corners, so they mirror; a RIGHT_TRIANGLE's hypotenuse from the base's
+    far end), and where a shallow one runs beside an axis edge it keeps only
+    the tile where it leaves, so the outline is one tile thick there."""
+    left, top, right, bottom = rect_bounds(x0, y0, x1, y1)
+    if right - left < 2 or bottom - top < 2:
+        return rect_tiles(x0, y0, x1, y1, map_width, map_height, filled=filled)
+    a, b, c = triangle_vertices(x0, y0, x1, y1, kind)
+    # Rasterized in the box's own frame, which holds every edge, then moved back and clipped.
+    bw, bh = right - left + 1, bottom - top + 1
+    axis_edges = [(a, b), (a, c)] if kind == RIGHT_TRIANGLE else [(a, b)]
+    sloped = [(b, c)] if kind == RIGHT_TRIANGLE else [(a, c), (b, c)]
+    sides = [set(line_tiles(px - left, py - top, qx - left, qy - top, bw, bh)) for (px, py), (qx, qy) in axis_edges]
+    edges = [line_tiles(px - left, py - top, qx - left, qy - top, bw, bh) for (px, py), (qx, qy) in sloped]
+    axis = set().union(*sides)
+    outline = axis.union(*edges)
+    if filled:
+        return _scanline_fill(((x + left, y + top) for x, y in outline), map_width, map_height)
+    for edge in edges:
+        # Each sloped edge starts on the base (sides[0]); the hypotenuse also ends on the other leg.
+        outline -= _band(edge, sides[0], axis)
+        if kind == RIGHT_TRIANGLE:
+            outline -= _band(edge[::-1], sides[1], axis)
+    return sorted(
+        ((x + left, y + top) for x, y in outline
+         if 0 <= x + left < map_width and 0 <= y + top < map_height),
+        key=lambda tile: (tile[1], tile[0]),
+    )
+
+
+def snap_triangle_delta(dx: int, dy: int) -> tuple[int, int]:
+    """Shift on Triangle: the base delta (the longer axis, x on a tie) is
+    made even, growing by one away from the anchor when odd, and the height
+    delta becomes half of it. The apex then lands on a whole tile and both
+    legs are pure 45-degree diagonals. Each axis keeps its own sign."""
+    sx = 1 if dx >= 0 else -1
+    sy = 1 if dy >= 0 else -1
+    if abs(dx) >= abs(dy):
+        base = abs(dx) + abs(dx) % 2
+        return sx * base, sy * (base // 2)
+    base = abs(dy) + abs(dy) % 2
+    return sx * (base // 2), sy * base

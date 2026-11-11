@@ -197,7 +197,7 @@ def test_the_advanced_tab_combo_saves_and_applies_the_setting():
         window.load_scenario(scenario_io.BLANK_TEMPLATE_PATH)
         combo = dialog.game_data_combo
         assert combo.currentData() == settings.GAME_DATA_DEFAULT
-        assert [combo.itemData(i) for i in range(combo.count())] == [cid for cid, _label in settings.GAME_DATA_CHOICES]
+        assert [combo.itemData(i) for i in range(combo.count())] == [cid for cid, _label in settings.game_data_choices()]
         combo.setCurrentIndex(combo.findData(game_dataset.ROR))
         assert game_dataset.is_ror() and window.game_data_lock_reason() is not None
         settings._game_data = None

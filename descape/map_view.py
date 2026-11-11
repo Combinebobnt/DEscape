@@ -6,6 +6,7 @@ reaches back up into the window."""
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import math
 import time
@@ -59,7 +60,9 @@ from descape import (
     trigger_range,
     unit_kind,
     unit_pick,
+    unit_shape,
     zoom_preframe,
+    zoom_stops,
 )
 from descape.instruction_overlay import InstructionOverlay
 from descape.render import SMALL_MAP_TILE_PIXELS
@@ -105,6 +108,9 @@ from descape.viewer_common import (
 # Stroke tools _touch_tile gap-fills. Cliff too: each path tile feeds the chain walk
 # in order, so a fast drag lays the same run as a slow one.
 _INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "eraser", "cliff", "unit_brush"})
+
+# GH #365's drag shapes: the press asks set_shape_press_query() for a latch, and they snap in unit_shape.
+_LATCHED_SHAPES = frozenset({"unit_line", "unit_shape"})
 
 # Units-mode brushes: a drag mutates, so they skip the selection click and hover cue.
 _UNIT_BRUSH_TOOLS = frozenset({"convert", "eraser", "unit_brush"})
@@ -768,7 +774,7 @@ class MapView(QGraphicsView):
         self._shape_anchor: tuple[int, int] | None = None
         self._shape_end: tuple[int, int] | None = None
         self._shape_modifiers = Qt.NoModifier
-        # The live drag's shape ("line" | "rect" | "wall"), latched at press
+        # The live drag's shape ("line" | "rect" | "wall" | "unit_line" | "unit_shape"), latched at press
         # so a mid-drag catalog change can't switch it. "" when no drag.
         self._drag_shape = ""
         # GH #98: returns "wall" when Place Unit should drag a wall run. A
@@ -776,9 +782,14 @@ class MapView(QGraphicsView):
         # already long injected list (a known merge-collision point).
         self._place_shape_query: Callable[[], str] = lambda: ""
         # GH #124: tiles a wall drag must leave empty, from set_place_blocked_query().
-        # Latched at press for "wall"/"wall_rect"/"wall_circle" drags; empty otherwise.
+        # Latched at press for a "wall" drag or a wall-branch latch below; empty otherwise.
         self._place_blocked_query: Callable[[], frozenset] = frozenset
         self._drag_blocked: frozenset = frozenset()
+        # GH #365: Unit Line / Unit Shape's press query, from set_shape_press_query(),
+        # and the latch it returned for the live drag, handed to on_shape_commit().
+        # Only MapView keeps it, so a cancelled drag leaves nothing behind.
+        self._shape_press_query: Callable[[], unit_shape.ShapeLatch | None] = lambda: None
+        self._shape_latch: unit_shape.ShapeLatch | None = None
         # GH #128: the hover ghost's resolver, set by set_place_preview(). _place_hover is
         # the last (scene pos, modifiers) the tool hovered on the map, for refreshes.
         self._on_place_preview: Callable[[QPointF, object], None] = lambda pos, modifiers: None
@@ -1114,6 +1125,8 @@ class MapView(QGraphicsView):
         self._wheel_gesture_mip: int | None = None
         self._wheel_last_t = 0.0
         self._wheel_budget_t = 0.0
+        # (key, points) of the last _wheel_lattice(), keyed on the ladder and the floor/ceiling.
+        self._wheel_lattice_cache: tuple[tuple, list[float]] | None = None
         self.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
         # Settings > Keybinds' wheel rows, masked modifiers -> settings.WHEEL_ACTIONS id, and the
         # brush hooks from set_wheel_brush_hooks(). _brush_wheel_accum is the sub-notch delta.
@@ -1172,6 +1185,7 @@ class MapView(QGraphicsView):
         self._mirror_axis_pen = _pen("mirror_overlay", 0)
         # TASK-327: pushed into the ghost item when it is created; apply_overlay_colors() drops a live one.
         self._unit_ghost_refused_color = QColor(settings.get_overlay_color("unit_ghost_refused"))
+        self._unit_ghost_garrison_color = QColor(settings.get_overlay_color("unit_ghost_garrison"))
         self._footprint_pen = _pen("footprint_outline", 0)
         self._fish_pen = _pen("fish_outline", self.FISH_OUTLINE_PEN_WIDTH, cosmetic=True)
         # Cosmetic width 0 like the footprint outline: Flat's squash
@@ -1412,6 +1426,11 @@ class MapView(QGraphicsView):
         wall, which turns Place Unit into a wall-run drag tool."""
         self._place_shape_query = fn
 
+    def set_shape_press_query(self, fn: Callable[[], unit_shape.ShapeLatch | None]) -> None:
+        """GH #365: `fn()` reads Unit Line / Unit Shape's pick and options at a
+        press: a latch held for the drag, or None to start no drag."""
+        self._shape_press_query = fn
+
     def set_place_blocked_query(self, fn: Callable[[], frozenset]) -> None:
         """GH #124: `fn()` returns the tiles a wall drag leaves empty (empty
         with "Walls skip occupied tiles" off). Read once per press."""
@@ -1494,6 +1513,7 @@ class MapView(QGraphicsView):
             # never update _place_hover, so the stored point goes stale.
             self._place_hover = None
             self._clear_unit_ghost()
+            self._clear_unit_hover()
             return
         pos, modifiers = self._place_hover
         self._show_place_ghost(pos, modifiers, self._pos_on_map(pos))
@@ -1503,6 +1523,8 @@ class MapView(QGraphicsView):
             self._on_place_preview(pos, modifiers)
         else:
             self._clear_unit_ghost()
+            # TASK-549: the garrison host outline goes with the ghost.
+            self._clear_unit_hover()
 
     def _is_shape_tool(self) -> bool:
         """Whether a press now would start a shape drag: a drag_shape tool,
@@ -2548,12 +2570,13 @@ class MapView(QGraphicsView):
         return (u / proj.half_w - v / proj.half_h) / 2 + 0.5, (u / proj.half_w + v / proj.half_h) / 2 + 0.5
 
     def _ensure_unit_ghost_item(self) -> UnitGhostItem:
-        """The live ghost item, created on first use with the refusal colour."""
+        """The live ghost item, created on first use with the refusal and garrison colours."""
         item = self._unit_ghost_item
         if item is None:
             item = UnitGhostItem()
             item.setZValue(self.UNIT_GHOST_Z)
             item.set_refusal_color(self._unit_ghost_refused_color)
+            item.set_garrison_color(self._unit_ghost_garrison_color)
             self.scene().addItem(item)
             self._unit_ghost_item = item
         return item
@@ -2571,7 +2594,9 @@ class MapView(QGraphicsView):
         ):
             self._clear_unit_ghost()
 
-    def set_unit_ghost(self, draws=None, polygons=None, color=None, refused: bool = False) -> None:
+    def set_unit_ghost(
+        self, draws=None, polygons=None, color=None, refused: bool = False, garrison: bool = False
+    ) -> None:
         """The mid-drag move preview's content, resolved by ViewerWindow and
         pushed here -- `set_unit_selection`'s shape, for the same reason (see
         this class's `_on_unit_drag_preview` comment).
@@ -2584,11 +2609,12 @@ class MapView(QGraphicsView):
         at a destination with no elevations/proj/corner_rise, both mean "no
         ghost this frame" -- never a crash, never a partial draw.
 
-        `refused` draws it in the refused look (TASK-327)."""
+        `refused` draws it in the refused look (TASK-327), `garrison` in the
+        garrison look (TASK-549, Place Unit over a host that takes it)."""
         item = self._ensure_unit_ghost_item()
-        if draws and item.set_sprites(draws, refused=refused):
+        if draws and item.set_sprites(draws, refused=refused, garrison=garrison):
             return
-        if polygons and color is not None and item.set_mark(polygons, color, refused=refused):
+        if polygons and color is not None and item.set_mark(polygons, color, refused=refused, garrison=garrison):
             return
         self._clear_unit_ghost()
 
@@ -3114,13 +3140,18 @@ class MapView(QGraphicsView):
                 pos = self.mapToScene(event.pos())
                 if self._pos_on_map(pos):
                     tile = self._pick_tile(pos)
-                    self._drag_shape = _TOOL_SHAPE.get(self._tool) or "wall"
+                    shape = _TOOL_SHAPE.get(self._tool) or "wall"
+                    latch = None
+                    if shape in _LATCHED_SHAPES:
+                        # A refused pick (logged by the viewer) starts no drag.
+                        latch = self._shape_press_query()
+                        if latch is None:
+                            return
+                    self._drag_shape = shape
+                    self._shape_latch = latch
+                    walls = shape == "wall" or (latch is not None and latch.branch == unit_shape.WALL)
                     # Gated on the shape: the query walks every unit, and Draw Line needs none of it.
-                    self._drag_blocked = (
-                        frozenset(self._place_blocked_query())
-                        if self._drag_shape in ("wall", "wall_rect", "wall_circle")
-                        else frozenset()
-                    )
+                    self._drag_blocked = frozenset(self._place_blocked_query()) if walls else frozenset()
                     self._shape_anchor = tile
                     self._shape_end = tile
                     self._shape_modifiers = event.modifiers()
@@ -3330,8 +3361,11 @@ class MapView(QGraphicsView):
         if self._shape_drag_live():
             if event.button() == Qt.LeftButton and self._shape_anchor is not None:
                 tiles = self._shape_tiles(preview=False)
+                latch = self._shape_latch
                 self._cancel_shape()
-                if tiles:
+                if tiles and latch is not None:
+                    self._on_shape_commit(tiles, latch=latch)
+                elif tiles:
                     self._on_shape_commit(tiles)
             return
         # b1.5's move-by-drag: the matching half of the press-time bookkeeping
@@ -3746,10 +3780,9 @@ class MapView(QGraphicsView):
 
     def _twin_snap(self, factor: float) -> tuple[QPoint, float] | None:
         """ZoomTwin.predict()'s `snap` for a notch by `factor`: wheelEvent()
-        snaps a notch that lands on the native stop (_snap_to_device_px()),
-        so the twin must too, else that notch never hits its frame."""
-        native = self.native_zoom_factor()
-        if native is None or abs(factor / native - 1.0) > MIP_SCALE_SLACK:
+        snaps a notch that lands on any level's stop (_snap_to_device_px(),
+        TASK-600), so the twin must too, else that notch never hits its frame."""
+        if not any(abs(factor / f - 1.0) <= MIP_SCALE_SLACK for f in self._level_stop_factors()):
             return None
         return zoom_preframe.viewport_offset(self.viewport()), self.devicePixelRatioF()
 
@@ -4044,7 +4077,8 @@ class MapView(QGraphicsView):
         paint different tiles per view style."""
         ax, ay = self._shape_anchor
         ex, ey = self._shape_end
-        if self._shape_modifiers & Qt.ShiftModifier:
+        # GH #365's shapes snap once, in unit_shape.lattice_cells(), on the cell delta.
+        if self._shape_modifiers & Qt.ShiftModifier and self._drag_shape not in _LATCHED_SHAPES:
             dx, dy = ex - ax, ey - ay
             shape = self._drag_shape
             if shape == "line":
@@ -4098,14 +4132,10 @@ class MapView(QGraphicsView):
             # GH #124: the preview drops blocked tiles; the commit keeps the
             # full path so the viewer can count and report them.
             return self._drop_blocked(shape_tools.wall_path_tiles(x0, y0, x1, y1, width, height), preview)
-        if shape == "wall_rect":
+        if shape in _LATCHED_SHAPES:
             # Must stay above the terrain-rectangle fallthrough below, which
             # would pick up Draw Rectangle's Filled state and the brush union.
-            # Perimeter-bounded, and blocked tiles drop from the preview as above.
-            return self._drop_blocked(shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, width, height), preview)
-        if shape == "wall_circle":
-            # GH #125: wall_rect's twin, above the same fallthrough for the same reason.
-            return self._drop_blocked(shape_tools.ellipse_perimeter_tiles(x0, y0, x1, y1, width, height), preview)
+            return self._latched_shape_tiles((x0, y0), (x1, y1), preview)
         if shape == "line":
             core = shape_tools.line_tiles(x0, y0, x1, y1, width, height)
             if preview and len(core) * self._brush_size**2 > self.SHAPE_PREVIEW_TILE_LIMIT:
@@ -4119,6 +4149,30 @@ class MapView(QGraphicsView):
         if preview and len(ring) * self._brush_size**2 > self.SHAPE_PREVIEW_TILE_LIMIT:
             return ring
         return self._brush_union(ring)
+
+    def _latched_shape_tiles(self, anchor, end, preview: bool) -> list[tuple[int, int]]:
+        """GH #365: the latch's cells. A wall branch's are its tiles, blocked
+        ones dropped from the preview as for a wall run. A unit branch
+        commits the cells' low corners and previews their W x H blocks: a
+        Filled shape its outline, as Draw Rectangle does, and past
+        SHAPE_PREVIEW_TILE_LIMIT the cells' corner tiles alone."""
+        latch = self._shape_latch
+        if latch is None:
+            return []
+        shift = bool(self._shape_modifiers & Qt.ShiftModifier)
+        width, height = self._map_width, self._map_height
+        if latch.branch == unit_shape.WALL:
+            return self._drop_blocked(unit_shape.lattice_cells(latch, anchor, end, shift, width, height), preview)
+        if not preview:
+            return unit_shape.lattice_cells(latch, anchor, end, shift, width, height)
+        outline = dataclasses.replace(latch, filled=False) if latch.filled else latch
+        cells = unit_shape.lattice_cells(outline, anchor, end, shift, width, height)
+        if len(cells) * latch.W * latch.H > self.SHAPE_PREVIEW_TILE_LIMIT:
+            return [cell for cell in cells if 0 <= cell[0] < width and 0 <= cell[1] < height]
+        tiles: dict[tuple[int, int], None] = {}
+        for cell in cells:
+            tiles.update(dict.fromkeys(unit_shape.cell_block(latch, cell, width, height)))
+        return list(tiles)
 
     def _drop_blocked(self, tiles: list[tuple[int, int]], preview: bool) -> list[tuple[int, int]]:
         """A wall drag's preview without the tiles latched in _drag_blocked, path order kept."""
@@ -4140,6 +4194,8 @@ class MapView(QGraphicsView):
             self._brush_thickness,
             self._rect_filled,
             self._tool,
+            # The latched shapes snap after _shape_span(), so Shift with no move must still rebuild.
+            bool(self._shape_modifiers & Qt.ShiftModifier),
         )
         if key == self._highlight_key:
             return
@@ -4158,6 +4214,7 @@ class MapView(QGraphicsView):
         self._shape_modifiers = Qt.NoModifier
         self._drag_shape = ""
         self._drag_blocked = frozenset()
+        self._shape_latch = None
         self._clear_highlight()
 
     def _clear_highlight(self) -> None:
@@ -5237,6 +5294,7 @@ class MapView(QGraphicsView):
         self._shape_modifiers = Qt.NoModifier
         self._drag_shape = ""
         self._drag_blocked = frozenset()
+        self._shape_latch = None
         # _capture_zoom_baseline() is not called here (that would recompute
         # bounds against a since-cleared map) -- but the readout still has to
         # fall back to "--", so fire the notification directly.
@@ -5654,6 +5712,7 @@ class MapView(QGraphicsView):
         self._shape_modifiers = Qt.NoModifier
         self._drag_shape = ""
         self._drag_blocked = frozenset()
+        self._shape_latch = None
         # scene().clear() destroyed the unit items too. Selection is dropped
         # rather than re-resolved: set_source() means a new scenario or a
         # style switch, and neither guarantees the old key still addresses
@@ -5859,14 +5918,20 @@ class MapView(QGraphicsView):
         None when there's no established fit yet (nothing on screen to be
         relative to) -- reset_view=False callers only ever call this while a
         map is already showing, so this is a defensive fallback, not an
-        expected path."""
+        expected path.
+
+        The centre is the exact float one (_viewport_center_scene()), and
+        _restore_view() puts it back with _center_on_exact(), so a
+        same-geometry re-render round-trips to the same scrollbar values
+        (TASK-386: QRect.center() and centerOn()'s truncation used to creep
+        the view 1-2 px up-left per re-render)."""
         fit = self._fit_baseline_scale()
         if not fit or self._map_rect is None:
             return None
         if self._map_rect.width() <= 0 or self._map_rect.height() <= 0:
             return None
         current_scale = abs(self.transform().determinant()) ** 0.5
-        center = self.mapToScene(self.viewport().rect().center())
+        center = self._viewport_center_scene()
         frac = QPointF(
             (center.x() - self._map_rect.left()) / self._map_rect.width(),
             (center.y() - self._map_rect.top()) / self._map_rect.height(),
@@ -5895,7 +5960,25 @@ class MapView(QGraphicsView):
             self._map_rect.left() + frac.x() * self._map_rect.width(),
             self._map_rect.top() + frac.y() * self._map_rect.height(),
         )
-        self.centerOn(center)
+        self._center_on_exact(center)
+
+    def _viewport_center_scene(self) -> QPointF:
+        """The scene point under the viewport's true centre (w/2, h/2), as a
+        float: QRect.center() is ((w-1)//2, (h-1)//2), half a pixel up-left."""
+        viewport = self.viewport()
+        inverse, _ok = self.viewportTransform().inverted()
+        return inverse.map(QPointF(viewport.width() / 2.0, viewport.height() / 2.0))
+
+    def _center_on_exact(self, point: QPointF) -> None:
+        """centerOn(), then each scrollbar corrected by the rounded offset of
+        `point` from the viewport's true centre (centerOn() truncates). The
+        scrollbars clamp at their limits; a zero range makes it a no-op."""
+        self.centerOn(point)
+        viewport = self.viewport()
+        mapped = self.viewportTransform().map(point)
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setValue(h.value() + round(mapped.x() - viewport.width() / 2.0))
+        v.setValue(v.value() + round(mapped.y() - viewport.height() / 2.0))
 
     def set_isometric(self, enabled: bool) -> None:
         self._isometric = enabled
@@ -6140,10 +6223,11 @@ class MapView(QGraphicsView):
         raw_max = self.MAX_ZOOM_MULTIPLE_OF_FIT * baseline
         self._min_linear_scale = max(raw_min / self._coarsest_mip_scale(), raw_min)
         self._max_linear_scale = min(raw_max / self._finest_mip_scale(), raw_max)
-        # TASK-599: never below the native sprite stop, which 64x fit misses on a big map in a small window.
-        native = self.native_zoom_factor()
-        if native is not None:
-            self._max_linear_scale = max(self._max_linear_scale, abs(self.transform().determinant()) ** 0.5 * native)
+        # TASK-599, TASK-600: never below the finest level's stop, which 64x fit misses on a big map in a small window.
+        finest = self._level_stop_factors()
+        if finest:
+            self._max_linear_scale = max(self._max_linear_scale, abs(self.transform().determinant()) ** 0.5 * finest[-1])
+        self._wheel_lattice_cache = None
         self._repad_edge_ticks()
         # Covers every path that reaches here: set_isometric()/set_source()
         # resetting the transform (readout returns to ~100%), and resizeEvent
@@ -6694,12 +6778,23 @@ class MapView(QGraphicsView):
         scale = _max_axis_scale(device_transform) * self.devicePixelRatioF()
         return item._cache.mip_for_scale(scale * factor)
 
+    def level_zoom_factor(self, level: int) -> float | None:
+        """The zoom factor that draws `level` at exactly one device px per
+        level px (its stop, TASK-600), DPR folded in as _mip_for_zoom_factor()
+        does. None with no canvas item or a level the ladder lacks."""
+        item = self._canvas_item
+        if item is None or level not in item._cache.mip_levels():
+            return None
+        scale = self.view_device_scale()
+        if scale <= 0:
+            return None
+        return 1.0 / item._cache.mip_scale(level) / scale
+
     def native_zoom_factor(self) -> float | None:
-        """The zoom factor that draws the native sprite level (TASK-599: one
-        tile spans iso_geometry.NATIVE_TILE_PIXELS device px, so x1 sprites
-        are 1:1) at exactly one device px per level px, DPR folded in as
-        _mip_for_zoom_factor() does. None where the ladder has no such level:
-        no canvas item, Potato and below, top-down Flat."""
+        """level_zoom_factor() of the native sprite level (TASK-599: one tile
+        spans iso_geometry.NATIVE_TILE_PIXELS device px, so x1 sprites are
+        1:1). None where the ladder has no such level: no canvas item, Potato
+        and below, top-down Flat."""
         item = self._canvas_item
         if item is None:
             return None
@@ -6707,33 +6802,47 @@ class MapView(QGraphicsView):
         native = next(
             (lvl for lvl in cache.mip_levels() if cache.mip_tile_px(lvl) == iso_geometry.NATIVE_TILE_PIXELS), None
         )
-        if native is None:
-            return None
-        scale = _max_axis_scale(item.deviceTransform(self.viewportTransform())) * self.devicePixelRatioF()
-        if scale <= 0:
-            return None
-        return 1.0 / cache.mip_scale(native) / scale
+        return None if native is None else self.level_zoom_factor(native)
+
+    def _level_stop_factors(self) -> list[float]:
+        """level_zoom_factor() of every level in the ladder, coarsest first."""
+        item = self._canvas_item
+        if item is None:
+            return []
+        factors = (self.level_zoom_factor(level) for level in item._cache.mip_levels())
+        return [f for f in factors if f is not None]
+
+    def at_level_stop(self) -> bool:
+        """Whether the view sits on some level's stop: within mip_for_scale()'s
+        own slack of it, so the level it picks there is that one, drawn 1:1."""
+        return any(abs(f - 1.0) <= MIP_SCALE_SLACK for f in self._level_stop_factors())
 
     def at_native_stop(self) -> bool:
-        """Whether the view sits on the native stop: within mip_for_scale()'s
-        own slack of it, so the level it picks there is the native one."""
+        """Whether the view sits on the native stop (View > Zoom to Native
+        Sprite Size's target), with at_level_stop()'s slack."""
         native = self.native_zoom_factor()
         return native is not None and abs(native - 1.0) <= MIP_SCALE_SLACK
 
-    def _native_landing(self, factor: float) -> float:
-        """`factor`, or the native stop's factor where a wheel step would cross
-        it (TASK-599), so the wheel lands on the stop from either direction.
-        A view already at the stop (native factor 1.0) moves on by `factor`."""
-        native = self.native_zoom_factor()
-        if native is None:
-            return factor
-        # A view landed on the stop by a float multiply is at it, so the start never counts.
-        slack = MIP_SCALE_SLACK
-        if factor > 1.0:
-            crosses = 1.0 + slack < native <= factor * (1.0 + slack)
-        else:
-            crosses = factor * (1.0 - slack) <= native < 1.0 - slack
-        return native if crosses else factor
+    def _wheel_lattice(self) -> tuple[list[float], float] | None:
+        """(the notch lattice in device scale, device scale per transform
+        scale), TASK-600's zoom_stops lattice over this ladder's level stops
+        and the floor/ceiling. None with no canvas item. The ratio is constant
+        under a uniform zoom (an iso Flat squash and the DPR folded in)."""
+        item = self._canvas_item
+        device = self.view_device_scale()
+        current = abs(self.transform().determinant()) ** 0.5
+        if item is None or device <= 0 or current <= 0:
+            return None
+        per = device / current
+        cache = item._cache
+        ratios = tuple(1.0 / cache.mip_scale(level) for level in cache.mip_levels())
+        lo = per * self._min_linear_scale if self._min_linear_scale is not None else min(ratios) / 2.0**8
+        hi = per * self._max_linear_scale if self._max_linear_scale is not None else max(ratios) * 2.0**8
+        # Rounded: `per` differs by ulps between calls, which must not miss the cache.
+        key = (ratios, float(f"{lo:.12g}"), float(f"{hi:.12g}"))
+        if self._wheel_lattice_cache is None or self._wheel_lattice_cache[0] != key:
+            self._wheel_lattice_cache = (key, zoom_stops.lattice(zoom_stops.level_stops(ratios), lo, hi))
+        return self._wheel_lattice_cache[1], per
 
     def zoom_to_native(self) -> bool:
         """View > Zoom to Native Sprite Size (TASK-599): zooms about the
@@ -6752,7 +6861,7 @@ class MapView(QGraphicsView):
         return True
 
     def _snap_to_device_px(self) -> None:
-        """Keeps the native stop pixel-exact: zoom_preframe.snap_to_device_px()
+        """Keeps a level stop pixel-exact: zoom_preframe.snap_to_device_px()
         with this viewport's offset in its window. A later pan at a fractional
         DPR is not re-snapped."""
         if self._canvas_item is None:
@@ -6772,17 +6881,24 @@ class MapView(QGraphicsView):
 
     def _wheel_zoom_factor(self, notches: int) -> float | None:
         """The zoom factor for a pending notch count, reduced until it is
-        inside the floor/ceiling AND at most one mip level from the budget's
-        anchor. A step that would overshoot a bound lands exactly on it
-        instead, so the readout can reach 50% and 6400%, and one that would
-        cross the native sprite stop lands on it (_native_landing()). None
-        refuses the whole event: already at the bound, or every step crosses
-        the budget."""
-        step = 1.25 if notches > 0 else 0.8
+        inside the floor/ceiling AND within the budget
+        (_crosses_wheel_mip_budget()). Each notch moves one point along the level lattice
+        (_wheel_lattice(), TASK-600), so every level's stop is a landing. A
+        step that would overshoot a bound lands exactly on it instead, so the
+        readout can reach 50% and 6400%. None refuses the whole event: already
+        at the bound, or every step crosses the budget."""
         current = abs(self.transform().determinant()) ** 0.5
+        lattice = self._wheel_lattice()
         while notches != 0:
-            factor = step ** abs(notches)
-            target = current * factor
+            if lattice is not None:
+                points, per = lattice
+                device = zoom_stops.notch_target(current * per, notches, points)
+                target = math.inf if notches > 0 else 0.0
+                if device is not None:
+                    target = device / per
+            else:
+                target = current * zoom_stops.NOTCH_STEP**notches
+            factor = target / current
             too_small = notches < 0 and self._min_linear_scale is not None and target < self._min_linear_scale
             too_big = notches > 0 and self._max_linear_scale is not None and target > self._max_linear_scale
             if too_small or too_big:
@@ -6791,7 +6907,8 @@ class MapView(QGraphicsView):
                 moves = factor > 1.0 + 1e-9 if notches > 0 else factor < 1.0 - 1e-9
                 if not moves:
                     return None
-            factor = self._native_landing(factor)
+            elif not math.isfinite(factor) or factor <= 0:
+                return None
             if not self._crosses_wheel_mip_budget(factor):
                 return factor
             notches += -1 if notches > 0 else 1
@@ -6799,14 +6916,18 @@ class MapView(QGraphicsView):
 
     def _crosses_wheel_mip_budget(self, factor: float) -> bool:
         """Whether zooming by `factor` would land more than one mip level
-        from the gesture's budget anchor. False with no canvas item (nothing
-        selects a level) and on a single-level ladder, where mip_for_scale()
-        clamps every scale to the same answer."""
+        from the gesture's budget anchor on a level that would build first
+        (TASK-614: a resident level is no placeholder and no sync build, so a
+        roll passes it unrefused). False with no canvas item (nothing selects
+        a level) and on a single-level ladder, where mip_for_scale() clamps
+        every scale to the same answer."""
         start = self._wheel_gesture_mip
         if start is None:
             return False
         mip = self._mip_for_zoom_factor(factor)
-        return mip is not None and abs(mip - start) > 1
+        if mip is None or abs(mip - start) <= 1:
+            return False
+        return not self._canvas_item._cache.paints_without_build(mip)
 
     def _wheel_notches(self, accum: int, delta: int) -> tuple[int, int]:
         """(whole notches, new residual) for a non-zoom wheel action's
@@ -6856,11 +6977,13 @@ class MapView(QGraphicsView):
             self._scroll_by(px, 0)
 
     def _wheel_delta(self, event) -> int:
-        """The event's vertical angleDelta, or its sideways one when Alt is
-        held and the vertical is 0: Qt 5's xcb and Windows plugins deliver
-        Alt+wheel transposed. A sideways tilt with no Alt stays 0."""
+        """The event's vertical angleDelta, or its sideways one when Alt or
+        Shift is held and the vertical is 0: Qt 5's xcb and Windows plugins
+        deliver Alt+wheel transposed, and macOS turns Shift+wheel into a
+        sideways scroll (TASK-363, fixed unchecked on a Mac). A sideways tilt
+        with neither held stays 0."""
         angle = event.angleDelta()
-        if angle.y() == 0 and event.modifiers() & Qt.AltModifier:
+        if angle.y() == 0 and event.modifiers() & (Qt.AltModifier | Qt.ShiftModifier):
             return angle.x()
         return angle.y()
 
@@ -6922,7 +7045,8 @@ class MapView(QGraphicsView):
         level_warm.neighbour_mips()'s +/-1 warm set: a placeholder frame from
         a resident level while that level warms (TASK-031.25), or, where no
         placeholder applies, a synchronous level build inside paint().
-        Pausing (or reversing) starts a fresh
+        A level already resident costs neither, so it spends no budget
+        (TASK-614). Pausing (or reversing) starts a fresh
         gesture. A roll that keeps going re-anchors the budget once
         WHEEL_GESTURE_GAP_S has passed since the last crossing: a rate limit
         of one level per gap, never a stop (it used to refuse until the wheel
@@ -6984,7 +7108,7 @@ class MapView(QGraphicsView):
         with perf_trace.op("zoom"):
             # Shared with the pre-rendered frames' twin, which predicts this transform (TASK-031.71).
             zoom_preframe.zoom_about(self, factor, anchor)
-            if self.at_native_stop():
+            if self.at_level_stop():
                 self._snap_to_device_px()
             self._preframe_dir = 1 if factor > 1.0 else -1
             self._note_viewport_changed()
@@ -7228,7 +7352,8 @@ class MapView(QGraphicsView):
             # the generic EDIT_TOOLS branch below uses, just reached from
             # here since Convert lives in Units mode (mousePressEvent's own
             # units-branch exclusion is the other half of this routing).
-            if self._tool in _UNIT_BRUSH_TOOLS:
+            # A drag or marquee begun before a keybound switch keeps its own branch below (TASK-562).
+            if self._tool in _UNIT_BRUSH_TOOLS and self._unit_drag_key is None and self._marquee_start_pos is None:
                 self._clear_unit_hover()
                 if on_map:
                     with perf_trace.phase("highlight"):
@@ -7237,18 +7362,17 @@ class MapView(QGraphicsView):
                         self._touch_tile(*tile, event.modifiers())
                 else:
                     self._clear_highlight()
-                # GH #270. The point stays live mid-stroke, for the release. A drag or
-                # marquee begun before a keybound switch keeps its own ghost.
-                if self._tool == "unit_brush" and self._unit_drag_key is None and self._marquee_start_pos is None:
+                # GH #270. The point stays live mid-stroke, for the release.
+                if self._tool == "unit_brush":
                     self._place_hover = (pos, event.modifiers())
                     if not self._stroke_active:
                         self._show_place_ghost(pos, event.modifiers(), on_map)
                 return
-            # GH #128: Place Unit's hover ghost. The cyan hover outline is
-            # cleared, as in the drag branch: a place click never selects.
+            # GH #128: Place Unit's hover ghost. A place click never selects, so
+            # the hover outline is the viewer's: the host it would garrison into
+            # (TASK-549), set or cleared by on_place_preview or the off-map clear.
             # A drag or marquee begun before a keybound switch to Place Unit keeps its own branch.
             if self._tool == "place_unit" and self._unit_drag_key is None and self._marquee_start_pos is None:
-                self._clear_unit_hover()
                 self._place_hover = (pos, event.modifiers())
                 self._show_place_ghost(pos, event.modifiers(), on_map)
                 return

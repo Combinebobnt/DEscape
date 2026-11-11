@@ -540,12 +540,16 @@ class OptionsEditModel:
         # above do.
         self._player_field_ids: frozenset[str] = frozenset()
         self._player_targets: dict[str, tuple[player_fields.PlayerWriteTarget, ...]] = {}
+        # A spinbox spec's minimum..maximum, refused in set_value() on every file version (TASK-481).
+        self._player_bounds: dict[str, tuple[int, int]] = {}
         if players_write_supported(loaded):
             specs_by_id = {s.field_id: s for s in player_fields.specs_for(loaded)}
             for key, targets in player_fields.write_targets(loaded).items():
                 field_id, player_id = player_fields.parse_player_field_id(key)
                 spec = specs_by_id[field_id]
                 self._player_targets[key] = targets
+                if spec.minimum is not None and spec.maximum is not None:
+                    self._player_bounds[key] = (spec.minimum, spec.maximum)
                 self._original[key] = player_fields.current_value(loaded, spec, player_id)
             self._player_field_ids = frozenset(self._player_targets)
 
@@ -865,15 +869,20 @@ class OptionsEditModel:
 
         targets = self._targets_for(field_id)
         if targets is not None:
+            # The file's own value first: an undo back to it never raises, whatever the file stores.
+            if value == self._original[field_id]:
+                self._pending.pop(field_id, None)
+                return
+            bounds = self._player_bounds.get(field_id)
+            if bounds is not None and isinstance(value, (int, float)) and not bounds[0] <= value <= bounds[1]:
+                # Before the codec: a pre-1.44 Pop Limit's f32 would take -5 silently.
+                raise ValueError(f"{value!r} is outside {field_id!r}'s range {bounds[0]}..{bounds[1]}")
             for target in targets:
                 try:
                     player_fields.encode_target(target, value)
                 except ValueError as e:
                     raise ValueError(f"{value!r} does not fit {field_id!r}: {e}") from e
-            if value == self._original[field_id]:
-                self._pending.pop(field_id, None)
-            else:
-                self._pending[field_id] = value
+            self._pending[field_id] = value
             return
 
         if field_id not in self._offsets:

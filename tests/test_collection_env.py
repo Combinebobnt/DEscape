@@ -78,3 +78,12 @@ def test_collection_succeeds_without_machine_data(tmp_path) -> None:
     # The isolation itself, checked on every OS rather than trusted.
     assert f"CHILD_CONFIG_PATH {config}\n" in result.stdout, output
     assert f"CHILD_SETTINGS_CONFIG_PATH {config}\n" in result.stdout, output
+
+
+def test_descape_is_imported_from_this_checkout():
+    """A test file collected from outside tests/ (a symlinked checkout in a git
+    worktree) once put another checkout first on sys.path, so the whole suite
+    tested that checkout's descape instead of this one."""
+    import descape
+
+    assert Path(descape.__file__).resolve().parent.parent == ROOT

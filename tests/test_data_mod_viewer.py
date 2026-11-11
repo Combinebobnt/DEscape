@@ -290,6 +290,58 @@ def test_a_mod_without_warnings_logs_no_summary(window, mods, monkeypatch):
     assert _menu(window)["Alpha"].toolTip() == "subscribed//Alpha"
 
 
+def _missing_art(monkeypatch, stems: list[str], textures: list[str]) -> None:
+    from descape import unit_sprites
+
+    monkeypatch.setattr(unit_sprites, "undrawable_stems", lambda: list(stems))
+    monkeypatch.setattr(asset_source, "undrawable_terrain_textures", lambda: list(textures))
+
+
+def test_a_data_mods_missing_art_is_logged_on_each_switch(window, mods, monkeypatch):
+    """GH #272: the art nothing provides, a count, up to WARNING_LINES names and the rest's count."""
+    from descape import data_mod_menu, mod_graphics
+
+    cap = data_mod_menu.WARNING_LINES
+    stems = [f"trainsiege{i:02d}-c1_x1" for i in range(cap + 3)]
+    _missing_art(monkeypatch, stems, ["swgb_metal.dds"])
+    mods.cached(mods.alpha)
+    mod_graphics.set_enabled(True)
+    lines = _logged(window, monkeypatch)
+    _menu(window)["Alpha"].trigger()
+
+    def logged():
+        return [line for line in lines if line.startswith(f"Data mod Alpha: {cap + 4} art files that no active mod")]
+
+    assert len(logged()) == 1
+    body = logged()[0].splitlines()
+    assert body[1:] == [*(f"  {stem}" for stem in stems[:cap]), "  ... and 4 more"]
+    _menu(window)["None (the game's own data)"].trigger()
+    _menu(window)["Alpha"].trigger()
+    assert len(logged()) == 2, "once per switch to the mod"
+
+
+def test_with_mod_art_off_the_missing_art_is_one_line(window, mods, monkeypatch):
+    from descape import mod_graphics
+
+    _missing_art(monkeypatch, ["swgb_new_x1"], [])
+    mods.cached(mods.alpha)
+    mod_graphics.set_enabled(False)
+    lines = _logged(window, monkeypatch)
+    _menu(window)["Alpha"].trigger()
+    assert [line for line in lines if "art file" in line] == [
+        "Data mod Alpha: 1 art file not in the game's install; View > Layers > Mod Art draws them from its art mod"
+    ]
+
+
+def test_a_data_mod_whose_art_is_all_there_logs_no_art_line(window, mods, monkeypatch):
+    _missing_art(monkeypatch, [], [])
+    mods.cached(mods.alpha)
+    lines = _logged(window, monkeypatch)
+    _menu(window)["Alpha"].trigger()
+    assert game_dataset.data_mod() == mods.tables[mods.alpha]
+    assert not [line for line in lines if "art file" in line]
+
+
 def test_an_uncached_pick_parses_in_a_subprocess_then_swaps(window, mods, tmp_path, monkeypatch):
     window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
     marker = tmp_path / "derived"

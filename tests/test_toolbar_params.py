@@ -200,7 +200,12 @@ def test_the_placement_boxes_show_for_place_unit_and_move() -> None:
             assert window.unrestricted_check.isEnabled() and window.off_grid_check.isEnabled()
             assert window.tool_param_separator_action.isVisible()
 
-        for other in ("wall_rect", "wall_circle", "convert", "eraser", "ruler", "select", "pan"):
+        # GH #365's lattice tools take Free placement but never Off-grid.
+        for tool in ("unit_line", "unit_shape"):
+            getattr(window, f"{tool}_action").setChecked(True)
+            assert _placement_boxes(window) == (True, False), tool
+
+        for other in ("convert", "eraser", "ruler", "select", "pan"):
             getattr(window, f"{other}_action").setChecked(True)
             assert window._current_tool == other
             assert _placement_boxes(window) == (False, False), other
@@ -229,7 +234,8 @@ def test_no_identifier_keeps_the_old_free_place_name() -> None:
     assert not [name for name in dir(settings.ToolDef) if "free_place" in name]
     place_unit = next(t for t in settings.TOOLS if t.tool_id == "place_unit")
     assert place_unit.supports_off_grid and place_unit.supports_unrestricted
-    assert viewer_common.OFF_GRID_TOOLS == viewer_common.UNRESTRICTED_TOOLS == {"place_unit", "move", "unit_brush"}
+    assert {"place_unit", "move", "unit_brush"} == viewer_common.OFF_GRID_TOOLS
+    assert viewer_common.OFF_GRID_TOOLS | {"unit_line", "unit_shape"} == viewer_common.UNRESTRICTED_TOOLS
 
 
 def test_level_spin_dead_while_draw_selected() -> None:

@@ -40,8 +40,8 @@ _STATES = (
     ("units_pan", "Units", ""),
     ("units_select", "Units", "select"),
     ("units_move", "Units", "move"),
-    ("units_wall_rect", "Units", "wall_rect"),
-    ("units_wall_circle", "Units", "wall_circle"),
+    ("units_unit_line", "Units", "unit_line"),
+    ("units_unit_shape", "Units", "unit_shape"),
 )
 
 _QAPP = None

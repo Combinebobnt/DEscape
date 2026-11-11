@@ -237,8 +237,9 @@ def _neighbour_rewrites(
     """(player_id, unit, new_variant) for every existing wall in
     `neighbourhood` but not in `exclude` whose stored shape disagrees with
     the one `all_tiles` derives. Shared by plan_wall_run(),
-    plan_gate_over_walls(), plan_gate_moves(), plan_wall_moves() and
-    plan_removal_rewrites(), so they cannot drift on the compare.
+    plan_gate_over_walls(), plan_gate_moves(), plan_wall_moves(),
+    plan_removal_rewrites(), plan_replace_rewrites() and plan_paste(), so
+    they cannot drift on the compare.
 
     A wall left with no neighbour at all derives no shape: it is skipped, or
     compared against `isolated` when that is given. Adding connectors never
@@ -603,8 +604,9 @@ def plan_wall_moves(
 def _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles) -> list[tuple[int, object, int]]:
     """The rewrites of `staying_walls` beside `triggers`, the tiles whose
     connector status changed, re-derived over `post_tiles` with the tower
-    rule (ISOLATED_VARIANT). plan_wall_moves()'s and
-    plan_removal_rewrites()'s one trigger rule (GH #266, GH #340)."""
+    rule (ISOLATED_VARIANT). plan_wall_moves()'s, plan_removal_rewrites()'s,
+    plan_replace_rewrites()'s and plan_paste()'s one trigger rule (GH #266,
+    GH #340, TASK-584, TASK-585)."""
     if not triggers:
         return []
     neighbourhood = {
@@ -648,6 +650,163 @@ def scenario_removal_rewrites(scenario, map_width: int, map_height: int, units) 
         return []
     tiles, walls = wall_scene(scenario, map_width, map_height, exclude_ids=frozenset(id(unit) for unit in units))
     return plan_removal_rewrites(vacated, existing_tiles=tiles, existing_walls=walls)
+
+
+def _arriving_shape(tile: tuple[int, int], post_tiles) -> int:
+    """The shape a wall arriving at `tile` takes over `post_tiles`: its 8-bit
+    derivation, the tower with no neighbour. Shared by Replace and Paste."""
+    derived = unit_sprites.wall_variant_from_neighbours8(
+        unit_sprites.neighbour_mask(*tile, post_tiles, diagonals=True)
+    )
+    return ISOLATED_VARIANT if derived is None else derived
+
+
+@dataclass(frozen=True)
+class ReplacePlan:
+    """What a Find and Replace into a non-gate const changes in wall shapes.
+    `rewrites` (player_id, unit, new_variant): walls whose const stays a wall,
+    non-candidates and wall -> wall candidates. `shaped` (unit, new_variant):
+    candidates turning into a wall from a non-wall, written after their
+    replace_type(), always listed."""
+
+    rewrites: list[tuple[int, object, int]]
+    shaped: list[tuple[object, int]]
+
+    def __bool__(self) -> bool:
+        return bool(self.rewrites or self.shaped)
+
+
+def plan_replace_rewrites(
+    old_tiles, new_walls, *, new_tiles, static_tiles, static_walls, kept_walls
+) -> ReplacePlan:
+    """The walls a Replace into a non-gate const reshapes (TASK-584). Pure.
+
+    `old_tiles`/`new_tiles`: the candidates' connector footprints before and
+    after. `new_walls`: (unit, tile) for each candidate becoming a wall from a
+    non-wall. `static_*`: wall_scene() without the candidates. `kept_walls`:
+    an ExistingWall per wall -> wall candidate on its unchanged tile, which
+    then re-derives only beside a tile that changed connector status, as any
+    other wall does. Nothing is removed: a candidate stacked on a wall stays."""
+    old_tiles, new_tiles = set(old_tiles), set(new_tiles)
+    pre = set(static_tiles) | old_tiles
+    post = set(static_tiles) | new_tiles
+    triggers = (old_tiles - post) | (new_tiles - pre)
+    rewrites = _changed_tile_rewrites(triggers, list(static_walls) + list(kept_walls), frozenset(), post)
+    shaped = [(unit, _arriving_shape(tile, post)) for unit, tile in new_walls]
+    return ReplacePlan(rewrites=rewrites, shaped=shaped)
+
+
+def scenario_replace_rewrites(scenario, map_width: int, map_height: int, changes) -> ReplacePlan | None:
+    """plan_replace_rewrites() for `changes`, [(player_id, unit, new_const,
+    new_x, new_y), ...], read off the scenario BEFORE the Replace. Qt-free.
+
+    None before any scene walk when every tile keeps its connector status and
+    no unit becomes a wall from a non-wall (a non-connector Replace, or a
+    wall -> wall batch in place). Raises ValueError for a gate `new_const`:
+    that is scenario_gate_changes()' job, which also removes the walls under
+    the new footprint."""
+    connectors = unit_sprites.wall_connector_consts()
+    old_tiles: set[tuple[int, int]] = set()
+    new_tiles: set[tuple[int, int]] = set()
+    new_walls: list[tuple[object, tuple[int, int]]] = []
+    kept: list[tuple[int, object]] = []
+    for player_id, unit, new_const, x, y in changes:
+        if gate_orientation.is_gate(new_const):
+            raise ValueError(f"Replace into gate const {new_const} plans through scenario_gate_changes()")
+        if unit.unit_const in connectors:
+            old_tiles.update(unit_occupied_tiles(unit, map_width, map_height) or ())
+        if new_const in connectors:
+            new_tiles.update(occupied_tiles_for(new_const, x, y, map_width, map_height) or ())
+        if not unit_sprites.rotation_variant_eligible(new_const):
+            continue
+        if unit_sprites.rotation_variant_eligible(unit.unit_const):
+            kept.append((player_id, unit))
+            continue
+        tile = _wall_tile(new_const, x, y, map_width, map_height)
+        if tile is not None:
+            new_walls.append((unit, tile))
+    if old_tiles == new_tiles and not new_walls:
+        return None
+    candidates = frozenset(id(unit) for _p, unit, _c, _x, _y in changes)
+    static_tiles, static_walls = wall_scene(scenario, map_width, map_height, exclude_ids=candidates)
+    kept_walls = []
+    for player_id, unit in kept:
+        bounds = unit_tile_bounds(unit, map_width, map_height)
+        if bounds is not None:
+            kept_walls.append(ExistingWall(unit=unit, player_id=player_id, tx=bounds[0], ty=bounds[2]))
+    return plan_replace_rewrites(
+        old_tiles, new_walls, new_tiles=new_tiles, static_tiles=static_tiles, static_walls=static_walls,
+        kept_walls=kept_walls,
+    )
+
+
+def apply_replace_plan(model, plan: ReplacePlan) -> None:
+    """`plan`'s writes, inside the Replace's open edit after every
+    replace_type(): the `shaped` units are walls only from then on."""
+    apply_rewrites(model, plan.rewrites)
+    for unit, variant in plan.shaped:
+        model.set_wall_variant(unit, variant)
+
+
+@dataclass(frozen=True)
+class PastePlan:
+    """What a paste changes in wall shapes (TASK-585). `rewrites` (player_id,
+    unit, new_variant): existing walls. `shapes`: paste target slot -> the
+    index its pasted wall takes, only where that differs from its decoded
+    stored one."""
+
+    rewrites: list[tuple[int, object, int]]
+    shapes: dict[int, int]
+
+    def __bool__(self) -> bool:
+        return bool(self.rewrites or self.shapes)
+
+
+def plan_paste(pasted_tiles, pasted_walls, *, pre_tiles, existing_walls) -> PastePlan:
+    """The walls a paste reshapes. Pure. `pasted_tiles`: every tile a pasted
+    wall or gate covers; `pasted_walls`: (slot, tile, rotation) per pasted
+    wall. Nothing is removed, so the scene before is wall_scene() as is.
+
+    A pasted wall takes the shape its new neighbours give it (a tower alone),
+    as a moved wall does (GH #266). An existing wall re-derives only beside a
+    tile that newly holds a connector: a paste stacked on a wall changes no
+    mask, and a radian file's noise there is left as it is. Gates are never
+    rewritten: existing_walls holds none, and a pasted gate has no shape."""
+    pre_tiles, pasted_tiles = set(pre_tiles), set(pasted_tiles)
+    post = pre_tiles | pasted_tiles
+    rewrites = _changed_tile_rewrites(pasted_tiles - pre_tiles, existing_walls, frozenset(), post)
+    shapes = {}
+    for slot, tile, rotation in pasted_walls:
+        derived = _arriving_shape(tile, post)
+        if unit_sprites.variant_index(rotation, 5) != derived:
+            shapes[slot] = derived
+    return PastePlan(rewrites=rewrites, shapes=shapes)
+
+
+def scenario_paste_plan(scenario, map_width: int, map_height: int, targets) -> PastePlan | None:
+    """plan_paste() for region_clipboard.unit_paste_targets()' `targets`
+    (duck-typed: slot, unit.unit_const, unit.rotation, x, y), read off the
+    scenario BEFORE the paste. Qt-free. None before any scene walk when no
+    target is a wall or gate on the map."""
+    connectors = unit_sprites.wall_connector_consts()
+    pasted_tiles: set[tuple[int, int]] = set()
+    pasted_walls: list[tuple[int, tuple[int, int], float]] = []
+    for t in targets:
+        const = t.unit.unit_const
+        if const not in connectors:
+            continue
+        tiles = occupied_tiles_for(const, t.x, t.y, map_width, map_height)
+        if not tiles:
+            continue
+        pasted_tiles.update(tiles)
+        if unit_sprites.rotation_variant_eligible(const):
+            tile = _wall_tile(const, t.x, t.y, map_width, map_height)
+            if tile is not None:
+                pasted_walls.append((t.slot, tile, t.unit.rotation))
+    if not pasted_tiles:
+        return None
+    pre_tiles, existing_walls = wall_scene(scenario, map_width, map_height)
+    return plan_paste(pasted_tiles, pasted_walls, pre_tiles=pre_tiles, existing_walls=existing_walls)
 
 
 def apply_rewrites(model, rewrites) -> None:

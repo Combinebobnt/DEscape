@@ -1024,6 +1024,11 @@ def test_the_warmer_backs_off_while_a_button_is_held_and_retargets_on_a_cursor_m
         view = window.map_view
         view._zoom_on_cursor = False  # the offscreen cursor is off the viewport, which refuses a job
         warmer = view.preframe_warmer
+        # TASK-482: a slow setup drain (numpy) outlasts SETTLE_MS, so the settle timer may already
+        # have started the warm; this test is about a settle that fires while a button is held.
+        warmer.cancel()
+        view._preframe_timer.stop()
+        assert not warmer.is_active
         held = {"value": True}
         monkeypatch.setattr(QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton if held["value"] else Qt.NoButton))
         view._on_preframe_settle()

@@ -1565,6 +1565,30 @@ def test_a_key_after_a_keybound_switch_to_place_unit_turns_the_drag_not_the_plac
         _close(window)
 
 
+@pytest.mark.parametrize("tool", ["unit_brush", "convert", "eraser"])
+def test_after_a_keybound_switch_to_a_unit_brush_the_drag_follows_the_cursor_and_a_turn_stays_there(tool) -> None:
+    """TASK-562: the brush tools' hover branch used to swallow a held drag's
+    moves, so the ghost froze and a Rotate key replayed the last drag point."""
+    window = _window()
+    try:
+        (unit,) = _add(window, _ARCHER, [(60, 60)])
+        window.units_panel._set_pending_object(_VILLAGER)
+        _start(window, (60, 60), (66, 66))
+        getattr(window, f"{tool}_action").setChecked(True)
+        assert window._current_tool == tool
+        assert window.map_view.unit_drag_live()
+
+        _move(window, (70, 70))
+        assert QPointF(window.map_view._unit_drag_hover[0]) == _viewport_pos(window, 70, 70)
+        _cw(window, 2)
+        ghost = window.map_view._unit_ghost_item
+        assert ghost is not None and ghost.boundingRect().contains(_scene_tile(window, (70, 70)))
+        _release(window, (70, 70))
+        assert (unit.x, unit.y, unit.rotation) == (70.5, 70.5, pytest.approx(2 * _TURN / 16))
+    finally:
+        _close(window)
+
+
 def test_a_wall_says_it_has_nothing_to_turn_and_moves_as_it_would() -> None:
     window = _window()
     try:

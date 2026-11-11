@@ -87,7 +87,8 @@ def main() -> None:
     from testkit import qt_window, settings_isolation
 
     settings_isolation.pin_install_path()
-    settings_isolation.isolate_settings(Path(tempfile.mkdtemp(prefix="bench-trigger-overlay-")))
+    settings_dir = tempfile.TemporaryDirectory(prefix="bench-trigger-overlay-")  # removed at exit (TASK-606)
+    settings_isolation.isolate_settings(Path(settings_dir.name))
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QImage, QPainter
     from PyQt5.QtWidgets import QApplication

@@ -151,6 +151,19 @@ real .dat and a real install rather than assumed:
   but its annex TREE reaches modern art, so it gets an entry via
   `_resolve_annex_tree` (see "Pasture annex tree" below). 1894/1898 stay out.
 
+**Shadow twins (GH #272).** A data mod's shell can list a body's shadow file
+before the body itself: Galactic Battlegrounds' Command Center 109 lists
+`BCOMDC1_S-C1_x1`, whose MAIN layer is empty, before `BCOMDC1-C1_x1`. In the
+lenient derive only, `_shell_deltas` drops a delta whose stem, with one shadow
+marker removed (`X_S-C1_x1`, `X_S_x1`, `XS_x1`), is another delta's stem in the
+same shell; a name alone is not enough (`DEBRIS_x1` has no twin and stays).
+Measured on GB against its art mod: 245 consts change body, and every body
+then has ink except four whose own data names a shadow file with no deltas
+(3179, 3180, 3188, 3189). The stock .dat runs strict, so its tables never move.
+Some GB shells also carry a leftover AoE2 name nothing ships, such as the Heavy
+Weapons Factory's `trainsiege1-c1_x1`, over a body and its shadow twin; when no
+delta is the shell's own stem or shadow, `_hidden_body` draws that body instead.
+
 **Composite buildings.** A town centre (and a pasture) is drawn from several
 co-located graphics, not one -- e.g. RTWC's own standing_graphic is
 `b_dark_town_center_age1_back_x1`, note `_back_`, one quarter of the real
@@ -242,6 +255,18 @@ unit's clearance_size, apart from the measured `_ART_INVARIANT_HOLDOUTS`,
 Saxons' town centre annex swaps) is dropped.
 A decoration-shell body is the delta at the same position in that civ's own
 shell as the hand-verified Gaia body.
+
+**Missing gate pieces.** A per-civ gate entry's non-parent piece whose .sld
+this install can't read takes Gaia's piece at the same (unit_id, dx, dy)
+when that one is readable (`_gaia_gate_piece_fallbacks()`), before the entry
+is compared with Gaia's, so a row whose only difference was the missing file
+drops out of civ_art. It is a generator rule because the misses are naming
+slips in the .dat: measured 2026-10-28 (build 26249352), 7 civ gate flag
+files are named and none ships (only the west, palisade, city and sea gate
+flags do), for 12 rows: 490 and 491 of civs 46, 47, 48, 54, 55 and 56, whose
+other three siblings already name the west flag at the same slots. The run
+prints what it substituted and never stops on it: a data mod's .dat may name
+missing files of its own.
 
 **Decoration-shell walls.** The three `_BODY_GRAPHIC_OVERRIDES` consts keep
 the body as their top-level graphic but also carry `pieces`: the shell's
@@ -389,6 +414,60 @@ def _looks_modern(file_name: str | None) -> bool:
     return bool(file_name) and file_name != "None" and file_name.endswith("_x1")
 
 
+# Each strips one shadow marker from a casefolded stem; see the module docstring's "Shadow twins".
+_SHADOW_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(.+)_s(-.+)_x1$"), r"\1\2_x1"),
+    (re.compile(r"^(.+)_s_x1$"), r"\1_x1"),
+    (re.compile(r"^(.+)s_x1$"), r"\1_x1"),
+)
+
+
+def _shadowed_stems(stem: str | None) -> set[str]:
+    """The body stems a casefolded shadow stem could belong to, one marker removed."""
+    return {pattern.sub(body, stem) for pattern, body in _SHADOW_MARKERS if stem and pattern.match(stem)}
+
+
+def _delta_stems(graphics: list, deltas) -> list[str | None]:
+    stems = []
+    for delta in deltas:
+        graphic_id = delta.graphic_id
+        graphic = graphics[graphic_id] if graphic_id is not None and 0 <= graphic_id < len(graphics) else None
+        stems.append(graphic.file_name.casefold() if graphic is not None and graphic.file_name else None)
+    return stems
+
+
+def _without_shadow_twins(graphics: list, deltas) -> list:
+    """`deltas` minus each one whose stem, a shadow marker removed, is another
+    delta's stem in the same list: that one is the body, this its shadow."""
+    stems = _delta_stems(graphics, deltas)
+    present = {stem for stem in stems if stem}
+    return [
+        delta for delta, stem in zip(deltas, stems, strict=True)
+        if not _shadowed_stems(stem) & (present - {stem})
+    ]
+
+
+def _hidden_body(graphics: list, shell):
+    """Lenient only (GH #272): the body a modern-named shell's deltas hold with
+    its shadow twin, when no delta is the shell's own stem or shadow, else None."""
+    if not _game_root.lenient() or not _looks_modern(shell.file_name) or not shell.deltas:
+        return None
+    own = shell.file_name.casefold()
+    stems = _delta_stems(graphics, shell.deltas)
+    if own in stems or any(own in _shadowed_stems(stem) for stem in stems):
+        return None
+    shadowed = set().union(*(_shadowed_stems(stem) for stem in stems))
+    for delta, stem in zip(shell.deltas, stems, strict=True):
+        if stem in shadowed and _looks_modern(graphics[delta.graphic_id].file_name):
+            return graphics[delta.graphic_id]
+    return None
+
+
+def _shell_deltas(graphics: list, shell) -> list:
+    """A shell's deltas in .dat order, its shadow twins dropped when lenient (GH #272)."""
+    return _without_shadow_twins(graphics, shell.deltas) if _game_root.lenient() else list(shell.deltas)
+
+
 def _resolve_modern_graphic(graphics: list, graphic_id: int, seen: set[int] | None = None):
     """Find the graphic actually worth rendering for graphic_id: itself if its
     file_name already looks modern, else the first delta descendant that
@@ -402,8 +481,8 @@ def _resolve_modern_graphic(graphics: list, graphic_id: int, seen: set[int] | No
     if graphic is None:
         return None
     if _looks_modern(graphic.file_name):
-        return graphic
-    for delta in graphic.deltas:
+        return _hidden_body(graphics, graphic) or graphic
+    for delta in _shell_deltas(graphics, graphic):
         resolved = _resolve_modern_graphic(graphics, delta.graphic_id, seen)
         if resolved is not None:
             return resolved
@@ -427,7 +506,7 @@ def _resolve_all_modern_deltas(graphics: list, graphic_id: int) -> list[tuple[ob
     if _looks_modern(graphic.file_name):
         return [(graphic, 0, 0)]
     result = []
-    for delta in graphic.deltas:
+    for delta in _shell_deltas(graphics, graphic):
         dg_id = delta.graphic_id
         if dg_id is None or not (0 <= dg_id < len(graphics)):
             continue
@@ -1564,7 +1643,7 @@ def _resolve_shell_delta_pieces(
     Galleon's sails share (0, -25). unit_id is unit_const on every piece, as
     for a wall. See the module docstring's "Ship sails" section."""
     deltas = [
-        d for d in shell.deltas
+        d for d in _shell_deltas(graphics, shell)
         if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
         and graphics[d.graphic_id] is not None
         and _looks_modern(graphics[d.graphic_id].file_name)
@@ -1845,6 +1924,7 @@ def _graphic_entry_for(
         return None, "body_override_missing"
     wall_pieces = None
     shell_pieces = None
+    hidden = None
     underwater = None
     body_offset = (0, 0)
     if position is not None:
@@ -1866,7 +1946,7 @@ def _graphic_entry_for(
             return None, "underwater_body_missing"
         graphic, body_dx, body_dy = underwater
         body_offset = (body_dx, body_dy)
-    elif not _looks_modern(graphic.file_name):
+    elif not _looks_modern(graphic.file_name) or (hidden := _hidden_body(graphics, graphic)) is not None:
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
             if unit_const in _PARTICLE_CONSTS and particles_dir is not None:
@@ -1874,9 +1954,11 @@ def _graphic_entry_for(
                 if particle is not None:
                     return particle, "particle"
             return None, "legacy_no_modern_replacement"
-        shell_pieces = _resolve_shell_delta_pieces(
-            graphics, unit_const, unit.type, graphic, resolved
-        )
+        # A non-ship's hidden body (GH #272) draws alone: its other deltas are not a legacy ship's sails.
+        if hidden is None or unit.type == _CREATABLE_TYPE:
+            shell_pieces = _resolve_shell_delta_pieces(
+                graphics, unit_const, unit.type, graphic, resolved
+            )
         graphic = resolved
     entry: dict[str, object] = {
         "graphic_id": graphic.id,
@@ -2309,6 +2391,35 @@ def _age_art(
     return result
 
 
+def _gaia_gate_piece_fallbacks(
+    entry: dict[str, object], gaia_entry: dict[str, object], readable
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    """A per-civ gate entry with each unreadable non-parent piece replaced by
+    a copy of Gaia's piece at the same (unit_id, dx, dy), where that one is
+    readable, plus the (old_file, new_file) swaps. Parents and top-level
+    fields stay; the input is never mutated (module docstring, "Missing gate
+    pieces")."""
+    def slot(piece: dict) -> tuple:
+        return piece.get("unit_id"), piece.get("dx"), piece.get("dy")
+
+    gaia_by_slot = {slot(p): p for p in gaia_entry.get("pieces", ()) if not p.get("parent")}
+    pieces: list[dict[str, object]] = []
+    swaps: list[tuple[str, str]] = []
+    for piece in entry.get("pieces", ()):
+        gaia = gaia_by_slot.get(slot(piece))
+        if (
+            not piece.get("parent") and not readable(piece["file_name"])
+            and gaia is not None and readable(gaia["file_name"])
+        ):
+            swaps.append((piece["file_name"], gaia["file_name"]))
+            pieces.append(dict(gaia))
+        else:
+            pieces.append(dict(piece))
+    if not swaps:
+        return entry, []
+    return {**entry, "pieces": pieces}, swaps
+
+
 def _building_art(
     data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
     gaia_entries: dict[str, dict[str, object]], building_consts: set[int],
@@ -2348,6 +2459,16 @@ def _building_art(
     bad_ages: set[tuple[int, int, int]] = set()
     drawn_rows: set[tuple[int, int, int]] = set()
     held_upgrades: dict[int, set[int]] = {}
+    # old_file -> {const: {civ}}, for the report: gate pieces drawn with Gaia's, and those left missing.
+    gate_swaps: dict[str, dict[int, set[int]]] = {}
+    gate_unfixed: dict[str, dict[int, set[int]]] = {}
+    readable_names: dict[str, bool] = {}
+
+    def readable(name: str) -> bool:
+        # Header only (12 bytes), once per file name: this runs for every civ's every gate piece.
+        if name not in readable_names:
+            readable_names[name] = _sld_frame_count(graphics_dir / f"{name}.sld") is not None
+        return readable_names[name]
 
     def age_fallback(base: int) -> str:
         # annex_upgrades was built from the full table, before the pair was dropped.
@@ -2376,10 +2497,18 @@ def _building_art(
         units = civ.units
         art: dict[str, dict[str, object]] = {}
         for const in sorted(building_consts):
-            entry, _kind = _entry_for(
+            entry, kind = _entry_for(
                 units, graphics, graphics_dir, const, body_positions, annex_upgrades
             )
             gaia_entry = gaia_entries.get(str(const))
+            if civ_index and kind == "gate" and entry is not None and gaia_entry is not None:
+                # Before the invariant checks and the Gaia comparison below (module docstring, "Missing gate pieces").
+                entry, swaps = _gaia_gate_piece_fallbacks(entry, gaia_entry, readable)
+                for old_file, _new_file in swaps:
+                    gate_swaps.setdefault(old_file, {}).setdefault(const, set()).add(civ_index)
+                for piece in entry.get("pieces", ()):
+                    if not piece.get("parent") and not readable(piece["file_name"]):
+                        gate_unfixed.setdefault(piece["file_name"], {}).setdefault(const, set()).add(civ_index)
             what = f"civ {civ_index} const {const}"
             problems = _structure_violations(what, entry, units[const], gaia_entry, gaia_units[const])
             keep = entry is not None
@@ -2481,6 +2610,19 @@ def _building_art(
     differing = {c for art in civ_art.values() for c in art}
     print(f"  building consts whose art differs by civ: {len(differing)}")
     print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
+
+    def by_file(found: dict[str, dict[int, set[int]]]) -> str:
+        return str({name: sorted(consts) for name, consts in sorted(found.items())})
+
+    def civs_of(found: dict[str, dict[int, set[int]]]) -> list[int]:
+        return sorted({civ for consts in found.values() for civs in consts.values() for civ in civs})
+
+    if gate_swaps:
+        rows = {(civ, const) for consts in gate_swaps.values() for const, civs in consts.items() for civ in civs}
+        print(f"    gate pieces missing on this install, drawn with Gaia's: {len(rows)} rows")
+        print(f"      {by_file(gate_swaps)}; civs {civs_of(gate_swaps)}")
+    if gate_unfixed:
+        print(f"    gate pieces missing with no Gaia fallback: {by_file(gate_unfixed)}; civs {civs_of(gate_unfixed)}")
     if lenient_held_out:
         print(f"    held out on Gaia art (lenient): {sorted(lenient_held_out)}")
     if bad_ages:
@@ -2558,8 +2700,8 @@ _ROR_VALUES: dict[str, object] = {
     # Same _underwater deltas, except Whale 2625, whose delta is empty there.
     "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
     "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
-    # Smoke and Flames unmeasured on the RoR .dat (absent 2026-10-28). The rest match AoE2's (2026-10-17).
-    "_PARTICLE_CONSTS": frozenset({303, 1608, 1609, 1610}),
+    # The same objects, graphics and effects as AoE2's (Smoke and Flames measured 2026-11-02).
+    "_PARTICLE_CONSTS": _PARTICLE_CONSTS,
     # TASK-205's start simulation is unmeasured on the RoR .dat (absent 2026-11-03): the age techs alone.
     "_START_UPGRADE_TECHS": None,
 }

@@ -7,7 +7,8 @@ The View menu, the Filters button and the look settings change what you see. Non
 The View menu stays open while you tick its entries, so you can switch several in a row. It remembers its choices between launches, except Show sprites and Isometric View, which start on each time.
 
 - **View > Isometric View (game-style)** draws Flat the way the game does: terrain as diamonds and units as upright sprites. Untick it for a plain top-down grid. It is greyed in Stepped and Sloped, which always draw that way.
-- **View > Zoom to Native Sprite Size** zooms so one tile spans 96 screen pixels, where unit sprites are drawn at their own size, pixel for pixel. Zooming with the wheel also stops there on the way past. It needs Graphics quality Default or Enhanced in **Settings > Appearance**, and is greyed in top-down Flat. At Enhanced the stop shows the high-resolution art scaled down by half.
+- **View > Zoom to Native Sprite Size** zooms so one tile spans 96 screen pixels, where unit sprites are drawn at their own size, pixel for pixel. It needs Graphics quality Default or Enhanced in **Settings > Appearance**, and is greyed in top-down Flat. At Enhanced the stop shows the high-resolution art scaled down by half.
+- Zooming with the wheel stops at each zoom level's own size on the way past, the native sprite size among them, so the map is drawn there without a second resample and looks sharpest. At Graphics quality Default, zooming in past the native size also reaches a stop where unit sprites are drawn at exactly twice their size, every pixel doubled.
 - **View > Show sprites** draws units as their real game sprites instead of coloured marks. It needs the AoE2:DE install path in **Settings > General**. Turning it on decodes the sprites once, which can take a few seconds.
 - **View > Show Stacked-Unit Badges** puts a count, in Units mode, over every spot where a unit is hidden under another. Grass and other passable eye candy never count. Click the spot repeatedly to cycle through the stack.
 - **View > Colour Selection by Owner** outlines selected units in their owner's colour. GAIA and the box you drag keep the Selection colour from **Settings > Appearance**.
@@ -43,7 +44,7 @@ No technology effects are applied, and siege units get no ring.
 - Hero Glow: a gold outline round hero units, as in the game.
 - Fish Outlines: a ring round every fish, so they are easy to find on the water. A deep-water fish, dolphin or whale is ringed round its whole footprint. Fish the Filters hide get no ring, and the colour is set in **Settings > Appearance**. The ring also shows round Place Unit's and the Unit Brush's preview when a fish is picked.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
-- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all.
+- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all. With a data mod picked in **File > Data Mod**, it also draws that mod's own units and terrains from its art mod; the status log names any art file nothing provides.
 - Colour Mood: off by default. On, it tints the map with the scenario's colour mood (Map Options), as the game does, approximately. It covers brightness and tint only, not fog, bloom or shadows, and the water definition is not previewed. DEscape's own overlays keep their colours. To see a mood a trigger would set, pick it in Map Options, look, then undo.
 
 A greyed layer has nothing to do in the current view, and its tooltip says why.

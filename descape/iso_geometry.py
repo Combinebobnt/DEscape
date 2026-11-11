@@ -169,17 +169,20 @@ MAX_ELEVATION = 15
 # Whether to revert to 8 now that the other reason is gone is a separate,
 # not-yet-decided question, deliberately not folded into this change.
 #
-# MIP_MAX_TILE_PIXELS = 128 is the real texel ceiling minus one octave:
-# asset_source.LOADED_TEXTURE_SIZE = 512, and render.py's _crop_offset
-# requires tile_px to divide it evenly -- 128 is the largest power of two
-# under that ceiling with real headroom left for a wraparound-free crop.
+# MIP_MAX_TILE_PIXELS is the absolute ceiling, a memory and quality choice
+# (TASK-601): since asset_source.crop_source() a tile_px need not divide the
+# 512 texture, so divisibility no longer bounds it. Each quality's own finest
+# level is render.FINEST_TILE_PIXELS; only Default reaches 192.
 MIP_MIN_TILE_PIXELS = 16
-MIP_MAX_TILE_PIXELS = 128
+MIP_MAX_TILE_PIXELS = 192
 
-# The one non-power-of-two tier (TASK-599): x1 sprite art is drawn for a 96 px
-# tile (unit_sprites.NATIVE_TILE_W), so only a level of exactly this tile_px
-# draws it 1:1. Iso ladders add it between 64 and 128; top-down Flat does not.
+# The 1:1 tile (TASK-599): x1 sprite art is drawn for a 96 px tile
+# (unit_sprites.NATIVE_TILE_W), so only a level of exactly this tile_px draws
+# it 1:1. Iso ladders add it between 64 and 128; top-down Flat does not.
 NATIVE_TILE_PIXELS = 96
+# The non-power-of-two tiers iso ladders may add (TASK-601): 96 draws x1 art
+# 1:1, 192 at an even 2x. Each quality caps them with render.native_tier_max().
+NATIVE_TIERS = (NATIVE_TILE_PIXELS, 2 * NATIVE_TILE_PIXELS)
 
 
 def half_dims(tile_px: int) -> tuple[int, int]:
@@ -380,19 +383,29 @@ def mip_projection(
     return candidate if is_exact_mip(base, candidate) else None
 
 
+def _three_halves_power_of_two(tile_px: int, base_tile_px: int) -> bool:
+    """tile_px == base_tile_px * 3/2 * 2**k for some k >= 0 (96 = 64 * 3/2, 192 = 32 * 6)."""
+    ratio, rest = divmod(2 * tile_px, 3 * base_tile_px)
+    return rest == 0 and ratio > 0 and ratio & (ratio - 1) == 0
+
+
 def mip_tile_px_candidates(
-    base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PIXELS, native_tier: bool = False
+    base_tile_px: int, max_tile_px: int = MIP_MAX_TILE_PIXELS, native_tier: bool = False,
+    native_tier_max: int = NATIVE_TILE_PIXELS,
 ) -> dict[int, int]:
     """Level index -> tile_px, for every tile_px in [MIP_MIN_TILE_PIXELS,
-    max_tile_px] reachable from base_tile_px by a power-of-two ratio, plus
-    NATIVE_TILE_PIXELS when `native_tier` is set and it is base_tile_px
-    times 3/2 or 3 (TASK-599). Indices are contiguous and ordered by tile_px,
+    max_tile_px] reachable from base_tile_px by a power-of-two ratio, plus,
+    when `native_tier` is set, each NATIVE_TIERS value up to both
+    `native_tier_max` and the ceiling that is finer than base_tile_px and
+    base_tile_px times 3/2 times a power of two (TASK-599's 96, TASK-601's
+    192 at Default). Indices are contiguous and ordered by tile_px,
     level 0 (tile_px == base_tile_px) always present, even when
     base_tile_px itself falls outside [MIN, MAX] -- D2: scene space is
     pinned to the reference level regardless of where it falls on the mip
     ladder. POSITIVE L is FINER, NEGATIVE L is COARSER. The index is a rank,
-    not log2 of the ratio: with the native tier at base 64, level 1 is 96
-    and level 2 is 128, so a caller reads the ratio from tile_px, never 2**L.
+    not log2 of the ratio: with the native tiers at base 64, level 1 is 96,
+    level 2 is 128 and level 3 is 192, so a caller reads the ratio from
+    tile_px, never 2**L.
 
     Pure integer arithmetic throughout -- no float, no log2. Geometry-free:
     Flat has no projection (canvas_dims() is a bare multiply, exact at
@@ -403,16 +416,17 @@ def mip_tile_px_candidates(
     elev_step_pct values (see mip_projections_for).
 
     `max_tile_px` is render.finest_tile_pixels(), the graphics quality's own
-    finest level (GH #241); it never removes level 0."""
+    finest level (GH #241), and `native_tier_max` render.native_tier_max();
+    neither removes level 0."""
     ceiling = min(max_tile_px, MIP_MAX_TILE_PIXELS)
     finer = []
     tile_px = base_tile_px
     while tile_px * 2 <= ceiling:
         tile_px *= 2
         finer.append(tile_px)
-    native = NATIVE_TILE_PIXELS
-    if native_tier and native <= ceiling and native > base_tile_px and native * 2 in (base_tile_px * 3, base_tile_px * 6):
-        finer = sorted({*finer, native})
+    if native_tier:
+        tiers = (t for t in NATIVE_TIERS if base_tile_px < t <= min(ceiling, native_tier_max))
+        finer = sorted({*finer, *(t for t in tiers if _three_halves_power_of_two(t, base_tile_px))})
     out = {0: base_tile_px}
     out.update(enumerate(finer, start=1))
     tile_px, level = base_tile_px, -1
@@ -428,9 +442,11 @@ def mip_tile_px_candidates(
 def mip_projections_for(
     w: int, h: int, base: IsoProjection, elev_step_pct: int, corner_headroom_steps: int = 0,
     max_tile_px: int = MIP_MAX_TILE_PIXELS, native_tier: bool = True,
+    native_tier_max: int = NATIVE_TILE_PIXELS,
 ) -> dict[int, IsoProjection]:
     """Level index -> IsoProjection, for every exact mip of `base` among
-    mip_tile_px_candidates(base.tile_px, native_tier=native_tier) (see
+    mip_tile_px_candidates(base.tile_px, max_tile_px, native_tier,
+    native_tier_max) (see
     is_exact_mip), renumbered after that filter so the indices stay
     contiguous: POSITIVE L is FINER (mip-up), NEGATIVE L is COARSER
     (mip-down), and the scene-space scale factor a caller needs is
@@ -464,12 +480,13 @@ def mip_projections_for(
         elev_step_pct 50, 150           -> {8, 16, 32, 64, 128}
         elev_step_pct 100, 200          -> {4, 8, 16, 32, 64, 128}, 4 excluded by MIP_MIN
 
-    The native tier (96) is exact wherever 128 is (TASK-599, measured on the
-    same sizes plus 240x240 and 252x252, every pct above). The set is
+    The native tiers (96, and 192 at Default) are exact wherever 128 is
+    (TASK-599 and TASK-601, measured on the same sizes plus 240x240 and
+    252x252, every pct above). The set is
     BASE-RELATIVE, not absolute: at elev_step_pct=10 with base 16 it is the
     singleton {16}."""
     exact: dict[int, IsoProjection] = {}
-    for level, tile_px in mip_tile_px_candidates(base.tile_px, max_tile_px, native_tier).items():
+    for level, tile_px in mip_tile_px_candidates(base.tile_px, max_tile_px, native_tier, native_tier_max).items():
         if level == 0:
             identity = canvas_size_and_origin(
                 w, h, tile_px, base.min_elev, base.max_elev, elev_step_pct=elev_step_pct,

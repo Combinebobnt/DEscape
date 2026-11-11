@@ -11,15 +11,21 @@ from itertools import pairwise
 import pytest
 
 from descape.shape_tools import (
+    RIGHT_TRIANGLE,
     SNAP_DIRECTIONS,
+    TRIANGLE,
     ellipse_perimeter_tiles,
+    ellipse_tiles,
     line_tiles,
     rect_bounds,
     rect_perimeter_tiles,
     rect_tiles,
     snap_line_delta,
     snap_square_delta,
+    snap_triangle_delta,
     snap_wall_delta,
+    triangle_tiles,
+    triangle_vertices,
     wall_path_tiles,
 )
 
@@ -416,3 +422,213 @@ def test_an_ellipse_straddling_the_map_edge_is_clipped_not_moved():
     assert clipped == [(x, y) for x, y in whole if 0 <= x < 8 and 0 <= y < 6]
     assert clipped and len(clipped) < len(whole)
     assert ellipse_perimeter_tiles(30, 30, 40, 40, _W, _H) == []
+
+
+# --- Unit Shape's triangles and filled ellipse (GH #365) -----------------
+
+_TRI_KINDS = (TRIANGLE, RIGHT_TRIANGLE)
+_TRI_SIZES = [(w, h) for w in range(1, 25) for h in range(1, 25)]
+
+
+def _tri(w: int, h: int, kind: str, *, filled: bool = False, x0: int = 100, y0: int = 200, flip=(1, 1)):
+    """A w x h box dragged from (x0, y0) in the `flip` direction."""
+    sx, sy = flip
+    return triangle_tiles(x0, y0, x0 + sx * (w - 1), y0 + sy * (h - 1), _BIG, _BIG, kind=kind, filled=filled)
+
+
+def test_every_triangle_is_clipped_to_its_box_row_major_and_duplicate_free():
+    bad = []
+    for kind in _TRI_KINDS:
+        for filled in (False, True):
+            for w, h in _TRI_SIZES:
+                tiles = _tri(w, h, kind, filled=filled)
+                if len(tiles) != len(set(tiles)) or tiles != sorted(tiles, key=lambda t: (t[1], t[0])):
+                    bad.append(("order", kind, filled, w, h))
+                if not tiles or any(not (100 <= x < 100 + w and 200 <= y < 200 + h) for x, y in tiles):
+                    bad.append(("box", kind, filled, w, h))
+    assert bad == []
+
+
+_FLIPS = ((1, 1), (-1, 1), (1, -1), (-1, -1))
+_TRI_BOXES = [(kind, w, h, flip) for kind in _TRI_KINDS for w in range(3, 25) for h in range(3, 25) for flip in _FLIPS]
+
+
+def _tri_corners(w: int, h: int, kind: str, flip) -> tuple[tuple[int, int], ...]:
+    return triangle_vertices(100, 200, 100 + flip[0] * (w - 1), 200 + flip[1] * (h - 1), kind)
+
+
+def _is_one_piece_without_spur(tiles: list[tuple[int, int]], corners) -> bool:
+    """A corner may end a run (1 neighbour, a flat triangle's base corner);
+    every other tile has 2 or more."""
+    ring = set(tiles)
+    if any(len(_ring_neighbours(tile, ring)) < (1 if tile in corners else 2) for tile in tiles):
+        return False
+    seen, todo = {tiles[0]}, [tiles[0]]
+    while todo:
+        for nxt in _ring_neighbours(todo.pop(), ring):
+            if nxt not in seen:
+                seen.add(nxt)
+                todo.append(nxt)
+    return seen == ring
+
+
+def test_every_triangle_outline_is_one_8_connected_piece_with_no_spur():
+    bad = [
+        (kind, w, h, flip)
+        for kind, w, h, flip in _TRI_BOXES
+        if not _is_one_piece_without_spur(_tri(w, h, kind, flip=flip), _tri_corners(w, h, kind, flip))
+    ]
+    assert bad == []
+
+
+def test_every_triangle_keeps_its_axis_edges_whole_and_leaves_them_through_one_tile_per_leg():
+    """TASK-609: a shallow leg beside the base used to draw a two-tile band
+    and cost the base its corners. Now the box-edge sides draw whole and
+    each sloped edge touches them through one connector at each end that
+    meets one."""
+    bad = []
+    for kind, w, h, flip in _TRI_BOXES:
+        a, b, c = _tri_corners(w, h, kind, flip)
+        axis = set(line_tiles(*a, *b, _BIG, _BIG))
+        if kind == RIGHT_TRIANGLE:
+            axis |= set(line_tiles(*a, *c, _BIG, _BIG))
+        tiles = set(_tri(w, h, kind, flip=flip))
+        if not axis <= tiles:
+            bad.append(("axis", kind, w, h, flip))
+        if sum(1 for tile in tiles - axis if _ring_neighbours(tile, axis)) > 2:
+            bad.append(("band", kind, w, h, flip))
+    assert bad == []
+
+
+def test_an_odd_width_triangle_is_mirror_symmetric():
+    """An odd base (an even base delta) puts the apex on the middle tile, so
+    the legs mirror: about the apex column in the wide form (a square box
+    included, x wins the tie), about the apex row in the tall one."""
+    bad = []
+    for w in range(3, 25):
+        for h in range(3, 25):
+            wide = w >= h
+            if (w if wide else h) % 2 == 0:
+                continue
+            for filled in (False, True):
+                tiles = set(_tri(w, h, TRIANGLE, filled=filled, x0=0, y0=0))
+                mirror = {(w - 1 - x, y) if wide else (x, h - 1 - y) for x, y in tiles}
+                if tiles != mirror:
+                    bad.append((w, h, filled))
+    assert bad == []
+
+
+def test_a_shift_triangle_outline_is_its_three_raw_edges():
+    """Shift legs are 45 degrees, so nothing runs beside an axis edge and the
+    thinning leaves every Shift outline exactly the union of its edges."""
+    bad = []
+    for kind, snap in ((TRIANGLE, snap_triangle_delta), (RIGHT_TRIANGLE, snap_square_delta)):
+        for dx in range(-14, 15):
+            for dy in range(-14, 15):
+                sx, sy = snap(dx, dy)
+                if abs(sx) < 2 or abs(sy) < 2:
+                    continue
+                a, b, c = triangle_vertices(100, 200, 100 + sx, 200 + sy, kind)
+                edges = set()
+                for p, q in ((a, b), (b, c), (c, a)):
+                    edges |= set(line_tiles(*p, *q, _BIG, _BIG))
+                if set(triangle_tiles(100, 200, 100 + sx, 200 + sy, _BIG, _BIG, kind=kind, filled=False)) != edges:
+                    bad.append((kind, dx, dy))
+    assert bad == []
+
+
+def test_a_flat_twenty_one_by_four_triangle_is_this_outline():
+    picture = [
+        "#####################",
+        "....#...........#....",
+        ".....####...####.....",
+        ".........###.........",
+    ]
+    expected = [(x, y) for y, row in enumerate(picture) for x, ch in enumerate(row) if ch == "#"]
+    assert triangle_tiles(0, 0, 20, 3, _BIG, _BIG, kind=TRIANGLE, filled=False) == expected
+
+
+def test_a_filled_triangle_contains_its_outline():
+    bad = [
+        (kind, w, h)
+        for kind in _TRI_KINDS
+        for w, h in _TRI_SIZES
+        if not set(_tri(w, h, kind)) <= set(_tri(w, h, kind, filled=True))
+    ]
+    assert bad == []
+
+
+def test_a_right_triangle_has_its_right_angle_at_the_anchor_whichever_way_it_is_dragged():
+    for flip in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        x0, y0 = 100, 200
+        x1, y1 = x0 + flip[0] * 6, y0 + flip[1] * 4
+        tiles = set(_tri(7, 5, RIGHT_TRIANGLE, flip=flip))
+        # Both legs run whole along the box edges through the anchor.
+        assert {(x, y0) for x in range(min(x0, x1), max(x0, x1) + 1)} <= tiles
+        assert {(x0, y) for y in range(min(y0, y1), max(y0, y1) + 1)} <= tiles
+        assert (x1, y1) not in tiles
+
+
+def test_a_triangle_puts_its_base_on_the_anchor_edge_along_the_longer_axis():
+    wide = _tri(9, 5, TRIANGLE)
+    assert {(x, 200) for x in range(100, 109)} <= set(wide)
+    assert [t for t in wide if t[1] == 204] == [(104, 204)]
+    tall = _tri(5, 9, TRIANGLE, flip=(1, -1))
+    assert {(100, y) for y in range(192, 201)} <= set(tall)
+    assert [t for t in tall if t[0] == 104] == [(104, 196)]
+
+
+def test_a_triangle_under_three_tiles_on_an_axis_is_the_rectangle():
+    for kind in _TRI_KINDS:
+        for filled in (False, True):
+            for box in ((4, 4, 4, 4), (4, 4, 12, 5), (4, 4, 5, 12)):
+                assert triangle_tiles(*box, _W, _H, kind=kind, filled=filled) == rect_tiles(*box, _W, _H, filled=filled)
+
+
+def test_a_triangle_straddling_the_map_edge_is_clipped_not_moved():
+    for kind in _TRI_KINDS:
+        whole = triangle_tiles(-5 + 50, -3 + 50, 9 + 50, 7 + 50, _BIG, _BIG, kind=kind, filled=False)
+        clipped = triangle_tiles(-5, -3, 9, 7, 8, 6, kind=kind, filled=False)
+        assert clipped == [(x - 50, y - 50) for x, y in whole if 0 <= x - 50 < 8 and 0 <= y - 50 < 6]
+
+
+def test_a_shift_triangle_has_an_odd_base_and_pure_diagonal_legs():
+    bad = []
+    for dx in range(-12, 13):
+        for dy in range(-12, 13):
+            sx, sy = snap_triangle_delta(dx, dy)
+            base, height = (sx, sy) if abs(dx) >= abs(dy) else (sy, sx)
+            if base % 2 or abs(height) != abs(base) // 2 or abs(base) < max(abs(dx), abs(dy)):
+                bad.append((dx, dy, "snap"))
+            if (dx and (sx > 0) != (dx > 0)) or (dy and (sy > 0) != (dy > 0)):
+                bad.append((dx, dy, "sign"))
+            if abs(base) < 4:
+                continue
+            a, b, c = triangle_vertices(0, 0, sx, sy, TRIANGLE)
+            # Each leg runs from a base end to the apex in equal steps on both axes.
+            bad.extend((dx, dy, "leg") for end in (a, b) if abs(c[0] - end[0]) != abs(c[1] - end[1]))
+    assert bad == []
+
+
+def test_a_shift_triangle_outline_is_the_base_and_two_diagonals():
+    tiles = triangle_tiles(0, 0, 8, 4, _W, _H, kind=TRIANGLE, filled=False)
+    expected = {(x, 0) for x in range(9)} | {(i, i) for i in range(5)} | {(8 - i, i) for i in range(5)}
+    assert set(tiles) == expected
+
+
+def test_a_filled_ellipse_is_its_ring_with_each_row_filled():
+    for w, h in [(3, 3), (5, 9), (11, 7), (16, 9), (24, 24)]:
+        ring = _ellipse_at(w, h)
+        filled = ellipse_tiles(100, 200, 100 + w - 1, 200 + h - 1, _BIG, _BIG, filled=True)
+        assert set(ring) <= set(filled)
+        assert filled == sorted(set(filled), key=lambda t: (t[1], t[0]))
+        for y in {y for _, y in ring}:
+            xs = [x for x, yy in ring if yy == y]
+            assert [x for x, yy in filled if yy == y] == list(range(min(xs), max(xs) + 1))
+    assert ellipse_tiles(4, 4, 14, 10, _W, _H, filled=False) == ellipse_perimeter_tiles(4, 4, 14, 10, _W, _H)
+
+
+def test_a_filled_ellipse_straddling_the_map_edge_is_clipped_not_moved():
+    whole = ellipse_tiles(45, 47, 59, 57, _BIG, _BIG, filled=True)
+    clipped = ellipse_tiles(-5, -3, 9, 7, 8, 6, filled=True)
+    assert clipped == [(x - 50, y - 50) for x, y in whole if 0 <= x - 50 < 8 and 0 <= y - 50 < 6]

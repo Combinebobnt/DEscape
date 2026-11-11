@@ -39,7 +39,7 @@ def is_refused_const(const: int) -> str | None:
     if gate_orientation.is_gate(const):
         return "gates are placed one at a time with Place Unit"
     if const in unit_sprites.wall_family_consts():
-        return "walls are placed as runs with Place Unit, Wall Rectangle or Wall Circle"
+        return "walls are placed as runs with Place Unit, or drawn with Unit Line or Unit Shape"
     if const in unit_kind.cliff_consts():
         return "cliffs are placed as chains with the Cliff tool"
     return None
@@ -125,7 +125,6 @@ def paint_dab(scenario, stroke: BrushStroke, tiles: Iterable[tuple[int, int]], a
         if rng.random() >= stroke.density:
             continue
         const = stroke.consts[0] if len(stroke.consts) == 1 else rng.choice(stroke.consts)
-        owner = unit_kind.placement_owner(const, stroke.chosen_owner)
         span = tile_span(const, NON_BUILDING_SPAN)
         x, y = snapped_anchor(tile, None, span, width, height)
         if jitter:
@@ -138,25 +137,37 @@ def paint_dab(scenario, stroke: BrushStroke, tiles: Iterable[tuple[int, int]], a
         footprint = occupied_tiles_for(const, x, y, width, height) or []
         if any(t in stroke.filled for t in footprint):
             continue
-        if stroke.rules:
-            _ensure_rule_state(scenario, stroke)
-            if placement_rules.refused(scenario, const, x, y, grid=stroke.grid, laid=stroke.laid):
-                stroke.refused += 1
-                if stroke.refusal_reason is None:
-                    # Built now, once: a bridge or blocker this stroke adds later would change the answer.
-                    stroke.refusal_reason = placement_rules.refusal(
-                        scenario, const, x, y, grid=stroke.grid, laid=stroke.laid
-                    )
-                continue
-        rotation = random_rotation(rng, const, owner) if stroke.randomize else rotation_for(stroke.pending, const, owner)
-        unit = add(Spec(owner, const, x, y, rotation))
-        # On the stroke at once: a raise later in this dab must still find it to commit.
-        stroke.placed.append((owner, unit))
-        placed.append((owner, unit))
-        if owner != stroke.chosen_owner:
-            stroke.gaia_only += 1
+        result = place_candidate(scenario, stroke, const, x, y, add)
+        if result is None:
+            continue
+        placed.append(result)
         # Learned before the next candidate, so one dab never overlaps itself.
         stroke.filled.update(footprint)
-        if stroke.grid is not None:
-            stroke.grid.add(owner, unit)
     return placed
+
+
+def place_candidate(scenario, stroke: BrushStroke, const: int, x: float, y: float, add: Callable[[Spec], object]):
+    """One fitted candidate's tail, shared with Unit Line and Unit Shape
+    (GH #365): the rules unless Free placement, the rotation, the add, and
+    the grid learning it. Returns (owner, unit), or None when refused."""
+    owner = unit_kind.placement_owner(const, stroke.chosen_owner)
+    if stroke.rules:
+        _ensure_rule_state(scenario, stroke)
+        if placement_rules.refused(scenario, const, x, y, grid=stroke.grid, laid=stroke.laid):
+            stroke.refused += 1
+            if stroke.refusal_reason is None:
+                # Built now, once: a bridge or blocker this stroke adds later would change the answer.
+                stroke.refusal_reason = placement_rules.refusal(
+                    scenario, const, x, y, grid=stroke.grid, laid=stroke.laid
+                )
+            return None
+    rng = stroke.rng
+    rotation = random_rotation(rng, const, owner) if stroke.randomize else rotation_for(stroke.pending, const, owner)
+    unit = add(Spec(owner, const, x, y, rotation))
+    # On the stroke at once: a raise later in this stroke must still find it to commit.
+    stroke.placed.append((owner, unit))
+    if owner != stroke.chosen_owner:
+        stroke.gaia_only += 1
+    if stroke.grid is not None:
+        stroke.grid.add(owner, unit)
+    return owner, unit

@@ -97,6 +97,9 @@ class _LevelCache:
     def pack_warm_job(self, mip, after_level_warm=False):
         return None
 
+    def native_prime_job(self, mip, after_level_warm=False):
+        return None
+
     def _walk(self):
         for _ in range(self.steps):
             self.stepped += 1

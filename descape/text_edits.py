@@ -93,7 +93,8 @@ class _MultiLineEdit(QPlainTextEdit):
     While a box has focus, ViewerWindow's Edit > Undo/Redo act on its own
     document undo stack rather than EditHistory (GH #38). Opening the Edit
     menu is a popup focus-out, which focusOutEvent() exempts, so the menu
-    reaches the box's stack before anything is committed.
+    reaches the box's stack before anything is committed. Opening it from the
+    keyboard (Alt) commits the box first.
 
     The grip emits linesChanged(n) per whole-line drag step, linesCommitted(n)
     once on release if the count moved, and linesReset() on a double-click
@@ -197,8 +198,8 @@ class _MultiLineEdit(QPlainTextEdit):
 
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
-        # Same exemptions as QLineEdit: a popup or a window switch is not the
-        # user leaving the field.
+        # A popup or a window switch is not the user leaving the field, so it does
+        # not commit; the menu bar's keyboard mode (MenuBarFocusReason) does.
         if event.reason() not in (Qt.PopupFocusReason, Qt.ActiveWindowFocusReason):
             self.editingFinished.emit()
 

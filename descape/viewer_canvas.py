@@ -1690,7 +1690,11 @@ class UnitGhostItem(QGraphicsItem):
     # opaque enough that a sprite's own art is still identifiable.
     GHOST_OPACITY = 0.6
     # TASK-327: how far a refused sprite's RGB moves toward the refusal colour, as the game tints its ghost.
+    # TASK-549's garrison look blends toward its own colour by the same amount.
     REFUSED_TINT = 0.6
+    # Per-entry looks: untinted is None.
+    REFUSED = "refused"
+    GARRISON = "garrison"
 
     def __init__(self) -> None:
         super().__init__()
@@ -1701,21 +1705,29 @@ class UnitGhostItem(QGraphicsItem):
         self._images: list[tuple[QImage, float, float]] = []
         # (polygon, brush, pen) per mark polygon: a group ghost (GH #75) mixes owners.
         self._marks: list[tuple[QPolygonF, QBrush, QPen]] = []
-        # TASK-327: the refused look lives beside those three, which keep untinted content for every
-        # entry. Per mark: refused or not. Per image: its source draw.rgba when refused, and the tint.
+        # TASK-327: the tinted looks live beside those three, which keep untinted content for every
+        # entry. Per mark: refused or not, garrison or not. Per image: (source draw.rgba, look) when
+        # tinted, and the tint.
         self._refused_marks: list[bool] = []
-        self._refused_sources: list[np.ndarray | None] = []
+        self._garrison_marks: list[bool] = []
+        self._tint_sources: list[tuple[np.ndarray, str] | None] = []
         self._tinted: list[QImage | None] = []
-        # id(source) -> (source, tinted copy, QImage over it). The source is held, so its id stays its own.
-        self._tint_cache: dict[int, tuple[np.ndarray, np.ndarray, QImage]] = {}
+        # (id(source), colour rgb) -> (source, tinted copy, QImage over it). The source is held, so its id stays its own.
+        self._tint_cache: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, QImage]] = {}
         self._refusal_color = QColor(Qt.red)
+        self._garrison_color = QColor(Qt.yellow)
         self._bounding_rect = QRectF()
         self.setOpacity(self.GHOST_OPACITY)
 
     @property
     def refused(self) -> bool:
         """Whether any part of the ghost is drawn refused."""
-        return any(self._refused_marks) or any(tinted is not None for tinted in self._tinted)
+        return any(self._refused_marks) or any(t is not None and t[1] == self.REFUSED for t in self._tint_sources)
+
+    @property
+    def garrison(self) -> bool:
+        """Whether any part of the ghost is drawn in the garrison look (TASK-549)."""
+        return any(self._garrison_marks) or any(t is not None and t[1] == self.GARRISON for t in self._tint_sources)
 
     def set_refusal_color(self, color: QColor) -> None:
         """The overlay colour a refused part is tinted toward (MapView pushes it)."""
@@ -1723,53 +1735,73 @@ class UnitGhostItem(QGraphicsItem):
         if color == self._refusal_color:
             return
         self._refusal_color = color
+        self._retint()
+
+    def set_garrison_color(self, color: QColor) -> None:
+        """The overlay colour a garrison part is tinted toward (MapView pushes it)."""
+        color = QColor(color)
+        if color == self._garrison_color:
+            return
+        self._garrison_color = color
+        self._retint()
+
+    def _retint(self) -> None:
         self._tint_cache = {}
-        self._tinted = [None if source is None else self._tint(source) for source in self._refused_sources]
+        self._tinted = [None if t is None else self._tint(*t) for t in self._tint_sources]
         self.update()
 
-    def set_sprites(self, draws, refused: bool = False) -> bool:
+    def set_sprites(self, draws, refused: bool = False, garrison: bool = False) -> bool:
         """draws: render.unit_sprite_draws_at()'s (draw, px, py) triples, in
         canvas pixels -- which ARE scene coordinates, since scene space is
         pinned to the reference mip (MapCanvasItem's plan decision D2).
 
         Returns whether anything is left to show, so the caller can fall back
         to the coloured mark on an empty resolve rather than leaving a stale
-        ghost on screen."""
+        ghost on screen. `refused` wins over `garrison`."""
         if refused:
             return self.set_content((), (), refused_draws=draws)
+        if garrison:
+            return self.set_content((), (), garrison_draws=draws)
         return self.set_content(draws, ())
 
-    def set_mark(self, polygons, color: tuple[int, int, int], refused: bool = False) -> bool:
+    def set_mark(self, polygons, color: tuple[int, int, int], refused: bool = False, garrison: bool = False) -> bool:
         """polygons: unit_pick.unit_polygons()' plain (x, y) point lists, in
         the same canvas/scene pixels as set_sprites(). The coloured-mark
         fallback, for Flat (which has no sprite compositor at all) and for any
         unit whose sprite does not resolve."""
         if refused:
             return self.set_content((), (), refused_marks=[(polygons, color)])
+        if garrison:
+            return self.set_content((), (), garrison_marks=[(polygons, color)])
         return self.set_content((), [(polygons, color)])
 
-    def set_content(self, draws, marks, refused_draws=(), refused_marks=()) -> bool:
+    def set_content(
+        self, draws, marks, refused_draws=(), refused_marks=(), garrison_draws=(), garrison_marks=()
+    ) -> bool:
         """Sprite draws and coloured marks together, for a group ghost whose
         members resolve differently. `marks` is a list of (polygons, color).
-        The refused_ pair is the same shape, drawn refused (TASK-327)."""
+        The refused_ pair is the same shape, drawn refused (TASK-327), and the
+        garrison_ pair in the garrison look (TASK-549)."""
         self.prepareGeometryChange()
         self._arrays = []
         self._images = []
         self._marks = []
         self._refused_marks = []
-        self._refused_sources = []
+        self._garrison_marks = []
+        self._tint_sources = []
         rect = QRectF()
-        for mark_list, refused in ((marks, False), (refused_marks, True)):
+        for mark_list, look in ((marks, None), (refused_marks, self.REFUSED), (garrison_marks, self.GARRISON)):
             for polygons, color in mark_list:
                 qcolor = QColor(*color)
                 brush, pen = QBrush(qcolor), QPen(qcolor)
                 for points in polygons:
                     polygon = QPolygonF([QPointF(px, py) for px, py in points])
                     self._marks.append((polygon, brush, pen))
-                    self._refused_marks.append(refused)
+                    self._refused_marks.append(look == self.REFUSED)
+                    self._garrison_marks.append(look == self.GARRISON)
                     rect = rect.united(polygon.boundingRect())
         live: set[int] = set()
-        for draw_list, refused in ((draws, False), (refused_draws, True)):
+        for draw_list, look in ((draws, None), (refused_draws, self.REFUSED), (garrison_draws, self.GARRISON)):
             for draw, ax, ay in draw_list:
                 rgba = np.ascontiguousarray(draw.rgba)
                 h, w = rgba.shape[:2]
@@ -1782,31 +1814,32 @@ class UnitGhostItem(QGraphicsItem):
                 image = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
                 self._arrays.append(rgba)
                 self._images.append((image, float(x0), float(y0)))
-                self._refused_sources.append(draw.rgba if refused else None)
+                self._tint_sources.append(None if look is None else (draw.rgba, look))
                 live.add(id(draw.rgba))
                 rect = rect.united(QRectF(x0, y0, w, h))
         # Only what this content draws stays cached: a group drag re-sends the same sources every move.
-        self._tint_cache = {key: hit for key, hit in self._tint_cache.items() if key in live}
-        self._tinted = [None if source is None else self._tint(source) for source in self._refused_sources]
+        self._tint_cache = {key: hit for key, hit in self._tint_cache.items() if key[0] in live}
+        self._tinted = [None if t is None else self._tint(*t) for t in self._tint_sources]
         self._bounding_rect = rect
         self.update()
         return bool(self._images or self._marks)
 
-    def _tint(self, source: np.ndarray) -> QImage:
-        """A copy of `source` with its RGB blended toward the refusal colour,
-        alpha untouched, cached per source. Never written in place:
+    def _tint(self, source: np.ndarray, look: str) -> QImage:
+        """A copy of `source` with its RGB blended toward `look`'s colour,
+        alpha untouched, cached per source and colour. Never written in place:
         np.ascontiguousarray() hands back the sprite cache's own array."""
-        hit = self._tint_cache.get(id(source))
+        color = self._refusal_color if look == self.REFUSED else self._garrison_color
+        key = (id(source), color.rgb())
+        hit = self._tint_cache.get(key)
         if hit is not None:
             return hit[2]
         rgba = np.array(source, dtype=np.uint8, order="C", copy=True)
-        color = self._refusal_color
         target = np.array([color.red(), color.green(), color.blue()], dtype=np.float32) * np.float32(self.REFUSED_TINT)
         rgb = rgba[..., :3] * np.float32(1.0 - self.REFUSED_TINT) + target
         rgba[..., :3] = np.rint(np.clip(rgb, 0.0, 255.0)).astype(np.uint8)
         h, w = rgba.shape[:2]
         image = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
-        self._tint_cache[id(source)] = (source, rgba, image)
+        self._tint_cache[key] = (source, rgba, image)
         return image
 
     def _hatch_brush(self, painter: QPainter, polygon: QPolygonF) -> QBrush:
@@ -1825,13 +1858,19 @@ class UnitGhostItem(QGraphicsItem):
         return self._bounding_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        for (polygon, brush, pen), refused in zip(self._marks, self._refused_marks, strict=True):
+        for (polygon, brush, pen), refused, garrison in zip(
+            self._marks, self._refused_marks, self._garrison_marks, strict=True
+        ):
             if refused:
                 painter.setPen(QPen(self._refusal_color))
                 painter.setBrush(QBrush(self._refusal_color))
                 painter.drawPolygon(polygon)
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(self._hatch_brush(painter, polygon))
+            elif garrison:
+                # TASK-549: filled, never hatched; the hatch stays the refusal cue.
+                painter.setPen(QPen(self._garrison_color))
+                painter.setBrush(QBrush(self._garrison_color))
             else:
                 painter.setPen(pen)
                 painter.setBrush(brush)

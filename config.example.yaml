@@ -151,6 +151,11 @@ view_layers:
 #   cliff_frame (default 0): 0 or more
 #   unit_brush_density (default 100): 1-100
 #   unit_brush_random (default true): true or false
+#   unit_shape_kind (default rectangle): rectangle, ellipse, triangle,
+#     right_triangle
+#   unit_shape_filled (default false): true or false
+#   unit_shape_spacing (default 0): 0-20
+#   unit_shape_random (default false): true or false
 #   convert_sources (default [0, 1, 2, 3, 4, 5, 6, 7, 8]): a list of 0, 1,
 #     2, 3, 4, 5, 6, 7, 8
 #   eraser_targets (default [units, buildings]): a list of units, buildings,
@@ -185,6 +190,11 @@ data_mod_hide_unchanged: false
 # End the name of an object only the data mod has in "(data mod)", in the
 # catalog and the pickers, Settings > Mods. Default: true.
 data_mod_label_shown: true
+
+# List the data mod's own terrains (new, or changed from the game's) in one
+# "Mod terrains" group at the top of the Terrain panel instead of in their
+# categories, Settings > Mods. Default: false.
+data_mod_terrain_group: false
 
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
@@ -369,6 +379,18 @@ browse_catalog_mode: icons
 # recent_files:
 #   - /path/to/recent_scenario.aoe2scenario
 
+# The scripts and addons you have agreed to run: each file's full path and the
+# sha256 of the bytes you agreed to. Written when you answer Yes to "Run
+# script?" or "Run addon?" -- not something you normally set by hand. A file
+# whose bytes change is asked about again. Omitted entirely until first
+# saved. The values below are only examples.
+# confirmed_scripts:
+#   - path: /path/to/scripts/example.py
+#     digest: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+# confirmed_addons:
+#   - path: /path/to/addons/example.py
+#     digest: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+
 # File > Data Mod's choice per saved scenario, keyed by the scenario's full
 # path. Written when you pick a data mod with a saved scenario open, or Save
 # As -- not something you normally set by hand. A scenario with no entry
@@ -551,8 +573,8 @@ keybinds:
   tool_ruler: R
   tool_place_unit: ''
   tool_unit_brush: ''
-  tool_wall_rect: ''
-  tool_wall_circle: ''
+  tool_unit_line: ''
+  tool_unit_shape: ''
   tool_convert: ''
   tool_eraser: X
   tool_create_objects: ''
@@ -592,6 +614,7 @@ overlay_colors:
   unit_stack: '#ffd24a'
   unit_stack_background: '#000000'
   unit_ghost_refused: '#ff3c3c'
+  unit_ghost_garrison: '#ffd23c'
   footprint_outline: '#c8c8c8'
   fish_outline: '#3cc8ff'
   range_ring: '#404040'

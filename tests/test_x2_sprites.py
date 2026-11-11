@@ -109,6 +109,19 @@ def test_native_size_draws_x1_pixel_for_pixel_without_hi_res(install):  # noqa: 
     assert (got.hotspot_x, got.hotspot_y) == (hx, hy)
 
 
+def test_the_192_tier_draws_x1_at_an_even_2x_without_hi_res(install):  # noqa: F811
+    """TASK-601: the 192 px tier (half_w 96, sprite_scale 2.0) draws every x1 pixel as an exact 2x2
+    block (Default), hotspot doubled; an uneven gather would double only some rows."""
+    _pair(install)
+    tile_192_half_w = 2 * NATIVE
+    assert unit_sprites.sprite_scale(tile_192_half_w) == 2.0
+    got = _draw(tile_192_half_w)
+    x1 = _tinted_frame(FILE_NAME, x2=False)
+    assert np.array_equal(got.rgba, np.repeat(np.repeat(x1, 2, axis=0), 2, axis=1))
+    _main, _pc, hx, hy = unit_sprites._drawn_frame(FILE_NAME, 0)
+    assert (got.hotspot_x, got.hotspot_y) == (2 * hx, 2 * hy)
+
+
 def test_on_draws_x2_box_halved_at_native_size(install):  # noqa: F811
     """TASK-599 Decision 4: Enhanced at the 96 px tier draws x2 at exactly 0.5 through the
     box filter, on x1's pixel grid and hotspot."""

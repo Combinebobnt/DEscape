@@ -594,6 +594,55 @@ def test_a_group_move_onto_a_bridge_deck_builds_the_laid_map_once(monkeypatch) -
         _close(window)
 
 
+def _bridge_and(window, villager_at: tuple[float, float]) -> list[tuple[int, int]]:
+    """The bridge over water plus a villager, both selected: [bridge key, villager key]."""
+    _set_terrain(window, [(x, y) for x in range(70, 87) for y in range(74, 87)], WATER_SHALLOW)
+    keys = _add_units(window, [(BRIDGE_MIDDLE, 80, 80.5), (VILLAGER, *villager_at)])
+    _select(window, keys)
+    return keys
+
+
+def _preview_refused(window, keys, dx: float, dy: float) -> set:
+    """The drag preview's refused members for a delta (TASK-327's _group_refused_ids())."""
+    index = window.map_view._unit_index
+    entries = [index.entry_for_key(key) for key in keys]
+    ids = window._group_refused_ids(entries, entries[1], dx, dy, None)
+    return {key for key, entry in zip(keys, entries, strict=True) if id(entry.unit) in ids}
+
+
+def test_a_bridge_moved_with_the_villager_on_its_deck_carries_it_onto_other_water() -> None:
+    """TASK-483: the villager is judged on the deck where the bridge lands, not where it stood."""
+    window = _window()
+    try:
+        bridge, villager = _bridge_and(window, (79.5, 80.5))
+        assert _preview_refused(window, [bridge, villager], -5, 0) == set()
+
+        window.on_unit_move(villager, _point(window, 74.5, 80.5), Qt.NoModifier)
+
+        assert _position(window, villager) == (74.5, 80.5), _last(window)
+        assert _position(window, bridge) == (75, 80.5)
+    finally:
+        _close(window)
+
+
+def test_a_villager_moved_onto_the_deck_its_bridge_leaves_is_refused() -> None:
+    """TASK-483: the deck goes with the bridge, so the tiles it leaves are water again."""
+    window = _window()
+    try:
+        bridge, villager = _bridge_and(window, (77.5, 80.5))
+        assert _preview_refused(window, [bridge, villager], 2, 0) == {villager}
+
+        window.on_unit_move(villager, _point(window, 79.5, 80.5), Qt.NoModifier)
+
+        assert _position(window, villager) == (77.5, 80.5)
+        assert _position(window, bridge) == (80, 80.5)
+        assert _last(window) == (
+            f"Move: 1 of 2 units can't go there (first: Villager Male can't stand on Water Shallow). {_GROUP_HINT}"
+        )
+    finally:
+        _close(window)
+
+
 def test_an_arrow_nudge_never_asks_the_rules() -> None:
     """Out of scope by decision: a nudge moves onto water and into another unit."""
     window = _window()

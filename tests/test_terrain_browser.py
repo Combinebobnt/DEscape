@@ -231,8 +231,8 @@ def test_each_swatch_shows_its_own_terrains_colour() -> None:
                 shown,
                 expected,
             )
-        # And they are not one repeated square.
-        assert len(seen) >= len(by_category) - 2
+        # And they are not one repeated square. Moddable's first slot (GH #271) repeats a grass.
+        assert len(seen) >= len(by_category) - 3
     finally:
         view.close()
 
@@ -621,6 +621,37 @@ def test_the_list_view_has_no_side_preview_and_the_list_takes_its_width() -> Non
         panel.close()
 
 
+def test_the_list_views_name_column_spans_the_tree() -> None:
+    """TASK-527: the Name column, and so a selected row's highlight, reaches the viewport's right
+    edge, and a narrower pane still scrolls a long name sideways rather than eliding it."""
+    from PyQt5.QtWidgets import QApplication
+
+    panel = _shown_panel("list")
+    try:
+        tree = panel.view.tree
+        header = tree.header()
+        assert tree.sizeHintForColumn(0) < tree.viewport().width(), "the names should be narrower than the tree here"
+        assert header.sectionSize(0) == tree.viewport().width(), (header.sectionSize(0), tree.viewport().width())
+        assert tree.horizontalScrollBar().maximum() == 0
+
+        panel.resize(900, 700)
+        QApplication.processEvents()
+        assert header.sectionSize(0) == tree.viewport().width(), "a wider pane leaves the column behind"
+        panel.resize(440, 700)
+        QApplication.processEvents()
+        assert header.sectionSize(0) == tree.viewport().width(), "a narrower pane keeps the wider column"
+        assert tree.horizontalScrollBar().maximum() == 0
+
+        tree.expandAll()
+        panel.resize(120, 700)
+        for _ in range(4):
+            QApplication.processEvents()
+        assert header.sectionSize(0) >= tree.sizeHintForColumn(0), "a narrow pane squeezes the names"
+        assert tree.horizontalScrollBar().maximum() > 0, "a narrow pane should scroll the names"
+    finally:
+        panel.close()
+
+
 def test_a_mode_switch_never_changes_the_terrain() -> None:
     window = _terrain_window()
     try:
@@ -907,3 +938,256 @@ def test_changing_the_install_clears_the_thumbnail_cache() -> None:
     asset_source.get_terrain_thumbnail(_GRASS_1, 8)
     asset_source.set_install_path_override(None)
     assert asset_source._terrain_thumbnail_for_path.cache_info().currsize == 0
+
+
+# -- data mod terrains (GH #271) ---------------------------------------------
+
+
+@pytest.fixture
+def gb_like_mod(tmp_path):
+    from testkit import data_mod_fixture
+
+    mod = data_mod_fixture.mod_tables(tmp_path)
+    data_mod_fixture.add_terrains(mod)
+    return mod
+
+
+def _tree_group_of(tree, value: int) -> str:
+    from descape.value_picker import GROUP_ROLE
+
+    return _row_for(tree, value).parent().data(0, GROUP_ROLE)
+
+
+def _group_names(tree) -> list[str]:
+    from descape.value_picker import GROUP_ROLE
+
+    return [tree.topLevelItem(i).data(0, GROUP_ROLE) for i in range(tree.topLevelItemCount())]
+
+
+def _expanded(tree) -> set[str]:
+    from descape.value_picker import GROUP_ROLE
+
+    return {tree.topLevelItem(i).data(0, GROUP_ROLE) for i in range(tree.topLevelItemCount()) if tree.topLevelItem(i).isExpanded()}
+
+
+def _values(tree) -> set[int]:
+    return {row.data(0, _user_role()) for _group, row in _rows(tree)}
+
+
+def _shown_values(tree) -> set[int]:
+    return {row.data(0, _user_role()) for group, row in _rows(tree) if not group.isHidden() and not row.isHidden()}
+
+
+def test_a_data_mod_switch_lists_its_terrains_in_tree_and_grid(gb_like_mod) -> None:
+    from descape import game_dataset
+    from descape.value_picker import GROUP_ROLE
+    from testkit.data_mod_fixture import SW_FARM, SW_METAL
+
+    window = _terrain_window()
+    try:
+        view = window.terrain_panel.view
+        assert SW_FARM not in _values(view.tree)
+        game_dataset.set_data_mod(gb_like_mod)
+        window._refresh_game_lists()
+        assert {SW_FARM, SW_METAL} <= _values(view.tree) and {SW_FARM, SW_METAL} <= set(view.grid.values())
+        assert _row_for(view.tree, SW_FARM).parent().data(0, GROUP_ROLE) == "Farms"
+        assert _row_for(view.tree, SW_METAL).parent().data(0, GROUP_ROLE) == terrain_catalog.CATEGORY_OTHER
+        assert {terrain_catalog.CATEGORY_UNUSED, terrain_catalog.CATEGORY_MODDABLE} <= set(_group_names(view.tree))
+        game_dataset.set_data_mod(None)
+        window._refresh_game_lists()
+        assert SW_FARM not in _values(view.tree) and SW_FARM not in view.grid.values()
+    finally:
+        _close(window)
+
+
+def test_an_install_change_redoes_the_mods_terrains_and_names(gb_like_mod, tmp_path, monkeypatch) -> None:
+    """Which terrains are the mod's follows the install's strings, and a new
+    install path is no dataset switch: the mod's string for Road matches one
+    install's and not the other's."""
+    from AoE2ScenarioParser.datasets.terrains import TerrainId
+
+    from descape import game_dataset, object_catalog
+
+    road = TerrainId.ROAD.value
+    road_string = object_catalog.dat_terrains()[road]["string_id"]
+    for install, text in (("same", "Lava"), ("stock", "Road")):
+        strings = tmp_path / install / asset_source.STRINGS_SUBPATH_TEMPLATE.format(lang="en")
+        strings.parent.mkdir(parents=True)
+        strings.write_text(f'{road_string} "{text}"\n', encoding="utf-8")
+    folder = gb_like_mod.root / "resources" / "en" / "strings" / "key-value"
+    folder.mkdir(parents=True)
+    (folder / "key-value-strings-utf8.txt").write_text(f'{road_string} "Lava"\n', encoding="utf-8")
+    monkeypatch.setattr(asset_source, "validate_install_path", lambda path: (True, "ok"))
+    monkeypatch.setattr(asset_source, "save_install_path_to_config", lambda path: None)
+    asset_source.set_install_path_override(tmp_path / "same")
+    game_dataset.set_data_mod(gb_like_mod)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        tree = window.terrain_panel.view.tree
+        stock_group = _tree_group_of(tree, road)
+        assert _row_for(tree, road).text(0) == "Road" and stock_group != terrain_catalog.CATEGORY_OTHER
+        for install, label, group, mod in (("stock", "Lava", terrain_catalog.CATEGORY_OTHER, True), ("same", "Road", stock_group, False)):
+            dialog.install_path_edit.setText(str(tmp_path / install))
+            dialog.load_install_path()
+            assert next(e for e in terrain_catalog.terrains() if e.id == road).mod is mod, install
+            assert (_row_for(tree, road).text(0), _tree_group_of(tree, road)) == (label, group), install
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+        asset_source.set_install_path_override(None)
+
+
+def test_a_reload_keeps_the_pick_the_show_hidden_box_and_the_open_groups(gb_like_mod) -> None:
+    from descape import game_dataset
+
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        panel.set_terrain(_SNOW_SOFT)
+        for i in range(view.tree.topLevelItemCount()):
+            view.tree.topLevelItem(i).setExpanded(False)
+        keep = {_group_of(_SNOW_SOFT), _group_of(_WATER_DEEP)}
+        for i in range(view.tree.topLevelItemCount()):
+            if _group_names(view.tree)[i] in keep:
+                view.tree.topLevelItem(i).setExpanded(True)
+        view.show_hidden_checkbox.setChecked(True)
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        game_dataset.set_data_mod(gb_like_mod)
+        panel.reload_catalog()
+        assert emitted == []
+        assert panel.terrain_id() == _SNOW_SOFT and view.current_value() == _SNOW_SOFT
+        assert _expanded(view.tree) == keep
+        assert view.show_hidden_checkbox.isChecked() and _BLACK in _shown_values(view.tree)
+        assert not _row_for(view.tree, _SNOW_SOFT).icon(0).isNull(), "an open group decodes its new rows"
+    finally:
+        panel.close()
+
+
+def test_a_reload_applies_the_kept_filter_to_the_new_rows(gb_like_mod) -> None:
+    from descape import game_dataset
+    from testkit.data_mod_fixture import SW_METAL
+
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        view.filter_edit.setText("metal")
+        assert _shown_values(view.tree) == set()
+        game_dataset.set_data_mod(gb_like_mod)
+        panel.reload_catalog()
+        assert view.filter_edit.text() == "metal"
+        assert _shown_values(view.tree) == {SW_METAL}
+        assert not view.grid.cell_item(SW_METAL).isHidden()
+        assert panel.terrain_id() == _GRASS_1, "a filter hiding the pick keeps it armed"
+    finally:
+        panel.close()
+
+
+def test_a_reload_in_grid_mode_keeps_the_mode_the_armed_cell_and_closed_sections(gb_like_mod) -> None:
+    from descape import game_dataset
+
+    panel = _shown_panel("grid")
+    try:
+        view = panel.view
+        water = _group_of(_WATER_DEEP)
+        view.grid.set_section_open(water, False)
+        game_dataset.set_data_mod(gb_like_mod)
+        panel.reload_catalog()
+        assert panel.display_mode() == "grid" and view.stack.currentWidget() is view.grid
+        assert view.grid.current_value() == _GRASS_1 and panel.terrain_id() == _GRASS_1
+        assert not view.grid.section_open(water) and view.grid.section_open("Farms")
+    finally:
+        panel.close()
+
+
+def test_switching_the_mod_off_with_its_terrain_armed_arms_the_default_once(gb_like_mod) -> None:
+    from descape import game_dataset
+    from descape.terrain_panel import default_terrain_id
+    from testkit.data_mod_fixture import SW_FARM
+
+    game_dataset.set_data_mod(gb_like_mod)
+    panel = _shown_panel("list")
+    try:
+        assert panel.set_terrain(SW_FARM)
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        game_dataset.set_data_mod(None)
+        panel.reload_catalog()
+        assert emitted == [default_terrain_id()]
+        assert panel.terrain_id() == default_terrain_id() == panel.view.current_value()
+        assert panel.view.grid.current_value() == default_terrain_id()
+        assert SW_FARM not in _values(panel.view.tree)
+    finally:
+        panel.close()
+
+
+def test_an_armed_terrain_the_reload_hides_is_shown_and_stays_armed(gb_like_mod) -> None:
+    """The mod unhides AoE2's MODDABLE row 84; switching the mod off hides it again."""
+    from descape import game_dataset
+    from testkit.data_mod_fixture import MOON_GRASS
+
+    game_dataset.set_data_mod(gb_like_mod)
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        assert panel.set_terrain(MOON_GRASS) and not view.show_hidden_checkbox.isChecked()
+        emitted: list[int] = []
+        panel.terrain_changed.connect(emitted.append)
+        game_dataset.set_data_mod(None)
+        panel.reload_catalog()
+        assert emitted == [] and panel.terrain_id() == MOON_GRASS
+        assert view.show_hidden_checkbox.isChecked()
+        assert view.current_value() == MOON_GRASS and view.grid.current_value() == MOON_GRASS
+        assert not view.grid.cell_item(MOON_GRASS).isHidden()
+    finally:
+        panel.close()
+
+
+def test_a_heading_current_before_a_reload_gives_way_to_the_armed_row(gb_like_mod) -> None:
+    from descape import game_dataset
+
+    panel = _shown_panel("list")
+    try:
+        view = panel.view
+        view.tree.setCurrentItem(_row_for(view.tree, _GRASS_1).parent())
+        assert view.current_value() is None and panel.terrain_id() == _GRASS_1
+        game_dataset.set_data_mod(gb_like_mod)
+        panel.reload_catalog()
+        assert view.current_value() == _GRASS_1 == panel.terrain_id()
+    finally:
+        panel.close()
+
+
+def test_the_option_lists_mod_terrains_first(gb_like_mod) -> None:
+    from descape import game_dataset, object_catalog, settings
+    from testkit.data_mod_fixture import SW_FARM
+
+    game_dataset.set_data_mod(gb_like_mod)
+    panel = _shown_panel("list")
+    try:
+        tree = panel.view.tree
+        assert terrain_catalog.CATEGORY_MOD_GROUP not in _group_names(tree)
+        settings.set_data_mod_terrain_group(True)
+        panel.reload_catalog()
+        assert _group_names(tree)[0] == terrain_catalog.CATEGORY_MOD_GROUP
+        heading = tree.topLevelItem(0)
+        assert {heading.child(c).data(0, _user_role()) for c in range(heading.childCount())} == set(
+            object_catalog.data_mod_terrain_ids()
+        )
+        assert panel.view.grid.heading_items()[0].text().startswith(f"{terrain_catalog.CATEGORY_MOD_GROUP} (")
+        assert _tree_group_of(tree, SW_FARM) == terrain_catalog.CATEGORY_MOD_GROUP
+        settings.set_data_mod_terrain_group(False)
+        panel.reload_catalog()
+        assert terrain_catalog.CATEGORY_MOD_GROUP not in _group_names(tree)
+        assert _tree_group_of(tree, SW_FARM) == "Farms", "the reload landed in the panel, not only items_for()"
+    finally:
+        panel.close()
+
+
+def test_the_option_does_nothing_without_a_data_mod() -> None:
+    from descape import settings
+
+    settings.set_data_mod_terrain_group(True)
+    assert [item.group for item in terrain_browser.items_for()] == [
+        item.group for item in terrain_browser.items_for(mod_group=False)
+    ]

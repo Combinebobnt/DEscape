@@ -267,7 +267,7 @@ def test_the_paste_write_path_never_reads_tiles_from_a_units_entry() -> None:
         block = window._clipboard_history.active_block
         terrain = _terrain_ids(window)
 
-        record, parts, _skipped, added = window._paste_block_at(block, 58, 69, True, True, True)
+        record, parts, _skipped, added, _reshaped = window._paste_block_at(block, 58, 69, True, True, True)
 
         assert parts == ["units"]
         assert record.label == "Paste Units"

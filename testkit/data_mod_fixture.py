@@ -17,6 +17,9 @@ DESCAPE = Path(game_dataset.__file__).resolve().parent
 ARCHER, SPEARMAN, TOWN_CENTER, CASTLE = 4, 93, 109, 82
 NEW_UNIT = 9990  # no install table has it
 NEW_TREE = 9991
+# add_terrains()' rows (GH #271): new ids past AoE2's 0-133, and one changed MODDABLE row.
+SW_FARM, SW_JUNGLE, SW_LAKE, SW_SANDBANK, SW_METAL = 134, 135, 136, 137, 140
+MOON_GRASS = 84
 
 
 def load(folder: Path, name: str) -> dict:
@@ -70,3 +73,26 @@ def mod_tables(tmp_path: Path) -> game_dataset.DataModTables:
     units["terrains"][first] = [{**units["terrains"][first][0], "id": NEW_TREE}]
     save(folder, "terrain_unit_map.json", units)
     return game_dataset.DataModTables("sentinel", folder, tmp_path / "mod", "Sentinel Mod", frozenset({NEW_UNIT}))
+
+
+def add_terrains(mod: game_dataset.DataModTables) -> None:
+    """Gives mod_tables()' mod a Galactic Battlegrounds-like terrain set (GH
+    #271): SW_FARM, a tree terrain, a deep-water and a beach terrain, a metal
+    floor no rule places, and MOON_GRASS, AoE2's hidden 84 renamed and shown."""
+    folder = mod.tables_dir
+    catalog = load(folder, "object_catalog.json")
+    terrains = catalog["terrains"]
+    for terrain_id, code in (
+        (SW_FARM, "SW_FARM"), (SW_JUNGLE, "SW_TERR_JUNGLE"), (SW_LAKE, "SW_TERR_LAKE"),
+        (SW_SANDBANK, "SW_TERR_SANDBANK"), (SW_METAL, "SW_TERR_METAL1"),
+    ):
+        terrains[str(terrain_id)] = {"code": code, "hidden": False, "string_id": -1}
+    terrains[str(MOON_GRASS)] = {**terrains[str(MOON_GRASS)], "code": "Moon Grass", "hidden": False}
+    save(folder, "object_catalog.json", catalog)
+    units = load(folder, "terrain_unit_map.json")
+    units["terrains"][str(SW_JUNGLE)] = units["terrains"]["10"]  # FOREST_OAK's trees
+    save(folder, "terrain_unit_map.json", units)
+    classes = load(folder, "terrain_classes.json")
+    classes["classes"][str(SW_LAKE)] = {**classes["classes"]["22"]}  # WATER_DEEP
+    classes["classes"][str(SW_SANDBANK)] = {**classes["classes"]["2"]}  # BEACH
+    save(folder, "terrain_classes.json", classes)

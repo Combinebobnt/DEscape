@@ -151,17 +151,32 @@ def tile_pixels_for_map(map_width: int, map_height: int) -> int:
 # set only the base resolution above, so a fully zoomed-in Potatest view built
 # the same 128 px level as Default, at the same memory and build cost. Past its
 # finest level a view enlarges that level, as every quality already does past 128.
+# Default reaches the 192 level, x1 art at an even 2x (TASK-601). Enhanced stays at 128
+# until TASK-441 gives it 192 with x2 art at 1:1: it flips [4] here and in NATIVE_TIER_MAX.
 FINEST_TILE_PIXELS = {
     1: 32,
     2: 64,
     3: iso_geometry.MIP_MAX_TILE_PIXELS,
-    4: iso_geometry.MIP_MAX_TILE_PIXELS,
+    4: 128,
+}
+# The finest native tier (iso_geometry.NATIVE_TIERS) each quality's iso ladder may add, gated
+# per quality so a later ceiling raise (TASK-202's 256) cannot admit 192 at Enhanced (TASK-441).
+NATIVE_TIER_MAX = {
+    1: 96,
+    2: 96,
+    3: 192,
+    4: 96,
 }
 
 
 def finest_tile_pixels() -> int:
     """The finest mip level's tile_px at the current graphics quality."""
     return FINEST_TILE_PIXELS[settings.get_graphics_quality()]
+
+
+def native_tier_max() -> int:
+    """The finest native tier the current graphics quality's iso ladder may add."""
+    return NATIVE_TIER_MAX[settings.get_graphics_quality()]
 
 
 def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
@@ -4463,12 +4478,29 @@ def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
     overrides_uncached() below -- signature unchanged, so
     tests/test_wall_connectivity.py's `"unit_filter" not in inspect.
     signature(wall_variant_rotation_overrides)` assertion still holds."""
+    return _wall_overrides_and_verdict(scenario)[0]
+
+
+def walls_file_is_radian(scenario) -> bool:
+    """The file-wide verdict the overrides were drawn under
+    (unit_sprites.file_is_radian() over every eligible wall), a by-product of
+    the same memoized walk. render_cache's wall_verdict_flipped() compares it
+    with the verdict its unit sources were built against (TASK-583)."""
+    return _wall_overrides_and_verdict(scenario)[1]
+
+
+def _wall_overrides_and_verdict(scenario) -> tuple[dict[tuple[int, int], float], bool]:
     return _unit_gen_cached(
-        _WALL_OVERRIDES_MEMO, scenario, lambda: _wall_variant_rotation_overrides_uncached(scenario)
+        _WALL_OVERRIDES_MEMO, scenario, lambda: _wall_overrides_and_verdict_uncached(scenario)
     )
 
 
 def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int], float]:
+    """The overrides alone, uncached: tools/scan_wall_rotation.py and tools/bench_sprite_memo.py read this."""
+    return _wall_overrides_and_verdict_uncached(scenario)[0]
+
+
+def _wall_overrides_and_verdict_uncached(scenario) -> tuple[dict[tuple[int, int], float], bool]:
     """Per-(player_id, index-in-that-player's-unit-list) derived rotation for
     a wall/gate whose real shape isn't recoverable from its own stored
     `rotation` -- see tools/scan_wall_rotation.py, which measures this
@@ -4504,7 +4536,10 @@ def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int],
     In an integer file that is the only override, and it is added only where
     the stored index is not already the tower, so a game-saved file keeps an
     empty dict. The per-wall rule is unit_sprites.wall_drawn_shape(); this is
-    draw-only, and no write path reads it."""
+    draw-only, and no write path reads it.
+
+    Returns (overrides, file_is_radian): the verdict rides along so a cache
+    can tell when an edit flipped it without a second walk."""
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
 
@@ -4548,7 +4583,7 @@ def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int],
         drawn = unit_sprites.wall_drawn_shape(mask8, unit_sprites.variant_index(rotation, 5), file_is_radian)
         if drawn is not None:
             overrides[(player_id, i)] = float(drawn)
-    return overrides
+    return overrides, file_is_radian
 
 
 def _unit_color(unit, player_color: tuple[int, int, int]) -> tuple[int, int, int]:

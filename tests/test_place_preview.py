@@ -1699,3 +1699,171 @@ def test_a_refused_fish_ghost_keeps_its_ring_in_the_fish_pen() -> None:
         assert _rgb(ring.pen().color()) == _rgb(window.map_view._fish_pen.color())
     finally:
         _close(window)
+
+
+# --- TASK-549: Place Unit over a garrison host ----------------------------------
+
+_ARCHER, _KNIGHT, _TOWER = 4, 38, 79
+
+
+def _free_tile(window) -> tuple[int, int]:
+    """A tile with no unit within two tiles, so a hover there hits nothing."""
+    anchors = [(u.x, u.y) for units in window.scenario.unit_manager.units for u in units]
+    return next(
+        (x, y) for x in range(30, 90) for y in range(30, 90)
+        if all(abs(x + 0.5 - ux) > 2 or abs(y + 0.5 - uy) > 2 for ux, uy in anchors)
+    )
+
+
+def add_host(window, const: int = _TOWER, player: int = 1):
+    """A host on a free tile, through the unit model; returns the unit."""
+    model = window._ensure_unit_edits()
+    tile = _free_tile(window)
+    with window._unit_edit(model, "Place host", [player]):
+        host = model.add(player, const, tile[0] + 0.5, tile[1] + 0.5)
+    window._rebuild_unit_index()
+    return host
+
+
+def _host_entry(window, host, player: int = 1):
+    return window.map_view._unit_index.entry_for_key((player, host.reference_id))
+
+
+def _garrison_window(const: int = _ARCHER):
+    window = _window(const=const)
+    host = add_host(window)
+    return window, host
+
+
+def _host_tile(host) -> tuple[int, int]:
+    return int(host.x), int(host.y)
+
+
+def _ghost(window):
+    item = window.map_view._unit_ghost_item
+    assert item is not None, "the ghost must show"
+    return item
+
+
+def test_over_a_host_with_room_the_ghost_is_garrison_tinted_and_the_host_outlined() -> None:
+    window, host = _garrison_window()
+    try:
+        _hover_tile(window, *_host_tile(host))
+        item = _ghost(window)
+        assert item.garrison and not item.refused
+        assert window.map_view._unit_hover_key == (1, host.reference_id)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("case", ["full", "wrong_type"])
+def test_over_a_full_or_unfit_host_the_ghost_is_refused_with_no_outline(case) -> None:
+    window, host = _garrison_window(_ARCHER if case == "full" else _KNIGHT)
+    try:
+        if case == "full":
+            for _ in range(5):
+                window._garrison_add_const(_host_entry(window, host), 83)
+        _hover_tile(window, *_host_tile(host))
+        item = _ghost(window)
+        assert item.refused and not item.garrison
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+def test_over_open_grass_the_ghost_is_untinted() -> None:
+    window, _host = _garrison_window()
+    try:
+        _hover_tile(window, *_free_tile(window))
+        item = _ghost(window)
+        assert not item.garrison and not item.refused
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+def test_a_house_pointed_at_a_host_keeps_the_placement_rules_look() -> None:
+    window, host = _garrison_window(_HOUSE)
+    try:
+        _hover_tile(window, *_host_tile(host))
+        item = _ghost(window)
+        assert item.refused, "the house overlaps the tower, by the placement rules"
+        assert not item.garrison
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+def test_free_placement_gives_the_plain_look_over_a_host_and_clears_the_outline() -> None:
+    window, host = _garrison_window()
+    try:
+        _hover_tile(window, *_host_tile(host))
+        assert _ghost(window).garrison
+        window.unrestricted_check.setChecked(True)
+        item = _ghost(window)
+        assert not item.garrison and not item.refused
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+def test_reaching_the_hosts_art_inside_one_snapped_tile_turns_the_ghost_yellow() -> None:
+    """The snapped point stays the tile centre, so the memo key must hold the host.
+    A tower stored near its tile's +x edge draws across the tile boundary, so
+    the left of the tile misses it and the right hits it."""
+    window = _window(const=_ARCHER)
+    try:
+        view = window.map_view
+        tx, ty = _free_tile(window)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Place host", [1]):
+            model.add(1, _TOWER, tx + 0.95, ty + 0.5)
+        window._rebuild_unit_index()
+        tp = view._tile_pixels
+        beside, over = QPointF((tx + 0.2) * tp, (ty + 0.5) * tp), QPointF((tx + 0.8) * tp, (ty + 0.5) * tp)
+        assert view.pick_unit_cover_at(beside) is None and view.pick_unit_cover_at(over) is not None
+        _hover_scene(window, beside)
+        assert not _ghost(window).garrison
+        point = window._place_ghost_memo[0][0]
+        _hover_scene(window, over)
+        assert window._place_ghost_memo[0][0] == point
+        assert _ghost(window).garrison
+    finally:
+        _close(window)
+
+
+def test_the_host_outline_survives_a_memo_hit_and_goes_off_the_map_or_with_a_wall_pick() -> None:
+    window, host = _garrison_window()
+    try:
+        view = window.map_view
+        tx, ty = _host_tile(host)
+        tp = view._tile_pixels
+        _hover_scene(window, QPointF((tx + 0.45) * tp, (ty + 0.5) * tp))
+        outline = view._unit_hover_item
+        assert outline is not None
+        _hover_scene(window, QPointF((tx + 0.55) * tp, (ty + 0.5) * tp))
+        assert view._unit_hover_item is outline, "kept, not removed and rebuilt on each move"
+        assert view._unit_hover_key == (1, host.reference_id)
+
+        _hover_scene(window, QPointF(-5 * tp, -5 * tp))
+        assert view._unit_hover_item is None, "off the map"
+
+        _hover_tile(window, tx, ty)
+        assert view._unit_hover_item is not None
+        window.units_panel._set_pending_object(_a_wall_const())
+        assert view._unit_hover_item is None, "a wall pick"
+    finally:
+        _close(window)
+
+
+def test_the_unit_brush_over_a_host_is_unaffected() -> None:
+    window, host = _garrison_window()
+    try:
+        window.unit_brush_action.setChecked(True)
+        assert window.map_view._tool == "unit_brush"
+        _hover_tile(window, *_host_tile(host))
+        item = window.map_view._unit_ghost_item
+        assert item is None or not item.garrison
+        assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)

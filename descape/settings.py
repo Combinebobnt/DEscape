@@ -10,6 +10,7 @@ once and written straight through to disk on change.
 from __future__ import annotations
 
 import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import yaml
 from descape import (
     asset_source,
     edge_ticks,
-    game_dataset,
+    games,
     grid_overlay,
     iso_geometry,
     terrain_style,
@@ -512,6 +513,25 @@ def set_data_mod_label_shown(enabled: bool) -> None:
     _save_config(config)
 
 
+# GH #271, Settings > Mods: list a data mod's own terrains in one Terrain panel group (off).
+_data_mod_terrain_group: bool | None = None
+
+
+def get_data_mod_terrain_group() -> bool:
+    global _data_mod_terrain_group
+    if _data_mod_terrain_group is None:
+        _data_mod_terrain_group = bool(_load_config().get("data_mod_terrain_group", False))
+    return _data_mod_terrain_group
+
+
+def set_data_mod_terrain_group(enabled: bool) -> None:
+    global _data_mod_terrain_group
+    _data_mod_terrain_group = enabled
+    config = _load_config()
+    config["data_mod_terrain_group"] = enabled
+    _save_config(config)
+
+
 # View > Distance Ticks: the ruler strip of tick marks drawn in the void
 # just outside the map's own border, with two persisted halves (whether it
 # is drawn at all, and how many tiles apart the minor ticks sit). Unlike
@@ -650,30 +670,33 @@ def set_terrain_picker_mode(mode: str) -> None:
 
 
 # GH #67: which game's data draws every opened scenario, Settings > Advanced. "auto"
-# follows the file's own header; the other two show it in that game's data, read-only
-# when it is the other game's file.
-GAME_DATA_CHOICES: list[tuple[str, str]] = [
-    ("auto", "Auto: the file's own game"),
-    ("aoe2", "Age of Empires II"),
-    ("ror", "Return of Rome"),
-]
+# follows the file's own header; a game's id shows it in that game's data, read-only
+# when it is another game's file.
 GAME_DATA_DEFAULT = "auto"
-_GAME_DATA_IDS = tuple(cid for cid, _label in GAME_DATA_CHOICES)
 _game_data: str | None = None
 
 
+def game_data_choices() -> list[tuple[str, str]]:
+    """(id, label) rows: auto, then one per registered game. Read per call, never frozen at import."""
+    return [(GAME_DATA_DEFAULT, "Auto: the file's own game"), *((game.id, game.display_name) for game in games.GAMES)]
+
+
+def _game_data_ids() -> tuple[str, ...]:
+    return tuple(cid for cid, _label in game_data_choices())
+
+
 def get_game_data() -> str:
-    """One of GAME_DATA_CHOICES' ids; an off-list value falls back to the default."""
+    """One of game_data_choices()' ids; an off-list value falls back to the default."""
     global _game_data
     if _game_data is None:
         raw = _load_config().get("game_data")
-        _game_data = raw if raw in _GAME_DATA_IDS else GAME_DATA_DEFAULT
+        _game_data = raw if raw in _game_data_ids() else GAME_DATA_DEFAULT
     return _game_data
 
 
 def set_game_data(choice: str) -> None:
-    if choice not in _GAME_DATA_IDS:
-        raise ValueError(f"game_data must be one of {list(_GAME_DATA_IDS)}, got {choice!r}")
+    if choice not in _game_data_ids():
+        raise ValueError(f"game_data must be one of {list(_game_data_ids())}, got {choice!r}")
     global _game_data
     _game_data = choice
     config = _load_config()
@@ -1227,6 +1250,8 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("unit_stack", "Stacked-unit badge text", "#ffd24a"),
     ("unit_stack_background", "Stacked-unit badge background", "#000000"),
     ("unit_ghost_refused", "Refused placement", "#ff3c3c"),
+    # TASK-549: Place Unit pointed at a host that takes the object.
+    ("unit_ghost_garrison", "Garrison placement", "#ffd23c"),
     ("footprint_outline", "Footprint outlines", "#c8c8c8"),
     # View > Layers > Fish Outlines (TASK-499).
     ("fish_outline", "Fish outlines", "#3cc8ff"),
@@ -1980,6 +2005,86 @@ def clear_recent_files() -> None:
     _save_config(config)
 
 
+# Consent to run code: the (resolved path, sha256 of the bytes) pairs the user
+# agreed to, scripts and addons kept apart. With one shared set, agreeing to
+# run a file as a script would also import it at every startup when both
+# folders are the same one.
+NO_ADDONS_FLAG = "--no-addons"
+ENV_NO_ADDONS = "DESCAPE_NO_ADDONS"
+_confirmed_scripts: set[tuple[str, str]] | None = None
+_confirmed_addons: set[tuple[str, str]] | None = None
+
+
+def _consent_pairs(raw) -> set[tuple[str, str]]:
+    """Anything that is not a {path, digest} pair of strings is dropped, not
+    repaired: dropping one only asks again, keeping a malformed one could run
+    a file nobody was asked about."""
+    pairs: set[tuple[str, str]] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                path, digest = item.get("path"), item.get("digest")
+                if isinstance(path, str) and isinstance(digest, str) and path and digest:
+                    pairs.add((path, digest))
+    return pairs
+
+
+def _with_consent(pairs: set[tuple[str, str]], path, digest: str) -> set[tuple[str, str]]:
+    """One digest per path: the bytes agreed to replace the ones before, so the list stays bounded."""
+    path = str(path)
+    return {pair for pair in pairs if pair[0] != path} | {(path, digest)}
+
+
+def _consent_rows(pairs: set[tuple[str, str]]) -> list[dict[str, str]]:
+    return [{"path": path, "digest": digest} for path, digest in sorted(pairs)]
+
+
+def get_confirmed_scripts() -> set[tuple[str, str]]:
+    """The (path, digest) pairs the user agreed to run as scripts. A copy."""
+    global _confirmed_scripts
+    if _confirmed_scripts is None:
+        _confirmed_scripts = _consent_pairs(_load_config().get("confirmed_scripts", []))
+    return set(_confirmed_scripts)
+
+
+def add_confirmed_script(path, digest: str) -> None:
+    """Records consent to run the script at `path` (resolved by the caller) while its bytes hash to `digest`."""
+    global _confirmed_scripts
+    _confirmed_scripts = _with_consent(get_confirmed_scripts(), path, digest)
+    config = _load_config()
+    config["confirmed_scripts"] = _consent_rows(_confirmed_scripts)
+    _save_config(config)
+
+
+def get_confirmed_addons() -> set[tuple[str, str]]:
+    """The (path, digest) pairs the user agreed to load as addons. A copy."""
+    global _confirmed_addons
+    if _confirmed_addons is None:
+        _confirmed_addons = _consent_pairs(_load_config().get("confirmed_addons", []))
+    return set(_confirmed_addons)
+
+
+def add_confirmed_addon(path, digest: str) -> None:
+    """add_confirmed_script()'s counterpart for an addon file or package."""
+    global _confirmed_addons
+    _confirmed_addons = _with_consent(get_confirmed_addons(), path, digest)
+    config = _load_config()
+    config["confirmed_addons"] = _consent_rows(_confirmed_addons)
+    _save_config(config)
+
+
+def addons_disabled_by(argv=None, env=None) -> str:
+    """The switch that turns addons off (and greys out scripts) for this
+    session, or "": NO_ADDONS_FLAG in `argv`, else ENV_NO_ADDONS set to a
+    true value. The name is what diagnostics report."""
+    if argv is not None and NO_ADDONS_FLAG in argv:
+        return NO_ADDONS_FLAG
+    environ = os.environ if env is None else env
+    if str(environ.get(ENV_NO_ADDONS, "")).strip().lower() in ("1", "true", "yes", "on"):
+        return ENV_NO_ADDONS
+    return ""
+
+
 # GH #58: File > Data Mod's choice per saved scenario, keyed by its resolved path.
 # A value is a data_mods.identity() dict; no key means the install's own data.
 DATA_MOD_IDENTITY_FIELDS = ("status_path", "title", "workshop_id")
@@ -2048,8 +2153,7 @@ def set_data_mod_for(path: Path, identity: dict | None) -> None:
 
 
 # File > New Map…'s last choices (GH #243), written by its dialog on OK, not
-# by Settings. Game data is a game_dataset id (GH #67).
-NEW_MAP_GAME_DATA = game_dataset.DATASETS
+# by Settings. Game data is a game id (GH #67).
 NEW_MAP_DEFAULT_TERRAIN_ID = 0
 NEW_MAP_DEFAULT_ELEVATION = 0
 # The Terrain tool's own defaults. Off for eye candy: Grass 1, the default terrain, carries some.
@@ -2057,6 +2161,11 @@ NEW_MAP_DEFAULT_TREES = True
 NEW_MAP_DEFAULT_EYE_CANDY = False
 
 _new_map: dict | None = None
+
+
+def new_map_game_data() -> tuple[str, ...]:
+    """The games File > New Map offers, in registry order: those with a blank template."""
+    return tuple(game.id for game in games.GAMES if game.blank_template is not None)
 
 
 def _int_or_none(value) -> int | None:
@@ -2079,9 +2188,10 @@ def _clean_new_map(raw) -> dict:
     elevation = _int_or_none(raw.get("elevation"))
     game_data = raw.get("game_data")
     trees, eye_candy = raw.get("trees"), raw.get("eye_candy")
+    offered = new_map_game_data()
     return {
         "tiles": BLANK_TEMPLATE_TILES if tiles is None else max(MIN_MAP_TILES, min(MAX_MAP_TILES, tiles)),
-        "game_data": game_data if game_data in NEW_MAP_GAME_DATA else NEW_MAP_GAME_DATA[0],
+        "game_data": game_data if game_data in offered else offered[0],
         "terrain_id": terrain_id if terrain_id is not None and 0 <= terrain_id <= 255 else NEW_MAP_DEFAULT_TERRAIN_ID,
         "elevation": (
             NEW_MAP_DEFAULT_ELEVATION
@@ -2153,7 +2263,7 @@ class ToolDef:
     # semantics stay exactly as they are. Paint Can is click_only and never
     # sets this: one flood fill per click has no brush to speak of.
     supports_brush: bool = False
-    # "" | "line" | "rect" | "wall_rect" | "wall_circle" -- press-drag-preview-commit-once tools, the third
+    # "" | "line" | "rect" | "unit_line" | "unit_shape" -- press-drag-preview-commit-once tools, the third
     # routing shape after the plain drag stroke and click_only. A stroke
     # cannot un-paint, so a rubber band that shrinks back toward its anchor
     # needs the whole edit deferred to release; see viewer_common.SHAPE_TOOLS
@@ -2294,21 +2404,21 @@ TOOLS: list[ToolDef] = [
         param_widget="unit_brush", supports_brush=True, supports_off_grid=True,
         supports_unrestricted=True, modes=("units",),
     ),
-    # The wall enclosure plan (2026-09-21): an outline-only, tile-axis ring
-    # of walls, one undo record per drag. Its own drag_shape value, like Draw
-    # Line / Draw Rectangle are two ToolDefs. The wall const comes from the
-    # Units catalog (no param widget), and brush/off-grid placement stay off
-    # because an off-centre or dilated wall piece has no derivable shape.
-    # Unbound: a duplicate QKeySequence silently kills BOTH actions.
+    # GH #365: a line and a shape (Rectangle, Ellipse, Triangle, Right
+    # Triangle) of the catalog pick, one undo record per drag, in place of the
+    # old Wall Rectangle and Wall Circle (their keybinds: _MERGED_KEYBINDS). A
+    # wall pick commits as a wall run; anything else as a lattice of units
+    # (descape/unit_shape.py). Two ToolDefs like Draw Line / Draw Rectangle.
+    # Off-grid stays off: a shape is a lattice. Unbound for the reason above.
     ToolDef(
-        "wall_rect", "Wall Rectangle", stroke_label="Place wall rectangle", default_key="",
-        drag_shape="wall_rect", modes=("units",), supports_skip_occupied=True,
+        "unit_line", "Unit Line", stroke_label="Draw unit line", default_key="",
+        drag_shape="unit_line", param_widget="unit_shape", modes=("units",),
+        supports_unrestricted=True, supports_skip_occupied=True,
     ),
-    # GH #125: Wall Rectangle's twin for the ellipse inscribed in the drag
-    # box (shape_tools.ellipse_perimeter_tiles), on the same terms.
     ToolDef(
-        "wall_circle", "Wall Circle", stroke_label="Place wall circle", default_key="",
-        drag_shape="wall_circle", modes=("units",), supports_skip_occupied=True,
+        "unit_shape", "Unit Shape", stroke_label="Draw unit shape", default_key="",
+        drag_shape="unit_shape", param_widget="unit_shape", modes=("units",),
+        supports_unrestricted=True, supports_skip_occupied=True,
     ),
     # Phase 3.5b's b2.5 (D3): a brush, not a click-once tool, so it reuses
     # the generic stroke mechanism (begin/tile/end) every brush tool already
@@ -2397,8 +2507,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #144, unbound like the openers around it and inside the edit_* run.
     ("edit_find_replace", "Find and Replace…", ""),
     # GH #197's Flip Selection pair, unbound like Scatter and Find, inside the edit_* run.
-    ("edit_flip_horizontal", "Flip Horizontal", ""),
-    ("edit_flip_vertical", "Flip Vertical", ""),
+    ("edit_flip_horizontal", "Flip West ↔ North", ""),
+    ("edit_flip_vertical", "Flip West ↔ South", ""),
     # TASK-256's Rotate Group pair, unbound like the Flip pair and inside the edit_* run.
     ("edit_rotate_group_ccw", "Rotate Group Anticlockwise (Quarter Turn)", ""),
     ("edit_rotate_group_cw", "Rotate Group Clockwise (Quarter Turn)", ""),
@@ -2810,10 +2920,29 @@ def _reconcile_load_time_collisions(keybinds: dict[str, str], persisted: dict) -
 
 # Action ids of removed tools and renamed actions, which a config written before the removal
 # still names: dropped on load, so set_keybind()'s whole-dict write does not carry them on.
-_RETIRED_KEYBINDS: tuple[str, ...] = ("tool_wall_run", "edit_disables", "file_resize")
+_RETIRED_KEYBINDS: tuple[str, ...] = (
+    "tool_wall_run", "edit_disables", "file_resize", "tool_wall_rect", "tool_wall_circle",
+)
 
 # Renamed action ids, old -> new. A saved old binding carries over unless the new id is saved too.
 _RENAMED_KEYBINDS: dict[str, str] = {"edit_disables": "map_disables", "file_resize": "map_resize"}
+
+# Several old ids folded into one (GH #365: Wall Rectangle and Wall Circle into Unit Shape).
+# set_keybind() saves every id, so an old one is often saved empty: the first non-empty one carries over.
+_MERGED_KEYBINDS: dict[str, tuple[str, ...]] = {"tool_unit_shape": ("tool_wall_rect", "tool_wall_circle")}
+
+
+def carry_renamed_keybinds(entries: dict) -> None:
+    """Carries renamed and merged old ids' saved bindings onto their new ids, in place,
+    unless the new id is saved itself. Shared with settings_file._entries()."""
+    for old, new in _RENAMED_KEYBINDS.items():
+        if old in entries and new not in entries:
+            entries[new] = entries[old]
+    for new, olds in _MERGED_KEYBINDS.items():
+        if new not in entries:
+            carried = next((entries[old] for old in olds if entries.get(old)), None)
+            if carried is not None:
+                entries[new] = carried
 
 
 def _load_keybinds() -> dict[str, str]:
@@ -2824,9 +2953,7 @@ def _load_keybinds() -> dict[str, str]:
         raw = _load_config().get("keybinds", {})
         raw = raw if isinstance(raw, dict) else {}
         persisted = {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
-        for old, new in _RENAMED_KEYBINDS.items():
-            if old in persisted and new not in persisted:
-                persisted[new] = persisted[old]
+        carry_renamed_keybinds(persisted)
         _keybinds = dict(_DEFAULT_KEYBINDS)
         _keybinds.update(persisted)
         for action_id in _RETIRED_KEYBINDS:

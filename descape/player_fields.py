@@ -141,18 +141,16 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
         "civilization", "Civilization", "Identity",
         "DataHeader", "player_data_1", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
         struct_field="civilization",
-        tooltip="An integer index below scenario version 1.56, a string "
-                "(e.g. 'HUN-CIV') from 1.56 on -- see resolve_civilization_name(). "
-                "Choices are resolved per-file by civilization_choices(), not "
-                "this spec's own (empty) choices tuple.",
+        # Stored as an index below scenario version 1.56 and a string ('HUN-CIV') from 1.56 on, see
+        # resolve_civilization_name(); choices come per file from civilization_choices().
+        tooltip="The civilization this player plays.",
     ),
     PlayerFieldSpec(
         "architecture", "Architecture", "Identity",
         "DataHeader", "player_data_1", COMBO, PlayerArrayLayout.P1_TO_P8_THEN_GAIA,
         struct_field="architecture_set",
-        tooltip="Same civilization/architecture dataset and the same "
-                "int-then-string version switch as Civilization above -- "
-                "the game expresses an architecture style as a civilization id.",
+        # The same dataset and index-then-string version switch as Civilization.
+        tooltip="Which civilization's building style this player's buildings use.",
     ),
     PlayerFieldSpec(
         "lock_civilization", "Lock civilization", "Identity",

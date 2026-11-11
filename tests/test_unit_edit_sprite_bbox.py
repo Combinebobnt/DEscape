@@ -615,6 +615,7 @@ def test_placing_a_wall_beside_walls_takes_the_reach_fallback(style, mip, art, m
         walls = [_add(window, 1, STONE_WALL, x, 50.5) for x in (50.5, 51.5)]
         for wall in walls:
             wall.rotation = 2 * math.pi / 5
+        window.scenario.unit_gen += 1
         window._after_unit_mutation()
         drawn = render.wall_variant_rotation_overrides(window.scenario)
         assert sorted(drawn.values()) == [2.0, 2.0], "a two-wall run's ends draw as towers"
@@ -867,6 +868,8 @@ def _wall_run(window, xs=(50.5, 51.5, 52.5), y: float = 50.5, variant: int = 2, 
     walls = [_add(window, 1, const, x, y) for x in xs]
     for wall in walls:
         wall.rotation = variant * 2 * math.pi / 5
+    # A write outside UnitEditModel bumps unit_gen itself (LoadedScenario.unit_gen's contract).
+    window.scenario.unit_gen += 1
     window._after_unit_mutation()
     return walls
 
@@ -879,6 +882,7 @@ def _literal_walls(window, shapes: dict) -> dict:
     walls = {tile: _add(window, 1, PALISADE, tile[0] + 0.5, tile[1] + 0.5) for tile in shapes}
     for tile, wall in walls.items():
         wall.rotation = float(shapes[tile])
+    window.scenario.unit_gen += 1
     window._after_unit_mutation()
     return walls
 
@@ -1124,6 +1128,203 @@ def test_deleting_an_integer_runs_end_draws_the_new_end_as_a_tower(style, mip, a
         _check(window, mip, "undo")
     finally:
         conftest.close_window(window)
+
+
+def _lone_radian_wall(window):
+    """TASK-583's scene: a lone GAIA Palisade storing a radian index (the
+    file's only non-literal wall), far from a literal run (60..62, 56)
+    storing 1, whose middle draws 0 while the file is radian and its stored
+    1 once it is integer. GAIA-owned, so its removal's undo is the scoped
+    membership shape (_gaia_membership_diff())."""
+    lone = _add(window, 0, PALISADE, 50.5, 50.5)
+    lone.rotation = 2 * math.pi / 5  # _literal_walls() bumps unit_gen after it
+    middle = _literal_walls(window, {(60, 56): 1, (61, 56): 1, (62, 56): 1})[(61, 56)]
+    assert _file_is_radian(window)
+    assert _drawn(window, middle) == 0
+    return lone, middle
+
+
+class _MutationSpy:
+    """Counts _after_unit_mutation() calls passing a scoped `changed`, and
+    _patch_unit_edit_cache() entries: a verdict flip passes the first and
+    skips the second."""
+
+    def __init__(self, window, monkeypatch):
+        self.scoped = 0
+        self.patched = 0
+        real_after, real_patch = window._after_unit_mutation, window._patch_unit_edit_cache
+
+        def after(changed=None, *args, **kwargs):
+            self.scoped += changed is not None
+            return real_after(changed, *args, **kwargs)
+
+        def patch(*args, **kwargs):
+            self.patched += 1
+            return real_patch(*args, **kwargs)
+
+        monkeypatch.setattr(window, "_after_unit_mutation", after)
+        monkeypatch.setattr(window, "_patch_unit_edit_cache", patch)
+
+    def assert_flip_went_wholesale(self, what: str) -> None:
+        assert self.scoped, f"{what}: no scoped _after_unit_mutation() call, so the flip check never ran"
+        assert not self.patched, f"{what}: the flip took the scoped repaint"
+        self.scoped = self.patched = 0
+
+
+# Cut shares _remove_units() with Delete, so Stepped at mip 0 is enough for it.
+_LAST_RADIAN_REMOVALS = [("delete", style, mip) for style, mip in LONE_WALL_STYLE_MIPS] + [("cut", "Stepped", 0)]
+
+
+@pytest.mark.parametrize(("verb", "style", "mip"), _LAST_RADIAN_REMOVALS)
+def test_deleting_the_last_radian_wall_repaints_every_wall(verb, style, mip, art, monkeypatch) -> None:
+    """TASK-583: Delete or Cut of the lone radian wall makes the file integer,
+    so the run beyond the edit draws its stored 1; undo makes it radian
+    again through the scoped membership undo, and the run draws 0."""
+    window = _window(style)
+    try:
+        lone, middle = _lone_radian_wall(window)
+        _show_level(window, monkeypatch, mip)
+        before = _level(window, mip)
+        spy = _MutationSpy(window, monkeypatch)
+
+        if verb == "delete":
+            _delete(window, lone)
+        else:
+            _select(window, lone)
+            window.cut_units()
+
+        assert not any(u is lone for u in window.scenario.unit_manager.units[0])
+        assert not _file_is_radian(window)
+        assert _drawn(window, middle) == 1
+        _check(window, mip, verb)
+        spy.assert_flip_went_wholesale(verb)
+        window.undo()
+        assert _file_is_radian(window)
+        assert np.array_equal(_check(window, mip, "undo"), before)
+        if style != "Flat":  # Flat's undo of a removal is already wholesale
+            spy.assert_flip_went_wholesale("undo")
+        window.redo()
+        _check(window, mip, "redo")
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("style", "mip"), [("Stepped", 0), ("Sloped", 0), ("Flat", 0)])
+def test_erasing_the_last_radian_wall_repaints_every_wall(style, mip, art, monkeypatch) -> None:
+    """The Eraser's mid-stroke flush and its release over the lone radian
+    wall. Flat is the control: its splice already refuses a wall const."""
+    window = _window(style)
+    try:
+        lone, middle = _lone_radian_wall(window)
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("eraser")
+        window.brush_size_spin.setValue(1)
+        for name, action in window.eraser_target_actions.items():
+            action.setChecked(name in ("buildings", "gaia"))
+        _show_level(window, monkeypatch, mip)
+        before = _level(window, mip)
+
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tiles([(50, 50)], 0)
+        window._erase_refresh_timer.stop()
+        window._flush_erase_refresh()
+        assert not any(u is lone for u in window.scenario.unit_manager.units[0])
+        assert not _file_is_radian(window)
+        assert _drawn(window, middle) == 1
+        _check(window, mip, "erase flush")
+        window.on_edit_stroke_end()
+        _check(window, mip, "erase end")
+        window.undo()
+        assert _file_is_radian(window)
+        assert np.array_equal(_check(window, mip, "undo"), before)
+    finally:
+        conftest.close_window(window)
+
+
+def _copy_lone_palisade(window, tile=(70, 70)):
+    """A lone literal Palisade at `tile` (a tower, 2), copied as units or, with
+    terrain of its own, as a region. Returns the source wall."""
+    (source,) = _literal_walls(window, {tile: 2}).values()
+    _select(window, source)
+    assert window.copy_units()
+    return source
+
+
+def _paste_at(window, tile) -> None:
+    window._hover_tile = tile
+    window.paste_region()
+
+
+@pytest.mark.parametrize("how", ["units", "region"])
+def test_a_wall_pasted_beside_a_run_and_its_undo_and_redo_match_a_fresh_render(how, art, monkeypatch) -> None:
+    """TASK-585 in an integer file: a lone wall pasted east of a run's end
+    makes that end a run piece (2 -> 0). Paste Units takes the units-only
+    branch; a Paste Region with terrain of its own takes the tile branch."""
+    window = _window("Stepped")
+    try:
+        run = _literal_walls(window, {(50, 50): 2, (51, 50): 0, (52, 50): 2})
+        if how == "units":
+            _copy_lone_palisade(window)
+        else:
+            _literal_walls(window, {(70, 70): 2})
+            mm = window.scenario.map_manager
+            index = 70 * mm.map_width + 70
+            mm.terrain[index].terrain_id = (mm.terrain[index].terrain_id + 1) % 10
+            window._apply_dirty([index])
+            window.on_region_selected((70, 70, 71, 71))
+            window.copy_region()
+        _show_level(window, monkeypatch, 0)
+        _level(window, 0)
+
+        _paste_at(window, (53, 50))
+
+        from descape.edit_history import CompositeDiffRecord
+
+        assert isinstance(window.edit_history.peek_undo(), CompositeDiffRecord) is (how == "region")
+        assert run[(52, 50)].rotation == 0.0
+        _check(window, 0, "paste")
+        window.undo()
+        assert run[(52, 50)].rotation == 2.0
+        _check(window, 0, "undo")
+        window.redo()
+        _check(window, 0, "redo")
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_paste_that_rewrites_the_last_radian_walls_repaints_every_wall(art, monkeypatch) -> None:
+    """(50, 50) and (52, 50) store radian index 1, the file's only radian
+    values. A wall pasted into the gap between them makes both run ends,
+    written as the literal 2, so the file turns integer and the run at
+    (60..62, 56) far away draws its stored 1 instead of 0."""
+    window = _window("Stepped")
+    try:
+        _literal_walls(window, {(70, 70): 2})
+        (source,) = _walls_at(window, {(70, 70)})
+        ends = _literal_walls(window, {(50, 50): 1, (52, 50): 1})
+        for wall in ends.values():
+            wall.rotation = 2 * math.pi / 5
+        middle = _literal_walls(window, {(60, 56): 1, (61, 56): 1, (62, 56): 1})[(61, 56)]
+        assert _file_is_radian(window) and _drawn(window, middle) == 0
+        _select(window, source)
+        assert window.copy_units()
+        _show_level(window, monkeypatch, 0)
+        before = _level(window, 0)
+
+        _paste_at(window, (51, 50))
+
+        assert [w.rotation for w in ends.values()] == [2.0, 2.0]
+        assert not _file_is_radian(window) and _drawn(window, middle) == 1
+        _check(window, 0, "paste")
+        window.undo()
+        assert _file_is_radian(window)
+        assert np.array_equal(_check(window, 0, "undo"), before)
+    finally:
+        conftest.close_window(window)
+
+
+def _walls_at(window, tiles) -> list:
+    return [u for units in window.scenario.unit_manager.units for u in units if (int(u.x), int(u.y)) in tiles and u.unit_const == PALISADE]
 
 
 def test_a_wholesale_wall_move_rebuilds_no_off_screen_level(art, monkeypatch) -> None:

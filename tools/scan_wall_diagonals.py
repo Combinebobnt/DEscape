@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-derives the three measurements
+"""Re-derives the four measurements
 unit_sprites.wall_variant_from_neighbours8() pins in its docstring, over
 examples/. Install-free (scenario_io.load_map_and_units only).
 
@@ -27,6 +27,11 @@ Reports, over the 20 loadable files (8193 wall placements as of
    everything else -> 2 at 179/179); the radian rows are flat noise across
    all five indices, which is the established evidence that a radian file's
    stored values carry no shape information.
+4. Stored index for one orthogonal neighbour plus exactly a diagonal pair
+   (TASK-581's junction masks), with every integer wall that disagrees with
+   the table: over 21 files (8369 placements, 2026-11-09) {NE, SW} stores 4
+   at 6 of 7 and {NW, SE} 3 at 10 of 11, so 16 of 18; the two dissenters
+   are 2_Joan_coop_2_v0_15 p4 (130, 53) and old-allies-final-v2 p5 (76, 30).
 """
 
 from __future__ import annotations
@@ -50,6 +55,8 @@ def main() -> None:
     frames = Counter()
     ortho_hist = Counter()
     diag_rows: dict[str, Counter] = {}
+    junction_rows: dict[str, Counter] = {}
+    dissenters: list[str] = []
     total_walls = 0
     loaded = 0
 
@@ -83,7 +90,7 @@ def main() -> None:
         is_radian = unit_sprites.file_is_radian([r for *_, r in walls], 5)
         kind = "radian" if is_radian else "integer"
 
-        for _player_id, unit, rotation in walls:
+        for player_id, unit, rotation in walls:
             total_walls += 1
             frames[int(unit.initial_animation_frame)] += 1
             bounds = unit_tile_bounds(unit, tile_w, tile_h)
@@ -93,9 +100,15 @@ def main() -> None:
             mask = unit_sprites.neighbour_mask(tx, ty, connector_tiles, diagonals=True)
             ortho = mask & unit_sprites.ORTHOGONAL_MASK
             ortho_hist[bin(ortho).count("1")] += 1
+            diag = mask & ~unit_sprites.ORTHOGONAL_MASK
+            if ortho and ortho & (ortho - 1) == 0 and diag in (NE_SW, NW_SE):
+                pair = "NE-SW" if diag == NE_SW else "NW-SE"
+                stored = unit_sprites.variant_index(rotation, 5)
+                junction_rows.setdefault(f"{kind}/stub on {pair}", Counter())[stored] += 1
+                if not is_radian and stored != unit_sprites.wall_variant_from_neighbours8(mask):
+                    dissenters.append(f"{path.stem} p{player_id} ({tx}, {ty}) stores {stored}")
             if ortho:
                 continue
-            diag = mask & ~unit_sprites.ORTHOGONAL_MASK
             if diag == NE_SW:
                 row = "two on NE-SW"
             elif diag == NW_SE:
@@ -121,6 +134,12 @@ def main() -> None:
         total = sum(counts.values())
         best, best_n = counts.most_common(1)[0]
         print(f"   {key:34s} n={total:5d}  index {best} in {best_n}  all={dict(sorted(counts.items()))}")
+    print("4. stored index for one orthogonal neighbour plus exactly a diagonal pair:")
+    for key in sorted(junction_rows):
+        counts = junction_rows[key]
+        print(f"   {key:34s} n={sum(counts.values()):5d}  all={dict(sorted(counts.items()))}")
+    for line in dissenters:
+        print(f"   integer dissenter: {line}")
 
 
 if __name__ == "__main__":

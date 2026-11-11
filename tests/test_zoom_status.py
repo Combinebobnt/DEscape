@@ -98,12 +98,16 @@ def test_at_fit_reads_roughly_100_percent() -> None:
 
 
 def test_a_wheel_tick_rises_by_the_step_factor() -> None:
+    """The step is one notch along the level lattice (TASK-600)."""
+    from test_wheel_zoom import _notch_scale, _scale
+
     window = _window()
     try:
-        before = window.map_view.zoom_percent_of_fit()
-        _wheel(window.map_view, up=True)
-        after = window.map_view.zoom_percent_of_fit()
-        assert after == pytest.approx(before * 1.25, rel=1e-6)
+        view = window.map_view
+        before, scale = view.zoom_percent_of_fit(), _scale(view)
+        _wheel(view, up=True)
+        after = view.zoom_percent_of_fit()
+        assert after == pytest.approx(before * _notch_scale(view, start=scale) / scale, rel=1e-6)
         assert window.zoom_status_label.text() == f"  Zoom: {after:.0f}%  "
     finally:
         conftest.close_window(window)

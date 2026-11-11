@@ -17,10 +17,11 @@ area this size.
 The layout sits in the first flat, empty, dry area found scanning out from the
 map centre, all player 1:
 
-- Group A, flipped horizontally on screen (the isometric view's left/right,
-  element `a`) about its own footprint box: a Knight facing one way, a Stone
-  Wall run along one diagonal with a Gate in it, and a House off centre. The
-  Gate takes its other diagonal sibling and the walls their other run index.
+- Group A, flipped West <-> North (Flip Selection's first entry, element
+  `mx`) across its own footprint box's edges: a Knight facing off-axis, a
+  Stone Wall run along a tile diagonal with a diagonal Gate in it, and a
+  House off centre. The Gate takes its other diagonal sibling and the walls
+  their other diagonal run index.
 - Region B, turned a quarter turn clockwise on screen about its centre: an
   8 x 8 square with a Road L, a Dirt stripe and a raised corner, holding a
   Villager facing one way, two Oaks and a House.
@@ -39,7 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import region_clipboard, region_transform, render, terrain_classes, unit_rotation
+from descape import gate_orientation, region_clipboard, region_transform, render, terrain_classes, unit_rotation
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
 from descape.mirror_tools import walls_are_radian
@@ -56,6 +57,8 @@ AREA_W, AREA_H = 36, 16
 MARGIN = 3
 KNIGHT, VILLAGER, OAK, HOUSE, WALL, GATE = 38, 83, 349, 70, 117, 64
 ROAD, DIRT = 24, 6
+DIAGONAL_GATE = gate_orientation.orientation_siblings(GATE)[1]  # the (4, 4) sibling running along (+1, +1)
+DIAGONAL_WALL = 3.0  # wall_variant_from_neighbours8() of a (+1, +1) run
 REGION_X, REGION_Y, REGION = 24, 4, 8  # Region B, local to the area
 
 
@@ -97,13 +100,15 @@ def find_area(loaded) -> tuple[int, int]:
 
 
 def _group_a(ax: int, ay: int) -> list[tuple[int, float, float, float]]:
-    """(const, x, y, rotation): a knight, a wall run with a gate in it, a house."""
+    """(const, x, y, rotation): a knight, a wall run along the tile diagonal
+    (+1, +1) with the matching diagonal gate in it, a house. A run along a
+    tile axis would keep its run under a flip, so the diagonal is what makes
+    the flip rewrite the gate const and the wall index."""
     units = [(KNIGHT, ax + 2.5, ay + 2.5, _facing(KNIGHT, 3))]
-    wy = ay + 9.5
-    units += [(WALL, ax + x + 0.5, wy, 0.0) for x in (2, 3, 4)]
-    units.append((GATE, *render.span_anchor(ax + 5, ay + 9, 4, 1), 0.0))
-    units += [(WALL, ax + x + 0.5, wy, 0.0) for x in (9, 10, 11)]
-    units.append((HOUSE, *render.span_anchor(ax + 10, ay + 2, 2, 2), 0.0))
+    units += [(WALL, ax + d + 0.5, ay + d - 5 + 0.5, DIAGONAL_WALL) for d in (6, 7, 8)]
+    units.append((DIAGONAL_GATE, *render.span_anchor(ax + 9, ay + 4, 4, 4), 0.0))
+    units += [(WALL, ax + d + 0.5, ay + d - 5 + 0.5, DIAGONAL_WALL) for d in (13, 14, 15)]
+    units.append((HOUSE, *render.span_anchor(ax + 3, ay + 11, 2, 2), 0.0))
     return units
 
 
@@ -192,9 +197,9 @@ def write_pair(source: Path, out: Path) -> int:
     group_before = [(u.unit_const, u.x, u.y, u.rotation) for u in group]
     region_before = [(u.unit_const, u.x, u.y, u.rotation) for u in region_units]
 
-    # Group A: Flip Horizontal (screen left/right in the isometric views, as in the game).
+    # Group A: Flip West <-> North, across the group's own footprint box.
     rect_a = units_region(group, mm.map_width, mm.map_height)
-    flip = region_transform.plan_in_place(_first_units(group), region_transform.FLIP_HORIZONTAL, rect_a, file_radian)
+    flip = region_transform.plan_in_place(_first_units(group), region_transform.FLIP_WEST_NORTH, rect_a, file_radian)
     _check_on_map(flip, mm)
 
     # Region B: Rotate Group clockwise, tiles and units together.
@@ -217,8 +222,11 @@ def write_pair(source: Path, out: Path) -> int:
     print(f"wrote {before_path}\nwrote {after_path}\n")
     print(f"Source {source.name}, all player {PLAYER}. Walls are {'radian' if file_radian else 'integer'}-encoded.")
     print(f"Group A, footprint box tiles x {rect_a[0]}..{rect_a[2] - 1}, y {rect_a[1]}..{rect_a[3] - 1}, flipped")
-    print("horizontally on screen: the Knight's facing mirrors left/right, the Gate takes its other")
-    print("diagonal orientation (a different object type), and the walls beside it their other run.")
+    print("West <-> North in place (the box stays put): everything mirrors across the line through the")
+    print("box's middle from its upper-left edge to its lower-right edge in the default view. The Knight")
+    print("moves to the box's North side and faces the mirrored way, the Gate takes its other diagonal")
+    print("orientation (a different object type) and still joins the walls, which take their other")
+    print("diagonal run.")
     _describe("Group A (const, position, rotation):", group, group_before)
     print(f"\nRegion B, tiles x {rx}..{rx + REGION - 1}, y {ry}..{ry + REGION - 1}, turned a quarter turn")
     print("clockwise on screen: its Road L, Dirt stripe and raised corner turn with it, the")

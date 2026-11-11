@@ -662,7 +662,7 @@ class _ObjectsTab(QWidget):
             return
         callbacks = self._dialog.callbacks
         keys = [row.key for row in rows]
-        text = f"Delete {len(rows)} objects? Ctrl+Z undoes."
+        text = f"Delete {len(rows)} objects? Edit > Undo reverts it."
         # Warned, never refused: a dangling reference is a Map Analysis finding, legal on disk.
         refs = callbacks.trigger_refs_for(keys)
         if refs:
@@ -693,7 +693,7 @@ class _ObjectsTab(QWidget):
             callbacks.warn("Replace", f"All {len(keys)} checked objects refuse this replacement; see the Note column.")
             return
         name = object_catalog.display_name(new_const)
-        text = f"Replace {ok} objects with {name}? Ctrl+Z undoes."
+        text = f"Replace {ok} objects with {name}? Edit > Undo reverts it."
         if gate_orientation.is_gate(new_const):
             # The viewer clears them (GH #339); said before the batch runs.
             text += " Walls under each new gate are removed."
@@ -1227,7 +1227,7 @@ class _TriggersTab(QWidget):
             return
         callbacks = self._dialog.callbacks
         triggers = len({h.trigger_index for h in hits})
-        if callbacks.confirm("Replace text", f"Replace in {len(hits)} fields across {triggers} triggers? Ctrl+Z undoes.") is None:
+        if callbacks.confirm("Replace text", f"Replace in {len(hits)} fields across {triggers} triggers? Edit > Undo reverts it.") is None:
             return
         self.own_op = "keep"
         notes = callbacks.text_replace(
@@ -1246,7 +1246,7 @@ class _TriggersTab(QWidget):
             callbacks.warn("Replace type", "Choose the object to replace with first.")
             return
         name = object_catalog.display_name(new_const)
-        if callbacks.confirm("Replace type", f"Set {len(hits)} type fields to {name}? Ctrl+Z undoes.") is None:
+        if callbacks.confirm("Replace type", f"Set {len(hits)} type fields to {name}? Edit > Undo reverts it.") is None:
             return
         self.own_op = "keep"
         self._mark(callbacks.type_replace(hits, frozenset(self.type_consts), new_const))
@@ -1262,7 +1262,7 @@ class _TriggersTab(QWidget):
         if not parents:
             return
         callbacks = self._dialog.callbacks
-        if callbacks.confirm("Delete triggers", f"Delete {len(parents)} triggers? Ctrl+Z undoes.") is None:
+        if callbacks.confirm("Delete triggers", f"Delete {len(parents)} triggers? Edit > Undo reverts it.") is None:
             return
         self.own_op = "clear"
         callbacks.delete_triggers(parents)

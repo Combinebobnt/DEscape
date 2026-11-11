@@ -49,7 +49,7 @@ TERRAIN_IDS = (0, 1, 2, 3, 6, 9, 10, 13)
 FARM_X, FARM_Y = 40, 80
 PLAIN_UNIT_CONST = 4  # no sprite in sprite_install's graphic map, so it draws a mark
 RISES = range(1, iso_geometry.MAX_ELEVATION + 1)
-TILE_PX_LADDER = (16, 32, 64, 96, 128)  # 96: the native tier (TASK-599), padded texture crops
+TILE_PX_LADDER = (16, 32, 64, 96, 128, 192)  # 96 and 192: the native tiers (TASK-599, TASK-601), padded texture crops
 
 
 @pytest.fixture

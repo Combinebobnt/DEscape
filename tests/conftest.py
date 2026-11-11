@@ -643,6 +643,17 @@ def load_verify_module(name: str):
 
 
 @pytest.fixture(autouse=True)
+def _temp_files_in_tmp_path(tmp_path):
+    """TASK-606: tempfile, and every subprocess through the inherited TMPDIR, writes under the
+    test's own tmp_path, which pytest prunes (three runs kept), never the shared TMPDIR.
+    Its own MonkeyPatch, so a test's monkeypatch.undo() can't drop it mid-test."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TMPDIR", str(tmp_path))
+        mp.setattr(tempfile, "tempdir", None)
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_perf_trace_hooks_left():
     """A traced ViewerWindow installs perf_trace's gc hook and the stall
     watchdog; neither may outlive the test that turned them on."""
@@ -810,6 +821,7 @@ def _isolated_settings(tmp_path, monkeypatch):
 
     unit_sprites.set_hi_res(False)
     unit_sprites.set_smooth_shrink(False)
+    unit_sprites.set_background_reach(False)  # GH #272: a window walks it in a thread
     # A window turns it on, and with AOE2DE_INSTALL_PATH set the profile autodetects to this
     # machine's own mods; only a test that names a profile in AOE2DE_PROFILE_PATH gets any.
     real_roots = mod_graphics._candidate_roots

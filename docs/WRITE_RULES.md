@@ -72,7 +72,10 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   same setters and guards, never a committed region in place. On a just-pasted region (GH #197) the Rotate
   actions edit no unit at all: they go through the *Region turn* exception below. On a
   committed Select region with no paste armed (TASK-256) they go through
-  the *Selection transform* exception below instead.
+  the *Selection transform* exception below instead. A script's
+  `editor.rotate()` (`descape/scripting.py`) is a caller too: it refuses a
+  non-finite facing, snaps the facing to the const's own frame grid, and
+  leaves a non-ANGLE const to `set_rotation()`'s raise.
 - *Region turn's unit images* (GH #197: Rotate, Edit > Flip Selection
   and, since GH #245, a wheel bound to Rotate preview, or to Brush size or
   rotate preview where no brush applies, and since GH #356 their "or
@@ -90,6 +93,9 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   orientation through `reorient_gate_const()`, and every other rotation,
   VARIANT and INERT alike, copied verbatim. `add()` is unvalidated, so the
   guard is `transform_block()`, pinned by `tests/test_region_transform.py`.
+  After the re-paste each pasted wall takes its neighbour-derived shape
+  (the *Wall shapes re-derived from neighbours* bullet's paste clause), so
+  the image index survives where it agrees with the new neighbours.
 - *Selection transform's in-place unit images* (TASK-256: Edit > Flip
   Selection and Rotate Selection's Rotate Group pair on a Units-mode
   selection, and Flip, Rotate Group and the Rotate actions on a committed
@@ -156,7 +162,9 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   corpus placement on a cyclable const stores one, never the radian form.
   Its callers are Cycle Variant, the Rotate actions, the Rotation field,
   Move's pending turn (GH #280) and the wheel's selected-units choices (GH
-  #356), the last two per the *Rotate* bullet above.
+  #356), the last two per the *Rotate* bullet above, and a script's
+  `editor.set_variant()`, which takes only an `int` inside the const's
+  variant count and writes it as its literal float.
 - *Wall shapes re-derived from neighbours*: Place Unit's wall-run
   junction rewrites, its rewrites of the walls
   beside a gate it places (GH #159, which also removes the walls under the
@@ -180,8 +188,15 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   it leaves are not filled), and a removal's rewrites of the walls left
   beside a removed wall or gate (GH #340: Delete, Cut Units, Find's Delete
   and the Eraser brush; only the walls beside a tile no other wall or gate
-  still covers). A wall a move, a gate move, a gate's new footprint or a
-  removal leaves with no neighbour takes the tower index 2, which all
+  still covers), and Find and Replace's rewrites of the walls beside a tile
+  it turns into or out of a wall or gate (the gate target is the GH #339
+  clause above), where a unit replaced into a wall from anything else takes
+  the shape its new neighbours give it, and a paste's rewrites (Paste Units
+  and Paste Region, and the move and turn of a just-pasted region: each
+  pasted wall takes the shape its new neighbours give it, and the walls
+  beside a tile a pasted wall or gate newly covers re-derive). A wall a
+  move, a gate move, a gate's new footprint, a removal, a Replace or a
+  paste leaves with no neighbour takes the tower index 2, which all
   24 isolated walls in the integer-encoded corpus store and AoE2:DE draws
   for a lone wall. All of these go via
   `UnitEditModel.set_wall_variant()`, only on the wall-family consts (9 in
@@ -245,7 +260,10 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   re-derives the index from neighbours), or both are INERT (which keeps the
   `7.0` sentinel); verbatim for two cyclable consts when the old variant
   index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
-  pairing and for any target gate.
+  pairing (a unit that becomes a wall then takes its neighbour-derived
+  shape, and a wall kept a wall re-derives when a tile beside it changes,
+  both by the wall bullet above; `replace_type()` itself stays as stated)
+  and for any target gate.
 - *Place Unit's placement rotation* (GH #172: the hover ghost turned by
   the wheel's rotate binding, Ctrl+wheel by default, or the Rotate actions
   before a click, or set by the Eyedropper's Units-mode pick,
@@ -265,8 +283,19 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   stays inside the *Cycle Variant* scope; nothing for any other const). It
   refuses walls, gates and cliffs outright. The pending state is the same
   one, and is also turned over the brush's own hover ghost (GH #355).
+  Unit Line and Unit Shape (GH #365) write it the same way, through the
+  brush's own tail (`unit_brush.place_candidate()`, driven by
+  `unit_shape.place_cells()`), with the pending state and the Random tick
+  latched at the drag's press. A wall pick there is not a placement
+  rotation case: it goes through `wall_run.plan_wall_run()` like Place
+  Unit's run, and gates and cliffs are refused before the drag starts.
   `add()` itself stays unvalidated, as with mirroring and paste: the guard
-  is `rotation_for()`, pinned by `tests/test_place_rotation.py`.
+  is `rotation_for()`, pinned by `tests/test_place_rotation.py` and, for
+  the shape tools, `tests/test_unit_shape.py`. A script's
+  `editor.add_unit()` takes its rotation from `rotation_for()` too, from a
+  state built of its `facing` or `variant` argument (each refused on a
+  const of the other kind), and sends a GAIA-only object to GAIA as Place
+  Unit does; `tests/test_scripting.py`.
 - *Terrain planting's variant* (the Terrain tool's Trees and Eye candy,
   and File > New Map…'s, which `scenario_new` and
   `tools/gen_blank_maps.py` also reach): each new GAIA unit is
@@ -308,11 +337,12 @@ angular zero-point offset applied. `unit_sprites.variant_index()` is the only
 correct reader; `angle_index()` mis-maps 3 and 4. A write path must pass the
 field through verbatim here too, with the exceptions listed above:
 `UnitEditModel.set_wall_variant()`, which writes the value derived from
-the same neighbours the game would read (or, for a wall a move or a
-removal leaves with none, the tower index 2); *Replace*
+the same neighbours the game would read (or, for a wall a move, a
+removal, a Replace or a paste leaves with none, the tower index 2); *Replace*
 (`UnitEditModel.replace_type()`, by `unit_model.replaced_rotation()`),
 which keeps a wall's index verbatim when the new const is also a wall and
-writes `0.0` when a non-wall becomes a wall; and the new wall images of
+writes `0.0` when a non-wall becomes a wall; the viewer then writes that
+wall's neighbour-derived shape through `set_wall_variant()`; and the new wall images of
 Map mirroring and a *Region turn* (GH #197), whose index goes through
 `mirror_tools.wall_index_image()`, the element's permutation of that same
 neighbour table, in an integer-encoded file only. A wall's correct stored value is also a

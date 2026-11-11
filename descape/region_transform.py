@@ -29,22 +29,12 @@ from descape import gate_orientation, mirror_tools, render, unit_rotation, unit_
 from descape.region_clipboard import RegionBlock
 from descape.terrain_palette import tile_span
 
-# Screen-space names: tile_screen_origin() puts sx along x + y and sy along
-# y - x, so `a` mirrors left/right on screen and `d` top/bottom, and `r` turns
-# a facing the way rotate_step(+1) does, clockwise on screen.
-ROTATE_CW, ROTATE_CCW, FLIP_HORIZONTAL, FLIP_VERTICAL = "r", "r3", "a", "d"
-# Top-down Flat draws x right and y down, so there the same two flips are mx and my.
-_TOP_DOWN_FLIPS = {FLIP_HORIZONTAL: "mx", FLIP_VERTICAL: "my"}
-
-
-def flip_element(direction: str, top_down: bool) -> str:
-    """The D4 element that mirrors the screen in flip `direction`
-    (FLIP_HORIZONTAL or FLIP_VERTICAL): the direction itself in the
-    isometric views, mx or my in top-down Flat. Rotations need no such map:
-    the views differ by a rotation, which keeps the turn sense."""
-    if direction not in _TOP_DOWN_FLIPS:
-        raise ValueError(f"flip_element: {direction!r} is not a flip direction")
-    return _TOP_DOWN_FLIPS[direction] if top_down else direction
+# `r` turns a facing the way rotate_step(+1) does, clockwise on screen. The
+# flips mirror across the selection's own edges, named by the compass corners
+# they swap as Mirror Map names them (mx: West <-> North, my: West <-> South),
+# which holds in every view. A screen mirror (`a`/`d`) swaps the tile axes on
+# the diamond grid, so in Stepped it looked like a quarter turn (TASK-613).
+ROTATE_CW, ROTATE_CCW, FLIP_WEST_NORTH, FLIP_WEST_SOUTH = "r", "r3", "mx", "my"
 
 
 @dataclass(frozen=True)

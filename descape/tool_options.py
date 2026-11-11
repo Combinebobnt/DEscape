@@ -70,6 +70,7 @@ GROUPS: tuple[tuple[str, str], ...] = (
     ("eyedropper", "Eyedropper"),
     ("cliff", "Cliff"),
     ("unit_brush", "Unit Brush"),
+    ("unit_shape", "Unit Line and Unit Shape"),
     ("convert", "Convert"),
     ("eraser", "Eraser"),
     ("trigger_area", "Trigger areas"),
@@ -82,6 +83,8 @@ CONVERT_SOURCES = tuple(range(9))
 # same reason (eraser reaches settings through unit_pick). Pinned by tests.
 ERASER_TARGETS = ("units", "buildings", "trees", "overlay", "invisible", "gaia", "cliffs")
 ERASER_DEFAULT_TARGETS = ("units", "buildings")
+# unit_shape.SHAPE_KINDS' values, as literals: unit_shape is not a leaf. Pinned by tests.
+UNIT_SHAPE_KINDS = ("rectangle", "ellipse", "triangle", "right_triangle")
 # Stone Wall in AoE2, Medium Wall in Return of Rome. Pinned against wall_family_consts() by tests.
 DEFAULT_WALL_CONST = 117
 
@@ -131,6 +134,10 @@ OPTIONS: tuple[ToolOption, ...] = (
     ToolOption("cliff_frame", "Cliff frame", "cliff", INT, 0, minimum=0),
     ToolOption("unit_brush_density", "Unit Brush density", "unit_brush", INT, 100, minimum=1, maximum=100),
     ToolOption("unit_brush_random", "Random facing/variant", "unit_brush", BOOL, True),
+    ToolOption("unit_shape_kind", "Shape", "unit_shape", CHOICE, UNIT_SHAPE_KINDS[0], choices=UNIT_SHAPE_KINDS),
+    ToolOption("unit_shape_filled", "Filled", "unit_shape", BOOL, False),
+    ToolOption("unit_shape_spacing", "Spacing (tiles)", "unit_shape", INT, 0, minimum=0, maximum=20),
+    ToolOption("unit_shape_random", "Random facing/variant", "unit_shape", BOOL, False),
     ToolOption(
         "convert_sources", "Convert sources", "convert", SET, list(CONVERT_SOURCES), members=CONVERT_SOURCES,
     ),

@@ -30,6 +30,25 @@ import _game_root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+def _texture_mapping(terrains, available: set[str]) -> tuple[dict[str, str], list[tuple[int, str, str]]]:
+    """terrain_id -> "<name_2>.dds" for each enabled, named terrain whose
+    texture the install has, and (id, name, name_2) for those it lacks. A
+    lenient run (a data mod's derive, GH #272) keeps those too: the data
+    mod's art mod ships them, asset_source asks Mod Art first, and a texture
+    nothing ships still draws the flat colour."""
+    mapping: dict[str, str] = {}
+    missing: list[tuple[int, str, str]] = []
+    for i, t in enumerate(terrains):
+        if not t.enabled or not t.name_2:
+            continue
+        stem = t.name_2.strip()
+        if stem not in available:
+            missing.append((i, t.name, stem))
+        if stem in available or _game_root.lenient():
+            mapping[str(i)] = f"{stem}.dds"
+    return mapping, missing
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -59,20 +78,11 @@ def main() -> None:
     data = DatFile.parse(str(dat_path))
     terrains = data.terrain_block.terrains
     available = {f.stem for f in tex_dir.glob("*.dds")}
-
-    mapping: dict[str, str] = {}
-    missing: list[tuple[int, str, str]] = []
-    for i, t in enumerate(terrains):
-        if not t.enabled or not t.name_2:
-            continue
-        stem = t.name_2.strip()
-        if stem in available:
-            mapping[str(i)] = f"{stem}.dds"
-        else:
-            missing.append((i, t.name, stem))
+    mapping, missing = _texture_mapping(terrains, available)
 
     if missing:
-        print(f"WARNING: {len(missing)} enabled terrain(s) had no matching .dds file:")
+        kept = " (kept: a data mod's art mod may ship them)" if _game_root.lenient() else ""
+        print(f"WARNING: {len(missing)} enabled terrain(s) had no matching .dds file{kept}:")
         for i, name, stem in missing:
             print(f"  id={i} name={name!r} name_2={stem!r}")
 

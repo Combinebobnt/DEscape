@@ -64,6 +64,13 @@ DEFAULT_CHUNK_PX = 512
 # 0.9-1.5us per occupied tile (Dos Pilas the densest), so a slice is ~1-1.5ms dev.
 PACK_WARM_TILES = 1024
 
+# Whether a level warm chains native_prime_job() (TASK-031.85) and a re-arm re-queues an
+# unfinished one (TASK-031.82 D6); tools/bench_gui_zoom.py's --no-margin-fix turns it off.
+WARM_NATIVE_INPUTS = True
+# The finest level native_prime_job() primes: 128 px assembly is one atom over the 3 ms limit
+# (TASK-031.85 census); TASK-031.87's sliced assembly raises it.
+NATIVE_PRIME_MAX_TILE_PX = 96
+
 # Byte bound of the reduced store (render_reduced_rect()), apart from max_bytes: a k=1 chunk is 768 KiB.
 REDUCED_MAX_BYTES = 64 << 20
 # _chunk_stamp entries for uncached keys are dropped once per this many stamps.
@@ -73,7 +80,7 @@ _NEVER_STAMP = -1
 
 # Relative slack _ChunkCacheBase.mip_for_scale() allows: a view landed on a
 # level's own ratio by a float multiply can sit an ulp or two above it.
-# MapView's native stop tests use the same one, so "at the stop" picks it.
+# MapView's level stop tests use the same one, so "at the stop" picks it.
 MIP_SCALE_SLACK = 1e-12
 
 
@@ -197,7 +204,9 @@ class UnitSplice:
         an integer file one can add or drop the written wall's own lone-wall
         key, and that wall is in the edit). A move's (GH #266,
         viewer._apply_wall_reshapes()) goes wholesale instead when it would
-        flip the verdict (wall_run.MovePlan.radian_flip). The Selection
+        flip the verdict (wall_run.MovePlan.radian_flip), and any other
+        batch that flips it (an undo restoring a radian value) is caught by
+        wall_verdict_flipped() and taken wholesale (TASK-583). The Selection
         transform's (viewer._write_lift_units()) writes only in an
         integer-encoded file (region_transform._rotation_write()), where
         every wall already stores a literal. What changes is the neighbour
@@ -298,8 +307,9 @@ def _batch_splice_eligible(units_by_tile: dict, changed: list[UnitSplice]) -> bo
 def _const_refusal(changed: list[UnitSplice]) -> str | None:
     """_batch_splice_refusal()'s const clause over the whole batch. For a
     wall/connector/rotation-variant unit that is not a pure reassign:
-    `const:add` or `const:remove` (either can flip the file's radian verdict
-    and shift override keys, so wholesale), `const:other` (an owner change
+    `const:add` or `const:remove` (either shifts override keys, so wholesale
+    sources; either can also flip the file's radian verdict, which the caller's
+    repaint learns from wall_verdict_flipped()), `const:other` (an owner change
     that also moved), else `const:move` if one moved, else None."""
     moved = False
     for s in changed:
@@ -628,6 +638,13 @@ def _splice_overrides(scenario: LoadedScenario, changed: list[UnitSplice]) -> di
     if any(unit_sprites.rotation_variant_eligible(s.unit.unit_const) for s in changed):
         return render.wall_variant_rotation_overrides(scenario)
     return {}
+
+
+def _verdict_can_move(changed: list[UnitSplice]) -> bool:
+    """Whether `changed` could flip the file's wall radian verdict: some splice
+    adds, removes or rewrites a rotation-variant wall. A pure reassign cannot,
+    since stored_rotation() is owner-free for those consts (_splice_eligible())."""
+    return any(not s.is_reassign and unit_sprites.rotation_variant_eligible(s.unit.unit_const) for s in changed)
 
 
 def _removals_first(changed: list[UnitSplice]) -> list[UnitSplice]:
@@ -1153,6 +1170,8 @@ class _ChunkCacheBase:
     POOL_MIN_PATCH_TILE_AREA = 1100
     # The garrison hosts this cache's unit sources reflect (_record_flag_hosts(), GH #203).
     _flag_hosts: frozenset[int] = frozenset()
+    # The wall radian verdict this cache's unit sources reflect (_record_wall_verdict(), TASK-583).
+    _wall_radian: bool | None = None
 
     def _init_mip_levels(self, tile_px_by_level: dict[int, int]) -> None:
         """Enumerates the level set ONCE, at construction -- never lazily.
@@ -1445,6 +1464,8 @@ class _ChunkCacheBase:
         self.chunk_px = chunk_px
         self._cache: OrderedDict[tuple[int, int, int], np.ndarray] = OrderedDict()
         self._cache_bytes = 0
+        # Mips any chunk was ever inserted at; never cleared (level_warmed(), TASK-031.82 D3).
+        self._composited_mips: set[int] = set()
         # The reduced store (render_reduced_rect()): per-instance, never class defaults.
         self._chunk_stamp: dict[tuple[int, int, int], int] = {}
         self._stamp_counter = 0
@@ -1488,16 +1509,22 @@ class _ChunkCacheBase:
             return None
         return _splice_plan(self.scenario, self.units_by_tile, self.unit_filter, changed)
 
-    def _trace_splice_refusal(self, changed: list[UnitSplice] | None, skipped: bool = False) -> None:
+    def _trace_splice_refusal(
+        self, changed: list[UnitSplice] | None, skipped: bool = False, flipped: bool = False
+    ) -> None:
         """Records why invalidate_units(changed) is about to go wholesale, as a
         zero-length `splice_refused=<reason>` phase on the open op or stroke end.
         Recomputed only while Perf Trace is on, and before the sources change.
-        `skipped`: the caller passed splice_levels=False, so the reason is `skipped`."""
+        `skipped`: the caller passed splice_levels=False, so the reason is `skipped`.
+        `flipped`: the batch flipped the wall radian verdict, `radian_flip`."""
         if changed is None or not self.with_units or not perf_trace.is_enabled():
             return
-        reason = "skipped" if skipped else _splice_plan_or_refusal(
-            self.scenario, self.units_by_tile, self.unit_filter, changed
-        )[1]
+        if flipped:
+            reason = "radian_flip"
+        elif skipped:
+            reason = "skipped"
+        else:
+            reason = _splice_plan_or_refusal(self.scenario, self.units_by_tile, self.unit_filter, changed)[1]
         with perf_trace.phase(f"splice_refused={reason}"):
             pass
 
@@ -1613,6 +1640,7 @@ class _ChunkCacheBase:
         """
         self._mutation_epoch += 1
         self._record_flag_hosts()
+        self._record_wall_verdict()
         self._refresh_source_caches()
 
     def _record_flag_hosts(self) -> None:
@@ -1629,6 +1657,42 @@ class _ChunkCacheBase:
         what this cache's sources reflect. A pure read, for a scoped edit to
         add the hosts its own splices do not name (viewer._flag_flip_splices())."""
         return render.garrison_host_ids(self.scenario) ^ self._flag_hosts
+
+    def _record_wall_verdict(self) -> None:
+        """Stamps the file's wall radian verdict (render.walls_file_is_radian())
+        as the one this cache's unit sources reflect. Only where the sources are
+        rebuilt against a verdict that may have moved: construction,
+        _refresh_unit_sources(), and invalidate_units() when it goes wholesale
+        or its batch could move the verdict (_verdict_can_move()). Never on an
+        elevation patch, for _record_flag_hosts()'s reason. Only with sprites
+        on: the verdict picks wall frames, which marks never draw, and a
+        sprites toggle refreshes the unit sources, so it stamps there."""
+        if self._wall_shapes_drawn():
+            self._wall_radian = render.walls_file_is_radian(self.scenario)
+
+    def _wall_shapes_drawn(self) -> bool:
+        return self.with_units and self.sprites_enabled
+
+    def wall_verdict_flipped(self, changed: list[UnitSplice] | None) -> bool:
+        """Whether the scoped edit `changed` flipped the file-wide wall radian
+        verdict since the last stamp (TASK-583): every wall's drawn shape then
+        changes, so the sources and the repaint must both go wholesale. A pure
+        read. False with no verdict read unless units and sprites are on and
+        some splice could move it; None is already wholesale, so False too."""
+        if not self._wall_shapes_drawn() or not changed or not _verdict_can_move(changed):
+            return False
+        return render.walls_file_is_radian(self.scenario) != self._wall_radian
+
+    def _note_wall_verdict(self, changed: list[UnitSplice] | None) -> list[UnitSplice] | None:
+        """invalidate_units()' shared opening: `changed`, or None on a verdict
+        flip (traced as `radian_flip`), with the verdict re-stamped whenever the
+        call goes wholesale or its batch could have moved it."""
+        if self.wall_verdict_flipped(changed):
+            self._trace_splice_refusal(changed, flipped=True)
+            changed = None
+        if changed is None or _verdict_can_move(changed):
+            self._record_wall_verdict()
+        return changed
 
     def _model_unit_gen(self):
         """scenario.unit_gen, which every UnitEditModel mutator bumps, or None
@@ -1741,6 +1805,26 @@ class _ChunkCacheBase:
                 return
             pack.ensure(pending[i : i + PACK_WARM_TILES])
 
+    def native_prime_job(self, mip: int, after_level_warm: bool = False) -> LevelWarmJob | None:
+        """The level's native composite inputs, primed an atom per step
+        (TASK-031.85), so a first chunk there finds them built. None on the
+        base: top-down Flat has no native composite. _LeveledChunkCache
+        (Stepped, iso Flat and Sloped) overrides it."""
+        return None
+
+    def native_primed(self, mip: int) -> bool:
+        """Whether a native prime walk finished for this level; False on the
+        base, which has none. _LeveledChunkCache overrides it."""
+        return False
+
+    def level_warmed(self, mip: int) -> bool:
+        """Whether this level's process-global cold builds have run: a chunk
+        was composited at it, or (Stepped, iso Flat and Sloped) its native
+        prime finished. margin_warm's cold-first defer reads it (TASK-031.82
+        D3). Per level only: a chunk with new blend keys or shapes can still
+        pay some cold cost on a warmed level."""
+        return mip in self._composited_mips or self.native_primed(mip)
+
     def has_chunk(self, mip: int, cx: int, cy: int) -> bool:
         """Whether chunk (mip, cx, cy) is already cached -- a plain
         membership read, no LRU touch (unlike get_chunk()'s move_to_end()).
@@ -1847,6 +1931,7 @@ class _ChunkCacheBase:
 
     def _insert(self, key: tuple[int, int, int], chunk: np.ndarray) -> None:
         self._cache[key] = chunk
+        self._composited_mips.add(key[0])
         self._cache_bytes += chunk.nbytes
         self._cache.move_to_end(key)
         self._stamp(key)
@@ -2713,6 +2798,7 @@ class _ChunkCacheBase:
         exists."""
         self._mutation_epoch += 1
         self._record_flag_hosts()
+        self._record_wall_verdict()
         self._refresh_source_caches()
 
     def set_unit_filter(self, unit_filter: UnitFilter) -> None:
@@ -2911,6 +2997,8 @@ class _LeveledChunkCache(_ChunkCacheBase):
         }
         self._init_mip_levels({level: lvl.tile_px for level, lvl in self._levels.items()})
         self._source_gen = 0
+        # mip -> the _source_gen a native prime walk ran to its end under (TASK-031.82 D6).
+        self._native_primed: dict[int, int] = {}
         # Bumped by every splice that leaves _source_gen alone, so a warm
         # started before one can tell its half-walked layer is stale.
         self._splice_epoch = 0
@@ -3285,9 +3373,14 @@ class _LeveledChunkCache(_ChunkCacheBase):
 
         A garrison flag flip on a host outside `changed` is the caller's to
         add (viewer._flag_flip_splices()); every path here stamps the live
-        hosts as reflected (_record_flag_hosts())."""
+        hosts as reflected (_record_flag_hosts()).
+
+        A batch that flips the file's wall radian verdict (wall_verdict_flipped(),
+        TASK-583) is taken as None: every wall's drawn shape moved, so no
+        splice, component or in-place update can cover it."""
         self._mutation_epoch += 1
         self._record_flag_hosts()
+        changed = self._note_wall_verdict(changed)
         plan = self._unit_splice_plan(changed) if splice_levels else None
         if plan is None:
             if splice_levels and cap_levels and self._splice_visible(changed, cap_levels):
@@ -3459,6 +3552,58 @@ class _LeveledChunkCache(_ChunkCacheBase):
         (2026-09-29 warm-tick plan)."""
         lvl = self._levels[mip]
         return lvl.gen == self._source_gen and not lvl.pending_elev
+
+    def native_prime_job(self, mip: int, after_level_warm: bool = False) -> LevelWarmJob | None:
+        """native_composite.prime_walk() for this level, as a job whose install
+        is a no-op: pack_warm_job()'s shape. It only fills caches earlier
+        than a first prepare would, so a chunk before or after it is
+        byte-identical. Its one state is the finished-walk marker
+        (native_primed()), which margin_warm's defer and the re-queue read.
+
+        None with WARM_NATIVE_INPUTS off, on the numpy backend, above
+        NATIVE_PRIME_MAX_TILE_PX, or unless after_level_warm says a level
+        warm is queued ahead or the level is resident and not yet primed
+        under its current _source_gen (TASK-031.82 D6: a walk a crossing
+        cancelled is re-queued by the next re-arm). So a re-arm over
+        resident, primed levels queues nothing and starts no timer. A
+        restarted walk re-runs its finished atoms as cache hits.
+        Between atoms the walk stops quietly once the level leaves residency."""
+        if not WARM_NATIVE_INPUTS or composite_backend.native is None:
+            return None
+        if self._levels[mip].tile_px > NATIVE_PRIME_MAX_TILE_PX:
+            return None
+        if not after_level_warm and (not self.is_level_resident(mip) or self.native_primed(mip)):
+            return None
+        return LevelWarmJob(gen=self._native_prime_walk(mip), install=lambda _payload: True, kind="native")
+
+    def native_primed(self, mip: int) -> bool:
+        """Whether a prime walk ran to its end under the current _source_gen.
+        Readiness only (D3's deferral, D6's re-queue): chunk output never reads it."""
+        return self._native_primed.get(mip) == self._source_gen
+
+    def _native_prime_walk(self, mip: int):
+        lvl = self._levels[mip]
+        start_gen = self._source_gen
+        heights = (lambda: (self._level_corner_rise(lvl), self._level_fold())) if self._sloped else None
+        walk = native_composite.prime_walk(
+            lvl.tile_px, lvl.proj.elev_step, sloped=self._sloped, blend_keys=self._prime_blend_keys, heights=heights
+        )
+        # The walk's first step is empty; each later next() runs one atom, after the check.
+        for _ in walk:
+            yield
+            if not self.is_level_resident(mip):
+                walk.close()
+                return
+        # A paint can rebuild the level between atoms while residency holds.
+        if self._source_gen == start_gen:
+            self._native_primed[mip] = start_gen
+
+    def _prime_blend_keys(self) -> list | None:
+        """The KeyMap's keys for prime_walk(), None while blending is off."""
+        key_map = self._blend_key_map
+        if key_map is None or not key_map.keys or not render.blend_effective(self.layers):
+            return None
+        return key_map.keys
 
     def set_sprites_enabled(self, enabled: bool) -> None:
         """Turns real .sld sprites on or off on a LIVE cache -- P3-g's toggle.
@@ -3722,7 +3867,7 @@ class IsoChunkCache(_LeveledChunkCache):
         self._init_levels(
             iso_geometry.mip_projections_for(
                 mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
-                max_tile_px=render.finest_tile_pixels(),
+                max_tile_px=render.finest_tile_pixels(), native_tier_max=render.native_tier_max(),
             )
         )
         # canvas_dims()'s own exactness assert: is_exact_mip() proves every
@@ -3740,6 +3885,7 @@ class IsoChunkCache(_LeveledChunkCache):
             )
         self._init_terrain_ids()
         self._record_flag_hosts()
+        self._record_wall_verdict()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -3953,6 +4099,7 @@ class FlatChunkCache(_ChunkCacheBase):
         self._window_built: set[tuple[str, int]] = set()
         self._init_terrain_ids()
         self._record_flag_hosts()
+        self._record_wall_verdict()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 
@@ -4027,9 +4174,11 @@ class FlatChunkCache(_ChunkCacheBase):
         does not describe yet: an add gives it an extra row, a reassign moves
         one. It is dropped here (_drop_window_built()) and rebuilds lazily
         from the lists this call brings the row table up to. A layer built
-        outside such a window is kept, so the row splice stays the fast path."""
+        outside such a window is kept, so the row splice stays the fast path.
+        A batch that flips the wall radian verdict is taken as None (TASK-583)."""
         self._mutation_epoch += 1
         self._record_flag_hosts()
+        changed = self._note_wall_verdict(changed)
         if self._window_built:
             self._drop_window_built()
         if self.can_splice(changed):
@@ -4563,7 +4712,7 @@ class SlopedChunkCache(_LeveledChunkCache):
         projs = iso_geometry.mip_projections_for(
             mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
             corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
-            max_tile_px=render.finest_tile_pixels(),
+            max_tile_px=render.finest_tile_pixels(), native_tier_max=render.native_tier_max(),
         )
         self._init_levels(projs)
         # Both canvas_dims() answers (sprites off and on) must scale exactly, as IsoChunkCache asserts.
@@ -4575,6 +4724,7 @@ class SlopedChunkCache(_LeveledChunkCache):
                 )
         self._init_terrain_ids()
         self._record_flag_hosts()
+        self._record_wall_verdict()
         self._refresh_source_caches()
         self._init_max_chunks(chunk_px, max_chunks)
 

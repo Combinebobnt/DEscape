@@ -242,8 +242,8 @@ def zoom_about(view: QGraphicsView, factor: float, anchor: QPoint) -> None:
 
 def snap_to_device_px(view: QGraphicsView, offset: QPoint, dpr: float) -> None:
     """Nudges `view`'s scrollbars so the scene origin lands on a whole device
-    px of its window, `offset` being the viewport's position there (TASK-599's
-    native stop; the canvas item sits at the scene origin). Scrolling moves in
+    px of its window, `offset` being the viewport's position there (a level
+    stop, TASK-599 and TASK-600; the canvas item sits at the scene origin). Scrolling moves in
     whole logical px, so only a fractional DPR (1.25, 1.5) or an offset that
     is not whole in device px moves anything. An axis with no whole value in
     reach (its bar at an end) is left as it is. Part of the wheel zoom's
@@ -329,7 +329,7 @@ class ZoomTwin:
         """(viewportTransform(), viewport rect) the real view will have after
         zoom_about(real, factor, anchor), computed on the twin. `snap`, the
         real viewport's (offset in its window, DPR), follows it with the
-        native stop's snap_to_device_px(). The real view is not touched."""
+        level stop's snap_to_device_px(). The real view is not touched."""
         self.sync()
         zoom_about(self._view, factor, anchor)
         if snap is not None:

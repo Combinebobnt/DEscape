@@ -20,15 +20,14 @@ from descape import gate_orientation, iso_geometry, render, unit_rotation
 from descape.mirror_tools import AXIS_SWAPPING, TRANSFORMS, compose, facing_image, invert
 from descape.region_clipboard import RegionBlock, RegionUnit
 from descape.region_transform import (
-    FLIP_HORIZONTAL,
-    FLIP_VERTICAL,
+    FLIP_WEST_NORTH,
+    FLIP_WEST_SOUTH,
     ROTATE_CCW,
     ROTATE_CW,
     WRITE_ANGLE,
     WRITE_WALL,
     FirstUnit,
     anchor_for,
-    flip_element,
     image_on_map,
     lands_on_map,
     pivot2_of,
@@ -223,36 +222,52 @@ def test_rotate_cw_turns_a_facing_the_way_rotate_step_does():
     assert compose(ROTATE_CW, ROTATE_CCW) == "id"
 
 
-def test_the_flips_mirror_the_screen_left_right_and_top_bottom():
-    """Through tile_screen_origin() itself: FLIP_HORIZONTAL negates sx about
-    the square's centre and keeps sy; FLIP_VERTICAL the other way round."""
+def test_the_flips_swap_the_compass_corners_they_are_named_for():
+    """Through tile_screen_origin() itself, on a square: West is the leftmost
+    corner, North the topmost, South the bottommost, East the rightmost.
+    FLIP_WEST_NORTH swaps West with North (and South with East),
+    FLIP_WEST_SOUTH West with South (and North with East). In top-down Flat
+    coordinates they are (n-1-x, y) and (x, n-1-y). Neither swaps the tile
+    axes, so a flip keeps a selection's rectangle (TASK-613)."""
+    assert FLIP_WEST_NORTH not in AXIS_SWAPPING and FLIP_WEST_SOUTH not in AXIS_SWAPPING
     n = 9
     proj = iso_geometry.canvas_size_and_origin(n, n, 32, 0, 0)
-
-    def screen(x, y):
-        return iso_geometry.tile_screen_origin(x, y, 0, proj)
-
-    # Twice the centre tile's origin, so the reflection stays in integers.
-    cx, cy = (2 * c for c in screen((n - 1) // 2, (n - 1) // 2))
+    corners = [(x, y) for x in (0, n - 1) for y in (0, n - 1)]
+    screen = {c: iso_geometry.tile_screen_origin(*c, 0, proj) for c in corners}
+    west = min(corners, key=lambda c: screen[c][0])
+    east = max(corners, key=lambda c: screen[c][0])
+    north = min(corners, key=lambda c: screen[c][1])
+    south = max(corners, key=lambda c: screen[c][1])
+    wn, ws = TRANSFORMS[FLIP_WEST_NORTH], TRANSFORMS[FLIP_WEST_SOUTH]
+    assert (wn(*west, n), wn(*north, n), wn(*south, n), wn(*east, n)) == (north, west, east, south)
+    assert (ws(*west, n), ws(*south, n), ws(*north, n), ws(*east, n)) == (south, west, east, north)
     for x, y in [(0, 0), (2, 7), (8, 3), (5, 5), (1, 0)]:
-        sx, sy = screen(x, y)
-        hx, hy = screen(*TRANSFORMS[FLIP_HORIZONTAL](x, y, n))
-        vx, vy = screen(*TRANSFORMS[FLIP_VERTICAL](x, y, n))
-        assert (hx, hy) == (cx - sx, sy), (x, y)
-        assert (vx, vy) == (sx, cy - sy), (x, y)
+        assert wn(x, y, n) == (n - 1 - x, y), (x, y)
+        assert ws(x, y, n) == (x, n - 1 - y), (x, y)
 
 
-def test_flip_element_mirrors_the_screen_in_every_view():
-    """Isometric views keep the direction itself (pinned above); top-down Flat
-    draws tile (x, y) at screen (x, y), so there Horizontal keeps y and
-    Vertical keeps x."""
-    assert (flip_element(FLIP_HORIZONTAL, False), flip_element(FLIP_VERTICAL, False)) == (FLIP_HORIZONTAL, FLIP_VERTICAL)
-    n = 9
-    for x, y in [(0, 0), (2, 7), (8, 3), (5, 5), (1, 0)]:
-        assert TRANSFORMS[flip_element(FLIP_HORIZONTAL, True)](x, y, n) == (n - 1 - x, y), (x, y)
-        assert TRANSFORMS[flip_element(FLIP_VERTICAL, True)](x, y, n) == (x, n - 1 - y), (x, y)
-    with pytest.raises(ValueError):
-        flip_element(ROTATE_CW, True)
+def test_a_flip_keeps_a_non_square_rect_and_mirrors_inside_it_where_a_turn_does_not():
+    """The user's symptom (TASK-613): a screen-space flip moved a non-square
+    selection to where a quarter turn puts it. An asymmetric L of archers in
+    a 2 x 3 rect mirrors inside the same rect; a 2 x 3 span keeps no
+    orientation it would have lost under an axis swap."""
+    rect = (40, 30, 42, 33)
+    spots = [(40.5, 30.5), (40.5, 31.5), (40.5, 32.5), (41.5, 32.5)]
+    firsts = [FirstUnit(i, ARCHER, x, y, 0.0) for i, (x, y) in enumerate(spots)]
+    expected = {
+        FLIP_WEST_NORTH: [(41.5, 30.5), (41.5, 31.5), (41.5, 32.5), (40.5, 32.5)],
+        FLIP_WEST_SOUTH: [(40.5, 32.5), (40.5, 31.5), (40.5, 30.5), (41.5, 30.5)],
+    }
+    turned = plan_in_place(firsts, ROTATE_CW, rect, False)
+    assert turned.rect != rect
+    for element, want in expected.items():
+        plan = plan_in_place(firsts, element, rect, False)
+        assert plan.rect == rect, element
+        assert [(image.x, image.y) for image in plan.images] == want, element
+        screen = plan_in_place(firsts, {FLIP_WEST_NORTH: "a", FLIP_WEST_SOUTH: "d"}[element], rect, False)
+        assert screen.rect == turned.rect, "the old screen flip landed where a quarter turn does"
+        bridge = [FirstUnit("bridge", BRIDGE, *render.span_anchor(40, 30, 2, 3), 0.0)]
+        assert plan_in_place(bridge, element, rect, False).kept_orientation == 0, element
 
 
 def test_four_turns_of_an_odd_parity_block_return_the_first_anchor_even_with_moves_between():
@@ -365,7 +380,7 @@ def test_a_lift_that_composes_back_to_the_identity_returns_every_first_field_exa
     an ulp and an odd rect's anchor by a tile, so this is the rule that keeps
     a lift exact."""
     firsts = _firsts()
-    for steps in ([element, invert(element)], [ROTATE_CW] * 4, [ROTATE_CW, FLIP_HORIZONTAL, ROTATE_CW, FLIP_HORIZONTAL]):
+    for steps in ([element, invert(element)], [ROTATE_CW] * 4, [ROTATE_CW, FLIP_WEST_NORTH, ROTATE_CW, FLIP_WEST_NORTH]):
         final, state = _lift(firsts, rect, steps)
         assert final == "id", steps
         assert _fields(state) == _fields(firsts), steps

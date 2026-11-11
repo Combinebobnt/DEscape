@@ -147,6 +147,29 @@ def _memoized_laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
     return laid
 
 
+def moved_laid_terrain(scenario, moved) -> dict[tuple[int, int], frozenset[int]] | None:
+    """laid_terrain() as it stands once `moved`, {id(unit): (x, y)}, have
+    landed: a moved foundation unit lays its deck at its landing and no longer
+    at its stored point (a group move carrying a bridge, TASK-483). None when
+    no moved unit lays a foundation, so the caller keeps the per-edit memo."""
+    mm = scenario.map_manager
+    laid: dict[tuple[int, int], set[int]] = {}
+    carried = False
+    for units in scenario.unit_manager.units:
+        for unit in units:
+            terrain_id = FOUNDATION_TERRAIN.get(unit.unit_const)
+            if terrain_id is None or unit.garrisoned_in_id != -1:
+                continue
+            landing = moved.get(id(unit))
+            carried = carried or landing is not None
+            x, y = (unit.x, unit.y) if landing is None else landing
+            for tile in render.occupied_tiles_for(unit.unit_const, x, y, mm.map_width, mm.map_height) or ():
+                laid.setdefault(tile, set()).add(terrain_id)
+    if not carried:
+        return None
+    return {tile: frozenset(ids) for tile, ids in laid.items()}
+
+
 def _footprint_block(scenario, unit_const: int, tiles, laid=None) -> int | None:
     """The terrain id of the first footprint tile `unit_const`'s restriction
     row does not pass, or None. A tile whose stored terrain is refused still
@@ -437,7 +460,15 @@ def gate_companions(scenario, unit) -> list:
 
 
 def move_refusal(
-    scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, unit_const: int | None = None
+    scenario,
+    unit,
+    x: float,
+    y: float,
+    exclude=(),
+    grid: BlockerGrid | None = None,
+    *,
+    unit_const: int | None = None,
+    laid=None,
 ) -> str | None:
     """refusal() for an existing `unit` going to (x, y). A garrisoned unit
     skips both rules: it stands wherever its host does, and with Show
@@ -445,11 +476,12 @@ def move_refusal(
     own corner pieces never block its move (gate_companions(), TASK-340).
 
     `unit_const` is the const it lands as, for a gate a drag turned (GH #280).
-    `unit` stays the real one: gate_companions() finds it by identity."""
+    `unit` stays the real one: gate_companions() finds it by identity.
+    `laid` is refusal()'s, for a group carrying a bridge (moved_laid_terrain())."""
     if unit.garrisoned_in_id != -1:
         return None
     const = unit.unit_const if unit_const is None else unit_const
-    return refusal(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
+    return refusal(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid, laid=laid)
 
 
 def refused(
@@ -473,10 +505,18 @@ def refused(
 
 
 def move_refused(
-    scenario, unit, x: float, y: float, exclude=(), grid: BlockerGrid | None = None, *, unit_const: int | None = None
+    scenario,
+    unit,
+    x: float,
+    y: float,
+    exclude=(),
+    grid: BlockerGrid | None = None,
+    *,
+    unit_const: int | None = None,
+    laid=None,
 ) -> bool:
     """move_refusal() is not None, without building a message."""
     if unit.garrisoned_in_id != -1:
         return False
     const = unit.unit_const if unit_const is None else unit_const
-    return refused(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid)
+    return refused(scenario, const, x, y, (*exclude, *gate_companions(scenario, unit)), grid, laid=laid)

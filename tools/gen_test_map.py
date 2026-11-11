@@ -45,7 +45,9 @@ What the app's models cannot author, and what was done instead:
 
 - An effect with an unknown type id (91, as in R4_LeLoi_4): the library's
   _add_effect() refuses an id outside EffectId, so it is added as a known
-  type and its effect_type is then set raw.
+  type and its effect_type is then set raw. Its trigger, and the Kill
+  Object naming a deleted unit, are disabled, so a play-test of the map
+  fires neither.
 - Every condition and effect field is set to a non-default value except the
   inert quantity-cluster slots (trigger_fields.apply_quantity_cluster_rule),
   which the property form keeps read-only for that entry's live slot.
@@ -1190,6 +1192,8 @@ def _build_trigger_vocab(m: _Map) -> None:
         dangling._add_effect(KILL_OBJECT)
         missing = m.targets.get("missing", m.units.next_unit_id + 1)
         dangling.effects[-1].selected_object_ids = [missing, *_unit_refs(m)[1:3]]
+        # Deliberate bait, kept in the file but never fired: either may crash a play-test (TASK-401).
+        unknown.enabled = dangling.enabled = 0
 
 
 def _build_trigger_structure(m: _Map) -> None:

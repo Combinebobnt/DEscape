@@ -141,6 +141,8 @@ _warm_ticks: list[tuple[float, int, float]] = []
 # Kernel ms per chunk run on a margin-warm worker thread, timed there and
 # recorded on arrival, so this module stays GUI-thread-only.
 _warm_worker: list[float] = []
+# mip -> margin-warm ticks deferred at a cold level during input (TASK-031.82 D3).
+_warm_deferred: dict[int, int] = {}
 # One step's wall time, kind, thread delta and fetch split, never an aggregate duplicate.
 _preframe_ticks: list[tuple[float, str, Delta | None, dict | None]] = []
 _armed_label: str | None = None
@@ -998,6 +1000,18 @@ def warm_tick(tick_ms: float, chunks: int, slowest_chunk_ms: float) -> None:
     _schedule_idle()
 
 
+def warm_deferred(mip: int) -> None:
+    """Records one margin-warm tick that started nothing: input was live and
+    level `mip` not yet warmed (margin_warm.DEFER_COLD_FIRST). Same idle-flush
+    restart as warm_tick()."""
+    if not _enabled:
+        return
+    _warm_deferred[mip] = _warm_deferred.get(mip, 0) + 1
+    where_tag = _where_stack[-1] if _where_stack else "other"
+    _recent.append((time.perf_counter(), 0.0, _op_label(), f"margin-warm deferred, level {mip} cold ({where_tag})"))
+    _schedule_idle()
+
+
 def preframe_tick(tick_ms: float, kind: str, stats: Delta | None = None, fetch: dict | None = None) -> None:
     """Records one pre-rendered zoom frame tick (TASK-031.71): `kind` is
     `predict`, `fetch`, `strip` or `finish`. Same idle-flush restart as warm_tick()."""
@@ -1107,6 +1121,9 @@ def _warm_summary() -> str:
         )
     if k:
         parts.append(f"worker {len(k)} chunks, {sum(k):.0f}ms total (max {max(k):.1f})")
+    if _warm_deferred:
+        levels = " ".join(f"{mip} x{n}" for mip, n in sorted(_warm_deferred.items()))
+        parts.append(f"deferred {sum(_warm_deferred.values())} ticks (cold levels {levels})")
     if lw:
         parts.append(
             f"level {len(lw)} ticks, max tick {max(t[0] for t in lw):.1f}{_worst_tick_text()}, "
@@ -1169,12 +1186,12 @@ def _take_extras() -> list[str]:
 def _flush_view() -> None:
     """Logs pending repaints and warm ticks as a `perf view` line and clears
     only those (plus the extras it prints)."""
-    global _warm_ticks, _warm_worker, _level_warm_ticks, _level_warm_worst, _preframe_ticks
+    global _warm_ticks, _warm_worker, _warm_deferred, _level_warm_ticks, _level_warm_worst, _preframe_ticks
     _drain_gc()
     parts = []
     if _repaint_durations:
         parts.append(_repaint_summary())
-    if _warm_ticks or _warm_worker or _level_warm_ticks:
+    if _warm_ticks or _warm_worker or _warm_deferred or _level_warm_ticks:
         parts.append(_warm_summary())
     if _preframe_ticks:
         parts.append(_preframe_summary())
@@ -1184,6 +1201,7 @@ def _flush_view() -> None:
         _clear_repaints()
         _warm_ticks = []
         _warm_worker = []
+        _warm_deferred = {}
         _level_warm_ticks = []
         _level_warm_worst = None
         _preframe_ticks = []
@@ -1343,6 +1361,7 @@ def _fresh_state() -> dict[str, object]:
         "_repaint_level_ms": 0.0,
         "_warm_ticks": [],
         "_warm_worker": [],
+        "_warm_deferred": {},
         "_preframe_ticks": [],
         "_armed_label": None,
         "_drag_active": False,

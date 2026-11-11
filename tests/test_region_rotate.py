@@ -162,7 +162,7 @@ def test_turns_that_compose_to_the_identity_reproduce_the_plain_paste(actions):
         _close(window)
 
 
-def test_a_flip_after_a_turn_flips_the_turned_block_on_screen():
+def test_a_flip_after_a_turn_flips_the_turned_block():
     """Each step applies after the ones before it: compose(step, so_far)."""
     from descape.mirror_tools import compose
 
@@ -173,8 +173,8 @@ def test_a_flip_after_a_turn_flips_the_turned_block_on_screen():
         source = window._paste_move.block
         window.rotate_cw_action.trigger()
         window.flip_horizontal_action.trigger()
-        element = compose(region_transform.FLIP_HORIZONTAL, region_transform.ROTATE_CW)
-        assert element != compose(region_transform.ROTATE_CW, region_transform.FLIP_HORIZONTAL)
+        element = compose(region_transform.FLIP_WEST_NORTH, region_transform.ROTATE_CW)
+        assert element != compose(region_transform.ROTATE_CW, region_transform.FLIP_WEST_NORTH)
         expected = region_transform.transform_block(source, element, False).block
         x0, y0 = region_transform.anchor_for((85, 83), expected)
         mm = window.scenario.map_manager
@@ -301,7 +301,9 @@ def test_a_pasted_holder_and_its_occupant_stay_linked_on_one_point():
         _close(window)
 
 
-def test_a_turned_wall_and_archer_carry_the_mirror_rules():
+def test_a_turned_lone_wall_lands_as_a_tower_and_an_archer_carries_the_mirror_rule():
+    """The wall stores 3 alone: its turned image is 4, but it lands with no
+    neighbour, so the re-paste writes the tower the game draws (TASK-585)."""
     window = _select_window()
     try:
         _setup(window)
@@ -309,8 +311,24 @@ def test_a_turned_wall_and_archer_carry_the_mirror_rules():
         window.rotate_cw_action.trigger()
         (wall,) = [u for u in _live(window, WALL) if u.x >= 30]
         (archer,) = [u for u in _live(window, ARCHER) if u.x >= 30]
-        assert float(wall.rotation) == 4.0  # a NW-SE diagonal run turns into a NE-SW one
+        assert float(wall.rotation) == 2.0
         assert float(archer.rotation) == pytest.approx(1.25 + 3.141592653589793 / 2, abs=1e-6)
+    finally:
+        _close(window)
+
+
+def test_a_turned_diagonal_run_keeps_its_turned_shape_and_its_ends_are_towers():
+    """Three walls on a NW-SE diagonal (2, 3, 2), turned once: the middle's
+    image and its derived shape agree on the NE-SW run (4), and both ends
+    stay towers."""
+    window = _select_window()
+    try:
+        _add(window, [(1, WALL, i + 0.5, i + 0.5, 3.0 if i == 1 else 2.0, None) for i in range(3)])
+        _setup(window, units=False)
+        _paste(window)
+        window.rotate_cw_action.trigger()
+        walls = sorted((u for u in _live(window, WALL) if u.x >= 30), key=lambda u: (u.x, u.y))
+        assert [float(u.rotation) for u in walls] == [2.0, 4.0, 2.0]
     finally:
         _close(window)
 
@@ -325,7 +343,7 @@ def test_a_lapsed_paste_says_so_by_action_and_writes_nothing(method, verb):
         assert window._paste_move is None
         snapshot = _tiles(window)
         depth = len(window.edit_history.records)
-        step = region_transform.ROTATE_CW if method == "rotate" else region_transform.FLIP_HORIZONTAL
+        step = region_transform.ROTATE_CW if method == "rotate" else region_transform.FLIP_WEST_NORTH
         window.on_region_transform(step)
         assert _last_status(window) == f"{verb}: paste a region first, then turn it"
         assert _tiles(window) == snapshot
@@ -392,7 +410,7 @@ def test_with_a_units_selection_rotate_turns_the_units_and_flip_flips_the_region
         flipped = _tiles(window)
         assert flipped != plain
         assert lone_rotation() == 0.0
-        assert window._paste_move.element == region_transform.FLIP_HORIZONTAL
+        assert window._paste_move.element == region_transform.FLIP_WEST_NORTH
         assert window._selection == [(1, loner.reference_id)]
 
         window.rotate_cw_action.trigger()

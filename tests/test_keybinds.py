@@ -840,6 +840,7 @@ def test_every_wheel_combo_fits_its_longest_label_at_the_minimum_dialog_width() 
 
 def test_a_wheel_combo_change_reaches_the_config_file_and_a_real_wheel_event() -> None:
     from test_wheel_bindings import _scale, _terrain_window, _wheel_xy
+    from test_wheel_zoom import _notch_scale
 
     from descape.viewer import SettingsDialog
 
@@ -850,7 +851,7 @@ def test_a_wheel_combo_change_reaches_the_config_file_and_a_real_wheel_event() -
             view = window.map_view
             size, scale = window.brush_size_spin.value(), _scale(view)
             _wheel_xy(view, (0, 120))
-            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9), "plain wheel should zoom by default"
+            assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9), "plain wheel should zoom by default"
             scale = _scale(view)
 
             _set_wheel_combo(dialog, "plain", "brush_size")

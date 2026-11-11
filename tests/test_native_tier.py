@@ -1,6 +1,7 @@
-"""TASK-599: the 96 px native-sprite tier in the iso mip ladders. The ladder
-table, the rank-based level selection, and the wrap-padded terrain crops a
-tile_px that does not divide the texture needs. Sprite identity at 96 is in
+"""TASK-599: the 96 px native-sprite tier in the iso mip ladders, and
+TASK-601's 192 tier at Default. The ladder table, the rank-based level
+selection, and the wrap-padded terrain crops a tile_px that does not divide
+the texture needs. Sprite identity at 96 is in
 tests/test_x2_sprites.py; backend agreement at 96 in test_native_composite.py."""
 
 from __future__ import annotations
@@ -15,27 +16,45 @@ NATIVE = iso_geometry.NATIVE_TILE_PIXELS
 
 
 def test_the_ladder_table() -> None:
-    """Every (base, quality finest, tier) a real cache can be built with; the
-    tier only where the finest reaches 96 and 96 is 3/2 or 3x the base."""
+    """Every (base, quality finest, tier, tier limit) a real cache can be built
+    with; a tier only where the finest and the quality's tier limit reach it and
+    it is the base times 3/2 times a power of two (TASK-599, TASK-601)."""
     table = {
-        # Default and Enhanced (finest 128): small and large maps.
-        (64, 128, True): {-2: 16, -1: 32, 0: 64, 1: 96, 2: 128},
-        (32, 128, True): {-1: 16, 0: 32, 1: 64, 2: 96, 3: 128},
-        (64, 128, False): {-2: 16, -1: 32, 0: 64, 1: 128},
-        (32, 128, False): {-1: 16, 0: 32, 1: 64, 2: 128},
+        # Default (finest 192, tiers to 192): small and large maps.
+        (64, 192, True, 192): {-2: 16, -1: 32, 0: 64, 1: 96, 2: 128, 3: 192},
+        (32, 192, True, 192): {-1: 16, 0: 32, 1: 64, 2: 96, 3: 128, 4: 192},
+        # Enhanced (finest 128, tiers to 96), until TASK-441.
+        (64, 128, True, 96): {-2: 16, -1: 32, 0: 64, 1: 96, 2: 128},
+        (32, 128, True, 96): {-1: 16, 0: 32, 1: 64, 2: 96, 3: 128},
+        # Top-down Flat: no tiers, so the 192 ceiling stops the power-of-two loop at 128.
+        (64, 192, False, 192): {-2: 16, -1: 32, 0: 64, 1: 128},
+        (32, 192, False, 192): {-1: 16, 0: 32, 1: 64, 2: 128},
         # Potato (finest 64) and Potatest (32) never reach 96.
-        (32, 64, True): {-1: 16, 0: 32, 1: 64},
-        (16, 64, True): {0: 16, 1: 32, 2: 64},
-        (16, 32, True): {0: 16, 1: 32},
-        # 96 is 6x 16: not a 3/2 or 3x step, so no tier even under a 128 ceiling.
-        (16, 128, True): {0: 16, 1: 32, 2: 64, 3: 128},
+        (32, 64, True, 96): {-1: 16, 0: 32, 1: 64},
+        (16, 64, True, 96): {0: 16, 1: 32, 2: 64},
+        (16, 32, True, 96): {0: 16, 1: 32},
+        # No real cache: base 16 only comes with a finest of 64 or less. 96 is 16 x 3/2 x 4, so it would be a tier.
+        (16, 128, True, 96): {0: 16, 1: 32, 2: 64, 3: 96, 4: 128},
+        # The tier limit alone keeps 192 out under a ceiling that admits it (Decision 2's back door).
+        (64, 192, True, 96): {-2: 16, -1: 32, 0: 64, 1: 96, 2: 128},
     }
     bad = {}
-    for (base, finest, tier), want in table.items():
-        got = iso_geometry.mip_tile_px_candidates(base, finest, native_tier=tier)
+    for (base, finest, tier, tier_max), want in table.items():
+        got = iso_geometry.mip_tile_px_candidates(base, finest, native_tier=tier, native_tier_max=tier_max)
         if got != want:
-            bad[(base, finest, tier)] = got
+            bad[(base, finest, tier, tier_max)] = got
     assert not bad, bad
+
+
+def test_a_raised_ceiling_still_keeps_192_off_enhanced(monkeypatch) -> None:
+    """Decision 2: TASK-202's 256 ceiling must not bring 192 (and x2 at 1:1, TASK-441) to Enhanced."""
+    monkeypatch.setattr(iso_geometry, "MIP_MAX_TILE_PIXELS", 256)
+    monkeypatch.setitem(render.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_MAX, 256)
+    monkeypatch.setattr(settings, "get_graphics_quality", lambda: settings.GRAPHICS_QUALITY_MAX)
+    got = iso_geometry.mip_tile_px_candidates(64, render.finest_tile_pixels(), native_tier=True,
+                                              native_tier_max=render.native_tier_max())
+    assert 256 in got.values(), "the patched ceiling did not reach the ladder -- vacuous"
+    assert 192 not in got.values() and NATIVE in got.values()
 
 
 @pytest.mark.parametrize("quality", sorted(render.FINEST_TILE_PIXELS))
@@ -45,10 +64,14 @@ def test_the_tier_exists_exactly_at_default_and_enhanced(monkeypatch, quality, l
     side = render.LARGE_MAP_TILE_THRESHOLD + 1 if large else render.LARGE_MAP_TILE_THRESHOLD
     base = render.tile_pixels_for_map(side, side)
     proj = iso_geometry.canvas_size_and_origin(side, side, base, 0, 7, elev_step_pct=100)
-    iso = {p.tile_px for p in iso_geometry.mip_projections_for(side, side, proj, 100, max_tile_px=render.finest_tile_pixels()).values()}
+    projs = iso_geometry.mip_projections_for(
+        side, side, proj, 100, max_tile_px=render.finest_tile_pixels(), native_tier_max=render.native_tier_max()
+    )
+    iso = {p.tile_px for p in projs.values()}
     flat = set(iso_geometry.mip_tile_px_candidates(base, render.finest_tile_pixels()).values())
     assert (NATIVE in iso) == (quality >= settings.GRAPHICS_QUALITY_DEFAULT)
-    assert NATIVE not in flat, "top-down Flat keeps the power-of-two ladder (Decision 5)"
+    assert (2 * NATIVE in iso) == (quality == settings.GRAPHICS_QUALITY_DEFAULT), "192 at Default only (TASK-601)"
+    assert NATIVE not in flat and 2 * NATIVE not in flat, "top-down Flat keeps the power-of-two ladder (Decision 5)"
 
 
 class _Ladder:
@@ -64,7 +87,11 @@ def test_mip_for_scale_decision_table() -> None:
     pow2 = _Ladder(iso_geometry.mip_tile_px_candidates(64, 128))
     tier64 = _Ladder(iso_geometry.mip_tile_px_candidates(64, 128, native_tier=True))
     tier32 = _Ladder(iso_geometry.mip_tile_px_candidates(32, 128, native_tier=True))
+    default64 = _Ladder(iso_geometry.mip_tile_px_candidates(64, 192, native_tier=True, native_tier_max=192))
     rows = [
+        # TASK-601: (1.5, 2.0] picks 128, (2.0, 3.0] picks 192, past that 192 still.
+        (default64, 1.5 + 1e-9, 128), (default64, 2.0, 128), (default64, 2.0 + 1e-9, 192), (default64, 3.0, 192),
+        (default64, 4.0, 192), (default64, 192 / 64 * (1 + 4e-16), 192),
         # (ladder, scale, expected tile_px)
         (pow2, 0.2, 16), (pow2, 0.25, 16), (pow2, 0.3, 32), (pow2, 1.0, 64), (pow2, 1.2, 128), (pow2, 9.0, 128),
         (tier64, 1.0, 64), (tier64, 1.0 + 1e-9, 96), (tier64, 1.5, 96), (tier64, 1.5 + 1e-9, 128),
@@ -90,18 +117,19 @@ def _texture(size: int = asset_source.LOADED_TEXTURE_SIZE, channels: int = 3) ->
     return rng.integers(0, 256, shape, dtype=np.uint8)
 
 
+@pytest.mark.parametrize("tile_px", [NATIVE, 2 * NATIVE])
 @pytest.mark.parametrize("channels", [3, 0], ids=["texture", "mask"])
-def test_a_padded_crop_equals_the_modulo_crop(channels) -> None:
+def test_a_padded_crop_equals_the_modulo_crop(channels, tile_px) -> None:
     tex = _texture(channels=channels)
     size = tex.shape[0]
     straddled = 0
     for x in range(size // 32):
         for y in (0, 5, 16):
-            ox, oy = render._crop_offset(x, y, size, NATIVE)
-            got = asset_source.crop_source(tex, NATIVE)[oy : oy + NATIVE, ox : ox + NATIVE]
-            rows, cols = (oy + np.arange(NATIVE)) % size, (ox + np.arange(NATIVE)) % size
+            ox, oy = render._crop_offset(x, y, size, tile_px)
+            got = asset_source.crop_source(tex, tile_px)[oy : oy + tile_px, ox : ox + tile_px]
+            rows, cols = (oy + np.arange(tile_px)) % size, (ox + np.arange(tile_px)) % size
             assert np.array_equal(got, tex[np.ix_(rows, cols)]), (x, y)
-            straddled += ox + NATIVE > size
+            straddled += ox + tile_px > size
     assert straddled, "no crop straddled the wrap -- vacuous"
 
 
@@ -109,6 +137,7 @@ def test_crop_source_pads_only_where_tile_px_does_not_divide() -> None:
     tex = _texture()
     for tile_px in (16, 32, 64, 128):
         assert asset_source.crop_source(tex, tile_px) is tex
+    assert asset_source.crop_source(tex, 2 * NATIVE).shape[:2] == (tex.shape[0] + 2 * NATIVE,) * 2
     padded = asset_source.crop_source(tex, NATIVE)
     assert padded.shape[:2] == (tex.shape[0] + NATIVE,) * 2
     assert not padded.flags.writeable
@@ -240,18 +269,21 @@ def test_zoom_to_native_lands_on_the_native_level_on_whole_device_px(monkeypatch
 @pytest.mark.parametrize("fit_multiple", [None, 30.0], ids=["real-ceiling", "ceiling-below-stop"])
 def test_the_wheel_lands_on_the_native_stop_from_both_directions(monkeypatch, fit_multiple) -> None:
     """A big map in a small window puts the fit-relative ceiling below the stop
-    (30x fit does on the test map); the ceiling is raised to the stop there."""
+    (30x fit does on the test map); the ceiling is raised to the finest
+    level's stop there (TASK-600), so the native stop stays reachable."""
+    from test_wheel_zoom import _notch_scale, _scale
+
     window = conftest.stepped_window(conftest.TEST_MAP_PATH, size=WINDOW_SIZE)
     try:
         view = window.map_view
         if fit_multiple is not None:
             monkeypatch.setattr(view, "MAX_ZOOM_MULTIPLE_OF_FIT", fit_multiple)
             view._capture_zoom_baseline()
-            at_stop = abs(view.transform().determinant()) ** 0.5 * view.native_zoom_factor()
+            at_stop = _scale(view) * view.native_zoom_factor()
+            finest = _scale(view) * view.level_zoom_factor(view._canvas_item._cache.mip_levels()[-1])
             assert fit_multiple * view._fit_baseline_scale() < at_stop, "ceiling not below the stop -- vacuous"
-            assert view._max_linear_scale == pytest.approx(at_stop, rel=1e-12)
-        # A ceiling at the stop leaves nothing past it to zoom out from.
-        for up in (True,) if fit_multiple else (True, False):
+            assert view._max_linear_scale == pytest.approx(finest, rel=1e-12)
+        for up in (True, False):
             # Start on the far side of the stop: fit for zooming in, two notches past it for zooming out.
             if not up:
                 view.zoom_to_native()
@@ -269,14 +301,10 @@ def test_the_wheel_lands_on_the_native_stop_from_both_directions(monkeypatch, fi
                 assert (before > 1.0) == (after > 1.0), f"{'in' if up else 'out'}: skipped the stop {before} -> {after}"
             assert landed, f"{'in' if up else 'out'}: never reached the stop"
             _assert_on_native_grid(view, 1.0)
-            # The next notch carries on by a whole step from the stop, or up to the ceiling.
-            at_stop = abs(view.transform().determinant()) ** 0.5
-            step = min(1.25, view._max_linear_scale / at_stop) if up else 0.8
+            # The next notch carries on to the stop's lattice neighbour (TASK-600).
+            want = _notch_scale(view, 1 if up else -1)
             _wheel(view, up)
-            if step > 1.0 + 1e-9 or not up:
-                assert view.native_zoom_factor() == pytest.approx(1 / step, rel=1e-9)
-            else:
-                assert _at_native(view), "a notch in past a ceiling at the stop moved"
+            assert _scale(view) == pytest.approx(want, rel=1e-9)
     finally:
         conftest.close_window(window)
 

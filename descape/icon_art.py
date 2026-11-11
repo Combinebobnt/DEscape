@@ -331,29 +331,16 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         *_figure(BLUE, 8.25, 0.5, 0.75),
         *(("ellipse", Role.INK, (x, y, 3, 3)) for y in (15.5, 20) for x in (2, 7.5, 13, 18.5)),
     ),
-    # A ring of stone walls, mortar in ink.
-    "tool-wall_rect": (
-        ("rect", GREY, (3, 4, 18, 4)),
-        ("rect", GREY, (3, 16, 18, 4)),
-        ("rect", GREY, (3, 8, 4, 8)),
-        ("rect", GREY, (17, 8, 4, 8)),
-        ("line", Role.INK, (9, 4, 9, 8, 1.1)),
-        ("line", Role.INK, (15, 4, 15, 8, 1.1)),
-        ("line", Role.INK, (6, 16, 6, 20, 1.1)),
-        ("line", Role.INK, (12, 16, 12, 20, 1.1)),
-        ("line", Role.INK, (18, 16, 18, 20, 1.1)),
-        ("line", Role.INK, (3, 12, 7, 12, 1.1)),
-        ("line", Role.INK, (17, 12, 21, 12, 1.1)),
+    # GH #365: a row of units along a diagonal guide line.
+    "tool-unit_line": (
+        ("line", Role.INK, (3.5, 20.5, 20.5, 3.5, 1.1)),
+        *(("rect", BLUE, (x, 19 - x, 5, 5)) for x in (1, 7, 13, 18.5)),
     ),
-    # A round ring of stone walls, mortar in ink.
-    "tool-wall_circle": (
-        ("ring", GREY, (4, 4, 16, 16, 4)),
-        ("line", Role.INK, (17.2, 15, 20.7, 17, 1.1)),
-        ("line", Role.INK, (12, 18, 12, 22, 1.1)),
-        ("line", Role.INK, (6.8, 15, 3.3, 17, 1.1)),
-        ("line", Role.INK, (6.8, 9, 3.3, 7, 1.1)),
-        ("line", Role.INK, (12, 6, 12, 2, 1.1)),
-        ("line", Role.INK, (17.2, 9, 20.7, 7, 1.1)),
+    # GH #365: units standing in a triangle, the Shape combo's newest member.
+    "tool-unit_shape": (
+        ("poly", GREY, (12, 4, 21, 20, 3, 20)),
+        *(("line", Role.INK, edge) for edge in ((12, 4, 21, 20, 1.1), (21, 20, 3, 20, 1.1), (3, 20, 12, 4, 1.1))),
+        *(("rect", BLUE, (x, y, 5, 5)) for x, y in ((9.5, 1.5), (0.5, 17.5), (18.5, 17.5), (5, 9.5), (14, 9.5), (9.5, 17.5))),
     ),
     # A blue figure, an arrow, a red figure: the owner changes.
     "tool-convert": (
@@ -550,21 +537,23 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("ellipse", Role.INK, (16.8, 15.8, 2.4, 2.4)),
         ("ellipse", Role.INK, (19.1, 18.1, 2.4, 2.4)),
     ),
+    # Flip West <-> North and West <-> South: a mirror line along a tile axis
+    # as Stepped draws it (down-right, up-right), a shape either side.
     "flip-horizontal": (
-        ("line", Role.INK_SOFT, (12, 2, 12, 4.5, 1.6)),
-        ("line", Role.INK_SOFT, (12, 8, 12, 10, 1.6)),
-        ("line", Role.INK_SOFT, (12, 14, 12, 16, 1.6)),
-        ("line", Role.INK_SOFT, (12, 19.5, 12, 22, 1.6)),
-        ("poly", Role.INK, (2, 5, 10, 12, 2, 19)),
-        ("poly", BLUE, (22, 5, 14, 12, 22, 19)),
+        ("line", Role.INK_SOFT, (2, 2, 4.5, 4.5, 1.6)),
+        ("line", Role.INK_SOFT, (8, 8, 10, 10, 1.6)),
+        ("line", Role.INK_SOFT, (14, 14, 16, 16, 1.6)),
+        ("line", Role.INK_SOFT, (19.5, 19.5, 22, 22, 1.6)),
+        ("poly", Role.INK, (15.5, 1.5, 22.5, 8.5, 14, 10)),
+        ("poly", BLUE, (1.5, 15.5, 8.5, 22.5, 10, 14)),
     ),
     "flip-vertical": (
-        ("line", Role.INK_SOFT, (2, 12, 4.5, 12, 1.6)),
-        ("line", Role.INK_SOFT, (8, 12, 10, 12, 1.6)),
-        ("line", Role.INK_SOFT, (14, 12, 16, 12, 1.6)),
-        ("line", Role.INK_SOFT, (19.5, 12, 22, 12, 1.6)),
-        ("poly", Role.INK, (5, 2, 19, 2, 12, 10)),
-        ("poly", BLUE, (5, 22, 12, 14, 19, 22)),
+        ("line", Role.INK_SOFT, (2, 22, 4.5, 19.5, 1.6)),
+        ("line", Role.INK_SOFT, (8, 16, 10, 14, 1.6)),
+        ("line", Role.INK_SOFT, (14, 10, 16, 8, 1.6)),
+        ("line", Role.INK_SOFT, (19.5, 4.5, 22, 2, 1.6)),
+        ("poly", Role.INK, (8.5, 1.5, 1.5, 8.5, 10, 10)),
+        ("poly", BLUE, (22.5, 15.5, 15.5, 22.5, 14, 14)),
     ),
     # Three tiles stacked one on another.
     "select-stack": (

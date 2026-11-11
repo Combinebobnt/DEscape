@@ -88,13 +88,13 @@ def _spy_reach_starts(window, monkeypatch) -> list:
     starts = []
     real = window._load_warmer.start
 
-    def spy(cache, mip, chunks, *, on_drained=None):
+    def spy(cache, mip, chunks, *, on_drained=None, **kwargs):
         if on_drained == window._on_reach_drained:
             starts.append((
                 window._reach_running, window._level_warmer.is_active, window._margin_warmer.is_active,
                 len(window._load_warm_queue), window._pending_level(),
             ))
-        return real(cache, mip, chunks, on_drained=on_drained)
+        return real(cache, mip, chunks, on_drained=on_drained, **kwargs)
 
     monkeypatch.setattr(window._load_warmer, "start", spy)
     return starts
@@ -513,9 +513,9 @@ def test_a_crossing_onto_a_cold_level_drops_the_reach_until_refine(monkeypatch) 
         starts = []
         real = window._load_warmer.start
 
-        def spy(c, mip, chunks, *, on_drained=None):
+        def spy(c, mip, chunks, *, on_drained=None, **kwargs):
             starts.append((mip, on_drained == window._on_reach_drained, window._pending_level()))
-            return real(c, mip, chunks, on_drained=on_drained)
+            return real(c, mip, chunks, on_drained=on_drained, **kwargs)
 
         monkeypatch.setattr(window._load_warmer, "start", spy)
         _set_device_scale(window, 1.48)  # level 1 near its top, so its reach grows past the ring
@@ -561,6 +561,39 @@ def test_a_pending_view_entry_preempts_the_reach_and_the_pending_level_holds_it_
         pending["on"] = False
         window._pump_load_warm()
         assert window._reach_running == entry
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.usefixtures("native_backend")
+def test_the_pending_levels_load_entry_defers_a_cold_chunk_during_input(monkeypatch) -> None:
+    """TASK-031.82 D3 (user, 2026-11-10): the pending level's load entry defers
+    like any other while input is live, so a roll click never waits behind
+    its cold first chunk; it runs once input goes quiet."""
+    from descape import level_warm
+
+    window = _settled(reach=False)
+    try:
+        assert isinstance(window._load_warmer, margin_warm.MarginWarmer)
+        monkeypatch.setattr(window, "_pending_level", lambda: 0)
+        monkeypatch.setattr(window, "_maybe_refine", lambda: None)
+        monkeypatch.setattr(window._cache, "level_warmed", lambda mip: False)
+        window._load_warmer.cancel()
+        window._load_warm_queue = [(0, [(0, 0), (1, 0)])]
+        window._pump_load_warm()
+        warmer = window._load_warmer
+        assert warmer.is_active and warmer.mip == 0, "vacuous: the pending entry did not start"
+        queued = list(warmer._queue)
+        before = margin_warm.deferrals
+        monkeypatch.setattr(level_warm, "_last_input", level_warm._now())
+        assert warmer.tick() is True
+        assert (margin_warm.deferrals, warmer._queue, warmer._in_flight) == (before + 1, queued, [])
+        monkeypatch.setattr(level_warm, "_last_input", None)
+        warmer.tick()
+        assert margin_warm.deferrals == before + 1
+        assert warmer._queue != queued or warmer._in_flight, "the quiet tick warmed nothing"
+        warmer.cancel()
     finally:
         conftest.close_window(window)
 

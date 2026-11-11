@@ -156,6 +156,18 @@ def test_a_garrisoned_bridge_and_a_const_without_a_foundation_lay_nothing() -> N
     assert placement_rules.laid_terrain(walls) == {}
 
 
+def test_a_moved_bridge_lays_its_deck_where_it_lands_and_a_group_without_one_keeps_the_memo() -> None:
+    """TASK-483: moved_laid_terrain() for a group move; None means no moved unit lays a foundation."""
+    bridge, villager = _unit(BRIDGE_MIDDLE, 10, 10.5), _unit(VILLAGER, 20.5, 20.5)
+    scenario = _scenario([[bridge, villager]], fill=WATER_SHALLOW)
+    moved = placement_rules.moved_laid_terrain(scenario, {id(bridge): (14, 10.5), id(villager): (24.5, 20.5)})
+    assert moved == {(x + 4, y): frozenset({28}) for x, y in BRIDGE_TILES}
+    assert placement_rules.moved_laid_terrain(scenario, {id(villager): (24.5, 20.5)}) is None
+    assert placement_rules.move_refusal(scenario, villager, 13.5, 10.5) is not None
+    assert placement_rules.move_refusal(scenario, villager, 13.5, 10.5, laid=moved) is None
+    assert placement_rules.move_refused(scenario, villager, 9.5, 10.5, laid=moved)
+
+
 # --- objects --------------------------------------------------------------------
 
 

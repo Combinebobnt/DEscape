@@ -22,7 +22,9 @@ A player starting in a later age already has every generic tech of an
 earlier one (measured 2026-10-16: Loom at a Feudal start, Bloodlines at
 Imperial, Chemistry only at Post-Imperial), so such a tech has no button
 (researched_at_start(), from the catalog's tech `age`). Unique techs were not
-measured and are left out.
+measured and are left out. Return of Rome was not measured either (its
+generator also keeps the age techs alone at a later start), so under the RoR
+dataset no tech counts as researched at start.
 """
 
 from __future__ import annotations
@@ -108,7 +110,7 @@ MISSING_START = "start"
 
 def researched_at_start(start_age: int | None, tech: int) -> bool:
     """Whether a player starting in `start_age` already has generic `tech`."""
-    if start_age is None:
+    if start_age is None or game_dataset.is_ror():
         return False
     row = command_buttons.catalog_row(tech, TECH)
     return row.get("civ", -1) == -1 and "age" in row and start_age > row["age"]

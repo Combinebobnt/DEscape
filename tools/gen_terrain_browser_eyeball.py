@@ -194,7 +194,8 @@ def _grid_report(window, label: str, expect_detail: bool) -> int:
     arrows = {True: 0, False: 0}
     for heading in grid.heading_items():
         rect = grid.visualItemRect(heading)
-        if heading.isHidden() or not rect.intersects(viewport):
+        # Wholly on screen: a heading clipped at the viewport's edge can show no text pixels at all.
+        if heading.isHidden() or not viewport.contains(rect):
             continue
         arrow = grid.arrow_rect(rect)
         text_left = arrow.right() + 1 + PAD

@@ -381,6 +381,10 @@ class _FakeCanvasItem:
     def __init__(self, cache):
         self._cache = cache
 
+    def deviceTransform(self, view_transform):
+        """An item at the scene origin, unscaled: the ceiling's level-stop raise reads it (TASK-600)."""
+        return view_transform
+
 
 def _bare_map_view():
     """A MapView with no source set, for the floor arithmetic alone. Its
@@ -544,8 +548,11 @@ def test_selected_mip_is_the_coarsest_at_fit_and_rises_with_zoom(monkeypatch) ->
             QApplication.processEvents()
             assert seen, f"no paint cycle after a {step}x scale step"
             scale, mip = seen[-1]
-            # Selection agrees with the derived rule, not just with itself.
-            expected = max(levels[0], min(levels[-1], math.ceil(math.log2(scale))))
+            # Selection agrees with the derived rule, not just with itself: the coarsest level whose
+            # tile_px covers the scale, else the finest (ranks, not log2, past the native tiers).
+            cache = item._cache
+            t0 = cache.mip_tile_px(0)
+            expected = next((lvl for lvl in levels if cache.mip_tile_px(lvl) >= scale * t0), levels[-1])
             assert mip == expected, f"at device scale {scale}: selected {mip}, rule says {expected}"
             selected.append(mip)
 

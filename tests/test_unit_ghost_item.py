@@ -30,12 +30,21 @@ def _refusal_color():
     return QColor(settings.get_default_overlay_color("unit_ghost_refused"))
 
 
+def _garrison_color():
+    from PyQt5.QtGui import QColor
+
+    from descape import settings
+
+    return QColor(settings.get_default_overlay_color("unit_ghost_garrison"))
+
+
 def _item():
     conftest.ensure_qapp()
     from descape.viewer_canvas import UnitGhostItem
 
     item = UnitGhostItem()
     item.set_refusal_color(_refusal_color())
+    item.set_garrison_color(_garrison_color())
     return item
 
 
@@ -90,7 +99,7 @@ def test_a_refused_sprite_pixel_blends_toward_the_refusal_colour_and_its_source_
         got.getRgb(), expected,
     )
     assert got.alpha() == 255
-    tinted = item._tint_cache[id(rgba)][1]
+    tinted = item._tint_cache[(id(rgba), color.rgb())][1]
     assert tinted[2, 2, 3] == 128 and tinted[0, 0, 3] == 0, "alpha is the source's"
 
     # The item draws the sprite cache's own array: the tint is a copy, never written into it.
@@ -114,6 +123,56 @@ def test_one_source_is_blended_once_across_content_updates_and_again_on_a_colour
     item.set_refusal_color(QColor(0, 0, 255))
     assert item._tinted[0] is not first
     assert _render(item, 8, 8).pixelColor(5, 5).blue() > _render(item, 8, 8).pixelColor(5, 5).red()
+
+
+def _near(got, color, tint: float, source: int = 255) -> bool:
+    expected = [_blend(source, c, tint) for c in (color.red(), color.green(), color.blue())]
+    return all(abs(g - e) <= 1 for g, e in zip((got.red(), got.green(), got.blue()), expected, strict=True))
+
+
+def test_a_garrison_sprite_blends_toward_the_garrison_colour_with_alpha_untouched() -> None:
+    """TASK-549: Place Unit over a host that takes the object."""
+    from descape.viewer_canvas import UnitGhostItem
+
+    rgba = np.zeros((4, 4, 4), dtype=np.uint8)
+    rgba[1, 1] = (255, 255, 255, 255)
+    rgba[2, 2] = (255, 255, 255, 128)
+    item = _item()
+    item.set_sprites([(_draw(rgba), 0.0, 0.0)], garrison=True)
+    assert item.garrison and not item.refused
+    got = _render(item, 4, 4).pixelColor(1, 1)
+    assert _near(got, _garrison_color(), UnitGhostItem.REFUSED_TINT), got.getRgb()
+    assert got.alpha() == 255
+    tinted = item._tint_cache[(id(rgba), _garrison_color().rgb())][1]
+    assert tinted[2, 2, 3] == 128 and tinted[0, 0, 3] == 0, "alpha is the source's"
+
+
+def test_one_source_shown_refused_then_garrison_gets_each_tint() -> None:
+    """The cache keys on the colour too, so one source tinted both ways never collides."""
+    from descape.viewer_canvas import UnitGhostItem
+
+    rgba = np.full((3, 3, 4), 255, dtype=np.uint8)
+    item = _item()
+    tint = UnitGhostItem.REFUSED_TINT
+    item.set_sprites([(_draw(rgba), 0.0, 0.0)], refused=True)
+    assert _near(_render(item, 3, 3).pixelColor(1, 1), _refusal_color(), tint)
+    item.set_sprites([(_draw(rgba), 0.0, 0.0)], garrison=True)
+    assert _near(_render(item, 3, 3).pixelColor(1, 1), _garrison_color(), tint)
+    item.set_sprites([(_draw(rgba), 0.0, 0.0)], refused=True)
+    assert _near(_render(item, 3, 3).pixelColor(1, 1), _refusal_color(), tint)
+
+
+def test_set_garrison_color_retints_a_garrison_sprite() -> None:
+    from PyQt5.QtGui import QColor
+
+    rgba = np.full((3, 3, 4), 255, dtype=np.uint8)
+    item = _item()
+    item.set_sprites([(_draw(rgba), 0.0, 0.0)], garrison=True)
+    first = item._tinted[0]
+    item.set_garrison_color(QColor(0, 0, 255))
+    assert item._tinted[0] is not first
+    pixel = _render(item, 3, 3).pixelColor(1, 1)
+    assert pixel.blue() > pixel.red()
 
 
 # --- marks -------------------------------------------------------------------------
@@ -184,3 +243,21 @@ def test_the_hatch_keeps_its_device_pixel_period_at_every_zoom() -> None:
         periods.add(tuple(b - a for a, b in pairwise(row[::2])))
     (gaps,) = {gaps[:3] for gaps in periods}
     assert set(gaps) == {8}
+
+
+def test_a_garrison_mark_is_filled_with_the_garrison_colour_and_not_hatched() -> None:
+    """TASK-549: the hatch stays the refusal cue, so red and yellow also differ in shape."""
+    from PyQt5.QtGui import QTransform
+
+    owner = (40, 80, 200)
+    plain, inside = _item(), _item()
+    plain.set_mark(_SQUARE, owner)
+    inside.set_mark(_SQUARE, owner, garrison=True)
+    assert inside.garrison and not inside.refused
+    assert not plain.garrison
+    assert {brush.color().getRgb()[:3] for _p, brush, _pen in inside._marks} == {owner}
+    pixels = _pixels(_render(inside, 44, 44, QTransform.fromScale(4.0, 4.0)))
+    fill = _garrison_color().getRgb()
+    assert pixels.count(fill) > 0.8 * 40 * 40, "filled in the garrison colour"
+    assert _hatch_ink() not in pixels
+    assert (*owner, 255) not in pixels

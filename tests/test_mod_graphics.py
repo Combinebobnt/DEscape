@@ -6,6 +6,7 @@ corpus byte-identity test, which needs this machine's real profile."""
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,7 @@ import pytest
 from test_smx_decoder import _PROFILE, _REQUIRE, DRAW, _file, _frame
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- fixture
 
-from descape import asset_source, mod_graphics, render, slp_decoder, unit_sprites
+from descape import asset_source, dat_derive, game_dataset, mod_graphics, render, slp_decoder, unit_sprites
 from descape.scenario_io import load_map_and_units
 
 import conftest
@@ -406,6 +407,237 @@ def test_mod_reach_widens_sprite_reach(tmp_path, monkeypatch):
     assert unit_sprites.sprite_reach()[0] == unit_sprites.MAX_SPRITE_REACH_LEFT
 
 
+# -- a data mod's own art (GH #272) ----------------------------------------------
+
+ART_MOD = "subscribed//517490_Art"
+MOD_STEM = "swgb_new_x1"  # a data mod's own stem: the install has no file of this name
+
+
+def _stock_tables(tmp_path: Path) -> game_dataset.DataModTables:
+    folder = tmp_path / "tables"
+    folder.mkdir()
+    for name in dat_derive.TABLE_NAMES:
+        shutil.copy(Path(game_dataset.__file__).resolve().parent / name, folder / name)
+    return game_dataset.DataModTables("gh272", folder, tmp_path / "data_mod", "GH272")
+
+
+def _numbered(first: int, frames: int, width: int = 2) -> bytes:
+    """A .smx whose frame k paints palette index first + k, so (first + k, 0, 0) under _install_with()."""
+    return _file(*[_frame([(0, [(DRAW, [(first + k, 0)] * width)])], width=width) for k in range(frames)])
+
+
+def _data_mod_art(tmp_path, monkeypatch, frames: int = 3, *, body: bytes | None = None, x2: bytes | None = None,
+                  data_mod: bool = True) -> None:
+    """An install without MOD_STEM, an enabled art mod shipping it (frame k
+    paints index 10 + k unless `body` is given), and a data mod in effect.
+    Mod Art still off."""
+    _install_with(tmp_path, monkeypatch, "n_install_only_x1", frames=1)
+    installed = unit_sprites.load_sld
+    monkeypatch.setattr(
+        unit_sprites, "load_sld",
+        lambda path, **kw: installed(path, **kw) if Path(str(path)[:-4] + ".smx").is_file() else None,
+    )
+    files = {f"drs/graphics/{MOD_STEM}.smx": _numbered(10, frames) if body is None else body}
+    if x2 is not None:
+        files[f"drs/graphics/{MOD_STEM[:-3]}_x2.smx"] = x2
+    _mod(tmp_path / "profile", "517490_Art", files)
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+    if data_mod:
+        game_dataset.set_data_mod(_stock_tables(tmp_path))
+    unit_sprites.clear_caches()
+
+
+def _mod_art_on() -> None:
+    mod_graphics.set_enabled(True)
+    unit_sprites.clear_caches()
+
+
+def test_a_data_mods_own_stem_draws_from_its_art_mod(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, frames=3)
+    assert unit_sprites._native_frame(MOD_STEM, 0) is None  # Mod Art off
+    _mod_art_on()
+    assert unit_sprites.sld_frame_count(MOD_STEM) is None, "write paths must still see no install file"
+    assert unit_sprites.drawn_frame_count(MOD_STEM) == 3
+    assert [unit_sprites._native_frame(MOD_STEM, k)[0][0, 0, 0] for k in range(3)] == [10, 11, 12]
+    assert unit_sprites._native_frame(MOD_STEM, 3) is None  # range-checked against the mod's own file
+    entry = {"file_name": MOD_STEM, "angle_count": 1, "mirroring_mode": 0, "frame_count": 1}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {GRASS: entry})
+    unit_sprites.clear_caches()
+    draw = unit_sprites.sprite_for(GRASS, 0.0, 0, 32)
+    assert draw is not None and (draw.rgba[draw.rgba[..., 3] > 0][:, 0] == 10).all()
+
+
+def test_switching_to_no_data_mod_drops_its_drawn_stem(tmp_path, monkeypatch):
+    """No clear_caches() after the switch: game_dataset's own switch drops what drew it."""
+    _data_mod_art(tmp_path, monkeypatch)
+    _mod_art_on()
+    entry = {"file_name": MOD_STEM, "angle_count": 1, "mirroring_mode": 0, "frame_count": 1}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {GRASS: entry})
+    unit_sprites.clear_caches()
+    assert unit_sprites._native_frame(MOD_STEM, 0) is not None
+    assert unit_sprites.sprite_for(GRASS, 0.0, 0, 32) is not None
+    game_dataset.set_data_mod(None)
+    assert unit_sprites._native_frame(MOD_STEM, 0) is None
+    assert unit_sprites.sprite_for(GRASS, 0.0, 0, 32) is None
+
+
+@pytest.mark.parametrize("why", ["no data mod", "Mod Art off", "opted out"])
+def test_a_stem_the_install_lacks_stays_undrawn_otherwise(tmp_path, monkeypatch, why):
+    _data_mod_art(tmp_path, monkeypatch, data_mod=why != "no data mod")
+    if why != "Mod Art off":
+        _mod_art_on()
+    if why == "opted out":
+        mod_graphics.set_excluded({ART_MOD})
+        unit_sprites.clear_caches()
+    assert unit_sprites.drawn_frame_count(MOD_STEM) is None
+    assert unit_sprites._native_frame(MOD_STEM, 0) is None
+
+
+def test_an_unreadable_data_mod_frame_is_a_miss_not_the_install(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, body=_file(_frame([(0, [(DRAW, [(9, 0)] * 2)])], width=2, palette=99)))
+    _mod_art_on()
+    assert unit_sprites.drawn_frame_count(MOD_STEM) == 1
+    assert unit_sprites._native_frame(MOD_STEM, 0) is None  # palette 99 is not loaded: logged, no raise
+
+
+def test_an_install_stem_keeps_the_install_count_under_a_data_mod(tmp_path, monkeypatch):
+    stem = "n_test_x1"
+    install = _install_with(tmp_path, monkeypatch, stem, frames=8)
+    (install / unit_sprites.GRAPHICS_SUBPATH / f"{stem}.sld").write_bytes(b"")  # listed; load_sld is the fake
+    _mod(tmp_path / "profile", "1_Mod", {f"drs/graphics/{stem}.smx": _numbered(10, 3, width=1)})
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+    game_dataset.set_data_mod(_stock_tables(tmp_path))
+    _mod_art_on()
+    assert unit_sprites.drawn_frame_count(stem) == unit_sprites.sld_frame_count(stem) == 8
+    assert unit_sprites._native_frame(stem, 2)[0][0, 0, 0] == 255  # 3 frames map to neither rule: the install's
+
+
+@pytest.mark.parametrize("with_x2", [False, True])
+def test_a_data_mods_own_stem_at_enhanced(tmp_path, monkeypatch, with_x2):
+    _data_mod_art(tmp_path, monkeypatch, frames=2, x2=_numbered(20, 2, width=4) if with_x2 else None)
+    _mod_art_on()
+    native = unit_sprites._x2_native_frame(MOD_STEM, 1)
+    if with_x2:
+        assert native[0].shape[1] == 4 and native[0][0, 0, 0] == 21
+    else:
+        assert native is None, "no _x2 in the mod: x1 draws, enlarged"
+        assert unit_sprites._native_frame(MOD_STEM, 1)[0][0, 0, 0] == 11
+
+
+def test_a_data_mods_own_stem_widens_sprite_reach(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, body=_wide_mod_frame(1000))
+    monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [(MOD_STEM, 0, 0)])
+    stock = (unit_sprites.MAX_SPRITE_REACH_LEFT, unit_sprites.MAX_SPRITE_REACH_RIGHT)
+    mod_graphics.set_enabled(True)
+    tables = game_dataset.data_mod()
+    game_dataset.set_data_mod(None)
+    assert unit_sprites.sprite_reach()[:2] == stock, "no data mod: the stem is not drawn, so it reaches nothing"
+    game_dataset.set_data_mod(tables)
+    assert unit_sprites.sprite_reach()[:2] == (500, 500)
+
+
+def test_a_data_mod_skips_opening_install_files_the_folder_lacks(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, data_mod=False)
+    opened = []
+    real = unit_sprites.load_sld
+    monkeypatch.setattr(unit_sprites, "load_sld", lambda path, **kw: (opened.append(Path(path).name), real(path, **kw))[1])
+    _mod_art_on()
+    unit_sprites.drawn_frame_count(MOD_STEM)
+    assert opened == [f"{MOD_STEM}.sld"], "with no data mod the install is asked, as before"
+    game_dataset.set_data_mod(_stock_tables(tmp_path))
+    opened.clear()
+    assert unit_sprites.drawn_frame_count(MOD_STEM) == 3
+    assert opened == [], "one listing of the install's folder, not a failed open per stem"
+
+
+def test_mod_folders_list_without_a_stat_per_file(tmp_path, monkeypatch):
+    common = _mod(tmp_path, "1_Art", {"drs/graphics/b_x1.smx": b"b", "drs/graphics/a_x1.smx": b"a"})
+    (common / "drs" / "graphics" / "sub.smx").mkdir()
+    monkeypatch.setattr(Path, "is_file", lambda self: pytest.fail("stat per file: 7 ms each on WSL's /mnt/c"))
+    assert [p.name for p in mod_graphics._listing(common / "drs" / "graphics")] == ["a_x1.smx", "b_x1.smx"]
+
+
+def _gated_walk(monkeypatch):
+    """Holds the background walk's mod file reads until the returned event is set."""
+    import threading
+
+    gate = threading.Event()
+    real = unit_sprites.load_smx
+    monkeypatch.setattr(unit_sprites, "load_smx", lambda path, **kw: (gate.wait(10), real(path, **kw))[1])
+    unit_sprites.set_background_reach(True)
+    return gate
+
+
+def _join_walk() -> None:
+    if unit_sprites._reach_walk is not None:
+        unit_sprites._reach_walk[1].join(10)
+
+
+def test_a_background_reach_walk_answers_the_whole_map_until_it_lands(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, body=_wide_mod_frame(1000))
+    monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [(MOD_STEM, 0, 0)])
+    gate = _gated_walk(monkeypatch)
+    mod_graphics.set_enabled(True)
+    pending = unit_sprites.PENDING_REACH
+    assert unit_sprites.sprite_reach() == (pending,) * 4 and unit_sprites.reach_pending()
+    gate.set()
+    _join_walk()
+    assert not unit_sprites.reach_pending()
+    assert unit_sprites.sprite_reach()[:2] == (500, 500)
+
+
+def test_a_background_walk_begun_before_a_change_never_lands_after_it(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, body=_wide_mod_frame(1000))
+    monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [(MOD_STEM, 0, 0)])
+    gate = _gated_walk(monkeypatch)
+    mod_graphics.set_enabled(True)
+    unit_sprites.sprite_reach()
+    first = unit_sprites._reach_walk
+    unit_sprites.clear_caches()  # an install change, say: the walk in flight is now stale
+    gate.set()
+    first[1].join(10)
+    assert unit_sprites._mod_reach is None
+    assert unit_sprites.sprite_reach()[0] == unit_sprites.PENDING_REACH, "the new state walks again"
+    _join_walk()
+
+
+def test_a_failed_background_walk_walks_in_place_instead_of_respawning(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, body=_wide_mod_frame(1000))
+    monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [(MOD_STEM, 0, 0)])
+    unit_sprites.set_background_reach(True)
+    real = unit_sprites._reach_over
+
+    def reach_over(*args, stop=None, **kwargs):
+        if stop is not None:  # only the worker passes stop=
+            raise OSError("bad smx")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(unit_sprites, "_reach_over", reach_over)
+    mod_graphics.set_enabled(True)
+    assert unit_sprites.sprite_reach()[0] == unit_sprites.PENDING_REACH
+    _join_walk()
+    assert unit_sprites.sprite_reach()[:2] == (500, 500), "the failed key walks synchronously"
+    assert unit_sprites._reach_walk is None, "no second worker"
+
+
+def test_a_pending_reach_repaints_the_whole_map(monkeypatch):
+    import test_sprite_edit_bbox as bbox
+
+    monkeypatch.setattr(unit_sprites, "_active_mod_reach", lambda: (unit_sprites.PENDING_REACH,) * 4)
+    scenario, dirty, elevations, proj = bbox._edited_scenario()
+    rect = render.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
+    assert rect == (0, 0, *render._canvas_pixel_dims(proj))
+
+
+def test_variant_dispatch_counts_a_data_mods_own_frames(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, frames=6)
+    monkeypatch.setattr(unit_sprites, "rotation_is_variant", lambda const: True)
+    entry = {"file_name": MOD_STEM, "angle_count": 4, "frame_count": 1}
+    assert unit_sprites._frame_for(GRASS, entry, 5.0) == 1  # nothing draws it: angle_count's wrap
+    _mod_art_on()
+    assert unit_sprites._frame_for(GRASS, entry, 5.0) == 5  # the mod file's 6 frames bound the literal
+
+
 def test_mod_terrain_texture_overrides_and_reverts(tmp_path, monkeypatch):
     """A mod's same-named texture wins while on; turning it off through
     clear_art_caches() serves the install's again, cached array included."""
@@ -460,6 +692,102 @@ def test_an_unreadable_mod_texture_draws_the_install_one(tmp_path, monkeypatch):
         assert asset_source.get_terrain_thumbnail(tid)[0, 0].tolist() == [200, 0, 0]
     finally:
         asset_source.set_install_path_override(None)
+
+
+def test_an_unreadable_return_of_rome_install_texture_still_raises(tmp_path, monkeypatch):
+    """GH #272 returns None for a mod texture the install lacks; under RoR the
+    install's copy is the RoR root's, so its own decode error must not pass for that."""
+    install = tmp_path / "install"
+    monkeypatch.setattr(asset_source, "_override_path", None)
+    asset_source.set_install_path_override(install)
+
+    def decode(path):
+        raise OSError("corrupt")
+
+    try:
+        with game_dataset.activated(game_dataset.ROR):
+            own = game_dataset.ror_root(install) / asset_source.TERRAIN_TEXTURE_SUBPATH / "ror_only.dds"
+            own.parent.mkdir(parents=True)
+            own.write_bytes(b"DDS ")
+            with pytest.raises(OSError):
+                asset_source._decode_with_install_fallback(own, decode)
+    finally:
+        asset_source.set_install_path_override(None)
+
+
+def _data_mod_texture(tmp_path, monkeypatch, texture: bytes | None) -> int:
+    """GH #272: a data mod whose terrain 140 names a texture the install lacks,
+    an art mod shipping `texture` under that name (None: nothing ships it),
+    and Mod Art on. Returns the terrain id."""
+    from descape import asset_source
+
+    tables = _stock_tables(tmp_path)
+    path = tables.tables_dir / "terrain_texture_map.json"
+    data = json.loads(path.read_text())
+    data["mapping"]["140"] = "swgb_metal.dds"
+    path.write_text(json.dumps(data))
+    install = tmp_path / "install"
+    (install / asset_source.TERRAIN_TEXTURE_SUBPATH).mkdir(parents=True)
+    files = {} if texture is None else {"terrain/textures/2x/swgb_metal.dds": texture}
+    _mod(tmp_path / "profile", "517490_Art", files or {"drs/graphics/unused_x1.smx": b"u"})
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+    monkeypatch.setattr(asset_source, "_override_path", None)
+    asset_source.set_install_path_override(install)
+    game_dataset.set_data_mod(tables)
+    mod_graphics.set_enabled(True)
+    asset_source.clear_art_caches()
+    return 140
+
+
+def test_a_data_mods_own_texture_draws_from_its_art_mod(tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (0, 0, 200)).save(buffer, format="DDS")
+    tid = _data_mod_texture(tmp_path, monkeypatch, buffer.getvalue())
+    assert "517490_Art" in str(asset_source.get_terrain_texture_path(tid))
+    assert asset_source.get_terrain_texture_array(tid)[0, 0].tolist() == [0, 0, 200]
+    assert asset_source.terrain_texture_at(tid, 64)[0, 0].tolist() == [0, 0, 200]
+    mod_graphics.set_enabled(False)
+    asset_source.clear_art_caches()
+    assert asset_source.get_terrain_texture_path(tid) is None, "Mod Art off: its flat colour, as before"
+
+
+def test_a_data_mods_texture_nothing_ships_draws_its_colour(tmp_path, monkeypatch):
+    tid = _data_mod_texture(tmp_path, monkeypatch, None)
+    assert asset_source.get_terrain_texture_path(tid) is None
+    assert asset_source.get_terrain_texture_array(tid) is None
+
+
+def test_an_unreadable_data_mod_texture_draws_its_colour_without_raising(tmp_path, monkeypatch):
+    tid = _data_mod_texture(tmp_path, monkeypatch, b"DDS \x00garbage")
+    assert asset_source.get_terrain_texture_path(tid) is not None
+    assert asset_source.get_terrain_texture_array(tid) is None
+    assert asset_source.terrain_texture_at(tid, 64) is None
+    assert asset_source.get_terrain_thumbnail(tid) is None
+    assert asset_source.get_terrain_average_color(tid) is None
+
+
+def test_undrawable_stems_are_what_neither_the_install_nor_a_mod_provides(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch)
+    (tmp_path / "install" / unit_sprites.GRAPHICS_SUBPATH / "N_Install_Only_x1.sld").write_bytes(b"")  # any case
+    names = [MOD_STEM, "n_install_only_x1", "trainsiege1-c1_x1"]
+    monkeypatch.setattr(unit_sprites, "referenced_entries", lambda: [(name, 0, 0) for name in names])
+    assert unit_sprites.undrawable_stems() == [MOD_STEM, "trainsiege1-c1_x1"], "Mod Art off"
+    _mod_art_on()
+    assert unit_sprites.undrawable_stems() == ["trainsiege1-c1_x1"]
+
+
+def test_undrawable_textures_are_what_neither_the_install_nor_a_mod_provides(tmp_path, monkeypatch):
+    tid = _data_mod_texture(tmp_path, monkeypatch, b"DDS ")
+    (tmp_path / "install" / asset_source.TERRAIN_TEXTURE_SUBPATH / "G_GRS.dds").write_bytes(b"")
+    table = {0: "g_grs.dds", 1: "nothing.dds", tid: "swgb_metal.dds"}
+    monkeypatch.setattr(asset_source, "_terrain_texture_map", lambda: table)
+    assert asset_source.undrawable_terrain_textures() == ["nothing.dds"]
+    mod_graphics.set_enabled(False)
+    assert asset_source.undrawable_terrain_textures() == ["nothing.dds", "swgb_metal.dds"]
 
 
 def _wide_mod_frame(width: int) -> bytes:

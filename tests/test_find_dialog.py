@@ -307,6 +307,7 @@ def test_a_replaced_host_carries_its_garrison_to_the_new_anchor() -> None:
         assert house.unit_const == 82
         assert (villager.x, villager.y) == (house.x, house.y)
         assert villager.garrisoned_in_id == _REF_HOUSE
+        assert "reshaping" not in window.status_log.toPlainText().splitlines()[-1]
     finally:
         _close(window)
 
@@ -333,13 +334,17 @@ _STONE_GATE = 64  # 4 along x: a wall replaced by it covers its own tile and the
 _GATE_NOTE = "Walls under each new gate are removed."
 
 
-def _wall_row(window, x0: int, x1: int, y: int, player: int = 1) -> dict[int, object]:
-    """{tile x: wall} for a Stone Wall run on x0..x1 along `y`, each storing its run shape."""
+def _wall_row(
+    window, x0: int, x1: int, y: int, player: int = 1, const: int = _STONE_WALL, skip=()
+) -> dict[int, object]:
+    """{tile x: wall} for a `const` wall run on x0..x1 along `y`, each storing
+    its run shape: 2 at either end, 0 inside. `skip` tiles get no wall."""
     model = window._ensure_unit_edits()
     with window._unit_edit(model, "Add", [player]):
         return {
-            x: model.add(player, _STONE_WALL, x + 0.5, y + 0.5, rotation=0.0 if x0 < x < x1 else 2.0)
+            x: model.add(player, const, x + 0.5, y + 0.5, rotation=0.0 if x0 < x < x1 else 2.0)
             for x in range(x0, x1 + 1)
+            if x not in skip
         }
 
 
@@ -367,7 +372,8 @@ def test_a_mid_run_wall_replaced_by_a_gate_clears_the_three_walls_it_now_covers(
 
         tab.replace_button.click()
 
-        assert boxes.confirmed[-1][1].startswith(f"Replace 1 objects with {_dialog_name(_STONE_GATE)}? Ctrl+Z undoes. {_GATE_NOTE}")
+        expected = f"Replace 1 objects with {_dialog_name(_STONE_GATE)}? Edit > Undo reverts it. {_GATE_NOTE}"
+        assert boxes.confirmed[-1][1].startswith(expected)
         assert window.edit_history.cursor == before + 1
         assert (wall.unit_const, wall.x, wall.y) == (_STONE_GATE, 65.0, 60.5)
         assert _walls_at(window, {(x, 60) for x in range(63, 67)}) == []
@@ -428,7 +434,9 @@ def test_a_refused_row_under_a_new_gates_footprint_is_not_removed() -> None:
         _close(window)
 
 
-def test_a_replace_into_a_non_gate_touches_no_wall_and_its_confirm_says_nothing_of_walls() -> None:
+def test_a_replace_into_a_non_gate_removes_no_wall_reshapes_those_beside_it_and_its_confirm_says_nothing_of_walls() -> None:
+    """TASK-584: the Barracks is no connector, so walls 62 and 64 lose their
+    neighbour at 63 and become run ends. No wall is removed."""
     window, boxes = _window()
     try:
         row = _wall_row(window, 60, 70, 60)
@@ -445,6 +453,131 @@ def test_a_replace_into_a_non_gate_touches_no_wall_and_its_confirm_says_nothing_
         assert row[63].unit_const == _BARRACKS
         assert sum(len(units) for units in window.scenario.unit_manager.units) == count
         assert len(_walls_at(window, {(x, 60) for x in range(60, 71)})) == 10
+        assert (row[62].rotation, row[64].rotation) == (2.0, 2.0)
+        assert window.status_log.toPlainText().splitlines()[-1].endswith("Replaced 1, reshaping 2 adjacent")
+    finally:
+        _close(window)
+
+
+# -- TASK-584: Replace into or out of a wall or gate reshapes the walls beside it ----
+
+_OUTPOST = 598  # 1x1, player-ownable, not a connector
+_PALISADE = 72
+_PALISADE_GATE = 789  # 4 along x, like _STONE_GATE
+
+
+def _add_unit(window, const: int, x: float, y: float, player: int = 1, rotation: float = 0.0):
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [player]):
+        return model.add(player, const, x, y, rotation=rotation)
+
+
+def _wall_column(window, x: int, y0: int, y1: int, skip=(), player: int = 1) -> dict[int, object]:
+    """{tile y: wall} for a Stone Wall run along y on x, `skip` left empty,
+    each wall storing the shape its neighbours give it (1 inside, 2 at an end)."""
+    tiles = [y for y in range(y0, y1 + 1) if y not in skip]
+    model = window._ensure_unit_edits()
+    with window._unit_edit(model, "Add", [player]):
+        return {
+            y: model.add(
+                player, _STONE_WALL, x + 0.5, y + 0.5, rotation=1.0 if y - 1 in tiles and y + 1 in tiles else 2.0
+            )
+            for y in tiles
+        }
+
+
+def test_a_mid_run_wall_replaced_by_an_outpost_ends_both_neighbours_in_one_undo_step() -> None:
+    window, _boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60)
+        wall = row[65]
+        dialog = _dialog(window)
+        tab = dialog.objects_tab
+        tab.run_find()
+        _check_only(dialog, {wall.reference_id})
+        tab.replace_edit.set_value(_OUTPOST)
+        before = window.edit_history.cursor
+
+        tab.replace_button.click()
+
+        assert window.edit_history.cursor == before + 1
+        assert wall.unit_const == _OUTPOST
+        assert (row[64].rotation, row[66].rotation) == (2.0, 2.0)
+        assert window.status_log.toPlainText().splitlines()[-1] == "Replaced 1, reshaping 2 adjacent"
+        window.undo()
+        assert (wall.unit_const, row[64].rotation, row[66].rotation) == (_STONE_WALL, 0.0, 0.0)
+        window.redo()
+        assert (wall.unit_const, row[64].rotation, row[66].rotation) == (_OUTPOST, 2.0, 2.0)
+    finally:
+        _close(window)
+
+
+def test_an_outpost_in_a_y_runs_gap_replaced_by_a_wall_joins_the_run() -> None:
+    """A y run on purpose: replaced_rotation() writes 0.0, an x run's shape,
+    so only the written shape makes the new wall a 1. The status counts the
+    two ends, not the replaced unit."""
+    window, _boxes = _window()
+    try:
+        column = _wall_column(window, 60, 55, 61, skip={58})
+        outpost = _add_unit(window, _OUTPOST, 60.5, 58.5)
+        replaced, refused = window._find_replace_keys([(1, outpost.reference_id)], _STONE_WALL)
+        assert (replaced, refused) == (1, {})
+        assert (outpost.unit_const, outpost.rotation) == (_STONE_WALL, 1.0)
+        assert (column[57].rotation, column[59].rotation) == (1.0, 1.0)
+        assert window.status_log.toPlainText().splitlines()[-1].endswith("Replaced 1, reshaping 2 adjacent")
+    finally:
+        _close(window)
+
+
+def test_a_stone_gate_in_a_run_replaced_by_a_wall_ends_the_far_wall() -> None:
+    """The gate shrinks to its low tile 63, so 64..66 stop being connectors:
+    the wall at 67 becomes a run end, and the new wall, with only 62 beside
+    it, a tower."""
+    window, _boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60, skip={63, 64, 65, 66})
+        for x in (62, 67):
+            row[x].rotation = 0.0  # the gate is their neighbour
+        gate = _add_unit(window, _STONE_GATE, 65.0, 60.5)
+        window._find_replace_keys([(1, gate.reference_id)], _STONE_WALL)
+        assert (gate.unit_const, int(gate.x), gate.rotation) == (_STONE_WALL, 63, 2.0)
+        assert (row[62].rotation, row[67].rotation) == (0.0, 2.0)
+    finally:
+        _close(window)
+
+
+def test_a_palisade_run_and_its_gate_replaced_by_stone_wall_ends_the_wall_past_the_gate() -> None:
+    """Find's "Walls and gates" batch: every row -> Stone Wall. The palisade
+    just past the gate's old high end is a wall -> wall candidate, and it
+    still becomes a run end."""
+    window, _boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60, const=_PALISADE, skip={63, 64, 65, 66})
+        for x in (62, 67):
+            row[x].rotation = 0.0
+        gate = _add_unit(window, _PALISADE_GATE, 65.0, 60.5)
+        keys = [(1, u.reference_id) for u in (gate, *row.values())]
+        replaced, refused = window._find_replace_keys(keys, _STONE_WALL)
+        assert (replaced, refused) == (len(keys), {})
+        assert all(u.unit_const == _STONE_WALL for u in (gate, *row.values()))
+        assert (row[67].rotation, gate.rotation, row[62].rotation, row[69].rotation) == (2.0, 2.0, 0.0, 0.0)
+    finally:
+        _close(window)
+
+
+def test_a_refused_wall_beside_a_replaced_one_stays_a_wall_and_a_neighbour() -> None:
+    """Wall 64 shares its reference_id with wall 69, so the pre-flight refuses
+    it. It keeps its const and counts as a neighbour: 63 leaving makes it a
+    run end, and 65 beside it keeps its run shape."""
+    window, _boxes = _window()
+    try:
+        row = _wall_row(window, 60, 70, 60)
+        row[64].reference_id = row[69].reference_id
+        keys = [(1, row[63].reference_id), (1, row[64].reference_id)]
+        replaced, refused = window._find_replace_keys(keys, _OUTPOST)
+        assert replaced == 1 and (1, row[64].reference_id) in refused
+        assert (row[63].unit_const, row[64].unit_const) == (_OUTPOST, _STONE_WALL)
+        assert (row[62].rotation, row[64].rotation, row[65].rotation) == (2.0, 2.0, 0.0)
     finally:
         _close(window)
 

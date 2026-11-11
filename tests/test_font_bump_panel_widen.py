@@ -121,3 +121,31 @@ def test_raising_the_ui_font_to_max_raises_terrains_drag_floor_and_it_still_fits
     finally:
         dialog.close()
         conftest.close_window(window)
+
+
+def test_raising_the_ui_font_to_max_raises_triggers_drag_floor_and_it_still_fits() -> None:
+    """TASK-560. Pass conditions, after the Appearance spin box is set to UI_FONT_SIZE_MAX and
+    applied while in Triggers mode, with no mode switch: Triggers' drag floor is wider than at the
+    pinned test font, and at it test_trigger_panel.check_triggers_fit_their_drag_floor's
+    conditions all hold."""
+    from PyQt5.QtWidgets import QApplication
+    from test_trigger_panel import _triggers_window, check_triggers_fit_their_drag_floor
+
+    from descape.viewer import SettingsDialog
+
+    window = _triggers_window()
+    dialog = SettingsDialog(window)
+    try:
+        base_floor = window.trigger_panel.minimumSizeHint().width()
+        dialog.ui_font_size_spin.setValue(settings.UI_FONT_SIZE_MAX)
+        dialog._ui_font_apply_timer.stop()
+        dialog._apply_ui_font()
+        QApplication.processEvents()
+        assert QApplication.font().pointSize() == settings.UI_FONT_SIZE_MAX
+
+        floor = check_triggers_fit_their_drag_floor(window)  # already in Triggers: no mode switch
+        assert floor > base_floor, f"the bigger font left the floor at {floor} px (was {base_floor} px)"
+    finally:
+        dialog.close()
+        window.edit_history.mark_saved()
+        conftest.close_window(window)

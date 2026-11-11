@@ -17,7 +17,9 @@ from pathlib import Path
 
 import pytest
 
+from descape import games
 from descape.content_roots import AOE2DE_STEAM_APP_ID
+from testkit import fake_game
 from tools import regen_game_data as regen
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -480,6 +482,35 @@ def test_all_without_a_ror_dat_says_so_and_looks_at_aoe2_only(world):
     assert not (world.tables / "ror").exists()
     assert world.run("--dataset", "ror") == regen.EXIT_CANNOT
     assert world.lines == [f"not found: {world.install / regen.ROR_DAT_SUBPATH}"]
+
+
+def test_a_registered_game_gets_its_own_dataset_tables_and_stamp_section(world):
+    """The datasets are descape/games.py's registry, so a third game needs no edit here."""
+    game = fake_game.fake(games.AOE2.tables_dir / "fake")
+    with fake_game.registered(game):
+        fake_dat = world.install / regen.dat_subpath(game)
+        fake_dat.parent.mkdir(parents=True)
+        fake_dat.write_bytes(b"fake dat")
+        world.add_ror()
+        assert world.run() == regen.EXIT_OK, world.text
+        assert [line for line in world.lines if line.startswith("===")] == [
+            "=== Age of Empires II ===", "=== Return of Rome ===", "=== Fake Game ===",
+        ]
+        before = world.stamp_data()
+        assert before["fake"]["dat"] == regen.dat_fingerprint(world.install, Path("modes/Fake") / regen.DAT_SUBPATH)
+        assert sorted(before["fake"]["tables"]) == sorted(path.name for path in (world.tables / "fake").glob("*"))
+        assert world.run("--status") == regen.EXIT_OK, world.text
+
+        world.dat.write_bytes(b"dat two, longer")
+        assert world.run("--dataset", "aoe2") == regen.EXIT_OK, world.text
+        after = world.stamp_data()
+        assert (after["fake"], after["ror"]) == (before["fake"], before["ror"]), "the top level keeps every section"
+        assert after["dat"] != before["dat"]
+        fake_dat.unlink()
+        assert world.run("--status") == regen.EXIT_OK, world.text
+        assert world.lines[0] == f"note: no Fake Game .dat at {fake_dat}: skipping its tables"
+    with pytest.raises(SystemExit):
+        world.run("--dataset", "fake")
 
 
 # --- without genieutils-py -----------------------------------------------

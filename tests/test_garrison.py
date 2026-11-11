@@ -103,6 +103,16 @@ def test_can_hold_separates_a_real_host_from_a_capacity_only_row() -> None:
     assert not garrison.can_hold(70)
 
 
+@pytest.mark.parametrize(
+    ("const", "expected"),
+    [(4, True), (83, True), (RELIC, True), (70, False), (64, False), (349, False)],
+    ids=["archer", "villager", "relic", "house", "gate", "oak"],
+)
+def test_can_garrison_is_a_garrison_bit_or_the_relic_rule(const: int, expected: bool) -> None:
+    """TASK-549: Place Unit's garrison-mode gate. A relic has no bit and still goes in."""
+    assert garrison.can_garrison(const) is expected
+
+
 def test_every_monastery_variant_and_the_fortified_church_hold_relics() -> None:
     for host in (MONASTERY, 30, 31, 32, FORTIFIED_CHURCH):
         assert garrison.can_hold(host), host

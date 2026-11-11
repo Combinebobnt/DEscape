@@ -582,6 +582,23 @@ def test_a_type_pick_writes_the_clicked_units_const_once_and_disarms() -> None:
         conftest.close_window(window)
 
 
+def test_a_type_pick_moves_the_item_id_row() -> None:
+    """TASK-561: the library derives item_id from the source unit, so its row follows the pick."""
+    from PyQt5.QtWidgets import QApplication
+
+    gen = _gen()
+    window = _type_window()
+    try:
+        panel = window.trigger_panel
+        assert _row(panel, "item_id").value() == gen._UNIT_ARCHER
+        assert panel.apply_picked_type(_type_target(), gen._UNIT_HOUSE) is True
+        QApplication.processEvents()
+        assert _effect_value(window, TYPE_FIELD) == gen._UNIT_HOUSE
+        assert _row(panel, "item_id").value() == gen._UNIT_HOUSE, "the item id row kept the old source unit"
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_type_pick_turns_the_object_list_type_row() -> None:
     """The reason the pick goes through commit_value(): _list_type_follows hears it as it hears Browse."""
     from PyQt5.QtWidgets import QComboBox

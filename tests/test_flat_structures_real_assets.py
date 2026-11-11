@@ -137,22 +137,20 @@ def test_a_flat_corner_gate_is_one_icon_across_its_four_siblings(tool, key, cons
         assert np.array_equal(rgba, icons[0]), f"gate {const} differs from {consts[0]}"
 
 
-def _parent_file(entry: dict) -> str:
-    """The file whose absence drops the whole icon; a missing non-parent
-    piece (a flag) is skipped, see _native_pieces_for()."""
-    parents = [p["file_name"] for p in entry.get("pieces", ()) if p.get("parent")]
-    return str(parents[0] if parents else entry["file_name"])
+def _drawn_pieces(const, civ, age) -> int:
+    # A missing non-parent piece (a flag) is skipped, a missing parent drops them all (_native_pieces_for()).
+    return len(unit_sprites.sprite_pieces_for(const, 0.0, 1, 48, art=(civ, age, civ)) or ())
 
 
-def test_no_gate_loses_its_icon_to_the_turn(tool):
-    """For every gate const and owner art pair, wherever the unturned art
-    resolves to a parent file this install has, the turned sibling's entry
-    resolves too and icon_for() draws it.
+def _entry_pieces(entry: dict) -> int:
+    return len(entry.get("pieces") or ()) or 1  # a single-graphic entry draws one piece
 
-    Measured 2026-10-19: 48 of the pairs (the X-state C orientation, owned
-    by a Chronicles civ 46-56) turn to a sibling whose civ flag piece is
-    missing on this install, so that icon draws without its flag. The same
-    sibling placed directly draws without it in every view already."""
+
+def test_no_gate_loses_a_piece_to_the_turn(tool):
+    """For every gate const and owner art pair whose unturned art draws every
+    piece of its entry on this install, the turned sibling draws every piece
+    of its own too (TASK-433: a missing flag file dropped the pennants), and
+    icon_for() still draws the turned icon."""
     art = unit_sprites.building_art()
     civs = [None, *sorted(art.civ_art)]
     checked, lost = 0, []
@@ -163,14 +161,17 @@ def test_no_gate_loses_its_icon_to_the_turn(tool):
             for civ in civs:
                 for age in range(2, 7):
                     before = unit_sprites.resolve_entry(const, civ, age, civ)
-                    if before is None or unit_sprites.sld_frame_count(_parent_file(before)) is None:
+                    if before is None or _drawn_pieces(const, civ, age) != _entry_pieces(before):
                         continue
                     checked += 1
                     after = unit_sprites.resolve_entry(turned, civ, age, civ)
                     icon = unit_sprites.icon_for(
                         const, 0.0, 0, span_x * GATE_TILE_PX, span_y * GATE_TILE_PX, art=(civ, age, civ)
                     )
-                    if after is None or icon is None:
+                    if (
+                        after is None or icon is None
+                        or _drawn_pieces(turned, civ, age) != _entry_pieces(after)
+                    ):
                         lost.append((const, civ, age))
     assert checked, "no gate art resolved at all, so this proves nothing"
-    assert not lost, f"{len(lost)} of {checked} lose their icon, first {lost[:5]}"
+    assert not lost, f"{len(lost)} of {checked} lose a piece or their icon, first {lost[:5]}"

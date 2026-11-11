@@ -54,12 +54,27 @@ def _build_id_to_name() -> dict[int, str]:
     .dat names only name dat-only ids: for old ids they do not reproduce the
     enum's ("Forest" vs FOREST_OAK). The active dataset's .dat (GH #67); the
     RoR terrain table has the same 134 ids as AoE2's, measured 2026-10-16, so
-    TerrainId names it too."""
+    TerrainId names it too. An id a data mod changed gets the mod's name
+    (GH #271): _data_mod_name()."""
     names = {t.value: t.name for t in TerrainId}
+    changed = object_catalog.data_mod_terrain_ids()
+    lang = asset_source.get_language() if changed else None
     for terrain_id, entry in object_catalog.dat_terrains().items():
-        if terrain_id not in names and entry.get("code", "").strip():
+        if terrain_id in changed and object_catalog.is_aoe2_terrain(terrain_id) and (name := _data_mod_name(entry, lang)):
+            names[terrain_id] = name
+        elif terrain_id not in names and entry.get("code", "").strip():
             names[terrain_id] = enum_style_name(entry["code"])
     return names
+
+
+def _data_mod_name(entry: dict, lang: str | None) -> str:
+    """A changed terrain's name: its string (the mod's strings over the
+    install's), else its .dat code, enum-style; "" when neither has one."""
+    string_id = entry.get("string_id", -1)
+    text = asset_source.resource_string(string_id, lang) if isinstance(string_id, int) and string_id >= 0 else None
+    # Word characters in any script, so "Forêt lunaire" keeps its ê.
+    name = re.sub(r"[\W_]+", "_", text or "").strip("_").upper()
+    return name or enum_style_name(entry.get("code", ""))
 
 
 _ID_TO_NAME: dict[int, str] = {}
@@ -205,14 +220,21 @@ def _refill(table, values) -> None:
     table.update(values)
 
 
-@game_dataset.on_switch
-def _load_tables() -> None:
-    """Fills every table above from the active dataset's generated tables, in
-    place. Runs at import and again after each dataset switch (GH #67)."""
+def reload_names() -> None:
+    """Refills the id->name table and what derives from it (ids, colours).
+    _load_tables() runs it; terrain_catalog.install_changed() runs it alone,
+    since a data mod terrain's name comes from the install's strings (GH #271)."""
     global _TERRAIN_IDS
     _refill(_ID_TO_NAME, _build_id_to_name())
     _TERRAIN_IDS = tuple(sorted(_ID_TO_NAME))
     _refill(_TERRAIN_COLOR_CACHE, {tid: _color_for_name(name) for tid, name in _ID_TO_NAME.items()})
+
+
+@game_dataset.on_switch
+def _load_tables() -> None:
+    """Fills every table above from the active dataset's generated tables, in
+    place. Runs at import and again after each dataset switch (GH #67)."""
+    reload_names()
     _refill(TREE_UNIT_IDS, (int(uid) for uid in json.loads(game_dataset.table_path(_TREE_UNIT_IDS_PATH).read_text())["ids"]))
     data = json.loads(game_dataset.table_path(_UNIT_RENDER_DATA_PATH).read_text())
     _refill(BUILDING_TILE_SPANS, {int(uid): (sx, sy) for uid, (sx, sy) in data["buildings"].items()})

@@ -20,7 +20,7 @@ pytestmark = [
 
 _NARROW_PX = 150
 # The View tests start from a narrow pane in a mode with the plain MIN_SPLIT_PANE drag floor:
-# Units (TASK-362) and Terrain (TASK-551) have their pages' own.
+# Units (TASK-362), Terrain (TASK-551) and Triggers (TASK-560) have their pages' own.
 _PLAIN_FLOOR_MODE = "Players"
 
 

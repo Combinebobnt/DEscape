@@ -269,6 +269,7 @@ class UnitsPanel(QWidget):
         on_garrison_unload=None,
         on_garrison_owner=None,
         on_garrison_cut=None,
+        on_garrison_duplicate=None,
         codec_field_supported=None,
         rng=None,
         on_unit_field_step=None,
@@ -310,6 +311,8 @@ class UnitsPanel(QWidget):
         self._on_garrison_owner = on_garrison_owner or (lambda *args: None)
         # GH #204: Cut (row ids). It marks rows; the next Paste moves them.
         self._on_garrison_cut = on_garrison_cut or (lambda *args: None)
+        # TASK-549: Duplicate (row ids), copies inside the same host.
+        self._on_garrison_duplicate = on_garrison_duplicate or (lambda *args: None)
         # True while show_unit()/show_group()/clear() are populating widgets
         # programmatically -- suppresses _field_changed() the same way
         # PlayersPanel._changed()'s own _populating guard does, so a
@@ -781,6 +784,11 @@ class UnitsPanel(QWidget):
         self.garrison_pick_button.setCheckable(True)
         self.garrison_pick_button.setToolTip("Click units on the map to put them inside; Esc or right-click to finish")
         self.garrison_pick_button.toggled.connect(self._garrison_pick_toggled)
+        self.garrison_duplicate_button = QPushButton("Duplicate")
+        self.garrison_duplicate_button.setToolTip("Copy the selected rows inside this same host")
+        self.garrison_duplicate_button.clicked.connect(
+            lambda *_: self._garrison_rows_clicked(self._on_garrison_duplicate)
+        )
         self.garrison_cut_button = QPushButton("Cut")
         self.garrison_cut_button.setToolTip(
             "Mark the selected rows to move: Paste inside another host moves the same units there, "
@@ -800,14 +808,15 @@ class UnitsPanel(QWidget):
         self.garrison_unload_button.clicked.connect(lambda *_: self._garrison_rows_clicked(self._on_garrison_unload))
         self.garrison_delete_button = QPushButton("Delete")
         self.garrison_delete_button.clicked.connect(lambda *_: self._garrison_delete_clicked())
-        self.garrison_owner_combo = QComboBox()
+        # TASK-480: it acts on activated, which Qt 5 emits for a wheel notch.
+        self.garrison_owner_combo = FocusWheelComboBox()
         self.garrison_owner_combo.setToolTip("Give the selected rows a new owner")
         self.garrison_owner_combo.addItem("Owner...", None)
         for player_id in range(GAIA_PLAYER_ID, MAX_PLAYER_ID + 1):
             _add_player_item(self.garrison_owner_combo, player_id, self._player_labels, self._player_colors, player_id)
         self.garrison_owner_combo.activated.connect(self._garrison_owner_activated)
         groups = (
-            (self.garrison_add_button, self.garrison_pick_button),
+            (self.garrison_add_button, self.garrison_pick_button, self.garrison_duplicate_button),
             (self.garrison_cut_button, self.garrison_copy_button, self.garrison_paste_button),
             (self.garrison_unload_button, self.garrison_delete_button, self.garrison_owner_combo),
         )
@@ -1469,6 +1478,7 @@ class UnitsPanel(QWidget):
 
     def _set_garrison_row_actions_enabled(self, enabled: bool) -> None:
         for widget in (
+            self.garrison_duplicate_button,
             self.garrison_cut_button,
             self.garrison_copy_button,
             self.garrison_unload_button,

@@ -55,11 +55,11 @@ _TICK_INTERVALS = " or ".join(str(n) for n in edge_ticks.TICK_INTERVALS)
 _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _TERRAIN_PICKER_MODE_IDS = " or ".join(mid for mid, _label in settings.TERRAIN_PICKER_MODES)
-_GAME_DATA_IDS = " or ".join(cid for cid, _label in settings.GAME_DATA_CHOICES)
+_GAME_DATA_IDS = " or ".join(cid for cid, _label in settings.game_data_choices())
 _TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
-_NEW_MAP_GAME_DATA = " or ".join(settings.NEW_MAP_GAME_DATA)
+_NEW_MAP_GAME_DATA = " or ".join(settings.new_map_game_data())
 _NEW_MAP_TILES = f"{scenario_new.MIN_MAP_TILES}-{scenario_new.MAX_MAP_TILES}"
 _NEW_MAP_ELEVATIONS = f"{iso_geometry.MIN_ELEVATION}-{iso_geometry.MAX_ELEVATION}"
 _UNITS_CATALOG_MODES = ", ".join(settings.UNITS_CATALOG_MODES)
@@ -271,6 +271,11 @@ data_mod_hide_unchanged: false
 # catalog and the pickers, Settings > Mods. Default: true.
 data_mod_label_shown: true
 
+# List the data mod's own terrains (new, or changed from the game's) in one
+# "Mod terrains" group at the top of the Terrain panel instead of in their
+# categories, Settings > Mods. Default: false.
+data_mod_terrain_group: false
+
 # Ruler-style distance ticks in the void just outside the map border,
 # View > Distance Ticks. Default: false.
 distance_ticks: false
@@ -454,6 +459,18 @@ browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
 # recent_files:
 #   - /path/to/recent_scenario.aoe2scenario
 
+# The scripts and addons you have agreed to run: each file's full path and the
+# sha256 of the bytes you agreed to. Written when you answer Yes to "Run
+# script?" or "Run addon?" -- not something you normally set by hand. A file
+# whose bytes change is asked about again. Omitted entirely until first
+# saved. The values below are only examples.
+# confirmed_scripts:
+#   - path: /path/to/scripts/example.py
+#     digest: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+# confirmed_addons:
+#   - path: /path/to/addons/example.py
+#     digest: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+
 # File > Data Mod's choice per saved scenario, keyed by the scenario's full
 # path. Written when you pick a data mod with a saved scenario open, or Save
 # As -- not something you normally set by hand. A scenario with no entry
@@ -474,7 +491,7 @@ browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
 # eye_candy are the Trees and Eye candy boxes, true or false.
 # new_map:
 #   tiles: {scenario_io.BLANK_TEMPLATE_TILES}
-#   game_data: {settings.NEW_MAP_GAME_DATA[0]}
+#   game_data: {settings.new_map_game_data()[0]}
 #   terrain_id: {settings.NEW_MAP_DEFAULT_TERRAIN_ID}
 #   elevation: {settings.NEW_MAP_DEFAULT_ELEVATION}
 #   trees: {str(settings.NEW_MAP_DEFAULT_TREES).lower()}

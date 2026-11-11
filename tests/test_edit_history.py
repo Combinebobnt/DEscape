@@ -25,6 +25,7 @@ from descape.edit_history import (
     CompositeDiffRecord,
     DiffRecord,
     EditHistory,
+    HistoryMoveFailed,
     RulerDiffRecord,
     TileDiffRecord,
     TriggerDiffRecord,
@@ -731,10 +732,106 @@ def test_a_refused_record_mid_span_leaves_the_cursor_and_the_tiles_alone() -> No
     hist.apply("paint", tiles, _paint(tiles, 0, 5))
     hist.push_trigger_record(_trigger_record())
     hist.apply("paint again", tiles, _paint(tiles, 0, 9))
-    with pytest.raises(RuntimeError, match="no TriggerEditModel"):
+    with pytest.raises(RuntimeError, match="no TriggerEditModel") as refused:
         hist.jump_to(0, tiles)
+    assert not isinstance(refused.value, HistoryMoveFailed), "a pre-move refusal is not a stopped move"
     assert hist.cursor == 3
     assert tiles[0].terrain_id == 9, "no record in the span may have been applied"
+
+
+class _ArmedMove:
+    """A record's undo/redo that raises while armed, else delegates."""
+
+    def __init__(self, real):
+        self.real = real
+        self.armed = True
+
+    def __call__(self, *args):
+        if self.armed:
+            raise KeyError("drifted")
+        return self.real(*args)
+
+
+def _three_tile_paints() -> tuple[EditHistory, list[FakeTile], _Counter]:
+    """Record k paints tile k-1 to k, so each record's effect is on its own tile."""
+    hist = EditHistory()
+    tiles = [FakeTile(), FakeTile(), FakeTile()]
+    for i in range(3):
+        hist.apply(f"paint {i}", tiles, _paint(tiles, i, i + 1))
+    counter = _Counter()
+    hist.on_change = counter
+    return hist, tiles, counter
+
+
+@pytest.mark.parametrize("backward", [True, False])
+def test_a_move_raising_mid_jump_stops_the_jump_after_the_last_finished_record(backward: bool) -> None:
+    """TASK-364: nothing rolls back; the cursor counts only the records whose
+    move returned, and the exception says what the caller must refresh."""
+    hist, tiles, counter = _three_tile_paints()
+    if not backward:
+        hist.jump_to(0, tiles)
+        counter.calls = 0
+    middle = hist.records[1]
+    name = "undo" if backward else "redo"
+    fake = _ArmedMove(getattr(middle, name))
+    setattr(middle, name, fake)
+    with pytest.raises(HistoryMoveFailed) as stopped:
+        hist.jump_to(0 if backward else 3, tiles)
+    exc = stopped.value
+    assert isinstance(exc.__cause__, KeyError)
+    assert (exc.done, exc.total) == (1, 3)
+    assert exc.kinds == frozenset({"tile"})
+    if backward:
+        assert hist.cursor == 2
+        assert [t.terrain_id for t in tiles] == [1, 2, 0], "only the third paint was undone"
+        assert exc.touched == [2, 1], "the finished record's tile, then the failed one's"
+    else:
+        assert hist.cursor == 1
+        assert [t.terrain_id for t in tiles] == [1, 0, 0], "only the first paint was redone"
+        assert exc.touched == [0, 1]
+    assert counter.calls == 1, "on_change fires once, for the records that finished"
+
+    fake.armed = False
+    hist.jump_to(0 if backward else 3, tiles)
+    assert [t.terrain_id for t in tiles] == ([0, 0, 0] if backward else [1, 2, 3]), "resuming from the stop is safe"
+
+
+@pytest.mark.parametrize("name", ["undo", "redo"])
+def test_a_raising_single_step_leaves_the_cursor_and_a_retry_succeeds(name: str) -> None:
+    hist, tiles, counter = _three_tile_paints()
+    if name == "redo":
+        hist.undo(tiles)
+        counter.calls = 0
+    record = hist.records[2]
+    fake = _ArmedMove(getattr(record, name))
+    setattr(record, name, fake)
+    cursor = hist.cursor
+    with pytest.raises(HistoryMoveFailed) as stopped:
+        getattr(hist, name)(tiles)
+    assert hist.cursor == cursor
+    assert (stopped.value.done, stopped.value.total) == (0, 1)
+    assert stopped.value.touched == [2]
+    assert counter.calls == 1
+    fake.armed = False
+    getattr(hist, name)(tiles)
+    assert hist.cursor == cursor + (-1 if name == "undo" else 1)
+
+
+def test_a_composite_redo_whose_second_child_raises_reports_the_applied_child() -> None:
+    hist = EditHistory()
+    tiles = [FakeTile(), FakeTile()]
+    tile_child = TileDiffRecord("paint", changes=[(0, (0, 0, -1), (5, 0, -1))])
+    unit_child = _unit_record()
+    hist.push_composite_record(CompositeDiffRecord("paste", children=[tile_child, unit_child]))
+    units = FakeUnitModel()
+    hist.undo(tiles, units=units)
+    unit_child.redo = _ArmedMove(unit_child.redo)
+    with pytest.raises(HistoryMoveFailed) as stopped:
+        hist.redo(tiles, units=units)
+    assert tiles[0].terrain_id == 5, "the tile child ran before the unit child raised"
+    assert hist.cursor == 0
+    assert stopped.value.kinds == frozenset({"tile", "unit"})
+    assert stopped.value.touched == [0]
 
 
 def test_span_kinds_unions_the_span_including_a_composite() -> None:

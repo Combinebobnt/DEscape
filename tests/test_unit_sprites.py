@@ -559,13 +559,27 @@ def test_wall_variant_from_neighbours(mask, expected):
 # --- the 8-bit superset (2026-09-19 wall-runs plan) -------------------
 
 
+def _junction_masks() -> dict[int, int]:
+    """TASK-581's eight masks: one orthogonal bit times the two diagonal pairs."""
+    return {
+        bit | pair: shape
+        for bit in (unit_sprites.WEST, unit_sprites.EAST, unit_sprites.NORTH, unit_sprites.SOUTH)
+        for pair, shape in unit_sprites.DIAGONAL_RUNS
+    }
+
+
+def test_there_are_exactly_eight_junction_masks():
+    assert len(_junction_masks()) == 8
+
+
 @pytest.mark.parametrize("mask", range(256))
 def test_wall_variant_from_neighbours8_is_a_superset_of_the_4_bit_function(mask):
     """The property that lets the write side use the 8-bit function while
     the render side keeps calling the 4-bit one: wherever the orthogonal
-    nibble says anything at all, the two agree exactly."""
+    nibble says anything at all, the two agree exactly, except at the eight
+    junction masks (TASK-581), where the 4-bit table cannot see the run."""
     orthogonal = mask & unit_sprites.ORTHOGONAL_MASK
-    if not orthogonal:
+    if not orthogonal or mask in _junction_masks():
         return
     assert unit_sprites.wall_variant_from_neighbours8(mask) == (
         unit_sprites.wall_variant_from_neighbours(orthogonal)
@@ -606,15 +620,30 @@ def test_wall_variant_from_neighbours8_leaves_mask_zero_underivable():
     assert unit_sprites.wall_variant_from_neighbours8(0) is None
 
 
-def test_an_orthogonal_neighbour_outranks_a_diagonal_one():
-    """The discriminating case: a diagonal-run interior mask that ALSO has
-    an orthogonal neighbour must answer the 4-bit table's 2, not 4 -- the
-    diagonal rows were measured only on walls with no orthogonal neighbour
-    at all."""
-    mask = unit_sprites.NE | unit_sprites.SW | unit_sprites.WEST
-    assert unit_sprites.wall_variant_from_neighbours8(mask) == 2
-    run = unit_sprites.NE | unit_sprites.SW | unit_sprites.WEST | unit_sprites.EAST
-    assert unit_sprites.wall_variant_from_neighbours8(run) == 0
+@pytest.mark.parametrize(("mask", "expected"), sorted(_junction_masks().items()))
+def test_one_orthogonal_stub_on_a_diagonal_run_keeps_the_run(mask, expected):
+    """TASK-581: a single wall meeting a diagonal run's interior. 16 of 18
+    integer corpus walls with exactly this mask store the run, not 2."""
+    assert unit_sprites.wall_variant_from_neighbours8(mask) == expected
+
+
+@pytest.mark.parametrize(
+    ("mask", "expected"),
+    [
+        # A third diagonal: only 1 of 4 corpus walls store the run.
+        (unit_sprites.WEST | unit_sprites.NE | unit_sprites.SW | unit_sprites.NW, 2),
+        (unit_sprites.NORTH | unit_sprites.NW | unit_sprites.SE | unit_sprites.SW, 2),
+        # A corner plus a pair: split 1:1 in the corpus, stays 2.
+        (unit_sprites.NORTH | unit_sprites.EAST | unit_sprites.NE | unit_sprites.SW, 2),
+        # A straight run crossed by a pair keeps its axis.
+        (unit_sprites.WEST | unit_sprites.EAST | unit_sprites.NE | unit_sprites.SW, 0),
+        (unit_sprites.NORTH | unit_sprites.SOUTH | unit_sprites.NW | unit_sprites.SE, 1),
+        # One orthogonal bit and a single diagonal: a tower.
+        (unit_sprites.WEST | unit_sprites.NE, 2),
+    ],
+)
+def test_other_orthogonal_masks_with_diagonals_keep_the_4_bit_answer(mask, expected):
+    assert unit_sprites.wall_variant_from_neighbours8(mask) == expected
 
 
 # --- the shared mask builder ------------------------------------------

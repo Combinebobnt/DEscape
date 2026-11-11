@@ -143,6 +143,91 @@ def test_opening_the_edit_menu_neither_commits_nor_greys_undo(which: str) -> Non
         conftest.close_window(window)
 
 
+def _edit_menu(window):
+    from PyQt5.QtWidgets import QMenu
+
+    return next(m for m in window.menuBar().findChildren(QMenu) if m.title() == "&Edit")
+
+
+def _leave_the_menu_bar(window) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    _edit_menu(window).hide()
+    QTest.keyClick(window.menuBar(), Qt.Key_Escape)
+    QApplication.processEvents()
+
+
+@pytest.mark.parametrize("which", BOXES)
+def test_a_mouse_click_on_the_edit_menu_title_commits_nothing(which: str) -> None:
+    """TASK-418: a spontaneous press through the window handle, so QMenuBar's own press path and
+    Qt's click-to-focus step run, which popup() skips. The box stays focused and uncommitted."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        finished = []
+        box.editingFinished.connect(lambda: finished.append(True))
+        _type(box, " xyz")
+        before_history = _history(window)
+
+        bar = window.menuBar()
+        edit_menu = _edit_menu(window)
+        pos = bar.mapTo(window, bar.actionGeometry(edit_menu.menuAction()).center())
+        QTest.mouseClick(window.windowHandle(), Qt.LeftButton, Qt.NoModifier, pos)
+        QApplication.processEvents()
+        assert edit_menu.isVisible(), "the click did not open the Edit menu"
+        assert finished == []
+        assert _history(window) == before_history
+        assert window._focused_text_box() is box
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+def _refetch_box(window, which: str):
+    """The box again: an undo rebuilds the form."""
+    from test_trigger_panel import _row_widget
+
+    if which == "trigger message":
+        return _row_widget(window.trigger_panel, "message")
+    return window.messages_panel.widget_for("hints")
+
+
+@pytest.mark.parametrize("which", BOXES)
+def test_alt_e_commits_the_box_once_and_undo_reverts_that_commit(which: str) -> None:
+    """TASK-125's recorded coarser path, pinned as designed (TASK-418): the menu bar's keyboard
+    mode takes focus (MenuBarFocusReason), which commits the box as one EditHistory record, and
+    Undo then reverts that whole commit. Changing this is a deliberate decision, not a fix."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        before_text = box.toPlainText()
+        records, cursor = _history(window)
+        _type(box, " xyz")
+
+        QTest.keyClick(box, Qt.Key_E, Qt.AltModifier)
+        QApplication.processEvents()
+        assert _history(window) == (records + 1, cursor + 1), "Alt+E should commit the box as one record"
+        assert window._focused_text_box() is None
+
+        window.undo_action.trigger()
+        QApplication.processEvents()
+        assert _history(window) == (records + 1, cursor)
+        assert _refetch_box(window, which).toPlainText() == before_text
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
 @pytest.mark.parametrize("which", BOXES)
 def test_focus_out_still_records_exactly_one_edit(which: str) -> None:
     window, box = _box_window(which)

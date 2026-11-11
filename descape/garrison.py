@@ -176,6 +176,12 @@ def unit_bit(unit_const: int) -> int:
     return _CLASS_BIT.get(classes.get(unit_const, -1), 0)
 
 
+def can_garrison(unit_const: int) -> bool:
+    """Whether `unit_const` can go inside any host at all: a garrison bit, or
+    the relic rule. Place Unit's gate for garrison mode (TASK-549)."""
+    return unit_bit(unit_const) != 0 or is_relic(unit_const)
+
+
 def accepts(host_const: int, occupant_const: int) -> bool:
     """Whether the game would let `occupant_const` garrison inside
     `host_const`. Capacity is a separate question -- see capacity()."""

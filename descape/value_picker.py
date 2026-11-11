@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QStringListModel, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QStringListModel, Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -41,6 +41,8 @@ from descape import item_activation
 # Past Qt.UserRole (which already holds the row's value on column 0).
 _HIDDEN_ROLE = Qt.UserRole + 1
 _SEARCH_ROLE = Qt.UserRole + 2
+# On a group heading: the group's name, without the "(N)" count (GH #271).
+GROUP_ROLE = Qt.UserRole + 3
 
 _PREVIEW_BOX_PX = 64
 
@@ -154,6 +156,9 @@ class ValuePickerView(QWidget):
         self.tree.setUniformRowHeights(True)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         _configure_scrolling(self.tree)
+        # TASK-527: the column, and a selected row's highlight, spans the viewport when the names are
+        # narrower; wider names still scroll sideways. stretchLastSection would elide them instead.
+        self.tree.viewport().installEventFilter(self)
         # itemActivated, not itemDoubleClicked: it fires on Enter too, and a
         # sidebar host has no Ok button to fall back on.
         self.tree.itemActivated.connect(self._on_activated)
@@ -177,6 +182,12 @@ class ValuePickerView(QWidget):
 
         self.set_items(items, default_group=default_group)
 
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Resize and watched is self.tree.viewport():
+            # ResizeToContents never sizes the column below this, so it reaches the viewport's edge.
+            self.tree.header().setMinimumSectionSize(self.tree.viewport().width())
+        return super().eventFilter(watched, event)
+
     # -- population -----------------------------------------------------
 
     def set_items(self, items: Sequence[PickerItem], *, default_group: str = "") -> None:
@@ -198,6 +209,7 @@ class ValuePickerView(QWidget):
             by_group.setdefault(item.group, []).append(item)
         for group, members in by_group.items():
             heading = QTreeWidgetItem([f"{group} ({len(members)})"])
+            heading.setData(0, GROUP_ROLE, group)
             self.tree.addTopLevelItem(heading)
             for item in sorted(members, key=lambda i: i.label):
                 heading.addChild(self._make_row(item))

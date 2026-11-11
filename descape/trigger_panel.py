@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import math
 from typing import ClassVar
 
 from PyQt5.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPointF, Qt, QTimer, pyqtSignal
@@ -13,6 +14,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
     QAction,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -156,6 +158,11 @@ class StatusStyle:
 
 # A PROBLEM row's tooltip lists at most this many reasons, then a count.
 _STATUS_TOOLTIP_LINES = 12
+
+
+def _same_shown(a, b) -> bool:
+    """Whether a form row shows the same value, NaN matching NaN."""
+    return a == b or (isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b))
 
 
 def status_icon(status: Status, hex_str: str) -> QIcon:
@@ -461,7 +468,6 @@ class TriggerPanel(QWidget):
     # when a name column and a detail column shared a single tree. Scales with
     # the app font (FontScaledWidth).
     MIN_USEFUL_WIDTH = FontScaledWidth(340)
-    _PROPERTY_MIN_WIDTH = 240
 
     # The detail column never gets less than this much of the entry tree's
     # viewport, however long the widest condition name is. Content-sizing the
@@ -1097,7 +1103,6 @@ class TriggerPanel(QWidget):
     def _build_property_page(self) -> QWidget:
         self.property_area = QScrollArea()
         self.property_area.setWidgetResizable(True)
-        self.property_area.setMinimumWidth(self._PROPERTY_MIN_WIDTH)
         self.property_host = QWidget()
         self.property_form = QFormLayout(self.property_host)
         self.property_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -1163,7 +1168,7 @@ class TriggerPanel(QWidget):
         """Size the detail tree's two columns to their content, capping Item.
 
         Neither column may be left at a fixed width, and for different reasons.
-        Item was pinned at `_PROPERTY_MIN_WIDTH` (240) out of a 340 px pane, so
+        Item was once pinned at 240 px out of a 340 px pane, so
         Detail got 98 px and read "quantity=19...", "timer=1, inv...". Detail
         was left at Qt's 100 px default, which is worse than it looks: with
         `setStretchLastSection(False)` the column really is 100 px wide, so the
@@ -3626,6 +3631,7 @@ class TriggerPanel(QWidget):
             return
         before = self._read(entries[0][2], spec.attribute)
         slots_before = self._quantity_slots(entries)
+        rows_before = self._form_snapshot(entries)
 
         # 4c: a rename that crosses the divider predicate changes the section
         # partition, which a label patch can't reflect -- escalate to a full
@@ -3650,7 +3656,16 @@ class TriggerPanel(QWidget):
         else:
             self._refresh_labels(trigger_index)
 
-        if self._quantity_slots(self._entries_for(live)) != slots_before:
+        entries_after = self._entries_for(live)
+        rows_after = self._form_snapshot(entries_after)
+        # TASK-561: a row the library derives from another field (item_id) moved with the edit.
+        expected = dict(rows_before)
+        if spec.name in expected:
+            expected[spec.name] = trigger_fields.form_value(spec, value)
+        rows_moved = rows_after.keys() != expected.keys() or any(
+            not _same_shown(rows_after[name], shown) for name, shown in expected.items()
+        )
+        if rows_moved or self._quantity_slots(entries_after) != slots_before:
             # Deferred: this runs inside the editing widget's own signal, and
             # repopulating unparents that widget immediately.
             QTimer.singleShot(0, lambda r=live: self.repopulate_form_if_current(r))
@@ -3661,11 +3676,43 @@ class TriggerPanel(QWidget):
         switched one (the form's locked fields then change)."""
         return [trigger_fields.live_quantity_slot(entry) if kind == "effect" else "" for kind, _i, entry in entries]
 
+    def _form_snapshot(self, entries) -> dict[str, object]:
+        """What each row shows, read as _populate_property_form() reads it. The
+        quantity cluster is left out: one library value sits behind its rows, and
+        _quantity_slots() owns them."""
+        objects = [entry for _k, _i, entry in entries]
+        return {
+            spec.name: trigger_fields.shared_value(
+                objects, spec.attribute, lambda e, a, s=spec: trigger_fields.form_value(s, self._read(e, a))
+            )
+            for spec, *_ in self._rows
+            if spec.name not in trigger_fields.CLUSTER_FIELDS
+        }
+
     def repopulate_form_if_current(self, refs) -> None:
-        """The cluster switch's deferred form rebuild, and the window's after a
-        group write (GH #138), skipped if the user has selected something else in between."""
-        if self._form_refs_now() == tuple(refs):
-            self._populate_property_form()
+        """The cluster switch's or a derived row's deferred form rebuild, and the
+        window's after a group write (GH #138), skipped if the user has selected
+        something else in between. Keyboard focus in the form stays on its row."""
+        if self._form_refs_now() != tuple(refs):
+            return
+        focus = QApplication.focusWidget()
+        focused = None
+        if focus is not None:
+            focused = next(
+                (spec.name for spec, *_, widget in self._rows if widget is focus or widget.isAncestorOf(focus)), None
+            )
+        scroll = self.property_area.verticalScrollBar().value()
+        self._populate_property_form()
+        self.property_area.verticalScrollBar().setValue(scroll)
+        widget = next((w for spec, *_, w in self._rows if spec.name == focused), None) if focused else None
+        if widget is None:
+            return
+        target = widget.line_edit if isinstance(widget, ValueLineEdit) else widget
+        if target.focusPolicy() == Qt.NoFocus:
+            # A composite row: its first editor, not the container.
+            target = next((w for w in target.findChildren(QWidget) if w.focusPolicy() != Qt.NoFocus), target)
+        target.setFocus(Qt.OtherFocusReason)
+        self.property_area.ensureWidgetVisible(widget)
 
     def _list_changed(self, spec, refs, widget: QLineEdit, multi: bool = False) -> None:
         if self._populating:

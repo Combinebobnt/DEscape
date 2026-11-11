@@ -64,6 +64,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "mod_art_included": (_MODS, "Mod art ticked while disabled in game"),
     "data_mod_hide_unchanged": (_MODS, "Hide a data mod's unchanged objects"),
     "data_mod_label_shown": (_MODS, "Show the \"(data mod)\" label"),
+    "data_mod_terrain_group": (_MODS, "List a data mod's own terrains in one group"),
     "theme": (_APPEARANCE, "Theme"),
     "theme_colors": (_APPEARANCE, "Chrome colours"),
     "dark_mode": (_APPEARANCE, "Theme"),
@@ -144,6 +145,8 @@ LOCAL_KEYS: dict[str, str] = {
     "recent_files": "this machine's recently opened files",
     "new_map": "the New Map dialog's last choices",
     "data_mod_by_scenario": "keyed by this machine's scenario paths",
+    "confirmed_scripts": "your consent to run this machine's script files",
+    "confirmed_addons": "your consent to run this machine's addon files",
     "window_size": "window layout for this screen",
     "split_sizes": "window layout for this screen",
     "log_height": "window layout for this screen",
@@ -376,9 +379,7 @@ def _entries(config: dict, key: str) -> dict:
     stored = config.get(key)
     entries = dict(stored) if isinstance(stored, dict) else {}
     if key == "keybinds":
-        for old, new in settings._RENAMED_KEYBINDS.items():
-            if old in entries and new not in entries:
-                entries[new] = entries[old]
+        settings.carry_renamed_keybinds(entries)
     if key == "tool_options":
         for legacy_key, name in settings._LEGACY_TOOL_OPTION_KEYS:
             if name not in entries and legacy_key in config:

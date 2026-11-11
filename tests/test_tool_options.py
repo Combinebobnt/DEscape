@@ -162,3 +162,7 @@ def test_ranges_mirror_their_sources() -> None:
     thickness = tool_options.option("brush_thickness")
     assert (thickness.minimum, thickness.maximum) == (brush.BRUSH_THICKNESS_MIN, brush.BRUSH_THICKNESS_MAX)
     assert tool_options.option("brush_shape").choices == brush.BRUSH_SHAPES
+    from descape import unit_shape
+
+    assert tool_options.option("unit_shape_kind").choices == tuple(value for value, _label in unit_shape.SHAPE_KINDS)
+    assert tool_options.option("unit_shape_spacing").maximum == unit_shape.SPACING_MAX

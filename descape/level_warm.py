@@ -1,6 +1,7 @@
-"""Incremental warm of a mip level's sprite layer, and then of its native unit
-pack's pending tiles (maintainer plan 2026-09-27), sliced across QTimer ticks
-on the main thread (maintainer plan 2026-09-04).
+"""Incremental warm of a mip level's sprite layer, then of its native unit
+pack's pending tiles (maintainer plan 2026-09-27) and its native composite
+inputs (TASK-031.85), sliced across QTimer ticks on the main thread
+(maintainer plan 2026-09-04).
 
 **No threads, deliberately, and that is the design rather than a shortcut.**
 The first zoom to a not-yet-visited mip level pays a 0.6-4.3s cold sprite
@@ -47,7 +48,8 @@ from descape import debug_log, gc_hold, perf_trace
 # warm-tick plan a level's assembly is sliced too (render.ASSEMBLY_SLICE),
 # its install only commits, and a job's unsliced first step (walk setup,
 # UnitPack(), a flush) only starts a tick, so the step past the budget is one
-# unit's resolve or an assembly slice. A resolve is a cold .sld decode at the
+# unit's resolve, an assembly slice or a native prime atom (TASK-031.85, under
+# 3 ms at its 96 px cap). A resolve is a cold .sld decode at the
 # coarse levels, and at the fine ones an editor marker's first build or a
 # many-piece composite: old-allies' level 1 warm peaked at 10.8-11.0ms steps
 # (a 1x3 blocker's marker), 17-19ms ticks (2026-10-07, after the separable
@@ -72,11 +74,16 @@ def note_input() -> None:
     _last_input = _now()
 
 
+def input_live() -> bool:
+    """Whether the canvas saw input within INPUT_QUIET_MS. margin_warm's cold
+    defer reads this, not tick_budget_ms(), which the bench's --no-input-budget
+    pins to BUDGET_MS (TASK-031.82 D3)."""
+    return _last_input is not None and _now() - _last_input < INPUT_QUIET_MS / 1000.0
+
+
 def tick_budget_ms() -> float:
     """INPUT_BUDGET_MS while input is recent, else BUDGET_MS."""
-    if _last_input is not None and _now() - _last_input < INPUT_QUIET_MS / 1000.0:
-        return INPUT_BUDGET_MS
-    return BUDGET_MS
+    return INPUT_BUDGET_MS if input_live() else BUDGET_MS
 
 
 def neighbour_mips(cache, scale: float) -> list[int]:
@@ -264,15 +271,22 @@ class LevelWarmer(_IdleTimerDriver):
     def is_active(self) -> bool:
         return self._job is not None or bool(self._queue)
 
-    def start(self, cache, mips, *, pack_only=(), on_job_done=None, on_drained=None) -> set[int]:
+    def start(
+        self, cache, mips, *, pack_only=(), on_job_done=None, on_drained=None, requeue_prime=True
+    ) -> set[int]:
         """Queues `mips` on `cache`, replacing any warm already in flight.
 
         Each mip gets its sprite-layer job, then its unit-pack derive
-        (cache.pack_warm_job, maintainer plan 2026-09-27) chained after it.
-        `pack_only` mips not in `mips` get just the derive, queued last.
+        (cache.pack_warm_job, maintainer plan 2026-09-27), then its native
+        input priming (cache.native_prime_job, TASK-031.85), chained in that
+        order. `pack_only` mips not in `mips` get just the derive and the
+        priming (an unprimed resident level's, TASK-031.82 D6), queued last.
+        `requeue_prime` False primes a `mips` entry only behind its level
+        job: the viewer's pending level, whose load warm a resident
+        placeholder level must not wait behind a prime for.
 
         A job with nothing worth doing is not queued at all -- the cache's
-        own level_warm_job()/pack_warm_job() decide that (units off, top-down
+        own level_warm_job()/pack_warm_job()/native_prime_job() decide that (units off, top-down
         Flat with sprites off, numpy, or the level already current; such a
         top-down Flat level is resident already, so its load warm starts at
         once), and they are asked HERE
@@ -284,8 +298,8 @@ class LevelWarmer(_IdleTimerDriver):
 
         `on_job_done`, if given, is called with a `mips` entry once the LAST
         job queued for it finishes (2026-09-07 plan's load-time margin warm,
-        Step 2), so a neighbour's load warm starts after its pack derive --
-        whether it installed cleanly or was dropped mid-walk (see tick()),
+        Step 2), so a neighbour's load warm starts after its pack derive and
+        priming -- whether it installed cleanly or was dropped mid-walk (see tick()),
         since either way there is nothing left to wait for on that mip. It
         never fires for a `pack_only` mip, nor for a mip that got no job at
         all: returns the set of mips it will fire for, and a caller that
@@ -299,17 +313,23 @@ class LevelWarmer(_IdleTimerDriver):
         jobs = []
         for mip in mips:
             level_job = cache.level_warm_job(mip)
-            pack_job = cache.pack_warm_job(mip, after_level_warm=level_job is not None)
-            if level_job is not None:
-                jobs.append((mip, level_job, pack_job is None))
-            if pack_job is not None:
-                jobs.append((mip, pack_job, True))
+            ahead = level_job is not None
+            chain = [
+                job for job in (
+                    level_job,
+                    cache.pack_warm_job(mip, after_level_warm=ahead),
+                    cache.native_prime_job(mip, after_level_warm=ahead) if ahead or requeue_prime else None,
+                ) if job is not None
+            ]
+            # Only the mip's last job notifies.
+            jobs += [(mip, job, i == len(chain) - 1) for i, job in enumerate(chain)]
         for mip in pack_only:
             if mip in mips:
                 continue
-            pack_job = cache.pack_warm_job(mip)
-            if pack_job is not None:
-                jobs.append((mip, pack_job, False))
+            # Last, so the neighbours' level jobs that placeholder time-to-sharp waits on go first.
+            for job in (cache.pack_warm_job(mip), cache.native_prime_job(mip)):
+                if job is not None:
+                    jobs.append((mip, job, False))
         if not jobs:
             return set()
         self._cache = cache

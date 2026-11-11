@@ -5,7 +5,8 @@ tests/test_wheel_zoom.py pins the shipped defaults; this file is about the
 binding layer itself. Events go straight to
 view.wheelEvent(), as there, and for the same reason: a run of them has to
 stay one gesture. Alt + wheel arrives transposed on X11 and Windows (Qt 5
-delivers it as a sideways delta), so the Alt slot runs with both shapes.
+delivers it as a sideways delta), and Shift + wheel on macOS (TASK-363), so
+the Alt and Shift slots run with both shapes.
 
 That leaves the step from QApplication to wheelEvent() untested, so one
 test sends single notches through QApplication.sendEvent() on the viewport
@@ -21,7 +22,7 @@ import pytest
 import test_unit_drag_preview as drag_preview
 from test_region_rotate import _add, _close, _live, _paste, _setup, _tiles, _units
 from test_region_select import _select_window
-from test_wheel_zoom import _PLACE_CONST, _facing, _gesture, _place_window, _scale
+from test_wheel_zoom import _PLACE_CONST, _facing, _gesture, _notch_scale, _place_window, _scale
 from test_zoom_status import _window
 
 import conftest
@@ -36,6 +37,7 @@ _SLOT_EVENTS = [
     pytest.param("plain", "NoModifier", (0, 120), id="plain"),
     pytest.param("ctrl", "ControlModifier", (0, 120), id="ctrl"),
     pytest.param("shift", "ShiftModifier", (0, 120), id="shift"),
+    pytest.param("shift", "ShiftModifier", (120, 0), id="shift-transposed"),
     pytest.param("alt", "AltModifier", (0, 120), id="alt"),
     pytest.param("alt", "AltModifier", (120, 0), id="alt-transposed"),
 ]
@@ -237,7 +239,7 @@ def test_a_slot_bound_to_zoom_zooms_over_the_ghost_and_in_draw(slot, modifier, d
             _bind(window, **{slot: "zoom"})
             size, scale = window.brush_size_spin.value(), _scale(view)
             _wheel_xy(view, delta, _mods(modifier))
-            assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+            assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
             assert window.brush_size_spin.value() == size
             assert window._place_rotation.facing == 0.0
         finally:
@@ -319,7 +321,7 @@ def test_by_default_ctrl_wheel_steps_the_brush_in_draw_and_plain_wheel_zooms() -
         assert window.brush_size_spin.value() == size
 
         _wheel_xy(view, (0, 120))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert window.brush_size_spin.value() == size
     finally:
         conftest.close_window(window)
@@ -329,6 +331,7 @@ def test_by_default_ctrl_wheel_steps_the_brush_in_draw_and_plain_wheel_zooms() -
     "modifier, delta",
     [
         pytest.param("ShiftModifier", (0, 120), id="shift"),
+        pytest.param("ShiftModifier", (120, 0), id="shift-transposed"),
         pytest.param("AltModifier", (0, 120), id="alt"),
         pytest.param("AltModifier", (120, 0), id="alt-transposed"),
     ],
@@ -340,7 +343,7 @@ def test_by_default_shift_and_alt_wheel_zoom(modifier, delta) -> None:
         view = window.map_view
         size, scale = window.brush_size_spin.value(), _scale(view)
         _wheel_xy(view, delta, _mods(modifier))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert window.brush_size_spin.value() == size
     finally:
         conftest.close_window(window)
@@ -360,7 +363,7 @@ def test_wheel_on_tool_and_ctrl_on_zoom_over_the_ghost() -> None:
         assert _scale(view) == scale
 
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert _facing(window) == 15
     finally:
         conftest.close_window(window)
@@ -400,7 +403,7 @@ def test_wheel_on_tool_and_ctrl_on_zoom_with_draw_active() -> None:
 
         size = window.brush_size_spin.value()
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert window.brush_size_spin.value() == size
     finally:
         conftest.close_window(window)
@@ -492,7 +495,7 @@ def test_an_unlisted_modifier_combination_zooms_over_the_ghost(modifiers, delta)
         assert view._unit_ghost_item is not None
         scale = _scale(view)
         _wheel_xy(view, delta, _mods(*modifiers))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert _facing(window) == 0
     finally:
         conftest.close_window(window)
@@ -510,8 +513,9 @@ def test_the_keypad_modifier_does_not_break_the_slot_lookup() -> None:
         conftest.close_window(window)
 
 
-@pytest.mark.parametrize("modifier", ["NoModifier", "ControlModifier", "ShiftModifier"])
-def test_a_sideways_tilt_without_alt_still_does_nothing(modifier) -> None:
+@pytest.mark.parametrize("modifier", ["NoModifier", "ControlModifier"])
+def test_a_sideways_tilt_without_alt_or_shift_still_does_nothing(modifier) -> None:
+    """Shift is read sideways since TASK-363 (macOS's Shift + wheel), so it is the shift-transposed cases."""
     window = _place_window()
     try:
         view = window.map_view
@@ -537,7 +541,7 @@ def test_a_binding_saved_before_the_window_is_built_is_live_on_the_first_event()
         assert window.brush_size_spin.value() == size + 1
         assert _scale(view) == scale
         _wheel_xy(view, (0, 120), _mods("ControlModifier"))
-        assert _scale(view) == pytest.approx(scale * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(_notch_scale(view, start=scale), rel=1e-9)
         assert window.brush_size_spin.value() == size + 1
     finally:
         conftest.close_window(window)

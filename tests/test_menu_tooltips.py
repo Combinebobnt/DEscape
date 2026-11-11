@@ -161,3 +161,50 @@ def test_each_elevation_view_entry_explains_its_own_mode() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def _typed_default_keys(texts) -> list[str]:
+    """Each text naming a rebindable action's default key combination: it goes stale once the
+    user rebinds it (TASK-487). Name the command, or read the live binding."""
+    from descape import settings
+
+    keys = {default for _id, _label, default in settings.REBINDABLE_ACTIONS if "+" in default}
+    return [f"{key} in {text!r}" for text in texts for key in keys if key in text]
+
+
+def test_no_action_tooltip_types_a_rebindable_default_key() -> None:
+    """TASK-487: the Select and Place Unit tool tips typed Ctrl+A, Ctrl+Shift+A and Ctrl+wheel."""
+    from PyQt5.QtWidgets import QAction
+
+    window = conftest.blank_window()
+    try:
+        tips = {action.toolTip() for action in window.findChildren(QAction)}
+        found = _typed_default_keys(tips) + [tip for tip in tips if "Ctrl+wheel" in tip]
+        assert not found, "\n".join(found)
+        # TASK-608's two tools came after TASK-487 and keep its no " -- " rule.
+        for action in (window.unit_line_action, window.unit_shape_action):
+            assert " -- " not in action.toolTip(), action.text()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_players_civilization_rows_read_as_user_text() -> None:
+    """TASK-487: the Civilization and Architecture tips named functions and a spec tuple."""
+    from descape import player_fields
+
+    tips = {spec.field_id: spec.tooltip for spec in player_fields._SPECS if spec.field_id in ("civilization", "architecture")}
+    assert set(tips) == {"civilization", "architecture"}
+    for name, tip in tips.items():
+        assert tip and "()" not in tip and " -- " not in tip and "tuple" not in tip, (name, tip)
+
+
+def test_find_and_replace_confirmations_name_undo_not_its_key() -> None:
+    """TASK-487: the confirmations said "Ctrl+Z undoes", stale once Undo is rebound."""
+    import inspect
+
+    from descape import find_dialog
+
+    source = inspect.getsource(find_dialog)
+    assert "Ctrl+Z" not in source
+    assert source.count("Edit > Undo reverts it.") == 5

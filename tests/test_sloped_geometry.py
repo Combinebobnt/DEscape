@@ -284,7 +284,7 @@ _CORNER_SHAPES = [tuple(v * d for v in shape) for d in (1, 2, 8) for shape in _U
 ]
 
 
-@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 64, ig.MIP_MAX_TILE_PIXELS])
+@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 64, 128, ig.MIP_MAX_TILE_PIXELS])
 @pytest.mark.parametrize("corners", _CORNER_SHAPES)
 def test_sloped_quad_indices_columns_stay_contiguous(tile_px, corners):
     """Every screen column of a sloped tile must be a contiguous run of
@@ -323,7 +323,7 @@ def test_sloped_quad_indices_columns_stay_contiguous(tile_px, corners):
     assert duplicates == 0, f"{duplicates} doubly-written row(s) at tile_px={tile_px}, corners={corners}"
 
 
-@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 64, ig.MIP_MAX_TILE_PIXELS])
+@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 64, 128, ig.MIP_MAX_TILE_PIXELS])
 @pytest.mark.parametrize("corners", _CORNER_SHAPES)
 def test_sloped_tile_edge_indices_are_a_subset_of_the_quads_own_pixels(tile_px, corners):
     """Disjointness between a farm tile's stroked perimeter and its
@@ -436,7 +436,7 @@ def test_uv_idx_stays_inside_its_own_column(tile_px, corners, nwse):
         assert np.all(np.diff(col) >= 0), f"column {c} resamples out of order"
 
 
-@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 32, 64, ig.MIP_MAX_TILE_PIXELS])
+@pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 32, 64, 128, ig.MIP_MAX_TILE_PIXELS])
 def test_nwse_fold_keeps_the_tiles_own_pixels(tile_px):
     """TASK-008: a NW-SE tile paints exactly the NE-SW entry's pixels (the
     very dst arrays), so abutment, no-holes and every dst-only consumer hold

@@ -179,6 +179,31 @@ def test_a_distant_wall_is_left_alone():
     assert plan.rewrites == []
 
 
+def _ne_sw_run(tx: int, ty: int) -> list[FakeUnit]:
+    """Five walls of a NE-SW diagonal run centred on (tx, ty), all storing 4."""
+    return [_wall_at(tx + i, ty - i, rotation=4.0) for i in range(-2, 3)]
+
+
+def _nw_se_run(tx: int, ty: int) -> list[FakeUnit]:
+    """Five walls of a NW-SE diagonal run centred on (tx, ty), all storing 3."""
+    return [_wall_at(tx + i, ty + i, rotation=3.0) for i in range(-2, 3)]
+
+
+def test_a_stub_north_of_a_ne_sw_runs_middle_keeps_both_junction_pieces_on_the_run():
+    """TASK-581: the stub's S is the middle T and its E is T's NE neighbour,
+    so both read one orthogonal bit plus NE+SW and keep their stored 4."""
+    plan = _plan([(10, 19)], _ne_sw_run(10, 20))
+    assert plan.rewrites == []
+    assert [n.variant for n in plan.nodes] == [2]
+
+
+def test_a_stub_west_of_a_nw_se_runs_middle_keeps_both_junction_pieces_on_the_run():
+    """The other pair: the stub's E is the middle T and its N is T's NW neighbour."""
+    plan = _plan([(29, 20)], _nw_se_run(30, 20))
+    assert plan.rewrites == []
+    assert [n.variant for n in plan.nodes] == [2]
+
+
 def test_touched_players_is_the_owner_plus_every_rewritten_walls_owner():
     existing = [_wall_at(10, y, rotation=1.0) for y in range(8, 13)]
     plan = _plan([(x, 10) for x in range(5, 10)], existing)
@@ -1541,6 +1566,15 @@ def test_a_survivor_already_a_tower_is_not_rewritten(stored):
     assert _removal(_walls_scenario(west, east), [west]) == []
 
 
+def test_deleting_the_east_wall_of_a_run_a_diagonal_pair_crosses_leaves_the_diagonal_run():
+    """TASK-581: (10, 10) was W+E+NE+SW (0); without E it is one orthogonal
+    stub on a NE-SW run, which the game stores as 4, not the tower."""
+    run = _x_run(5, 11, 10)
+    pair = [_wall_at(11, 9, rotation=4.0), _wall_at(9, 11, rotation=4.0)]
+    rewrites = _by_tile(_removal(_walls_scenario(*run, *pair), [run[-1]]))
+    assert rewrites[(10, 10)] == 4
+
+
 def test_deleting_one_of_two_stacked_walls_reshapes_nothing():
     """The tile stays a connector, so no mask changed, and the neighbours'
     radian noise (index 1 where they derive 2 and 0) is left as it is."""
@@ -1620,6 +1654,194 @@ def test_move_plan_players_adds_each_carried_walls_owner():
         removals=[(0, _wall_at(13, 10))], fills=[], rewrites=[(5, _wall_at(12, 10), 2)], moved=[(3, _wall_at(9, 9), 2)]
     )
     assert wall_run.move_plan_players(plan) == {0, 3, 5}
+
+
+# --- Find and Replace into or out of a wall or gate (TASK-584) -------------
+
+_OUTPOST = 598  # 1x1, not a connector
+_PALISADE_GATE = 789  # 4 along x, like GATE
+
+
+def _replace(scenario, rows, new_const: int):
+    from descape.unit_model import replaced_position
+
+    changes = [(1, unit, new_const, *replaced_position(unit, new_const)) for unit in rows]
+    return wall_run.scenario_replace_rewrites(scenario, 60, 60, changes)
+
+
+def _shaped(plan) -> list[tuple[tuple[int, int], int]]:
+    """Each shaped unit by its tile before the Replace (a 1x1 source keeps it)."""
+    return [(_tile(unit), variant) for unit, variant in plan.shaped]
+
+
+def test_replacing_a_mid_run_wall_with_a_non_connector_ends_both_neighbours():
+    run = _x_run(5, 15, 10)
+    plan = _replace(_walls_scenario(*run), [run[5]], _OUTPOST)
+    assert _by_tile(plan.rewrites) == {(9, 10): 2, (11, 10): 2}
+    assert plan.shaped == []
+    assert run[5] not in [u for _p, u, _v in plan.rewrites]
+
+
+def test_a_palisade_run_and_its_gate_all_replaced_by_stone_wall_ends_the_wall_past_the_gate():
+    """The gate shrinks to its low tile (8, 10), so (9..11, 10) stop being
+    connectors: the wall at (12, 10), itself a wall -> wall candidate, goes
+    0 -> 2 through kept_walls. (7, 10) still has (8, 10) and keeps 0; the
+    gate's wall takes the tower; nothing farther along is touched."""
+    walls = [_wall_at(x, 10, rotation=2.0 if x in (5, 20) else 0.0, const=_PALISADE) for x in range(5, 21) if not 8 <= x <= 11]
+    gate = FakeUnit(x=10.0, y=10.5, unit_const=_PALISADE_GATE)
+    plan = _replace(_walls_scenario(gate, *walls), [gate, *walls], WALL)
+    assert _by_tile(plan.rewrites) == {(12, 10): 2}
+    assert [(u is gate, v) for u, v in plan.shaped] == [(True, 2)]
+
+
+@pytest.mark.parametrize("radian", [False, True], ids=["literal", "radian"])
+def test_a_non_connector_replaced_into_a_wall_in_a_y_runs_gap_joins_it(radian):
+    """A y run on purpose: an x run derives 0, which replaced_rotation()
+    already writes, so it could not tell a written shape from none. The
+    ends beside the gap go 2 -> 1, and the new wall takes 1; in a radian
+    scene both are the same literal indices."""
+    stored = {5: 2, 6: 1, 7: 2, 9: 2, 10: 1, 11: 2}
+    scale = 2 * 3.141592653589793 / 5 if radian else 1.0
+    walls = [_wall_at(10, y, rotation=index * scale) for y, index in stored.items()]
+    outpost = _wall_at(10, 8, const=_OUTPOST)
+    plan = _replace(_walls_scenario(outpost, *walls), [outpost], WALL)
+    assert _by_tile(plan.rewrites) == {(10, 7): 1, (10, 9): 1}
+    assert _shaped(plan) == [((10, 8), 1)]
+
+
+def test_replacing_a_gate_in_a_run_with_a_non_connector_ends_the_walls_it_joined():
+    gate, _walls, scenario = _gate_scenario()
+    plan = _replace(scenario, [gate], _OUTPOST)
+    assert _by_tile(plan.rewrites) == {(7, 10): 2, (12, 10): 2}
+    assert plan.shaped == []
+
+
+def test_a_lone_non_connector_replaced_into_a_wall_is_a_tower():
+    villager = _wall_at(30, 30, const=_VILLAGER)
+    plan = _replace(_walls_scenario(villager), [villager], WALL)
+    assert plan.rewrites == []
+    assert _shaped(plan) == [((30, 30), 2)]
+
+
+def test_a_gate_replaced_by_a_wall_lands_on_its_low_tile_and_ends_the_far_wall():
+    gate, _walls, scenario = _gate_scenario()
+    plan = _replace(scenario, [gate], WALL)
+    assert _by_tile(plan.rewrites) == {(12, 10): 2}
+    assert [(u is gate, v) for u, v in plan.shaped] == [(True, 2)]
+
+
+def test_a_unit_replaced_into_a_wall_on_a_wall_tile_reshapes_no_neighbour():
+    """The tile was already a connector, so no mask changed: the neighbours'
+    radian noise (index 1 where they derive 2) stays. The new wall still
+    takes the tile's derived shape."""
+    west, under, east = _wall_at(9, 10, rotation=_RADIAN_1), _wall_at(10, 10), _wall_at(11, 10, rotation=_RADIAN_1)
+    outpost = _wall_at(10, 10, const=_OUTPOST)
+    plan = _replace(_walls_scenario(west, under, east, outpost), [outpost], WALL)
+    assert plan.rewrites == []
+    assert _shaped(plan) == [((10, 10), 0)]
+
+
+def test_scenario_replace_rewrites_plans_nothing_without_a_scene_walk_when_no_tile_changes(monkeypatch):
+    def walked(*_args, **_kwargs):
+        raise AssertionError("wall_scene() walked for a batch that changes no tile")
+
+    outpost = _wall_at(30, 30, const=_OUTPOST)
+    palisade = _wall_at(10, 10, rotation=2.0, const=_PALISADE)
+    scenario = _walls_scenario(outpost, palisade)
+    monkeypatch.setattr(wall_run, "wall_scene", walked)
+    assert _replace(scenario, [outpost], _VILLAGER) is None
+    assert _replace(scenario, [palisade], WALL) is None
+    with pytest.raises(ValueError, match="scenario_gate_changes"):
+        _replace(scenario, [outpost], GATE)
+
+
+def test_apply_replace_plan_writes_the_rewrites_then_the_shaped_units():
+    calls = []
+
+    class _Model:
+        def set_wall_variant(self, unit, variant):
+            calls.append((unit, variant))
+
+    a, b = object(), object()
+    wall_run.apply_replace_plan(_Model(), wall_run.ReplacePlan(rewrites=[(1, a, 2)], shaped=[(b, 1)]))
+    assert calls == [(a, 2), (b, 1)]
+    assert not wall_run.ReplacePlan(rewrites=[], shaped=[])
+
+
+# --- a paste lands walls or gates (TASK-585) ----------------------------------
+
+
+@dataclass
+class _Target:
+    """region_clipboard.PasteTarget's duck type."""
+
+    slot: int
+    unit: FakeUnit
+    x: float
+    y: float
+
+
+def _paste(scenario, *pasted: tuple[int, int, int, float]):
+    """scenario_paste_plan() for (tx, ty, const, rotation) pastes, slots in order."""
+    targets = [
+        _Target(slot, FakeUnit(x=0.5, y=0.5, unit_const=const, rotation=rotation), tx + 0.5, ty + 0.5)
+        for slot, (tx, ty, const, rotation) in enumerate(pasted)
+    ]
+    return wall_run.scenario_paste_plan(scenario, 60, 60, targets)
+
+
+def test_a_wall_pasted_back_into_its_runs_gap_joins_both_ends():
+    """Cut-and-paste-back: the gap's two ends store 2 and go to 0; the pasted
+    wall, stored 0, derives 0 and gets no shape."""
+    run = [_wall_at(x, 10, rotation=2.0 if x in (5, 9, 11, 15) else 0.0) for x in range(5, 16) if x != 10]
+    plan = _paste(_walls_scenario(*run), (10, 10, WALL, 0.0))
+    assert _by_tile(plan.rewrites) == {(9, 10): 0, (11, 10): 0}
+    assert plan.shapes == {}
+
+
+def test_a_lone_pasted_wall_takes_the_tower():
+    plan = _paste(_walls_scenario(), (30, 30, WALL, 0.0))
+    assert plan.rewrites == []
+    assert plan.shapes == {0: 2}
+
+
+def test_a_wall_pasted_past_a_runs_end_makes_the_old_end_a_run_piece():
+    run = _x_run(5, 9, 10)
+    plan = _paste(_walls_scenario(*run), (10, 10, WALL, 2.0))
+    assert _by_tile(plan.rewrites) == {(9, 10): 0}
+    assert plan.shapes == {}
+
+
+def test_a_gate_pasted_beside_a_runs_end_reshapes_it_and_is_never_named():
+    run = _x_run(5, 9, 10)
+    gate = _Target(0, FakeUnit(x=0.5, y=0.5, unit_const=GATE), 12.0, 10.5)  # x 10..13
+    plan = wall_run.scenario_paste_plan(_walls_scenario(*run), 60, 60, [gate])
+    assert _by_tile(plan.rewrites) == {(9, 10): 0}
+    assert plan.shapes == {}
+    assert gate.unit not in [u for _p, u, _v in plan.rewrites]
+
+
+def test_a_wall_pasted_onto_a_wall_reshapes_no_neighbour_but_takes_the_tiles_shape():
+    """The tile already held a connector: no mask changed, so the neighbours'
+    radian noise (index 1 where they derive 2) stays."""
+    west, under, east = _wall_at(9, 10, rotation=_RADIAN_1), _wall_at(10, 10), _wall_at(11, 10, rotation=_RADIAN_1)
+    plan = _paste(_walls_scenario(west, under, east), (10, 10, WALL, 2.0))
+    assert plan.rewrites == []
+    assert plan.shapes == {0: 0}
+
+
+def test_a_radian_pasted_wall_already_on_its_shape_is_left_verbatim():
+    plan = _paste(_walls_scenario(), (30, 30, WALL, 2 * _RADIAN_1))
+    assert not plan
+
+
+def test_scenario_paste_plan_skips_non_connectors_and_off_map_ones_without_a_walk(monkeypatch):
+    def walked(*_args, **_kwargs):
+        raise AssertionError("wall_scene() walked for a paste with no wall or gate on the map")
+
+    monkeypatch.setattr(wall_run, "wall_scene", walked)
+    assert _paste(_walls_scenario(), (30, 30, _VILLAGER, 0.0)) is None
+    assert _paste(_walls_scenario(), (-5, 30, WALL, 0.0)) is None
 
 
 # --- set_cliff_frame()'s guard ----------------------------------------

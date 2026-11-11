@@ -137,7 +137,7 @@ class NewMapDialog(QDialog):
         form.addRow(f"Custom size ({MIN_MAP_TILES}-{MAX_MAP_TILES}):", self.custom_spin)
 
         self.game_data_combo = QComboBox()
-        for game_data in settings.NEW_MAP_GAME_DATA:
+        for game_data in settings.new_map_game_data():
             self.game_data_combo.addItem(game_dataset.DISPLAY_NAMES[game_data], game_data)
         self.game_data_combo.setToolTip("Which game the new map is for: Age of Empires II or Return of Rome")
         form.addRow("Game data:", self.game_data_combo)
@@ -215,7 +215,7 @@ class NewMapDialog(QDialog):
         default = NewMapChoice()
         self.choice = None
         self._set_size(initial.tiles if MIN_MAP_TILES <= initial.tiles <= MAX_MAP_TILES else default.tiles)
-        game_data = initial.game_data if initial.game_data in settings.NEW_MAP_GAME_DATA else default.game_data
+        game_data = initial.game_data if initial.game_data in settings.new_map_game_data() else default.game_data
         self.game_data_combo.setCurrentIndex(self.game_data_combo.findData(game_data))
         terrain_index = self.terrain_combo.findData(initial.terrain_id)
         if terrain_index < 0:

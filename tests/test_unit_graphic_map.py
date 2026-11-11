@@ -782,6 +782,19 @@ def test_garrisoned_hosts_carry_their_measured_flags(graphics):
     assert len(flagged) == 99, len(flagged)
 
 
+def test_return_of_rome_hosts_carry_garrison_flags():
+    """GH #261: RoR's transports fly the flag at the offset measured on the issue, and a building has one too."""
+    from descape import game_dataset
+
+    ror = json.loads((game_dataset.ROR_TABLES_DIR / GRAPHIC_MAP_PATH.name).read_text())["graphics"]
+    for unit_const in (545, 37):
+        assert _flag_tuples(ror[str(unit_const)]) == [("e_all_garrison_flag_x1", 2, -24)], unit_const
+    assert _flag_tuples(ror["109"]), "Town Center"
+    for key, entry in ror.items():
+        if "garrison_flags" in entry:
+            _assert_garrison_flags(key, entry["garrison_flags"])
+
+
 def test_a_civs_building_art_carries_its_own_flags():
     """The flag is attached where per-civ art is built, so a civ's castle
     draws its own set's flags at its own offsets."""
@@ -988,6 +1001,85 @@ def test_a_buildings_multi_delta_shell_is_drawn_as_its_hull_when_lenient(gen, le
     ]
     ship, ship_kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
     assert ship_kind == "shell_deltas" and len(ship["pieces"]) == 2, "a creatable keeps its sails"
+
+
+def _twin_shell(shadow: str, body: str) -> list:
+    """GH #272: Galactic Battlegrounds' shape, a body's shadow file listed before the body."""
+    return [_graphic(0, "None", deltas=[_delta(1), _delta(2)]), _graphic(1, shadow), _graphic(2, body)]
+
+
+@pytest.mark.parametrize("shadow, body", [
+    ("BCOMDC1_S-C1_x1", "BCOMDC1-C1_x1"),
+    ("OBJ-CARBON3_S_x1", "OBJ-CARBON3_x1"),
+    ("lbld-jabbapals_x1", "lbld-jabbapal_x1"),
+], ids=["s_dash", "underscore_s", "trailing_s"])
+def test_a_shadow_twin_gives_way_to_its_body_when_lenient(gen, lenient, shadow, body):
+    graphics = _twin_shell(shadow, body)
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == body
+    assert [g.file_name for g, _dx, _dy in gen._resolve_all_modern_deltas(graphics, 0)] == [body]
+    assert lenient == []
+
+
+def test_the_shadow_twin_rule_is_off_when_strict(gen):
+    graphics = _twin_shell("BCOMDC1_S-C1_x1", "BCOMDC1-C1_x1")
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "BCOMDC1_S-C1_x1"
+    assert len(gen._resolve_all_modern_deltas(graphics, 0)) == 2
+
+
+def test_a_shadow_like_name_without_a_twin_is_kept(gen, lenient):
+    graphics = _twin_shell("DEBRIS_x1", "obj-kcrater-s_x1")
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "DEBRIS_x1"
+    assert len(gen._resolve_all_modern_deltas(graphics, 0)) == 2
+
+
+def test_a_ships_shadow_twin_leaves_its_hull_and_sails(gen, lenient):
+    graphics = [
+        _graphic(0, "-C1", deltas=[_delta(1), _delta(2), _delta(3, offset_y=-25)]),
+        _graphic(1, "SHIP_S-C1_x1"),
+        _graphic(2, "SHIP-C1_x1"),
+        _graphic(3, "SAIL-C1_x1"),
+    ]
+    entry, kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
+    assert kind == "shell_deltas" and entry["file_name"] == "SHIP-C1_x1"
+    assert [p["file_name"] for p in entry["pieces"]] == ["SHIP-C1_x1", "SAIL-C1_x1"]
+    assert lenient == []
+
+
+def _named_shell(*deltas: str) -> list:
+    """GH #272: GB's Heavy Weapons Factory, a modern-named shell nothing ships over its body and shadow."""
+    names = deltas or ("BHVWEA3_S-C1_x1", "BHVWEA3-C1_x1", "POWER-OFF-C1_x1")
+    shell = _graphic(0, "trainsiege1-c1_x1", deltas=[_delta(i + 1) for i in range(len(names))])
+    return [shell, *(_graphic(i + 1, name) for i, name in enumerate(names))]
+
+
+def test_a_modern_named_shell_over_a_body_and_its_shadow_draws_the_body_when_lenient(gen, lenient):
+    graphics = _named_shell()
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "BHVWEA3-C1_x1"
+    entry, kind = gen._entry_for(_units(45), graphics, Path("no-graphics"), 45, {})
+    assert (entry["graphic_id"], entry["file_name"], kind) == (2, "BHVWEA3-C1_x1", "plain")
+    assert lenient == [], "not a legacy ship shell, so no ship-sail warning"
+
+
+def test_a_ships_hidden_body_keeps_its_pieces_when_lenient(gen, lenient):
+    graphics = _named_shell("BHVWEA3_S-C1_x1", "BHVWEA3-C1_x1", "SAIL-C1_x1")
+    entry, kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
+    assert kind == "shell_deltas" and [p["file_name"] for p in entry["pieces"]] == ["BHVWEA3-C1_x1", "SAIL-C1_x1"]
+
+
+def test_a_modern_named_shell_draws_itself_when_strict(gen):
+    graphics = _named_shell()
+    assert gen._resolve_modern_graphic(graphics, 0).file_name == "trainsiege1-c1_x1"
+    entry, _kind = gen._entry_for(_units(45), graphics, Path("no-graphics"), 45, {})
+    assert entry["file_name"] == "trainsiege1-c1_x1"
+
+
+@pytest.mark.parametrize("deltas", [
+    ("trainsiege1_s-c1_x1", "BHVWEA3_S-C1_x1", "BHVWEA3-C1_x1"),
+    ("BHVWEA3_S-C1_x1", "trainsiege1-c1_x1"),
+    ("BHVWEA3-C1_x1", "POWER-OFF-C1_x1"),
+], ids=["own_shadow", "own_stem", "no_pair"])
+def test_a_modern_named_shell_keeps_itself_without_a_hidden_body(gen, lenient, deltas):
+    assert gen._resolve_modern_graphic(_named_shell(*deltas), 0).file_name == "trainsiege1-c1_x1"
 
 
 @pytest.mark.parametrize("change", [{"copies": 3}, {"delta__display_angle": 2}], ids=["three_deltas", "one_angle_only"])
@@ -1203,8 +1295,8 @@ def test_only_the_allowlisted_particle_consts_are_particle_entries(graphics):
 
 
 def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatch):
-    """Smoke and the Flames are unmeasured on the RoR .dat, and main() refuses a
-    run whose emitted set differs from the list."""
+    """GH #311: the RoR .dat gives Smoke and the Flames AoE2's graphics and effects
+    (measured 2026-11-02), and main() refuses a run whose emitted set differs from the list."""
     import importlib.util
 
     monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
@@ -1212,9 +1304,11 @@ def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatc
     spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_ror", path)
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)  # a private copy: _select_dataset rewrites module globals
-    assert 1336 in gen._PARTICLE_CONSTS
+    aoe2 = gen._PARTICLE_CONSTS
+    assert 1336 in aoe2
     gen._select_dataset("ror")
-    assert sorted(gen._PARTICLE_CONSTS) == [303, 1608, 1609, 1610]
+    assert aoe2 == gen._PARTICLE_CONSTS
+    assert sorted(gen._PARTICLE_CONSTS) == [303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610]
 
 
 def _particle_graphic(folder: Path, **effect):
@@ -1241,3 +1335,37 @@ def test_the_generator_refuses_a_non_bool_fliph(gen, tmp_path, flip):
 def test_the_generator_takes_a_particle_effect_of_known_keys(gen, tmp_path, effect):
     entry = gen._particle_entry(1336, _particle_graphic(tmp_path, **effect), tmp_path)
     assert entry is not None and entry["file_name"] == "fx" and entry["art_scale"] == 0.5
+
+
+def _gate_piece(file_name: str, dx: int, dy: int, parent: bool = False) -> dict:
+    piece = {"unit_id": 490, "file_name": file_name, "angle_count": 1, "frame_count": 1, "dx": dx, "dy": dy}
+    return {**piece, "parent": True} if parent else piece
+
+
+def test_a_missing_gate_piece_takes_gaias_same_slot_piece_and_nothing_else_moves(monkeypatch):
+    """TASK-433's generator rule, install-free with a fake `readable`."""
+    import copy
+
+    monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
+    gen = importlib.import_module("gen_unit_graphic_map")
+    gaia = {"file_name": "g_body", "pieces": [
+        _gate_piece("g_body", -72, -36, parent=True),
+        _gate_piece("west_flag", -72, -156),
+        _gate_piece("gone_too", 72, -84),
+    ]}
+    civ = {"file_name": "c_body", "pieces": [
+        _gate_piece("c_body", -72, -36, parent=True),  # (b) a missing parent stays
+        _gate_piece("civ_flag", -72, -156),  # (a) takes Gaia's west_flag
+        _gate_piece("civ_flag", 72, -84),  # (c) Gaia's same-slot piece is missing too
+        _gate_piece("lone", 0, 0),  # (d) no Gaia piece at this slot
+    ]}
+    before = copy.deepcopy(civ)
+    readable = {"g_body", "west_flag"}.__contains__
+    out, swaps = gen._gaia_gate_piece_fallbacks(civ, gaia, readable)
+    assert civ == before, "(e) the input entry was mutated"
+    assert swaps == [("civ_flag", "west_flag")]
+    assert [p["file_name"] for p in out["pieces"]] == ["c_body", "west_flag", "civ_flag", "lone"]
+    assert out["pieces"][1] == gaia["pieces"][1] and out["pieces"][1] is not gaia["pieces"][1]
+    assert out["file_name"] == "c_body"
+    unchanged, none = gen._gaia_gate_piece_fallbacks(civ, gaia, lambda name: True)
+    assert unchanged is civ and none == []

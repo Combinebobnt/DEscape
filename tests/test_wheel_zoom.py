@@ -52,14 +52,40 @@ def _scale(view) -> float:
     return abs(view.transform().determinant()) ** 0.5
 
 
+def _notch_scale(view, notches: int = 1, start: float | None = None) -> float:
+    """The scale `notches` whole notches from `start` (default: here) land
+    on, read from the level lattice (TASK-600: a notch's size depends on
+    where the view sits). The lattice outlives a zoom, so `start` may be a
+    scale read before the notch. One notch is checked to be a real notch's
+    move, not a sliver or a jump."""
+    from descape import zoom_stops
+
+    points, per = view._wheel_lattice()
+    start = _scale(view) if start is None else start
+    target = zoom_stops.notch_target(start * per, notches, points)
+    assert target is not None, "no lattice point that way"
+    if abs(notches) == 1:
+        ratio = (target / (start * per)) ** notches
+        assert zoom_stops.MIN_OFF_LATTICE_STEP * (1 - 1e-9) <= ratio <= 1.5, ratio
+    return target / per
+
+
+def _on_lattice(view) -> bool:
+    from descape import zoom_stops
+
+    points, per = view._wheel_lattice()
+    return zoom_stops.on_point(_scale(view) * per, points) is not None
+
+
 def test_one_full_notch_is_still_exactly_one_zoom_step() -> None:
-    """The coarse-wheel case: unchanged from before the accumulator."""
+    """The coarse-wheel case: one detent is one lattice step (TASK-600)."""
     window = _window()
     try:
         view = window.map_view
-        before = _scale(view)
+        want = _notch_scale(view)
         _wheel_units(view, 120)
-        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(want, rel=1e-9)
+        assert _on_lattice(view)
     finally:
         conftest.close_window(window)
 
@@ -70,13 +96,13 @@ def test_sub_notch_events_accumulate_into_one_step() -> None:
     window = _window()
     try:
         view = window.map_view
-        before = _scale(view)
+        before, want = _scale(view), _notch_scale(view)
         _wheel_units(view, 40)
         assert _scale(view) == pytest.approx(before, rel=1e-9)
         _wheel_units(view, 40)
         assert _scale(view) == pytest.approx(before, rel=1e-9)
         _wheel_units(view, 40)
-        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(want, rel=1e-9)
     finally:
         conftest.close_window(window)
 
@@ -98,9 +124,29 @@ def test_a_hard_flick_crosses_at_most_one_mip_level() -> None:
         after_mip = view.viewport_chunk_target()[0]
         ratio = _scale(view) / before
         assert after_mip - before_mip == 1
-        # Whole notches, and fewer than the ~3.05 notches a second mip
-        # boundary would need (1.25**k < 4.0).
-        assert 1.25 - 1e-9 <= ratio < 4.0
+        # Whole notches, and less than the octave pair a second mip boundary would need.
+        assert 1.25**0.5 - 1e-9 <= ratio < 4.0
+        assert _on_lattice(view)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_flick_onto_resident_levels_is_not_clamped(monkeypatch) -> None:
+    """TASK-614: the budget only keeps a crossing off a level that would build
+    first. With every level resident, the same ten-notch flick crosses more
+    than one (a roll used to stall 0.25 s at each crossing)."""
+    window = _window()
+    try:
+        view = window.map_view
+        cache = view._canvas_item._cache
+        levels = cache.mip_levels()
+        before_mip = view.viewport_chunk_target()[0]
+        if before_mip + 2 > levels[-1]:
+            pytest.skip("ladder has no room for two levels of zoom-in")
+        monkeypatch.setattr(cache, "paints_without_build", lambda mip: True)
+        _wheel_units(view, 1200)
+        assert view.viewport_chunk_target()[0] - before_mip >= 2
+        assert _on_lattice(view)
     finally:
         conftest.close_window(window)
 
@@ -210,11 +256,11 @@ def test_a_direction_flip_drops_the_residual() -> None:
     window = _window()
     try:
         view = window.map_view
-        before = _scale(view)
+        before, want = _scale(view), _notch_scale(view, -1)
         _wheel_units(view, 60)
         assert _scale(view) == pytest.approx(before, rel=1e-9)
         _wheel_units(view, -120)
-        assert _scale(view) == pytest.approx(before * 0.8, rel=1e-9)
+        assert _scale(view) == pytest.approx(want, rel=1e-9)
     finally:
         conftest.close_window(window)
 
@@ -290,9 +336,9 @@ def test_plain_wheel_still_zooms_with_place_unit_armed() -> None:
     window = _place_window()
     try:
         view = window.map_view
-        before = _scale(view)
+        want = _notch_scale(view)
         _wheel_units(view, 120)
-        assert _scale(view) == pytest.approx(before * 1.25, rel=1e-9)
+        assert _scale(view) == pytest.approx(want, rel=1e-9)
         assert _facing(window) == 0
     finally:
         conftest.close_window(window)

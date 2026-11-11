@@ -332,8 +332,8 @@ CROSSING_SCALE = 0.66
 def _crossed(window, scale: float = CROSSING_SCALE) -> int:
     """Zooms onto level 0 from a drained fit; returns it. The grab is the caller's."""
     cache = window._cache
-    # 1 is the native tier (96, TASK-599), 2 is 128.
-    assert cache.mip_levels() == [-2, -1, 0, 1, 2], "the fixture's ladder moved"
+    # 1 is the native tier (96, TASK-599), 2 is 128, 3 the 192 tier (TASK-601).
+    assert cache.mip_levels() == [-2, -1, 0, 1, 2, 3], "the fixture's ladder moved"
     assert not cache.is_level_resident(0), "level 0 already built -- vacuous"
     _set_device_scale(window, scale)
     target = window.map_view.viewport_chunk_target()
@@ -988,13 +988,18 @@ def _zoom_out_roll(start_scale: float, notches: int, edge: bool, reach: bool) ->
     """TASK-031.11's roll: a real wheel notch at the anchor first (it records
     the roll's cursor), a settle at `start_scale` with every warm drained,
     then `notches` real zoom-out notches at that anchor, no drain between.
-    Per notch: (level, composited in its paint, placeholder frame, clamped)."""
+    Per notch: (level, composited in its paint, placeholder frame, clamped).
+    The notches step a fixed 0.8x (the wheel's no-lattice fallback), not
+    TASK-600's level lattice: the reach covers any zoom down to the coarser
+    level's stop, and the lattice's widest view inside a level stops short
+    of the residual ~0.51 this roll needs."""
     from PyQt5.QtCore import QPoint, QPointF
 
     window = _window(size=1360, height=1030)
     try:
         window.set_reach_warm_allowed(reach)
         view = window.map_view
+        view._wheel_lattice = lambda: None
         item = view._canvas_item
         cache = window._cache
         assert cache.pools_chunks(), "no worker path -- the reach is off by design (D1)"

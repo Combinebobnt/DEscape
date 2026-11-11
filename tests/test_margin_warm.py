@@ -36,11 +36,13 @@ class _FakeCache:
     driver geometry is testable with no scenario, no PyQt5, no QApplication.
     """
 
-    def __init__(self, canvas_dims, chunk_px: int = 512, mip_scales=None, resident_mips=(), clock=None):
+    def __init__(self, canvas_dims, chunk_px: int = 512, mip_scales=None, resident_mips=(), clock=None, primed=None):
         self._canvas_dims = canvas_dims  # {mip: (w, h)}
         self.chunk_px = chunk_px
         self._mip_scales = mip_scales or {}
         self._resident_mips = set(resident_mips)
+        # level_warmed()'s primed half; None: every resident mip counts as primed.
+        self.primed = set(resident_mips) if primed is None else set(primed)
         self._cache: set[tuple[int, int, int]] = set()
         self.get_chunk_calls: list[tuple[int, int, int]] = []
         self.fail_on: set[tuple[int, int, int]] = set()
@@ -59,6 +61,10 @@ class _FakeCache:
 
     def is_level_resident(self, mip: int) -> bool:
         return mip in self._resident_mips
+
+    def level_warmed(self, mip: int) -> bool:
+        """render_cache's rule: primed, or any chunk composited at the mip."""
+        return mip in self.primed or any(key[0] == mip for key in self._cache)
 
     def get_chunk(self, mip, cx, cy):
         key = (mip, cx, cy)
@@ -478,6 +484,149 @@ def test_budgeted_tick_reports_tick_and_slowest_chunk_to_perf_trace(clock, monke
     assert chunks == 2, "1ms then 4ms; 5ms + a predicted 4ms passes 8ms"
     assert tick_ms == pytest.approx(5.0)
     assert slowest_ms == pytest.approx(4.0)
+
+
+# --- MarginWarmer: the cold-first defer (TASK-031.82 D3) ---------------------
+
+
+@pytest.fixture
+def input_clock(monkeypatch) -> _Clock:
+    """level_warm's input clock, shared with margin_warm's; no stamp yet."""
+    fake = _Clock()
+    monkeypatch.setattr(margin_warm, "_now", fake)
+    monkeypatch.setattr(level_warm, "_now", fake)
+    monkeypatch.setattr(level_warm, "_last_input", None)
+    return fake
+
+
+def _cold_cache(clock, **kwargs) -> _FakeCache:
+    return _FakeCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=clock, primed=(), **kwargs)
+
+
+def test_a_cold_level_defers_while_input_is_live_and_runs_once_it_is_quiet(input_clock) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+    level_warm.note_input()
+    before = margin_warm.deferrals
+
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [], "a cold first chunk ran inside the input window"
+    assert warmer._queue == [(0, 0), (1, 0)], "the deferral dropped queued chunks"
+    assert margin_warm.deferrals == before + 1
+
+    input_clock.t += level_warm.INPUT_QUIET_MS / 1000.0
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0)]
+
+
+@pytest.mark.parametrize("warmed_by", ("primed", "composited"))
+def test_a_warmed_level_runs_inside_the_input_window(input_clock, warmed_by) -> None:
+    cache = _cold_cache(input_clock)
+    if warmed_by == "primed":
+        cache.primed.add(0)
+    else:
+        cache._cache.add((0, 5, 5))
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)])
+    level_warm.note_input()
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 0, 0)]
+
+
+def test_a_cold_level_runs_with_no_input_stamp_or_with_the_input_budget_pinned(input_clock, monkeypatch) -> None:
+    """The bench's --no-input-budget sets INPUT_BUDGET_MS = BUDGET_MS, so
+    tick_budget_ms() always reads the input budget: the defer must read
+    input_live(), or an old stamp would defer a never-warmed level forever."""
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)])
+    assert warmer.tick() is False, "no stamp: nothing to defer for"
+
+    monkeypatch.setattr(level_warm, "INPUT_BUDGET_MS", level_warm.BUDGET_MS)
+    level_warm.note_input()
+    input_clock.t += 1.0
+    assert level_warm.tick_budget_ms() == level_warm.INPUT_BUDGET_MS, "vacuous: the pin is off"
+    warmer.start(cache, 0, [(1, 0)])
+    cache._cache.clear()
+    assert warmer.tick() is False
+    assert cache.get_chunk_calls == [(0, 0, 0), (0, 1, 0)]
+
+
+@pytest.mark.parametrize("opt_out", ("switch", "run_to_completion"))
+def test_the_defer_never_applies_when_opted_out(input_clock, monkeypatch, opt_out) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+    if opt_out == "switch":
+        monkeypatch.setattr(margin_warm, "DEFER_COLD_FIRST", False)
+    level_warm.note_input()
+    if opt_out == "run_to_completion":
+        warmer.run_to_completion()
+    else:
+        warmer.tick()
+    assert cache.get_chunk_calls[:1] == [(0, 0, 0)]
+
+
+def test_an_empty_queue_drains_and_fires_on_drained_inside_the_input_window(input_clock) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    drained = []
+    warmer.start(cache, 0, [(0, 0)], on_drained=lambda: drained.append(True))
+    warmer._queue = []
+    level_warm.note_input()
+    assert warmer.tick() is False
+    assert drained == [True]
+
+
+def test_a_deferral_keeps_in_flight_jobs_and_their_results_install(inline_pool, input_clock) -> None:
+    cache = _JobCache({0: (20 * 512, 20 * 512)}, resident_mips={0}, clock=input_clock, primed=())
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0), (2, 0)])
+    assert warmer.tick() is True
+    assert warmer._in_flight, "vacuous: nothing in flight"
+    queued = list(warmer._queue)
+    cache._cache.clear()  # the level reads cold again, as on a new level after a crossing
+    level_warm.note_input()
+    assert warmer.tick() is True
+    assert warmer._queue == queued
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    assert cache.installed, "an in-flight result was dropped by the deferral"
+    warmer.cancel()
+
+
+@pytest.mark.gui
+def test_a_deferral_backs_the_timer_off_and_the_next_quiet_tick_restores_it(input_clock) -> None:
+    conftest.ensure_qapp()
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0), (1, 0)])
+    level_warm.note_input()
+    warmer.tick()
+    assert warmer._timer.interval() == margin_warm.MarginWarmer.HELD_INTERVAL_MS
+    input_clock.t += 1.0
+    warmer.tick()
+    assert warmer._timer.interval() == 0
+    warmer.cancel()
+
+
+def test_a_deferral_reaches_the_perf_view_line(input_clock, monkeypatch) -> None:
+    from descape import perf_trace
+
+    monkeypatch.setattr(perf_trace, "_enabled", True)
+    for name, value in perf_trace._fresh_state().items():
+        monkeypatch.setattr(perf_trace, name, value)
+    monkeypatch.setattr(perf_trace, "_idle_scheduler", None)
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)])
+    level_warm.note_input()
+    warmer.tick()
+    warmer.tick()
+    assert perf_trace._warm_deferred == {0: 2}
+    assert "deferred 2 ticks (cold levels 0 x2)" in perf_trace._warm_summary()
 
 
 # --- MarginWarmer: worker threads (Batch F T2) -------------------------------
@@ -1289,7 +1438,7 @@ def test_the_reach_holds_the_widest_view_a_zoom_out_shows_at_its_level(style, ed
         cache = window._cache
         assert isinstance(cache, IsoChunkCache), "not an iso cache -- the Flat case needs Isometric View"
         levels = cache.mip_levels()
-        assert levels == [-2, -1, 0, 1, 2], "the fixture's ladder moved"
+        assert levels == [-2, -1, 0, 1, 2, 3], "the fixture's ladder moved"
         if level == 2:
             assert 1.0 / cache.mip_scale(level - 1) != 2.0 ** (level - 1), "no native tier -- vacuous"
         scale = 0.98 / cache.mip_scale(level)

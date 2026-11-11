@@ -111,63 +111,219 @@
    "file_name": "b_egy_archery_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 10,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -98
+    }
+   ]
   },
   {
    "graphic_id": 6665,
    "file_name": "b_egy_archery_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 14,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -95
+    }
+   ]
   },
   {
    "graphic_id": 6673,
    "file_name": "b_egy_academy_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 18,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -100,
+     "dy": -68
+    }
+   ]
+  },
+  {
+   "graphic_id": 6673,
+   "file_name": "b_egy_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 19,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -100,
+     "dy": -68
+    }
+   ]
   },
   {
    "graphic_id": 6706,
    "file_name": "b_egy_barracks_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 10,
+     "dy": -27
+    },
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 78,
+     "dy": -65
+    }
+   ]
   },
   {
    "graphic_id": 7061,
    "file_name": "b_egy_temple_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 30,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -67,
+     "dy": -87
+    },
+    {
+     "unit_id": 30,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 29,
+     "dy": -40
+    }
+   ]
+  },
+  {
+   "graphic_id": 7061,
+   "file_name": "b_egy_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 31,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -67,
+     "dy": -87
+    },
+    {
+     "unit_id": 31,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 29,
+     "dy": -40
+    }
+   ]
   },
   {
    "graphic_id": 6734,
    "file_name": "b_egy_temple_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 32,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -66,
+     "dy": -89
+    },
+    {
+     "unit_id": 32,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 29,
+     "dy": -40
+    }
+   ]
   },
   {
    "graphic_id": 6755,
    "file_name": "b_egy_dock_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 47,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -22
+    }
+   ]
   },
   {
    "graphic_id": 7042,
    "file_name": "b_egy_siege_workshop_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 49,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -9,
+     "dy": -118
+    }
+   ]
   },
   {
    "graphic_id": 6763,
    "file_name": "b_egy_dock_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 51,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -104
+    }
+   ]
   },
   {
    "graphic_id": 6779,
@@ -324,14 +480,34 @@
    "file_name": "b_egy_granary_age1_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 68,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
   },
   {
    "graphic_id": 7139,
    "file_name": "b_egy_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 76,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -106
+    }
+   ]
   },
   {
    "graphic_id": 6783,
@@ -440,7 +616,17 @@
    "file_name": "b_egy_wonder_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 82,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -100,
+     "dy": -68
+    }
+   ]
   },
   {
    "graphic_id": 6811,
@@ -497,7 +683,42 @@
    "file_name": "b_egy_stable_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -64,
+     "dy": -54
+    },
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 68,
+     "dy": -52
+    }
+   ]
+  },
+  {
+   "graphic_id": 6658,
+   "file_name": "b_egy_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 87,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -98
+    }
+   ]
   },
   {
    "graphic_id": 6807,
@@ -702,6 +923,65 @@
    ]
   },
   {
+   "graphic_id": 6673,
+   "file_name": "b_egy_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 103,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -100,
+     "dy": -68
+    }
+   ]
+  },
+  {
+   "graphic_id": 7061,
+   "file_name": "b_egy_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 104,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -67,
+     "dy": -87
+    },
+    {
+     "unit_id": 104,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 29,
+     "dy": -40
+    }
+   ]
+  },
+  {
+   "graphic_id": 6673,
+   "file_name": "b_egy_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 105,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -100,
+     "dy": -68
+    }
+   ]
+  },
+  {
    "graphic_id": 7077,
    "file_name": "b_egy_trade_workshop_x1",
    "angle_count": 1,
@@ -713,7 +993,17 @@
    "file_name": "b_egy_market_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 116,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 7096,
@@ -725,39 +1015,173 @@
    "variant_count": 5
   },
   {
+   "graphic_id": 6923,
+   "file_name": "b_egy_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 129,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
+   "graphic_id": 6923,
+   "file_name": "b_egy_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 130,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
    "graphic_id": 6930,
    "file_name": "b_egy_granary_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 131,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -158
+    }
+   ]
   },
   {
    "graphic_id": 6698,
    "file_name": "b_egy_barracks_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -5,
+     "dy": -8
+    },
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 83,
+     "dy": -54
+    }
+   ]
   },
   {
    "graphic_id": 6964,
    "file_name": "b_egy_market_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 137,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -95
+    }
+   ]
   },
   {
    "graphic_id": 7002,
    "file_name": "b_egy_town_center_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 141,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -37
+    }
+   ]
   },
   {
    "graphic_id": 7018,
    "file_name": "b_egy_town_center_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 142,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
+  },
+  {
+   "graphic_id": 7042,
+   "file_name": "b_egy_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 150,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -9,
+     "dy": -118
+    }
+   ]
+  },
+  {
+   "graphic_id": 7068,
+   "file_name": "b_egy_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -64,
+     "dy": -54
+    },
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 68,
+     "dy": -52
+    }
+   ]
   },
   {
    "graphic_id": 7100,
@@ -767,6 +1191,23 @@
    "frame_count": 1,
    "rotation_is_variant": true,
    "variant_count": 5
+  },
+  {
+   "graphic_id": 7139,
+   "file_name": "b_egy_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 158,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -106
+    }
+   ]
   },
   {
    "graphic_id": 7084,
@@ -787,6 +1228,40 @@
    "file_name": "b_egy_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 235,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -106
+    }
+   ]
+  },
+  {
+   "graphic_id": 7139,
+   "file_name": "b_egy_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 236,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -106
+    }
+   ]
+  },
+  {
+   "graphic_id": 6747,
+   "file_name": "b_egy_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
    "frame_count": 1
   },
   {
@@ -794,21 +1269,51 @@
    "file_name": "b_egy_house_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 463,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -90
+    }
+   ]
   },
   {
    "graphic_id": 6916,
    "file_name": "b_egy_house_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 464,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 10,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 6951,
    "file_name": "b_egy_house_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 465,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 11,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 7006,
@@ -830,6 +1335,23 @@
    "angle_count": 1,
    "mirroring_mode": 0,
    "frame_count": 1
+  },
+  {
+   "graphic_id": 7002,
+   "file_name": "b_egy_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 484,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -37
+    }
+   ]
   },
   {
    "graphic_id": 6791,
@@ -1050,7 +1572,34 @@
    "file_name": "b_meso_tower_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 566,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 3,
+     "dy": -213
+    }
+   ]
+  },
+  {
+   "graphic_id": 7018,
+   "file_name": "b_egy_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 597,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -90
+    }
+   ]
   },
   {
    "graphic_id": 7022,
@@ -1799,74 +2348,284 @@
    ]
   },
   {
+   "graphic_id": 6755,
+   "file_name": "b_egy_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 806,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -22
+    }
+   ]
+  },
+  {
+   "graphic_id": 6763,
+   "file_name": "b_egy_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 807,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -104
+    }
+   ]
+  },
+  {
+   "graphic_id": 6763,
+   "file_name": "b_egy_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 808,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -104
+    }
+   ]
+  },
+  {
    "graphic_id": 303,
    "file_name": "b_meso_tower_scen_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1102,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -223
+    }
+   ]
+  },
+  {
+   "graphic_id": 6763,
+   "file_name": "b_egy_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1189,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -104
+    }
+   ]
   },
   {
    "graphic_id": 9,
    "file_name": "b_gre_archery_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 10,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -93
+    }
+   ]
   },
   {
    "graphic_id": 21,
    "file_name": "b_gre_archery_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 14,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -6,
+     "dy": -107
+    }
+   ]
   },
   {
    "graphic_id": 50,
    "file_name": "b_gre_academy_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 18,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -72
+    }
+   ]
+  },
+  {
+   "graphic_id": 50,
+   "file_name": "b_gre_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 19,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 102,
    "file_name": "b_gre_barracks_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -11,
+     "dy": 0
+    },
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 86,
+     "dy": -52
+    }
+   ]
   },
   {
    "graphic_id": 510,
    "file_name": "b_gre_temple_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 30,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -50,
+     "dy": -71
+    }
+   ]
+  },
+  {
+   "graphic_id": 510,
+   "file_name": "b_gre_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 31,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -50,
+     "dy": -71
+    }
+   ]
   },
   {
    "graphic_id": 147,
    "file_name": "b_gre_temple_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 32,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -47,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 221,
    "file_name": "b_gre_dock_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 47,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -48
+    }
+   ]
   },
   {
    "graphic_id": 486,
    "file_name": "b_gre_siege_workshop_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 49,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -110
+    }
+   ]
   },
   {
    "graphic_id": 233,
    "file_name": "b_gre_dock_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 51,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -97
+    }
+   ]
   },
   {
    "graphic_id": 2057,
@@ -2023,14 +2782,34 @@
    "file_name": "b_gre_granary_age1_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 68,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
   },
   {
    "graphic_id": 2412,
    "file_name": "b_gre_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 76,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -145
+    }
+   ]
   },
   {
    "graphic_id": 2069,
@@ -2139,7 +2918,17 @@
    "file_name": "b_gre_wonder_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 82,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 2129,
@@ -2196,7 +2985,34 @@
    "file_name": "b_gre_stable_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 5,
+     "dy": -89
+    }
+   ]
+  },
+  {
+   "graphic_id": 9,
+   "file_name": "b_gre_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 87,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -93
+    }
+   ]
   },
   {
    "graphic_id": 2117,
@@ -2401,6 +3217,57 @@
    ]
   },
   {
+   "graphic_id": 50,
+   "file_name": "b_gre_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 103,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -72
+    }
+   ]
+  },
+  {
+   "graphic_id": 510,
+   "file_name": "b_gre_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 104,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -50,
+     "dy": -71
+    }
+   ]
+  },
+  {
+   "graphic_id": 50,
+   "file_name": "b_gre_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 105,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -72
+    }
+   ]
+  },
+  {
    "graphic_id": 546,
    "file_name": "b_gre_trade_workshop_x1",
    "angle_count": 1,
@@ -2412,7 +3279,17 @@
    "file_name": "b_gre_market_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 116,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -4,
+     "dy": -37
+    }
+   ]
   },
   {
    "graphic_id": 2021,
@@ -2424,39 +3301,165 @@
    "variant_count": 5
   },
   {
+   "graphic_id": 365,
+   "file_name": "b_gre_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 129,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
+   "graphic_id": 365,
+   "file_name": "b_gre_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 130,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
    "graphic_id": 377,
    "file_name": "b_gre_granary_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 131,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -158
+    }
+   ]
   },
   {
    "graphic_id": 90,
    "file_name": "b_gre_barracks_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -11,
+     "dy": -4
+    },
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 87,
+     "dy": -52
+    }
+   ]
   },
   {
    "graphic_id": 3431,
    "file_name": "b_gre_market_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 137,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -110,
+     "dy": -47
+    }
+   ]
   },
   {
    "graphic_id": 3262,
    "file_name": "b_gre_town_center_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 141,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -32
+    }
+   ]
   },
   {
    "graphic_id": 3038,
    "file_name": "b_gre_town_center_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 142,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -85
+    }
+   ]
+  },
+  {
+   "graphic_id": 486,
+   "file_name": "b_gre_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 150,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -110
+    }
+   ]
+  },
+  {
+   "graphic_id": 522,
+   "file_name": "b_gre_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 5,
+     "dy": -89
+    }
+   ]
   },
   {
    "graphic_id": 2033,
@@ -2466,6 +3469,23 @@
    "frame_count": 1,
    "rotation_is_variant": true,
    "variant_count": 5
+  },
+  {
+   "graphic_id": 2412,
+   "file_name": "b_gre_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 158,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -145
+    }
+   ]
   },
   {
    "graphic_id": 566,
@@ -2486,6 +3506,40 @@
    "file_name": "b_gre_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 235,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -145
+    }
+   ]
+  },
+  {
+   "graphic_id": 2412,
+   "file_name": "b_gre_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 236,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -145
+    }
+   ]
+  },
+  {
+   "graphic_id": 171,
+   "file_name": "b_gre_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
    "frame_count": 1
   },
   {
@@ -2493,21 +3547,51 @@
    "file_name": "b_gre_house_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 463,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -90
+    }
+   ]
   },
   {
    "graphic_id": 2220,
    "file_name": "b_gre_house_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 464,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 10,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 2265,
    "file_name": "b_gre_house_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 465,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 11,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 456,
@@ -2529,6 +3613,23 @@
    "angle_count": 1,
    "mirroring_mode": 0,
    "frame_count": 1
+  },
+  {
+   "graphic_id": 3262,
+   "file_name": "b_gre_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 484,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -32
+    }
+   ]
   },
   {
    "graphic_id": 2093,
@@ -2749,7 +3850,34 @@
    "file_name": "b_east_tower_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 566,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -197
+    }
+   ]
+  },
+  {
+   "graphic_id": 3038,
+   "file_name": "b_gre_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 597,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -85
+    }
+   ]
   },
   {
    "graphic_id": 468,
@@ -3498,74 +4626,300 @@
    ]
   },
   {
+   "graphic_id": 221,
+   "file_name": "b_gre_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 806,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -48
+    }
+   ]
+  },
+  {
+   "graphic_id": 233,
+   "file_name": "b_gre_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 807,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -97
+    }
+   ]
+  },
+  {
+   "graphic_id": 233,
+   "file_name": "b_gre_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 808,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -97
+    }
+   ]
+  },
+  {
    "graphic_id": 298,
    "file_name": "b_east_tower_scen_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1102,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -311
+    }
+   ]
+  },
+  {
+   "graphic_id": 233,
+   "file_name": "b_gre_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1189,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -97
+    }
+   ]
   },
   {
    "graphic_id": 11,
    "file_name": "b_bab_archery_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 10,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 17,
+     "dy": -94
+    },
+    {
+     "unit_id": 10,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -84,
+     "dy": -42
+    }
+   ]
   },
   {
    "graphic_id": 23,
    "file_name": "b_bab_archery_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 14,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 17,
+     "dy": -98
+    },
+    {
+     "unit_id": 14,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -85,
+     "dy": -47
+    }
+   ]
   },
   {
    "graphic_id": 52,
    "file_name": "b_bab_academy_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 18,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -39,
+     "dy": -89
+    }
+   ]
+  },
+  {
+   "graphic_id": 52,
+   "file_name": "b_bab_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 19,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -39,
+     "dy": -89
+    }
+   ]
   },
   {
    "graphic_id": 104,
    "file_name": "b_bab_barracks_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -9
+    },
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 82,
+     "dy": -51
+    }
+   ]
   },
   {
    "graphic_id": 512,
    "file_name": "b_bab_temple_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 30,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -44,
+     "dy": -110
+    }
+   ]
+  },
+  {
+   "graphic_id": 512,
+   "file_name": "b_bab_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 31,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -44,
+     "dy": -110
+    }
+   ]
   },
   {
    "graphic_id": 149,
    "file_name": "b_bab_temple_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 32,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -22,
+     "dy": -112
+    }
+   ]
   },
   {
    "graphic_id": 223,
    "file_name": "b_bab_dock_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 47,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -60
+    }
+   ]
   },
   {
    "graphic_id": 488,
    "file_name": "b_bab_siege_workshop_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 49,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 4,
+     "dy": -101
+    }
+   ]
   },
   {
    "graphic_id": 235,
    "file_name": "b_bab_dock_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 51,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 2059,
@@ -3722,14 +5076,34 @@
    "file_name": "b_bab_granary_age1_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 68,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
   },
   {
    "graphic_id": 2414,
    "file_name": "b_bab_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 76,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -107
+    }
+   ]
   },
   {
    "graphic_id": 2071,
@@ -3838,7 +5212,17 @@
    "file_name": "b_bab_wonder_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 82,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -39,
+     "dy": -89
+    }
+   ]
   },
   {
    "graphic_id": 2131,
@@ -3895,7 +5279,50 @@
    "file_name": "b_bab_stable_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 4,
+     "dy": -90
+    },
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 93,
+     "dy": -49
+    }
+   ]
+  },
+  {
+   "graphic_id": 11,
+   "file_name": "b_bab_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 87,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 17,
+     "dy": -94
+    },
+    {
+     "unit_id": 87,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -84,
+     "dy": -42
+    }
+   ]
   },
   {
    "graphic_id": 2119,
@@ -4100,6 +5527,57 @@
    ]
   },
   {
+   "graphic_id": 52,
+   "file_name": "b_bab_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 103,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -39,
+     "dy": -89
+    }
+   ]
+  },
+  {
+   "graphic_id": 512,
+   "file_name": "b_bab_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 104,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -44,
+     "dy": -110
+    }
+   ]
+  },
+  {
+   "graphic_id": 52,
+   "file_name": "b_bab_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 105,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -39,
+     "dy": -89
+    }
+   ]
+  },
+  {
    "graphic_id": 548,
    "file_name": "b_bab_trade_workshop_x1",
    "angle_count": 1,
@@ -4111,7 +5589,17 @@
    "file_name": "b_bab_market_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 116,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -78
+    }
+   ]
   },
   {
    "graphic_id": 2023,
@@ -4123,39 +5611,173 @@
    "variant_count": 5
   },
   {
+   "graphic_id": 367,
+   "file_name": "b_bab_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 129,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
+   "graphic_id": 367,
+   "file_name": "b_bab_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 130,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
    "graphic_id": 379,
    "file_name": "b_bab_granary_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 131,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -158
+    }
+   ]
   },
   {
    "graphic_id": 92,
    "file_name": "b_bab_barracks_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": 0
+    },
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 82,
+     "dy": -46
+    }
+   ]
   },
   {
    "graphic_id": 3433,
    "file_name": "b_bab_market_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 137,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -86
+    }
+   ]
   },
   {
    "graphic_id": 3264,
    "file_name": "b_bab_town_center_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 141,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -40
+    }
+   ]
   },
   {
    "graphic_id": 3040,
    "file_name": "b_bab_town_center_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 142,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -47
+    }
+   ]
+  },
+  {
+   "graphic_id": 488,
+   "file_name": "b_bab_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 150,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 4,
+     "dy": -101
+    }
+   ]
+  },
+  {
+   "graphic_id": 524,
+   "file_name": "b_bab_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 4,
+     "dy": -90
+    },
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 93,
+     "dy": -49
+    }
+   ]
   },
   {
    "graphic_id": 2035,
@@ -4165,6 +5787,23 @@
    "frame_count": 1,
    "rotation_is_variant": true,
    "variant_count": 5
+  },
+  {
+   "graphic_id": 2414,
+   "file_name": "b_bab_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 158,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -107
+    }
+   ]
   },
   {
    "graphic_id": 568,
@@ -4185,6 +5824,40 @@
    "file_name": "b_bab_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 235,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -107
+    }
+   ]
+  },
+  {
+   "graphic_id": 2414,
+   "file_name": "b_bab_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 236,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -107
+    }
+   ]
+  },
+  {
+   "graphic_id": 173,
+   "file_name": "b_bab_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
    "frame_count": 1
   },
   {
@@ -4201,21 +5874,51 @@
    "file_name": "b_bab_house_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 463,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -90
+    }
+   ]
   },
   {
    "graphic_id": 2222,
    "file_name": "b_bab_house_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 464,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 10,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 2267,
    "file_name": "b_bab_house_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 465,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 11,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 458,
@@ -4237,6 +5940,23 @@
    "angle_count": 1,
    "mirroring_mode": 0,
    "frame_count": 1
+  },
+  {
+   "graphic_id": 3264,
+   "file_name": "b_bab_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 484,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -40
+    }
+   ]
   },
   {
    "graphic_id": 2095,
@@ -4457,7 +6177,34 @@
    "file_name": "b_orie_tower_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 566,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -4,
+     "dy": -178
+    }
+   ]
+  },
+  {
+   "graphic_id": 3040,
+   "file_name": "b_bab_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 597,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -47
+    }
+   ]
   },
   {
    "graphic_id": 470,
@@ -5206,74 +6953,284 @@
    ]
   },
   {
+   "graphic_id": 223,
+   "file_name": "b_bab_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 806,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -60
+    }
+   ]
+  },
+  {
+   "graphic_id": 235,
+   "file_name": "b_bab_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 807,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -72
+    }
+   ]
+  },
+  {
+   "graphic_id": 235,
+   "file_name": "b_bab_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 808,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -72
+    }
+   ]
+  },
+  {
    "graphic_id": 300,
    "file_name": "b_orie_tower_scen_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1102,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -179
+    }
+   ]
+  },
+  {
+   "graphic_id": 235,
+   "file_name": "b_bab_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1189,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 0,
+     "dy": -72
+    }
+   ]
   },
   {
    "graphic_id": 10,
    "file_name": "b_asi_archery_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 10,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -3,
+     "dy": -101
+    }
+   ]
   },
   {
    "graphic_id": 22,
    "file_name": "b_asi_archery_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 14,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -3,
+     "dy": -101
+    }
+   ]
   },
   {
    "graphic_id": 51,
    "file_name": "b_asi_academy_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 18,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -89
+    }
+   ]
+  },
+  {
+   "graphic_id": 51,
+   "file_name": "b_asi_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 19,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -89
+    }
+   ]
   },
   {
    "graphic_id": 103,
    "file_name": "b_asi_barracks_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -4,
+     "dy": -5
+    },
+    {
+     "unit_id": 20,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 88,
+     "dy": -52
+    }
+   ]
   },
   {
    "graphic_id": 511,
    "file_name": "b_asi_temple_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 30,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -121
+    }
+   ]
+  },
+  {
+   "graphic_id": 511,
+   "file_name": "b_asi_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 31,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -121
+    }
+   ]
   },
   {
    "graphic_id": 148,
    "file_name": "b_asi_temple_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 32,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -124
+    }
+   ]
   },
   {
    "graphic_id": 222,
    "file_name": "b_asi_dock_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 47,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -66
+    }
+   ]
   },
   {
    "graphic_id": 487,
    "file_name": "b_asi_siege_workshop_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 49,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -17,
+     "dy": -118
+    }
+   ]
   },
   {
    "graphic_id": 234,
    "file_name": "b_asi_dock_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 51,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -82
+    }
+   ]
   },
   {
    "graphic_id": 2058,
@@ -5430,14 +7387,34 @@
    "file_name": "b_asi_granary_age1_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 68,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
   },
   {
    "graphic_id": 2413,
    "file_name": "b_asi_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 76,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -137
+    }
+   ]
   },
   {
    "graphic_id": 2070,
@@ -5546,7 +7523,17 @@
    "file_name": "b_asi_wonder_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 82,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -89
+    }
+   ]
   },
   {
    "graphic_id": 2130,
@@ -5603,7 +7590,34 @@
    "file_name": "b_asi_stable_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 86,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -20,
+     "dy": -96
+    }
+   ]
+  },
+  {
+   "graphic_id": 10,
+   "file_name": "b_asi_archery_age2_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 87,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -3,
+     "dy": -101
+    }
+   ]
   },
   {
    "graphic_id": 2118,
@@ -5808,6 +7822,57 @@
    ]
   },
   {
+   "graphic_id": 51,
+   "file_name": "b_asi_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 103,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -89
+    }
+   ]
+  },
+  {
+   "graphic_id": 511,
+   "file_name": "b_asi_temple_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 104,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -121
+    }
+   ]
+  },
+  {
+   "graphic_id": 51,
+   "file_name": "b_asi_academy_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 105,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 43,
+     "dy": -89
+    }
+   ]
+  },
+  {
    "graphic_id": 547,
    "file_name": "b_asi_trade_workshop_x1",
    "angle_count": 1,
@@ -5819,7 +7884,17 @@
    "file_name": "b_asi_market_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 116,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -93
+    }
+   ]
   },
   {
    "graphic_id": 2022,
@@ -5831,39 +7906,165 @@
    "variant_count": 5
   },
   {
+   "graphic_id": 366,
+   "file_name": "b_asi_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 129,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
+   "graphic_id": 366,
+   "file_name": "b_asi_granary_age1_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 130,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -155
+    }
+   ]
+  },
+  {
    "graphic_id": 378,
    "file_name": "b_asi_granary_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 131,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -158
+    }
+   ]
   },
   {
    "graphic_id": 91,
    "file_name": "b_asi_barracks_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -4,
+     "dy": -5
+    },
+    {
+     "unit_id": 132,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 88,
+     "dy": -52
+    }
+   ]
   },
   {
    "graphic_id": 3432,
    "file_name": "b_asi_market_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 137,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -98
+    }
+   ]
   },
   {
    "graphic_id": 3263,
    "file_name": "b_asi_town_center_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 141,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -33
+    }
+   ]
   },
   {
    "graphic_id": 3039,
    "file_name": "b_asi_town_center_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 142,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -143
+    }
+   ]
+  },
+  {
+   "graphic_id": 487,
+   "file_name": "b_asi_siege_workshop_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 150,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -17,
+     "dy": -118
+    }
+   ]
+  },
+  {
+   "graphic_id": 523,
+   "file_name": "b_asi_stable_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 153,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -20,
+     "dy": -96
+    }
+   ]
   },
   {
    "graphic_id": 2034,
@@ -5873,6 +8074,23 @@
    "frame_count": 1,
    "rotation_is_variant": true,
    "variant_count": 5
+  },
+  {
+   "graphic_id": 2413,
+   "file_name": "b_asi_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 158,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -137
+    }
+   ]
   },
   {
    "graphic_id": 567,
@@ -5893,6 +8111,40 @@
    "file_name": "b_asi_tower_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 235,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -137
+    }
+   ]
+  },
+  {
+   "graphic_id": 2413,
+   "file_name": "b_asi_tower_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 236,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -137
+    }
+   ]
+  },
+  {
+   "graphic_id": 172,
+   "file_name": "b_asi_wonder_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
    "frame_count": 1
   },
   {
@@ -5909,21 +8161,51 @@
    "file_name": "b_asi_house_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 463,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 8,
+     "dy": -90
+    }
+   ]
   },
   {
    "graphic_id": 2221,
    "file_name": "b_asi_house_age3_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 464,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 10,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 2266,
    "file_name": "b_asi_house_age4_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 465,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 11,
+     "dy": -87
+    }
+   ]
   },
   {
    "graphic_id": 457,
@@ -5945,6 +8227,23 @@
    "angle_count": 1,
    "mirroring_mode": 0,
    "frame_count": 1
+  },
+  {
+   "graphic_id": 3263,
+   "file_name": "b_asi_town_center_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 484,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -1,
+     "dy": -33
+    }
+   ]
   },
   {
    "graphic_id": 2094,
@@ -6165,7 +8464,34 @@
    "file_name": "b_asia_tower_age2_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 566,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -4,
+     "dy": -170
+    }
+   ]
+  },
+  {
+   "graphic_id": 3039,
+   "file_name": "b_asi_town_center_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 597,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 2,
+     "dy": -143
+    }
+   ]
   },
   {
    "graphic_id": 469,
@@ -6914,11 +9240,89 @@
    ]
   },
   {
+   "graphic_id": 222,
+   "file_name": "b_asi_dock_age3_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 806,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -66
+    }
+   ]
+  },
+  {
+   "graphic_id": 234,
+   "file_name": "b_asi_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 807,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -82
+    }
+   ]
+  },
+  {
+   "graphic_id": 234,
+   "file_name": "b_asi_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 808,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -82
+    }
+   ]
+  },
+  {
    "graphic_id": 299,
    "file_name": "b_asia_tower_scen_x1",
    "angle_count": 1,
    "mirroring_mode": 0,
-   "frame_count": 1
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1102,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": 1,
+     "dy": -234
+    }
+   ]
+  },
+  {
+   "graphic_id": 234,
+   "file_name": "b_asi_dock_age4_x1",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "garrison_flags": [
+    {
+     "unit_id": 1189,
+     "file_name": "e_all_garrison_flag_x1",
+     "angle_count": 1,
+     "frame_count": 30,
+     "dx": -2,
+     "dy": -82
+    }
+   ]
   }
  ],
  "civ_art": {
@@ -6926,1321 +9330,1321 @@
    "10": 0,
    "14": 1,
    "18": 2,
-   "19": 2,
-   "20": 3,
-   "30": 4,
-   "31": 4,
-   "32": 5,
-   "47": 6,
-   "49": 7,
-   "51": 8,
-   "63": 9,
-   "64": 10,
-   "67": 11,
-   "68": 12,
-   "76": 13,
-   "78": 14,
-   "80": 15,
-   "81": 16,
-   "82": 17,
-   "85": 18,
-   "86": 19,
-   "87": 0,
-   "88": 20,
-   "90": 21,
-   "91": 22,
-   "92": 23,
-   "95": 24,
-   "103": 2,
-   "104": 4,
-   "105": 2,
-   "110": 25,
-   "116": 26,
-   "117": 27,
-   "129": 12,
-   "130": 12,
-   "131": 28,
-   "132": 29,
-   "137": 30,
-   "141": 31,
-   "142": 32,
-   "150": 7,
-   "153": 19,
-   "155": 33,
-   "158": 13,
-   "179": 25,
-   "209": 34,
-   "210": 35,
-   "235": 36,
-   "236": 13,
-   "276": 17,
-   "463": 37,
-   "464": 38,
-   "465": 39,
-   "481": 40,
-   "482": 41,
-   "483": 42,
-   "484": 31,
-   "487": 43,
-   "488": 44,
-   "490": 45,
-   "491": 46,
-   "564": 47,
-   "565": 48,
-   "566": 49,
-   "584": 48,
-   "585": 48,
-   "586": 48,
-   "587": 48,
-   "597": 32,
-   "611": 50,
-   "612": 51,
-   "613": 52,
-   "614": 53,
-   "615": 54,
-   "616": 55,
-   "659": 56,
-   "660": 57,
-   "661": 58,
-   "662": 59,
-   "663": 60,
-   "664": 61,
-   "665": 62,
-   "666": 63,
-   "667": 64,
-   "668": 65,
-   "669": 66,
-   "670": 67,
-   "671": 68,
-   "672": 69,
-   "673": 70,
-   "674": 71,
-   "806": 6,
-   "807": 8,
-   "808": 8,
-   "826": 17,
-   "1102": 72,
-   "1189": 8,
-   "1647": 25
+   "19": 3,
+   "20": 4,
+   "30": 5,
+   "31": 6,
+   "32": 7,
+   "47": 8,
+   "49": 9,
+   "51": 10,
+   "63": 11,
+   "64": 12,
+   "67": 13,
+   "68": 14,
+   "76": 15,
+   "78": 16,
+   "80": 17,
+   "81": 18,
+   "82": 19,
+   "85": 20,
+   "86": 21,
+   "87": 22,
+   "88": 23,
+   "90": 24,
+   "91": 25,
+   "92": 26,
+   "95": 27,
+   "103": 28,
+   "104": 29,
+   "105": 30,
+   "110": 31,
+   "116": 32,
+   "117": 33,
+   "129": 34,
+   "130": 35,
+   "131": 36,
+   "132": 37,
+   "137": 38,
+   "141": 39,
+   "142": 40,
+   "150": 41,
+   "153": 42,
+   "155": 43,
+   "158": 44,
+   "179": 31,
+   "209": 45,
+   "210": 46,
+   "235": 47,
+   "236": 48,
+   "276": 49,
+   "463": 50,
+   "464": 51,
+   "465": 52,
+   "481": 53,
+   "482": 54,
+   "483": 55,
+   "484": 56,
+   "487": 57,
+   "488": 58,
+   "490": 59,
+   "491": 60,
+   "564": 61,
+   "565": 62,
+   "566": 63,
+   "584": 62,
+   "585": 62,
+   "586": 62,
+   "587": 62,
+   "597": 64,
+   "611": 65,
+   "612": 66,
+   "613": 67,
+   "614": 68,
+   "615": 69,
+   "616": 70,
+   "659": 71,
+   "660": 72,
+   "661": 73,
+   "662": 74,
+   "663": 75,
+   "664": 76,
+   "665": 77,
+   "666": 78,
+   "667": 79,
+   "668": 80,
+   "669": 81,
+   "670": 82,
+   "671": 83,
+   "672": 84,
+   "673": 85,
+   "674": 86,
+   "806": 87,
+   "807": 88,
+   "808": 89,
+   "826": 49,
+   "1102": 90,
+   "1189": 91,
+   "1647": 31
   },
   "2": {
-   "10": 73,
-   "14": 74,
-   "18": 75,
-   "19": 75,
-   "20": 76,
-   "30": 77,
-   "31": 77,
-   "32": 78,
-   "47": 79,
-   "49": 80,
-   "51": 81,
-   "63": 82,
-   "64": 83,
-   "67": 84,
-   "68": 85,
-   "76": 86,
-   "78": 87,
-   "80": 88,
-   "81": 89,
-   "82": 90,
-   "85": 91,
-   "86": 92,
-   "87": 73,
-   "88": 93,
-   "90": 94,
-   "91": 95,
-   "92": 96,
-   "95": 97,
-   "103": 75,
-   "104": 77,
-   "105": 75,
-   "110": 98,
-   "116": 99,
-   "117": 100,
-   "129": 85,
-   "130": 85,
-   "131": 101,
-   "132": 102,
-   "137": 103,
-   "141": 104,
-   "142": 105,
-   "150": 80,
-   "153": 92,
-   "155": 106,
-   "158": 86,
-   "179": 98,
-   "209": 107,
-   "210": 108,
-   "235": 109,
-   "236": 86,
-   "276": 90,
-   "463": 110,
-   "464": 111,
-   "465": 112,
-   "481": 113,
-   "482": 114,
-   "483": 115,
-   "484": 104,
-   "487": 116,
-   "488": 117,
-   "490": 118,
-   "491": 119,
-   "564": 120,
-   "565": 121,
-   "566": 122,
-   "584": 121,
-   "585": 121,
-   "586": 121,
-   "587": 121,
-   "597": 105,
-   "611": 123,
-   "612": 124,
-   "613": 125,
-   "614": 126,
-   "615": 127,
-   "616": 128,
-   "659": 129,
-   "660": 130,
-   "661": 131,
-   "662": 132,
-   "663": 133,
-   "664": 134,
-   "665": 135,
-   "666": 136,
-   "667": 137,
-   "668": 138,
-   "669": 139,
-   "670": 140,
-   "671": 141,
-   "672": 142,
-   "673": 143,
-   "674": 144,
-   "806": 79,
-   "807": 81,
-   "808": 81,
-   "826": 90,
-   "1102": 145,
-   "1189": 81,
-   "1647": 98
+   "10": 92,
+   "14": 93,
+   "18": 94,
+   "19": 95,
+   "20": 96,
+   "30": 97,
+   "31": 98,
+   "32": 99,
+   "47": 100,
+   "49": 101,
+   "51": 102,
+   "63": 103,
+   "64": 104,
+   "67": 105,
+   "68": 106,
+   "76": 107,
+   "78": 108,
+   "80": 109,
+   "81": 110,
+   "82": 111,
+   "85": 112,
+   "86": 113,
+   "87": 114,
+   "88": 115,
+   "90": 116,
+   "91": 117,
+   "92": 118,
+   "95": 119,
+   "103": 120,
+   "104": 121,
+   "105": 122,
+   "110": 123,
+   "116": 124,
+   "117": 125,
+   "129": 126,
+   "130": 127,
+   "131": 128,
+   "132": 129,
+   "137": 130,
+   "141": 131,
+   "142": 132,
+   "150": 133,
+   "153": 134,
+   "155": 135,
+   "158": 136,
+   "179": 123,
+   "209": 137,
+   "210": 138,
+   "235": 139,
+   "236": 140,
+   "276": 141,
+   "463": 142,
+   "464": 143,
+   "465": 144,
+   "481": 145,
+   "482": 146,
+   "483": 147,
+   "484": 148,
+   "487": 149,
+   "488": 150,
+   "490": 151,
+   "491": 152,
+   "564": 153,
+   "565": 154,
+   "566": 155,
+   "584": 154,
+   "585": 154,
+   "586": 154,
+   "587": 154,
+   "597": 156,
+   "611": 157,
+   "612": 158,
+   "613": 159,
+   "614": 160,
+   "615": 161,
+   "616": 162,
+   "659": 163,
+   "660": 164,
+   "661": 165,
+   "662": 166,
+   "663": 167,
+   "664": 168,
+   "665": 169,
+   "666": 170,
+   "667": 171,
+   "668": 172,
+   "669": 173,
+   "670": 174,
+   "671": 175,
+   "672": 176,
+   "673": 177,
+   "674": 178,
+   "806": 179,
+   "807": 180,
+   "808": 181,
+   "826": 141,
+   "1102": 182,
+   "1189": 183,
+   "1647": 123
   },
   "3": {
-   "10": 146,
-   "14": 147,
-   "18": 148,
-   "19": 148,
-   "20": 149,
-   "30": 150,
-   "31": 150,
-   "32": 151,
-   "47": 152,
-   "49": 153,
-   "51": 154,
-   "63": 155,
-   "64": 156,
-   "67": 157,
-   "68": 158,
-   "76": 159,
-   "78": 160,
-   "80": 161,
-   "81": 162,
-   "82": 163,
-   "85": 164,
-   "86": 165,
-   "87": 146,
-   "88": 166,
-   "90": 167,
-   "91": 168,
-   "92": 169,
-   "95": 170,
-   "103": 148,
-   "104": 150,
-   "105": 148,
-   "110": 171,
-   "116": 172,
-   "117": 173,
-   "129": 158,
-   "130": 158,
-   "131": 174,
-   "132": 175,
-   "137": 176,
-   "141": 177,
-   "142": 178,
-   "150": 153,
-   "153": 165,
-   "155": 179,
-   "158": 159,
-   "179": 171,
-   "209": 180,
-   "210": 181,
-   "235": 182,
-   "236": 159,
-   "276": 163,
-   "446": 183,
-   "463": 184,
-   "464": 185,
-   "465": 186,
-   "481": 187,
-   "482": 188,
-   "483": 189,
-   "484": 177,
-   "487": 190,
-   "488": 191,
-   "490": 192,
-   "491": 193,
-   "564": 194,
-   "565": 195,
-   "566": 196,
-   "584": 195,
-   "585": 195,
-   "586": 195,
-   "587": 195,
-   "597": 178,
-   "611": 197,
-   "612": 198,
-   "613": 199,
-   "614": 200,
-   "615": 201,
-   "616": 202,
-   "659": 203,
-   "660": 204,
-   "661": 205,
-   "662": 206,
-   "663": 207,
-   "664": 208,
-   "665": 209,
-   "666": 210,
-   "667": 211,
-   "668": 212,
-   "669": 213,
-   "670": 214,
-   "671": 215,
-   "672": 216,
-   "673": 217,
-   "674": 218,
-   "806": 152,
-   "807": 154,
-   "808": 154,
-   "826": 163,
-   "1102": 219,
-   "1189": 154,
-   "1647": 171
+   "10": 184,
+   "14": 185,
+   "18": 186,
+   "19": 187,
+   "20": 188,
+   "30": 189,
+   "31": 190,
+   "32": 191,
+   "47": 192,
+   "49": 193,
+   "51": 194,
+   "63": 195,
+   "64": 196,
+   "67": 197,
+   "68": 198,
+   "76": 199,
+   "78": 200,
+   "80": 201,
+   "81": 202,
+   "82": 203,
+   "85": 204,
+   "86": 205,
+   "87": 206,
+   "88": 207,
+   "90": 208,
+   "91": 209,
+   "92": 210,
+   "95": 211,
+   "103": 212,
+   "104": 213,
+   "105": 214,
+   "110": 215,
+   "116": 216,
+   "117": 217,
+   "129": 218,
+   "130": 219,
+   "131": 220,
+   "132": 221,
+   "137": 222,
+   "141": 223,
+   "142": 224,
+   "150": 225,
+   "153": 226,
+   "155": 227,
+   "158": 228,
+   "179": 215,
+   "209": 229,
+   "210": 230,
+   "235": 231,
+   "236": 232,
+   "276": 233,
+   "446": 234,
+   "463": 235,
+   "464": 236,
+   "465": 237,
+   "481": 238,
+   "482": 239,
+   "483": 240,
+   "484": 241,
+   "487": 242,
+   "488": 243,
+   "490": 244,
+   "491": 245,
+   "564": 246,
+   "565": 247,
+   "566": 248,
+   "584": 247,
+   "585": 247,
+   "586": 247,
+   "587": 247,
+   "597": 249,
+   "611": 250,
+   "612": 251,
+   "613": 252,
+   "614": 253,
+   "615": 254,
+   "616": 255,
+   "659": 256,
+   "660": 257,
+   "661": 258,
+   "662": 259,
+   "663": 260,
+   "664": 261,
+   "665": 262,
+   "666": 263,
+   "667": 264,
+   "668": 265,
+   "669": 266,
+   "670": 267,
+   "671": 268,
+   "672": 269,
+   "673": 270,
+   "674": 271,
+   "806": 272,
+   "807": 273,
+   "808": 274,
+   "826": 233,
+   "1102": 275,
+   "1189": 276,
+   "1647": 215
   },
   "4": {
    "10": 0,
    "14": 1,
    "18": 2,
-   "19": 2,
-   "20": 3,
-   "30": 4,
-   "31": 4,
-   "32": 5,
-   "47": 6,
-   "49": 7,
-   "51": 8,
-   "63": 9,
-   "64": 10,
-   "67": 11,
-   "68": 12,
-   "76": 13,
-   "78": 14,
-   "80": 15,
-   "81": 16,
-   "82": 17,
-   "85": 18,
-   "86": 19,
-   "87": 0,
-   "88": 20,
-   "90": 21,
-   "91": 22,
-   "92": 23,
-   "95": 24,
-   "103": 2,
-   "104": 4,
-   "105": 2,
-   "110": 25,
-   "116": 26,
-   "117": 27,
-   "129": 12,
-   "130": 12,
-   "131": 28,
-   "132": 29,
-   "137": 30,
-   "141": 31,
-   "142": 32,
-   "150": 7,
-   "153": 19,
-   "155": 33,
-   "158": 13,
-   "179": 25,
-   "209": 34,
-   "210": 35,
-   "235": 36,
-   "236": 13,
-   "276": 17,
-   "463": 37,
-   "464": 38,
-   "465": 39,
-   "481": 40,
-   "482": 41,
-   "483": 42,
-   "484": 31,
-   "487": 43,
-   "488": 44,
-   "490": 45,
-   "491": 46,
-   "564": 47,
-   "565": 48,
-   "566": 49,
-   "584": 48,
-   "585": 48,
-   "586": 48,
-   "587": 48,
-   "597": 32,
-   "611": 50,
-   "612": 51,
-   "613": 52,
-   "614": 53,
-   "615": 54,
-   "616": 55,
-   "659": 56,
-   "660": 57,
-   "661": 58,
-   "662": 59,
-   "663": 60,
-   "664": 61,
-   "665": 62,
-   "666": 63,
-   "667": 64,
-   "668": 65,
-   "669": 66,
-   "670": 67,
-   "671": 68,
-   "672": 69,
-   "673": 70,
-   "674": 71,
-   "806": 6,
-   "807": 8,
-   "808": 8,
-   "826": 17,
-   "1102": 72,
-   "1189": 8,
-   "1647": 25
+   "19": 3,
+   "20": 4,
+   "30": 5,
+   "31": 6,
+   "32": 7,
+   "47": 8,
+   "49": 9,
+   "51": 10,
+   "63": 11,
+   "64": 12,
+   "67": 13,
+   "68": 14,
+   "76": 15,
+   "78": 16,
+   "80": 17,
+   "81": 18,
+   "82": 19,
+   "85": 20,
+   "86": 21,
+   "87": 22,
+   "88": 23,
+   "90": 24,
+   "91": 25,
+   "92": 26,
+   "95": 27,
+   "103": 28,
+   "104": 29,
+   "105": 30,
+   "110": 31,
+   "116": 32,
+   "117": 33,
+   "129": 34,
+   "130": 35,
+   "131": 36,
+   "132": 37,
+   "137": 38,
+   "141": 39,
+   "142": 40,
+   "150": 41,
+   "153": 42,
+   "155": 43,
+   "158": 44,
+   "179": 31,
+   "209": 45,
+   "210": 46,
+   "235": 47,
+   "236": 48,
+   "276": 49,
+   "463": 50,
+   "464": 51,
+   "465": 52,
+   "481": 53,
+   "482": 54,
+   "483": 55,
+   "484": 56,
+   "487": 57,
+   "488": 58,
+   "490": 59,
+   "491": 60,
+   "564": 61,
+   "565": 62,
+   "566": 63,
+   "584": 62,
+   "585": 62,
+   "586": 62,
+   "587": 62,
+   "597": 64,
+   "611": 65,
+   "612": 66,
+   "613": 67,
+   "614": 68,
+   "615": 69,
+   "616": 70,
+   "659": 71,
+   "660": 72,
+   "661": 73,
+   "662": 74,
+   "663": 75,
+   "664": 76,
+   "665": 77,
+   "666": 78,
+   "667": 79,
+   "668": 80,
+   "669": 81,
+   "670": 82,
+   "671": 83,
+   "672": 84,
+   "673": 85,
+   "674": 86,
+   "806": 87,
+   "807": 88,
+   "808": 89,
+   "826": 49,
+   "1102": 90,
+   "1189": 91,
+   "1647": 31
   },
   "5": {
-   "10": 73,
-   "14": 74,
-   "18": 75,
-   "19": 75,
-   "20": 76,
-   "30": 77,
-   "31": 77,
-   "32": 78,
-   "47": 79,
-   "49": 80,
-   "51": 81,
-   "63": 82,
-   "64": 83,
-   "67": 84,
-   "68": 85,
-   "76": 86,
-   "78": 87,
-   "80": 88,
-   "81": 89,
-   "82": 90,
-   "85": 91,
-   "86": 92,
-   "87": 73,
-   "88": 93,
-   "90": 94,
-   "91": 95,
-   "92": 96,
-   "95": 97,
-   "103": 75,
-   "104": 77,
-   "105": 75,
-   "110": 98,
-   "116": 99,
-   "117": 100,
-   "129": 85,
-   "130": 85,
-   "131": 101,
-   "132": 102,
-   "137": 103,
-   "141": 104,
-   "142": 105,
-   "150": 80,
-   "153": 92,
-   "155": 106,
-   "158": 86,
-   "179": 98,
-   "209": 107,
-   "210": 108,
-   "235": 109,
-   "236": 86,
-   "276": 90,
-   "463": 110,
-   "464": 111,
-   "465": 112,
-   "481": 113,
-   "482": 114,
-   "483": 115,
-   "484": 104,
-   "487": 116,
-   "488": 117,
-   "490": 118,
-   "491": 119,
-   "564": 120,
-   "565": 121,
-   "566": 122,
-   "584": 121,
-   "585": 121,
-   "586": 121,
-   "587": 121,
-   "597": 105,
-   "611": 123,
-   "612": 124,
-   "613": 125,
-   "614": 126,
-   "615": 127,
-   "616": 128,
-   "659": 129,
-   "660": 130,
-   "661": 131,
-   "662": 132,
-   "663": 133,
-   "664": 134,
-   "665": 135,
-   "666": 136,
-   "667": 137,
-   "668": 138,
-   "669": 139,
-   "670": 140,
-   "671": 141,
-   "672": 142,
-   "673": 143,
-   "674": 144,
-   "806": 79,
-   "807": 81,
-   "808": 81,
-   "826": 90,
-   "1102": 145,
-   "1189": 81,
-   "1647": 98
+   "10": 92,
+   "14": 93,
+   "18": 94,
+   "19": 95,
+   "20": 96,
+   "30": 97,
+   "31": 98,
+   "32": 99,
+   "47": 100,
+   "49": 101,
+   "51": 102,
+   "63": 103,
+   "64": 104,
+   "67": 105,
+   "68": 106,
+   "76": 107,
+   "78": 108,
+   "80": 109,
+   "81": 110,
+   "82": 111,
+   "85": 112,
+   "86": 113,
+   "87": 114,
+   "88": 115,
+   "90": 116,
+   "91": 117,
+   "92": 118,
+   "95": 119,
+   "103": 120,
+   "104": 121,
+   "105": 122,
+   "110": 123,
+   "116": 124,
+   "117": 125,
+   "129": 126,
+   "130": 127,
+   "131": 128,
+   "132": 129,
+   "137": 130,
+   "141": 131,
+   "142": 132,
+   "150": 133,
+   "153": 134,
+   "155": 135,
+   "158": 136,
+   "179": 123,
+   "209": 137,
+   "210": 138,
+   "235": 139,
+   "236": 140,
+   "276": 141,
+   "463": 142,
+   "464": 143,
+   "465": 144,
+   "481": 145,
+   "482": 146,
+   "483": 147,
+   "484": 148,
+   "487": 149,
+   "488": 150,
+   "490": 151,
+   "491": 152,
+   "564": 153,
+   "565": 154,
+   "566": 155,
+   "584": 154,
+   "585": 154,
+   "586": 154,
+   "587": 154,
+   "597": 156,
+   "611": 157,
+   "612": 158,
+   "613": 159,
+   "614": 160,
+   "615": 161,
+   "616": 162,
+   "659": 163,
+   "660": 164,
+   "661": 165,
+   "662": 166,
+   "663": 167,
+   "664": 168,
+   "665": 169,
+   "666": 170,
+   "667": 171,
+   "668": 172,
+   "669": 173,
+   "670": 174,
+   "671": 175,
+   "672": 176,
+   "673": 177,
+   "674": 178,
+   "806": 179,
+   "807": 180,
+   "808": 181,
+   "826": 141,
+   "1102": 182,
+   "1189": 183,
+   "1647": 123
   },
   "6": {
    "10": 0,
    "14": 1,
    "18": 2,
-   "19": 2,
-   "20": 3,
-   "30": 4,
-   "31": 4,
-   "32": 5,
-   "47": 6,
-   "49": 7,
-   "51": 8,
-   "63": 9,
-   "64": 10,
-   "67": 11,
-   "68": 12,
-   "76": 13,
-   "78": 14,
-   "80": 15,
-   "81": 16,
-   "82": 17,
-   "85": 18,
-   "86": 19,
-   "87": 0,
-   "88": 20,
-   "90": 21,
-   "91": 22,
-   "92": 23,
-   "95": 24,
-   "103": 2,
-   "104": 4,
-   "105": 2,
-   "110": 25,
-   "116": 26,
-   "117": 27,
-   "129": 12,
-   "130": 12,
-   "131": 28,
-   "132": 29,
-   "137": 30,
-   "141": 31,
-   "142": 32,
-   "150": 7,
-   "153": 19,
-   "155": 33,
-   "158": 13,
-   "179": 25,
-   "209": 34,
-   "210": 35,
-   "235": 36,
-   "236": 13,
-   "276": 17,
-   "463": 37,
-   "464": 38,
-   "465": 39,
-   "481": 40,
-   "482": 41,
-   "483": 42,
-   "484": 31,
-   "487": 43,
-   "488": 44,
-   "490": 45,
-   "491": 46,
-   "564": 47,
-   "565": 48,
-   "566": 49,
-   "584": 48,
-   "585": 48,
-   "586": 48,
-   "587": 48,
-   "597": 32,
-   "611": 50,
-   "612": 51,
-   "613": 52,
-   "614": 53,
-   "615": 54,
-   "616": 55,
-   "659": 56,
-   "660": 57,
-   "661": 58,
-   "662": 59,
-   "663": 60,
-   "664": 61,
-   "665": 62,
-   "666": 63,
-   "667": 64,
-   "668": 65,
-   "669": 66,
-   "670": 67,
-   "671": 68,
-   "672": 69,
-   "673": 70,
-   "674": 71,
-   "806": 6,
-   "807": 8,
-   "808": 8,
-   "826": 17,
-   "1102": 72,
-   "1189": 8,
-   "1647": 25
+   "19": 3,
+   "20": 4,
+   "30": 5,
+   "31": 6,
+   "32": 7,
+   "47": 8,
+   "49": 9,
+   "51": 10,
+   "63": 11,
+   "64": 12,
+   "67": 13,
+   "68": 14,
+   "76": 15,
+   "78": 16,
+   "80": 17,
+   "81": 18,
+   "82": 19,
+   "85": 20,
+   "86": 21,
+   "87": 22,
+   "88": 23,
+   "90": 24,
+   "91": 25,
+   "92": 26,
+   "95": 27,
+   "103": 28,
+   "104": 29,
+   "105": 30,
+   "110": 31,
+   "116": 32,
+   "117": 33,
+   "129": 34,
+   "130": 35,
+   "131": 36,
+   "132": 37,
+   "137": 38,
+   "141": 39,
+   "142": 40,
+   "150": 41,
+   "153": 42,
+   "155": 43,
+   "158": 44,
+   "179": 31,
+   "209": 45,
+   "210": 46,
+   "235": 47,
+   "236": 48,
+   "276": 49,
+   "463": 50,
+   "464": 51,
+   "465": 52,
+   "481": 53,
+   "482": 54,
+   "483": 55,
+   "484": 56,
+   "487": 57,
+   "488": 58,
+   "490": 59,
+   "491": 60,
+   "564": 61,
+   "565": 62,
+   "566": 63,
+   "584": 62,
+   "585": 62,
+   "586": 62,
+   "587": 62,
+   "597": 64,
+   "611": 65,
+   "612": 66,
+   "613": 67,
+   "614": 68,
+   "615": 69,
+   "616": 70,
+   "659": 71,
+   "660": 72,
+   "661": 73,
+   "662": 74,
+   "663": 75,
+   "664": 76,
+   "665": 77,
+   "666": 78,
+   "667": 79,
+   "668": 80,
+   "669": 81,
+   "670": 82,
+   "671": 83,
+   "672": 84,
+   "673": 85,
+   "674": 86,
+   "806": 87,
+   "807": 88,
+   "808": 89,
+   "826": 49,
+   "1102": 90,
+   "1189": 91,
+   "1647": 31
   },
   "7": {
-   "10": 73,
-   "14": 74,
-   "18": 75,
-   "19": 75,
-   "20": 76,
-   "30": 77,
-   "31": 77,
-   "32": 78,
-   "47": 79,
-   "49": 80,
-   "51": 81,
-   "63": 82,
-   "64": 83,
-   "67": 84,
-   "68": 85,
-   "76": 86,
-   "78": 87,
-   "80": 88,
-   "81": 89,
-   "82": 90,
-   "85": 91,
-   "86": 92,
-   "87": 73,
-   "88": 93,
-   "90": 94,
-   "91": 95,
-   "92": 96,
-   "95": 97,
-   "103": 75,
-   "104": 77,
-   "105": 75,
-   "110": 98,
-   "116": 99,
-   "117": 100,
-   "129": 85,
-   "130": 85,
-   "131": 101,
-   "132": 102,
-   "137": 103,
-   "141": 104,
-   "142": 105,
-   "150": 80,
-   "153": 92,
-   "155": 106,
-   "158": 86,
-   "179": 98,
-   "209": 107,
-   "210": 108,
-   "235": 109,
-   "236": 86,
-   "276": 90,
-   "463": 110,
-   "464": 111,
-   "465": 112,
-   "481": 113,
-   "482": 114,
-   "483": 115,
-   "484": 104,
-   "487": 116,
-   "488": 117,
-   "490": 118,
-   "491": 119,
-   "564": 120,
-   "565": 121,
-   "566": 122,
-   "584": 121,
-   "585": 121,
-   "586": 121,
-   "587": 121,
-   "597": 105,
-   "611": 123,
-   "612": 124,
-   "613": 125,
-   "614": 126,
-   "615": 127,
-   "616": 128,
-   "659": 129,
-   "660": 130,
-   "661": 131,
-   "662": 132,
-   "663": 133,
-   "664": 134,
-   "665": 135,
-   "666": 136,
-   "667": 137,
-   "668": 138,
-   "669": 139,
-   "670": 140,
-   "671": 141,
-   "672": 142,
-   "673": 143,
-   "674": 144,
-   "806": 79,
-   "807": 81,
-   "808": 81,
-   "826": 90,
-   "1102": 145,
-   "1189": 81,
-   "1647": 98
+   "10": 92,
+   "14": 93,
+   "18": 94,
+   "19": 95,
+   "20": 96,
+   "30": 97,
+   "31": 98,
+   "32": 99,
+   "47": 100,
+   "49": 101,
+   "51": 102,
+   "63": 103,
+   "64": 104,
+   "67": 105,
+   "68": 106,
+   "76": 107,
+   "78": 108,
+   "80": 109,
+   "81": 110,
+   "82": 111,
+   "85": 112,
+   "86": 113,
+   "87": 114,
+   "88": 115,
+   "90": 116,
+   "91": 117,
+   "92": 118,
+   "95": 119,
+   "103": 120,
+   "104": 121,
+   "105": 122,
+   "110": 123,
+   "116": 124,
+   "117": 125,
+   "129": 126,
+   "130": 127,
+   "131": 128,
+   "132": 129,
+   "137": 130,
+   "141": 131,
+   "142": 132,
+   "150": 133,
+   "153": 134,
+   "155": 135,
+   "158": 136,
+   "179": 123,
+   "209": 137,
+   "210": 138,
+   "235": 139,
+   "236": 140,
+   "276": 141,
+   "463": 142,
+   "464": 143,
+   "465": 144,
+   "481": 145,
+   "482": 146,
+   "483": 147,
+   "484": 148,
+   "487": 149,
+   "488": 150,
+   "490": 151,
+   "491": 152,
+   "564": 153,
+   "565": 154,
+   "566": 155,
+   "584": 154,
+   "585": 154,
+   "586": 154,
+   "587": 154,
+   "597": 156,
+   "611": 157,
+   "612": 158,
+   "613": 159,
+   "614": 160,
+   "615": 161,
+   "616": 162,
+   "659": 163,
+   "660": 164,
+   "661": 165,
+   "662": 166,
+   "663": 167,
+   "664": 168,
+   "665": 169,
+   "666": 170,
+   "667": 171,
+   "668": 172,
+   "669": 173,
+   "670": 174,
+   "671": 175,
+   "672": 176,
+   "673": 177,
+   "674": 178,
+   "806": 179,
+   "807": 180,
+   "808": 181,
+   "826": 141,
+   "1102": 182,
+   "1189": 183,
+   "1647": 123
   },
   "8": {
-   "10": 146,
-   "14": 147,
-   "18": 148,
-   "19": 148,
-   "20": 149,
-   "30": 150,
-   "31": 150,
-   "32": 151,
-   "47": 152,
-   "49": 153,
-   "51": 154,
-   "63": 155,
-   "64": 156,
-   "67": 157,
-   "68": 158,
-   "76": 159,
-   "78": 160,
-   "80": 161,
-   "81": 162,
-   "82": 163,
-   "85": 164,
-   "86": 165,
-   "87": 146,
-   "88": 166,
-   "90": 167,
-   "91": 168,
-   "92": 169,
-   "95": 170,
-   "103": 148,
-   "104": 150,
-   "105": 148,
-   "110": 171,
-   "116": 172,
-   "117": 173,
-   "129": 158,
-   "130": 158,
-   "131": 174,
-   "132": 175,
-   "137": 176,
-   "141": 177,
-   "142": 178,
-   "150": 153,
-   "153": 165,
-   "155": 179,
-   "158": 159,
-   "179": 171,
-   "209": 180,
-   "210": 181,
-   "235": 182,
-   "236": 159,
-   "276": 163,
-   "446": 183,
-   "463": 184,
-   "464": 185,
-   "465": 186,
-   "481": 187,
-   "482": 188,
-   "483": 189,
-   "484": 177,
-   "487": 190,
-   "488": 191,
-   "490": 192,
-   "491": 193,
-   "564": 194,
-   "565": 195,
-   "566": 196,
-   "584": 195,
-   "585": 195,
-   "586": 195,
-   "587": 195,
-   "597": 178,
-   "611": 197,
-   "612": 198,
-   "613": 199,
-   "614": 200,
-   "615": 201,
-   "616": 202,
-   "659": 203,
-   "660": 204,
-   "661": 205,
-   "662": 206,
-   "663": 207,
-   "664": 208,
-   "665": 209,
-   "666": 210,
-   "667": 211,
-   "668": 212,
-   "669": 213,
-   "670": 214,
-   "671": 215,
-   "672": 216,
-   "673": 217,
-   "674": 218,
-   "806": 152,
-   "807": 154,
-   "808": 154,
-   "826": 163,
-   "1102": 219,
-   "1189": 154,
-   "1647": 171
+   "10": 184,
+   "14": 185,
+   "18": 186,
+   "19": 187,
+   "20": 188,
+   "30": 189,
+   "31": 190,
+   "32": 191,
+   "47": 192,
+   "49": 193,
+   "51": 194,
+   "63": 195,
+   "64": 196,
+   "67": 197,
+   "68": 198,
+   "76": 199,
+   "78": 200,
+   "80": 201,
+   "81": 202,
+   "82": 203,
+   "85": 204,
+   "86": 205,
+   "87": 206,
+   "88": 207,
+   "90": 208,
+   "91": 209,
+   "92": 210,
+   "95": 211,
+   "103": 212,
+   "104": 213,
+   "105": 214,
+   "110": 215,
+   "116": 216,
+   "117": 217,
+   "129": 218,
+   "130": 219,
+   "131": 220,
+   "132": 221,
+   "137": 222,
+   "141": 223,
+   "142": 224,
+   "150": 225,
+   "153": 226,
+   "155": 227,
+   "158": 228,
+   "179": 215,
+   "209": 229,
+   "210": 230,
+   "235": 231,
+   "236": 232,
+   "276": 233,
+   "446": 234,
+   "463": 235,
+   "464": 236,
+   "465": 237,
+   "481": 238,
+   "482": 239,
+   "483": 240,
+   "484": 241,
+   "487": 242,
+   "488": 243,
+   "490": 244,
+   "491": 245,
+   "564": 246,
+   "565": 247,
+   "566": 248,
+   "584": 247,
+   "585": 247,
+   "586": 247,
+   "587": 247,
+   "597": 249,
+   "611": 250,
+   "612": 251,
+   "613": 252,
+   "614": 253,
+   "615": 254,
+   "616": 255,
+   "659": 256,
+   "660": 257,
+   "661": 258,
+   "662": 259,
+   "663": 260,
+   "664": 261,
+   "665": 262,
+   "666": 263,
+   "667": 264,
+   "668": 265,
+   "669": 266,
+   "670": 267,
+   "671": 268,
+   "672": 269,
+   "673": 270,
+   "674": 271,
+   "806": 272,
+   "807": 273,
+   "808": 274,
+   "826": 233,
+   "1102": 275,
+   "1189": 276,
+   "1647": 215
   },
   "9": {
-   "10": 146,
-   "14": 147,
-   "18": 148,
-   "19": 148,
-   "20": 149,
-   "30": 150,
-   "31": 150,
-   "32": 151,
-   "47": 152,
-   "49": 153,
-   "51": 154,
-   "63": 155,
-   "64": 156,
-   "67": 157,
-   "68": 158,
-   "76": 159,
-   "78": 160,
-   "80": 161,
-   "81": 162,
-   "82": 163,
-   "85": 164,
-   "86": 165,
-   "87": 146,
-   "88": 166,
-   "90": 167,
-   "91": 168,
-   "92": 169,
-   "95": 170,
-   "103": 148,
-   "104": 150,
-   "105": 148,
-   "110": 171,
-   "116": 172,
-   "117": 173,
-   "129": 158,
-   "130": 158,
-   "131": 174,
-   "132": 175,
-   "137": 176,
-   "141": 177,
-   "142": 178,
-   "150": 153,
-   "153": 165,
-   "155": 179,
-   "158": 159,
-   "179": 171,
-   "209": 180,
-   "210": 181,
-   "235": 182,
-   "236": 159,
-   "276": 163,
-   "446": 183,
-   "463": 184,
-   "464": 185,
-   "465": 186,
-   "481": 187,
-   "482": 188,
-   "483": 189,
-   "484": 177,
-   "487": 190,
-   "488": 191,
-   "490": 192,
-   "491": 193,
-   "564": 194,
-   "565": 195,
-   "566": 196,
-   "584": 195,
-   "585": 195,
-   "586": 195,
-   "587": 195,
-   "597": 178,
-   "611": 197,
-   "612": 198,
-   "613": 199,
-   "614": 200,
-   "615": 201,
-   "616": 202,
-   "659": 203,
-   "660": 204,
-   "661": 205,
-   "662": 206,
-   "663": 207,
-   "664": 208,
-   "665": 209,
-   "666": 210,
-   "667": 211,
-   "668": 212,
-   "669": 213,
-   "670": 214,
-   "671": 215,
-   "672": 216,
-   "673": 217,
-   "674": 218,
-   "806": 152,
-   "807": 154,
-   "808": 154,
-   "826": 163,
-   "1102": 219,
-   "1189": 154,
-   "1647": 171
+   "10": 184,
+   "14": 185,
+   "18": 186,
+   "19": 187,
+   "20": 188,
+   "30": 189,
+   "31": 190,
+   "32": 191,
+   "47": 192,
+   "49": 193,
+   "51": 194,
+   "63": 195,
+   "64": 196,
+   "67": 197,
+   "68": 198,
+   "76": 199,
+   "78": 200,
+   "80": 201,
+   "81": 202,
+   "82": 203,
+   "85": 204,
+   "86": 205,
+   "87": 206,
+   "88": 207,
+   "90": 208,
+   "91": 209,
+   "92": 210,
+   "95": 211,
+   "103": 212,
+   "104": 213,
+   "105": 214,
+   "110": 215,
+   "116": 216,
+   "117": 217,
+   "129": 218,
+   "130": 219,
+   "131": 220,
+   "132": 221,
+   "137": 222,
+   "141": 223,
+   "142": 224,
+   "150": 225,
+   "153": 226,
+   "155": 227,
+   "158": 228,
+   "179": 215,
+   "209": 229,
+   "210": 230,
+   "235": 231,
+   "236": 232,
+   "276": 233,
+   "446": 234,
+   "463": 235,
+   "464": 236,
+   "465": 237,
+   "481": 238,
+   "482": 239,
+   "483": 240,
+   "484": 241,
+   "487": 242,
+   "488": 243,
+   "490": 244,
+   "491": 245,
+   "564": 246,
+   "565": 247,
+   "566": 248,
+   "584": 247,
+   "585": 247,
+   "586": 247,
+   "587": 247,
+   "597": 249,
+   "611": 250,
+   "612": 251,
+   "613": 252,
+   "614": 253,
+   "615": 254,
+   "616": 255,
+   "659": 256,
+   "660": 257,
+   "661": 258,
+   "662": 259,
+   "663": 260,
+   "664": 261,
+   "665": 262,
+   "666": 263,
+   "667": 264,
+   "668": 265,
+   "669": 266,
+   "670": 267,
+   "671": 268,
+   "672": 269,
+   "673": 270,
+   "674": 271,
+   "806": 272,
+   "807": 273,
+   "808": 274,
+   "826": 233,
+   "1102": 275,
+   "1189": 276,
+   "1647": 215
   },
   "10": {
-   "10": 220,
-   "14": 221,
-   "18": 222,
-   "19": 222,
-   "20": 223,
-   "30": 224,
-   "31": 224,
-   "32": 225,
-   "47": 226,
-   "49": 227,
-   "51": 228,
-   "63": 229,
-   "64": 230,
-   "67": 231,
-   "68": 232,
-   "76": 233,
-   "78": 234,
-   "80": 235,
-   "81": 236,
-   "82": 237,
-   "85": 238,
-   "86": 239,
-   "87": 220,
-   "88": 240,
-   "90": 241,
-   "91": 242,
-   "92": 243,
-   "95": 244,
-   "103": 222,
-   "104": 224,
-   "105": 222,
-   "110": 245,
-   "116": 246,
-   "117": 247,
-   "129": 232,
-   "130": 232,
-   "131": 248,
-   "132": 249,
-   "137": 250,
-   "141": 251,
-   "142": 252,
-   "150": 227,
-   "153": 239,
-   "155": 253,
-   "158": 233,
-   "179": 245,
-   "209": 254,
-   "210": 255,
-   "235": 256,
-   "236": 233,
-   "276": 237,
-   "446": 257,
-   "463": 258,
-   "464": 259,
-   "465": 260,
-   "481": 261,
-   "482": 262,
-   "483": 263,
-   "484": 251,
-   "487": 264,
-   "488": 265,
-   "490": 266,
-   "491": 267,
-   "564": 268,
-   "565": 269,
-   "566": 270,
-   "584": 269,
-   "585": 269,
-   "586": 269,
-   "587": 269,
-   "597": 252,
-   "611": 271,
-   "612": 272,
-   "613": 273,
-   "614": 274,
-   "615": 275,
-   "616": 276,
-   "659": 277,
-   "660": 278,
-   "661": 279,
-   "662": 280,
-   "663": 281,
-   "664": 282,
-   "665": 283,
-   "666": 284,
-   "667": 285,
-   "668": 286,
-   "669": 287,
-   "670": 288,
-   "671": 289,
-   "672": 290,
-   "673": 291,
-   "674": 292,
-   "806": 226,
-   "807": 228,
-   "808": 228,
-   "826": 237,
-   "1102": 293,
-   "1189": 228,
-   "1647": 245
+   "10": 277,
+   "14": 278,
+   "18": 279,
+   "19": 280,
+   "20": 281,
+   "30": 282,
+   "31": 283,
+   "32": 284,
+   "47": 285,
+   "49": 286,
+   "51": 287,
+   "63": 288,
+   "64": 289,
+   "67": 290,
+   "68": 291,
+   "76": 292,
+   "78": 293,
+   "80": 294,
+   "81": 295,
+   "82": 296,
+   "85": 297,
+   "86": 298,
+   "87": 299,
+   "88": 300,
+   "90": 301,
+   "91": 302,
+   "92": 303,
+   "95": 304,
+   "103": 305,
+   "104": 306,
+   "105": 307,
+   "110": 308,
+   "116": 309,
+   "117": 310,
+   "129": 311,
+   "130": 312,
+   "131": 313,
+   "132": 314,
+   "137": 315,
+   "141": 316,
+   "142": 317,
+   "150": 318,
+   "153": 319,
+   "155": 320,
+   "158": 321,
+   "179": 308,
+   "209": 322,
+   "210": 323,
+   "235": 324,
+   "236": 325,
+   "276": 326,
+   "446": 327,
+   "463": 328,
+   "464": 329,
+   "465": 330,
+   "481": 331,
+   "482": 332,
+   "483": 333,
+   "484": 334,
+   "487": 335,
+   "488": 336,
+   "490": 337,
+   "491": 338,
+   "564": 339,
+   "565": 340,
+   "566": 341,
+   "584": 340,
+   "585": 340,
+   "586": 340,
+   "587": 340,
+   "597": 342,
+   "611": 343,
+   "612": 344,
+   "613": 345,
+   "614": 346,
+   "615": 347,
+   "616": 348,
+   "659": 349,
+   "660": 350,
+   "661": 351,
+   "662": 352,
+   "663": 353,
+   "664": 354,
+   "665": 355,
+   "666": 356,
+   "667": 357,
+   "668": 358,
+   "669": 359,
+   "670": 360,
+   "671": 361,
+   "672": 362,
+   "673": 363,
+   "674": 364,
+   "806": 365,
+   "807": 366,
+   "808": 367,
+   "826": 326,
+   "1102": 368,
+   "1189": 369,
+   "1647": 308
   },
   "11": {
-   "10": 220,
-   "14": 221,
-   "18": 222,
-   "19": 222,
-   "20": 223,
-   "30": 224,
-   "31": 224,
-   "32": 225,
-   "47": 226,
-   "49": 227,
-   "51": 228,
-   "63": 229,
-   "64": 230,
-   "67": 231,
-   "68": 232,
-   "76": 233,
-   "78": 234,
-   "80": 235,
-   "81": 236,
-   "82": 237,
-   "85": 238,
-   "86": 239,
-   "87": 220,
-   "88": 240,
-   "90": 241,
-   "91": 242,
-   "92": 243,
-   "95": 244,
-   "103": 222,
-   "104": 224,
-   "105": 222,
-   "110": 245,
-   "116": 246,
-   "117": 247,
-   "129": 232,
-   "130": 232,
-   "131": 248,
-   "132": 249,
-   "137": 250,
-   "141": 251,
-   "142": 252,
-   "150": 227,
-   "153": 239,
-   "155": 253,
-   "158": 233,
-   "179": 245,
-   "209": 254,
-   "210": 255,
-   "235": 256,
-   "236": 233,
-   "276": 237,
-   "446": 257,
-   "463": 258,
-   "464": 259,
-   "465": 260,
-   "481": 261,
-   "482": 262,
-   "483": 263,
-   "484": 251,
-   "487": 264,
-   "488": 265,
-   "490": 266,
-   "491": 267,
-   "564": 268,
-   "565": 269,
-   "566": 270,
-   "584": 269,
-   "585": 269,
-   "586": 269,
-   "587": 269,
-   "597": 252,
-   "611": 271,
-   "612": 272,
-   "613": 273,
-   "614": 274,
-   "615": 275,
-   "616": 276,
-   "659": 277,
-   "660": 278,
-   "661": 279,
-   "662": 280,
-   "663": 281,
-   "664": 282,
-   "665": 283,
-   "666": 284,
-   "667": 285,
-   "668": 286,
-   "669": 287,
-   "670": 288,
-   "671": 289,
-   "672": 290,
-   "673": 291,
-   "674": 292,
-   "806": 226,
-   "807": 228,
-   "808": 228,
-   "826": 237,
-   "1102": 293,
-   "1189": 228,
-   "1647": 245
+   "10": 277,
+   "14": 278,
+   "18": 279,
+   "19": 280,
+   "20": 281,
+   "30": 282,
+   "31": 283,
+   "32": 284,
+   "47": 285,
+   "49": 286,
+   "51": 287,
+   "63": 288,
+   "64": 289,
+   "67": 290,
+   "68": 291,
+   "76": 292,
+   "78": 293,
+   "80": 294,
+   "81": 295,
+   "82": 296,
+   "85": 297,
+   "86": 298,
+   "87": 299,
+   "88": 300,
+   "90": 301,
+   "91": 302,
+   "92": 303,
+   "95": 304,
+   "103": 305,
+   "104": 306,
+   "105": 307,
+   "110": 308,
+   "116": 309,
+   "117": 310,
+   "129": 311,
+   "130": 312,
+   "131": 313,
+   "132": 314,
+   "137": 315,
+   "141": 316,
+   "142": 317,
+   "150": 318,
+   "153": 319,
+   "155": 320,
+   "158": 321,
+   "179": 308,
+   "209": 322,
+   "210": 323,
+   "235": 324,
+   "236": 325,
+   "276": 326,
+   "446": 327,
+   "463": 328,
+   "464": 329,
+   "465": 330,
+   "481": 331,
+   "482": 332,
+   "483": 333,
+   "484": 334,
+   "487": 335,
+   "488": 336,
+   "490": 337,
+   "491": 338,
+   "564": 339,
+   "565": 340,
+   "566": 341,
+   "584": 340,
+   "585": 340,
+   "586": 340,
+   "587": 340,
+   "597": 342,
+   "611": 343,
+   "612": 344,
+   "613": 345,
+   "614": 346,
+   "615": 347,
+   "616": 348,
+   "659": 349,
+   "660": 350,
+   "661": 351,
+   "662": 352,
+   "663": 353,
+   "664": 354,
+   "665": 355,
+   "666": 356,
+   "667": 357,
+   "668": 358,
+   "669": 359,
+   "670": 360,
+   "671": 361,
+   "672": 362,
+   "673": 363,
+   "674": 364,
+   "806": 365,
+   "807": 366,
+   "808": 367,
+   "826": 326,
+   "1102": 368,
+   "1189": 369,
+   "1647": 308
   },
   "12": {
-   "10": 220,
-   "14": 221,
-   "18": 222,
-   "19": 222,
-   "20": 223,
-   "30": 224,
-   "31": 224,
-   "32": 225,
-   "47": 226,
-   "49": 227,
-   "51": 228,
-   "63": 229,
-   "64": 230,
-   "67": 231,
-   "68": 232,
-   "76": 233,
-   "78": 234,
-   "80": 235,
-   "81": 236,
-   "82": 237,
-   "85": 238,
-   "86": 239,
-   "87": 220,
-   "88": 240,
-   "90": 241,
-   "91": 242,
-   "92": 243,
-   "95": 244,
-   "103": 222,
-   "104": 224,
-   "105": 222,
-   "110": 245,
-   "116": 246,
-   "117": 247,
-   "129": 232,
-   "130": 232,
-   "131": 248,
-   "132": 249,
-   "137": 250,
-   "141": 251,
-   "142": 252,
-   "150": 227,
-   "153": 239,
-   "155": 253,
-   "158": 233,
-   "179": 245,
-   "209": 254,
-   "210": 255,
-   "235": 256,
-   "236": 233,
-   "276": 237,
-   "446": 257,
-   "463": 258,
-   "464": 259,
-   "465": 260,
-   "481": 261,
-   "482": 262,
-   "483": 263,
-   "484": 251,
-   "487": 264,
-   "488": 265,
-   "490": 266,
-   "491": 267,
-   "564": 268,
-   "565": 269,
-   "566": 270,
-   "584": 269,
-   "585": 269,
-   "586": 269,
-   "587": 269,
-   "597": 252,
-   "611": 271,
-   "612": 272,
-   "613": 273,
-   "614": 274,
-   "615": 275,
-   "616": 276,
-   "659": 277,
-   "660": 278,
-   "661": 279,
-   "662": 280,
-   "663": 281,
-   "664": 282,
-   "665": 283,
-   "666": 284,
-   "667": 285,
-   "668": 286,
-   "669": 287,
-   "670": 288,
-   "671": 289,
-   "672": 290,
-   "673": 291,
-   "674": 292,
-   "806": 226,
-   "807": 228,
-   "808": 228,
-   "826": 237,
-   "1102": 293,
-   "1189": 228,
-   "1647": 245
+   "10": 277,
+   "14": 278,
+   "18": 279,
+   "19": 280,
+   "20": 281,
+   "30": 282,
+   "31": 283,
+   "32": 284,
+   "47": 285,
+   "49": 286,
+   "51": 287,
+   "63": 288,
+   "64": 289,
+   "67": 290,
+   "68": 291,
+   "76": 292,
+   "78": 293,
+   "80": 294,
+   "81": 295,
+   "82": 296,
+   "85": 297,
+   "86": 298,
+   "87": 299,
+   "88": 300,
+   "90": 301,
+   "91": 302,
+   "92": 303,
+   "95": 304,
+   "103": 305,
+   "104": 306,
+   "105": 307,
+   "110": 308,
+   "116": 309,
+   "117": 310,
+   "129": 311,
+   "130": 312,
+   "131": 313,
+   "132": 314,
+   "137": 315,
+   "141": 316,
+   "142": 317,
+   "150": 318,
+   "153": 319,
+   "155": 320,
+   "158": 321,
+   "179": 308,
+   "209": 322,
+   "210": 323,
+   "235": 324,
+   "236": 325,
+   "276": 326,
+   "446": 327,
+   "463": 328,
+   "464": 329,
+   "465": 330,
+   "481": 331,
+   "482": 332,
+   "483": 333,
+   "484": 334,
+   "487": 335,
+   "488": 336,
+   "490": 337,
+   "491": 338,
+   "564": 339,
+   "565": 340,
+   "566": 341,
+   "584": 340,
+   "585": 340,
+   "586": 340,
+   "587": 340,
+   "597": 342,
+   "611": 343,
+   "612": 344,
+   "613": 345,
+   "614": 346,
+   "615": 347,
+   "616": 348,
+   "659": 349,
+   "660": 350,
+   "661": 351,
+   "662": 352,
+   "663": 353,
+   "664": 354,
+   "665": 355,
+   "666": 356,
+   "667": 357,
+   "668": 358,
+   "669": 359,
+   "670": 360,
+   "671": 361,
+   "672": 362,
+   "673": 363,
+   "674": 364,
+   "806": 365,
+   "807": 366,
+   "808": 367,
+   "826": 326,
+   "1102": 368,
+   "1189": 369,
+   "1647": 308
   },
   "17": {
-   "10": 220,
-   "14": 221,
-   "18": 222,
-   "19": 222,
-   "20": 223,
-   "30": 224,
-   "31": 224,
-   "32": 225,
-   "47": 226,
-   "49": 227,
-   "51": 228,
-   "63": 229,
-   "64": 230,
-   "67": 231,
-   "68": 232,
-   "76": 233,
-   "78": 234,
-   "80": 235,
-   "81": 236,
-   "82": 237,
-   "85": 238,
-   "86": 239,
-   "87": 220,
-   "88": 240,
-   "90": 241,
-   "91": 242,
-   "92": 243,
-   "95": 244,
-   "103": 222,
-   "104": 224,
-   "105": 222,
-   "110": 245,
-   "116": 246,
-   "117": 247,
-   "129": 232,
-   "130": 232,
-   "131": 248,
-   "132": 249,
-   "137": 250,
-   "141": 251,
-   "142": 252,
-   "150": 227,
-   "153": 239,
-   "155": 253,
-   "158": 233,
-   "179": 245,
-   "209": 254,
-   "210": 255,
-   "235": 256,
-   "236": 233,
-   "276": 237,
-   "446": 257,
-   "463": 258,
-   "464": 259,
-   "465": 260,
-   "481": 261,
-   "482": 262,
-   "483": 263,
-   "484": 251,
-   "487": 264,
-   "488": 265,
-   "490": 266,
-   "491": 267,
-   "564": 268,
-   "565": 269,
-   "566": 270,
-   "584": 269,
-   "585": 269,
-   "586": 269,
-   "587": 269,
-   "597": 252,
-   "611": 271,
-   "612": 272,
-   "613": 273,
-   "614": 274,
-   "615": 275,
-   "616": 276,
-   "659": 277,
-   "660": 278,
-   "661": 279,
-   "662": 280,
-   "663": 281,
-   "664": 282,
-   "665": 283,
-   "666": 284,
-   "667": 285,
-   "668": 286,
-   "669": 287,
-   "670": 288,
-   "671": 289,
-   "672": 290,
-   "673": 291,
-   "674": 292,
-   "806": 226,
-   "807": 228,
-   "808": 228,
-   "826": 237,
-   "1102": 293,
-   "1189": 228,
-   "1647": 245
+   "10": 277,
+   "14": 278,
+   "18": 279,
+   "19": 280,
+   "20": 281,
+   "30": 282,
+   "31": 283,
+   "32": 284,
+   "47": 285,
+   "49": 286,
+   "51": 287,
+   "63": 288,
+   "64": 289,
+   "67": 290,
+   "68": 291,
+   "76": 292,
+   "78": 293,
+   "80": 294,
+   "81": 295,
+   "82": 296,
+   "85": 297,
+   "86": 298,
+   "87": 299,
+   "88": 300,
+   "90": 301,
+   "91": 302,
+   "92": 303,
+   "95": 304,
+   "103": 305,
+   "104": 306,
+   "105": 307,
+   "110": 308,
+   "116": 309,
+   "117": 310,
+   "129": 311,
+   "130": 312,
+   "131": 313,
+   "132": 314,
+   "137": 315,
+   "141": 316,
+   "142": 317,
+   "150": 318,
+   "153": 319,
+   "155": 320,
+   "158": 321,
+   "179": 308,
+   "209": 322,
+   "210": 323,
+   "235": 324,
+   "236": 325,
+   "276": 326,
+   "446": 327,
+   "463": 328,
+   "464": 329,
+   "465": 330,
+   "481": 331,
+   "482": 332,
+   "483": 333,
+   "484": 334,
+   "487": 335,
+   "488": 336,
+   "490": 337,
+   "491": 338,
+   "564": 339,
+   "565": 340,
+   "566": 341,
+   "584": 340,
+   "585": 340,
+   "586": 340,
+   "587": 340,
+   "597": 342,
+   "611": 343,
+   "612": 344,
+   "613": 345,
+   "614": 346,
+   "615": 347,
+   "616": 348,
+   "659": 349,
+   "660": 350,
+   "661": 351,
+   "662": 352,
+   "663": 353,
+   "664": 354,
+   "665": 355,
+   "666": 356,
+   "667": 357,
+   "668": 358,
+   "669": 359,
+   "670": 360,
+   "671": 361,
+   "672": 362,
+   "673": 363,
+   "674": 364,
+   "806": 365,
+   "807": 366,
+   "808": 367,
+   "826": 326,
+   "1102": 368,
+   "1189": 369,
+   "1647": 308
   }
  }
 }

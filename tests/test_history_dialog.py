@@ -817,3 +817,67 @@ def test_jumps_over_terrain_spans_repaint_like_a_fresh_render(style: str) -> Non
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+class _ArmedRaise:
+    """Stands in for a record's move: raises while armed, else delegates."""
+
+    def __init__(self, real):
+        self.real = real
+        self.armed = True
+
+    def __call__(self, *args):
+        if self.armed:
+            raise RuntimeError("unit lists drifted behind the model")
+        return self.real(*args)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_jump_stopped_by_a_raising_record_repaints_what_it_restored(style: str) -> None:
+    """TASK-364: a record's move raising mid-span stops the jump there; what
+    the finished records restored must still reach the canvas."""
+    import numpy as np
+
+    window = _terrain_span_window(style)
+    try:
+        cache = window._cache  # priv: the stopped jump must patch this very cache
+        canvas_w, canvas_h = cache.canvas_dims()
+        history = window.edit_history
+        snapshots = [_tile_states(window)]
+        for block, terrain in (
+            (_block(44, 44, 48, 48), _TERRAIN_A),
+            (_block(50, 50, 54, 54), _TERRAIN_B),
+            (_block(56, 56, 60, 60), _TERRAIN_A),
+        ):
+            _stroke(window, "draw", block, terrain)
+            snapshots.append(_tile_states(window))
+        assert history.cursor == 3
+        fake = _ArmedRaise(history.records[1].undo)
+        history.records[1].undo = fake
+
+        # Re-warm right before the click: an evicted chunk recomposites fresh, hiding a stale patch.
+        cache.render_rect(0, 0, canvas_w, canvas_h)
+        _click_jump(window, 0)
+        stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
+        assert np.array_equal(stitched, _fresh_render(window, canvas_w, canvas_h)), "stale pixels after a stopped jump"
+        assert history.cursor == 2
+        assert _tile_states(window) == snapshots[2]
+        dialog = window._history_dialog
+        bold = [row for row in range(dialog.tree.topLevelItemCount()) if dialog.tree.topLevelItem(row).font(1).bold()]
+        assert bold == [2]
+        assert window.undo_action.isEnabled() and window.redo_action.isEnabled()
+        assert window.windowTitle().startswith("*")
+        log = window.status_log.toPlainText()
+        assert "Jump stopped after 1 of 3 steps" in log
+        assert "Jump refused" not in log
+
+        fake.armed = False
+        cache.render_rect(0, 0, canvas_w, canvas_h)
+        _click_jump(window, 0)
+        assert history.cursor == 0
+        assert _tile_states(window) == snapshots[0]
+        stitched = cache.render_rect(0, 0, canvas_w, canvas_h)
+        assert np.array_equal(stitched, _fresh_render(window, canvas_w, canvas_h)), "stale pixels after the resumed jump"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

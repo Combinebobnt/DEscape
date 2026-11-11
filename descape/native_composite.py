@@ -63,27 +63,49 @@ _EDGE_SIDES = tuple(side for _bit, side in render._FARM_EDGE_BITS)
 _EMPTY_EXT = (1, 0, 0, 0)
 
 
-def _extent(dst_y: np.ndarray, dst_x: np.ndarray) -> tuple[int, int, int, int]:
-    if dst_y.size == 0:
-        return _EMPTY_EXT
-    return int(dst_y.min()), int(dst_y.max()), int(dst_x.min()), int(dst_x.max())
+def _extents(dy: np.ndarray, dx: np.ndarray, start: np.ndarray) -> np.ndarray:
+    """Each op's inclusive (min y, max y, min x, max x) over the concatenated
+    columns, _EMPTY_EXT for an empty op, flat int32 (TASK-031.85)."""
+    ext = np.empty((start.size - 1, 4), dtype=np.int32)
+    ext[:] = _EMPTY_EXT
+    full = start[1:] > start[:-1]
+    if full.any():
+        # Empty ops share their successor's offset, so the non-empty starts alone segment the columns.
+        idx = start[:-1][full]
+        ext[full, 0] = np.minimum.reduceat(dy, idx)
+        ext[full, 1] = np.maximum.reduceat(dy, idx)
+        ext[full, 2] = np.minimum.reduceat(dx, idx)
+        ext[full, 3] = np.maximum.reduceat(dx, idx)
+    return ext.reshape(-1)
+
+
+_I32 = np.iinfo(np.int32)
 
 
 def _i32(parts: list[np.ndarray]) -> np.ndarray:
     if not parts:
         return np.zeros(0, dtype=np.int32)
     wide = np.concatenate(parts)
-    out = wide.astype(np.int32)
-    if not np.array_equal(out, wide):
+    if wide.dtype.kind not in "iu":
+        if not np.array_equal(wide.astype(np.int32), wide):
+            raise OverflowError("an index table value does not fit in int32")
+    elif wide.size and (int(wide.min()) < _I32.min or int(wide.max()) > _I32.max):
         raise OverflowError("an index table value does not fit in int32")
-    return out
+    return wide.astype(np.int32)
 
 
 def _blend_samples(tile_px: int, sy: list[np.ndarray], sx: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """The distinct (sy, sx) across the given source columns, row-major, as
     two contiguous int32 arrays: the texels the kernel composes per blended
-    tile. Built fresh, never written in place, since a worker may hold it."""
-    flat = np.unique(np.concatenate([np.zeros(0, np.int64), *(y.astype(np.int64) * tile_px + x for y, x in zip(sy, sx, strict=True))]))
+    tile. Built fresh, never written in place, since a worker may hold it.
+    A presence bitmap over [0, tile_px²) stands in for np.unique (TASK-031.85)."""
+    flat = np.concatenate([np.zeros(0, np.int64), *(y.astype(np.int64) * tile_px + x for y, x in zip(sy, sx, strict=True))])
+    present = np.zeros(tile_px * tile_px, dtype=bool)
+    if flat.size:
+        # A negative index would wrap silently in present[flat].
+        assert int(flat.min()) >= 0 and int(flat.max()) < tile_px * tile_px
+        present[flat] = True
+    flat = np.flatnonzero(present)
     return np.ascontiguousarray(flat // tile_px, dtype=np.int32), np.ascontiguousarray(flat % tile_px, dtype=np.int32)
 
 
@@ -97,12 +119,36 @@ def _csr(ops: list[tuple], src: bool) -> dict:
         "dy": _i32([op[0] for op in ops]),
         "dx": _i32([op[1] for op in ops]),
         "start": start,
-        "ext": np.array([_extent(op[0], op[1]) for op in ops], dtype=np.int32).reshape(-1),
     }
+    cols["ext"] = _extents(cols["dy"], cols["dx"], start)
     if src:
         cols["sy"] = _i32([op[2] for op in ops])
         cols["sx"] = _i32([op[3] for op in ops])
     return cols
+
+
+def _fixed_ops(tile_px: int) -> list[tuple]:
+    """The Stepped op table's N_FIXED (op, factor key) pairs. The key is the
+    render._seam_factors/_shadow_factors key for a darken op, None for a
+    scatter or solid one. Shared by SteppedTables and prime_walk()."""
+    g = iso_geometry
+    return [
+        (g.diamond_indices(tile_px), None),
+        *((g.seam_edge_indices(tile_px, side), ("seam", side)) for side in ("up_left", "up_right")),
+        (g.seam_apex_indices(tile_px), ("seam", "apex")),
+        *((g.tile_edge_indices(tile_px, side), None) for side in _EDGE_SIDES),
+    ]
+
+
+def _rise_ops(tile_px: int, rise: int) -> list[tuple]:
+    """One rise's PER_RISE (op, factor key) pairs, as _fixed_ops()."""
+    g = iso_geometry
+    return [
+        (g.skirt_quad_indices(tile_px, rise, "left"), None),
+        (g.skirt_quad_indices(tile_px, rise, "right"), None),
+        *((g.shadow_quad_indices(tile_px, rise, side)[:2], ("shadow", rise, side)) for side in ("up_left", "up_right")),
+        (g.shadow_apex_indices(tile_px, rise)[:2], ("shadow", rise, "apex")),
+    ]
 
 
 class SteppedTables:
@@ -111,32 +157,14 @@ class SteppedTables:
     factors are fetched per call (stepped_factors)."""
 
     def __init__(self, tile_px: int, elev_step: int):
-        g = iso_geometry
-        ops: list[tuple] = [g.diamond_indices(tile_px)]
-        # factor_keys[i] is the render._seam_factors/_shadow_factors key for
-        # a darken op, None for a scatter or solid one.
-        keys: list[tuple | None] = [None]
-        for side in ("up_left", "up_right"):
-            ops.append(g.seam_edge_indices(tile_px, side))
-            keys.append(("seam", side))
-        ops.append(g.seam_apex_indices(tile_px))
-        keys.append(("seam", "apex"))
-        for side in _EDGE_SIDES:
-            ops.append(g.tile_edge_indices(tile_px, side))
-            keys.append(None)
-        assert len(ops) == N_FIXED
+        pairs = _fixed_ops(tile_px)
+        assert len(pairs) == N_FIXED
         for r in range(1, MAX_RISE + 1):
-            rise = r * elev_step
-            ops.append(g.skirt_quad_indices(tile_px, rise, "left"))
-            keys.append(None)
-            ops.append(g.skirt_quad_indices(tile_px, rise, "right"))
-            keys.append(None)
-            for side in ("up_left", "up_right"):
-                ops.append(g.shadow_quad_indices(tile_px, rise, side)[:2])
-                keys.append(("shadow", rise, side))
-            ops.append(g.shadow_apex_indices(tile_px, rise)[:2])
-            keys.append(("shadow", rise, "apex"))
-        assert len(ops) == N_FIXED + MAX_RISE * PER_RISE
+            pairs += _rise_ops(tile_px, r * elev_step)
+        assert len(pairs) == N_FIXED + MAX_RISE * PER_RISE
+        ops = [op for op, _key in pairs]
+        # factor_keys[i] is op i's factor key (_fixed_ops()).
+        keys = [key for _op, key in pairs]
         # One src entry per dst entry in every op, zeros where an op samples
         # nothing, so the four columns share the start offsets.
         cols = _csr([op if len(op) == 4 else (*op, np.zeros_like(op[0]), np.zeros_like(op[0])) for op in ops], src=True)
@@ -264,6 +292,117 @@ def _pack_ops(ops: list[tuple]) -> tuple:
 @lru_cache(maxsize=16)
 def sloped_shapes(tile_px: int) -> SlopedShapes:
     return SlopedShapes(tile_px)
+
+
+# ---------------------------------------------------------------------------
+# Priming (TASK-031.85)
+
+# prime_walk()'s batch per step, from the TASK-031.85 atom census: each batch <= 2 ms at 128 px.
+PRIME_MASK_BATCH = 8
+PRIME_SHAPE_BATCH = 12
+PRIME_SHADE_BATCH = 32
+PRIME_BAND_ROWS = 32
+# KeyMap keys read per step while collecting mask arguments.
+PRIME_KEY_SCAN = 512
+
+
+def prime_walk(tile_px: int, elev_step: int, *, sloped: bool = False, blend_keys=None, heights=None):
+    """Fills the caches a first native prepare at one level reads, one atom
+    per step, by calling the same producers and factories the prepare calls:
+    a generator that yields before each atom, so its first step does nothing.
+    Output can't change: it only runs a cached builder earlier, and a prepare
+    that comes first, or after an eviction, builds as it does today.
+
+    Stepped (and iso Flat): the fixed ops and one rise per step, the
+    stepped_tables() assembly, then its factors (kernel_tables()). Sloped:
+    the sloped_shapes() registry. Both then the blend masks: blend_keys()
+    returns the KeyMap's keys (None with blending off), snapshotted here, and
+    each key's get_blend_mask() pairs are filled PRIME_MASK_BATCH a step, for
+    keys whose layer mask is absent or already loaded. A layer mask load is
+    never run here. Sloped last: heights() returns (corner_rise, fold); the
+    level's shapes are discovered PRIME_BAND_ROWS tile rows a step by
+    prepare_sloped()'s own encoding, registered PRIME_SHAPE_BATCH a step,
+    packed in one step, and shaded PRIME_SHADE_BATCH a step at elev_step.
+    crop_source()'s wrap copies are not warmed."""
+    yield
+    if sloped:
+        sloped_shapes(tile_px)
+    else:
+        _fixed_ops(tile_px)
+        _rise_ops(tile_px, elev_step)
+        for r in range(2, MAX_RISE + 1):
+            yield
+            _rise_ops(tile_px, r * elev_step)
+        yield
+        tables = stepped_tables(tile_px, elev_step)
+        yield
+        tables.kernel_tables()
+    yield
+    keys = None if blend_keys is None else blend_keys()
+    if keys:
+        yield from _prime_masks(list(keys), tile_px)
+    if sloped:
+        yield from _prime_shapes(tile_px, elev_step, heights)
+
+
+def _prime_masks(keys: list, tile_px: int):
+    """prime_walk()'s blend masks over a snapshot of KeyMap keys."""
+    seen: set = set()
+    pending: list = []
+    for i in range(0, len(keys), PRIME_KEY_SCAN):
+        if i:
+            yield
+        for key in keys[i:i + PRIME_KEY_SCAN]:
+            layer, pairs = blend_mask_args(key, tile_px)
+            if layer is not None and not asset_source.terrain_mask_loaded(*layer):
+                continue
+            for args in pairs:
+                if args not in seen:
+                    seen.add(args)
+                    pending.append(args)
+        while len(pending) >= PRIME_MASK_BATCH:
+            yield
+            for args in pending[:PRIME_MASK_BATCH]:
+                asset_source.get_blend_mask(*args)
+            del pending[:PRIME_MASK_BATCH]
+    if pending:
+        yield
+        for args in pending:
+            asset_source.get_blend_mask(*args)
+
+
+def _prime_shapes(tile_px: int, elev_step: int, heights):
+    """prime_walk()'s Sloped discovery, registration, pack and shades."""
+    yield
+    corner_rise, fold = heights()
+    rows = corner_rise.shape[0] - 1
+    registered = set(sloped_shapes(tile_px).ids)
+    seen: set = set()
+    found: list = []
+    for y0 in range(0, rows, PRIME_BAND_ROWS):
+        if y0:
+            yield
+        y1 = min(rows, y0 + PRIME_BAND_ROWS)
+        band = corner_rise[y0:y1 + 1]
+        keys, _inv = _shape_keys(
+            band[:-1, :-1].ravel(), band[:-1, 1:].ravel(), band[1:, :-1].ravel(), band[1:, 1:].ravel(),
+            None if fold is None else fold[y0:y1].ravel(),
+        )
+        for key in keys:
+            if key not in seen:
+                seen.add(key)
+                found.append(key)
+    new = [key for key in found if key not in registered]
+    for i in range(0, len(new), PRIME_SHAPE_BATCH):
+        yield
+        sloped_shapes(tile_px).shape_ids(new[i:i + PRIME_SHAPE_BATCH])
+    yield
+    sloped_shapes(tile_px).packed()
+    # Every shape, not only new ones: an earlier registration may have shaded at another elev_step.
+    for i in range(0, len(found), PRIME_SHADE_BATCH):
+        yield
+        for key in found[i:i + PRIME_SHADE_BATCH]:
+            render._slope_shade(tile_px, *key[:4], elev_step)
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +776,18 @@ def _textures(
     return slots.astype(np.int32).reshape(-1), (arrays, flat, sizes), uniq
 
 
+def blend_mask_args(key, tile_px: int) -> tuple[tuple[str, int] | None, list[tuple[int, int, int]]]:
+    """What _blend_tables() fetches for one KeyMap key at tile_px: the layer
+    mask's terrain_mask_at() arguments (None without a layer) and each
+    neighbour entry's get_blend_mask() arguments, in entry order. One
+    helper, so prime_walk() warms exactly the keys a prepare reads."""
+    _own, layer_tid, entries = key
+    layer = None
+    if layer_tid >= 0:
+        layer = (terrain_blend.layer_mask_name(layer_tid), asset_source.terrain_texture_size(tile_px))
+    return layer, [(mode, tile, tile_px) for _n_tid, mode, tile in entries]
+
+
 # Blend op kinds, mirrored by DEF constants in _composite_native.pyx.
 BLEND_LAYER, BLEND_NEIGHBOUR = 0, 1
 # _blend_tables()' answer for a blend the kernel can't compose byte-identically.
@@ -686,14 +837,14 @@ def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridd
 
     keys = table.keys
     for sid in specs.tolist():
-        _own, layer_tid, entries = keys[sid]
-        if layer_tid >= 0:
-            name = terrain_blend.layer_mask_name(layer_tid)
-            mask = asset_source.terrain_mask_at(name, asset_source.terrain_texture_size(tile_px))
+        key = keys[sid]
+        layer, pairs = blend_mask_args(key, tile_px)
+        if layer is not None:
+            mask = asset_source.terrain_mask_at(*layer)
             mask = None if mask is None else asset_source.crop_source(mask, tile_px)
-            ops.append((BLEND_LAYER, slot_of[layer_tid], mask_id(("layer", name), mask)))
-        for n_tid, mode, tile in entries:
-            ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id((mode, tile), asset_source.get_blend_mask(mode, tile, tile_px))))
+            ops.append((BLEND_LAYER, slot_of[key[1]], mask_id(("layer", layer[0]), mask)))
+        for (n_tid, _mode, _tile), args in zip(key[2], pairs, strict=True):
+            ops.append((BLEND_NEIGHBOUR, slot_of[n_tid], mask_id(args[:2], asset_source.get_blend_mask(*args))))
         starts.append(len(ops))
     if len(size) > 1:
         return UNCOMPOSABLE
@@ -895,6 +1046,28 @@ def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise,
     return True
 
 
+def _shape_keys(nw, ne, sw, se, fold, inverse: bool = False) -> tuple[list, np.ndarray | None]:
+    """The distinct normalized Sloped shape keys over 1-D corner arrays (and
+    the tiles' fold bits, or None for the fixed NE-SW fold), in scalar order,
+    plus each tile's index into them with `inverse`. prepare_sloped()'s
+    encoding, shared with prime_walk()'s discovery."""
+    dmin = np.minimum(np.minimum(nw, ne), np.minimum(sw, se))
+    norm = [nw - dmin, ne - dmin, sw - dmin, se - dmin]
+    # The fold bit on non-planar shapes only, so a planar key stays the NE-SW one.
+    nwse = np.zeros(nw.size, dtype=np.int64) if fold is None else (fold & (nw + se != ne + sw)).astype(np.int64)
+    # One scalar per shape (base past the largest normalized corner), far
+    # cheaper to unique than rows.
+    base = int(max(int(c.max()) for c in norm)) + 1
+    scalar = (((norm[0] * base + norm[1]) * base + norm[2]) * base + norm[3]) * 2 + nwse
+    if inverse:
+        _uniq, first, inv = np.unique(scalar, return_index=True, return_inverse=True)
+        inv = inv.reshape(-1)
+    else:
+        _uniq, first = np.unique(scalar, return_index=True)
+        inv = None
+    return [(*(int(c[i]) for c in norm), bool(nwse[i])) for i in first.tolist()], inv
+
+
 def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack: UnitPack | None,
                    textures: bool, grid, share: bool = False, terrain_ids: np.ndarray | None = None,
                    blend: terrain_blend.RectKeys | None = None, fold: np.ndarray | None = None) -> tuple | None:
@@ -912,17 +1085,7 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
 
     nw, ne = corner_rise[cy, cx], corner_rise[cy, cx + 1]
     sw, se = corner_rise[cy + 1, cx], corner_rise[cy + 1, cx + 1]
-    dmin = np.minimum(np.minimum(nw, ne), np.minimum(sw, se))
-    norm = [nw - dmin, ne - dmin, sw - dmin, se - dmin]
-    # The fold bit on non-planar shapes only, so a planar key stays the NE-SW one.
-    nwse = np.zeros(cx.size, dtype=np.int64) if fold is None else (fold[cy, cx] & (nw + se != ne + sw)).astype(np.int64)
-    # One scalar per shape (base past the largest normalized corner), far
-    # cheaper to unique than rows.
-    base = int(max(int(c.max()) for c in norm)) + 1
-    scalar = (((norm[0] * base + norm[1]) * base + norm[2]) * base + norm[3]) * 2 + nwse
-    _uniq, first, inv = np.unique(scalar, return_index=True, return_inverse=True)
-    inv = inv.reshape(-1)
-    shape_keys = [(*(int(c[i]) for c in norm), bool(nwse[i])) for i in first.tolist()]
+    shape_keys, inv = _shape_keys(nw, ne, sw, se, None if fold is None else fold[cy, cx], inverse=True)
     registry = sloped_shapes(tile_px)
     shape_of = np.array(registry.shape_ids(shape_keys), dtype=np.int32)
     cand_shape = np.ascontiguousarray(shape_of[inv], dtype=np.int32)

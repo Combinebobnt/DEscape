@@ -26,6 +26,22 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Return of Rome game data refresh** (GH #311, GH #261): Return of Rome
+  maps draw Smoke and Flames from their particle effects, loaded Return of
+  Rome transports and buildings show their garrison flag, and the train and
+  research button grid filters Return of Rome civilizations (a later starting
+  age hides no techs there yet, as that rule is measured in AoE2 only).
+  (contributed by @teslatankx, #366)
+- **Place Unit into a garrison** (GH #115): pointed at a building or unit that
+  can hold the picked object, Place Unit puts it inside, with a yellow preview
+  (red when the host is full or can't take it). The Garrison list gains a
+  Duplicate button, and a new Garrison placement overlay colour.
+- **Unit Line and Unit Shape tools** in Units mode (GH #365, GH #125, GH #360):
+  drag a line, rectangle, ellipse, triangle or right triangle of any unit or
+  building, outlined or filled, with a Spacing between objects, one undo step
+  per drag. With a wall picked they lay a joined wall run or outline. They
+  replace the Wall Rectangle tool; the key bound to it (or else to Wall
+  Circle) moves to Unit Shape.
 - **Debug Log colours by level** (GH #358): Help > Debug Log marks warnings in
   amber and errors in red, with a *Colour by level* toggle and tags in copied text.
 - **Sprites at native size**: at Graphics quality Default and Enhanced a new
@@ -142,7 +158,8 @@ content, link the doc instead of summarizing it.
   report, DEscape on GitHub and the AoE2 Scenario Editor Guide
   (ugc.aoe2.rocks). The README's usage notes moved into the guide, which is
   also readable on GitHub under `descape/help/`.
-- **Flip and turn a selection in place**: Edit > Flip Selection and the new
+- **Flip and turn a selection in place**: Edit > Flip Selection (Flip West
+  ↔ North, Flip West ↔ South) and the new
   Edit > Rotate Selection > Rotate Group pair flip or turn the selected units
   (Units mode) as one group about their shared centre. With no units
   selected, they flip or turn a selected region in place, with its terrain,
@@ -160,11 +177,22 @@ content, link the doc instead of summarizing it.
   list only what the data mod adds or changes in the Units catalog, with a
   note counting what is hidden, and can turn off the "(data mod)" label.
   (contributed by @teslatankx, #362)
-- **Wall Circle tool** in Units mode (GH #125): drag a box to place an
-  outline ellipse of walls inside it, one undo step per drag; Shift makes it
-  a circle. It uses the wall picked in the catalog or with the Wall button,
-  joins and reshapes walls it touches, gives diagonal stretches diagonal
-  wall pieces, and follows "Walls skip occupied tiles".
+- **A data mod's own terrains in the Terrain panel** (GH #271): with a data
+  mod loaded, the Terrain panel rebuilds its rows (keeping the armed
+  terrain, filter, List or Grid view and open groups), names a terrain the
+  mod changed by the mod's own name, and files the mod's new terrains into
+  the existing categories the way the game's editor does, else under
+  Other. Settings > Mods can gather them into one "Mod terrains" group
+  instead. "Unused / moddable" is now two groups, Unused and Moddable.
+  (contributed by @teslatankx, #368)
+- **A data mod's own sprites and terrain textures** (GH #272): with a data
+  mod loaded and View > Layers > Mod Art on, the mod's own units, buildings
+  and terrains draw from its art mod instead of as marks and flat colours,
+  including bodies its data lists behind a shadow or an unused name.
+  Turning Mod Art on with a large art mod is much faster, and the measure
+  of how far mod art reaches runs in the background after a load or a Mod
+  Art change, so opening a map no longer waits on it. (contributed by
+  @teslatankx, #367)
 - **Range rings for trigger-changed range** (GH #49): with View > Range
   Rings > Selected Buildings on, a selected building also gets a dashed ring
   for each trigger that changes its range, one per trigger as if it fired
@@ -240,6 +268,18 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **Flip Selection mirrors across the selection's own edges** (Flip West ↔
+  North, Flip West ↔ South) in every view, for a pasted region too. In the
+  isometric views it used to mirror the screen, which looked like a quarter
+  turn, and in Top-down Flat across a diagonal; the region now keeps its
+  place and shape.
+- **Wheel zoom stops at every zoom level's own size**, not only the native
+  sprite size, so terrain and sprites are drawn sharp at more zoom steps.
+- **A finer zoom level at Graphics quality Default**: zooming in past the
+  native sprite size reaches a level where unit sprites are drawn at exactly
+  twice their size.
+- **A fast wheel roll no longer pauses at each zoom level**: rolling the
+  wheel through levels the map has already drawn zooms straight through.
 - **Faster trigger overlays**: selecting many triggers with large areas, or a
   whole-map area, no longer stalls the map in Sloped, and is faster in every style.
   Large selections also redraw faster after a unit or elevation edit.
@@ -434,6 +474,36 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **The map no longer creeps a pixel or two** each time it redraws after a
+  settings, Mod Art, quality or style change.
+- **The hover readout updates after an edit or an undo/redo** under a still
+  pointer, instead of showing the tile as it was until the mouse moved.
+- **Gates of the Achaemenids, Athenians, Spartans, Macedonians, Thracians and
+  Puru keep their flags** in every orientation (top-down Flat, and a rotated
+  span gate in every view).
+- **Scripts: setting a P1-P8 player value outside its range** (e.g. a negative
+  population limit) raises ValueError on every file version; older files took
+  it silently.
+- **Triggers mode's left pane can no longer be dragged narrower than the
+  Triggers panel**: below it, condition and effect fields sat past the pane's
+  edge with no scrollbar to reach them.
+- **The trigger form's item id row** follows a changed source unit, technology
+  or tribute.
+- **Terrain mode's List view**: the Name column and the selected row's
+  highlight span the whole list.
+- **Settings opens wide enough to show every tab title** at the current UI font.
+- **Tooltips and Find and Replace confirmations name commands** (Edit > Undo,
+  Select All, Deselect) instead of default keys that go stale once rebound,
+  and the Isometric elevation height tooltip says it also drives Sloped.
+- **A mouse wheel over the Garrison list's Owner box** no longer reassigns the
+  selected rows unless the box has focus.
+- **Moving a group that includes a bridge** judges the units on its deck where
+  the bridge lands, not where it stood.
+- **Switching to the Unit Brush, Convert or Eraser by key during a Move drag**
+  no longer freezes the drag's preview, so a Rotate key turns it where the
+  cursor is.
+- **Shift + Wheel bindings also respond to a sideways scroll**, which is how
+  macOS sends Shift + scroll.
 - **Windows taskbar and executable icon** (GH #250): source launches, the
   setup splash and `DEscape.exe` now use DEscape's icon instead of Python's
   or the default build icon.
@@ -465,7 +535,17 @@ content, link the doc instead of summarizing it.
   beside it, as placing a gate does.
 - **Deleting a wall reshapes its neighbours** (GH #340): deleting, cutting or
   erasing a wall or gate rewrites the stored shape of the walls left beside
-  it, so a run's new end is saved as an end piece.
+  it, so a run's new end is saved as an end piece. Find and Replace does the
+  same when it turns objects into walls or a wall or gate into something else,
+  and the new wall takes its neighbours' shape.
+- **Pasting walls or gates reshapes the walls beside them**, and each pasted
+  wall takes the shape of where it lands, so a wall cut from a run and pasted
+  back joins it again.
+- **A wall where a single wall meets a diagonal run** gets the diagonal shape
+  the game gives it, not a tower, when an edit creates or reshapes it, and
+  radian-encoded files draw it that way.
+- **Deleting or erasing a map's last radian-encoded wall** now redraws every
+  wall whose shape that changes, not only the walls beside it.
 - **The Cliff tool removes trees under a new cliff**, instead of leaving a
   forest standing inside it.
 - **Athenian, Spartan and Macedonian Fortified Walls draw with their own
@@ -535,9 +615,6 @@ content, link the doc instead of summarizing it.
   new place (a tower when it stands alone), and the walls it leaves or joins
   reshape too, so DEscape shows the walls as the game does. Moving a wall
   left stale by an earlier move fixes it.
-- **Flip in top-down Flat mirrors on screen**: with Isometric View off, Flip
-  Horizontal and Flip Vertical now mirror a pasted region left/right and
-  top/bottom, instead of across a diagonal.
 - **Top-down Flat: zooming in the middle of a Convert drag** no longer
   leaves the newly shown zoom level drawing units out of step with the map.
 - **Players mode: P1-P8 Pop Limit can no longer go below 0**, which crashed

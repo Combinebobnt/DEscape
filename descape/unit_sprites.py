@@ -16,7 +16,8 @@ unreadable file and an undecodable frame are all exactly as safe as "no install
 configured" already is. An active mod's frame that fails (a frame count that
 maps to neither rule, a decode that raises) draws the install's instead, and
 so does a blank one on a single-graphic unit; a blank composite piece stays a
-gap and the other pieces draw.
+gap and the other pieces draw. A data mod's own stem, one the install lacks
+(GH #272), has no install art to fall back to, so its failed frame is a miss.
 
 ## How a unit becomes a frame
 
@@ -51,6 +52,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import time
 import weakref
@@ -308,10 +310,16 @@ SLD_BYTES_CACHE_BYTES = 64 * 1024 * 1024
 #   134.2MB, Dos Pilas 1.8 / 7.3 / 29.2 / 117.0MB, June 0.7 / 2.7 / 10.6 /
 #   42.4MB. Largest single entry 3.4MB.
 #
-# 256MB: the level warm targets the current level +/-1, and three adjacent
-# levels peak at 176MB on the measured corpus (old-allies mips -1 to 1). The
-# margin over that is headroom for a map larger than anything in examples/.
-SCALED_CACHE_BYTES = 256 * 1024 * 1024
+# The level warm targets the current level +/-1, so the budget holds three
+# adjacent levels. 256MB held 176MB (old-allies mips -1 to 1). TASK-601's 192
+# level, re-measured 2026-11-09 at Default (tools/bench_unit_sprites.py --ladder
+# --scaled-uncapped), 16 / 32 / 64 / 96 / 128 / 192: old-allies 2.2 / 8.9 /
+# 35.5 / 80.0 / 142.1 / 319.7MB, Dos Pilas 1.9 / 7.6 / 30.4 / 68.3 / 121.6 /
+# 273.4MB, June 0.7 / 3.0 / 11.8 / 26.6 / 47.2 / 106.3MB. The finest three
+# peak at 541.8MB (old-allies); 768MB keeps the old ~1.5x margin over the peak,
+# headroom for a map larger than anything in examples/. A cap, not a
+# reservation: only zooming in on a big map fills it.
+SCALED_CACHE_BYTES = 768 * 1024 * 1024
 
 # Flat's icon cache (P3-g7), a BYTE budget rather than an entry count -- see
 # _ByteLRU for why an entry count cannot work here.
@@ -480,8 +488,16 @@ _sld_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
 # The mod file drawing a stem (mod_graphics), walked, keyed like _sld_index_cache;
 # its bytes share _sld_bytes_cache under a ("mod", file_name) key.
 _mod_index_cache = _LRU(SLD_INDEX_CACHE_SIZE)
-# ((mod_graphics.generation(), hi_res_generation()), (left, right, up, down)) of the active mods' reach.
-_mod_reach: tuple[tuple[int, int], tuple[int, int, int, int]] | None = None
+# (_reach_key(), (left, right, up, down)) of the active mods' reach.
+_mod_reach: tuple[tuple[int, int, int], tuple[int, int, int, int]] | None = None
+# Moves on every clear_caches(), so a background reach walk begun before one never lands after it.
+_reach_epoch = 0
+# The viewer's (GH #272): a stale reach is walked in a worker thread, see set_background_reach().
+_background_reach = False
+# (_reach_key(), thread) of the background walk in flight, if any.
+_reach_walk: tuple[tuple[int, int, int], threading.Thread] | None = None
+# The _reach_key() whose background walk raised: that key walks in place instead of respawning.
+_reach_failed: tuple[int, int, int] | None = None
 # Stems whose mod file's frame count fits neither mapping, logged once each.
 _mod_mismatch_logged: set[str] = set()
 # Stems an active mod draws as no ink: a composite piece's gap (an open town centre's back piece) is
@@ -667,7 +683,7 @@ def clear_caches() -> None:
     install path -- a cached array outlives the file it came from otherwise,
     and every one of these remembers MISSES too, so a first-time install
     configuration would keep serving "no sprite" without this."""
-    global _mod_reach, _clear_generation
+    global _mod_reach, _reach_epoch, _clear_generation
     # Pending sprite prefetches are forgotten, as asset_source._forget_prefetches() does.
     _clear_generation += 1
     prefetch_discard()
@@ -675,6 +691,8 @@ def clear_caches() -> None:
     _sld_index_cache.clear()
     _mod_index_cache.clear()
     _mod_reach = None
+    _reach_epoch += 1
+    _install_sld_names.cache_clear()
     _mod_mismatch_logged.clear()
     _mod_blank_stems.clear()
     _sld_bytes_cache.clear()
@@ -1097,6 +1115,9 @@ WEST, EAST, NORTH, SOUTH = 1, 2, 4, 8
 # above, so NE is (tx + 1, ty - 1).
 NE, SE, SW, NW = 16, 32, 64, 128
 ORTHOGONAL_MASK = WEST | EAST | NORTH | SOUTH
+# (diagonal pair, shape): a diagonal run's interior, alone or met by one
+# orthogonal stub (TASK-581). One tuple so the two branches cannot drift.
+DIAGONAL_RUNS: tuple[tuple[int, int], ...] = ((NE | SW, 4), (NW | SE, 3))
 
 # (dx, dy, bit), orthogonals first so `mask & ORTHOGONAL_MASK` is exactly the
 # 4-bit mask wall_variant_from_neighbours() was calibrated on.
@@ -1158,9 +1179,17 @@ def wall_variant_from_neighbours8(mask: int) -> int | None:
     for the write side (2026-09-19 wall-runs plan) and since adopted by the
     render side for radian files through wall_drawn_shape().
 
-    Any orthogonal bit set defers to the 4-bit function verbatim, so the
-    superset property holds by construction rather than by agreement. The
-    diagonal cases below cover the 21.4% of corpus walls that have no
+    Any orthogonal bit set defers to the 4-bit function verbatim, except at
+    the eight junction masks below, so the superset property holds by
+    construction at every other mask rather than by agreement:
+
+    - exactly one orthogonal bit and diagonal bits exactly {NE, SW} -> 4,
+      exactly {NW, SE} -> 3 (TASK-581): a single wall meeting a diagonal
+      run's interior. 16 of the 18 integer corpus walls with this mask
+      store the run (2026-11-03); with a third diagonal only 1 of 4 does,
+      and a corner plus a pair splits 1:1, so those stay 2.
+
+    The diagonal cases below cover the 21.4% of corpus walls that have no
     orthogonal neighbour at all (1756 of 8193), which the 4-bit function
     answers None for. Measured over the integer-encoded corpus files, the
     only ones whose stored values carry shape information at all (the same
@@ -1182,14 +1211,16 @@ def wall_variant_from_neighbours8(mask: int) -> int | None:
     and wall_drawn_shape() (the render side, which adopted this table) each
     supply WALL_TOWER.
     """
-    if mask & ORTHOGONAL_MASK:
-        return wall_variant_from_neighbours(mask & ORTHOGONAL_MASK)
+    orthogonal = mask & ORTHOGONAL_MASK
+    diagonal = mask & ~ORTHOGONAL_MASK
+    if orthogonal & (orthogonal - 1) == 0:
+        for pair, shape in DIAGONAL_RUNS:
+            if diagonal == pair:
+                return shape
+    if orthogonal:
+        return wall_variant_from_neighbours(orthogonal)
     if mask == 0:
         return None
-    if mask == NE | SW:
-        return 4
-    if mask == NW | SE:
-        return 3
     return 2
 
 
@@ -1400,6 +1431,8 @@ def _sld_path(directory: Path, file_name: str) -> Path:
 def sld_frame_count(file_name: str) -> int | None:
     """How many frames the .sld file actually holds, or None when it can't be
     read (no install configured, or the file is missing on this install).
+    Install-only, so a write path (cliff_catalog) answers the same with Mod
+    Art on or off; drawing reads drawn_frame_count().
 
     The .dat's `angle_count` is NOT this number and disagrees in BOTH
     directions -- measured on the cliff families: Marble declares 25 angles
@@ -1413,6 +1446,28 @@ def sld_frame_count(file_name: str) -> int | None:
     rest, since an install-path change invalidates it."""
     sld = _sld_index(file_name)
     return None if sld is None else int(sld.frame_count)
+
+
+@lru_cache(maxsize=1)
+def _install_sld_names(directory: Path) -> frozenset[str] | None:
+    """Every .sld name in the install's graphics folder, casefolded, from one
+    listing; None when it will not list. Cleared by clear_caches()."""
+    try:
+        with os.scandir(directory) as entries:
+            return frozenset(entry.name.casefold() for entry in entries if entry.name[-4:].casefold() == ".sld")
+    except OSError as exc:
+        debug_log.log(f"sprite: cannot list {directory} ({exc!r})")
+        return None
+
+
+def _install_lacks(directory: Path, file_name: str) -> bool:
+    """True when the install's graphics folder has no .sld of this stem in any
+    case, so an open would fail. False under Return of Rome, whose root can
+    hold a copy (_sld_path())."""
+    if game_dataset.is_ror():
+        return False
+    names = _install_sld_names(directory)
+    return names is not None and f"{file_name}.sld".casefold() not in names
 
 
 def _sld_index(file_name: str):
@@ -1437,6 +1492,10 @@ def _sld_index(file_name: str):
             _prefetch_stash[(file_name, frame_index)] = value
         _sld_index_cache.put(file_name, sld)
         return sld
+    if game_dataset.data_mod() is not None and _install_lacks(directory, file_name):
+        # A data mod's own stem (GH #272): a failed open costs ~4 ms on WSL's /mnt/c, the listing one scan.
+        _sld_index_cache.put(file_name, _MISS)
+        return None
     sld = load_sld(_sld_path(directory, file_name))
     if sld is not None:
         _sld_bytes_cache.put(file_name, sld.release_data())
@@ -1448,7 +1507,9 @@ def _mod_index(file_name: str):
     """(walked file holding no bytes, path, "sld" | "smx") for the active mod
     file drawing this stem, or None: mod art off, no mod ships it, or it won't
     read. Pixels only: frame counts and every dispatch guard stay on the
-    install file (_sld_index), so a cosmetic mod can never move them."""
+    install file (_sld_index), so a cosmetic mod can never move them. The one
+    exception is a data mod's own stem, which the install lacks
+    (_mod_only_index())."""
     resolved = mod_graphics.resolve_sprite(file_name)
     if resolved is None:
         return None
@@ -1463,6 +1524,28 @@ def _mod_index(file_name: str):
         _sld_bytes_cache.put(("mod", file_name), walked.release_data())
     _mod_index_cache.put(file_name, value)
     return None if walked is None else value
+
+
+def _mod_only_index(file_name: str):
+    """_mod_index() for a stem the install lacks, while a data mod is in effect
+    (GH #272): the data mod's own art, which its art mod ships under names the
+    install never had, so that file gives the frame count too. None otherwise,
+    so a stock stem a missing DLC lacks stays undrawn, as does any stem
+    without an install (no palettes)."""
+    if game_dataset.data_mod() is None or _graphics_dir() is None or _sld_index(file_name) is not None:
+        return None
+    return _mod_index(file_name)
+
+
+def drawn_frame_count(file_name: str) -> int | None:
+    """How many frames drawing may index: the install file's
+    (sld_frame_count()), else a data mod's own file's (_mod_only_index()),
+    else None. Draw-only: write paths keep sld_frame_count()."""
+    count = sld_frame_count(file_name)
+    if count is not None:
+        return count
+    mod = _mod_only_index(file_name)
+    return None if mod is None else int(mod[0].frame_count)
 
 
 def _mod_frame_index(file_name: str, frame_index: int, install_count: int, mod_count: int) -> int | None:
@@ -1493,7 +1576,8 @@ def _mod_bytes(path: Path, file_name: str) -> bytes:
 
 def _decode_mod_frame(file_name: str, frame_index: int, install_count: int):
     """The active mod's decoded frame for this install frame, or None when no
-    mod applies or its layout does not map (the install draws). Raises
+    mod applies or its layout does not map (the install draws). install_count
+    is drawn_frame_count(): the mod file's own for a data mod's stem. Raises
     SLDError/OSError like decode_frame()."""
     mod = _mod_index(file_name)
     if mod is None:
@@ -1645,20 +1729,22 @@ def _native_frame(file_name: str, frame_index: int):
         _native_cache.put(key, _MISS if value is None else value)
         return value
     sld = _sld_index(file_name)
-    if sld is None:
-        _native_cache.put(key, _MISS)
-        return None
+    count = drawn_frame_count(file_name)
     # The .dat's angle_count * frame_count overruns the real frame count on a
     # small minority of graphics, so trust the file, not the arithmetic.
-    if not (0 <= frame_index < sld.frame_count):
+    if count is None or not (0 <= frame_index < count):
         _native_cache.put(key, _MISS)
         return None
     try:
-        frame = _decode_mod_frame(file_name, frame_index, sld.frame_count)
+        frame = _decode_mod_frame(file_name, frame_index, count)
     except (SLDError, OSError) as exc:
-        debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, drawing the install's: {exc}", level=debug_log.WARNING)
+        fallback = "not drawn" if sld is None else "drawing the install's"
+        debug_log.log(f"mod art: {file_name} frame {frame_index} failed to decode, {fallback}: {exc}", level=debug_log.WARNING)
         frame = None
-    if frame is None and _prefetch_active:
+    if frame is None and sld is None:
+        # A data mod's own stem has no install file to fall back to (GH #272).
+        value = None
+    elif frame is None and _prefetch_active:
         # The prefetch's value for this key is the computation below's (D1); only this key reads it.
         value = _prefetch_stash.pop(key, _ABSENT)
         if value is _ABSENT or value is _UNSERVED:
@@ -1831,10 +1917,10 @@ def _x2_native_frame(file_name: str, frame_index: int):
     if _graphics_dir() is None:
         return None  # not negative-cached, as in _native_frame()
     value = None
-    sld = None if file_name in _particle_stems() else _sld_index(file_name)
-    if sld is not None and 0 <= frame_index < sld.frame_count:
+    count = None if file_name in _particle_stems() else drawn_frame_count(file_name)
+    if count is not None and 0 <= frame_index < count:
         try:
-            frame = _decode_x2_frame(file_name, x2_name, frame_index, sld.frame_count)
+            frame = _decode_x2_frame(file_name, x2_name, frame_index, count)
         except (SLDError, OSError) as exc:
             debug_log.log(f"x2 art: {x2_name} frame {frame_index} failed to decode, drawing x1: {exc}", level=debug_log.WARNING)
             frame = None
@@ -1861,6 +1947,18 @@ def referenced_entries() -> list[tuple[str, int, int]]:
     return sorted(entries)
 
 
+def undrawable_stems() -> list[str]:
+    """Every stem the tables in effect draw that neither the install (one
+    folder listing) nor an active mod provides, sorted: drawn as coloured
+    marks (GH #272's status line). Particle stems are not files; [] without
+    an install or a folder that will not list."""
+    directory = _graphics_dir()
+    if directory is None:
+        return []
+    stems = {name for name, _dx, _dy in referenced_entries()} - _particle_stems()
+    return sorted(s for s in stems if _install_lacks(directory, s) and mod_graphics.resolve_sprite(s) is None)
+
+
 def _walked_reach(walked, fmt: str, dx: int, dy: int) -> tuple[int, int, int, int]:
     """(left, right, up, down) of every frame's MAIN box from the hotspot moved
     by (dx, dy), as tools/scan_sprite_reach.py measures the install."""
@@ -1883,31 +1981,124 @@ def _walked_reach(walked, fmt: str, dx: int, dy: int) -> tuple[int, int, int, in
     return tuple(reach)
 
 
+def _reach_over(entries, hi_res: bool, mod_file, frame_count, stop=None) -> tuple[int, int, int, int]:
+    """(left, right, up, down) native px of the mod art drawing `entries`.
+    mod_file(stem) is _mod_index()'s triple or None, frame_count(name) the
+    count drawing indexes (drawn_frame_count()); a file whose count maps by
+    neither _mod_frame_index() rule draws the install's and is skipped. At
+    Enhanced a mod's _x2 art counts too, halved and rounded up (GH #241).
+    stop() ends the walk early, its answer then unused."""
+    reach = (0, 0, 0, 0)
+    for name, dx, dy in entries:
+        if stop is not None and stop():
+            break
+        # x1's own mod file, then (at Enhanced) its x2 one at x2 px, halved.
+        x2_name = _x2_stem(name) if hi_res else None
+        for stem, k in ((name, 1), (x2_name, 2)):
+            mod = None if stem is None else mod_file(stem)
+            if mod is None:
+                continue
+            count = frame_count(name)
+            if count is None or mod[0].frame_count not in (count, 1):
+                continue
+            sides = (math.ceil(side / k) for side in _walked_reach(mod[0], mod[2], dx * k, dy * k))
+            reach = tuple(max(a, b) for a, b in zip(reach, sides, strict=True))
+    return reach
+
+
+def _reach_key() -> tuple[int, int, int]:
+    return (mod_graphics.generation(), _hi_res_generation, _reach_epoch)
+
+
+def set_background_reach(flag: bool) -> None:
+    """The viewer's switch (GH #272): a stale mod reach is walked in a worker
+    thread, and until it lands sprite_reach() answers PENDING_REACH, which
+    widens an edit's dirty bbox to the whole map. Opening a file costs ~5 ms
+    on WSL's /mnt/c, so a data mod's art mod (1,255 files for Galactic
+    Battlegrounds) took 10+ s on the GUI thread. Off by module default, so
+    tools and tests walk synchronously."""
+    global _background_reach
+    _background_reach = bool(flag)
+
+
+PENDING_REACH = 1 << 20  # native px each way while a background walk runs: the dirty bbox clamps it to the map
+
+
+def _uncached_reach(key, entries, hi_res: bool, directory: Path | None, data_mod: bool) -> None:
+    """The worker: _reach_over() through its own reads, never this module's
+    caches, which only the GUI thread touches. Lands in _mod_reach only while
+    _reach_key() still equals `key`."""
+    global _mod_reach, _reach_walk, _reach_failed
+    walked: dict[str, tuple | None] = {}
+    counts: dict[str, int | None] = {}
+
+    def mod_file(stem: str):
+        if stem not in walked:
+            resolved = mod_graphics.resolve_sprite(stem)
+            file = None
+            if resolved is not None:
+                path, fmt = resolved
+                file = load_sld(path, keep_data=False) if fmt == "sld" else load_smx(path, keep_data=False)
+            walked[stem] = None if file is None else (file, *resolved)
+        return walked[stem]
+
+    def frame_count(name: str):
+        # drawn_frame_count()'s answer: the install file's count, else a data mod's own file's.
+        if name not in counts:
+            count = None
+            if directory is not None:
+                sld = None if _install_lacks(directory, name) else load_sld(_sld_path(directory, name), keep_data=False)
+                if sld is not None:
+                    count = int(sld.frame_count)
+                elif data_mod and (mod := mod_file(name)) is not None:
+                    count = int(mod[0].frame_count)
+            counts[name] = count
+        return counts[name]
+
+    try:
+        t0 = time.perf_counter()
+        reach = _reach_over(entries, hi_res, mod_file, frame_count, stop=lambda: _reach_key() != key)
+        if _reach_key() == key:
+            _mod_reach = (key, reach)
+            debug_log.log(f"mod art: reach {reach} over {len(walked)} files in {time.perf_counter() - t0:.2f}s")
+    except Exception as exc:  # noqa: BLE001 -- a worker must not die silently; sprite_reach() then walks in place
+        debug_log.log(f"mod art: background reach walk failed: {exc!r}", level=debug_log.WARNING)
+        _reach_failed = key
+    finally:
+        if _reach_walk is not None and _reach_walk[0] == key:
+            _reach_walk = None
+
+
 def _active_mod_reach() -> tuple[int, int, int, int]:
     """The farthest any active mod's drawn art reaches, (left, right, up,
-    down) native px; zeros when mod art is off. At Enhanced a mod's _x2 art
-    counts too, halved and rounded up (GH #241). Recomputed per
-    mod_graphics.generation() and hi_res_generation()."""
-    global _mod_reach
-    generation = (mod_graphics.generation(), _hi_res_generation)
-    if _mod_reach is not None and _mod_reach[0] == generation:
+    down) native px; zeros when mod art is off. Recomputed per _reach_key():
+    mod_graphics.generation(), hi_res_generation() and clear_caches(). With
+    set_background_reach() on, a stale answer starts a worker and is
+    PENDING_REACH each way until it lands; a key whose worker raised walks
+    in place."""
+    global _mod_reach, _reach_walk
+    key = _reach_key()
+    if _mod_reach is not None and _mod_reach[0] == key:
         return _mod_reach[1]
-    reach = (0, 0, 0, 0)
-    if mod_graphics.enabled():
-        for name, dx, dy in referenced_entries():
-            # x1's own mod file, then (at Enhanced) its x2 one at x2 px, halved.
-            x2_name = _x2_stem(name) if _hi_res else None
-            for stem, k in ((name, 1), (x2_name, 2)):
-                mod = None if stem is None else _mod_index(stem)
-                if mod is None:
-                    continue
-                install_count = sld_frame_count(name)
-                if install_count is None or _mod_frame_index(stem, 0, install_count, mod[0].frame_count) is None:
-                    continue
-                sides = (math.ceil(side / k) for side in _walked_reach(mod[0], mod[2], dx * k, dy * k))
-                reach = tuple(max(a, b) for a, b in zip(reach, sides, strict=True))
-    _mod_reach = (generation, reach)
+    if not mod_graphics.enabled():
+        _mod_reach = (key, (0, 0, 0, 0))
+        return _mod_reach[1]
+    if _background_reach and _reach_failed != key:
+        if _reach_walk is None or _reach_walk[0] != key or not _reach_walk[1].is_alive():
+            # The inputs are read here, on the GUI thread: the tables' caches are not the worker's to fill.
+            args = (key, referenced_entries(), _hi_res, _graphics_dir(), game_dataset.data_mod() is not None)
+            worker = threading.Thread(target=_uncached_reach, args=args, name="mod-art-reach", daemon=True)
+            _reach_walk = (key, worker)
+            worker.start()
+        return (PENDING_REACH,) * 4
+    reach = _reach_over(referenced_entries(), _hi_res, _mod_index, drawn_frame_count)
+    _mod_reach = (key, reach)
     return reach
+
+
+def reach_pending() -> bool:
+    """Whether a background reach walk is still in flight for the current state."""
+    return _reach_walk is not None and _reach_walk[0] == _reach_key() and _reach_walk[1].is_alive()
 
 
 def sprite_reach() -> tuple[int, int, int, int]:
@@ -2094,7 +2285,7 @@ def _frame_for(
     file_name = str(entry["file_name"])
     return _dispatch(
         entry, rotation, angle_offset_deg, seed, piece_index, rotation_is_variant(unit_const),
-        lambda: sld_frame_count(file_name),
+        lambda: drawn_frame_count(file_name),
     )
 
 
@@ -2106,7 +2297,7 @@ def _dispatch(
     rotation_is_variant() of the piece's own const, and `frame_count_of()` the
     file's real frame count (None when it won't read), called only on the
     seeded and variant branches, so an angle const walks nothing. The GUI
-    thread passes sld_frame_count(); a prefetch worker its own walk's count."""
+    thread passes drawn_frame_count(); a prefetch worker its own walk's count."""
     return _dispatched_frame(
         entry, rotation, angle_offset_deg, seed, piece_index, is_variant, frame_count_of
     ) + int(entry.get("frame_offset", 0))
@@ -2135,9 +2326,9 @@ def _dispatched_frame(
     # 16*30) where they do not; passing the raw file total there would let an
     # out-of-angle-range literal (legal under the old angle_index() wrap)
     # resolve past this graphic's real per-variant frame run undetected. None
-    # (no install, or the .sld missing here) falls back to angle_count, which
+    # (no install, or no file draws this stem) falls back to angle_count, which
     # is what every caller did before this existed; there is no sprite to draw
-    # on that path anyway.
+    # on that path anyway. A data mod's own stem counts its mod file's frames.
     real_frames = frame_count_of()
     variant_count = None if real_frames is None else max(1, real_frames // frame_count)
     return variant_index(rotation, angle_count, variant_count) * frame_count

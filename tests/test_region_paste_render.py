@@ -317,6 +317,30 @@ def test_the_undo_and_redo_of_a_units_and_elevation_paste_build_the_level_at_mos
         window.close()
 
 
+def test_a_redo_stopped_by_its_unit_child_repaints_the_tiles_it_restored(monkeypatch) -> None:
+    """TASK-364: the paste composite's tile child redoes before its unit child
+    raises (the _check_alignment() shape); the map must still be repainted."""
+    window = _seeded_window(MARK_CONST)
+    try:
+        _paste(window)
+        window.undo()
+        cursor = window.edit_history.cursor
+        _canvas(window)
+
+        def drifted(_snapshot):
+            raise RuntimeError("unit lists drifted behind the model")
+
+        monkeypatch.setattr(window.unit_edits, "restore", drifted)
+        with pytest.raises(RuntimeError):
+            window.redo()
+        assert np.array_equal(_canvas(window), _fresh(window)), "stale pixels after a stopped redo"
+        assert window.edit_history.cursor == cursor
+        assert "Redo stopped:" in window.status_log.toPlainText()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_units_only_paste_in_units_mode_can_pick_a_pasted_unit() -> None:
     """No tile record: Draw release's shape, and the pick index is rebuilt."""
     from PyQt5.QtCore import QPointF

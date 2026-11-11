@@ -821,3 +821,50 @@ def test_verify_player_count_block_across_the_corpus(corpus_files) -> None:
     assert passed, "no corpus file passed the Number of Players gate"
     assert refused, "the Number of Players gate never fired on the corpus"
     assert len(counts) > 1, f"every corpus file resolved to the same count: {counts}"
+
+
+# -- TASK-481: a P1-P8 field outside its spec's range is refused alike on every version --
+
+
+def _refuses_a_negative_pop_limit(loaded) -> None:
+    from descape.options_model import OptionsEditModel
+
+    model = OptionsEditModel(loaded)
+    spec = next(s for s in pf.specs_for(loaded) if s.field_id == "pop_limit")
+    assert spec.minimum == 0
+    with pytest.raises(ValueError, match="pop_limit"):
+        model.set_value("player:pop_limit:1", spec.minimum - 5)
+    assert not model.has_edits, "a refused value was recorded"
+    model.set_value("player:pop_limit:1", spec.minimum)  # the floor itself is fine
+
+
+def test_a_negative_pop_limit_is_refused_on_a_1_44_plus_file(_loaded) -> None:
+    loaded = _loaded()
+    assert float(loaded.scenario_version) >= 1.44, loaded.scenario_version
+    _refuses_a_negative_pop_limit(loaded)
+
+
+@pytest.mark.corpus
+def test_a_negative_pop_limit_is_refused_on_a_pre_1_44_file() -> None:
+    if not _PRE_1_56_PATH.exists():
+        pytest.skip("examples/ corpus not present")
+    loaded = load_map_and_units(_PRE_1_56_PATH)
+    assert float(loaded.scenario_version) < 1.44, loaded.scenario_version
+    _refuses_a_negative_pop_limit(loaded)
+
+
+def test_a_stored_value_outside_the_spec_can_still_be_set_back(_loaded, monkeypatch) -> None:
+    """An undo back to the file's own value must never raise, whatever the file stores."""
+    from descape.options_model import OptionsEditModel
+
+    loaded = _loaded()
+    model = OptionsEditModel(loaded)
+    key = "player:player_name_string_id:1"
+    spec = next(s for s in pf.specs_for(loaded) if s.field_id == "player_name_string_id")
+    stored = spec.minimum - 1  # s32 holds it; the spec's floor is -2
+    monkeypatch.setitem(model._original, key, stored)  # priv: stands in for a file storing it
+    model.set_value(key, 7)
+    model.set_value(key, stored)
+    assert not model.has_edits
+    with pytest.raises(ValueError, match="player_name_string_id"):
+        model.set_value(key, stored - 1)

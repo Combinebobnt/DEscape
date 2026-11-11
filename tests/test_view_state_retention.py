@@ -65,7 +65,7 @@ def _current_scale(view) -> float:
 
 
 def _current_center(view):
-    return view.mapToScene(view.viewport().rect().center())
+    return view._viewport_center_scene()  # priv: the float centre the round trip keeps
 
 
 @pytest.mark.parametrize("style,isometric", [("Flat", False), ("Flat", True), ("Stepped", False)])
@@ -92,15 +92,81 @@ def test_reset_view_false_preserves_zoom_and_pan(style, isometric) -> None:
         after_scale = _current_scale(view)
         after_center = _current_center(view)
         assert after_scale == pytest.approx(before_scale, rel=1e-6)
-        # QGraphicsView's scrollbars are integer-valued in VIEW pixels, so
-        # centerOn() is lossy by up to ~1 view pixel each time it's called --
-        # once capturing before_center, once restoring it. At scene-units-
-        # per-view-pixel (1 / after_scale) that's a few scene units at this
-        # zoom, nowhere near "reset to fit" (hundreds of units on a 7680-wide
-        # map) if this regressed.
-        pixel_tolerance = 3.0 / after_scale
+        # The float centre round-trips to the same integer scrollbars (TASK-386), so
+        # under one view pixel (1 / after_scale scene units) covers only the rounding.
+        pixel_tolerance = 1.0 / after_scale
         assert after_center.x() == pytest.approx(before_center.x(), abs=pixel_tolerance)
         assert after_center.y() == pytest.approx(before_center.y(), abs=pixel_tolerance)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def _render_path_window(path: str, odd: bool):
+    """A shown window on one render path, set through the window (its
+    Isometric View setting decides Flat's path), with the viewport's width
+    and height both odd or both even."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer import ViewerWindow
+
+    conftest.ensure_qapp()
+    window = ViewerWindow()
+    window.load_scenario(FIXTURE)
+    if window.scenario is None:
+        window.close()
+        pytest.skip(f"{FIXTURE.name} failed to load")
+    style, iso = {
+        "flat_square": ("Flat", False),
+        "flat_iso": ("Flat", True),
+        "stepped": ("Stepped", False),
+        "sloped": ("Sloped", False),
+    }[path]
+    # Unchecked while still Stepped, or Flat renders through Flat+Isometric's projection.
+    window.iso_action.setChecked(False)
+    window.terrain_style_combo.setCurrentText(style)
+    window.iso_action.setChecked(iso)
+    window.refresh_map()
+    window.resize(1400, 1000)
+    window.show()
+    QApplication.processEvents()
+    viewport = window.map_view.viewport()
+    grow_w = (viewport.width() % 2 == 1) != odd
+    grow_h = (viewport.height() % 2 == 1) != odd
+    if grow_w or grow_h:
+        window.resize(1400 + grow_w, 1000 + grow_h)
+        QApplication.processEvents()
+    assert (viewport.width() % 2, viewport.height() % 2) == (int(odd), int(odd)), "viewport parity not set"
+    window._render_current()  # fit to the shown viewport
+    QApplication.processEvents()
+    expected = {"flat_square": ("flat", "flat"), "flat_iso": ("stepped", "stepped")}.get(path, (path, path))
+    assert (window._render_style, window.map_view._terrain_style) == expected, f"{path} runs another render path"
+    return window
+
+
+@pytest.mark.parametrize("odd", [False, True], ids=["even", "odd"])
+@pytest.mark.parametrize("path", ["flat_square", "flat_iso", "stepped", "sloped"])
+def test_repeated_rerender_does_not_drift(path: str, odd: bool) -> None:
+    """TASK-386: a same-geometry re-render is a fixed point of the view
+    round trip, so five in a row leave the scrollbars exactly where they were."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _render_path_window(path, odd)
+    try:
+        view = window.map_view
+        for _ in range(5):
+            view.scale(1.25, 1.25)
+        view.centerOn(view._map_rect.center().x() * 0.6, view._map_rect.center().y() * 0.7)
+        QApplication.processEvents()
+        h, v = view.horizontalScrollBar(), view.verticalScrollBar()
+        before = (h.value(), v.value())
+        assert 0 < before[0] < h.maximum() and 0 < before[1] < v.maximum(), "not panned off-centre"
+        seen = []
+        for _ in range(5):
+            window.refresh_map()
+            QApplication.processEvents()
+            seen.append((h.value(), v.value()))
+        assert seen == [before] * 5
     finally:
         window.edit_history.mark_saved()
         window.close()

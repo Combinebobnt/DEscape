@@ -44,7 +44,7 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 - Hold Alt as you click with Place Unit, drop with Move, or start a Unit Brush drag, for one off-grid placement.
 - Arrow keys nudge the selection by a tenth of a tile, Shift+arrow by a whole tile. With nothing selected, an arrow key does whatever the Pan commands bind it to.
 - Delete deletes the selection, without asking.
-- Place Unit with a wall picked: drag to lay a run, and hold Shift for one straight segment in one of 8 directions. Wall Rectangle and Wall Circle: hold Shift for a square or a circle. Right-click cancels any of these drags.
+- Place Unit with a wall picked: drag to lay a run, and hold Shift for one straight segment in one of 8 directions. Unit Line: hold Shift for a line at an even angle (with a wall, Place Unit's straight segment). Unit Shape: hold Shift for a square, a circle, or a triangle with 45-degree sides. Shift answers at once, without a mouse move. Right-click or Esc cancels any of these drags.
 - Eyedropper: a click copies a unit's type, owner and facing or variant; Shift+click copies the type only; a repeat click walks down a stack. With *Switch back after a pick* ticked, Ctrl+click picks and stays on the Eyedropper.
 - Convert and the Eraser: right-drag does the same as a left drag. The Unit Brush paints with the left button only.
 - Pan: the first click on a unit shows a hint naming the tools that select and move units.

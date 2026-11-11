@@ -2121,6 +2121,7 @@ def test_a_group_selection_or_a_new_single_unit_hides_the_garrison_block() -> No
 
 def _row_buttons(panel):
     return (
+        panel.garrison_duplicate_button,
         panel.garrison_copy_button,
         panel.garrison_unload_button,
         panel.garrison_delete_button,
@@ -2133,6 +2134,7 @@ def test_the_buttons_keep_the_planned_order() -> None:
     order = [
         panel.garrison_add_button,
         panel.garrison_pick_button,
+        panel.garrison_duplicate_button,
         panel.garrison_cut_button,
         panel.garrison_copy_button,
         panel.garrison_paste_button,

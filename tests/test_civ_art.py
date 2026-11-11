@@ -265,6 +265,48 @@ def test_walls_and_gates_are_fortified_at_an_imperial_start_where_the_civ_has_it
     assert unit_sprites.resolve_entry(STONE_GATE_NE, None, 5, GOTHS) is gm[STONE_GATE_NE]
 
 
+def test_a_civs_gate_siblings_name_one_flag_set():
+    """TASK-433: one owner's four orientation siblings of a gate draw the same
+    flag files, so Flat's turned art (a sibling's) keeps the gate's pennants."""
+    art = unit_sprites.building_art()
+    split = []
+    for civ in (None, *sorted(art.civ_art)):
+        for group, consts in sorted(gate_orientation.groups().items()):
+            flag_sets = set()
+            for const in consts:
+                entry = unit_sprites.resolve_entry(const, civ, 2) or {}
+                flag_sets.add(tuple(sorted(p["file_name"] for p in entry.get("pieces", ()) if "_flag_" in p["file_name"])))
+            if len(flag_sets) > 1:
+                split.append((civ, group))
+    assert not split, f"gate siblings naming different flags, (civ, group): {split}"
+    flags = [p for p in unit_sprites.resolve_entry(490, 46, 2)["pieces"] if "_flag_" in p["file_name"]]
+    assert [(p["file_name"], p["dx"], p["dy"]) for p in flags] == [
+        ("b_west_gate_stone_flag_x1", -72, -156),
+        ("b_west_gate_stone_flag_x1", 72, -84),
+    ]
+
+
+def test_every_file_the_civ_art_table_names_is_on_this_install():
+    """TASK-433's guard on install gaps: the generator swaps an unreadable gate
+    piece for Gaia's, so a file this install lacks must not reach the table."""
+    if asset_source.get_install_path() is None:
+        pytest.skip(
+            "no AoE2:DE install visible. Set AOE2DE_INSTALL_PATH to one. The configured "
+            "config.yaml install is deliberately hidden by conftest._isolated_settings."
+        )
+    art = unit_sprites.building_art()
+    entries = [e for by_const in art.civ_art.values() for e in by_const.values()]
+    entries += [e for by_age in art.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
+    names = set()
+    for entry in entries:
+        names.add(entry["file_name"])
+        names.update(p["file_name"] for p in entry.get("pieces", ()))
+        names.update(f["file_name"] for f in entry.get("garrison_flags", ()))
+    missing = sorted(name for name in names if unit_sprites.sld_frame_count(name) is None)
+    assert len(names) > 100, "too few files to prove anything"
+    assert not missing, f"named but not readable on this install: {missing}"
+
+
 def test_a_table_without_max_age_clamps_post_imperial_to_imperial(monkeypatch):
     """Today's RoR table: no max_age key, so age 6 reads its age-5 row."""
     real = unit_sprites.building_art()

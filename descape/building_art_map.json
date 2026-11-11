@@ -39654,7 +39654,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_persian_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -39662,7 +39662,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_persian_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -39704,7 +39704,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_persian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -39712,7 +39712,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_persian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -43462,7 +43462,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_greek_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -43470,7 +43470,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_greek_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -43512,7 +43512,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_greek_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -43520,7 +43520,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_greek_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -46981,7 +46981,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_thracian_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -46989,7 +46989,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_thracian_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -47031,7 +47031,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_thracian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -47039,7 +47039,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_thracian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -49754,7 +49754,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_puru_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -49762,7 +49762,7 @@
     },
     {
      "unit_id": 490,
-     "file_name": "b_puru_gate_stone_flag_x1",
+     "file_name": "b_west_gate_stone_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,
@@ -49804,7 +49804,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_persian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": -72,
@@ -49812,7 +49812,7 @@
     },
     {
      "unit_id": 491,
-     "file_name": "b_persian_gate_fortified_flag_x1",
+     "file_name": "b_west_gate_fortified_flag_x1",
      "angle_count": 1,
      "frame_count": 1,
      "dx": 72,

@@ -6,7 +6,7 @@ Where this is in the in-game editor: the Terrain tab (painting, elevation, cliff
 
 ## Choosing a terrain
 
-The panel on the left lists every terrain by category, each with a swatch of its ground texture. Type in the filter box to find one by name or number. The List and Grid buttons switch between a list and a grid of swatches; **Settings > Appearance** sets the grid's swatch size. In the grid, click a category heading to collapse it or open it again. Tick "Show unused / moddable terrains" to list the unused, moddable and obsolete terrain slots too. Forest and snow variants share a ground texture, so their swatches look alike. The line at the bottom of the panel describes the tile under the cursor.
+The panel on the left lists every terrain by category, each with a swatch of its ground texture. Type in the filter box to find one by name or number. The List and Grid buttons switch between a list and a grid of swatches; **Settings > Appearance** sets the grid's swatch size. In the grid, click a category heading to collapse it or open it again. Tick "Show unused / moddable terrains" to list the unused, moddable and obsolete terrain slots too. With a data mod picked in **File > Data Mod**, the panel lists the mod's own terrains under its names: in Forest when their trees grow on them, in Water or Beach by the mod's data, else by name, or in Other. **Settings > Mods** can list them in one "Mod terrains" group at the top instead. Forest and snow variants share a ground texture, so their swatches look alike. The line at the bottom of the panel describes the tile under the cursor.
 
 ## The tools
 
@@ -64,9 +64,9 @@ A region you have just pasted stays live until your next edit:
 
 - Drag inside it with Select to move it.
 - **Edit > Rotate Selection** turns it a quarter turn, and so does the mouse wheel's rotate binding.
-- **Edit > Flip Selection** mirrors it left/right or top/bottom on screen.
+- **Edit > Flip Selection** mirrors it across its own edges: **Flip West ↔ North** or **Flip West ↔ South** swaps those two corners, and the region keeps its place and shape.
 
-Walls, gates and unit facings turn with the block, and the paste plus every move and turn of it stay one undo step.
+Walls, gates and unit facings turn with the block, and pasted walls join the walls they land beside; the paste plus every move and turn of it stay one undo step.
 
 A selected region that you did not just paste is flipped or turned in place: **Edit > Flip Selection** mirrors it, and **Edit > Rotate Selection** (any of its turn entries) turns it a quarter turn, as long as no units are selected in Units mode. Its terrain, its elevation and the units standing on it move together, and the units stay the same units, so triggers that name them still work. A region that is not square turns about its own centre: the tiles it no longer covers keep what they had, and the selection follows the turned rectangle. A run of flips and turns is one undo step; press Enter to keep it, or Esc to put the region back as it was. The turn is refused if part of the region would leave the map, on a map that is not square, or where the file's terrain can't be edited. The mouse wheel's rotate binding still turns only a just-pasted region.
 

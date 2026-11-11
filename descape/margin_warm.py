@@ -21,6 +21,14 @@ max 10.3ms against a 9.3ms chunk max). A single chunk slower than
 the budget is the case worker threads (maintainer plan Batch F T2) would
 remove; Perf Trace's `warm:` bucket reports it as `max chunk`.
 
+**Cold-first defer (TASK-031.82 D3).** The slow single chunk is the first at a
+level, paying its cold builds. While the canvas saw input, a tick at a level
+not yet level_warmed() runs nothing and backs off to HELD_INTERVAL_MS, so a
+roll click never queues behind it (DEFER_COLD_FIRST). That holds for the
+viewer's pending level too, so a placeholder stays an upscale until input
+pauses (user, 2026-11-10: its load entry running cold put the click back
+behind the same chunk).
+
 **Worker threads (maintainer plan Batch F T2).** Where the cache offers a
 ChunkJob (render_cache.prepare_chunk_job: native backend, Stepped or Sloped),
 a tick does only the Python half of each chunk on the GUI thread and hands
@@ -50,7 +58,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from descape import debug_log, gc_hold, perf_trace
+from descape import debug_log, gc_hold, level_warm, perf_trace
 from descape.level_warm import _IdleTimerDriver
 
 # Wall-clock budget per tick: the 8ms warm-tick budget Batch F's gates use.
@@ -59,6 +67,14 @@ BUDGET_MS = 8
 
 # The tick's clock, a module attribute so tests can drive it deterministically.
 _now = time.perf_counter
+
+# TASK-031.82 D3: while the canvas saw input (level_warm.input_live()), a tick
+# at a level whose cold builds have not run (cache.level_warmed()) starts
+# nothing. The first chunk at a level pays them, 11-28 ms dev, and no budget
+# bounds a tick's first chunk. tools/bench_gui_zoom.py's --no-margin-fix clears it.
+DEFER_COLD_FIRST = True
+# Ticks deferred so far, process-wide; the bench reports it.
+deferrals = 0
 
 # Kernel worker threads, shared by every MarginWarmer; 0 keeps every chunk on
 # the GUI thread. Also each warmer's cap on jobs in flight, since a prepared
@@ -477,7 +493,11 @@ class MarginWarmer(_IdleTimerDriver):
         so this always returns True here: the timer only ever reaches this
         branch with a non-empty queue, since a drained queue stops the
         timer before it can fire again. An overdue gc hold's collect is a
-        whole tick too (_IdleTimerDriver._overdue_collect)."""
+        whole tick too (_IdleTimerDriver._overdue_collect).
+
+        While input is live at a level that is not yet level_warmed(), warms
+        nothing and backs off the same way (DEFER_COLD_FIRST); queue and
+        in-flight jobs are kept."""
         if self._held_backoff():
             return True
         if self._overdue_collect():
@@ -488,6 +508,13 @@ class MarginWarmer(_IdleTimerDriver):
                 self._stop_timer()
                 return True
             return self._drained()
+        if self._defers():
+            global deferrals
+            deferrals += 1
+            self._set_interval(self.HELD_INTERVAL_MS)
+            with perf_trace.where("margin-warm"):
+                perf_trace.warm_deferred(self._mip)
+            return True
         pooled = self._pooled()
         start = _now()
         deadline = start + BUDGET_MS / 1000.0
@@ -523,6 +550,12 @@ class MarginWarmer(_IdleTimerDriver):
                 self._stop_timer()
             return True
         return self._drained()
+
+    def _defers(self) -> bool:
+        if not DEFER_COLD_FIRST or self._sync or not level_warm.input_live():
+            return False
+        warmed = getattr(self._cache, "level_warmed", None)
+        return warmed is not None and not warmed(self._mip)
 
     def _pooled(self) -> bool:
         if WORKERS <= 0 or self._sync or not hasattr(self._cache, "prepare_chunk_job"):

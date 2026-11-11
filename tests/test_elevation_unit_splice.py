@@ -1355,8 +1355,8 @@ def test_a_brush_9_elevate_stroke_leaves_no_level_stale_after_a_zoom_out_and_bac
         cache = window._cache
         view = window.map_view
         cache.max_bytes *= 8  # room for both levels at once
-        # Just above the mip -1 boundary (0.5), so one 0.8x notch out crosses it.
-        view.setTransform(QTransform.fromScale(0.55, 0.55))
+        # One lattice point above the mip -1 boundary (0.5): one notch out lands on mip -1's stop, one back on mip 0.
+        view.setTransform(QTransform.fromScale(0.5 * 2 ** (1 / 3), 0.5 * 2 ** (1 / 3)))
         view.centerOn(*iso_geometry.tile_screen_origin(40, 40, 0, window._iso_proj))
         QApplication.processEvents()
         assert view.viewport_chunk_target()[0] == 0

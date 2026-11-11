@@ -62,6 +62,8 @@ MEMOIZED_GLOBALS = (
     "_gaia_only_catalog_mode",
     "_log_height",
     "_recent_files",
+    "_confirmed_scripts",
+    "_confirmed_addons",
     "_data_mod_by_scenario",
     "_new_map",
     "_keybinds",
@@ -101,6 +103,7 @@ MEMOIZED_GLOBALS = (
     "_mod_art_included",
     "_data_mod_hide_unchanged",
     "_data_mod_label_shown",
+    "_data_mod_terrain_group",
     "_terrain_picker_mode",
     "_terrain_grid_swatch_px",
 )

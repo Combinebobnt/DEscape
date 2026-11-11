@@ -132,3 +132,20 @@ def test_a_span_that_breaks_its_rule_gets_no_row_when_lenient(tools, lenient, sp
     warnings = lenient(gen)
     assert getattr(gen, span)(3118, unit) is None
     assert len(warnings) == 1 and "3118" in warnings[0]
+
+
+def test_a_lenient_texture_map_keeps_a_terrain_the_install_lacks(tools, lenient):
+    """GH #272: a data mod's own terrain textures come from its art mod, never the install."""
+    gen = tools("gen_terrain_texture_map")
+    terrains = [
+        NS(enabled=True, name="Grass", name_2="g_grs"),
+        NS(enabled=True, name="Metal", name_2="swgb_metal "),
+        NS(enabled=False, name="off", name_2="x"),
+        NS(enabled=True, name="unnamed", name_2=""),
+    ]
+    missing = [(1, "Metal", "swgb_metal")]
+    gen._game_root.set_lenient(False)
+    assert gen._texture_mapping(terrains, {"g_grs"}) == ({"0": "g_grs.dds"}, missing)
+    warnings = lenient(gen)
+    assert gen._texture_mapping(terrains, {"g_grs"}) == ({"0": "g_grs.dds", "1": "swgb_metal.dds"}, missing)
+    assert warnings == []

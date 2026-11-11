@@ -85,6 +85,15 @@ step tail, one at the idle budget inside a roll the first notch (no input seen y
 Under G3's signatures, a `queue holders` line per over-gate click names everything that
 held its queue, not only the largest, and the part no holder covers.
 
+Each level warm primes the level's native composite inputs as in the app (TASK-031.85: a
+chained `native` job fills the index tables, blend masks and Sloped shapes a first chunk
+reads, at levels up to render_cache.NATIVE_PRIME_MAX_TILE_PX), and a re-arm re-queues a
+prime a crossing cancelled (TASK-031.82 D6). Margin warms defer a cold level's first chunk
+while input is live (TASK-031.82 D3, margin_warm.DEFER_COLD_FIRST). --no-margin-fix keeps
+all three off (render_cache.WARM_NATIVE_INPUTS and DEFER_COLD_FIRST), the A arm of
+TASK-031.82's margin-chunk bench. Each margin chunk records level_warmed and primed at its
+start, and GATES' margin_warm block lists the deferrals.
+
 --profile-paint N wraps MapCanvasItem.paint in cProfile and prints the N
 slowest paints' top 25 by cumtime (cProfile inflates every figure; read it for
 shares, never for gates). --profile-frame N does the same for whole frames and
@@ -345,6 +354,9 @@ class WarmChunk:
     ms: float
     warmer: str = ""
     first_at_level: bool = False
+    # At the chunk's start (TASK-031.82 D3/D6): cache.level_warmed(mip), cache.native_primed(mip).
+    level_warmed: bool | None = None
+    primed: bool | None = None
 
     @property
     def identity(self) -> str:
@@ -1033,6 +1045,8 @@ class _Recorder:
         self.all_profiles: list[object] = []
         self.warm_profiles: list[tuple[WarmChunk, object]] = []
         self.margin_chunks: list[WarmChunk] = []
+        # (t, mip, warmer) per margin-warm tick deferred at a cold level (TASK-031.82 D3).
+        self.margin_deferrals: list[dict] = []
         self._margin_levels: set[int] = set()
         self._margin_tick: Activity | None = None
         self._chunk_active: WarmChunk | None = None
@@ -1129,8 +1143,12 @@ class _Recorder:
 
     def margin_data(self, clicks: list[Click], bounds: dict) -> dict:
         """Raw process-wide attribution, including first chunks warmed during load."""
+        from descape import margin_warm
+
         return {
             "chunks": [asdict(c) for c in self.margin_chunks],
+            "deferrals": self.margin_deferrals,
+            "deferral_count": margin_warm.deferrals,
             "ticks": [dict(asdict(a), ms=a.ms) for a in self.activities if a.kind == "margin-warm"],
             "clicks": [asdict(c) for c in clicks],
             "passes": {name: {"start": start, "end": end} for name, (start, end, _pending) in bounds.items()},
@@ -1170,8 +1188,10 @@ class _Recorder:
                     chunk, prof = pending[1:]
                 else:
                     path = "flat" if isinstance(cache, render_cache.FlatChunkCache) else "sync"
+                    warmed, primed = getattr(cache, "level_warmed", None), getattr(cache, "native_primed", None)
                     chunk = WarmChunk(now(), 0.0, mip, cx, cy, path, 0.0,
-                                      rec._margin_tick.warmer if rec._margin_tick else "", mip not in rec._margin_levels)
+                                      rec._margin_tick.warmer if rec._margin_tick else "", mip not in rec._margin_levels,
+                                      warmed(mip) if warmed else None, primed(mip) if primed else None)
                     rec._margin_levels.add(mip)
                     rec.margin_chunks.append(chunk)
                     if rec._margin_tick is not None:
@@ -1358,6 +1378,14 @@ class _Recorder:
                 return original(tick_ms, chunks, slowest_chunk_ms)
             return wrapper
 
+        def warm_deferred(original):
+            def wrapper(mip):
+                rec.margin_deferrals.append(
+                    {"t": now(), "mip": mip, "warmer": rec._margin_tick.warmer if rec._margin_tick else ""}
+                )
+                return original(mip)
+            return wrapper
+
         def stall(original):
             def wrapper(late_ms, stats=None):
                 t = now()
@@ -1399,6 +1427,7 @@ class _Recorder:
         self._wrap(perf_trace, "level_event", level_event)
         self._wrap(perf_trace, "level_warm_tick", level_warm_tick)
         self._wrap(perf_trace, "warm_tick", warm_tick)
+        self._wrap(perf_trace, "warm_deferred", warm_deferred)
         self._wrap(perf_trace, "stall", stall)
         self._wrap(perf_trace, "preframe_tick", preframe_tick)
         self._wrap(render_cache._ChunkCacheBase, "get_chunk", lambda original: chunk_call(original, False))
@@ -1615,17 +1644,29 @@ def _finish_report(output, frozen, rec, bench, bounds) -> None:
     output.append("GATES " + json.dumps(gate))
 
 
+def apply_module_arms(args) -> None:
+    """The A arms that are module switches, set in the child before the window."""
+    from descape import level_warm, margin_warm, render_cache
+
+    # The level warmer's input budget (TASK-031.80 D1); --no-input-budget is the A arm.
+    if args.no_input_budget:
+        level_warm.INPUT_BUDGET_MS = level_warm.BUDGET_MS
+    # Native input priming and its re-queue (TASK-031.85 D5, TASK-031.82 D6) and the cold-first
+    # defer (TASK-031.82 D3); --no-margin-fix is the A arm.
+    if args.no_margin_fix:
+        render_cache.WARM_NATIVE_INPUTS = False
+        margin_warm.DEFER_COLD_FIRST = False
+
+
 def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     from PyQt5.QtWidgets import QApplication
 
-    from descape import composite_backend, debug_log, level_warm, perf_trace, viewer
+    from descape import composite_backend, debug_log, margin_warm, perf_trace, render_cache, viewer
     from testkit.qt_window import ScenarioLoadError
 
     if composite_backend.active_backend() != "native" and not args.allow_numpy:
         raise SystemExit(f"composite backend is {composite_backend.describe()}; build the native kernel or --allow-numpy")
-    # The level warmer's input budget (TASK-031.80 D1); --no-input-budget is the A arm.
-    if args.no_input_budget:
-        level_warm.INPUT_BUDGET_MS = level_warm.BUDGET_MS
+    apply_module_arms(args)
     perf_trace.enable(True)  # before the window: its constructor starts the stall watchdog and gc hook
     rec = _Recorder(args.profile_paint, args.profile_frame, args.profile_warm)
     rec.install()
@@ -1671,7 +1712,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f" trees {window.paint_trees_check.isChecked()}, eye candy {window.paint_eye_candy_check.isChecked()},"
             f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'},"
             f" preframes {'off' if args.no_preframes else 'on'}, reach {'off' if args.no_reach else 'on'},"
-            f" input budget {'off' if args.no_input_budget else 'on'}"
+            f" input budget {'off' if args.no_input_budget else 'on'},"
+            f" native prime {'off' if args.no_margin_fix else 'on'}, margin defer {'off' if args.no_margin_fix else 'on'}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1771,6 +1813,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             },
             "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
             "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
+            "native_prime": render_cache.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
             "level_warm_passes": warm_json,
             "runtime": runtime,
         }, rec, bench, bounds)
@@ -1826,6 +1869,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the window keeps the zoom-out reach warm off (TASK-031.11's A arm; the app's default is on)")
     parser.add_argument("--no-input-budget", action="store_true",
                         help="level-warm ticks keep the idle budget during input (TASK-031.80's A arm; the app's default is on)")
+    parser.add_argument("--no-margin-fix", action="store_true",
+                        help="level warms skip native input priming and its re-queue (TASK-031.85, TASK-031.82 D6)"
+                        " and margin warms never defer a cold level's first chunk during input (TASK-031.82 D3):"
+                        " the A arm of TASK-031.82's bench; the app's default is on")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     return parser
 
@@ -1838,7 +1885,7 @@ def child_command(args, style: str, sprites: str, passes: list[str]) -> list[str
     cmd += ["--window", f"{args.window[0]}x{args.window[1]}"]
     if args.root:
         cmd += ["--root", str(args.root)]
-    for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget"):
+    for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget", "no_margin_fix"):
         if getattr(args, flag):
             cmd.append(f"--{flag.replace('_', '-')}")
     return cmd

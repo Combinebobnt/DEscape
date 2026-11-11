@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QLabel, QMenu
 
-from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, settings
+from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, mod_graphics, settings, unit_sprites
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
@@ -348,11 +348,37 @@ class DataModMenu(QObject):
             if tables.warnings and tables.key not in self._warned:
                 self._warned.add(tables.key)
                 self._window._log_status(warning_summary(tables), level=debug_log.WARNING)
+            if art := art_summary(tables):
+                self._window._log_status(art)
         return changed
 
 
 def _warning_count(count: int) -> str:
     return "1 warning" if count == 1 else f"{count} warnings"
+
+
+def _file_count(count: int) -> str:
+    return "1 art file" if count == 1 else f"{count} art files"
+
+
+def art_summary(tables: game_dataset.DataModTables) -> str:
+    """The status log's lines for the art a data mod's tables name that
+    neither the install nor an active mod provides (GH #272), "" when none:
+    a count, up to WARNING_LINES names, the rest's count. With Mod Art off,
+    one line, since only Mod Art draws a data mod's art mod."""
+    missing = [*unit_sprites.undrawable_stems(), *asset_source.undrawable_terrain_textures()]
+    if not missing:
+        return ""
+    count = _file_count(len(missing))
+    if not mod_graphics.enabled():
+        return f"Data mod {tables.title}: {count} not in the game's install; View > Layers > Mod Art draws them from its art mod"
+    lines = [
+        f"Data mod {tables.title}: {count} that no active mod provides, drawn as marks or flat colours:",
+        *(f"  {name}" for name in missing[:WARNING_LINES]),
+    ]
+    if len(missing) > WARNING_LINES:
+        lines.append(f"  ... and {len(missing) - WARNING_LINES} more")
+    return "\n".join(lines)
 
 
 def warning_summary(tables: game_dataset.DataModTables) -> str:

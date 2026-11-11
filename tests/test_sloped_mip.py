@@ -101,7 +101,7 @@ def _assert_same(got: np.ndarray, want: np.ndarray, what: str) -> None:
 def test_each_level_matches_a_full_render_at_its_own_tile_px(sprite_install, sprites) -> None:  # noqa: F811
     scn = _scenario()
     cache = _cache(scn, sprites=sprites)
-    assert cache.mip_levels() == [-2, -1, 0, 1, 2]  # 1 is the native tier (96, TASK-599)
+    assert cache.mip_levels() == [-2, -1, 0, 1, 2, 3]  # 1 and 3 are the native tiers (96, TASK-599; 192, TASK-601)
     stitched = {mip: _whole(cache, mip) for mip in cache.mip_levels()}
     for mip, got in stitched.items():
         lvl = cache._levels[mip]
@@ -148,18 +148,43 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
         assert np.array_equal(rise, real(cache.elevations, lvl.proj, rule=rule)), f"level {mip}"
         assert cache._level_extra_top(lvl) == render._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
     assert cache._level_corner_rise(cache._levels[0]) is cache.corner_rise
-    assert sorted(calls) == [16, 32, 96, 128], "level 0 shares self.corner_rise; every other level computes its own"
+    assert sorted(calls) == [16, 32, 96, 128, 192], "level 0 shares self.corner_rise; every other level computes its own"
     assert cache._levels[-1].headroom > 0, "a flat field has headroom 0 at every level -- vacuous"
 
     for mip in cache.mip_levels():
         cache._level_corner_rise(cache._levels[mip])
-    assert len(calls) == 4, "re-derived without level 0's corner_rise changing"
+    assert len(calls) == len(cache.mip_levels()) - 1, "re-derived without level 0's corner_rise changing"
 
     cache.elevations[3, 3] += 1
     cache.patch((0, 0, *cache.canvas_dims(0)), elevation_changed={(3, 3)})
     for mip in cache.mip_levels():
         lvl = cache._levels[mip]
         assert np.array_equal(cache._level_corner_rise(lvl), real(cache.elevations, lvl.proj, rule=rule))
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_192_level_leaves_every_other_level_byte_identical(sprite_install, monkeypatch, style) -> None:  # noqa: F811
+    """TASK-601: adding the 192 tier at Default changes no other level. The release render
+    diff covers level 0 only, so this guards the rest, sprites on."""
+    scn = _scenario()
+
+    def build():
+        if style == "Sloped":
+            return _cache(scn, sprites=True)
+        elevations, proj = render.elevations_and_proj(scn)
+        return IsoChunkCache(scn, elevations, proj, proj.tile_px, sprites=True)
+
+    def levels(cache):
+        return {cache.mip_tile_px(m): _whole(cache, m) for m in cache.mip_levels()}
+
+    settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
+    with_192 = levels(build())
+    monkeypatch.setitem(render.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_DEFAULT, 128)
+    without = levels(build())
+    assert 192 in with_192 and 192 not in without and {96, 128} <= set(without)
+    assert set(with_192) - {192} == set(without)
+    for tile_px, img in without.items():
+        _assert_same(with_192[tile_px], img, f"{style} {tile_px} px")
 
 
 # --- 3. canvas dims --------------------------------------------------------

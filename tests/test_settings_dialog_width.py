@@ -60,6 +60,79 @@ def test_settings_minimum_width_fits_its_opening_width_and_no_tab_scrolls_sidewa
         conftest.close_window(window)
 
 
+@pytest.fixture
+def _font_baseline():
+    """Puts the shared QApplication's font and apply_ui_font()'s cached default back
+    (tests/test_ui_font.py's fixture: a font left applied poisons the worker)."""
+    conftest.ensure_qapp()
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import gc_hold, viewer_dialogs
+
+    app = QApplication.instance()
+    saved_font = app.font()
+    saved_default = viewer_dialogs._DEFAULT_FONT
+    viewer_dialogs._DEFAULT_FONT = None
+    yield
+    viewer_dialogs._DEFAULT_FONT = saved_default
+    with gc_hold.paused():
+        app.setFont(saved_font)
+
+
+def _tab_bar_cuts(dialog) -> list[str]:
+    """What keeps a tab title out of view at the dialog's opening width: Qt's scroll arrows, or a
+    tab running past the bar's right edge."""
+    from PyQt5.QtWidgets import QTabWidget, QToolButton
+
+    dialog.show()
+    _settle()
+    bar = dialog.findChild(QTabWidget).tabBar()
+    cuts = [f"scroll arrow {b.arrowType()}" for b in bar.findChildren(QToolButton) if b.isVisible()]
+    cuts += [f"{bar.tabText(i)} ends at {bar.tabRect(i).right()} of {bar.width()} px" for i in range(bar.count())
+             if bar.tabRect(i).right() >= bar.width()]
+    return cuts
+
+
+@pytest.mark.parametrize("font_size", [None, 14], ids=["test font", "14 pt UI font"])
+def test_settings_opens_wide_enough_for_every_tab_title(font_size, _font_baseline) -> None:
+    """TASK-500 (decided 2026-10-29): Settings opens at the tab bar's own width hint when that is
+    wider than its coded 520 px, so no tab scrolls out of view at any UI font. 14 pt still fits
+    the 800 px offscreen screen; the next test covers a font that does not."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer_dialogs import apply_ui_font
+
+    if font_size is not None:
+        apply_ui_font(QApplication.instance(), "", font_size)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        assert dialog.width() >= 520
+        cuts = _tab_bar_cuts(dialog)
+        assert not cuts, f"at {dialog.width()} px: {cuts}"
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_settings_never_opens_wider_than_the_screen(_font_baseline) -> None:
+    """TASK-500: at the largest UI font the tab titles want more than the 800 px offscreen screen,
+    and the dialog stops at the screen's width (or its own minimum) instead."""
+    from PyQt5.QtWidgets import QApplication, QTabWidget
+
+    from descape import settings
+    from descape.viewer_dialogs import apply_ui_font
+
+    apply_ui_font(QApplication.instance(), "", settings.UI_FONT_SIZE_MAX)
+    dialog, window = conftest.dialog_and_window()
+    try:
+        screen = QApplication.primaryScreen().availableGeometry().width()
+        assert dialog.findChild(QTabWidget).tabBar().sizeHint().width() > screen, "the precondition: titles outgrow the screen"
+        assert dialog.width() == max(screen, dialog.minimumSizeHint().width())
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_tools_and_keybinds_labels_wrap_to_few_lines_at_the_opening_width() -> None:
     """Word-wrapped, and not squeezed below one line by their scroll area (the GOTCHAS trap).
     Tools takes two lines at most. Keybinds three: its key box and the Default and Clear

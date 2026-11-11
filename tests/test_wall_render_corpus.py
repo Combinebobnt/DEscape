@@ -5,6 +5,8 @@ corpus, install-free, rather than trusted from the figures in its docstring.
   stores the tower already, so the shipped overrides are empty and no
   game-saved file draws differently. That is the premise of the lone-wall
   rule: AoE2:DE saves such a wall as a tower.
+- Integer-encoded files: a single wall meeting a diagonal run's interior
+  stores the run, the 8-bit table's junction case (TASK-581).
 - Radian-encoded files: every on-map wall draws its 8-bit derivation (a lone
   wall the tower), diagonal runs included.
 """
@@ -69,6 +71,29 @@ def test_integer_files_store_a_tower_wherever_a_wall_has_at_most_one_neighbour(c
         pytest.skip("no integer-encoded file with walls in this corpus")
     assert lone, "no wall with at most one neighbour, so this proves nothing"
     assert bad == []
+
+
+def test_integer_files_store_the_diagonal_run_where_one_wall_meets_it(corpus_files):
+    """TASK-581's premise: one orthogonal neighbour plus exactly a diagonal
+    pair stores the run (4 or 3), not the tower. 16 of 18 on the full corpus
+    (2026-11-03); the dissenters are 2_Joan_coop_2_v0_15 p4 (130, 53) and
+    old-allies-final-v2 p5 (76, 30). The default subset holds only 2."""
+    pairs = {pair for pair, _shape in unit_sprites.DIAGONAL_RUNS}
+    total = agree = 0
+    for _path, _scenario, walls, radian in _loaded(corpus_files):
+        if radian:
+            continue
+        for _player_id, _i, rotation, mask in walls:
+            if mask is None:
+                continue
+            orthogonal = mask & unit_sprites.ORTHOGONAL_MASK
+            if not orthogonal or orthogonal & (orthogonal - 1) or (mask & ~unit_sprites.ORTHOGONAL_MASK) not in pairs:
+                continue
+            total += 1
+            agree += unit_sprites.variant_index(rotation, 5) == unit_sprites.wall_variant_from_neighbours8(mask)
+    if total < 15:
+        pytest.skip(f"only {total} junction walls in this corpus; --corpus-full measures 18")
+    assert agree >= 0.85 * total, (agree, total)
 
 
 def test_radian_files_draw_every_wall_by_the_8_bit_table(corpus_files):

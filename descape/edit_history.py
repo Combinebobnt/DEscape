@@ -63,6 +63,23 @@ def tile_state(tile) -> TileState:
     return (tile.terrain_id, tile.elevation, tile.layer)
 
 
+class HistoryMoveFailed(RuntimeError):
+    """A record's own undo()/redo() raised partway through undo(), redo() or
+    jump_to() (TASK-364). Nothing rolls back: the move stops at the failed
+    record, the cursor names the last record that finished, and the caller
+    refreshes from `kinds`/`touched`, which cover the finished records plus
+    the failed one (it may be half-applied). `done` of `total` records
+    finished. The original exception is `__cause__`. A refusal before
+    anything moves (require_target(), a bad target) is never this type."""
+
+    def __init__(self, message: str, kinds: frozenset[str], touched: list[int], done: int, total: int):
+        super().__init__(message)
+        self.kinds = kinds
+        self.touched = touched
+        self.done = done
+        self.total = total
+
+
 @dataclass
 class DiffRecord:
     """One undo step, in whichever domain the subclass covers.
@@ -948,8 +965,11 @@ class EditHistory:
             return []
         record = self.records[self.cursor - 1]
         record.require_target(tiles, triggers, options, units, messages)  # must raise before the cursor moves
+        try:
+            dirty = record.undo(tiles, triggers, options, units, messages)
+        except Exception as exc:
+            raise self._move_failed(record, frozenset(), [], 0, 1, exc) from exc
         self.cursor -= 1
-        dirty = record.undo(tiles, triggers, options, units, messages)
         self._notify()
         return dirty
 
@@ -965,10 +985,27 @@ class EditHistory:
             return []
         record = self.records[self.cursor]
         record.require_target(tiles, triggers, options, units, messages)  # must raise before the cursor moves
+        try:
+            dirty = record.redo(tiles, triggers, options, units, messages)
+        except Exception as exc:
+            raise self._move_failed(record, frozenset(), [], 0, 1, exc) from exc
         self.cursor += 1
-        dirty = record.redo(tiles, triggers, options, units, messages)
         self._notify()
         return dirty
+
+    def _move_failed(
+        self, record: DiffRecord, kinds: frozenset[str], touched: list[int], done: int, total: int, exc: Exception
+    ) -> HistoryMoveFailed:
+        """Fires on_change for the records that finished, then builds the
+        exception the caller raises: the failed record counts as touched."""
+        self._notify()
+        seen = set(touched)
+        touched = list(touched)
+        for index in record.touched_indices():
+            if index not in seen:
+                seen.add(index)
+                touched.append(index)
+        return HistoryMoveFailed(str(exc), kinds | record.kinds(), touched, done, total)
 
     def span_records(self, target: int) -> list[DiffRecord]:
         """The records between the cursor and `target`, in the order a
@@ -1006,9 +1043,10 @@ class EditHistory:
         the freshly-opened file", len(records) means "all the way forward".
 
         require_target() runs over the whole span before anything moves, so a
-        span containing one unrestorable record leaves the cursor exactly
-        where it was -- the same all-or-nothing contract undo()/redo() have,
-        applied to a multi-step move.
+        span containing one record it refuses leaves the cursor exactly where
+        it was. That is the only all-or-nothing part: a record whose own move
+        raises stops the jump there, with the records before it applied and
+        the cursor after the last one that finished (HistoryMoveFailed).
 
         saved_at_cursor is deliberately untouched: the saved state is a cursor
         position, so jumping onto it makes the document clean and jumping off
@@ -1026,11 +1064,17 @@ class EditHistory:
             record.require_target(tiles, triggers, options, units, messages)
         touched: list[int] = []
         seen: set[int] = set()
+        kinds: frozenset[str] = frozenset()
         backward = target < self.cursor
-        for record in span:
-            self.cursor += -1 if backward else 1
+        for done, record in enumerate(span):
             move = record.undo if backward else record.redo
-            for index in move(tiles, triggers, options, units, messages):
+            try:
+                moved = move(tiles, triggers, options, units, messages)
+            except Exception as exc:
+                raise self._move_failed(record, kinds, touched, done, len(span), exc) from exc
+            self.cursor += -1 if backward else 1
+            kinds |= record.kinds()
+            for index in moved:
                 if index not in seen:
                     seen.add(index)
                     touched.append(index)

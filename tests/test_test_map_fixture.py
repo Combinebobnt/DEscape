@@ -619,6 +619,12 @@ def _check_trigger_vocab(m: _Map) -> None:
                         left.append(f"{definition.name}.{spec.name}")
     assert not left, f"fields left at their default: {left}"
     assert any(e.effect_type == 91 for t in m.manager.triggers for e in t.effects), "no unknown effect type"
+    # TASK-401: the bait stays in the file but never fires in a play-test.
+    bait = [
+        t for t in m.manager.triggers if t.name == "Names a deleted unit" or any(e.effect_type == 91 for e in t.effects)
+    ]
+    assert len(bait) == 2, [t.name for t in bait]
+    assert all(t.enabled == 0 for t in bait), f"enabled bait: {[t.name for t in bait if t.enabled]}"
 
 
 def _check_trigger_structure(m: _Map) -> None:

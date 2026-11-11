@@ -15,11 +15,13 @@ headless in test_wall_run.py.
 
 from __future__ import annotations
 
+import json
+import threading
 from pathlib import Path
 
 import pytest
 
-from descape import settings
+from descape import game_dataset, settings, unit_sprites
 
 import conftest
 
@@ -54,6 +56,79 @@ def _hold_the_synthetic_button(monkeypatch):
     _HELD["value"] = False
     yield
     _HELD["value"] = False
+
+
+# TASK-444: these tests flaked as if Palisade and Aqueduct had stopped being walls. The guard below
+# fails such a test with where the wall set came from, instead of with a wrong unit count.
+_WALL_SOURCES = {
+    name: getattr(unit_sprites, name)
+    for name in (
+        "graphic_map",
+        "rotation_variant_eligible",
+        "wall_family_consts",
+        "rotation_variant_const_set",
+        "_ROTATION_VARIANT_CONSTS",
+    )
+}
+_WALL_FIELDS = ("angle_count", "file_name")
+_WALL_ENTRIES = {
+    const: {field: entry[field] for field in _WALL_FIELDS}
+    for const, entry in (
+        (const, json.loads(Path(unit_sprites.GRAPHIC_MAP_PATH).read_text())["graphics"][str(const)])
+        for const in (PALISADE, WALL, AQUEDUCT)
+    )
+}
+
+
+def _describe(obj) -> str:
+    code = getattr(obj, "__code__", None)
+    where = f" at {code.co_filename}:{code.co_firstlineno}" if code is not None else ""
+    name = getattr(obj, "__qualname__", type(obj).__name__)
+    return f"{getattr(obj, '__module__', '?')}.{name}{where}"
+
+
+def _wall_state() -> str | None:
+    """None while Place Unit sees the real wall set, else where it came from.
+    Reads viewer._wall_consts(), which is cached per dataset, and the live set
+    beside it: a cache filled under another test's patch outlives the patch."""
+    from descape import viewer
+
+    walls = {PALISADE, WALL, AQUEDUCT}
+    cached, live = viewer._wall_consts(), frozenset(unit_sprites.wall_family_consts())
+    if walls <= cached and walls <= live and game_dataset.cache_key() == game_dataset.AOE2:
+        return None
+    parts = [f"viewer._wall_consts() = {sorted(cached)}, unit_sprites.wall_family_consts() = {sorted(live)}"]
+    for name, original in _WALL_SOURCES.items():
+        now = getattr(unit_sprites, name)
+        if now is not original:
+            parts.append(f"unit_sprites.{name} is patched: {_describe(now)}")
+    parts.append(f"cache_key() = {game_dataset.cache_key()!r}")
+    table = unit_sprites.graphic_map()
+    parts.append(f"len(graphic_map()) = {len(table)}")
+    for const, want in _WALL_ENTRIES.items():
+        entry = table.get(const)
+        got = None if entry is None else {field: entry.get(field) for field in _WALL_FIELDS}
+        if got != want:
+            parts.append(f"graphic_map()[{const}] = {got}, the JSON has {want}")
+    parts.append(f"threads = {[t.name for t in threading.enumerate()]}")
+    return "; ".join(parts)
+
+
+@pytest.fixture(autouse=True)
+def _wall_consts_intact():
+    state = _wall_state()
+    assert state is None, f"wall set wrong before the test: {state}"
+    yield
+    state = _wall_state()
+    assert state is None, f"wall set changed during the test: {state}"
+
+
+def _trace(view, what: str, tile=None) -> None:
+    """One routing line per event, shown only when a test fails (TASK-444)."""
+    print(
+        f"{what} {tile}: tool={view._tool!r} shape_query={view._place_shape_query()!r} "
+        f"shape_tool={view._is_shape_tool()} anchor={view._shape_anchor!r}"
+    )
 
 
 def _window(const: int = WALL):
@@ -110,6 +185,7 @@ def _press(map_view, tile, modifiers=None) -> None:
             Qt.LeftButton, Qt.LeftButton, modifiers,
         )
     )
+    _trace(map_view, "press", tile)
 
 
 def _move(map_view, tile, modifiers=None) -> None:
@@ -133,6 +209,7 @@ def _release(map_view, tile) -> None:
         )
     )
     _HELD["value"] = False
+    _trace(map_view, "release", tile)
 
 
 def _drag(map_view, a, b, modifiers=None) -> None:
@@ -389,7 +466,9 @@ def _click_point(window, x: float, y: float) -> None:
     _HELD["value"] = True
     try:
         view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton))
+        _trace(view, "click press", (x, y))
         view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton))
+        _trace(view, "click release", (x, y))
     finally:
         _HELD["value"] = False
 
@@ -653,11 +732,19 @@ def test_a_committed_run_agrees_with_the_render_sides_derivation(owner):
 # --- Wall Rectangle (2026-09-21 wall enclosure plan) --------------------
 
 
-def _rect_window(const: int = WALL):
+def _shape_window(const: int, kind: str):
+    """Unit Shape (GH #365, which replaced Wall Rectangle and Wall Circle) with `kind` in its Shape combo."""
+    from descape.tool_option_bindings import find_data
+
     window = _window(const)
-    window.wall_rect_action.setChecked(True)
-    assert window._current_tool == "wall_rect"
+    window.unit_shape_action.setChecked(True)
+    assert window._current_tool == "unit_shape"
+    window.unit_shape_kind_combo.setCurrentIndex(find_data(window.unit_shape_kind_combo, kind))
     return window
+
+
+def _rect_window(const: int = WALL):
+    return _shape_window(const, "rectangle")
 
 
 def _ring(x0, y0, x1, y1):
@@ -666,16 +753,18 @@ def _ring(x0, y0, x1, y1):
     return shape_tools.rect_perimeter_tiles(x0, y0, x1, y1, 120, 120)
 
 
-def test_the_wall_rectangle_button_only_shows_in_units_mode():
+@pytest.mark.parametrize("tool", ["unit_line", "unit_shape"])
+def test_the_unit_line_and_shape_buttons_only_show_in_units_mode(tool):
     """QAction.isVisible(), never the widget's -- an offscreen unshown
     widget reports False unconditionally and would pass vacuously."""
     window = _rect_window()
     try:
-        assert window.wall_rect_action.isVisible()
+        action = getattr(window, f"{tool}_action")
+        assert action.isVisible() and action.isEnabled()
         window.mode_combo.setCurrentText("Terrain")
-        assert not window.wall_rect_action.isVisible()
+        assert not action.isVisible()
         window.mode_combo.setCurrentText("View")
-        assert not window.wall_rect_action.isVisible()
+        assert not action.isVisible()
     finally:
         _close(window)
 
@@ -768,14 +857,17 @@ def test_shift_squares_the_ring():
         _close(window)
 
 
-def test_a_non_wall_const_is_refused_with_a_status_line():
-    window = _rect_window(VILLAGER)
+def test_a_gate_pick_starts_no_drag_and_says_why():
+    window = _rect_window(GATE)
     try:
         before = _unit_count(window)
-        _drag(window.map_view, (20, 40), (28, 44))
+        _press(window.map_view, (20, 40))
+        assert window.map_view._shape_anchor is None and window.map_view._shape_latch is None
+        _move(window.map_view, (28, 44))
+        _release(window.map_view, (28, 44))
         assert _unit_count(window) == before
         assert not window.edit_history.can_undo
-        assert "Wall Rectangle: pick a wall in the catalog" in window.status_log.toPlainText()
+        assert "Unit Shape: gates are placed one at a time" in window.status_log.toPlainText()
     finally:
         _close(window)
 
@@ -832,10 +924,7 @@ _CIRCLE_A, _CIRCLE_B = (20, 40), (34, 50)
 
 
 def _circle_window(const: int = WALL):
-    window = _window(const)
-    window.wall_circle_action.setChecked(True)
-    assert window._current_tool == "wall_circle"
-    return window
+    return _shape_window(const, "ellipse")
 
 
 def _ellipse(x0, y0, x1, y1):
@@ -844,34 +933,13 @@ def _ellipse(x0, y0, x1, y1):
     return shape_tools.ellipse_perimeter_tiles(x0, y0, x1, y1, 120, 120)
 
 
-def test_the_wall_circle_button_only_shows_in_units_mode():
-    window = _circle_window()
-    try:
-        assert window.wall_circle_action.isVisible()
-        assert window.wall_circle_action.isEnabled()
-        window.mode_combo.setCurrentText("Terrain")
-        assert not window.wall_circle_action.isVisible()
-        window.mode_combo.setCurrentText("View")
-        assert not window.wall_circle_action.isVisible()
-    finally:
-        _close(window)
-
-
-def test_the_wall_circle_tool_is_registered_like_wall_rectangle():
-    """Unbound, Units-only, its own drag shape, the skip-occupied toggle,
-    and a tooltip that names its terms."""
-    tool = next(t for t in settings.TOOLS if t.tool_id == "wall_circle")
-    assert (tool.label, tool.drag_shape, tool.modes, tool.default_key) == (
-        "Wall Circle", "wall_circle", ("units",), ""
-    )
-    assert tool.supports_skip_occupied and not tool.supports_brush and not tool.supports_off_grid
-    window = _circle_window()
-    try:
-        tip = window.wall_circle_action.toolTip()
-        for words in ("outline", "one undo step per drag", "Shift makes it a circle", "Wall button"):
-            assert words in tip, words
-    finally:
-        _close(window)
+@pytest.mark.parametrize(("tool_id", "label"), [("unit_line", "Unit Line"), ("unit_shape", "Unit Shape")])
+def test_unit_line_and_shape_are_registered_unbound_and_units_only(tool_id, label):
+    tool = next(t for t in settings.TOOLS if t.tool_id == tool_id)
+    assert (tool.label, tool.drag_shape, tool.modes, tool.default_key) == (label, tool_id, ("units",), "")
+    assert tool.supports_skip_occupied and tool.supports_unrestricted
+    assert not tool.supports_brush and not tool.supports_off_grid
+    assert not any(t.tool_id in ("wall_rect", "wall_circle") for t in settings.TOOLS)
 
 
 def test_a_circle_drag_is_one_ring_and_one_undo_record_even_with_draw_rectangle_filled():
@@ -888,8 +956,8 @@ def test_a_circle_drag_is_one_ring_and_one_undo_record_even_with_draw_rectangle_
         before = _unit_count(window)
         _press(map_view, _CIRCLE_A)
         _move(map_view, _CIRCLE_B)
-        assert map_view._shape_tiles(preview=True) == ring
-        assert map_view._shape_tiles(preview=False) == ring
+        assert sorted(map_view._shape_tiles(preview=True)) == sorted(ring)
+        assert sorted(map_view._shape_tiles(preview=False)) == sorted(ring)
         _release(map_view, _CIRCLE_B)
         assert _unit_count(window) == before + len(ring)
         assert [r.kind for r in window.edit_history.records] == ["unit"]
@@ -919,7 +987,7 @@ def test_shift_makes_the_circle_a_circle():
         xs = {x for x, _y in tiles}
         ys = {y for _x, y in tiles}
         assert max(xs) - min(xs) == max(ys) - min(ys) == 14
-        assert tiles == _ellipse(min(xs), min(ys), max(xs), max(ys))
+        assert sorted(tiles) == sorted(_ellipse(min(xs), min(ys), max(xs), max(ys)))
         # A circle: the ring is its own transpose about the box's diagonal.
         assert {(y - min(ys), x - min(xs)) for x, y in tiles} == {(x - min(xs), y - min(ys)) for x, y in tiles}
         _release(map_view, _CIRCLE_B)
@@ -927,14 +995,14 @@ def test_shift_makes_the_circle_a_circle():
         _close(window)
 
 
-def test_a_non_wall_const_is_refused_with_a_wall_circle_status_line():
+def test_a_villager_ellipse_places_units_not_walls():
     window = _circle_window(VILLAGER)
     try:
         before = _unit_count(window)
         _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
-        assert _unit_count(window) == before
-        assert not window.edit_history.can_undo
-        assert "Wall Circle: pick a wall in the catalog" in window.status_log.toPlainText()
+        assert _unit_count(window) > before
+        assert [r.kind for r in window.edit_history.records] == ["unit"]
+        assert "Placed " in window.status_log.toPlainText().splitlines()[-1]
     finally:
         _close(window)
 
@@ -990,8 +1058,8 @@ def test_the_wall_button_shows_for_wall_circle_and_a_menu_pick_keeps_it():
         assert window.wall_pick_param_action.isVisible()
         assert window.wall_pick_button.isEnabled()
         _menu_action(window, PALISADE).trigger()
-        assert window._current_tool == "wall_circle"
-        assert window.wall_circle_action.isChecked()
+        assert window._current_tool == "unit_shape"
+        assert window.unit_shape_action.isChecked()
         assert window.units_panel.selected_object_const() == PALISADE
         before = _unit_count(window)
         _drag(window.map_view, _CIRCLE_A, _CIRCLE_B)
@@ -1041,7 +1109,7 @@ def test_the_skip_occupied_checkbox_shows_for_the_wall_tools_only():
     window = _window()
     try:
         assert not window.skip_occupied_check.isChecked()
-        for tool in ("place_unit", "wall_rect", "wall_circle"):
+        for tool in ("place_unit", "unit_line", "unit_shape"):
             window._on_tool_selected(tool)
             assert window.skip_occupied_param_action.isVisible(), tool
             assert window.skip_occupied_check.isEnabled(), tool
@@ -1228,7 +1296,7 @@ def test_the_skip_occupied_checkbox_shows_under_no_tool_but_the_wall_tools():
                 if visible:
                     shown.add(tool.tool_id)
         assert reached == {tool.tool_id for tool in settings.TOOLS}
-        assert shown == {"place_unit", "wall_rect", "wall_circle"}
+        assert shown == {"place_unit", "unit_line", "unit_shape"}
         assert not window.skip_occupied_check.isChecked()
     finally:
         _close(window)
@@ -1366,15 +1434,15 @@ def test_a_menu_pick_while_wall_rectangle_is_active_keeps_wall_rectangle():
     window = _rect_window()
     try:
         _menu_action(window, PALISADE).trigger()
-        assert window._current_tool == "wall_rect"
-        assert window.wall_rect_action.isChecked()
+        assert window._current_tool == "unit_shape"
+        assert window.unit_shape_action.isChecked()
         assert window.units_panel.selected_object_const() == PALISADE
         assert window.wall_pick_button.text() == "Wall: Palisade Wall"
         # And the click now re-arms the menu's pick, not Stone Wall.
         _pick(window, VILLAGER)
         window.wall_pick_button.click()
         assert window.units_panel.selected_object_const() == PALISADE
-        assert window._current_tool == "wall_rect"
+        assert window._current_tool == "unit_shape"
     finally:
         _close(window)
 
@@ -1476,8 +1544,10 @@ def _drag_point(window, a, b) -> None:
     _HELD["value"] = True
     try:
         view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        _trace(view, "drag press", a)
         view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
         view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
+        _trace(view, "drag release", b)
     finally:
         _HELD["value"] = False
 
@@ -2735,3 +2805,212 @@ def test_a_radian_files_neighbour_is_rewritten_and_the_file_stays_radian():
         assert render.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
     finally:
         _close(window)
+
+
+# --- TASK-585: a paste reshapes the walls beside pasted walls and gates ----------
+
+
+def _paste_units_at(window, tile) -> None:
+    window.on_hover(tile)
+    window.paste_region()
+
+
+def _record_refreshes(window, monkeypatch) -> list:
+    refreshes = []
+    real = window._after_unit_mutation
+    monkeypatch.setattr(
+        window, "_after_unit_mutation", lambda changed=None, **kw: (refreshes.append(changed), real(changed, **kw))[1]
+    )
+    return refreshes
+
+
+def test_a_wall_cut_from_a_run_and_pasted_back_joins_it_again():
+    """The task's regression. Wall 34 belongs to another player, so a missing
+    owner in the paste's undo snapshot would show on undo."""
+    window, row = _run_window()
+    try:
+        index = window.map_view._unit_index
+        window._reassign_units([index.entry_for_key((PLAYER, row[34].reference_id))], 2)
+        assert any(u is row[34] for u in window.scenario.unit_manager.units[2])
+        _select_units(window, [row[35]])
+        window.cut_units()
+        assert (row[34].rotation, row[36].rotation) == (2.0, 2.0)
+        records = len(window.edit_history.records)
+
+        _paste_units_at(window, (35, _DEL_ROW))
+
+        (pasted,) = _walls_on(window, {(35, _DEL_ROW)})
+        assert (row[34].rotation, pasted.rotation, row[36].rotation) == (0.0, 0.0, 0.0)
+        assert len(window.edit_history.records) == records + 1
+        assert window.edit_history.peek_undo().label == "Paste Units"
+        assert _last_status(window) == f"Pasted 1 unit at (35, {_DEL_ROW}), reshaping 2 adjacent"
+        window.undo()
+        assert (row[34].rotation, row[36].rotation) == (2.0, 2.0)
+        assert _walls_on(window, {(35, _DEL_ROW)}) == []
+        window.redo()
+        assert (row[34].rotation, row[36].rotation) == (0.0, 0.0)
+    finally:
+        _close(window)
+
+
+def _region_window():
+    """The blank template (no walls, so integer-only), Select active: two x
+    runs on 30..34 at y 30 and y 33, and a two-wall run at (50..51, 40) copied
+    as a region. Returns (window, {tile: wall})."""
+    from test_region_select import _select_window
+
+    window = _select_window()
+    model = window._ensure_unit_edits()
+    tiles = {(x, y): 2.0 if x in (30, 34) else 0.0 for y in (30, 33) for x in range(30, 35)}
+    tiles |= {(50, 40): 2.0, (51, 40): 2.0}
+    with window._unit_edit(model, "Add", [PLAYER]):
+        walls = {t: model.add(PLAYER, WALL, t[0] + 0.5, t[1] + 0.5, rotation=r) for t, r in tiles.items()}
+    # Terrain of its own, so a paste writes a tile record too, not only units.
+    mm = window.scenario.map_manager
+    for x in (50, 51):
+        tile = mm.terrain[40 * mm.map_width + x]
+        tile.terrain_id = (tile.terrain_id + 1) % 10
+    window.on_region_selected((50, 40, 52, 41))
+    window.copy_region()
+    return window, walls
+
+
+def test_paste_region_against_a_runs_end_joins_it_in_one_composite_record():
+    from descape.edit_history import CompositeDiffRecord
+
+    window, walls = _region_window()
+    try:
+        assert window.paste_terrain_check.isChecked()
+        _paste_units_at(window, (35, 30))
+
+        (near,), (far,) = _walls_on(window, {(35, 30)}), _walls_on(window, {(36, 30)})
+        assert (walls[(34, 30)].rotation, near.rotation, far.rotation) == (0.0, 0.0, 2.0)
+        assert isinstance(window.edit_history.peek_undo(), CompositeDiffRecord)
+        assert _last_status(window).endswith("at (35, 30), reshaping 1 adjacent")
+        window.undo()
+        assert walls[(34, 30)].rotation == 2.0
+        assert _walls_on(window, {(35, 30), (36, 30)}) == []
+    finally:
+        _close(window)
+
+
+def test_moving_the_pasted_region_restores_the_first_site_and_joins_the_second():
+    window, walls = _region_window()
+    try:
+        _paste_units_at(window, (35, 30))
+        assert walls[(34, 30)].rotation == 0.0
+
+        window.on_region_move(0, 3)
+
+        assert walls[(34, 30)].rotation == 2.0
+        assert walls[(34, 33)].rotation == 0.0
+        assert [u.rotation for u in _walls_on(window, {(35, 33)})] == [0.0]
+        assert _walls_on(window, {(35, 30), (36, 30)}) == []
+        assert _last_status(window) == "Moved pasted region to (35, 33), reshaping 1 adjacent"
+    finally:
+        _close(window)
+
+
+def _stepped(window) -> None:
+    window.iso_action.setChecked(True)
+    window.terrain_style_combo.setCurrentText("Stepped")
+
+
+def test_a_paste_units_that_reshapes_walls_refreshes_wholesale_on_stepped(monkeypatch):
+    """Rewritten walls carry no splice and can flip a radian file's verdict."""
+    window, row = _run_window()
+    try:
+        _stepped(window)
+        _select_units(window, [row[35]])
+        window.cut_units()
+        refreshes = _record_refreshes(window, monkeypatch)
+
+        _paste_units_at(window, (35, _DEL_ROW))
+
+        assert row[34].rotation == 0.0
+        assert refreshes == [None]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("what", ["lone wall", "villager"])
+def test_a_paste_units_that_reshapes_nothing_keeps_its_splices_on_stepped(monkeypatch, what):
+    window = _window()
+    try:
+        _stepped(window)
+        if what == "villager":
+            unit = _add_unit(window, VILLAGER, 60.5, 60.5)
+        else:
+            window.on_shape_commit([(60, 60)])
+            (unit,) = _walls_on(window, {(60, 60)})
+        _select_units(window, [unit])
+        assert window.copy_units()
+        refreshes = _record_refreshes(window, monkeypatch)
+
+        _paste_units_at(window, (70, 70))
+
+        assert len(refreshes) == 1 and refreshes[0], "expected one spliced refresh"
+    finally:
+        _close(window)
+
+
+def test_a_paste_beside_a_radian_neighbour_writes_the_literal_and_the_file_stays_radian():
+    """The fixture as loaded is radian (its GAIA wall). (60, 60) stores radian
+    index 1 and a lone wall pasted east of it makes it a run end: it takes the
+    literal 2."""
+    from descape import render
+
+    window = _window()
+    try:
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [PLAYER]):
+            neighbour = model.add(PLAYER, WALL, 60.5, 60.5, rotation=1.256637)
+            source = model.add(PLAYER, WALL, 80.5, 80.5, rotation=2.0)
+        assert render.wall_variant_rotation_overrides(window.scenario)
+        _select_units(window, [source])
+        assert window.copy_units()
+
+        _paste_units_at(window, (61, 60))
+
+        assert neighbour.rotation == 2.0
+        assert render.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
+    finally:
+        _close(window)
+
+
+# --- the TASK-444 guard itself -------------------------------------------------
+
+
+def test_the_wall_guard_names_a_patched_table(monkeypatch) -> None:
+    stone_only = {WALL: dict(unit_sprites.graphic_map()[WALL])}
+    with monkeypatch.context() as m:
+        m.setattr(unit_sprites, "graphic_map", lambda: stone_only)
+        state = _wall_state()
+    assert state is not None
+    assert f"unit_sprites.graphic_map is patched: {__name__}.test_the_wall_guard_names_a_patched_table.<locals>.<lambda>" in state
+    assert f"{__file__}:" in state, "the patching test's file and line"
+
+
+def test_the_wall_guard_names_a_changed_entry(monkeypatch) -> None:
+    real = unit_sprites.graphic_map()
+
+    def changed():
+        table = dict(real)
+        table[PALISADE] = {**real[PALISADE], "angle_count": 1}
+        return table
+
+    with monkeypatch.context() as m:
+        m.setattr(unit_sprites, "graphic_map", changed)
+        state = _wall_state()
+    assert state is not None
+    assert "graphic_map()[72] = {'angle_count': 1," in state and "the JSON has {'angle_count': 5," in state
+    assert real[PALISADE]["angle_count"] == 5, "the real cached table was mutated"
+
+
+def test_the_wall_guard_names_another_dataset() -> None:
+    try:
+        game_dataset.set_active(game_dataset.ROR)
+        state = _wall_state()
+    finally:
+        game_dataset.set_active(game_dataset.AOE2)
+    assert state is not None and "cache_key() = 'ror'" in state

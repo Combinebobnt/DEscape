@@ -121,6 +121,14 @@ def test_unique_techs_are_left_out_of_the_start_age_rule() -> None:
     assert not civ_availability.researched_at_start(6, 494), "Pavise (Italians) was not measured"
 
 
+def test_return_of_rome_has_no_start_age_rule() -> None:
+    """Unmeasured on RoR: Wood Working 107 is a generic Tool Age tech whose button stays at an Iron start."""
+    with game_dataset.activated(game_dataset.ROR):
+        assert not civ_availability.researched_at_start(5, 107)
+        assert civ_availability.missing(None, NO_OVERRIDES, 107, TECH, 5) == ""
+    assert civ_availability.researched_at_start(5, _LOOM)
+
+
 def test_missing_names_the_reason() -> None:
     listed = Overrides(listed=frozenset({(_MILITIA, UNIT)}))
     assert civ_availability.missing(_SPANISH, NO_OVERRIDES, _CONQUISTADOR, UNIT) == ""

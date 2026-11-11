@@ -1769,6 +1769,46 @@ def test_the_per_row_owner_reassigns_only_the_selected_occupant() -> None:
         _close(window)
 
 
+def _wheel_notch(combo) -> None:
+    """One notch down the list, delivered as Qt would (test_unit_choice_viewer.py's _wheel)."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import QApplication
+
+    centre = QPointF(combo.rect().center())
+    event = QWheelEvent(centre, centre, QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(combo, event)
+
+
+def test_a_wheel_over_the_unfocused_garrison_owner_combo_reassigns_nothing() -> None:
+    """TASK-480: Qt 5 emits activated for a wheel notch, and Owner... acts on it."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window()
+    try:
+        tower, occupants = _tower_with_two_inside(window)
+        _hide_garrisoned(window)
+        window.show()
+        QApplication.setActiveWindow(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        _select_rows(window, {u.reference_id for u in occupants})
+        combo = window.units_panel.garrison_owner_combo
+        assert combo.isEnabled()
+        window.map_view.setFocus()
+        QApplication.processEvents()
+        assert not combo.hasFocus()
+        records_before = len(window.edit_history.records)
+
+        _wheel_notch(combo)
+
+        assert [_owner_of(window, u.reference_id) for u in occupants] == [1, 1]
+        assert len(window.edit_history.records) == records_before
+        assert not combo.hasFocus(), "the wheel must not hand the combo focus either"
+    finally:
+        _close(window)
+
+
 # --- b1.3: inspector round-trip ----------------------------------------------
 
 

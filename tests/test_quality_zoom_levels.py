@@ -1,7 +1,9 @@
 """GH #241: each graphics quality builds zoom levels only up to its own finest
 tile_px (render.FINEST_TILE_PIXELS), in Stepped, Sloped and Flat alike, so
-Potatest and Potato stay cheap when zoomed in. Default and Enhanced keep the
-ladder's 128 px top."""
+Potatest and Potato stay cheap when zoomed in. Default reaches the 192 px
+level (TASK-601), Enhanced stops at 128 until TASK-441. Top-down Flat's
+power-of-two ladder stops at the largest power of two within that finest, so
+at Default it stops at 128."""
 
 from __future__ import annotations
 
@@ -16,7 +18,8 @@ QUALITIES = sorted(settings.GRAPHICS_QUALITY_LABELS)
 
 
 def test_low_qualities_stop_below_the_ladders_top():
-    assert [render.FINEST_TILE_PIXELS[q] for q in QUALITIES] == [32, 64, 128, 128]
+    assert [render.FINEST_TILE_PIXELS[q] for q in QUALITIES] == [32, 64, 192, 128]
+    assert [render.NATIVE_TIER_MAX[q] for q in QUALITIES] == [96, 96, 192, 96]
     assert max(render.FINEST_TILE_PIXELS.values()) == iso_geometry.MIP_MAX_TILE_PIXELS
 
 
@@ -42,4 +45,6 @@ def _finest(style: str) -> int:
 @pytest.mark.parametrize("style", ["stepped", "sloped", "flat"])
 def test_every_view_stops_at_its_qualitys_finest_level(style, quality):
     settings.set_graphics_quality(quality)
-    assert _finest(style) == render.FINEST_TILE_PIXELS[quality]
+    finest = render.FINEST_TILE_PIXELS[quality]
+    want = 1 << (finest.bit_length() - 1) if style == "flat" else finest
+    assert _finest(style) == want

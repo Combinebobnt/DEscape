@@ -1024,7 +1024,15 @@ class UnitEditModel:
         or gate that Delete, Cut Units, Find's Delete or the Eraser removes
         (GH #340, wall_run.plan_removal_rewrites(), written by
         wall_run.apply_rewrites() or the Eraser's release), where a wall
-        left with no neighbour takes the tower index 2 too.
+        left with no neighbour takes the tower index 2 too. Find and
+        Replace's rewrites of the walls beside a tile it turns into or out
+        of a wall or gate, and a unit Replace turns into a wall from a
+        non-wall, which takes the shape its new neighbours give it
+        (TASK-584, wall_run.scenario_replace_rewrites(), written by
+        wall_run.apply_replace_plan() after every replace_type()). A wall
+        Paste Units or Paste Region lands takes the shape its new neighbours
+        give it, and so do the walls beside a tile a pasted wall or gate
+        newly covers (TASK-585, wall_run.scenario_paste_plan()).
         Also a selected wall flipped or
         turned in place (TASK-256), whose index is the element's image
         through mirror_tools.wall_index_image() (region_transform.
@@ -1249,7 +1257,10 @@ class UnitEditModel:
         axis whose span is unchanged (replaced_position()); rotation and
         initial_animation_frame follow replaced_rotation(), AGENTS.md's
         *Replace* verbatim exception. A batch passes its pre-flight's
-        `planned`, so the guard checks the same final state in any order."""
+        `planned`, so the guard checks the same final state in any order.
+        The viewer re-derives the walls around a replaced unit in the same
+        record (wall_run.scenario_replace_rewrites()); this method does not,
+        so a batch script's Replace stays verbatim."""
         reason = self.replace_refusal(unit, new_const, map_w, map_h, planned=planned)
         if reason is not None:
             raise ValueError(f"cannot replace unit {unit.reference_id} with {new_const}: {reason}")
@@ -1725,6 +1736,32 @@ class UnitEditModel:
         self._dirty = snapshot.dirty
         self._bump_unit_gen()
 
+    def rollback_to(self, lists: Sequence[Sequence[Unit]]) -> None:
+        """Abandons the open whole-list edit and puts the document back to
+        its begin_unit_edit(range(9)) snapshot: a failed script run's way
+        back (descape/scripting.py). `lists` is the nine unit lists as they
+        were at that begin.
+
+        Unlike restore(), it realigns first: manager.units and the tracked
+        lists are rewritten from `lists`, so a list changed around the model
+        (an append, a del, the banned `unit.player =` setter) cannot trip the
+        alignment gate. Raises, changing nothing, unless a whole-list edit
+        covering all nine players is open.
+        """
+        snapshot = self._pending
+        if not isinstance(snapshot, UnitSnapshot) or len(lists) != 9 or set(snapshot.players) != set(range(9)):
+            raise RuntimeError("rollback_to() needs an open begin_unit_edit(range(9)) and nine unit lists")
+        self._pending = None
+        manager = self.loaded.unit_manager
+        for player, units in enumerate(lists):
+            # Slice assignment, never rebinding: restore()'s trap 2.
+            manager.units[player][:] = list(units)
+            self._tracked[player][:] = list(units)
+        self._rebuild_pos()
+        self._garrison = None
+        self._highest_ref_id_stale = True
+        self.restore(snapshot)
+
     def _restore_field_delta(self, snapshot: UnitFieldSnapshot) -> None:
         """restore()'s delta counterpart (Batch D's D6): puts back the state
         and blob of exactly the units `snapshot` names, keyed by identity
@@ -1801,6 +1838,28 @@ class UnitEditModel:
         if push:
             history.push_unit_record(record)
         return record
+
+    def settle_unchanged(self, record: UnitDiffRecord) -> None:
+        """For a whole-list `record` just committed with push=False: every
+        player whose units and states ended as they began gets its `before`
+        blobs back and leaves the record, so an edit that returned to where
+        it started (a unit moved away and back, one added then removed)
+        keeps the file's own bytes and records nothing. With no player left,
+        the id counter and the dirty flag go back to the edit's start too,
+        since no record will ever restore them. The caller must have checked
+        that nothing outside UnitState changed (descape/scripting.py does)."""
+        before, after = record.before, record.after
+        if not isinstance(before, UnitSnapshot):
+            raise RuntimeError("settle_unchanged() takes a whole-list unit record")
+        for player in list(before.players):
+            then, now = before.players[player], after.players[player]
+            if _same_items(then.units, now.units) and then.states == now.states:
+                self._blobs[player][:] = list(then.blobs)
+                del before.players[player]
+                del after.players[player]
+        if not before.players:
+            self._next_unit_id = before.next_unit_id
+            self._dirty = before.dirty
 
     def _capture_field_delta_after(self, before: UnitFieldSnapshot) -> UnitFieldSnapshot:
         """commit_unit_edit()'s delta counterpart to _capture(): builds

@@ -56,7 +56,9 @@ the floor a level still costs when a paint reaches it before its warm).
 art where x1 would be enlarged, at the committed x2 budgets. With --ladder
 each file's lines end with the x2 caches' contents. `--x2-uncapped` lifts
 those budgets, so the line is the x2 working set NATIVE_X2_CACHE_BYTES and
-SLD_X2_BYTES_CACHE_BYTES are sized from.
+SLD_X2_BYTES_CACHE_BYTES are sized from. `--scaled-uncapped` does the same
+for the x1 scaled cache: with --ladder, each `first` line's scaled bytes less
+the previous one's is that level's working set, SCALED_CACHE_BYTES's source.
 
 `--mod-art` replaces all of the above with the cosmetic-mod row (see
 bench_mod_art): the cold Stepped sprite layer with Mod Art off against on,
@@ -243,7 +245,8 @@ def _bench_stepped_sprites(scenario, proj, elevations) -> list[str]:
     """
     mm = scenario.map_manager
     projs = iso_geometry.mip_projections_for(
-        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels()
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels(),
+        native_tier_max=render.native_tier_max(),
     )
     levels = sorted(projs)
     lines = ["    stepped sprites, adjacent-level thrashing (Item 24):"]
@@ -580,7 +583,8 @@ def bench_single_sprite(path: Path) -> str:
     mm = scenario.map_manager
     _elevations, proj, _tile_px = _projection(scenario)
     projs = iso_geometry.mip_projections_for(
-        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels()
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels(),
+        native_tier_max=render.native_tier_max(),
     )
     unit_sprites.clear_caches()
     best = _largest_drawn_frame(scenario)
@@ -679,6 +683,10 @@ def main() -> None:
         help="With --hi-res: lift the x2 cache budgets to measure the x2 working set",
     )
     parser.add_argument(
+        "--scaled-uncapped", action="store_true",
+        help="Lift the scaled sprite cache's budget to measure each level's whole working set (TASK-601)",
+    )
+    parser.add_argument(
         "--mod-art", action="store_true",
         help="Only the TASK-378 row: cold Stepped layer with Mod Art off vs on, first reach walk, .smx vs .sld decode",
     )
@@ -725,6 +733,9 @@ def main() -> None:
             f"hi-res: x2 budgets native {unit_sprites.NATIVE_X2_CACHE_BYTES / 1e6:.0f}MB, "
             f"bytes {unit_sprites.SLD_X2_BYTES_CACHE_BYTES / 1e6:.0f}MB{' (uncapped)' if args.x2_uncapped else ''}"
         )
+    if args.scaled_uncapped:
+        unit_sprites._scaled_cache.capacity_bytes = 1 << 40
+        print("scaled budget lifted (uncapped)")
     unit_sprites.set_smooth_shrink(args.smooth)
     print(
         f"graphics quality {settings.get_graphics_quality()} | smooth shrink {'on' if args.smooth else 'off'}"

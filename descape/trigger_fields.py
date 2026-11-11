@@ -827,7 +827,7 @@ QUANTITY = "quantity"
 QUANTITY_FLOAT = "quantity_float"
 
 _ARMOUR_ATTACK_FIELDS = ("armour_attack_quantity", "armour_attack_class")
-_CLUSTER_FIELDS = ("quantity", "quantity_float", *_ARMOUR_ATTACK_FIELDS)
+CLUSTER_FIELDS = ("quantity", "quantity_float", *_ARMOUR_ATTACK_FIELDS)
 
 # The vocabulary fields each live slot makes editable. `variable` is live in
 # both of its states and is not a cluster field.
@@ -867,7 +867,7 @@ def apply_quantity_cluster_rule(specs: Sequence[FieldSpec], entry: Any) -> tuple
     live = _LIVE_FIELDS[live_quantity_slot(entry)]
     return tuple(
         replace(spec, read_only=True)
-        if spec.name in _CLUSTER_FIELDS and spec.name not in live
+        if spec.name in CLUSTER_FIELDS and spec.name not in live
         else spec
         for spec in specs
     )

@@ -1,5 +1,8 @@
 """Which game's data DEscape reads: Age of Empires II or Return of Rome (GH #67).
 
+Each game is a descriptor in descape/games.py (docs/GAME_DATA.md); this module
+holds the active one and resolves tables and install files from it.
+
 Return of Rome (RoR) has its own empires2_x2_p1.dat, and the same unit const
 means a different unit there (93 is Spearman in AoE2 and Hoplite in RoR). So
 every table generated from the .dat (tools/regen_game_data.py) has a RoR copy
@@ -29,20 +32,32 @@ from dataclasses import dataclass, field
 from functools import lru_cache, update_wrapper
 from pathlib import Path
 
+from descape import games
+
+# The two games' ids, as plain strings for set_active() callers.
 AOE2 = "aoe2"
 ROR = "ror"
-DATASETS = (AOE2, ROR)
-DISPLAY_NAMES = {AOE2: "Age of Empires II", ROR: "Return of Rome"}
-
-# ScenarioVariant.ROR, the file header's unknown_value_2 for a RoR scenario.
-ROR_VARIANT = 2
-# The RoR root, relative to the install: its own resources/ and widgetui/ trees.
-ROR_SUBPATH = "modes/Pompeii"
 
 TABLES_DIR = Path(__file__).resolve().parent
-ROR_TABLES_DIR = TABLES_DIR / "ror"
-# Tables not derived from either .dat: both datasets read the one copy.
+# Tables not derived from any .dat: every dataset reads the one copy.
 SHARED_TABLES = frozenset({"cliff_connectivity.json", "trigger_requirements.json"})
+
+
+def __getattr__(name: str):
+    # The old constants, read from the registry on each access so a game registered later shows.
+    if name == "DATASETS":
+        return games.ids()
+    if name == "DISPLAY_NAMES":
+        return {game.id: game.display_name for game in games.GAMES}
+    if name == "ROR_VARIANT":
+        # ScenarioVariant.ROR, the file header's unknown_value_2 for a RoR scenario.
+        return min(games.get(ROR).variants)
+    if name == "ROR_SUBPATH":
+        # The RoR root, relative to the install: its own resources/ and widgetui/ trees.
+        return games.get(ROR).root_subpath
+    if name == "ROR_TABLES_DIR":
+        return games.get(ROR).tables_dir
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,11 @@ _switch_hooks: list[Callable[[], None]] = []
 
 def active() -> str:
     return _active
+
+
+def game() -> games.Game:
+    """The active game's descriptor. A file's own game is games.for_scenario()."""
+    return games.get(_active)
 
 
 def is_ror() -> bool:
@@ -122,8 +142,7 @@ def set_active(dataset: str) -> bool:
     """Makes `dataset` the active one; True when it changed. A change drops
     every install-derived cache (names, art, icons) and runs the on_switch()
     hooks, which refill the tables other modules imported at load time."""
-    if dataset not in DATASETS:
-        raise ValueError(f"unknown game dataset {dataset!r}")
+    games.get(dataset)  # raises ValueError for an unknown one
     if dataset == _active:
         return False
     return _set_state(dataset, _data_mod)
@@ -161,43 +180,44 @@ def on_switch(hook: Callable[[], None]) -> Callable[[], None]:
 def from_variant(variant) -> str:
     """The dataset for a file header's variant (ScenarioVariant or its int):
     ROR for Return of Rome, AOE2 for everything else, None included."""
-    try:
-        return ROR if variant is not None and int(variant) == ROR_VARIANT else AOE2
-    except (TypeError, ValueError):
-        return AOE2
+    return games.for_variant(variant).id
 
 
 def table_path(default: Path | str, dataset: str | None = None) -> Path:
     """The active dataset's copy of a generated table, or `dataset`'s. `default`
-    is the AoE2 path (or just the file name); under RoR the same name in
-    descape/ror/, under a data mod in its tables folder (dataset None only),
-    except SHARED_TABLES, which stay where `default` points."""
+    is the AoE2 path (or just the file name); under another game the same name
+    in its own tables folder (descape/ror/), under a data mod in its tables
+    folder (dataset None only), except SHARED_TABLES, which stay where
+    `default` points."""
     path = Path(default)
     if len(path.parts) == 1:
         path = TABLES_DIR / path
     if path.name in SHARED_TABLES:
         return path
-    if (dataset or _active) == ROR:
-        return ROR_TABLES_DIR / path.name
+    of = games.get(dataset or _active)
+    if of.id != games.DEFAULT_ID:
+        return of.tables_dir / path.name
     mod = data_mod() if dataset is None else None
     return path if mod is None else mod.tables_dir / path.name
 
 
 def ror_root(install: Path | None) -> Path | None:
-    return None if install is None else install / ROR_SUBPATH
+    return None if install is None else games.get(ROR).root(install)
 
 
 def resource_path_in(install: Path | None, subpath: str | Path) -> Path | None:
-    """An install file or folder for the active dataset: under RoR the RoR
-    root's copy when it exists, else the install's own (which may not exist
-    either; the caller checks). None without an install."""
+    """An install file or folder for the active dataset: the first copy that
+    exists along its root chain (under RoR the RoR root's, then the
+    install's), else the last root's own path (which may not exist either;
+    the caller checks). None without an install."""
     if install is None:
         return None
-    if _active == ROR:
-        candidate = install / ROR_SUBPATH / subpath
+    *own, last = games.chain(game())
+    for of in own:
+        candidate = of.root(install) / subpath
         if candidate.exists():
             return candidate
-    return install / subpath
+    return last.root(install) / subpath
 
 
 def resource_path(subpath: str | Path) -> Path | None:
@@ -208,15 +228,28 @@ def resource_path(subpath: str | Path) -> Path | None:
 
 
 def resource_dirs(subpath: str | Path) -> list[Path]:
-    """Every folder a lookup by loose name should search, in priority order:
-    the RoR root's copy first under RoR, then the install's. Only existing folders."""
+    """Every folder a lookup by loose name should search, in priority order
+    along the active dataset's root chain: the RoR root's copy first under
+    RoR, then the install's. Only existing folders."""
     from descape import asset_source
 
     install = asset_source.get_install_path()
     if install is None:
         return []
-    roots = [install / ROR_SUBPATH, install] if _active == ROR else [install]
+    roots = [of.root(install) for of in games.chain(game())]
     return [root / subpath for root in roots if (root / subpath).is_dir()]
+
+
+# Every cache()'s per-key dict, so forget() can reach them.
+_caches: list[dict[object, Callable]] = []
+
+
+def forget(dataset: str) -> None:
+    """Drops every cache() entry kept for `dataset`, with or without a data mod.
+    For games.unregister(): the next game registered under that id must not read this one's tables."""
+    for per_dataset in _caches:
+        for key in [key for key in per_dataset if key == dataset or (isinstance(key, tuple) and key[0] == dataset)]:
+            del per_dataset[key]
 
 
 def cache(maxsize: int | None = 128):
@@ -226,6 +259,7 @@ def cache(maxsize: int | None = 128):
 
     def decorate(fn):
         per_dataset: dict[object, Callable] = {}
+        _caches.append(per_dataset)
 
         def _cached() -> Callable:
             key = _cache_key

@@ -273,7 +273,8 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
     ),
     Neutralization(
         "lone-walls",
-        "TASK-524: a wall with at most one neighbour draws as a tower, and radian files draw diagonal walls by their neighbours",
+        "TASK-524: a wall with at most one neighbour draws as a tower, and radian files draw diagonal walls by their neighbours"
+        " (TASK-581: a single wall meeting a diagonal run's interior too)",
         since="v0.10", control_file=ELCID, must_fail=SPRITES_ON,
         patch=_stored_wall_shapes,
     ),

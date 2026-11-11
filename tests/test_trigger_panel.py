@@ -2170,6 +2170,7 @@ def test_the_columns_re_fit_when_the_pane_is_resized() -> None:
     the panel happened to be built at makes it meaningless."""
     from PyQt5.QtWidgets import QApplication
 
+    from descape import settings
     from descape.trigger_panel import TriggerPanel
 
     window = _triggers_window()
@@ -2178,7 +2179,8 @@ def test_the_columns_re_fit_when_the_pane_is_resized() -> None:
         panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
         tree = panel.entry_tree
 
-        window.content_splitter.setSizes([240, 1260])
+        # The narrowest reachable pane: Triggers' drag floor lifts this (TASK-560).
+        window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, 1500 - settings.MIN_SPLIT_PANE])
         QApplication.processEvents()
         narrow = tree.viewport().width() - tree.columnWidth(0)
         assert narrow >= TriggerPanel._MIN_DETAIL_WIDTH, (
@@ -6599,6 +6601,131 @@ def test_a_differing_field_reads_as_differs_and_a_shared_one_shows_its_value() -
         window.close()
 
 
+# TASK-561: the library's Effect.item_id getter is derived from these, so the item id row moves with them.
+_HOUSE = 70
+_LOOM, _WHEELBARROW = 22, 213
+
+
+def _modify_attribute_window(count: int = 1):
+    window = _triggers_window()
+    panel = window.trigger_panel
+    indices = _appended_effects(
+        window, _effect_type_id(panel, "modify_attribute"), [{"object_list_unit_id": _ARCHER}] * count
+    )
+    panel.refresh_entries(select=("effect", indices[0]))  # the form was built before the fields were set
+    _select_entries(panel, *[("effect", i) for i in indices])
+    return window, indices
+
+
+def _commit_and_settle(widget, value) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    widget.commit_value(value)
+    QApplication.processEvents()
+
+
+def test_a_source_unit_commit_moves_the_item_id_row() -> None:
+    """TASK-561: commit_value() is the path Browse, a typed value and the eyedropper share."""
+    window, _indices = _modify_attribute_window()
+    try:
+        panel = window.trigger_panel
+        assert _row_widget(panel, "item_id").value() == _ARCHER
+        _commit_and_settle(_row_widget(panel, "object_list_unit_id"), _HOUSE)
+        assert _row_widget(panel, "item_id").value() == _HOUSE, "the item id row kept the old source unit"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_technology_commit_moves_the_item_id_row() -> None:
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        index = _appended_effects(window, _effect_type_id(panel, "enable/disable_technology"), [{"technology": _LOOM}])[0]
+        panel.refresh_entries(select=("effect", index))
+        assert _row_widget(panel, "item_id").value() == _LOOM
+        _commit_and_settle(_row_widget(panel, "technology"), _WHEELBARROW)
+        assert _row_widget(panel, "item_id").value() == _WHEELBARROW, "the item id row kept the old technology"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_group_source_unit_commit_shows_the_new_shared_item_id() -> None:
+    window, _indices = _modify_attribute_window(2)
+    try:
+        panel = window.trigger_panel
+        _commit_and_settle(_row_widget(panel, "object_list_unit_id"), _HOUSE)
+        item = _row_widget(panel, "item_id")
+        assert not _reads_differs(item) and item.value() == _HOUSE
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_undoing_a_source_unit_commit_shows_the_old_item_id() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window, _indices = _modify_attribute_window()
+    try:
+        panel = window.trigger_panel
+        _commit_and_settle(_row_widget(panel, "object_list_unit_id"), _HOUSE)
+        window.undo()
+        QApplication.processEvents()
+        assert _row_widget(panel, "object_list_unit_id").value() == _ARCHER
+        assert _row_widget(panel, "item_id").value() == _ARCHER
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_rebuild_after_a_source_unit_commit_keeps_focus_on_its_row() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window, _indices = _modify_attribute_window()
+    try:
+        panel = window.trigger_panel
+        window.activateWindow()
+        old = _row_widget(panel, "object_list_unit_id")
+        old.line_edit.setFocus()
+        QApplication.processEvents()
+        assert QApplication.focusWidget() is old.line_edit, "offscreen focus did not take"
+        _commit_and_settle(old, _HOUSE)
+        new = _row_widget(panel, "object_list_unit_id")
+        assert new is not old, "the form was not rebuilt"
+        assert QApplication.focusWidget() is new.line_edit, QApplication.focusWidget()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_an_edit_that_moves_no_other_row_keeps_the_form_widgets() -> None:
+    """A source player edit, and a quantity edit whose slot stays (the cluster exemption), patch
+    labels only: no rebuild."""
+    from PyQt5.QtWidgets import QApplication
+
+    window, _indices = _modify_attribute_window()
+    try:
+        panel = window.trigger_panel
+        before = [w for *_, w in panel._rows]
+        player = _row_widget(panel, "source_player")
+        player.setCurrentIndex(player.findData(3))
+        QApplication.processEvents()
+        assert _effects0(window)[_indices[0]].source_player == 3
+        assert [w for *_, w in panel._rows] == before, "a source player edit rebuilt the form"
+
+        quantity = _row_widget(panel, "quantity")
+        assert not quantity.property("readOnly") and quantity.isEnabled()
+        quantity.setValue(7)
+        quantity.editingFinished.emit()
+        QApplication.processEvents()
+        assert _effects0(window)[_indices[0]].quantity == 7
+        assert [w for *_, w in panel._rows] == before, "a quantity edit rebuilt the form"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_focusing_every_indeterminate_widget_writes_nothing(tmp_path: Path) -> None:
     """The load-bearing one. Two entries differing in STR, prose, INT, ENUM,
     BOOL, INT_LIST and catalog fields: tab through every row, then save. No
@@ -8950,10 +9077,7 @@ def _area_boxes(panel) -> list:
 @pytest.mark.font_sensitive
 @pytest.mark.parametrize("kind", ["condition", "effect"])
 def test_an_area_shows_two_rows_of_two_boxes_with_their_captions_above(kind: str) -> None:
-    from PyQt5.QtWidgets import QApplication, QLabel
-
-    from descape.trigger_panel import TriggerPanel
-    from testkit.qt_window import FONT_DPI_OVERRIDE_ENV
+    from PyQt5.QtWidgets import QLabel
 
     window = _area_window(kind)
     try:
@@ -8982,13 +9106,93 @@ def test_an_area_shows_two_rows_of_two_boxes_with_their_captions_above(kind: str
         assert reached[:3] == [y1, x2, y2]
 
         # The floor itself, whatever the font: 9 pt fits a narrow pane even without it.
+        # check_triggers_fit_their_drag_floor covers area forms at the real pane floor.
         assert grid.minimumSizeHint().width() < 2 * x1.sizeHint().width()
-        assert grid.minimumSizeHint().width() <= TriggerPanel._PROPERTY_MIN_WIDTH
-        if not os.environ.get(FONT_DPI_OVERRIDE_ENV):
-            # Only at the pinned font: above it the form's other rows outgrow this unscaled width.
-            panel.property_area.setFixedWidth(TriggerPanel._PROPERTY_MIN_WIDTH)
-            QApplication.processEvents()
-            assert panel.property_area.horizontalScrollBar().maximum() == 0
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# TASK-560: the widest forms of the 144 condition and effect types, measured 2026-11-02 at the
+# panel's minimum from 72 to 168 DPI (the plan's p560 probe), plus an area-bearing one.
+_WIDE_FORM_TYPES = (
+    ("condition", "own_objects"),
+    ("condition", "own_fewer_objects"),
+    ("condition", "objects_in_area"),
+    ("effect", "task_object"),
+    ("effect", "build_object"),
+    ("effect", "activate_trigger"),
+    ("effect", "deactivate_trigger"),
+    ("effect", "kill_object"),
+)
+
+
+def check_triggers_fit_their_drag_floor(window) -> int:
+    """TASK-560: Triggers mode with the pane dragged as narrow as the splitter allows. Pass
+    conditions:
+    - the pane stops above MIN_SPLIT_PANE, at the trigger panel's own minimumSizeHint width;
+    - each _WIDE_FORM_TYPES form has nothing to scroll sideways and its scroll area ends inside
+      the panel;
+    - every visible button in the panel lies wholly inside it at no less than its minimum hint.
+    Returns the narrowest pane width."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QAbstractButton, QApplication
+
+    from descape import library_compat, settings
+
+    window.mode_combo.setCurrentText("Triggers")
+    QApplication.processEvents()
+    total = sum(window.content_splitter.sizes())
+    window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+    QApplication.processEvents()
+    pane = window.content_splitter.sizes()[0]
+    panel = window.trigger_panel
+    assert pane > settings.MIN_SPLIT_PANE, "Triggers has no drag floor"
+    assert pane == panel.minimumSizeHint().width(), (pane, panel.minimumSizeHint().width())
+
+    vocabulary = library_compat.load_vocabulary(window.scenario.scenario_version)
+    panel.select_trigger(0)
+    for kind, name in _WIDE_FORM_TYPES:
+        entries = vocabulary.conditions if kind == "condition" else vocabulary.effects
+        type_id = next(e.id for e in entries.values() if e.name == name)
+        trigger = panel._manager().triggers[0]
+        index = len(trigger.conditions if kind == "condition" else trigger.effects)
+        window.entry_structural_edit("new", 0, kind, -1, type_id)
+        panel.refresh_entries(select=(kind, index))
+        QApplication.processEvents()
+        area = panel.property_area
+        slack = area.viewport().width() - panel.property_host.minimumSizeHint().width()
+        assert area.horizontalScrollBar().maximum() == 0, f"{name} scrolls sideways at the floor (slack {slack} px)"
+        right = area.mapTo(panel, QPoint(area.width(), 0)).x()
+        assert right <= panel.width(), f"{name}'s form ends at {right} px, past the {panel.width()} px panel"
+    for button in panel.findChildren(QAbstractButton):
+        if not button.isVisible():
+            continue
+        left = button.mapTo(panel, QPoint(0, 0)).x()
+        assert left >= 0 and left + button.width() <= panel.width(), (button.text(), left, button.width(), panel.width())
+        # A fixed-width button (a picker's "…") is never wider than its maximum, as Qt's layouts allow.
+        assert button.width() >= min(button.minimumSizeHint().width(), button.maximumWidth()), button.text()
+    window.edit_history.mark_saved()
+    return pane
+
+
+@pytest.mark.font_sensitive
+def test_triggers_mode_cannot_be_dragged_below_its_panel() -> None:
+    """TASK-560, at the pinned font: check_triggers_fit_their_drag_floor's conditions; leaving
+    Triggers gives the pane back its plain floor."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window = _triggers_window()
+    try:
+        check_triggers_fit_their_drag_floor(window)
+        window.mode_combo.setCurrentText("View")
+        QApplication.processEvents()
+        total = sum(window.content_splitter.sizes())
+        window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+        QApplication.processEvents()
+        assert window.content_splitter.sizes()[0] == settings.MIN_SPLIT_PANE
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -20,9 +20,9 @@ from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QButtonGroup, QHBoxLayout, QStackedWidget, QToolButton, QTreeWidgetItem
 
-from descape import asset_source, terrain_catalog, terrain_palette
+from descape import asset_source, settings, terrain_catalog, terrain_palette
 from descape.swatch_grid import SwatchGridView
-from descape.value_picker import PickerItem, ValuePickerView
+from descape.value_picker import GROUP_ROLE, PickerItem, ValuePickerView
 
 HIDDEN_LABEL = "Show unused / moddable terrains"
 SWATCH_PX = asset_source.TERRAIN_THUMBNAIL_PX
@@ -66,16 +66,23 @@ def _flat_color(terrain_id: int):
     return QColor(*terrain_palette.color_for_terrain_id(terrain_id))
 
 
-def items_for(entries=None) -> tuple[PickerItem, ...]:
+def items_for(entries=None, *, mod_group: bool | None = None) -> tuple[PickerItem, ...]:
     """terrain_catalog rows reduced to value_picker's domain-free shape. The
     search text carries the RAW enum name as well as the display label, so
-    filtering on "non_navigable" works as well as on "non navigable"."""
+    filtering on "non_navigable" works as well as on "non navigable".
+
+    mod_group (default: the Settings > Mods option, GH #271) puts every data
+    mod terrain under CATEGORY_MOD_GROUP, listed first so that group heads the tree."""
     entries = terrain_catalog.terrains() if entries is None else entries
+    if mod_group is None:
+        mod_group = settings.get_data_mod_terrain_group()
+    if mod_group:
+        entries = sorted(entries, key=lambda entry: not entry.mod)
     return tuple(
         PickerItem(
             label=terrain_catalog.display_name(entry.name),
             value=entry.id,
-            group=entry.category,
+            group=terrain_catalog.CATEGORY_MOD_GROUP if mod_group and entry.mod else entry.category,
             hidden=entry.hidden,
             search_text=f"{entry.name.lower()} {terrain_catalog.display_name(entry.name).lower()} {entry.id}",
         )
@@ -83,17 +90,16 @@ def items_for(entries=None) -> tuple[PickerItem, ...]:
     )
 
 
-def _category_of(terrain_id: int | None) -> str:
-    """The category to start expanded, or "" for none matched -- which
+# A default_group no item has: every group starts collapsed.
+_NO_GROUP = "\x00"
+
+
+def _group_of(items, terrain_id: int | None) -> str:
+    """The group to start expanded, or "" for none matched -- which
     ValuePickerView reads as "expand everything", so a caller passing an
     unknown id gets the old all-expanded behaviour rather than an empty
     tree."""
-    if terrain_id is None:
-        return ""
-    for entry in terrain_catalog.terrains():
-        if entry.id == terrain_id:
-            return entry.category
-    return ""
+    return next((item.group for item in items if item.value == terrain_id), "")
 
 
 class TerrainPickerView(ValuePickerView):
@@ -121,9 +127,10 @@ class TerrainPickerView(ValuePickerView):
         # which is the stall the per-category population exists to avoid.
         # Opening on the current terrain's own category collapses the other
         # nine and lands the user where they already are.
+        items = items_for()
         super().__init__(
-            items_for(),
-            default_group=_category_of(current_id),
+            items,
+            default_group=_group_of(items, current_id),
             hidden_label=HIDDEN_LABEL,
             parent=parent,
         )
@@ -255,6 +262,38 @@ class TerrainPickerView(ValuePickerView):
                     shown.add(child.data(0, Qt.UserRole))
         # A filter opens the sections it matches, as the tree's own filter does its groups.
         self.grid.set_visible_values(shown, reveal=bool(text.strip()))
+
+    def reload(self) -> None:
+        """Rebuilds the rows from the catalog in effect, after a data mod switch
+        or the Settings > Mods group option (GH #271). The current terrain, the
+        filter, the show-hidden box, the List/Grid mode and the open groups of
+        both views stay (the armed terrain's own group opens, as select() does);
+        a remembered group that is gone is dropped."""
+        current = self.tree.currentItem()
+        value = current.data(0, Qt.UserRole) if current is not None else None
+        expanded = {
+            self.tree.topLevelItem(i).data(0, GROUP_ROLE)
+            for i in range(self.tree.topLevelItemCount())
+            if self.tree.topLevelItem(i).isExpanded()
+        }
+        closed = {item.group for item in self._items if not self.grid.section_open(item.group)}
+        items = items_for()
+        groups = {item.group for item in items}
+        self.grid.set_items(items)
+        for group in closed & groups:
+            self.grid.set_section_open(group, False)
+        kept = expanded & groups
+        # A group no item has collapses every group (an empty one expands all 85 textures' worth).
+        fallback = "" if kept else _group_of(items, value)
+        self.set_items(items, default_group=fallback or _NO_GROUP)
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            if group.data(0, GROUP_ROLE) in kept:
+                group.setExpanded(True)
+        if isinstance(value, int):
+            self.select(value)
+        self._mirror_to_grid()
+        self._update_preview()
 
     def refresh_swatches(self) -> None:
         """Drop every row icon and redecode the expanded groups.

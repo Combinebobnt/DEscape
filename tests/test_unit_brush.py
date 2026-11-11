@@ -355,7 +355,7 @@ def test_a_seed_reproduces_the_stroke() -> None:
 
 def test_walls_gates_and_cliffs_refuse_and_name_their_tool() -> None:
     cliff = min(unit_kind.cliff_consts())
-    assert "Wall" in is_refused_const(STONE_WALL)
+    assert "Unit Shape" in is_refused_const(STONE_WALL)
     assert all(is_refused_const(c) for c in unit_sprites.wall_family_consts())
     assert "Place Unit" in is_refused_const(STONE_GATE)
     assert "Cliff tool" in is_refused_const(cliff)

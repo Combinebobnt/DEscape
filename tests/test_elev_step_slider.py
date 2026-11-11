@@ -109,6 +109,26 @@ def test_the_label_reads_a_pct_and_still_marks_the_default() -> None:
         window.close()
 
 
+def test_the_tooltip_and_guide_name_sloped_and_the_games_height() -> None:
+    """TASK-568: the slider drives Sloped too (render.sloped_elevations_and_proj), and 100% is
+    one full half_h step, the game's height."""
+    from pathlib import Path
+
+    dialog, window = _dialog_and_window()
+    try:
+        tip = dialog.elev_step_slider.toolTip()
+        assert "Stepped" in tip and "Sloped" in tip and "Isometric View" in tip
+        assert "100% matches the game's own height" in tip
+        assert " -- " not in tip
+    finally:
+        dialog.close()
+        window.edit_history.mark_saved()
+        window.close()
+    guide = (Path(__file__).resolve().parent.parent / "descape" / "help" / "settings.md").read_text(encoding="utf-8")
+    line = next(line for line in guide.splitlines() if line.startswith("- Isometric elevation height:"))
+    assert "Sloped" in line and "100% matches the game's own height" in line
+
+
 @pytest.mark.parametrize("how", ["close", "accept"])
 def test_closing_the_dialog_applies_each_pending_slider_change_and_leaves_no_timer_armed(how) -> None:
     """TASK-463: a keyboard step arms a 200 ms debounce; the dialog outlives its close, so an

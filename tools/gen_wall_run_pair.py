@@ -54,20 +54,49 @@ Three edits, all deliberately asymmetric so "did anything change" becomes
      a "stale" one with the removal alone (what Delete wrote until GH #340)
      and the "after", with the two walls either side of the gap rewritten
      from a run piece (0) to a run end (2).
+ 13. Unit Line and Unit Shape (GH #365), in both an integer and a radian
+     file, one undo record per shape as the tools commit them: a Shift
+     Triangle of Stone Wall whose base T-joins the anchor wall's run, then on
+     clear ground a Shift Right Triangle, a Rectangle and an Ellipse of Stone
+     Wall (the old Wall Rectangle and Wall Circle checks) and an outline
+     rectangle of Houses at Spacing 1. The wall shapes go through
+     unit_shape.lattice_cells() and plan_wall_run(), the Houses through
+     unit_shape.place_cells() with the game's placement rules on.
+ 14. A single wall meeting a diagonal run's interior (TASK-581), integer
+     file only, as three files. On clear ground, three diagonal runs of 5
+     placed through plan_wall_run(): site A a NE-SW run with one stub N of
+     its middle, site B a NW-SE run with one stub W of its middle, site C a
+     second NW-SE run with two stubs, N and E of its middle (a corner plus
+     the pair). "before" holds the runs only, "stale" adds the stubs planned
+     with the pre-TASK-581 table (both junction pieces at A and at B store
+     2) and "after" the stubs as shipped (A's keep 4, B's keep 3, C's middle
+     stores 2 either way). Every junction tile's stored index is printed
+     per file.
+ 15. Find and Replace out of and back into a wall (TASK-584), in both an
+     integer and a radian file, as four files at 12's site (a mid x-run
+     wall whose two neighbours decode to 0): "before"; "stale", the wall
+     replaced by an Outpost with replace_type() alone; "out", the same
+     through scenario_replace_rewrites() and apply_replace_plan(), so its
+     two neighbours become run ends; and "in", that Outpost replaced back
+     into a Stone Wall the same way. In "out" and "in" every wall in the
+     site's 8-neighbourhood, the new one included, stores what the file's
+     own neighbours derive.
 
 Writes into build/wall_run_pairs/, which is gitignored.
 """
 
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import gate_orientation, shape_tools, unit_sprites, wall_run
+from descape import gate_orientation, shape_tools, unit_shape, unit_sprites, wall_run
 from descape.edit_history import EditHistory
+from descape.place_rotation import PlaceRotation
 from descape.render import occupied_tiles_for, snapped_anchor, span_anchor, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
@@ -133,6 +162,27 @@ MOVE_CASES = [
     ("move_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
 ]
 MOVE_ROWS = 3
+# (label, source file): GH #365's Unit Line / Unit Shape scene.
+SHAPE_CASES = [
+    ("task608_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
+    ("task608_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
+]
+HOUSE = 70
+# (name, kind, box width, box height, Shift): the shapes drawn on clear ground, each box's anchor at its low corner.
+SHAPE_BOXES = [
+    ("right triangle", shape_tools.RIGHT_TRIANGLE, 9, 9, True),
+    ("rectangle", unit_shape.RECTANGLE, 9, 5, False),
+    ("ellipse", unit_shape.ELLIPSE, 13, 9, False),
+]
+HOUSE_BOX = (8, 8)
+# (label, source file): TASK-581's stub-on-a-diagonal-run junctions.
+JUNCTION_CASES = [("junction", "2_Joan_coop_1_v0_13.aoe2scenario")]
+OUTPOST = 598  # 1x1, player-ownable, not a connector
+# (label, source file): TASK-584's Replace out of and back into a wall.
+REPLACE_CASES = [
+    ("replace_integer", "2_Joan_coop_1_v0_13.aoe2scenario"),
+    ("replace_radian", "C2_ElCid_coop_1_v0_16.aoe2scenario"),
+]
 
 
 def _busiest_wall(scenario, w: int, h: int):
@@ -738,6 +788,317 @@ def _move_case(label: str, name: str) -> None:
     )
 
 
+def _clear_boxes(occupied: set, taken: list, bw: int, bh: int, w: int, h: int):
+    """Low corners of bw x bh boxes free of every object, with a 1-tile
+    margin and then with none, and two tiles clear of the boxes already
+    `taken`, nearest the map centre first so the shape is easy to find in
+    the editor. The corpus maps are a third full, so the boxes are small."""
+    cx, cy = w // 2, h // 2
+    for margin in (1, 0):
+        origins = sorted(
+            ((x, y) for y in range(margin, h - bh - margin) for x in range(margin, w - bw - margin)),
+            key=lambda o: (abs(o[0] - cx) + abs(o[1] - cy), o),
+        )
+        for x0, y0 in origins:
+            # Two tiles between shapes whatever the margin, so no two join.
+            if any(x0 - 2 < tx1 and tx0 < x0 + bw + 2 and y0 - 2 < ty1 and ty0 < y0 + bh + 2 for tx0, ty0, tx1, ty1 in taken):
+                continue
+            lo_x, lo_y, hi_x, hi_y = x0 - margin, y0 - margin, x0 + bw + margin, y0 + bh + margin
+            if any((x, y) in occupied for y in range(lo_y, hi_y) for x in range(lo_x, hi_x)):
+                continue
+            yield x0, y0
+    raise SystemExit(f"no clear {bw}x{bh} box")
+
+
+def _run_end_site(scenario, occupied: set, w: int, h: int):
+    """A straight run's end wall with ground past it for a 9x5 Shift Triangle
+    whose base continues the run: (end wall's tile, the drag's anchor, its
+    end, objects under the box). No other wall may touch the box; among the
+    rest, the fewest objects under it, then nearest the map centre. The
+    corpus has no run end with wholly clear ground past it."""
+    tiles, walls = wall_run.wall_scene(scenario, w, h)
+    sites = []
+    for wall in walls:
+        ex, ey = wall.tx, wall.ty
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if (ex - dx, ey - dy) not in tiles or (ex - 2 * dx, ey - 2 * dy) not in tiles:
+                continue
+            ax, ay = ex + dx, ey + dy
+            # The base along the run, the apex to the side nearer the map centre.
+            side = (0, 1 if ay < h // 2 else -1) if dx else (1 if ax < w // 2 else -1, 0)
+            bx, by = ax + dx * 8 + side[0] * 4, ay + dy * 8 + side[1] * 4
+            lo_x, hi_x = min(ax, bx) - 1, max(ax, bx) + 1
+            lo_y, hi_y = min(ay, by) - 1, max(ay, by) + 1
+            if lo_x < 0 or lo_y < 0 or hi_x >= w or hi_y >= h:
+                continue
+            box = {(x, y) for y in range(lo_y, hi_y + 1) for x in range(lo_x, hi_x + 1)} - {(ex, ey)}
+            if box & tiles:
+                continue
+            covered = len(box & occupied)
+            sites.append((covered, abs(ax - w // 2) + abs(ay - h // 2), (ex, ey), (ax, ay), (bx, by)))
+    if not sites:
+        raise SystemExit("no run end with wall-free ground past it")
+    covered, _d, wall_tile, anchor, end = min(sites)
+    return wall_tile, anchor, end, covered
+
+
+def _shape_wall(model, loaded, kind: str, anchor, end, shift: bool, w: int, h: int, history) -> str:
+    """One Unit Line / Unit Shape wall drag, as the viewer's _commit_wall_run() writes it."""
+    latch = unit_shape.latch_for(
+        (STONE_WALL,), PLAYER, kind, filled=False, spacing=0, randomize=False, rules=True, pending=PlaceRotation()
+    )
+    cells = unit_shape.lattice_cells(latch, anchor, end, shift, w, h)
+    existing_tiles, existing_walls = wall_run.wall_scene(loaded, w, h)
+    plan = wall_run.plan_wall_run(
+        cells, unit_const=STONE_WALL, existing_tiles=existing_tiles, existing_walls=existing_walls
+    )
+    model.begin_unit_edit(wall_run.touched_players(PLAYER, plan))
+    wall_run.apply_wall_plan(model, PLAYER, plan)
+    model.commit_unit_edit("Draw unit shape", history)
+    xs = [x for x, _y in cells]
+    ys = [y for _x, y in cells]
+    corners = sorted((int(n.x), int(n.y)) for n in plan.nodes if n.variant == 2)
+    return (
+        f"drag ({anchor[0]}, {anchor[1]}) -> ({end[0]}, {end[1]}){' with Shift' if shift else ''}, "
+        f"tiles x {min(xs)}..{max(xs)} y {min(ys)}..{max(ys)}: {len(plan.nodes)} placed, "
+        f"{len(plan.rewrites)} rewritten, {plan.skipped} skipped, indices {sorted({n.variant for n in plan.nodes})}, "
+        f"towers (2) at {corners}"
+    )
+
+
+def _shape_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    loaded = load_map_and_units(src)
+    mm = loaded.map_manager
+    w, h = mm.map_width, mm.map_height
+    tiles, _walls = wall_run.wall_scene(loaded, w, h)
+    occupied = wall_run.blocked_tiles(loaded, w, h) | tiles
+    (wx, wy), anchor, end, covered = _run_end_site(loaded, occupied, w, h)
+
+    before = OUT / f"{label}_before.aoe2scenario"
+    after = OUT / f"{label}_after.aoe2scenario"
+    write_scenario(loaded, before)
+
+    model = UnitEditModel(loaded)
+    history = EditHistory()
+    # The joined triangle: anchored just past a run's end wall, its base continuing the run.
+    drawn = _shape_wall(model, loaded, shape_tools.TRIANGLE, anchor, end, True, w, h, history)
+    lines = [f"joined triangle ({covered} object tiles under its box): {drawn}"]
+    taken = [(min(anchor[0], end[0]), min(anchor[1], end[1]), max(anchor[0], end[0]) + 1, max(anchor[1], end[1]) + 1)]
+    for shape_name, kind, bw, bh, shift in SHAPE_BOXES:
+        x0, y0 = next(_clear_boxes(occupied, taken, bw, bh, w, h))
+        taken.append((x0, y0, x0 + bw, y0 + bh))
+        drawn = _shape_wall(model, loaded, kind, (x0, y0), (x0 + bw - 1, y0 + bh - 1), shift, w, h, history)
+        lines.append(f"{shape_name}: {drawn}")
+
+    # The Houses: the first clear box the game's placement rules accept whole (terrain can refuse a house).
+    bw, bh = HOUSE_BOX
+    latch = unit_shape.latch_for(
+        (HOUSE,), PLAYER, unit_shape.RECTANGLE, filled=False, spacing=1, randomize=False, rules=True,
+        pending=PlaceRotation(),
+    )
+
+    def add(spec):
+        return model.add(spec.player, spec.unit_const, spec.x, spec.y, rotation=spec.rotation)
+
+    for x0, y0 in _clear_boxes(occupied, taken, bw, bh, w, h):
+        cells = unit_shape.lattice_cells(latch, (x0, y0), (x0 + bw - 1, y0 + bh - 1), False, w, h)
+        model.begin_unit_edit([PLAYER])
+        with model.batch_adds():
+            stroke = unit_shape.place_cells(loaded, latch, cells, add, random.Random(608))
+        if stroke.refused:
+            # abort_unit_edit() does not roll the document back, so this box's houses come out first.
+            for _owner, unit in stroke.placed:
+                model.remove(unit)
+            model.abort_unit_edit()
+            continue
+        model.commit_unit_edit("Draw unit shape", history)
+        break
+    houses = sorted((u.x, u.y) for _owner, u in stroke.placed)
+    lines.append(
+        f"houses: drag ({x0}, {y0}) -> ({x0 + bw - 1}, {y0 + bh - 1}) at Spacing 1: {len(houses)} placed at {houses}"
+    )
+    write_scenario(loaded, after, units=model)
+
+    # Read back: every placed house is in the written file.
+    reread = load_map_and_units(after)
+    _t, walls_back = wall_run.wall_scene(reread, w, h)
+    placed = set(houses)
+    houses_back = sorted(
+        (u.x, u.y) for units in reread.unit_manager.units for u in units if u.unit_const == HOUSE and (u.x, u.y) in placed
+    )
+    assert houses_back == houses, (len(houses_back), len(houses))
+    # Every house the after file gained is a reported one: none left over from a refused box.
+    gained = sum(u.unit_const == HOUSE for units in reread.unit_manager.units for u in units) - sum(
+        u.unit_const == HOUSE for units in load_map_and_units(before).unit_manager.units for u in units
+    )
+    assert gained == len(houses), (gained, len(houses))
+    print(f"{label} {name} (owner {PLAYER}), the joined run's end wall at tile ({wx}, {wy})")
+    for line in lines:
+        print(f"         {line}")
+    print(f"         {len(walls_back)} walls read back; {before.name} / {after.name}")
+
+
+def _pre_task581_table(mask: int) -> int | None:
+    """wall_variant_from_neighbours8() as it was before TASK-581: any orthogonal bit defers to the 4-bit table."""
+    if mask & unit_sprites.ORTHOGONAL_MASK:
+        return unit_sprites.wall_variant_from_neighbours(mask & unit_sprites.ORTHOGONAL_MASK)
+    return _SHIPPED_TABLE(mask)
+
+
+_SHIPPED_TABLE = unit_sprites.wall_variant_from_neighbours8
+
+
+def _junction_sites(loaded, w: int, h: int):
+    """[(site, run tiles, stub tile groups, {junction tile: label})] on three clear 5x5 boxes."""
+    tiles, _walls = wall_run.wall_scene(loaded, w, h)
+    occupied = wall_run.blocked_tiles(loaded, w, h) | tiles
+    taken: list = []
+    sites = []
+    for site in "ABC":
+        x0, y0 = next(_clear_boxes(occupied, taken, 5, 5, w, h))
+        taken.append((x0, y0, x0 + 5, y0 + 5))
+        mid = (x0 + 2, y0 + 2)
+        if site == "A":
+            run = [(x0 + i, y0 + 4 - i) for i in range(5)]
+            stubs = [[(x0 + 2, y0 + 1)]]
+            junctions = {mid: "middle", (x0 + 3, y0 + 1): "middle's NE"}
+        elif site == "B":
+            run = [(x0 + i, y0 + i) for i in range(5)]
+            stubs = [[(x0 + 1, y0 + 2)]]
+            junctions = {mid: "middle", (x0 + 1, y0 + 1): "middle's NW"}
+        else:
+            run = [(x0 + i, y0 + i) for i in range(5)]
+            stubs = [[(x0 + 2, y0 + 1), (x0 + 3, y0 + 2)]]
+            junctions = {mid: "middle", (x0 + 1, y0 + 1): "middle's NW", (x0 + 3, y0 + 3): "middle's SE"}
+        for group in stubs:
+            junctions.update(dict.fromkeys(group, "stub"))
+        sites.append((site, run, stubs, junctions))
+    return sites
+
+
+def _place_walls(model, loaded, tile_groups, w: int, h: int, history) -> None:
+    """One plan_wall_run() record per group, as one Wall tool drag each."""
+    for group in tile_groups:
+        existing_tiles, existing_walls = wall_run.wall_scene(loaded, w, h)
+        plan = wall_run.plan_wall_run(
+            group, unit_const=STONE_WALL, existing_tiles=existing_tiles, existing_walls=existing_walls
+        )
+        model.begin_unit_edit(wall_run.touched_players(PLAYER, plan))
+        wall_run.apply_wall_plan(model, PLAYER, plan)
+        model.commit_unit_edit("Place wall run", history)
+
+
+def _junction_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    files = {kind: OUT / f"{label}_{kind}.aoe2scenario" for kind in ("before", "stale", "after")}
+    sites = None
+    for kind in ("stale", "after"):
+        loaded = load_map_and_units(src)
+        mm = loaded.map_manager
+        w, h = mm.map_width, mm.map_height
+        found = _junction_sites(loaded, w, h)
+        assert sites is None or [s[1] for s in found] == [s[1] for s in sites], "sites moved between loads"
+        sites = found
+        model = UnitEditModel(loaded)
+        history = EditHistory()
+        _place_walls(model, loaded, [run for _s, run, _st, _j in sites], w, h, history)
+        if kind == "stale":
+            write_scenario(loaded, files["before"], units=model)
+            unit_sprites.wall_variant_from_neighbours8 = _pre_task581_table
+        try:
+            _place_walls(model, loaded, [g for _s, _r, stubs, _j in sites for g in stubs], w, h, history)
+        finally:
+            unit_sprites.wall_variant_from_neighbours8 = _SHIPPED_TABLE
+        write_scenario(loaded, files[kind], units=model)
+
+    # Read every junction tile back off the written files.
+    stored = {}
+    for kind, path in files.items():
+        walls = wall_run.wall_scene(load_map_and_units(path), w, h)[1]
+        stored[kind] = {(wall.tx, wall.ty): unit_sprites.variant_index(wall.unit.rotation, 5) for wall in walls}
+    print(f"{label} {name} (owner {PLAYER})")
+    for site, run, _stubs, junctions in sites:
+        print(f"         site {site}, run {run[0]} .. {run[-1]}:")
+        for tile, what in junctions.items():
+            row = ", ".join(f"{kind} {stored[kind].get(tile, '-')}" for kind in files)
+            print(f"           {what:12s} {tile}: {row}")
+    a, b, c = sites
+    for site, keep in ((a, 4), (b, 3)):
+        pieces = [tile for tile, what in site[3].items() if what != "stub"]
+        assert [stored["stale"][t] for t in pieces] == [2, 2], (site[0], "stale")
+        assert [stored["after"][t] for t in pieces] == [keep, keep], (site[0], "after")
+    assert stored["after"][(c[1][2])] == 2, "site C middle"
+    print("         " + " / ".join(path.name for path in files.values()))
+
+
+def _replace_one(model, loaded, unit, owner: int, const: int, w: int, h: int, plan_walls: bool):
+    """viewer._replace_units() for one unit into a non-gate const, or replace_type() alone."""
+    x, y = replaced_position(unit, const)
+    plan = wall_run.scenario_replace_rewrites(loaded, w, h, [(owner, unit, const, x, y)]) if plan_walls else None
+    model.begin_unit_edit(sorted({owner} | {p for p, _u, _v in (plan.rewrites if plan else [])}))
+    model.replace_type(unit, const, map_w=w, map_h=h, planned={unit.reference_id: const})
+    if plan:
+        wall_run.apply_replace_plan(model, plan)
+    model.commit_unit_edit("Replace unit", EditHistory())
+    return plan
+
+
+def _replace_case(label: str, name: str) -> None:
+    src = ROOT / "examples" / name
+    files = {kind: OUT / f"{label}_{kind}.aoe2scenario" for kind in ("before", "stale", "out", "in")}
+    site = None
+    for kind in ("stale", "planned"):
+        loaded = load_map_and_units(src)
+        mm = loaded.map_manager
+        w, h = mm.map_width, mm.map_height
+        wall, west, east, _rewrites = _delete_site(loaded, w, h)
+        assert site is None or site == (wall.tx, wall.ty), "the site moved between loads"
+        site, owner, ref = (wall.tx, wall.ty), wall.player_id, wall.unit.reference_id
+        refs = {"west": west.unit.reference_id, "east": east.unit.reference_id}
+        model = UnitEditModel(loaded)
+        if kind == "stale":
+            write_scenario(loaded, files["before"])
+            _replace_one(model, loaded, wall.unit, owner, OUTPOST, w, h, plan_walls=False)
+            write_scenario(loaded, files["stale"], units=model)
+            continue
+        out_plan = _replace_one(model, loaded, wall.unit, owner, OUTPOST, w, h, plan_walls=True)
+        write_scenario(loaded, files["out"], units=model)
+        in_plan = _replace_one(model, loaded, wall.unit, owner, STONE_WALL, w, h, plan_walls=True)
+        write_scenario(loaded, files["in"], units=model)
+
+    # The M check, on the files as written: every wall around the site stores its derived shape.
+    lines = []
+    found: dict[str, dict[str, int]] = {}
+    for kind, path in files.items():
+        reread = load_map_and_units(path)
+        by_ref = {u.reference_id: u for units in reread.unit_manager.units for u in units}
+        found[kind] = {side: unit_sprites.variant_index(by_ref[r].rotation, 5) for side, r in refs.items()}
+        consts = by_ref[ref].unit_const
+        if kind in ("out", "in"):
+            connectors, walls_back = wall_run.wall_scene(reread, w, h)
+            near = [wb for wb in walls_back if max(abs(wb.tx - site[0]), abs(wb.ty - site[1])) <= 1]
+            assert (kind == "in") == any(wb.unit.reference_id == ref for wb in near), (kind, "the replaced unit")
+            for wb in near:
+                derived = unit_sprites.wall_variant_from_neighbours8(
+                    unit_sprites.neighbour_mask(wb.tx, wb.ty, connectors, diagonals=True)
+                )
+                derived = wall_run.ISOLATED_VARIANT if derived is None else derived
+                stored = unit_sprites.variant_index(wb.unit.rotation, 5)
+                assert stored == derived, (path.name, (wb.tx, wb.ty), stored, derived)
+        lines.append(f"           {kind:6s} unit ref {ref} is const {consts}, neighbours store {found[kind]}")
+    assert all(found["out"][side] != found["stale"][side] for side in refs), (found["out"], found["stale"])
+    print(
+        f"{label} {name} (owner {owner}), wall ref {ref} on tile {site} in an x run, replaced by Outpost {OUTPOST} "
+        f"then back into Stone Wall {STONE_WALL}\n"
+        f"         out reshaped {len(out_plan.rewrites)}, in reshaped {len(in_plan.rewrites)}, "
+        f"in shaped {[v for _u, v in in_plan.shaped]}"
+    )
+    for line in lines:
+        print(line)
+    print("         " + " / ".join(path.name for path in files.values()))
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for label, name, kind, owner in CASES:
@@ -797,6 +1158,12 @@ def main() -> None:
         _gate_replace_case(label, name)
     for label, name in DELETE_CASES:
         _delete_case(label, name)
+    for label, name in SHAPE_CASES:
+        _shape_case(label, name)
+    for label, name in JUNCTION_CASES:
+        _junction_case(label, name)
+    for label, name in REPLACE_CASES:
+        _replace_case(label, name)
 
 
 if __name__ == "__main__":

@@ -894,6 +894,36 @@ def test_a_saved_map_disables_binding_beats_a_stale_edit_disables_one(tmp_path: 
     assert settings.get_keybind("map_disables") == "F9"
 
 
+# GH #365 folded Wall Rectangle and Wall Circle into Unit Shape. set_keybind() saves every id,
+# so a real config holds both old ids, usually one of them empty: (saved entries, expected key).
+_MERGED_WALL_KEYBIND_CASES = [
+    ({"tool_wall_rect": "", "tool_wall_circle": "Ctrl+K"}, "Ctrl+K"),
+    ({"tool_wall_rect": "Ctrl+J", "tool_wall_circle": "Ctrl+K"}, "Ctrl+J"),
+    ({"tool_wall_rect": "Ctrl+J", "tool_wall_circle": ""}, "Ctrl+J"),
+    ({"tool_wall_rect": "", "tool_wall_circle": "", "tool_unit_shape": ""}, ""),
+    ({"tool_wall_rect": "Ctrl+J", "tool_wall_circle": "Ctrl+K", "tool_unit_shape": "Ctrl+L"}, "Ctrl+L"),
+    ({"tool_wall_rect": "Ctrl+J", "tool_unit_shape": ""}, ""),
+]
+
+
+@pytest.mark.parametrize(("saved", "expected"), _MERGED_WALL_KEYBIND_CASES)
+def test_the_wall_shape_keybinds_merge_into_unit_shape_on_load(tmp_path: Path, saved, expected) -> None:
+    import yaml
+
+    _write_config(tmp_path, yaml.safe_dump({"keybinds": saved}))
+    loaded = settings._load_keybinds()
+    assert loaded["tool_unit_shape"] == expected
+    assert "tool_wall_rect" not in loaded and "tool_wall_circle" not in loaded
+    assert loaded["tool_unit_line"] == ""
+
+
+@pytest.mark.parametrize(("saved", "expected"), _MERGED_WALL_KEYBIND_CASES)
+def test_the_wall_shape_keybinds_merge_the_same_way_in_a_settings_file(saved, expected) -> None:
+    from descape import settings_file
+
+    assert settings_file._entries({"keybinds": dict(saved)}, "keybinds").get("tool_unit_shape", "") == expected
+
+
 # The mouse wheel rows (Settings > Keybinds): one action per modifier slot.
 
 

@@ -49,7 +49,8 @@ import conftest
 # Layer 1: pure geometry, no scenario load at all.
 # ---------------------------------------------------------------------------
 
-_SHAPES = [(480, 480), (120, 120), (200, 144)]
+# 240, 252 and 144x200: TASK-599's and TASK-601's exactness probes for the native tiers.
+_SHAPES = [(480, 480), (120, 120), (200, 144), (240, 240), (252, 252), (144, 200)]
 _BASES = [32, 64]
 
 # The plan's own documented matrix, re-measured against canvas_size_and_origin
@@ -83,6 +84,9 @@ def test_exactness_matrix(w, h, base_tile_px, pct) -> None:
     assert got == expected
     flat = iso_geometry.mip_projections_for(w, h, base, pct, native_tier=False)
     assert {p.tile_px for p in flat.values()} == expected - {iso_geometry.NATIVE_TILE_PIXELS}
+    # The 192 tier (TASK-601, Default's tier limit) is exact wherever 128 is too.
+    default = iso_geometry.mip_projections_for(w, h, base, pct, native_tier_max=192)
+    assert {p.tile_px for p in default.values()} == expected | ({192} if 128 in expected else set())
 
 
 def test_pct10_at_base_16_is_a_singleton() -> None:

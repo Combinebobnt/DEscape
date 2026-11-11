@@ -43,7 +43,8 @@ scope.
   - *Rotate*: `UnitEditModel.set_rotation()`, ANGLE consts only (the .dat's
     creatable type 70 plus four trebuchets, `descape/unit_rotation.py`);
     `tests/test_unit_model.py`, the whitelist re-measured by
-    `tests/test_unit_rotation.py`'s corpus test.
+    `tests/test_unit_rotation.py`'s corpus test. A script's
+    `editor.rotate()` is a caller, under the same guard.
   - *Region turn's unit images* (GH #197): `region_transform.transform_block()`,
     new units only, the eight D4 elements only; `tests/test_region_transform.py`.
   - *Selection transform's in-place unit images* (TASK-256):
@@ -53,7 +54,8 @@ scope.
     units only, no model guard; `tests/test_mirror_units.py`.
   - *Cycle Variant*: `UnitEditModel.set_variant()`, cyclable consts only
     (`descape/unit_variant.py`), never a wall, cliff or gate;
-    `tests/test_unit_variant.py`, `tests/test_unit_model.py`.
+    `tests/test_unit_variant.py`, `tests/test_unit_model.py`. A script's
+    `editor.set_variant()` is a caller, under the same guard.
   - *Wall shapes re-derived from neighbours*:
     `UnitEditModel.set_wall_variant()`, wall-family consts and an index in
     `0..4` only; `tests/test_wall_run.py`.
@@ -63,8 +65,11 @@ scope.
     `tests/test_cliff_chain.py`.
   - *Replace* (GH #144): `UnitEditModel.replace_type()`, by
     `unit_model.replaced_rotation()`; `tests/test_unit_replace_type.py`.
-  - *Place Unit's placement rotation* (GH #172, and the Unit Brush, GH
-    #170): `place_rotation.rotation_for()`; `tests/test_place_rotation.py`.
+  - *Place Unit's placement rotation* (GH #172, the Unit Brush, GH #170,
+    and Unit Line / Unit Shape, GH #365, and a script's
+    `editor.add_unit()`): `place_rotation.rotation_for()`;
+    `tests/test_place_rotation.py`, `tests/test_unit_shape.py`,
+    `tests/test_scripting.py`.
   - *Terrain planting's variant*: `terrain_units.variant_for()`;
     `tests/test_terrain_units.py`.
 - Gates carry no rotation at all: every visible gate const has
@@ -107,9 +112,28 @@ scope.
   no live unit has, into a host that is transitively inside the unit (a
   cycle), or for a unit that holds a garrison of its own (no nesting). -1
   unloads and is always allowed. Type and capacity are not model rules: every
-  UI path checks them through `garrison.refusal()`, so a batch script stays
-  unvalidated, as with `add()`. Clipboard paste (a region or copied units)
-  and `add()` set the field at construction only.
+  UI path checks them through `garrison.refusal()`, and so does a script's
+  `editor.garrison()`, so only a batch script stays unvalidated, as with
+  `add()`. Clipboard paste (a region or copied units) and `add()` set the
+  field at construction only.
+- **Code run against the open scenario (a script or an addon command,
+  `descape/scripting.py`) changes units only through the `editor` facade.**
+  The facade hands out no edit model: each write calls the model methods
+  above inside their guards, plus the checks every UI path makes around
+  them, and it adds no caller to `set_wall_variant()`, `set_cliff_frame()`,
+  `set_unit_const()` or `replace_type()`. `ScriptRun` enforces it rather
+  than documenting it: a unit or unit list that differs from what the
+  facade left (`ScriptRun.check()` before each facade unit write,
+  `unit_findings()` in full on the first one and at the end) fails the run,
+  which rolls back whole and
+  pushes nothing. A tile may be written directly, since the whole-map diff
+  records it, but the run fails the same way if a tile it changed could not
+  be saved or would not load (`terrain_findings()`: an unwritable file, an
+  id outside 0..255, a layer the file cannot store or equal to its base,
+  an elevation out of range or more than 1 from a neighbour). The facade
+  has no save: Save keeps the rules above. A new facade write keeps to
+  this, and one that needs a scoped exception amends that exception first.
+  `tests/test_scripting.py`.
 - A unit's `standing_graphic` is not always the thing you draw. For some consts
   it is a DECORATION — an animated flag — whose real body is a delta hanging
   off it, and whose own art covers only the one shape the decoration sits on.

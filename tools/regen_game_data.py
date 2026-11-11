@@ -20,12 +20,13 @@ state (a table that differs from the stamp); rerun the regeneration.
     python3 tools/regen_game_data.py --check      does one reproduce the tables?
     python3 tools/regen_game_data.py --dataset ror   only Return of Rome's tables
 
-Two datasets (GH #67), each with its own .dat, tables and stamp section:
-aoe2 (resources/_common/dat/, descape/, the stamp's top level) and ror, Return
-of Rome (modes/Pompeii/resources/_common/dat/, descape/ror/, the stamp's "ror"
-section). Each generator runs with --dataset ror for the second. --dataset
-picks aoe2, ror or all (the default); under all, an install without the RoR
-.dat looks at the AoE2 tables only, with a note.
+One dataset per game in descape/games.py (GH #67, docs/GAME_DATA.md), each
+with its own .dat, tables and stamp section: aoe2 (resources/_common/dat/,
+descape/, the stamp's top level) and ror, Return of Rome
+(modes/Pompeii/resources/_common/dat/, descape/ror/, the stamp's "ror"
+section). Each generator runs with --dataset <id> for every game but aoe2.
+--dataset picks one game or all (the default); under all, a game whose .dat
+the install lacks is skipped, with a note.
 
 --only regenerates a subset and updates only those tables' stamp entries. It
 refuses when the install's .dat or build id is not the one the stamp records,
@@ -72,21 +73,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, dat_derive
+from descape import asset_source, dat_derive, games
 from descape.content_roots import AOE2DE_STEAM_APP_ID
 
 TOOLS_DIR = ROOT / "tools"
 TABLES_DIR = ROOT / "descape"
 STAMP_PATH = TOOLS_DIR / "game_data_stamp.json"
 DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
-ROR_DAT_SUBPATH = Path("modes") / "Pompeii" / DAT_SUBPATH
-ROR_STAMP_KEY = "ror"
-ROR_TABLES_SUBDIR = "ror"
+
+
+def dat_subpath(game: games.Game) -> Path:
+    """`game`'s .dat, relative to the install: DAT_SUBPATH under its own root."""
+    return DAT_SUBPATH if game.root_subpath is None else Path(game.root_subpath) / DAT_SUBPATH
+
+
+def tables_subdir(game: games.Game) -> Path:
+    """`game`'s tables folder, relative to the default game's (descape/). It must sit
+    under it: --tables-dir moves every game's tables together."""
+    return game.tables_dir.relative_to(games.default().tables_dir)
+
+
+# Return of Rome's values, by their names from before the registry.
+ROR_DAT_SUBPATH = dat_subpath(games.ROR)
+ROR_STAMP_KEY = games.ROR.stamp_key
+ROR_TABLES_SUBDIR = tables_subdir(games.ROR).as_posix()
 
 # The one registry, shared with the runtime derivation of a data mod's tables (GH #58).
 GENERATORS = dat_derive.GENERATORS
-
-DATASET_LABELS = {"aoe2": "Age of Empires II", "ror": "Return of Rome"}
 
 EXIT_OK = 0
 EXIT_STALE = 1
@@ -159,22 +172,24 @@ class Context:
     genieutils_version: Callable[[], str | None] = genieutils_version
     today: Callable[[], str] = _today
     out: Callable[[str], None] = print
-    # Per dataset: dataset_context() replaces these for ror, and tables_dir with descape/ror/.
+    # Per dataset: dataset_context() replaces these, and tables_dir, for every game but the default.
     dat_subpath: Path = DAT_SUBPATH
     generator_args: tuple[str, ...] = ()
     stamp_key: str | None = None
 
 
 def dataset_context(ctx: Context, dataset: str) -> Context:
-    """ctx for one dataset: aoe2 as given, ror under tables_dir/ror with its own .dat and stamp section."""
-    if dataset == "aoe2":
+    """ctx for one game: the default game (aoe2) as given, any other under its
+    own folder of tables_dir (ror/) with its own .dat and stamp section."""
+    game = games.get(dataset)
+    if game.id == games.DEFAULT_ID:
         return ctx
     return replace(
         ctx,
-        tables_dir=ctx.tables_dir / ROR_TABLES_SUBDIR,
-        dat_subpath=ROR_DAT_SUBPATH,
-        generator_args=("--dataset", "ror"),
-        stamp_key=ROR_STAMP_KEY,
+        tables_dir=ctx.tables_dir / tables_subdir(game),
+        dat_subpath=dat_subpath(game),
+        generator_args=("--dataset", game.id),
+        stamp_key=game.stamp_key,
     )
 
 
@@ -198,13 +213,19 @@ def stamp_text(stamp: dict) -> str:
     return json.dumps(stamp, indent=2, sort_keys=True) + "\n"
 
 
+def _section_keys() -> frozenset[str]:
+    """The stamp keys that are another game's section, not top-level fields."""
+    return frozenset(game.stamp_key for game in games.GAMES if game.stamp_key is not None)
+
+
 def load_section(ctx: Context) -> dict | None:
-    """ctx's dataset's part of the stamp: the top level without the ror section, or that section."""
+    """ctx's dataset's part of the stamp: the top level without the other games' sections, or its section."""
     stamp = load_stamp(ctx.stamp_path)
     if stamp is None:
         return None
     if ctx.stamp_key is None:
-        return {key: value for key, value in stamp.items() if key != ROR_STAMP_KEY}
+        sections = _section_keys()
+        return {key: value for key, value in stamp.items() if key not in sections}
     section = stamp.get(ctx.stamp_key)
     return section if isinstance(section, dict) else None
 
@@ -214,7 +235,7 @@ def merged_stamp(ctx: Context, section: dict) -> dict:
     stamp = load_stamp(ctx.stamp_path) or {}
     if ctx.stamp_key is not None:
         return {**stamp, ctx.stamp_key: section}
-    return {**section, **({ROR_STAMP_KEY: stamp[ROR_STAMP_KEY]} if ROR_STAMP_KEY in stamp else {})}
+    return {**section, **{key: stamp[key] for key in sorted(_section_keys()) if key in stamp}}
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -482,9 +503,10 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     mode.add_argument("--check", action="store_true", help="--status, plus a full regeneration compared with the tables")
     mode.add_argument("--only", nargs="+", metavar="SCRIPT", help="Regenerate only these generators' tables, e.g. gen_unit_stats.py")
     parser.add_argument("--keep", action="store_true", help="Leave the scratch directory of generated tables and print its path")
+    named = ", ".join(g.id if g.id == games.DEFAULT_ID else f"{g.id} ({g.display_name})" for g in games.GAMES)
     parser.add_argument(
-        "--dataset", choices=("aoe2", "ror", "all"), default="all",
-        help="Which game's tables: aoe2, ror (Return of Rome) or all (default)",
+        "--dataset", choices=(*games.ids(), "all"), default="all",
+        help=f"Which game's tables: {named} or all (default)",
     )
     args = parser.parse_args(argv)
 
@@ -505,15 +527,19 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     if regenerating and ctx.stamp_path.resolve() == STAMP_PATH.resolve() and ctx.tables_dir.resolve() != TABLES_DIR.resolve():
         parser.error("regenerating into --tables-dir needs --stamp too, or the repo's own stamp would describe tables kept elsewhere")
     install = args.install if args.install is not None else asset_source.get_install_path()
-    datasets = ["aoe2", "ror"] if args.dataset == "all" else [args.dataset]
-    if args.dataset == "all" and install is not None and not (install / ROR_DAT_SUBPATH).is_file():
-        if (install / DAT_SUBPATH).is_file():
-            ctx.out(f"note: no Return of Rome .dat at {install / ROR_DAT_SUBPATH}: looking at the AoE2 tables only")
-        datasets = ["aoe2"]
+    datasets = list(games.ids()) if args.dataset == "all" else [args.dataset]
+    if args.dataset == "all" and install is not None:
+        # The default game's .dat is never skipped: without it the run reports that it cannot look.
+        default_dat = (install / dat_subpath(games.default())).is_file()
+        skipped = [g for g in games.GAMES if g.id != games.DEFAULT_ID and not (install / dat_subpath(g)).is_file()]
+        datasets = [dataset for dataset in datasets if dataset not in {g.id for g in skipped}]
+        left = "looking at the AoE2 tables only" if datasets == [games.DEFAULT_ID] else "skipping its tables"
+        for game in skipped if default_dat else ():
+            ctx.out(f"note: no {game.display_name} .dat at {install / dat_subpath(game)}: {left}")
     worst = EXIT_OK
     for dataset in datasets:
         if len(datasets) > 1:
-            ctx.out(f"=== {DATASET_LABELS[dataset]} ===")
+            ctx.out(f"=== {games.get(dataset).display_name} ===")
         dctx = dataset_context(ctx, dataset)
         if args.status:
             result = status(install, dctx)

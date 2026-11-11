@@ -167,7 +167,7 @@ def test_no_required_field_has_an_enum_with_a_minus_one_member() -> None:
 def test_no_cluster_field_is_required_on_a_slot_switching_effect() -> None:
     """cluster_incoherence() owns those fields: which one is live depends on
     object_attributes, so a table token would read a dead slot."""
-    cluster = {*trigger_fields._CLUSTER_FIELDS}
+    cluster = {*trigger_fields.CLUSTER_FIELDS}
     names = {
         definition.name
         for _v, kind_key, _k, _r, definition, _voc, _s in _definitions()

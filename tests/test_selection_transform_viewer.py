@@ -88,7 +88,7 @@ def _key(window, key) -> None:
     window.map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
 
 
-def test_flip_horizontal_of_a_paste_in_top_down_flat_mirrors_left_right_on_screen():
+def test_flip_west_north_of_a_paste_in_top_down_flat_mirrors_left_right_on_screen():
     window = _select_window()
     try:
         _top_down(window)
@@ -96,7 +96,7 @@ def test_flip_horizontal_of_a_paste_in_top_down_flat_mirrors_left_right_on_scree
         _paste(window)
         source = window._paste_move.block
         window.flip_horizontal_action.trigger()
-        assert _last_status(window) == "Flipped pasted region horizontally"
+        assert _last_status(window) == "Flipped pasted region West ↔ North"
         assert window._paste_move.element == "mx"
         expected = region_transform.transform_block(source, "mx", False).block
         x0, y0 = window._paste_move.anchor
@@ -115,15 +115,19 @@ def test_flip_horizontal_of_a_paste_in_top_down_flat_mirrors_left_right_on_scree
         _close(window)
 
 
-def test_flip_in_the_isometric_views_keeps_the_screen_diagonal():
+def test_a_flip_of_a_non_square_paste_in_stepped_keeps_its_rectangle():
+    """TASK-613: a screen mirror swapped the tile axes, so the flipped paste
+    landed where a quarter turn puts it."""
     window = _select_window()
     try:
         assert window._render_style != "flat"
         _setup(window, units=False)
         _paste(window)
-        plain = _tiles(window)
+        plain, region = _tiles(window), window._region
+        assert region[2] - region[0] != region[3] - region[1]
         window.flip_horizontal_action.trigger()
-        assert window._paste_move.element == region_transform.FLIP_HORIZONTAL
+        assert window._paste_move.element == region_transform.FLIP_WEST_NORTH
+        assert window._region == region
         assert _tiles(window) != plain
     finally:
         _close(window)
@@ -138,20 +142,45 @@ def test_flip_moves_the_group_about_its_shared_centre_keeping_identity_and_undo_
         units = _group(window)
         archer, wall, gate, _wall2, _house = units
         refs = [u.reference_id for u in units]
-        plan = _expected(units, region_transform.FLIP_HORIZONTAL)
+        plan = _expected(units, region_transform.FLIP_WEST_NORTH)
         before = _state(window)
         depth = len(window.edit_history.records)
         window.flip_horizontal_action.trigger()
-        assert _last_status(window) == "Flipped 5 units horizontally (Enter to apply, Esc to undo)"
+        assert _last_status(window) == "Flipped 5 units West ↔ North (Enter to apply, Esc to undo)"
         assert len(window.edit_history.records) == depth + 1
         assert [u.reference_id for u in units] == refs
         assert [(u.unit_const, u.x, u.y) for u in units] == [(i.unit_const, i.x, i.y) for i in plan.images]
-        assert gate.unit_const == gate_orientation.orientation_siblings(GATE)[2], "the (4, 1) gate became its (1, 4) sibling"
-        assert float(wall.rotation) == 1.0, "a run along x became a run along y"
-        assert archer.rotation == facing_image(1.25, region_transform.FLIP_HORIZONTAL, 16)
+        assert gate.unit_const == GATE, "a run along a tile axis keeps its run (TASK-613)"
+        assert float(wall.rotation) == 0.0
+        assert archer.rotation == facing_image(1.25, region_transform.FLIP_WEST_NORTH, 16)
         # A trigger naming the archer still finds it, at its new tile.
         ref = window._unit_reference_index().get(archer.reference_id)
         assert ref is not None and ref.own_tile == (int(archer.x), int(archer.y))
+        window.undo()
+        assert _state(window) == before
+    finally:
+        _close(window)
+
+
+def test_flip_west_north_sends_a_diagonal_gate_and_wall_to_the_other_diagonal():
+    window = _units_window()
+    try:
+        diagonal = gate_orientation.orientation_siblings(GATE)[1]
+        other = gate_orientation.orientation_siblings(GATE)[3]
+        units = _add(
+            window,
+            [
+                (1, diagonal, *render.span_anchor(43, 40, 4, 4), 0.0, None),
+                (1, WALL, 40.5, 40.5, 3.0, None),
+                (1, ARCHER, 48.5, 45.5, 0.0, None),
+            ],
+        )
+        gate, wall, _archer = units
+        _select(window, units)
+        before = _state(window)
+        window.flip_horizontal_action.trigger()
+        assert gate.unit_const == other
+        assert float(wall.rotation) == 4.0
         window.undo()
         assert _state(window) == before
     finally:
@@ -169,9 +198,9 @@ def test_a_run_of_flips_and_turns_is_one_record_whose_undo_restores_the_first_st
         window.flip_vertical_action.trigger()
         assert len(window.edit_history.records) == depth + 1
         assert window._live_lift("units").element == compose(
-            region_transform.FLIP_VERTICAL, compose(region_transform.ROTATE_CW, region_transform.FLIP_HORIZONTAL)
+            region_transform.FLIP_WEST_SOUTH, compose(region_transform.ROTATE_CW, region_transform.FLIP_WEST_NORTH)
         )
-        assert _last_status(window) == "Flipped 5 units vertically"
+        assert _last_status(window) == "Flipped 5 units West ↔ South"
         window.undo()
         assert _state(window) == before
         assert window._lift is None
@@ -273,7 +302,7 @@ def test_a_refused_turn_mid_lift_changes_nothing_and_free_placement_lets_it_thro
         _house, archer = units
         firsts = [region_transform.FirstUnit(i, u.unit_const, u.x, u.y, u.rotation) for i, u in enumerate(units)]
         rect = units_region(units, 120, 120)
-        flip = region_transform.FLIP_HORIZONTAL
+        flip = region_transform.FLIP_WEST_NORTH
         turned = compose(region_transform.ROTATE_CW, flip)
         target = region_transform.plan_in_place(firsts, turned, rect, False).images[1]
         tile = (int(target.x), int(target.y))
@@ -353,14 +382,14 @@ def test_an_occupant_rides_onto_its_hosts_new_point_and_one_stored_away_leaves_t
         _close(window)
 
 
-def test_flip_horizontal_of_a_unit_group_in_top_down_flat_mirrors_left_right():
+def test_flip_west_north_of_a_unit_group_in_top_down_flat_mirrors_left_right():
     window = _units_window()
     try:
         _top_down(window)
         units = _group(window)
         plan = _expected(units, "mx")
         window.flip_horizontal_action.trigger()
-        assert _last_status(window) == "Flipped 5 units horizontally (Enter to apply, Esc to undo)"
+        assert _last_status(window) == "Flipped 5 units West ↔ North (Enter to apply, Esc to undo)"
         assert window._live_lift("units").element == "mx"
         assert [(u.x, u.y) for u in units] == [(i.x, i.y) for i in plan.images]
     finally:
@@ -467,11 +496,11 @@ def test_flip_of_a_square_region_turns_its_tiles_and_units_in_place_as_one_recor
         before_tiles, before_units = _region_tiles(window, (36, 36, 50, 50)), _state(window)
         depth = len(window.edit_history.records)
         window.flip_vertical_action.trigger()
-        assert _last_status(window) == "Flipped region vertically (Enter to apply, Esc to undo)"
+        assert _last_status(window) == "Flipped region West ↔ South (Enter to apply, Esc to undo)"
         assert len(window.edit_history.records) == depth + 1
         assert window._region == rect
         assert [archer.reference_id, house.reference_id] == refs
-        turned = region_transform.transform_block(first, region_transform.FLIP_VERTICAL, False).block
+        turned = region_transform.transform_block(first, region_transform.FLIP_WEST_SOUTH, False).block
         assert _copy(window, rect) == turned, "a copy of the flipped region is the flipped copy"
         window.undo()
         assert _region_tiles(window, (36, 36, 50, 50)) == before_tiles
@@ -511,6 +540,37 @@ def test_a_non_square_region_turns_about_its_centre_and_leaves_the_tiles_it_vaca
         assert window._live_lift("region").element == "id"
         assert _region_tiles(window, around) == start
         assert window._region == rect
+    finally:
+        _close(window)
+
+
+def test_a_flip_of_a_non_square_region_in_stepped_keeps_its_rectangle():
+    """TASK-613: Flip mirrors across the region's own edges in Stepped too."""
+    window = _select_window()
+    try:
+        assert window._render_style != "flat"
+        rect = (40, 40, 45, 43)
+        _paint(window, rect, lambda x, y: (_A, _B, _C)[(x * 7 + y * 3) % 3])
+        (archer,) = _add(window, [(1, ARCHER, 40.5, 40.5, 0.0, None)])
+        window.on_region_selected(rect)
+        first = _copy(window, rect)
+        window.flip_horizontal_action.trigger()
+        assert _last_status(window) == "Flipped region West ↔ North (Enter to apply, Esc to undo)"
+        assert window._region == rect
+        turned = region_transform.transform_block(first, region_transform.FLIP_WEST_NORTH, False).block
+        assert _copy(window, rect) == turned
+        assert (archer.x, archer.y) == (44.5, 40.5), "mirrored to the region's other x edge"
+    finally:
+        _close(window)
+
+
+def test_the_flip_entries_name_the_compass_corners_and_the_flat_reading():
+    window = _select_window()
+    try:
+        labels = [a.text().replace("&", "") for a in window._flip_actions]
+        assert labels == ["Flip West ↔ North", "Flip West ↔ South"]
+        tips = [a.toolTip() for a in window._flip_actions]
+        assert "left/right in Top-down Flat" in tips[0] and "top/bottom in Top-down Flat" in tips[1]
     finally:
         _close(window)
 
@@ -578,7 +638,7 @@ def test_a_fish_flips_with_its_water_and_is_not_refused_by_the_land_it_leaves_fo
         (fish,) = _add(window, [(0, PERCH, *render.span_anchor(40, 42, 2, 2), 0.0, None)])
         window.on_region_selected(rect)
         window.flip_horizontal_action.trigger()
-        assert _last_status(window) == "Flipped region horizontally (Enter to apply, Esc to undo)"
+        assert _last_status(window) == "Flipped region West ↔ North (Enter to apply, Esc to undo)"
         mm = window.scenario.map_manager
         tiles = render.occupied_tiles_for(PERCH, fish.x, fish.y, mm.map_width, mm.map_height)
         assert tiles and all(mm.terrain[y * mm.map_width + x].terrain_id == _C for x, y in tiles)
@@ -600,7 +660,7 @@ def test_a_region_turn_is_refused_and_disabled_where_its_tiles_cannot_be_written
         setattr(window.scenario, gate, False)
         window._update_rotate_enabled()
         assert not any(action.isEnabled() for action in turn)
-        window.on_selection_transform(region_transform.FLIP_HORIZONTAL)
+        window.on_selection_transform(region_transform.FLIP_WEST_NORTH)
         reason = "needs a square map" if gate == "map_is_square" else "terrain cannot be edited"
         assert reason in _last_status(window) and _last_status(window).startswith("Flip: ")
         window.on_unit_rotate(1)
@@ -630,5 +690,67 @@ def test_target_order_a_unit_selection_beats_the_region_and_rotate_alone_turns_t
         window.rotate_cw_action.trigger()
         assert window._lift.kind == "region"
         assert _region_tiles(window, rect) != tiles
+    finally:
+        _close(window)
+
+
+# --- a setter raising mid-step (TASK-490) ----------------------------------------
+
+
+class _RaiseOnCall:
+    """Delegates to `real` until call number `at`, which raises."""
+
+    def __init__(self, real, at: int):
+        self.real = real
+        self.at = at
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == self.at:
+            raise ValueError("a setter refused the plan")
+        return self.real(*args, **kwargs)
+
+
+def _history_view(window):
+    history = window.edit_history
+    return history.cursor, [id(record) for record in history.records]
+
+
+@pytest.mark.parametrize("first", [True, False], ids=["first_step", "later_step"])
+@pytest.mark.parametrize("kind", ["units", "region"])
+def test_a_setter_raising_mid_step_leaves_the_document_and_history_as_before_the_step(kind, first, monkeypatch):
+    """Every unit write the step made is put back and its quiet undo is
+    redone, and on a region no tile is written: a later step leaves the
+    lift's record on top and the lift holding, a first step creates neither,
+    and nothing is left over on the redo stack."""
+    window = _units_window() if kind == "units" else _select_window()
+    try:
+        area = (36, 36, 52, 52)
+        if kind == "units":
+            _group(window)
+        else:
+            rect = (40, 40, 46, 46)
+            _paint(window, rect, lambda x, y: (_A, _B, _C)[(x * 7 + y * 3) % 3])
+            _add(window, [(1, ARCHER, 40.5, 44.5, 1.25, None), (1, HOUSE, *render.span_anchor(43, 41, 2, 2), 0.0, None)])
+            window.on_region_selected(rect)
+        lift = None
+        if not first:
+            window.flip_horizontal_action.trigger()
+            lift = window._live_lift(kind)
+            assert lift is not None and lift.record is window.edit_history.peek_undo()
+        before = (_state(window), _region_tiles(window, area), _history_view(window))
+
+        model = window.unit_edits
+        setter = _RaiseOnCall(model.set_position, at=2)  # the first member moves, the second raises
+        monkeypatch.setattr(model, "set_position", setter)
+        with pytest.raises(ValueError, match="refused the plan"):
+            window.on_selection_transform(region_transform.ROTATE_CW)
+        assert setter.calls == 2
+        assert _state(window) == before[0], "a unit write of the failed step stayed"
+        assert _region_tiles(window, area) == before[1], "a tile write of the failed step stayed"
+        assert _history_view(window) == before[2], "the history moved"
+        assert not window.edit_history.can_redo
+        assert window._live_lift(kind) is lift, "the lift no longer holds" if lift else "a failed first step made a lift"
     finally:
         _close(window)

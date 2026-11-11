@@ -170,6 +170,7 @@ def test_runtime_metadata_reads_actual_loaded_versions_and_interpreter():
 
 @pytest.mark.parametrize("flag", ["0\n", "1\n", "malformed\n", FileNotFoundError(), PermissionError()])
 def test_runtime_metadata_preserves_sysctl_context_without_disabling_sample(monkeypatch, flag):
+    from pathlib import Path
     from types import SimpleNamespace
 
     from descape import thread_stats
@@ -180,7 +181,7 @@ def test_runtime_metadata_preserves_sysctl_context_without_disabling_sample(monk
         reads.append(path)
         if path == thread_stats.SCHEDSTAT:
             return "1000000 0 1\n"
-        assert str(path) == "/proc/sys/kernel/sched_schedstats"
+        assert path == Path("/proc/sys/kernel/sched_schedstats")
         if isinstance(flag, OSError):
             raise flag
         return flag
@@ -193,7 +194,7 @@ def test_runtime_metadata_preserves_sysctl_context_without_disabling_sample(monk
     assert bz.runtime_metadata()["sched_schedstats"] == expected
     sampled = thread_stats.sample()
     assert sampled.cpu_ns == 1000000 and sampled.runq_ns == 0
-    assert [str(path) for path in reads] == ["/proc/sys/kernel/sched_schedstats", str(thread_stats.SCHEDSTAT)]
+    assert reads == [Path("/proc/sys/kernel/sched_schedstats"), thread_stats.SCHEDSTAT]
 
 
 def test_recorder_accepts_baseline_stall_and_preframe_callback_signatures(monkeypatch):
@@ -509,6 +510,29 @@ def test_no_input_budget_parses_and_reaches_the_child():
     assert "--no-input-budget" not in bz.child_command(bz.build_parser().parse_args([]), "Flat", "off", ["notch"])
 
 
+def test_no_margin_fix_parses_and_reaches_the_child():
+    """TASK-031.85's A arm (render_cache.WARM_NATIVE_INPUTS off) is forwarded like the other A arms."""
+    args = bz.build_parser().parse_args(["--no-margin-fix"])
+    assert args.no_margin_fix and not args.no_input_budget
+    assert "--no-margin-fix" in bz.child_command(args, "Sloped", "off", ["notch"])
+    assert "--no-margin-fix" not in bz.child_command(bz.build_parser().parse_args([]), "Stepped", "on", ["notch"])
+
+
+@pytest.mark.parametrize("flag", [None, "--no-margin-fix", "--no-input-budget"])
+def test_module_arms_set_each_switch_only_for_its_flag(monkeypatch, flag):
+    """--no-margin-fix clears the native prime and its re-queue (WARM_NATIVE_INPUTS) and the
+    cold-first defer (DEFER_COLD_FIRST, TASK-031.82 D3); --no-input-budget pins the budget."""
+    from descape import level_warm, margin_warm, render_cache
+
+    for module, name in ((render_cache, "WARM_NATIVE_INPUTS"), (margin_warm, "DEFER_COLD_FIRST"),
+                         (level_warm, "INPUT_BUDGET_MS")):
+        monkeypatch.setattr(module, name, getattr(module, name))
+    bz.apply_module_arms(bz.build_parser().parse_args([flag] if flag else []))
+    fix_on = flag != "--no-margin-fix"
+    assert render_cache.WARM_NATIVE_INPUTS is fix_on and margin_warm.DEFER_COLD_FIRST is fix_on
+    assert (level_warm.INPUT_BUDGET_MS == level_warm.BUDGET_MS) is (flag == "--no-input-budget")
+
+
 def test_a_frame_dominated_by_gc_gen2_is_031_81():
     click = _click("roll", 0.0, end=1.0)
     frames = [bz.Frame(0.003, 0.103, {"other": 95.0}, 0, 97.0)]
@@ -733,6 +757,7 @@ def margin_recorder(monkeypatch):
     monkeypatch.setattr(perf_trace, "_where_stack", [])
     monkeypatch.setattr(perf_trace, "_texture_raw", deque())
     monkeypatch.setattr(perf_trace, "warm_tick", lambda *a: None)
+    monkeypatch.setattr(perf_trace, "warm_deferred", lambda *a: None)
     monkeypatch.setattr(perf_trace, "level_event", lambda *a: None)
 
     def get_chunk(cache, mip, cx, cy):
@@ -754,6 +779,7 @@ def margin_recorder(monkeypatch):
     monkeypatch.setattr(render_cache._ChunkCacheBase, "prepare_chunk_job", prepare_chunk_job)
     cache = render_cache.IsoChunkCache.__new__(render_cache.IsoChunkCache)
     cache.get_ms, cache.nested, cache.events, cache.job = 5.0, "", False, None
+    cache._composited_mips, cache._native_primed, cache._source_gen = set(), {}, 0
     rec = bz._Recorder(profile_paint=1, profile_warm=2)
     rec.install()
     try:
@@ -853,6 +879,38 @@ def test_margin_ticks_attach_warmer_chunks_textures_levels_and_raw_json(margin_r
     assert data["clicks"][0]["index"] == 1 and data["passes"]["notch"] == {"start": 0.001, "end": 1.0}
     row = bz.format_row(click, bz.click_stats(click, [], ticks[:1]))
     assert ticks[0].detail in row
+
+
+def test_margin_chunks_record_warmed_and_primed_at_their_start_and_ticks_their_deferrals(margin_recorder, monkeypatch):
+    """TASK-031.82: each chunk says whether its level was warmed and primed when it
+    started, so D6 (primed) and D3 (moved) read apart; deferrals land in GATES."""
+    import json
+    from types import SimpleNamespace
+
+    from descape import margin_warm, perf_trace
+
+    rec, cache, _clock = margin_recorder
+    cache._native_primed = {-1: 0}
+    monkeypatch.setattr(margin_warm, "deferrals", 7)
+
+    def tick():
+        with perf_trace.where("margin-warm"):
+            perf_trace.warm_deferred(2)
+            for mip in (-1, 0, 1):
+                cache.get_chunk(mip, 0, 0)
+                cache._composited_mips.add(mip)  # what the real get_chunk's _insert() does
+            cache.get_chunk(0, 1, 0)
+        return False
+
+    window = SimpleNamespace(_load_warmer=SimpleNamespace(tick=tick), _margin_warmer=SimpleNamespace(tick=tick))
+    rec.watch_margin_warmers(window)
+    window._margin_warmer.tick()
+    fields = [(c.mip, c.cx, c.level_warmed, c.primed) for c in rec.margin_chunks]
+    assert fields == [(-1, 0, True, True), (0, 0, False, False), (1, 0, False, False), (0, 1, True, False)]
+    data = json.loads(json.dumps(rec.margin_data([], {})))
+    assert [(d["mip"], d["warmer"]) for d in data["deferrals"]] == [(2, "_margin_warmer")]
+    assert data["deferral_count"] == 7
+    assert data["chunks"][0]["primed"] is True and data["chunks"][1]["level_warmed"] is False
 
 
 def test_warm_profiles_keep_the_slowest_combined_chunks_separate_from_paints(margin_recorder):

@@ -821,8 +821,9 @@ def _pack_pending(cache, mip: int) -> int | None:
 
 
 def test_on_job_done_fires_after_each_neighbours_pack_derive(native_kernel, sprite_install, mixed_scenario) -> None:  # noqa: F811
-    """Each neighbour's pack derive runs right after its level warm and
-    carries the notify; a pack_only mip is derived last and never notifies."""
+    """Each neighbour's pack derive runs right after its level warm, then its
+    native priming (TASK-031.85), which carries the notify; a pack_only mip
+    is derived and (resident, unprimed: TASK-031.82 D6) primed last, and never notifies."""
     with composite_backend.use_backend("native"):
         cache = _iso_cache(mixed_scenario)
         cache._level(0)
@@ -832,8 +833,9 @@ def test_on_job_done_fires_after_each_neighbours_pack_derive(native_kernel, spri
             cache, [-1, 1], pack_only=[0], on_job_done=lambda m: seen.append((m, _pack_pending(cache, m))),
         )
         assert notifying == {-1, 1}
-        assert [(m, notify) for m, _job, notify in warmer._queue] == [
-            (-1, False), (-1, True), (1, False), (1, True), (0, False),
+        assert [(m, job.kind, notify) for m, job, notify in warmer._queue] == [
+            (-1, "walk", False), (-1, "pack", False), (-1, "native", True),
+            (1, "walk", False), (1, "pack", False), (1, "native", True), (0, "pack", False), (0, "native", False),
         ]
         warmer.run_to_completion()
     assert seen == [(-1, 0), (1, 0)]
@@ -1094,6 +1096,9 @@ class _FakeJobsCache:
     def pack_warm_job(self, mip: int, after_level_warm: bool = False):
         return None
 
+    def native_prime_job(self, mip: int, after_level_warm: bool = False):
+        return None
+
 
 def test_a_job_starts_only_on_a_fresh_tick(monkeypatch) -> None:
     """The first job ends 3ms into a 12ms budget; the second, whose first step
@@ -1217,6 +1222,9 @@ def test_a_traced_tick_names_its_longest_step_by_the_unit_it_resolved(monkeypatc
             return LevelWarmJob(gen=walk(), install=lambda _payload: True)
 
         def pack_warm_job(self, mip, after_level_warm=False):
+            return None
+
+        def native_prime_job(self, mip, after_level_warm=False):
             return None
 
     warmer = level_warm.LevelWarmer()
@@ -1417,6 +1425,8 @@ def test_a_style_switch_with_a_poll_pending_leaves_no_warm_on_the_old_cache(nati
             assert window._level_warmer._cache is None or window._level_warmer._cache is window._cache
             window._level_warmer.run_to_completion()
         finally:
+            # closeEvent() calls _cancel_warms(): the patched one would re-arm a poll, and a warm, on the closing window.
+            vars(window).pop("_cancel_warms", None)
             conftest.close_window(window)
 
 
@@ -1492,8 +1502,14 @@ def test_a_mip_change_queues_no_load_warm_for_an_already_warm_level(native_kerne
             fake["mip"] = neighbours[0]
             window._last_viewport_chunk_target = real_target
             window._on_viewport_changed()
+            # The paint-built fit level was never primed: its re-queued prime notifies it (TASK-031.82 D6).
+            # The drain also warms the new anchor's other, unvisited neighbour, whose load warm is legit.
+            window._level_warmer.run_to_completion()
 
             assert fit_mip in calls, "the resident fit level never reached _queue_load_warm -- vacuous"
-            assert window._load_warm_queue == [] and not window._load_warmer.is_active
+            queued = [m for m, _chunks in window._load_warm_queue]
+            if window._load_warmer.is_active:
+                queued.append(window._load_warmer.mip)
+            assert fit_mip not in queued
         finally:
             conftest.close_window(window)

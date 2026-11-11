@@ -2383,3 +2383,77 @@ def test_a_visible_splice_says_so_on_its_perf_line(style, shared_art_install, tr
     line = next(line for line in debug_log.get_log_text().splitlines() if "perf op draw" in line)
     assert "splice_visible=2" in line, line
     assert "splice_refused" not in line, line
+
+
+# --- the wall radian verdict (TASK-583) -----------------------------------------
+
+
+def _verdict_scene():
+    """A lone radian Palisade (the file's only radian value), a literal
+    Palisade run storing 1, and a mill. Returns (scenario, lone, run, mill)."""
+    scenario = _scenario()
+    lone = _place(scenario, 0, RUN_WALL_CONST, 30.5, 30.5)
+    lone.rotation = RUN_WALL_RADIAN
+    run = _wall_run(scenario, 1, 1.0, xs=(60, 61, 62), y=56)
+    mill = _place(scenario, 0, MILL_CONST, *MILL_TILE)
+    return scenario, lone, run, mill
+
+
+def _verdict_reads(monkeypatch) -> list[int]:
+    reads = [0]
+    real = render.walls_file_is_radian
+
+    def counted(scenario):
+        reads[0] += 1
+        return real(scenario)
+
+    monkeypatch.setattr(render, "walls_file_is_radian", counted)
+    return reads
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_wall_verdict_flipped_reads_the_verdict_only_for_a_wall_batch(style, monkeypatch):
+    scenario, lone, run, mill = _verdict_scene()
+    off = _make_cache(style, scenario)
+    assert off._wall_radian is None, "a sprites-off cache draws no wall shape, so it never stamps"
+    cache = _make_cache(style, scenario, sprites=True)
+    assert cache._wall_radian is True
+    reads = _verdict_reads(monkeypatch)
+
+    mill_index = scenario.unit_manager.units[0].index(mill)
+    assert not cache.wall_verdict_flipped([_move_splice(scenario, 0, mill_index, mill, *MOVED_TILE)])
+    assert not cache.wall_verdict_flipped([_reassign_splice(scenario, 1, 2, run[0])])
+    assert not cache.wall_verdict_flipped(None) and not cache.wall_verdict_flipped([])
+    assert reads == [0], "a batch with no wall it could flip read the verdict"
+
+    gone = _remove_splice(scenario, 0, lone)
+    assert cache.wall_verdict_flipped([gone])
+    cache.invalidate_units([gone])
+    assert cache._wall_radian is False
+    assert not cache.wall_verdict_flipped([gone]), "invalidate_units() did not re-stamp the verdict"
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_moved_wall_that_flips_the_verdict_goes_wholesale(style, traced, monkeypatch):
+    """A const:move splice would take the membership component, which re-resolves
+    only the moved wall's neighbours; the flip reshapes the run far away too."""
+    scenario, lone, _run, _mill = _verdict_scene()
+    cache = _make_cache(style, scenario, sprites=True)
+    refreshes = [0]
+    real = cache._refresh_source_caches
+
+    def counted(*args, **kwargs):
+        refreshes[0] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "_refresh_source_caches", counted)
+    with perf_trace.op("Move"):
+        splice = _move_splice(scenario, 0, scenario.unit_manager.units[0].index(lone), lone, 33.5, 30.5)
+        lone.rotation = 2.0
+        assert render_cache._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:move"
+        cache.invalidate_units([splice])
+    perf_trace.flush_idle()
+    assert refreshes == [1], "the flip did not rebuild the sources wholesale"
+    line = next(line for line in debug_log.get_log_text().splitlines() if "perf op move" in line)
+    assert "splice_refused=radian_flip" in line, line
+    assert cache._wall_radian is False
