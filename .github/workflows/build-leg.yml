@@ -1,0 +1,138 @@
+name: build-leg
+# One platform's build leg: test, freeze, verify, package, upload. Called by
+# build.yml (Linux, Windows) and build-macos.yml (macOS, dispatched by hand).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        required: true
+      label:
+        type: string
+        required: true
+      suite-minutes:
+        type: number
+        required: true
+      job-minutes:
+        type: number
+        required: true
+      pytest-args:
+        description: Test paths or extra pytest arguments; empty runs the whole quick suite.
+        type: string
+        default: ''
+      release-upload:
+        description: On a v* tag ref, attach the tarball to that tag's draft release.
+        type: boolean
+        default: false
+jobs:
+  leg:
+    runs-on: ${{ inputs.runner }}
+    # GitHub-hosted jobs stop at 360 min whatever this says.
+    timeout-minutes: ${{ inputs.job-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Compute version
+        shell: bash
+        run: echo "VERSION=$(python -c 'import descape; print(descape.__version__)')" >> "$GITHUB_ENV"
+
+      # Checked before any build/test minutes are spent on a tag push, so a
+      # mistyped or premature tag fails immediately instead of after ~30
+      # minutes of matrix builds.
+      - name: Check tag matches __version__ / CHANGELOG.md (tag push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/check_release_tag.py "${{ github.ref_name }}"
+
+      - uses: ./.github/actions/qt-linux-libs
+        if: runner.os == 'Linux'
+
+      # First, while nothing has built the native kernel in place yet: a
+      # from-source launch's own path (fresh .venv, bootstrap.py's native
+      # step) must end on the native backend on every OS.
+      - name: From-source bootstrap builds the native kernel
+        run: python tools/ci_bootstrap_native.py
+
+      - uses: ./.github/actions/install-and-build
+
+      # Every OS, not only Linux: besides the quick suite itself, this is the
+      # one place the MSVC and arm64 clang builds are compared byte for byte
+      # against numpy (the native kernel oracle tests run inside the suite).
+      # macOS arm64's full quick suite took 88 min on its first run and over
+      # 5 h by 2026-11, so build-macos.yml runs only its oracle tests unless
+      # dispatched with suite: full.
+      - uses: ./.github/actions/quick-suite
+        timeout-minutes: ${{ inputs.suite-minutes }}
+        with:
+          pytest-args: ${{ inputs.pytest-args }}
+
+      - name: Build frozen bundle
+        if: runner.os != 'Linux'
+        run: python -m PyInstaller packaging/descape.spec --noconfirm
+
+      # An explicit docker run, not a job-level container:, so checkout, the
+      # test tier, verification and upload stay on the ubuntu-22.04 host. The
+      # verify steps below are then a real cross-glibc test (built 2.28, run
+      # 2.35). setup-python's pip cache does not reach inside the container.
+      - name: Build frozen bundle + AppImage in AlmaLinux 8 (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CONTAINER_RUNTIME: docker
+        run: bash packaging/build_linux_container.sh
+
+      - name: Verify frozen bundle (self-check + smoke)
+        run: python tools/verify_frozen_build.py
+
+      - name: Smoke test (real xcb plugin, Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a env QT_QPA_PLATFORM=xcb dist/DEscape/DEscape --smoke
+
+      - name: Move AppImage to artifact root (Linux)
+        # actions/download-artifact --merge-multiple preserves each
+        # artifact's internal layout, so a nested dist/*.AppImage would land
+        # one level deeper than the other platforms' flat uploads and miss
+        # the release job's artifacts/* glob. Flatten it here instead.
+        if: runner.os == 'Linux'
+        run: mv dist/DEscape-*.AppImage .
+
+      - name: Stage licenses into the bundle
+        run: |
+          python tools/collect_licenses.py --strict --out dist/DEscape/licenses/third-party
+          python -c "import shutil; shutil.copy('LICENSE', 'dist/DEscape/LICENSE')"
+
+      - name: Package for upload (posix)
+        if: runner.os != 'Windows'
+        run: tar -czf "DEscape-${VERSION}-${{ inputs.label }}.tar.gz" -C dist DEscape
+
+      - name: Package for upload (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/DEscape -DestinationPath "DEscape-$env:VERSION-${{ inputs.label }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DEscape-${{ inputs.label }}
+          path: |
+            DEscape-${{ env.VERSION }}-${{ inputs.label }}.tar.gz
+            DEscape-${{ env.VERSION }}-${{ inputs.label }}.zip
+            DEscape-*.AppImage
+          retention-days: 14
+
+      # The caller grants contents: write; the draft must already exist (build.yml's tag build makes it).
+      - name: Attach to the tag's draft release
+        if: inputs.release-upload && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft)" \
+            || { echo "::error::gh release view $GITHUB_REF_NAME failed (stderr above); a missing release means build.yml's tag build has not made the draft yet"; exit 1; }
+          [ "$draft" = true ] \
+            || { echo "::error::$GITHUB_REF_NAME is already published; refusing to replace its macOS asset"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" "DEscape-$VERSION-${{ inputs.label }}.tar.gz" --clobber

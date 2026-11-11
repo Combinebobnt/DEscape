@@ -25,14 +25,14 @@ if [ "$#" -gt 1 ]; then
     exit 1
 fi
 
-# Same order as build.yml: the cheap tag check fails fast, before the suite.
+# Same order as build-leg.yml: the cheap tag check fails fast, before the suite.
 if [ "$#" -eq 1 ]; then
     .venv/bin/python3 tools/check_release_tag.py "$1" || exit 1
 else
     echo "ci_parity: no tag given, skipping check_release_tag.py"
 fi
 
-# Same as build.yml: the kernel is built first and the suite requires it, so a
+# Same as build-leg.yml: the kernel is built first and the suite requires it, so a
 # missing or stale build fails here rather than skipping the native oracle.
 .venv/bin/python3 tools/build_native.py || exit 1
 

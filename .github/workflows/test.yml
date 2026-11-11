@@ -7,9 +7,10 @@ concurrency:
   group: test-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  # The same three runners and test steps as build.yml's legs, minus the bundle.
+  # The same three runners and test steps as build-leg.yml, minus the bundle.
   # macOS runs only the native kernel oracle tests: its full quick suite outgrew
-  # 180 min on 3 workers. build.yml (tag push or manual dispatch) runs it in full.
+  # 180 min on 3 workers. build-macos.yml dispatched with suite: full runs it in full.
+  # Keep the macOS pytest-args identical to build-macos.yml's oracle list.
   tier:
     strategy:
       fail-fast: false
@@ -32,7 +33,7 @@ jobs:
       - uses: ./.github/actions/qt-linux-libs
         if: runner.os == 'Linux'
 
-      # Before anything builds the kernel in place, as in build.yml.
+      # Before anything builds the kernel in place, as in build-leg.yml.
       - name: From-source bootstrap builds the native kernel
         run: python tools/ci_bootstrap_native.py
 
