@@ -209,6 +209,7 @@ class ButtonGrid(QWidget):
         self._on_resize = None
         self._layout_key: tuple | None = None
         self._icons: dict[tuple[int, str], QPixmap | None] = {}
+        self._icons_generation = asset_source.install_generation()
         self._context_for = None
         self.context: PlayerContext = NO_CONTEXT
         self._applied: train_locations.Applied | None = None
@@ -604,9 +605,12 @@ class ButtonGrid(QWidget):
         return QIcon(canvas)
 
     def _icon(self, id_: int, kind: str) -> QPixmap | None:
-        """A unit's portrait or a tech's icon from the install, cached per id."""
+        """A unit's portrait or a tech's icon, cached per id until the install generation moves."""
         if id_ < 0:
             return None
+        generation = asset_source.install_generation()
+        if generation != self._icons_generation:  # GH #363: a data mod switch or a Mod Art toggle
+            self._icons, self._icons_generation = {}, generation
         key = (id_, kind)
         if key not in self._icons:
             if kind == TECH:

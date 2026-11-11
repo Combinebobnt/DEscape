@@ -80,6 +80,21 @@ def test_priority_order_formats_case_and_exclusions(tmp_path, monkeypatch):
     assert not mod_graphics.set_excluded({"subscribed//1_High"})
 
 
+def test_drawn_roots_are_the_drawn_mods_folders_in_order(tmp_path, monkeypatch):
+    """GH #363: a data mod's portraits are looked up in these, after its own folder."""
+    profile = _tree(tmp_path, monkeypatch)
+    mods = profile / PID / "mods"
+    assert mod_graphics.drawn_roots() == [], "off"
+    mod_graphics.set_enabled(True)
+    high, low, off = (mods / "subscribed" / name for name in ("1_High", "2_Low", "3_Off"))
+    loose, unlisted = mods / "local" / "Loose", mods / "subscribed" / "9_Unlisted"
+    assert mod_graphics.drawn_roots() == [high, low, loose, unlisted]
+    mod_graphics.set_excluded({"subscribed//1_High"})
+    assert mod_graphics.drawn_roots() == [low, loose, unlisted], "an opt-out"
+    mod_graphics.set_included({"subscribed//3_Off"})
+    assert mod_graphics.drawn_roots() == [low, off, loose, unlisted], "the opt-in of a mod disabled in game"
+
+
 def _drawn() -> dict[str, bool]:
     return {m.status_path: m.drawn for m in mod_graphics.mods_with_art()}
 

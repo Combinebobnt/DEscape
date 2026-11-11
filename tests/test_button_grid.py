@@ -626,6 +626,33 @@ def test_a_tech_cell_uses_the_installs_tech_icon(monkeypatch) -> None:
         _close(window)
 
 
+def test_a_unit_portrait_is_read_again_after_the_art_changes(monkeypatch) -> None:
+    """GH #363: a data mod switch or a Mod Art toggle moves the install generation, so the memo misses."""
+    import numpy as np
+
+    from descape import asset_source
+
+    shade = [100]
+
+    def portrait(*_args):
+        return np.full((8, 8, 4), (shade[0], 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        grid = _grid(window)
+        before = grid._icon(_SPEARMAN, "unit")
+        shade[0] = 200
+        assert grid._icon(_SPEARMAN, "unit") is before
+        asset_source.clear_art_caches()
+        assert grid._icon(_SPEARMAN, "unit").toImage().pixelColor(4, 4).red() == 200
+    finally:
+        _close(window)
+
+
 def test_another_effects_hidden_button_gets_a_red_frame() -> None:
     """A tech put on Barracks button 1 by another effect stays under the Militia (measured with Chemistry)."""
     window, _indices = _grid_window(

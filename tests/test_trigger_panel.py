@@ -8462,6 +8462,35 @@ def test_a_single_display_instructions_effect_gets_a_preview_under_its_form() ->
         window.close()
 
 
+def test_refresh_portraits_shows_the_preview_portrait_the_art_now_gives(monkeypatch) -> None:
+    """GH #363: after a Mod Art toggle or a data mod switch (install generation moved) the open preview redraws."""
+    import numpy as np
+
+    from descape import asset_source
+
+    shade = [100]
+
+    def portrait(*_args):
+        return np.full((8, 8, 4), (shade[0], 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window = _instruction_window(object_list_unit_id=4)
+    try:
+        panel = window.trigger_panel
+        preview = _preview(panel)
+        assert preview.icon_source == "icon"
+        shade[0] = 200
+        panel.refresh_portraits()
+        assert preview._icon_pixmap.toImage().pixelColor(4, 4).red() == 100, "same generation: the memo"
+        asset_source.clear_art_caches()
+        panel.refresh_portraits()
+        assert preview._icon_pixmap.toImage().pixelColor(4, 4).red() == 200
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_no_preview_for_a_trigger_a_condition_another_effect_or_a_multi_select() -> None:
     from PyQt5.QtWidgets import QApplication
 

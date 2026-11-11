@@ -193,8 +193,10 @@ class InstructionPreview(QWidget):
             self._on_view(self.view)
 
     def _icon(self, unit_id: int) -> QPixmap | None:
-        if unit_id != self._icon_key:
-            self._icon_key = unit_id
+        # The generation moves on a data mod switch or a Mod Art toggle (GH #363).
+        key = (unit_id, asset_source.install_generation())
+        if key != self._icon_key:
+            self._icon_key = key
             self._icon_pixmap, self.icon_source = None, None
             if unit_id >= 0:
                 arr = asset_source.get_unit_icon(*object_catalog.portrait_for(unit_id))

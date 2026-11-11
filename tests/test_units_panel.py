@@ -1238,7 +1238,7 @@ def test_the_placing_cards_portrait_is_decoded_before_the_lists_viewport(case, f
         while len(executor.submitted) == served and deadline:
             QApplication.processEvents()
             deadline -= 1
-        _fn, (_install, icon, _building, px), _future = executor.submitted[served]
+        _fn, (_install, _layers, icon, _building, px), _future = executor.submitted[served]
         assert (icon, px) == (object_catalog.icon_for(town_center), unit_card.PORTRAIT_PX)
     finally:
         panel.close()

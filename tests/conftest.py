@@ -151,7 +151,7 @@ class ManualExecutor:
         future.set_result(fn(*args))
 
     def icons(self) -> list[int]:
-        return [args[1] for _fn, args, _future in self.submitted]
+        return [args[2] for _fn, args, _future in self.submitted]
 
 
 def settle_thumbs(loader, timeout: float = 5.0) -> None:

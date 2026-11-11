@@ -266,9 +266,10 @@ def set_install_path_override(path: Path | None) -> None:
 
 
 def clear_art_caches() -> None:
-    """Drops every cache holding sprite or terrain-texture art, for a change
-    in which files draw it (mod art toggled or opted out, TASK-378), and
-    bumps install_generation() so ThumbLoader-keyed thumbnails reload."""
+    """Drops every cache holding sprite, terrain-texture or portrait art, for a
+    change in which files draw it (mod art toggled or opted out, TASK-378; a
+    data mod's portraits, GH #363), and bumps install_generation() so
+    ThumbLoader-keyed thumbnails reload."""
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
     # Path-keyed rather than id-keyed, so a changed install that resolves to
@@ -288,6 +289,9 @@ def clear_art_caches() -> None:
     unit_sprites.clear_caches()
     # Blended blocks are built from the textures above.
     terrain_blend.clear_caches()
+    # GH #363: with a data mod, Mod Art's mods supply portraits too.
+    _layered_icon_files.cache_clear()
+    get_unit_icon.cache_clear()
 
 
 def clear_install_caches() -> None:
@@ -310,7 +314,6 @@ def clear_install_caches() -> None:
     _data_mod_changed_string_ids.cache_clear()
     _has_ror_strings.cache_clear()
     _ror_icon_files.cache_clear()
-    get_unit_icon.cache_clear()
     get_tech_icon.cache_clear()
     get_stat_icon.cache_clear()
     # object_catalog.py's name resolution reads resource_string() above --
@@ -448,21 +451,45 @@ def _find_file(folder: Path, match) -> Path | None:
 def unit_icon_path(icon: int | None, building: bool = False) -> Path | None:
     """The portrait file for a catalog icon index, or None. A building looks
     in BUILDING_ICON_DIR by its "NNN_" prefix first, then falls back to the
-    unit set. Extension case varies, so names are matched loosely."""
+    unit set. Extension case varies, so names are matched loosely. With a data
+    mod in effect, its portrait_layers() come before the install (GH #363)."""
     return unit_icon_path_in(get_install_path(), icon, building)
 
 
-def unit_icon_path_in(install: Path | None, icon: int | None, building: bool = False) -> Path | None:
+def portrait_layers() -> tuple[Path, ...]:
+    """The folders a portrait is looked up in before the install (GH #363): the
+    data mod's own, then the ones Mod Art draws, in its order; () with no data
+    mod in effect (Return of Rome included). GUI thread only."""
+    mod = game_dataset.data_mod()
+    if mod is None:
+        return ()
+    from descape import mod_graphics
+
+    return (mod.root, *(root for root in mod_graphics.drawn_roots() if root != mod.root))
+
+
+def unit_icon_path_in(
+    install: Path | None, icon: int | None, building: bool = False, layers: tuple[Path, ...] | None = None
+) -> Path | None:
     """unit_icon_path() under an install the caller passes, never read here:
-    the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68)."""
+    the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68).
+    layers are portrait_layers()'s folders, read here when None (GH #363)."""
     if install is None or icon is None or icon < 0:
         return None
+    section = "Buildings" if building else "Units"
     if game_dataset.is_ror():
-        path = _ror_icon_files(install).get(("Buildings" if building else "Units", icon))
+        path = _ror_icon_files(install).get((section, icon))
         if path is not None:
             return path
-    # GH #67: under Return of Rome without its icon table, its own icon set first, then the install's.
-    roots = [game_dataset.ror_root(install), install] if game_dataset.is_ror() else [install]
+        # GH #67: under Return of Rome without its icon table, its own icon set first, then the install's.
+        roots = [game_dataset.ror_root(install), install]
+    else:
+        layers = portrait_layers() if layers is None else tuple(layers)
+        path = _layered_icon_files(layers, install).get((section, icon)) if layers else None
+        if path is not None:
+            return path
+        # GH #363: a data mod's and its art mods' loose portraits beat the install's by name.
+        roots = [*layers, install]
     if building:
         prefix = f"{icon:03d}_"
         for root in roots:
@@ -488,11 +515,15 @@ def _read_json(path: Path) -> dict:
 
 
 def _atlas_files(materials: dict) -> dict[str, str]:
-    """RefName -> FileName (relative to widgetui/) for every atlas texture a materials file defines."""
+    """RefName -> FileName (relative to widgetui/) for every atlas texture a materials file defines.
+    Wrong-shaped entries are skipped: a data mod's file is untrusted (GH #363)."""
     files = {}
-    for atlas in materials.get("AtlasTextures", ()):
-        for texture in atlas.get("AtlasDef", {}).get("Textures", ()):
-            if "RefName" in texture and "FileName" in texture:
+    atlases = materials.get("AtlasTextures")
+    for atlas in atlases if isinstance(atlases, list) else ():
+        definition = atlas.get("AtlasDef") if isinstance(atlas, dict) else None
+        textures = definition.get("Textures") if isinstance(definition, dict) else None
+        for texture in textures if isinstance(textures, list) else ():
+            if isinstance(texture, dict) and isinstance(texture.get("RefName"), str) and isinstance(texture.get("FileName"), str):
                 files[texture["RefName"]] = texture["FileName"]
     return files
 
@@ -526,10 +557,79 @@ def _ror_icon_files(install: Path) -> dict[tuple[str, int], Path]:
     return files
 
 
-def read_unit_icon_in(install: Path | None, icon: int | None, building: bool = False, px: int | None = None):
-    """get_unit_icon() under a passed install, uncached and thread-safe,
-    downscaled to fit px x px when px is given; or None."""
-    arr = _read_rgba(unit_icon_path_in(install, icon, building))
+@lru_cache(maxsize=2)
+def _layered_icon_files(layers: tuple[Path, ...], install: Path) -> dict[tuple[str, int], Path]:
+    """("Units" or "Buildings", icon index) -> its portrait file through a data mod's icon table (GH #363).
+    As in the game's file overlay, icons.json, morematerials.json and materials.json each come whole
+    from the first of `layers` with a readable one (materials from the install last); a RefName resolves
+    through morematerials, then materials, and its file comes from the first folder that has it, the
+    install last. widgetui/ and file names match case-insensitively, as the side_key fingerprint does,
+    and wrong-shaped entries are skipped. Only existing files; {} when no layer has an icon table."""
+    from descape import content_roots
+
+    layer_uis = [ui for ui in (content_roots.child_dir(root, UI_DIR) for root in layers) if ui is not None]
+    install_ui = content_roots.child_dir(install, UI_DIR)
+    uis = [*layer_uis, *([install_ui] if install_ui is not None else [])]
+    listings: dict[Path, dict[str, Path]] = {}
+
+    def first(folders, name: str) -> dict:
+        """The first folder's readable `name`, whole; {} when none has one."""
+        for folder in folders:
+            path = _ui_file(folder, name, listings)
+            data = _read_json(path) if path is not None else {}
+            if data:
+                return data
+        return {}
+
+    table = first(layer_uis, ICON_TABLE_NAME)
+    if not table:
+        return {}
+    # morematerials second, so its RefNames win.
+    refs = {**_atlas_files(first(uis, MATERIALS_NAME)), **_atlas_files(first(uis, ROR_MATERIALS_NAME))}
+    files = {}
+    for section in ("Units", "Buildings"):
+        entries = table.get(section)
+        for key, ref in entries.items() if isinstance(entries, dict) else ():
+            if not (key.isdigit() and isinstance(ref, str) and ref in refs):
+                continue
+            path = next((p for p in (_ui_file(ui, refs[ref], listings) for ui in uis) if p is not None), None)
+            if path is not None:
+                files[(section, int(key))] = path
+    return files
+
+
+def _ui_file(ui: Path, rel: str, listings: dict[Path, dict[str, Path]]) -> Path | None:
+    """ui/<rel>, each part matched case-insensitively (listings memoizes each folder's names,
+    first by sorted name), or None. A rel that is absolute or climbs out with ".." is None."""
+    parts = Path(rel).parts
+    if not parts or Path(rel).is_absolute() or ".." in parts:
+        return None
+    found: Path | None = ui
+    for part in parts:
+        names = listings.get(found)
+        if names is None:
+            names = listings[found] = {}
+            try:
+                for entry in sorted(found.iterdir()):
+                    names.setdefault(entry.name.lower(), entry)
+            except OSError:
+                pass
+        found = names.get(part.lower())
+        if found is None:
+            return None
+    return found if found.is_file() else None
+
+
+def read_unit_icon_in(
+    install: Path | None,
+    icon: int | None,
+    building: bool = False,
+    px: int | None = None,
+    layers: tuple[Path, ...] | None = None,
+):
+    """get_unit_icon() under a passed install and portrait layers, uncached and
+    thread-safe when layers is given, downscaled to fit px x px when px is given; or None."""
+    arr = _read_rgba(unit_icon_path_in(install, icon, building, layers))
     if arr is None or px is None:
         return arr
     import numpy as np
@@ -605,9 +705,9 @@ def _read_rgba(path: Path | None):
 
 @lru_cache(maxsize=64)
 def get_unit_icon(icon: int | None, building: bool = False):
-    """The install's portrait for this catalog icon index (unit_icon_path())
-    as a read-only (h, w, 4) uint8 RGBA array, or None (no install, no file,
-    a decode failure)."""
+    """The portrait for this catalog icon index (unit_icon_path(), a data mod's
+    first, GH #363) as a read-only (h, w, 4) uint8 RGBA array, or None (no
+    install, no file, a decode failure)."""
     return _read_rgba(unit_icon_path(icon, building))
 
 

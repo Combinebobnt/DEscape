@@ -115,6 +115,27 @@ def test_fingerprint_moves_on_any_byte_and_is_empty_with_no_files(tmp_path):
     assert data_mod_side.fingerprint(tmp_path) != second
 
 
+def test_fingerprint_hashes_the_portrait_tables_only(tmp_path):
+    """GH #363: the mod's own widgetui/ icons.json, materials.json and morematerials.json join side_key."""
+    ui = tmp_path / "widgetui"
+    ui.mkdir()
+    assert data_mod_side.fingerprint(None, ui) == ""
+    (ui / "techtreepreviewpanel.json").write_text("{}")
+    assert data_mod_side.fingerprint(None, ui) == "", "only the files DEscape reads"
+    (ui / "icons.json").write_text("{}")
+    first = data_mod_side.fingerprint(None, ui)
+    assert first
+    (ui / "icons.json").write_text("{ }")
+    second = data_mod_side.fingerprint(None, ui)
+    assert second != first
+    (ui / "MoreMaterials.json").write_text("{}")
+    assert data_mod_side.fingerprint(None, ui) != second
+    (tmp_path / "eras.json").write_text("[]")
+    (ui / "techtreepreviewpanel.json").write_text("[]")
+    with_side = data_mod_side.fingerprint(tmp_path, ui)
+    assert with_side != data_mod_side.fingerprint(tmp_path) and with_side != data_mod_side.fingerprint(None, ui)
+
+
 @pytest.mark.parametrize("text", [
     "not json", "[]", "{}", '{"civilization_list": 3}', '{"civilization_list": [1, 2]}',
     '{"civilization_list": [{"data_name": 1}, {"data_name": "A"}]}',
@@ -163,6 +184,20 @@ def test_tables_for_fills_side_key_from_the_mods_files(tmp_path, monkeypatch):
     second = data_mods.tables_for(mod, "key")
     assert second.key == first.key and second.side_key != first.side_key
     assert first != second, "an edit is a new overlay"
+
+
+def test_tables_for_side_key_follows_the_mods_icon_table(tmp_path, monkeypatch):
+    root = tmp_path / "mod"
+    ui = root / "widgetui"
+    ui.mkdir(parents=True)
+    (ui / "icons.json").write_text("{}")
+    entry = SimpleNamespace(path=tmp_path / "tables", mod_only_ids=frozenset(), warnings=())
+    monkeypatch.setattr(data_mods.dat_cache, "lookup", lambda key: entry)
+    mod = data_mods.DataMod("s", "Stand-in", None, root, _dat(root) / "empires2_x2_p1.dat")
+    first = data_mods.tables_for(mod, "key")
+    assert first.side_key == data_mod_side.fingerprint(None, ui) != ""
+    (ui / "icons.json").write_text('{"Units": {}}')
+    assert data_mods.tables_for(mod, "key").side_key != first.side_key
 
 
 def test_only_side_key_changed_still_switches_and_rereads(mod):

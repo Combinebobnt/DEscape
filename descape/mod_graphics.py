@@ -3,8 +3,9 @@ mods override the install's: per file stem, the highest-priority drawn mod
 that ships one, else the install (None here).
 
 Qt-free module state, read by unit_sprites (sprites), asset_source (terrain
-textures) and the viewer (the View > Layers "Mod Art" row, the Mod art list in
-Settings > Mods, the status line):
+textures, and a data mod's portraits through drawn_roots(), GH #363) and the
+viewer (the View > Layers "Mod Art" row, the Mod art list in Settings > Mods,
+the status line):
 
 - **Off by module default.** The viewer turns it on from the persisted layer,
   so tests and tools/ never pick up the developer's mods by accident.
@@ -242,6 +243,16 @@ def mods_with_art() -> list[ModArt]:
                 in_game=root.enabled, drawn=_drawn(root.status_path, index),
             ))
     return found
+
+
+def drawn_roots() -> list[Path]:
+    """Every drawn mod's folder in resolution order, [] while off: where a data
+    mod's portraits are looked up after its own folder (GH #363). Counts mods
+    shipping no sprite or texture too, which mods_with_art() leaves out."""
+    if not _enabled:
+        return []
+    index = _get_index()
+    return [root.path for root in index.roots if _drawn(root.status_path, index)]
 
 
 def resolve_sprite(file_name: str) -> tuple[Path, str] | None:

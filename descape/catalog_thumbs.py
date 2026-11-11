@@ -7,8 +7,9 @@ GUI thread. ThumbLoader keeps one decode in flight and a GUI-side pending
 list that each request() replaces, so rows that scrolled away are dropped
 rather than drained, and a fast scroll wastes at most one decode.
 
-Two rules carried from GOTCHAS: the install path is resolved on the GUI
-thread at request() and handed to the worker, never read lazily there; and a
+Two rules carried from GOTCHAS: the install path and the portrait layers
+(asset_source.portrait_layers(), GH #363) are resolved on the GUI thread at
+request() and handed to the worker, never read lazily there; and a
 result from before asset_source.clear_install_caches() or clear_art_caches()
 (the install generation moved) is discarded, never shown or memoized.
 
@@ -91,9 +92,9 @@ def sprite_thumb(const: int, px: int) -> np.ndarray | None:
     return np.array(image)
 
 
-def _decode_portrait(install, icon: int, building: bool, px: int):
-    """The worker's half: the install's portrait fitted into px, or None. Never touches a sprite."""
-    return asset_source.read_unit_icon_in(install, icon, building, px)
+def _decode_portrait(install, layers, icon: int, building: bool, px: int):
+    """The worker's half: the portrait fitted into px, or None. Never touches a sprite."""
+    return asset_source.read_unit_icon_in(install, icon, building, px, layers)
 
 
 def _icon(arr: np.ndarray | None, px: int) -> QIcon | None:
@@ -112,8 +113,9 @@ def _icon(arr: np.ndarray | None, px: int) -> QIcon | None:
 def team_filled(icon: QIcon | None, source: str | None, rgb: tuple[int, int, int], px: int) -> QIcon | None:
     """An "icon"-source thumbnail over a solid `rgb` square: DE's portraits
     leave the player-colour region fully transparent for the game to fill
-    (479 of the install's 716 portraits). Every portrait is a 256 px square,
-    so the fill never shows outside one. A sprite, or no icon, passes through."""
+    (479 of the install's 716 portraits). A portrait is square (the install's
+    256 px, a data mod's often 36 px, scaled up), so the fill shows outside one
+    only as a pixel's strip round an odd one (GH #363). A sprite, or no icon, passes through."""
     if icon is None or source != "icon":
         return icon
     pixmap = QPixmap(px, px)
@@ -195,6 +197,7 @@ class ThumbLoader(QObject):
         self._pending: dict[int, tuple[bool, list[tuple[int, int]]]] = {}
         self._in_flight: tuple[int, int, int] | None = None
         self._install = None
+        self._layers: tuple = ()
         self._request_generation = asset_source.install_generation()
         # (const, px) -> (icon, source): source "icon", "sprite" or None.
         self._memo: OrderedDict[tuple[int, int], tuple[QIcon | None, str | None]] = OrderedDict()
@@ -214,8 +217,8 @@ class ThumbLoader(QObject):
         return True, self._memo[key][0]
 
     def source(self, const: int, px: int) -> str | None:
-        """Where a memoized thumbnail came from: "icon" (the install's
-        portrait), "sprite", or None (nothing, or not resolved yet)."""
+        """Where a memoized thumbnail came from: "icon" (a portrait, the
+        install's or a data mod's), "sprite", or None (nothing, or not resolved yet)."""
         found = self._memo.get((const, px))
         return None if found is None else found[1]
 
@@ -225,6 +228,7 @@ class ThumbLoader(QObject):
         hit is not re-requested; read it with cached()."""
         self._check_generation()
         self._install = asset_source.get_install_path()
+        self._layers = asset_source.portrait_layers()
         self._request_generation = asset_source.install_generation()
         wanted = list(dict.fromkeys(c for c in consts if (c, px) not in self._memo))
         self._pending.pop(id(client), None)
@@ -284,7 +288,7 @@ class ThumbLoader(QObject):
                 return
             key = (const, px, self._request_generation)
             self._in_flight = key
-            future = executor.submit(_decode_portrait, self._install, icon, building, px)
+            future = executor.submit(_decode_portrait, self._install, self._layers, icon, building, px)
             # A partial over the relay and the token: the worker must not hold this loader.
             future.add_done_callback(functools.partial(_post, self._relay, self._token, key))
 

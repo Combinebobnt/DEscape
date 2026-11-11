@@ -169,6 +169,23 @@ def test_the_install_is_captured_at_request_and_never_read_by_the_worker(fake_in
     assert executor.submitted[0][2].result() is not None
 
 
+def test_the_portrait_layers_are_captured_at_request_and_never_read_by_the_worker(fake_install, tmp_path, monkeypatch) -> None:
+    """GH #363: a data mod's layers follow the install's rule."""
+    executor = _ManualExecutor()
+    loader, _got = _loader(executor)
+    layers = (tmp_path / "data_mod", tmp_path / "art_mod")
+    monkeypatch.setattr(asset_source, "portrait_layers", lambda: layers)
+    loader.request([_ARCHER], 32)
+    assert executor.submitted[0][1][1] == layers
+
+    def no_lookup():
+        raise AssertionError("the worker read the layers itself")
+
+    monkeypatch.setattr(asset_source, "portrait_layers", no_lookup)
+    executor.run(0)
+    assert executor.submitted[0][2].result() is not None, "missing layers fall back to the install's portrait"
+
+
 def test_a_memo_hit_is_not_requested_again(fake_install) -> None:
     executor = _ManualExecutor()
     loader, got = _loader(executor)

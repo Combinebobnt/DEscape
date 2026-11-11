@@ -10163,6 +10163,7 @@ class ViewerWindow(QMainWindow):
         self.refresh_map()
         self.terrain_panel.view.refresh_swatches()
         self.units_panel.refresh_thumbnails()
+        self.trigger_panel.refresh_portraits()
         if self.scenario is None:
             self._update_tool_enabled()  # refresh_map() re-gates when a map is open
         pending = " (measuring its reach in the background)" if unit_sprites.reach_pending() else ""
@@ -20936,6 +20937,7 @@ class ViewerWindow(QMainWindow):
         if self.map_view._unit_index is not None:
             self._rebuild_unit_index()
         self._refresh_player_labels()
+        self.trigger_panel.refresh_portraits()
         self._update_info()
 
     def _after_game_data_change(self) -> None:

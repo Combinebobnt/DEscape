@@ -2602,6 +2602,13 @@ class TriggerPanel(QWidget):
                 cls._discard_layout_item(layout.takeAt(0))
             layout.deleteLater()
 
+    def refresh_portraits(self) -> None:
+        """GH #363: redraws the open form's button grid and instruction preview after the portrait files change."""
+        if self._button_grid is not None:
+            self._button_grid.refresh()
+        if self._instruction_preview is not None:
+            self._instruction_preview.refresh()
+
     def refresh_player_labels(self, labels, colors) -> None:
         """GH #130: store the labels for the next form build and relabel the
         PlayerId combos already on screen, keeping their "(differs)" and "unknown" rows."""

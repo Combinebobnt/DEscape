@@ -107,7 +107,7 @@ def tables_for(mod: DataMod, key: str) -> game_dataset.DataModTables | None:
     entry = dat_cache.lookup(key)
     if entry is None:
         return None
-    side_key = data_mod_side.fingerprint(data_mod_side.side_dir(mod.root))
+    side_key = data_mod_side.fingerprint(data_mod_side.side_dir(mod.root), data_mod_side.ui_dir(mod.root))
     return game_dataset.DataModTables(key, entry.path, mod.root, mod.title, entry.mod_only_ids, entry.warnings, side_key)
 
 

@@ -16,6 +16,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,7 @@ from descape import (
     dat_derive,
     data_mods,
     game_dataset,
+    object_catalog,
     scenario_io,
     settings,
     unit_stats_table,
@@ -40,7 +42,10 @@ pytestmark = [
 
 DESCAPE = Path(game_dataset.__file__).resolve().parent
 SPEARMAN = 93
+ARCHER = 4
 MOD_HP = 4242
+# FakeMods patches it; the GH #363 re-pick test needs the real side_key.
+_REAL_TABLES_FOR = data_mods.tables_for
 
 
 def _mod(tmp_path: Path, name: str) -> data_mods.DataMod:
@@ -454,6 +459,37 @@ def test_a_parser_that_cannot_start_fails_readably(window, mods, monkeypatch):
 
 
 # --- GH #263: a mod's civilizations.json and eras.json ------------------
+
+
+def _pixel() -> tuple[int, ...]:
+    return tuple(asset_source.get_unit_icon(*object_catalog.portrait_for(ARCHER))[0, 0])
+
+
+def test_a_repick_after_an_icon_table_edit_shows_the_new_portrait(window, mods, tmp_path, monkeypatch):
+    """GH #363: the mod's own widgetui/icons.json is in side_key, so picking the mod again re-reads it."""
+    from PIL import Image
+
+    entry = SimpleNamespace(path=mods.tables[mods.alpha].tables_dir, mod_only_ids=frozenset(), warnings=())
+    monkeypatch.setattr(data_mods.dat_cache, "lookup", lambda key: entry)
+    monkeypatch.setattr(data_mods, "tables_for", _REAL_TABLES_FOR)
+    ui = mods.alpha.root / "widgetui"
+    textures = []
+    for name, color in (("Red", (255, 0, 0, 255)), ("Green", (0, 255, 0, 255))):
+        path = ui / "textures" / "ingame" / "units" / f"{name}.dds"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", (4, 4), color).save(path, format="PNG")
+        textures.append({"RefName": name, "FileName": f"textures/ingame/units/{name}.dds"})
+    (ui / "materials.json").write_text(json.dumps({"AtlasTextures": [{"AtlasDef": {"Textures": textures}}]}))
+    icon = object_catalog.icon_for(ARCHER)
+    (ui / "icons.json").write_text(json.dumps({"Units": {f"{icon:03d}": "Red"}}))
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    _menu(window)["Alpha"].trigger()
+    assert game_dataset.data_mod().root == mods.alpha.root
+    assert _pixel() == (255, 0, 0, 255)
+    (ui / "icons.json").write_text(json.dumps({"Units": {f"{icon:03d}": "Green"}}))
+    assert _pixel() == (255, 0, 0, 255), "cached until the mod is picked again"
+    _menu(window)["Alpha"].trigger()
+    assert _pixel() == (0, 255, 0, 255)
 
 
 def _side_files(mod: data_mods.DataMod) -> None:
