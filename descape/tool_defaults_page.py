@@ -6,8 +6,11 @@ label, a control and a Default button. An edit stores the default
 (ViewerWindow.apply_tool_option_default()) and logs a status line.
 
 The dialog is modal and rebuilt on every open, so the page reads the store
-once, at construction. It fills its controls with their signals blocked and
-only then connects them, so opening and closing the dialog writes nothing.
+at construction, and again in _refresh(). It fills its controls with their
+signals blocked and only then connects them, so opening and closing the
+dialog writes nothing. Settings' Cancel puts back the defaults and the
+toolbar row from when it opened or was last applied, and its Reset does
+what Reset All to Defaults does (GH #191).
 
 A stored id this session's game data can't show (a wall const or Cliff family
 another dataset has) gets one extra entry, "Unavailable (<value>)": the value

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import yaml
 
 from descape import (
     asset_source,
+    debug_log,
     edge_ticks,
     games,
     grid_overlay,
@@ -54,6 +56,24 @@ def _save_config(config: dict) -> None:
     # bind-by-value import, so there are two module attributes to patch)
     # still takes effect.
     asset_source.write_config_file(CONFIG_PATH, config)
+    for listener in _SAVE_LISTENERS.copy():  # a listener may remove itself
+        try:
+            listener(config)
+        except Exception as e:  # noqa: BLE001 -- a stale listener must never break a save
+            debug_log.error(f"Settings save listener failed: {e!r}")
+
+
+# GH #191: called with the dict just written, after every save (Settings' Apply button). CAPS, so not a memo.
+_SAVE_LISTENERS: list[Callable[[dict], None]] = []
+
+
+def add_save_listener(listener: Callable[[dict], None]) -> None:
+    _SAVE_LISTENERS.append(listener)
+
+
+def remove_save_listener(listener: Callable[[dict], None]) -> None:
+    with contextlib.suppress(ValueError):
+        _SAVE_LISTENERS.remove(listener)
 
 
 # Settings > Appearance's graphics-quality slider -- render.

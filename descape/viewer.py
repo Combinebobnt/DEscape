@@ -47,7 +47,7 @@ class plus 19 mixins, one module per area:
 
 The widgets and dialogs it drives live beside it: map_view*.py,
 trigger_panel*.py, map_options_panel.py, viewer_canvas.py, viewer_dialogs.py,
-settings_dialog.py, mirror_dialog.py, and the viewer_common.py helpers they
+settings_dialog.py (with its settings_dialog_apply.py mixin), mirror_dialog.py, and the viewer_common.py helpers they
 share. Those import one way, never back into this module at runtime.
 
 Rules of the split (tests/test_viewer_split.py checks them):

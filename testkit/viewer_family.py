@@ -24,6 +24,7 @@ VIEWER_MODULES: tuple[str, ...] = (
     "descape.viewer",
     "descape.viewer_common",
     "descape.settings_dialog",
+    "descape.settings_dialog_apply",
     "descape.mirror_dialog",
     "descape.viewer_menus",
     "descape.viewer_toolbar",

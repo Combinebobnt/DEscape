@@ -331,7 +331,7 @@ def test_the_slider_fades_live_and_persists_once_on_close() -> None:
         assert dialog._overlay_opacity_labels["region"].text() == "40%"
         # Debounced: every setter is a full YAML round trip.
         assert settings.get_overlay_opacity("region") == 100
-        dialog.done(0)
+        dialog.accept()  # OK; Cancel would drop it (GH #191)
         assert settings.get_overlay_opacity("region") == 40
         assert "Overlay opacity: Select tool -> 40%" in window.status_log.toPlainText()
     finally:
@@ -408,9 +408,9 @@ _GROUP_CASES = {
 
 
 def _flush_and_close(dialog) -> None:
-    """done() persists a pending debounced opacity; a never-shown dialog's close() skips done(),
-    so the 200 ms timer would otherwise fire inside a later test and write into its config."""
-    dialog.done(0)
+    """OK persists a pending debounced opacity (Cancel drops it, GH #191); a never-shown dialog's close()
+    skips done(), so the 200 ms timer would otherwise fire inside a later test and write into its config."""
+    dialog.accept()
     dialog.close()
     assert not dialog._overlay_opacity_timer.isActive()
 

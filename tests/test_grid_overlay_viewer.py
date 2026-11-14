@@ -569,7 +569,7 @@ def test_a_keyboard_change_is_applied_when_the_dialog_closes() -> None:
         dialog.grid_thickness_slider.setValue(grid_overlay.thickness_index(4))
         assert view.grid_previewing()
         assert dialog._grid_apply_timer.isActive()
-        dialog.reject()  # what Close, Escape and the title-bar X all reach
+        dialog.accept()  # OK keeps it (GH #191); Cancel, Escape and the title-bar X put it back
         assert not view.grid_previewing()
         assert window._cache.grid.thickness == 4
     finally:

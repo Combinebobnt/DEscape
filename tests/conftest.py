@@ -698,6 +698,20 @@ def _no_perf_trace_hooks_left():
 
 
 @pytest.fixture(autouse=True)
+def _no_unapplied_settings_prompt(monkeypatch):
+    """GH #191: Settings' unapplied-changes prompt is modal and would block forever offscreen,
+    so a test that closes a dirty dialog through reject() (Esc, the title-bar X) fails at once
+    instead. A test that wants the prompt patches SettingsDialog._ask_unapplied, which shadows this."""
+    if PYQT5_AVAILABLE:
+        from descape.settings_dialog_apply import _SettingsDialogApplyMixin
+
+        def refuse(_dialog):
+            raise AssertionError("Settings asked about unapplied changes: patch SettingsDialog._ask_unapplied")
+
+        monkeypatch.setattr(_SettingsDialogApplyMixin, "_ask_unapplied", refuse)
+
+
+@pytest.fixture(autouse=True)
 def _aoe2_dataset():
     """GH #67: every test starts and ends with the AoE2 game data active, and no data mod (GH #58)."""
     from descape import game_dataset
@@ -834,6 +848,8 @@ def _isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_module, "CONFIG_PATH", fake_config_path)
     for name in settings_isolation.MEMOIZED_GLOBALS:
         monkeypatch.setattr(settings_module, name, None)
+    # GH #191: a SettingsDialog a test never closed must not hear a later test's saves.
+    monkeypatch.setattr(settings_module, "_SAVE_LISTENERS", [])
     # Settings > Mods lists content_roots(), so a developer's AOE2DE_PROFILE_PATH must not reach it (GH #126).
     # setenv first so teardown restores "unset" even after testkit.isolate_settings() sets it (TASK-378).
     monkeypatch.setenv("AOE2DE_PROFILE_PATH", "")

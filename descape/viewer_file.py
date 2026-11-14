@@ -149,6 +149,11 @@ class _ViewerFileMixin:
         and redraws the open document in it. Display only: the file's own flag is never
         changed, and a mismatch locks the document."""
         settings.set_game_data(choice)
+        self.apply_game_data()
+
+    def apply_game_data(self) -> None:
+        """Redraws the open document in the saved Game data choice, writing nothing
+        (Settings' Cancel and Reset, GH #191)."""
         if game_dataset.set_active(self._shown_game_dataset()):
             self._refresh_game_assets()
         self._after_game_data_change()
