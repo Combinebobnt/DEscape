@@ -56,7 +56,7 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from descape import iso_geometry
-from descape.render import tile_pixels_for_map
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 

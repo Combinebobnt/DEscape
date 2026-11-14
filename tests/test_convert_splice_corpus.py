@@ -25,14 +25,18 @@ import numpy as np
 import pytest
 from test_bystander_grid_patch import grid_state
 
-from descape import asset_source, composite_backend, render, render_cache
+from descape import asset_source, composite_backend, render_cache_splice, render_units
 from descape.edit_history import EditHistory
 from descape.native_composite import ROW_SPRITE
-from descape.render import elevations_and_proj, sloped_elevations_and_proj, tile_pixels_for_map
-from descape.render_cache import IsoChunkCache, SlopedChunkCache, UnitSplice
+from descape.render_cache import IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import UnitSplice
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import sloped_elevations_and_proj
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
 from descape.unit_model import UnitEditModel
+from testkit.render_family import set_render_cache_global, set_render_global
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 FILES = (
@@ -124,18 +128,18 @@ def _assert_matches_fresh(cache, style: str, scenario, unit_filter: UnitFilter, 
 
 def _footprint(scenario, unit):
     mm = scenario.map_manager
-    tiles = render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+    tiles = render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
     return (int(unit.x), int(unit.y)), None if tiles is None else tuple(tiles)
 
 
 def _over_cap(scenario, cache, splices) -> bool:
     """Whether a refused batch was refused for the component cap alone."""
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 10**9)
-        component, _why = render_cache._reassign_component_splices(
+        set_render_cache_global(mp, "_COMPONENT_SPLICE_MAX_UNITS", 10**9)
+        component, _why = render_cache_splice._reassign_component_splices(
             scenario, cache.units_by_tile, cache.unit_filter, splices
         )
-    return component is not None and len(component) > render_cache._COMPONENT_SPLICE_MAX_UNITS
+    return component is not None and len(component) > render_cache_splice._COMPONENT_SPLICE_MAX_UNITS
 
 
 @pytest.mark.corpus
@@ -158,8 +162,8 @@ def test_random_convert_batches_splice_exactly_like_a_fresh_cache(name, style, h
     model = UnitEditModel(scenario)
     history = EditHistory()
     wholesale = []
-    real_units_by_tile = render._units_by_tile
-    monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
+    real_units_by_tile = render_units._units_by_tile
+    set_render_global(monkeypatch, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
     stats = {"spliced": 0, "component": 0, "over_cap": 0}
     shared_seeded = 0
 
@@ -189,8 +193,8 @@ def test_random_convert_batches_splice_exactly_like_a_fresh_cache(name, style, h
         model.commit_unit_edit(f"probe convert {r}", history)
         tag = f"round {r}: {len(splices)} units {source}->{destination}"
 
-        eligible = render_cache._batch_splice_eligible(cache.units_by_tile, splices)
-        plan = render_cache._splice_plan(scenario, cache.units_by_tile, cache.unit_filter, splices)
+        eligible = render_cache_splice._batch_splice_eligible(cache.units_by_tile, splices)
+        plan = render_cache_splice._splice_plan(scenario, cache.units_by_tile, cache.unit_filter, splices)
         if plan is None:
             assert _over_cap(scenario, cache, splices), f"{tag}: fell back below the component cap"
         wholesale.clear()

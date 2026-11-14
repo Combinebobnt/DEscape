@@ -3,7 +3,7 @@
 Geometry comes through panel_scale() and panel_top(), and the art through the
 module's own constants, so a corrected slot or colour moves no test here; the
 corpus tests compare those constants with the install. The window cases reuse
-test_trigger_panel's offscreen fixture, whose trigger 0 effect 0 is one Display
+trigger_panel_helpers' offscreen fixture, whose trigger 0 effect 0 is one Display
 Instructions.
 """
 
@@ -23,7 +23,7 @@ pytestmark = [
 ]
 
 if conftest.PYQT5_AVAILABLE:
-    from test_trigger_panel import (
+    from trigger_panel_helpers import (
         TRIGGER_FIXTURE,
         _instruction_window,
         _plant_prose_effect,

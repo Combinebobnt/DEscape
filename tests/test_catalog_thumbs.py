@@ -169,6 +169,23 @@ def test_the_install_is_captured_at_request_and_never_read_by_the_worker(fake_in
     assert executor.submitted[0][2].result() is not None
 
 
+def test_the_portrait_layers_are_captured_at_request_and_never_read_by_the_worker(fake_install, tmp_path, monkeypatch) -> None:
+    """GH #363: a data mod's layers follow the install's rule."""
+    executor = _ManualExecutor()
+    loader, _got = _loader(executor)
+    layers = (tmp_path / "data_mod", tmp_path / "art_mod")
+    monkeypatch.setattr(asset_source, "portrait_layers", lambda: layers)
+    loader.request([_ARCHER], 32)
+    assert executor.submitted[0][1][1] == layers
+
+    def no_lookup():
+        raise AssertionError("the worker read the layers itself")
+
+    monkeypatch.setattr(asset_source, "portrait_layers", no_lookup)
+    executor.run(0)
+    assert executor.submitted[0][2].result() is not None, "missing layers fall back to the install's portrait"
+
+
 def test_a_memo_hit_is_not_requested_again(fake_install) -> None:
     executor = _ManualExecutor()
     loader, got = _loader(executor)
@@ -179,6 +196,44 @@ def test_a_memo_hit_is_not_requested_again(fake_install) -> None:
     assert hit and icon is not None
     loader.request([_ARCHER], 32)
     assert len(executor.submitted) == 1
+
+
+def _data_mod(tmp_path):
+    from testkit import data_mod_fixture
+
+    folder = tmp_path / "data_mod"
+    folder.mkdir()
+    return data_mod_fixture.mod_tables(folder)
+
+
+def test_a_data_mod_switch_drops_the_memo_though_the_art_stays(fake_install, tmp_path) -> None:
+    """TASK-478: a data-mod switch keeps install_generation(), but a const can resolve to other art."""
+    from descape import game_dataset
+
+    executor = _ManualExecutor()
+    loader, got = _loader(executor)
+    loader.request([_ARCHER], 32)
+    executor.run(0)
+    _pump(lambda: bool(got))
+    assert loader.cached(_ARCHER, 32)[0]
+    generation = asset_source.install_generation()
+    assert game_dataset.set_data_mod(_data_mod(tmp_path))
+    assert asset_source.install_generation() == generation
+    assert loader.cached(_ARCHER, 32) == (False, None)
+
+
+def test_a_decode_in_flight_across_a_data_mod_switch_is_not_memoized(fake_install, tmp_path) -> None:
+    from descape import game_dataset
+
+    executor = _ManualExecutor()
+    loader, got = _loader(executor)
+    loader.request([_ARCHER, _MILITIA], 32)
+    game_dataset.set_data_mod(_data_mod(tmp_path))
+    executor.run(0)
+    _pump()
+    assert got == []
+    assert loader.cached(_ARCHER, 32) == (False, None)
+    assert len(executor.submitted) == 1, "nothing from the old request is decoded after the switch"
 
 
 def test_with_no_install_everything_resolves_to_none_at_once() -> None:
@@ -331,3 +386,103 @@ def test_a_narrow_thumb_is_centred_on_a_square_icon() -> None:
 
 def test_no_sprite_gives_no_thumb(facing_install) -> None:
     assert catalog_thumbs.sprite_thumb(_TREE, 32) is None
+
+
+# -- GH #372: a portrait by the owner's civ -------------------------------------------
+
+_BRITONS = 1  # no Archer portrait of its own: folds to GAIA's
+
+
+def _civ_loader(executor):
+    conftest.ensure_qapp()
+    loader = catalog_thumbs.ThumbLoader(executor=executor)
+    got = []
+    loader.ready.connect(lambda const, px, icon, civ: got.append((const, px, civ, icon)))
+    return loader, got
+
+
+def test_each_civ_with_its_own_portrait_memoizes_apart(archer_civ_portrait) -> None:
+    civ = archer_civ_portrait
+    executor = _ManualExecutor()
+    loader, got = _civ_loader(executor)
+    loader.request([_ARCHER], 32, civ=civ)
+    assert executor.icons() == [conftest.CIV_PORTRAIT_ICON], "the worker decodes the civ's own icon"
+    executor.run(0)
+    _pump(lambda: len(got) == 1)
+    loader.request([_ARCHER], 32, civ=_BRITONS)
+    assert executor.icons() == [conftest.CIV_PORTRAIT_ICON, 17]
+    executor.run(1)
+    _pump(lambda: len(got) == 2)
+    assert [(const, civ_) for const, _px, civ_, _icon in got] == [(_ARCHER, civ), (_ARCHER, None)], "ready carries the folded civ"
+    loader.request([_ARCHER], 32)
+    loader.request([_ARCHER], 32, civ=_BRITONS + 1)
+    assert len(executor.submitted) == 2, "GAIA and every civ without its own share one entry"
+    assert loader.cached(_ARCHER, 32, civ)[0] and loader.cached(_ARCHER, 32)[0]
+    assert loader.source(_ARCHER, 32, civ) == loader.source(_ARCHER, 32, _BRITONS) == "icon"
+    blue, red = (loader.cached(_ARCHER, 32, c)[1].pixmap(32).toImage().pixelColor(16, 16) for c in (civ, None))
+    assert (blue.blue(), red.red()) == (200, 200)
+
+
+def test_a_civ_portrait_from_an_older_install_is_dropped(archer_civ_portrait) -> None:
+    executor = _ManualExecutor()
+    loader, got = _civ_loader(executor)
+    loader.request([_ARCHER], 32, civ=archer_civ_portrait)
+    asset_source.clear_install_caches()
+    executor.run(0)
+    _pump()
+    assert got == []
+    assert loader.cached(_ARCHER, 32, archer_civ_portrait) == (False, None)
+
+
+def test_tinted_puts_the_player_colour_into_the_regions_shading() -> None:
+    """GH #372: DE keeps the region's shading under alpha 0; the game tints it, darker in a fold, and the art stays over it."""
+    arr = np.zeros((2, 2, 4), np.uint8)
+    arr[0, 0] = (255, 255, 255, 0)  # full-bright shading
+    arr[0, 1] = (64, 64, 64, 0)  # a fold
+    arr[1, 0] = (10, 20, 30, 255)  # art
+    arr[1, 1] = (200, 200, 200, 128)  # an edge: half art, half tint
+    out = catalog_thumbs.tinted(arr, (200, 0, 100))
+    assert out[0, 0].tolist() == [255, 56, 172, 255]
+    assert out[0, 1].tolist() == [112, 20, 66, 255]
+    assert out[1, 0].tolist() == [10, 20, 30, 255]
+    assert out[1, 1].tolist() == [219, 123, 171, 255]
+    assert out[0, 0, 0] > out[0, 0, 1] and out[0, 1, 0] > out[0, 1, 1], "the player colour shows in both"
+
+
+def test_tinted_gives_a_region_without_shading_the_flat_colour() -> None:
+    """Some mod portraits leave the region black under alpha 0: the tint would be about 23% of the colour."""
+    arr = np.zeros((2, 2, 4), np.uint8)
+    arr[1, 0] = (10, 20, 30, 255)
+    arr[1, 1] = (200, 200, 200, 128)
+    out = catalog_thumbs.tinted(arr, (200, 0, 100))
+    assert out[0, 0].tolist() == out[0, 1].tolist() == [200, 0, 100, 255]
+    assert out[1, 0].tolist() == [10, 20, 30, 255]
+    assert out[1, 1].tolist() == [200, 100, 150, 255], "an edge over the flat colour"
+
+
+def test_the_memo_cap_counts_a_portraits_array_beside_its_icon(monkeypatch) -> None:
+    """GH #372 keeps the decoded array for tinted(); a sprite keeps none."""
+    loader = catalog_thumbs.ThumbLoader(executor=_ManualExecutor())
+    portrait = np.zeros((32, 32, 4), np.uint8)
+    icon_bytes = 32 * 32 * 4
+    monkeypatch.setattr(catalog_thumbs, "MEMO_BYTES_CAP", 3 * (icon_bytes + portrait.nbytes))
+    for const in range(4):
+        loader._finish((const, 32, None), portrait.copy(), "icon")
+    assert loader._memo_bytes == 3 * (icon_bytes + portrait.nbytes)
+    assert not loader.cached(0, 32)[0] and loader.cached(3, 32)[0], "the oldest went"
+    loader._finish((9, 32, None), portrait.copy(), "sprite")
+    assert loader.art(9, 32) is None and loader._memo_sizes[(9, 32, None)] == icon_bytes
+
+
+def test_a_downscaled_portrait_keeps_the_shading_under_its_transparent_region(tmp_path) -> None:
+    """An RGBA resize premultiplies and would turn the region black."""
+    from PIL import Image
+
+    units = tmp_path / "AoE2DE" / "widgetui" / "textures" / "ingame" / "units"
+    units.mkdir(parents=True)
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 255))
+    image.paste((240, 240, 240, 0), (16, 16, 48, 48))
+    image.save(units / "017_50730.DDS", format="DDS")
+    arr = asset_source.read_unit_icon_in(tmp_path / "AoE2DE", 17, False, 32, ())
+    assert arr.shape == (32, 32, 4)
+    assert arr[16, 16].tolist() == [240, 240, 240, 0]

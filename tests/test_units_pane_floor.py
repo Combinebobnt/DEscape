@@ -2,7 +2,7 @@
 page's own minimumSizeHint width (user decision 2026-10-14); every other mode
 but Terrain and Triggers keeps settings.MIN_SPLIT_PANE as its drag floor.
 Terrain's own floor (TASK-551) is tests/test_gh142_panel_widths.py's, and
-Triggers' (TASK-560) is tests/test_trigger_panel.py's.
+Triggers' (TASK-560) is tests/test_trigger_panel_object_fields.py's.
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
+from testkit.qt_window import panel_width, set_panel_width
 
 import conftest
 
@@ -24,10 +26,9 @@ BLANK_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "golden_blank_120
 def _drag_left_to(window, width: int) -> int:
     from PyQt5.QtWidgets import QApplication
 
-    total = sum(window.content_splitter.sizes())
-    window.content_splitter.setSizes([width, total - width])
+    set_panel_width(window, width)
     QApplication.processEvents()
-    return window.content_splitter.sizes()[0]
+    return panel_width(window)
 
 
 def test_units_mode_floors_the_left_pane_at_the_units_page_and_leaving_restores_it() -> None:
@@ -52,6 +53,6 @@ def test_units_mode_floors_the_left_pane_at_the_units_page_and_leaving_restores_
 
         window.mode_combo.setCurrentText("Units")
         QApplication.processEvents()
-        assert window.content_splitter.sizes()[0] >= needed, "re-entering Units must lift a narrow pane"
+        assert panel_width(window) >= needed, "re-entering Units must lift a narrow pane"
     finally:
         conftest.close_window(window)

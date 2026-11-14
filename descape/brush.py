@@ -180,7 +180,7 @@ def brush_tiles(
     clamp) so a footprint straddling an edge can never wrap into the next
     row -- same hazard fill_tools.py's neighbor clamp guards against. Works
     for map_width != map_height even though nothing in this app can
-    currently open such a map (see viewer.py's non-square load-time note);
+    currently open such a map (see viewer_file.py's non-square load-time note);
     this function's own contract doesn't depend on that."""
     return [
         (cx + dx, cy + dy)

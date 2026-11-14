@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from test_mod_graphics import PID, _mod
 
-from descape import asset_source, debug_log, mod_graphics, render, unit_sprites
+from descape import asset_source, debug_log, mod_graphics, render_sprites, unit_sprites
 from descape.sld_decoder import SLDFile
 
 import conftest
@@ -413,9 +413,9 @@ def test_the_sprite_memo_invariants_change_with_the_flag():
     from types import SimpleNamespace
 
     mm = SimpleNamespace(map_width=4, map_height=4)
-    before = render._sprite_memo_invariants(None, mm, None, False, 1.0, False)
+    before = render_sprites._sprite_memo_invariants(None, mm, None, False, 1.0, False)
     unit_sprites.set_hi_res(True)
-    assert render._sprite_memo_invariants(None, mm, None, False, 1.0, False) != before
+    assert render_sprites._sprite_memo_invariants(None, mm, None, False, 1.0, False) != before
 
 
 _GUI = [pytest.mark.gui, pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")]
@@ -472,8 +472,10 @@ def test_a_window_opened_at_enhanced_turns_the_flag_on(qtbot, monkeypatch, dlc):
 @pytest.mark.parametrize("ror", [True, False], ids=["ror-x2", "no-ror-x2"])
 @pytest.mark.parametrize("dlc", [True, False], ids=["dlc", "no-dlc"])
 def test_the_settings_say_whether_the_dlc_was_detected(qtbot, monkeypatch, tmp_path, dlc, ror):
+    from descape import game_dataset, games
+
     _dlc(monkeypatch, dlc)
-    monkeypatch.setattr(unit_sprites, "ror_x2_art_installed", lru_cache(maxsize=1)(lambda: ror))
+    monkeypatch.setattr(unit_sprites, "own_x2_art_installed", lambda game=None: ror and (game or game_dataset.game()) is games.ROR)
     monkeypatch.setattr(asset_source, "get_install_path", lambda: tmp_path)
     dialog, window = conftest.dialog_and_window()
     try:
@@ -496,17 +498,21 @@ def test_the_dlc_probe_is_the_villagers_x2_file(install, monkeypatch):  # noqa: 
     assert unit_sprites.x2_art_installed()
 
 
-def test_the_ror_probe_is_any_x2_file_in_the_ror_folder(install):  # noqa: F811
-    from descape import game_dataset
+def test_the_own_x2_probe_is_any_x2_file_in_the_games_own_root(install):  # noqa: F811
+    from descape import game_dataset, games
 
-    ror_graphics = game_dataset.ror_root(asset_source.get_install_path()) / unit_sprites.GRAPHICS_SUBPATH
+    ror_graphics = games.ROR.root(asset_source.get_install_path()) / unit_sprites.GRAPHICS_SUBPATH
     ror_graphics.mkdir(parents=True)
     (ror_graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
-    assert not unit_sprites.ror_x2_art_installed()
+    assert not unit_sprites.own_x2_art_installed(games.ROR)
     (ror_graphics / f"{X2_NAME}.sld").write_bytes(build_sld(4, canvas=16))
+    assert not unit_sprites.own_x2_art_installed(games.ROR), "cached until the art caches clear"
     unit_sprites.clear_caches()
-    assert unit_sprites.ror_x2_art_installed()
+    assert unit_sprites.own_x2_art_installed(games.ROR)
     assert not unit_sprites.x2_art_installed(), "RoR's x2 is not the DLC"
+    assert not unit_sprites.own_x2_art_installed(), "AoE2 is active, and its root is the install"
+    game_dataset.set_active(game_dataset.ROR)
+    assert unit_sprites.own_x2_art_installed(), "the default is the active game"
 
 
 @_GUI[0]
@@ -515,13 +521,14 @@ def test_the_ror_probe_is_any_x2_file_in_the_ror_folder(install):  # noqa: F811
 def test_the_status_log_names_ror_art_under_ror(monkeypatch, ror, install):  # noqa: F811
     """RoR ships its own x2 (GH #241 test issue, 2026-10-20): under RoR the
     log says so rather than that the DLC is missing."""
-    from descape import game_dataset, settings, viewer
+    from descape import game_dataset, settings, viewer_common
 
     _dlc(monkeypatch, False)
-    monkeypatch.setattr(unit_sprites, "ror_x2_art_installed", lru_cache(maxsize=1)(lambda: True))
-    monkeypatch.setattr(game_dataset, "is_ror", lambda: ror)
+    # Every game with its own root ships x2 here; AoE2's root is the install, which has none.
+    monkeypatch.setattr(unit_sprites, "own_x2_art_installed", lambda game=None: (game or game_dataset.game()).root_subpath is not None)
+    game_dataset.set_active(game_dataset.ROR if ror else game_dataset.AOE2)
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX)
-    suffix = viewer._sync_hi_res()
+    suffix = viewer_common._sync_hi_res()
     assert unit_sprites.hi_res()
     assert ("Return of Rome high-resolution unit art on" in suffix) is ror
     assert ("DLC not installed" in suffix) is not ror
@@ -531,11 +538,11 @@ def test_the_status_log_names_ror_art_under_ror(monkeypatch, ror, install):  # n
 @_GUI[1]
 def test_the_status_log_names_no_unit_art_without_an_install(monkeypatch):
     """With no install there is no unit art at all, so Enhanced does not blame a missing DLC."""
-    from descape import settings, viewer
+    from descape import settings, viewer_common
 
     monkeypatch.setattr(asset_source, "get_install_path", lambda: None)
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_MAX)
-    assert viewer._sync_hi_res() == ""
+    assert viewer_common._sync_hi_res() == ""
     assert unit_sprites.hi_res()
 
 
@@ -547,11 +554,11 @@ def test_default_and_above_shrink_smoothly(monkeypatch, quality, smooth, native)
     """GH #254: box-filtered shrinking from Default up, the nearest gather at
     Potato and below, set beside the x2 flag. Never on numpy (TASK-440's
     load budget)."""
-    from descape import composite_backend, settings, viewer
+    from descape import composite_backend, settings, viewer_common
 
     monkeypatch.setattr(settings, "_graphics_quality", quality)
     monkeypatch.setattr(composite_backend, "native", object() if native else None)
-    viewer._sync_hi_res()
+    viewer_common._sync_hi_res()
     assert unit_sprites.smooth_shrink() is (smooth and native)
     assert unit_sprites.hi_res() is (quality == settings.GRAPHICS_QUALITY_MAX)
 

@@ -21,12 +21,13 @@ from pathlib import Path
 import pytest
 from test_convert_splice_corpus import VIEW_PX, _assert_matches_fresh, _footprint, _make_cache, _mips
 
-from descape import asset_source, render, render_cache
+from descape import asset_source, render_cache_splice, render_units
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
+from descape.render_bbox import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
 from descape.render_cache import IsoChunkCache
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
+from testkit.render_family import set_render_cache_global
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 FILES = (
@@ -39,7 +40,7 @@ BRUSH = 9
 
 def _shared_tile_units(scenario, cache) -> list:
     """Every filter-visible, on-map unit sharing a footprint or own tile with another."""
-    own_index = render.unit_own_tile_index(scenario)
+    own_index = render_units.unit_own_tile_index(scenario)
     out = []
     for units in scenario.unit_manager.units:
         for u in units:
@@ -53,7 +54,7 @@ def _shared_tile_units(scenario, cache) -> list:
 
 def _over_cap(scenario, cache, tiles) -> bool:
     """Whether a refused raise was refused for the cache's component cap alone."""
-    out = render_cache._elevation_splices(scenario, cache.units_by_tile, cache.unit_filter, tiles, 10**9)
+    out = render_cache_splice._elevation_splices(scenario, cache.units_by_tile, cache.unit_filter, tiles, 10**9)
     return out is not None and len(out) > cache.elevation_splice_cap()
 
 
@@ -75,14 +76,14 @@ def test_random_shared_tile_raises_splice_exactly_like_a_fresh_cache(name, style
     assert candidates, f"{name} has no unit on a shared tile -- vacuous"
 
     calls = []
-    real_splices = render_cache._elevation_splices
+    real_splices = render_cache_splice._elevation_splices
 
     def recorded(*args, **kwargs):
         out = real_splices(*args, **kwargs)
         calls.append((args[3], out))
         return out
 
-    monkeypatch.setattr(render_cache, "_elevation_splices", recorded)
+    set_render_cache_global(monkeypatch, "_elevation_splices", recorded)
     stats = {"spliced": 0, "units": 0, "seeds": 0, "over_cap": 0, "headroom": 0}
 
     for r in range(ROUNDS):

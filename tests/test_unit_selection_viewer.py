@@ -1269,7 +1269,7 @@ def test_a_settings_swatch_click_reinks_gaia_the_fill_and_the_marquee(monkeypatc
     from PyQt5.QtWidgets import QColorDialog
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _owner_window()
     dialog = SettingsDialog(window)

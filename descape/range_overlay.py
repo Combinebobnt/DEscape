@@ -1,7 +1,7 @@
 """Qt-free geometry for View > Range Rings -- GH #49's base range ring.
 
 Split the way grid_overlay already is: this module decides WHERE the ring
-goes, map_view's QGraphicsPathItem decides how it looks. Nothing here imports
+goes, map_view_units.py's QGraphicsPathItem decides how it looks. Nothing here imports
 PyQt5.
 
 Nothing here draws an ellipse. The ring is a true circle in TILE space, and
@@ -202,7 +202,7 @@ def ring_points(
     """The ring around continuous map point (cx, cy) as a polygon in scene
     space, plain tuples so this module stays Qt-free (unit_pick.unit_polygons'
     own convention). Implicitly closed: the last point joins the first, and
-    map_view's _add_closed_polygons() is what closes the subpath.
+    map_view_units._add_closed_polygons() is what closes the subpath.
 
     Flat's scene space is (mx * tile_px, my * tile_px) (grid_axes()' own flat
     branch), so the ring is a TRUE circle there and Flat + Isometric's view

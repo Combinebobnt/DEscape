@@ -14,7 +14,19 @@ import pytest
 from test_smx_decoder import _PROFILE, _REQUIRE, DRAW, _file, _frame
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- fixture
 
-from descape import asset_source, dat_derive, game_dataset, mod_graphics, render, slp_decoder, unit_sprites
+from descape import (
+    asset_source,
+    dat_derive,
+    game_dataset,
+    games,
+    mod_graphics,
+    render_bbox,
+    render_flat,
+    render_iso,
+    render_sloped,
+    slp_decoder,
+    unit_sprites,
+)
 from descape.scenario_io import load_map_and_units
 
 import conftest
@@ -78,6 +90,21 @@ def test_priority_order_formats_case_and_exclusions(tmp_path, monkeypatch):
     assert mod_graphics.mods_with_art()[0].excluded
     assert not mod_graphics.mods_with_art()[0].drawn
     assert not mod_graphics.set_excluded({"subscribed//1_High"})
+
+
+def test_drawn_roots_are_the_drawn_mods_folders_in_order(tmp_path, monkeypatch):
+    """GH #363: a data mod's portraits are looked up in these, after its own folder."""
+    profile = _tree(tmp_path, monkeypatch)
+    mods = profile / PID / "mods"
+    assert mod_graphics.drawn_roots() == [], "off"
+    mod_graphics.set_enabled(True)
+    high, low, off = (mods / "subscribed" / name for name in ("1_High", "2_Low", "3_Off"))
+    loose, unlisted = mods / "local" / "Loose", mods / "subscribed" / "9_Unlisted"
+    assert mod_graphics.drawn_roots() == [high, low, loose, unlisted]
+    mod_graphics.set_excluded({"subscribed//1_High"})
+    assert mod_graphics.drawn_roots() == [low, loose, unlisted], "an opt-out"
+    mod_graphics.set_included({"subscribed//3_Off"})
+    assert mod_graphics.drawn_roots() == [low, off, loose, unlisted], "the opt-in of a mod disabled in game"
 
 
 def _drawn() -> dict[str, bool]:
@@ -144,6 +171,98 @@ def test_a_mod_flipped_in_the_game_keeps_the_choice_for_its_new_state(tmp_path, 
     mod_graphics.clear()
     assert _drawn()["subscribed//3_Off"] and _drawn()["subscribed//2_Low"]
     assert mod_graphics.resolve_sprite("n_rock_x1")[0].read_bytes() == b"off"
+
+
+def _rewrite_status(profile: Path, edit=None) -> None:
+    """mod-status.json rewritten through `edit(mods)`, its mtime a whole second on (TASK-438)."""
+    import os
+
+    status_file = profile / PID / "mods" / "mod-status.json"
+    before = status_file.stat().st_mtime_ns
+    status = json.loads(status_file.read_text())
+    if edit is not None:
+        edit(status["Mods"])
+    status_file.write_text(json.dumps(status))
+    ns = before + 1_000_000_000
+    os.utime(status_file, ns=(ns, ns))
+
+
+def _set_mod(**fields):
+    def edit(mods):
+        for mod in mods:
+            mod.update(fields.get(mod["Path"].split("//")[1], {}))
+    return edit
+
+
+def test_refresh_picks_up_the_game_s_mod_list_and_ignores_a_touch(tmp_path, monkeypatch):
+    """TASK-438: refresh() bumps only when what draws changed. A disable or a
+    priority swap in the game does; the game's identical rewrite at launch
+    does not; nothing scanned yet has nothing to compare."""
+    profile = _tree(tmp_path, monkeypatch)
+    mod_graphics.set_enabled(True)
+    assert not mod_graphics.refresh(), "nothing scanned yet"
+    assert mod_graphics.resolve_sprite("n_tree_x1")[0].read_bytes() == b"high"
+
+    gen = mod_graphics.generation()
+    _rewrite_status(profile)
+    assert not mod_graphics.refresh() and mod_graphics.generation() == gen
+
+    _rewrite_status(profile, _set_mod(**{"1_High": {"Enabled": False}}))
+    assert mod_graphics.refresh() and mod_graphics.generation() > gen
+    assert mod_graphics.resolve_sprite("n_tree_x1")[0].read_bytes() == b"low"
+    assert not mod_graphics.refresh()
+
+    _rewrite_status(profile, _set_mod(**{"1_High": {"Enabled": True, "Priority": 2}, "2_Low": {"Priority": 1}}))
+    assert mod_graphics.refresh()
+    assert mod_graphics.resolve_sprite("n_tree_x1")[0].read_bytes() == b"low"
+    assert [m.status_path for m in mod_graphics.mods_with_art()][:2] == ["subscribed//2_Low", "subscribed//1_High"]
+
+
+def test_refresh_of_a_mod_without_art_changes_the_list_not_the_art(tmp_path, monkeypatch):
+    """An AI-only mod toggled in the game is a list change (Personality's), not an art one: no bump."""
+    profile = _tree(tmp_path, monkeypatch)
+    _mod(profile, "8_Ai", {"ai/x.ai": b""})
+    _rewrite_status(profile, lambda mods: mods.append({"Enabled": False, "Path": "subscribed//8_Ai", "Priority": 8}))
+    mod_graphics.set_enabled(True)
+    mod_graphics.mods_with_art()
+    gen = mod_graphics.generation()
+    _rewrite_status(profile, _set_mod(**{"8_Ai": {"Enabled": True}}))
+    assert mod_graphics.refresh() == {mod_graphics.MODS}
+    assert mod_graphics.generation() == gen
+    _rewrite_status(profile, _set_mod(**{"2_Low": {"Enabled": False}}))
+    assert mod_graphics.refresh() == {mod_graphics.MODS, mod_graphics.ART}
+    assert mod_graphics.generation() > gen
+
+
+def test_refresh_of_a_portrait_only_mod_changes_the_art(tmp_path, monkeypatch):
+    """GH #363: a mod shipping only portraits (a widgetui/, no sprite or
+    texture) draws a data mod's portraits, so toggling it is an art change."""
+    profile = _tree(tmp_path, monkeypatch)
+    portraits = profile / PID / "mods" / "subscribed" / "8_Portraits" / "widgetui" / "textures" / "ingame" / "units"
+    portraits.mkdir(parents=True)
+    (portraits / "001_50730.DDS").write_bytes(b"")
+    _rewrite_status(profile, lambda mods: mods.append({"Enabled": False, "Path": "subscribed//8_Portraits", "Priority": 8}))
+    mod_graphics.set_enabled(True)
+    mod_graphics.mods_with_art()
+    gen = mod_graphics.generation()
+    _rewrite_status(profile, _set_mod(**{"8_Portraits": {"Enabled": True}}))
+    assert mod_graphics.refresh() == {mod_graphics.MODS, mod_graphics.ART}
+    assert mod_graphics.generation() > gen
+
+
+def test_refresh_picks_up_a_new_mod_folder(tmp_path, monkeypatch):
+    import os
+
+    profile = _tree(tmp_path, monkeypatch)
+    mod_graphics.set_enabled(True)
+    assert mod_graphics.resolve_sprite("n_new_x1") is None
+    subscribed = profile / PID / "mods" / "subscribed"
+    before = subscribed.stat().st_mtime_ns
+    _mod(profile, "5_New", {"drs/graphics/n_new_x1.smx": b"new"})
+    ns = before + 1_000_000_000
+    os.utime(subscribed, ns=(ns, ns))
+    assert mod_graphics.refresh()
+    assert mod_graphics.resolve_sprite("n_new_x1")[0].read_bytes() == b"new"
 
 
 def test_palx_alpha_and_pal_fourth_column(tmp_path):
@@ -384,12 +503,12 @@ def test_no_eye_candy_const_that_draws_without_mods_is_lost_to_a_blank_mod_frame
 def test_sprite_reach_px_keeps_its_side_order(monkeypatch):
     from types import SimpleNamespace
 
-    from descape import render
+    from descape import render_bbox
 
     for name, value in (("LEFT", 96), ("RIGHT", 192), ("UP", 288), ("DOWN", 384)):
         monkeypatch.setattr(unit_sprites, f"MAX_SPRITE_REACH_{name}", value)
     proj = SimpleNamespace(half_w=48)  # sprite_scale 1.0
-    assert render._sprite_reach_px(proj) == (97, 289, 193, 385)  # (left, up, right, down) at scale 1
+    assert render_bbox._sprite_reach_px(proj) == (97, 289, 193, 385)  # (left, up, right, down) at scale 1
 
 
 def test_mod_reach_widens_sprite_reach(tmp_path, monkeypatch):
@@ -479,6 +598,46 @@ def test_switching_to_no_data_mod_drops_its_drawn_stem(tmp_path, monkeypatch):
     game_dataset.set_data_mod(None)
     assert unit_sprites._native_frame(MOD_STEM, 0) is None
     assert unit_sprites.sprite_for(GRASS, 0.0, 0, 32) is None
+
+
+def _lacking_stem_draws() -> tuple[bool, ...]:
+    """Whether each cache path draws MOD_STEM: native, scaled, Flat's icon, and the x2 frame."""
+    return (
+        unit_sprites._native_frame(MOD_STEM, 0) is not None,
+        unit_sprites.sprite_for(GRASS, 0.0, 0, 32) is not None,
+        unit_sprites.icon_for(GRASS, 0.0, 0, 16, 16) is not None,
+        unit_sprites._x2_native_frame(MOD_STEM, 0) is not None,
+    )
+
+
+@pytest.mark.parametrize("start_with_mod", [False, True])
+def test_a_data_mod_switch_redraws_a_stem_the_install_lacks(tmp_path, monkeypatch, start_with_mod):
+    """TASK-478 keeps decoded art across a data-mod switch, but no draw of a stem only a data mod's art draws."""
+    _data_mod_art(tmp_path, monkeypatch, data_mod=start_with_mod, x2=_numbered(20, 3, width=4))
+    _mod_art_on()
+    entry = {"file_name": MOD_STEM, "angle_count": 1, "mirroring_mode": 0, "frame_count": 1}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {GRASS: entry})
+    unit_sprites.clear_caches()
+    assert _lacking_stem_draws() == (start_with_mod,) * 4
+    game_dataset.set_data_mod(None if start_with_mod else _stock_tables(tmp_path))
+    assert _lacking_stem_draws() == (not start_with_mod,) * 4
+
+
+def test_a_data_mod_switch_forgets_only_lacking_stems_mod_blank_mark(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, data_mod=False)
+    (unit_sprites._graphics_dir() / "n_install_only_x1.sld").write_bytes(b"")  # listed; load_sld is the fake
+    unit_sprites._mod_blank_stems.update({MOD_STEM, "n_install_only_x1"})
+    game_dataset.set_data_mod(_stock_tables(tmp_path))
+    assert unit_sprites._mod_blank_stems == {"n_install_only_x1"}
+
+
+def test_a_data_mod_switch_drops_every_draw_when_the_graphics_folder_will_not_list(tmp_path, monkeypatch):
+    _data_mod_art(tmp_path, monkeypatch, data_mod=False)
+    monkeypatch.setattr(unit_sprites, "_install_sld_names", lambda directory: None)
+    unit_sprites._native_cache.put(("n_install_only_x1", 0), "kept?")
+    unit_sprites._mod_blank_stems.add("n_install_only_x1")
+    game_dataset.set_data_mod(_stock_tables(tmp_path))
+    assert not unit_sprites._native_cache and not unit_sprites._mod_blank_stems
 
 
 @pytest.mark.parametrize("why", ["no data mod", "Mod Art off", "opted out"])
@@ -625,8 +784,8 @@ def test_a_pending_reach_repaints_the_whole_map(monkeypatch):
 
     monkeypatch.setattr(unit_sprites, "_active_mod_reach", lambda: (unit_sprites.PENDING_REACH,) * 4)
     scenario, dirty, elevations, proj = bbox._edited_scenario()
-    rect = render.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
-    assert rect == (0, 0, *render._canvas_pixel_dims(proj))
+    rect = render_bbox.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
+    assert rect == (0, 0, *render_bbox._canvas_pixel_dims(proj))
 
 
 def test_variant_dispatch_counts_a_data_mods_own_frames(tmp_path, monkeypatch):
@@ -706,7 +865,7 @@ def test_an_unreadable_return_of_rome_install_texture_still_raises(tmp_path, mon
 
     try:
         with game_dataset.activated(game_dataset.ROR):
-            own = game_dataset.ror_root(install) / asset_source.TERRAIN_TEXTURE_SUBPATH / "ror_only.dds"
+            own = games.ROR.root(install) / asset_source.TERRAIN_TEXTURE_SUBPATH / "ror_only.dds"
             own.parent.mkdir(parents=True)
             own.write_bytes(b"DDS ")
             with pytest.raises(OSError):
@@ -816,10 +975,10 @@ def test_wide_mod_art_widens_the_edit_bbox_to_cover_itself(tmp_path, monkeypatch
     assert unit_sprites.sprite_reach()[:2] == (width // 2, width // 2)
 
     scenario, dirty, elevations, proj = bbox._edited_scenario()
-    widened = render.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
+    widened = render_bbox.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
     with monkeypatch.context() as m:
         m.setattr(unit_sprites, "_active_mod_reach", lambda: (0, 0, 0, 0))
-        plain = render.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
+        plain = render_bbox.dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_sprites=True)
     for elevation in bbox.OBSERVED_ELEVATIONS:
         rect = bbox._sprite_rect(scenario, proj, elevation)
         assert rect[2] - rect[0] > bbox.SPRITE_CANVAS, "the mod's wide art must be what draws"
@@ -836,9 +995,9 @@ def _renders(scenario) -> dict[str, np.ndarray]:
     """Full sprite renders in every style, after the apply path's own cache drop."""
     asset_source.clear_art_caches()
     return {
-        "flat": render.overlay_units(render.render_terrain(scenario), scenario, with_sprites=True),
-        "stepped": render.render_terrain_iso_with_proj(scenario, with_sprites=True)[0],
-        "sloped": render.render_terrain_sloped_with_proj(scenario, with_sprites=True)[0],
+        "flat": render_flat.overlay_units(render_flat.render_terrain(scenario), scenario, with_sprites=True),
+        "stepped": render_iso.render_terrain_iso_with_proj(scenario, with_sprites=True)[0],
+        "sloped": render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=True)[0],
     }
 
 

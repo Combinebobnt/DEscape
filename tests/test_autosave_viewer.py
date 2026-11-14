@@ -221,11 +221,11 @@ def test_save_as_discards_the_untitled_slots_it_was_autosaved_under(tmp_path, mo
     clears _untitled BEFORE returning, so a freshly-computed key would name
     the new path, discard nothing, and leak the untitled slots into Recover
     under a stale "Untitled" label -- while still looking green."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     dest = tmp_path / "named.aoe2scenario"
     monkeypatch.setattr(
-        viewer_module.QFileDialog,
+        QFileDialog,
         "getSaveFileName",
         staticmethod(lambda *args, **kwargs: (str(dest), "")),
     )
@@ -340,7 +340,7 @@ def _copy_elsewhere(tmp_path) -> Path:
 
 
 def test_the_saving_tab_controls_persist_and_re_arm_the_timer(tmp_path) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.blank_window(load=False)
     dialog = SettingsDialog(window)
@@ -376,9 +376,9 @@ def test_the_saving_tab_controls_persist_and_re_arm_the_timer(tmp_path) -> None:
 
 
 def _pick_folder(monkeypatch, folder: Path) -> None:
-    from descape import viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
-    monkeypatch.setattr(viewer_module.QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
 
 
 def _custom_slots(folder: Path) -> list[Path]:
@@ -386,7 +386,7 @@ def _custom_slots(folder: Path) -> list[Path]:
 
 
 def test_browse_persists_the_folder_and_the_next_tick_writes_there(tmp_path, monkeypatch) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     custom = tmp_path / "custom"
     custom.mkdir()
@@ -429,7 +429,7 @@ def test_after_use_default_the_next_tick_writes_to_the_config_folder_and_recover
     """
     from PyQt5.QtCore import Qt
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     custom = tmp_path / "custom"
     custom.mkdir()
@@ -462,7 +462,8 @@ def test_after_use_default_the_next_tick_writes_to_the_config_folder_and_recover
 
 
 def test_a_subscribed_pick_is_refused_and_leaves_the_setting(tmp_path, monkeypatch) -> None:
-    from descape.viewer import SettingsDialog, status_color
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer_common import status_color
 
     subscribed = tmp_path / "mods" / "subscribed" / "12345"
     subscribed.mkdir(parents=True)

@@ -2,7 +2,7 @@
 plan). Its Step 0 probe dropped the separate in-op splice cap (an uncapped
 splice cost ~0.9x the wholesale rebuild, not <= 0.5x) and chose two changes:
 
-- render._dirty_screen_bbox() reads a dirty set of BBOX_ARRAY_PATH_MIN_TILES
+- render_bbox._dirty_screen_bbox() reads a dirty set of BBOX_ARRAY_PATH_MIN_TILES
   or more as index arrays (_dirty_seed_mask). It must give exactly the loop's
   rect, elevation_changed set and written elevations, on Stepped's radii and
   Sloped's, with and without sprites, units_changed and flatten.
@@ -19,10 +19,13 @@ import pytest
 from test_elevation_unit_splice import BASE_ELEVATION, _place
 from test_invalidate_units_splice import MILL_CONST, WALL_CONST, traced  # noqa: F401 -- traced is a fixture
 
-from descape import debug_log, perf_trace, render, render_cache
-from descape.render import _canvas_pixel_dims, dirty_screen_bbox_iso, elevations_and_proj, tile_pixels_for_map
+from descape import debug_log, perf_trace, render_bbox
+from descape.render_bbox import _canvas_pixel_dims, dirty_screen_bbox_iso
 from descape.render_cache import IsoChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import set_render_cache_global, set_render_global
 
 from test_unit_sprites import CONST as SPRITE_CONST
 
@@ -68,10 +71,10 @@ def _edit(mm, dirty, rng: random.Random, top: int = 15) -> None:
 
 
 def _run(monkeypatch, threshold, scenario, dirty, pre, proj, **kw):
-    monkeypatch.setattr(render, "BBOX_ARRAY_PATH_MIN_TILES", threshold)
+    set_render_global(monkeypatch, "BBOX_ARRAY_PATH_MIN_TILES", threshold)
     elevations = pre.copy()
     changed: set = set()
-    rect = render._dirty_screen_bbox(
+    rect = render_bbox._dirty_screen_bbox(
         scenario, dirty, elevations, proj, _canvas_pixel_dims(proj), elevation_changed=changed, **kw
     )
     return rect, changed, elevations
@@ -127,14 +130,14 @@ def test_the_array_path_starts_at_its_threshold(monkeypatch):
     scenario = _bumpy_scenario(4)
     pre, proj = elevations_and_proj(scenario)
     calls = []
-    real = render._dirty_seed_mask
+    real = render_bbox._dirty_seed_mask
 
     def spy(*args, **kwargs):
         calls.append(len(args[1]))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(render, "_dirty_seed_mask", spy)
-    n = render.BBOX_ARRAY_PATH_MIN_TILES
+    set_render_global(monkeypatch, "_dirty_seed_mask", spy)
+    n = render_bbox.BBOX_ARRAY_PATH_MIN_TILES
     for size in (n - 1, n):
         dirty_screen_bbox_iso(scenario, list(range(size)), pre.copy(), proj)
     assert calls == [n]
@@ -145,7 +148,7 @@ def test_the_array_path_starts_at_its_threshold(monkeypatch):
 
 def _unit_cache(monkeypatch, cap: int):
     """A Stepped cache over four lone units on raised ground, cap patched."""
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", cap)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", cap)
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     mm = scenario.map_manager
     for t in mm.terrain:

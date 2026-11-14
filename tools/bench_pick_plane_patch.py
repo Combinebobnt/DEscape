@@ -43,13 +43,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    composite_ids_rect_sloped,
-    dirty_screen_bbox_sloped,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_sloped
 from descape.render_cache import DEFAULT_CHUNK_PX, SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import composite_ids_rect_sloped, sloped_elevations_and_proj
 from descape.scenario_io import load_map_and_units
 
 # Area fractions of one full plane to time; 1.0 is the full-plane rebuild

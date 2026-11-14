@@ -6,7 +6,7 @@ Reproduces two existing widgets' exact behaviour with their domain coupling
 lifted out. descape/constant_picker.py's CatalogLineEdit subclasses the line
 edit for a catalog field (ids rendered bare), and a tech field's Browse is
 ValueBrowseDialog as is; a converted large-ENUM field in
-descape/trigger_panel.py is one more consumer. Object Browse and the
+descape/trigger_panel_fields.py is one more consumer. Object Browse and the
 Units-mode sidebar use descape/catalog_browser.py instead, which needs each
 entry's class. Dumb like every other widget
 in this family: no EditHistory, no model, just `committed`/`activated`

@@ -124,9 +124,9 @@ def _open_window():
 
 
 def _set_left_width(window, width: int) -> None:
-    sizes = window.content_splitter.sizes()
-    total = sum(sizes) or (width + 800)
-    window.content_splitter.setSizes([width, total - width])
+    from testkit.qt_window import set_panel_width
+
+    set_panel_width(window, width)
 
 
 def _grab_inspector(window, out_path: Path) -> Path:

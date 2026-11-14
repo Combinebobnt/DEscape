@@ -26,6 +26,7 @@ from test_terrain_units_viewer import _canvas, _fresh
 from descape.edit_history import TileDiffRecord
 from descape.terrain_palette import name_for_terrain_id
 from descape.terrain_target import CLEAR, LAYER, TERRAIN
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -301,7 +302,7 @@ def test_off_terrain_no_tool_reaches_the_unit_plan_or_a_confirm(target: str, mon
     a tile whose terrain_id did not change, so that would pass without the
     skip. Trees is ticked, the pick is a forest and the confirm threshold is
     1, so on the Terrain target every one of these would plan and ask."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     window = _window("draw", pick=_FOREST_OAK)
     try:
@@ -312,8 +313,8 @@ def test_off_terrain_no_tool_reaches_the_unit_plan_or_a_confirm(target: str, mon
         window.paint_trees_check.setChecked(True)
         window.paint_eye_candy_check.setChecked(True)
         _set_target(window, target)
-        monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 1)
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(_fail_if_called))
+        set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 1)
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(_fail_if_called))
         monkeypatch.setattr(window, "_apply_terrain_unit_plan", _fail_if_called)
 
         _stroke(window, [(1, 1), (2, 1)])
@@ -562,8 +563,6 @@ def _render_history(window, style: str, monkeypatch, before_step=None) -> None:
     Undo. The whole canvas is rendered right before each step (so a stale
     chunk cannot be hidden by an eviction) and compared with a fresh render
     right after it, failing as `<step>: ...`."""
-    import descape.viewer as viewer_module
-
     def draw():
         window._on_tool_selected("draw")
         _stroke(window, [(40, 40), (41, 40), (41, 41), (60, 12)])
@@ -574,12 +573,12 @@ def _render_history(window, style: str, monkeypatch, before_step=None) -> None:
 
     def big_fill():
         # 14,352 tiles of GRASS_1: past the lowered threshold, so Stepped and Sloped refresh wholesale.
-        monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
+        set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
         window.on_fill(0, 0, 0)
 
     def big_undo():
         window.undo()
-        monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 20_000)
+        set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", 20_000)
 
     def rectangle():
         fill()  # something for the rectangle to clear
@@ -601,11 +600,11 @@ def _render_history(window, style: str, monkeypatch, before_step=None) -> None:
 
 @pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
 def test_layer_edits_and_their_undo_match_a_fresh_render(style: str, blend_install, monkeypatch) -> None:  # noqa: F811
-    from descape import render
+    from descape import render_paint
 
     window = _render_window(style)
     try:
-        assert render.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
+        assert render_paint.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
         _render_history(window, style, monkeypatch)
         if style != "Flat":
             assert "refreshed the full map in place instead of patching" in window.status_log.toPlainText()

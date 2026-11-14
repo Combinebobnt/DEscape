@@ -1,5 +1,5 @@
 """Settings > Appearance's per-element tool overlay color grid --
-descape.viewer.SettingsDialog's swatch rows and MapView.apply_overlay_colors()'s
+descape.settings_dialog.SettingsDialog's swatch rows and MapView.apply_overlay_colors()'s
 live-push path. Same offscreen-ViewerWindow technique tests/test_fill_tool.py
 documents: QT_QPA_PLATFORM=offscreen, one shared QApplication via
 conftest.ensure_qapp(), and every window edit_history.mark_saved()'d before
@@ -36,7 +36,7 @@ def test_every_overlay_color_prefix_has_a_section_title() -> None:
     unlisted prefix still renders (falls back to section.title()), so
     nothing would fail loudly if this decayed on its own -- the Appearance
     tab would just grow an ungrouped, oddly-cased header."""
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     prefixes = {color_id.split("_", 1)[0] for color_id, _label, _default in settings.OVERLAY_COLORS}
     assert prefixes <= set(SettingsDialog._OVERLAY_SECTION_TITLES)
@@ -153,7 +153,7 @@ def test_every_overlay_opacity_group_has_exactly_one_slider_row() -> None:
     not a swatch: test_every_overlay_color_has_a_matching_swatch_row pins those."""
     from PyQt5.QtWidgets import QSlider
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     group_ids = [gid for gid, _label, _default in settings.OVERLAY_OPACITIES]
     prefixes = {color_id.split("_", 1)[0] for color_id, _label, _default in settings.OVERLAY_COLORS}
@@ -319,7 +319,7 @@ def test_apply_overlay_opacity_with_no_map_and_after_close_is_a_no_op() -> None:
 
 
 def test_the_slider_fades_live_and_persists_once_on_close() -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.blank_window()
     dialog = SettingsDialog(window)
@@ -340,7 +340,7 @@ def test_the_slider_fades_live_and_persists_once_on_close() -> None:
 
 
 def test_the_opacity_default_button_restores_and_persists_at_once() -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     settings.set_overlay_opacity("trigger_area", 30)
     window = conftest.blank_window()
@@ -434,7 +434,7 @@ def test_dragging_each_opacity_slider_fades_its_overlay_live_and_default_restore
     - releasing it persists the last value;
     - the row's Default button puts the slider, the setting and every item back at 100%.
     """
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     build, items_of = _GROUP_CASES[group_id]
     window = build()
@@ -467,7 +467,7 @@ def test_a_faded_trigger_keeps_its_dim_siblings_proportionally_dimmer() -> None:
     - after the Area opacity slider moves to 40, every area item's effective alpha (opacity x
       colour alpha) is 0.4 of what it was, so each dim/strong ratio is unchanged.
     """
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _trigger_window()
     dialog = SettingsDialog(window)
@@ -495,7 +495,7 @@ def test_an_opacity_survives_closing_and_reopening_settings_and_a_restart(monkey
     - after settings' memo is dropped (a restart), a new window's region starts at 0.35 and its
       Settings shows 35.
     """
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _region_window()
     try:

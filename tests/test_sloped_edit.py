@@ -1,5 +1,5 @@
 """Track C4's Step 3 -- Sloped's incremental edit path, the piece that makes
-Sloped editable rather than view-only. Covers descape.render.
+Sloped editable rather than view-only. Covers descape.render_bbox.
 dirty_screen_bbox_sloped(), SlopedChunkCache's corner_rise rebuild, and
 ViewerWindow._apply_dirty()'s sloped branch.
 
@@ -48,18 +48,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    SLOPE_CORNER_RULE,
-    dirty_screen_bbox_iso,
-    dirty_screen_bbox_sloped,
-    render_terrain_sloped,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
 from descape.render_cache import SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import SLOPE_CORNER_RULE, render_terrain_sloped, sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import set_render_global
 
 import conftest
 
@@ -234,13 +230,13 @@ def test_bbox_clamps_to_the_sloped_canvas_not_the_padded_one(monkeypatch):
     dirty, _changed = _edit_and_dirty(mm, ex, ey, 3)
 
     passed_dims = []
-    real = render._dirty_screen_bbox
+    real = render_bbox._dirty_screen_bbox
 
     def spy(scenario, dirty_indices, elevations, proj, canvas_dims, *args, **kwargs):
         passed_dims.append(canvas_dims)
         return real(scenario, dirty_indices, elevations, proj, canvas_dims, *args, **kwargs)
 
-    monkeypatch.setattr(render, "_dirty_screen_bbox", spy)
+    set_render_global(monkeypatch, "_dirty_screen_bbox", spy)
     sloped = dirty_screen_bbox_sloped(scenario, dirty, elevations.copy(), proj, with_units=True)
     stepped = dirty_screen_bbox_iso(scenario, dirty, elevations.copy(), proj, with_units=True)
     assert sloped is not None and stepped is not None
@@ -248,7 +244,7 @@ def test_bbox_clamps_to_the_sloped_canvas_not_the_padded_one(monkeypatch):
     assert sloped[2] <= canvas_w and sloped[3] <= canvas_h
     sloped_dims, stepped_dims = passed_dims
     assert sloped_dims == (canvas_w, canvas_h)
-    assert stepped_dims == render._canvas_pixel_dims(proj)
+    assert stepped_dims == render_bbox._canvas_pixel_dims(proj)
     assert stepped_dims[1] > sloped_dims[1], (
         "the two canvases have the same height, so this test no longer exercises the divergence"
     )

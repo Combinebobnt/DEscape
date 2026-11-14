@@ -11,6 +11,7 @@ import gc
 import pytest
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -47,19 +48,17 @@ def test_closing_the_window_unfreezes() -> None:
 
 
 def test_the_next_load_parses_with_the_previous_document_unfrozen(monkeypatch) -> None:
-    from descape import viewer
-
     window = conftest.blank_window()
     try:
         assert gc.get_freeze_count() > 0
         seen: list[int] = []
-        real = viewer.load_map_and_units
+        real = viewer_global("load_map_and_units")
 
         def recording(path):
             seen.append(gc.get_freeze_count())
             return real(path)
 
-        monkeypatch.setattr(viewer, "load_map_and_units", recording)
+        set_viewer_global(monkeypatch, "load_map_and_units", recording)
         window.load_scenario(BLANK_TEMPLATE_PATH)
         assert seen == [0], "the parse ran with the previous document still frozen"
         assert gc.get_freeze_count() > 0, "the second load did not freeze"

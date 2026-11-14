@@ -1,6 +1,6 @@
 """The Clipboard History window: pick which copied region or units Paste uses.
 
-Dumb in exactly the way trigger_panel.VariablesDialog is: it never imports
+Dumb in exactly the way trigger_panel_variables.VariablesDialog is: it never imports
 ClipboardHistory, never touches EditHistory, and reports intent through the
 callbacks it is constructed with. It is handed plain rows, not entry objects,
 so the Qt half and the collection half stay independently testable.
@@ -73,7 +73,7 @@ class ClipboardHistoryDialog(QDialog):
         self._on_clear = on_clear or (lambda *args: None)
         self._on_rename = on_rename or (lambda *args: None)
 
-        # A plain QTreeWidget, not trigger_panel's _HScrollStableTreeWidget:
+        # A plain QTreeWidget, not value_picker's _HScrollStableTreeWidget:
         # that subclass exists to cancel Qt's horizontal auto-scroll toward a
         # wide ResizeToContents column, and here the only wide column is
         # Stretch, so the case never arises.

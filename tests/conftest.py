@@ -25,6 +25,9 @@ import pytest
 
 from testkit import qt_capture, qt_window, settings_isolation
 
+# Helper modules the split test files import: rewritten like test files, so their asserts report values.
+pytest.register_assert_rewrite("trigger_panel_helpers", "unit_edit_viewer_helpers")
+
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = ROOT / "tools"
 
@@ -151,7 +154,7 @@ class ManualExecutor:
         future.set_result(fn(*args))
 
     def icons(self) -> list[int]:
-        return [args[1] for _fn, args, _future in self.submitted]
+        return [args[2] for _fn, args, _future in self.submitted]
 
 
 def settle_thumbs(loader, timeout: float = 5.0) -> None:
@@ -178,6 +181,34 @@ def fake_install(tmp_path):
     yield
     asset_source.set_install_path_override(None)
 
+# GH #372: the Archer's own portrait for one civ, a blue one beside GAIA's red 017.
+CIV_PORTRAIT_CIV = 46
+CIV_PORTRAIT_ICON = 613
+CIV_PORTRAIT_BLUE = (10, 10, 200, 255)
+
+
+@pytest.fixture()
+def archer_civ_portrait(fake_install, monkeypatch):
+    """The fake install plus a portrait 613 that the Archer (4) shows for civ 46 only."""
+    from PIL import Image
+
+    from descape import asset_source, object_catalog
+
+    units = asset_source.get_install_path() / "widgetui" / "textures" / "ingame" / "units"
+    Image.new("RGBA", (32, 32), CIV_PORTRAIT_BLUE).save(units / f"{CIV_PORTRAIT_ICON}_50730.DDS", format="DDS")
+    asset_source.clear_install_caches()
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        if section == "objects" and id_ == 4:
+            row = {**row, "civ_icons": {str(CIV_PORTRAIT_CIV): CIV_PORTRAIT_ICON}}
+        return row
+
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    return CIV_PORTRAIT_CIV
+
+
 # Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
 # sites keep working; the implementation now lives in testkit/ so tools/
 # scripts, which can't import conftest, can share it. See that module for
@@ -192,13 +223,13 @@ def rotating_install(tmp_path, monkeypatch):
     oak (349) one per variant, and each stone gate orientation (64 and its
     siblings) its own colour. Warms _wall_consts first: patching graphic_map
     before a hover would cache an empty wall set for the xdist worker."""
-    from descape import asset_source, unit_sprites, viewer
+    from descape import asset_source, unit_sprites, viewer_unit_place
     from descape.gate_orientation import orientation_siblings
 
     from test_unit_sprites import build_sld
 
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    viewer_unit_place._wall_consts.cache_clear()
+    assert viewer_unit_place._wall_consts(), "the real wall set must be cached before the patch"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     table: dict[int, dict] = {}
@@ -332,7 +363,8 @@ def shown_terrain_window(width: int = 1200, height: int = 800):
 
 def dialog_and_window():
     """An empty ViewerWindow (never shown) and a SettingsDialog built on it."""
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     ensure_qapp()
     window = _raise_on_warn(ViewerWindow())

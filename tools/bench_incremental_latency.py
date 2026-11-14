@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-touched-tile incremental redraw latency (descape.render.
+"""Per-touched-tile incremental redraw latency (descape.render_iso.
 refresh_region_iso), across every real example file. Informational only,
 matching this project's own bench_iso_backend.py/bench_iso_memory.py
 convention -- always runs, never pass/fail. One representative single-tile
@@ -24,7 +24,8 @@ sys.path.insert(0, str(ROOT))
 
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
-from descape.render import refresh_region_iso, render_terrain_iso_with_proj, tile_pixels_for_map
+from descape.render_iso import refresh_region_iso, render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 

@@ -258,7 +258,7 @@ def test_each_cancel_disarms_without_writing(how, pick) -> None:
     from PyQt5.QtCore import QEvent, QPointF, Qt
     from PyQt5.QtGui import QMouseEvent
 
-    from descape.trigger_panel import PICK_TYPE
+    from descape.trigger_panel_fields import PICK_TYPE
 
     gen = _gen()
     window = _window()
@@ -516,7 +516,7 @@ PLAYER_TWO = 2
 
 
 def _type_target(effect: int = EFFECT) -> tuple:
-    from descape.trigger_panel import PICK_TYPE
+    from descape.trigger_panel_fields import PICK_TYPE
 
     return (ARMOUR_TRIGGER, "effect", effect, TYPE_FIELD, False, PICK_TYPE)
 

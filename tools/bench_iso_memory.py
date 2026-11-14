@@ -71,7 +71,8 @@ def _child_main(args: argparse.Namespace) -> None:
 
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ISO_DIR))
-    from descape.render import render_terrain, tile_pixels_for_map
+    from descape.render_flat import render_terrain
+    from descape.render_paint import tile_pixels_for_map
     from descape.scenario_io import load_map_and_units
 
     path = ROOT / "examples" / args.file

@@ -33,7 +33,7 @@ ORIG_SUFFIX = ".orig"
 
 class BackupFailedError(WriteBlockedError):
     """Raised when a `.bak`/`.orig` copy fails partway through, leaving every
-    pre-existing backup intact. Subclasses WriteBlockedError so viewer.py's
+    pre-existing backup intact. Subclasses WriteBlockedError so viewer_file.py's
     existing WriteBlockedError handling in save()/save_as() already aborts
     correctly with no separate except clause -- shows "Save blocked", logs,
     and returns without edit_history.mark_saved(), leaving the document

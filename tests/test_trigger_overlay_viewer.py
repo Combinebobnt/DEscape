@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -198,7 +200,7 @@ def test_a_union_one_shape_past_the_cap_draws_nothing_and_says_why(monkeypatch) 
     """The union is re-derived on every unit edit, so past MAX_OVERLAY_SHAPES
     it draws nothing (never a partial union) and stops being re-derived. One
     trigger alone is never capped."""
-    import descape.viewer as viewer_module
+    from descape.viewer_trigger_overlay import MAX_OVERLAY_SHAPES
 
     window = _window()
     try:
@@ -213,15 +215,15 @@ def test_a_union_one_shape_past_the_cap_draws_nothing_and_says_why(monkeypatch) 
         ]
         panel.select_triggers(pair)
         total = len(view._trigger_shapes)
-        assert total > 0 and total < viewer_module.MAX_OVERLAY_SHAPES
+        assert total > 0 and total < MAX_OVERLAY_SHAPES
 
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", total)
         panel.select_trigger(pair[0])
         panel.select_triggers(pair)
         assert len(view._trigger_shapes) == total, "a union exactly at the cap still draws"
         assert "Trigger overlay hidden" not in window.status_log.toPlainText()
 
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", total - 1)
         panel.select_trigger(pair[0])
         panel.select_triggers(pair)
         assert view._trigger_shapes == [] and view.trigger_overlay_items() == []
@@ -229,7 +231,7 @@ def test_a_union_one_shape_past_the_cap_draws_nothing_and_says_why(monkeypatch) 
         said = window.status_log.toPlainText().splitlines()[-1]
         assert said == f"Trigger overlay hidden: the 2 selected triggers have more than {total - 1} areas, locations and units to draw"
 
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", 0)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", 0)
         panel.select_trigger(pair[0])
         assert len(view._trigger_shapes) == total // 2, "one trigger is never capped"
     finally:
@@ -239,7 +241,6 @@ def test_a_union_one_shape_past_the_cap_draws_nothing_and_says_why(monkeypatch) 
 def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(monkeypatch) -> None:
     """TASK-352: View > Show Trigger Overlay off skips the union and the cap
     message on every selection change; turning it on derives and reports."""
-    import descape.viewer as viewer_module
     from descape import trigger_geometry
 
     window = _window()
@@ -263,7 +264,7 @@ def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(
         # GH #167's ghosts default on and derive a union of their own (the twin below).
         window.trigger_ghosts_action.setChecked(False)
         window.trigger_overlay_action.setChecked(False)
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", total - 1)
         panel.select_trigger(pair[0])
         calls.clear()
         panel.select_triggers(pair)
@@ -277,7 +278,7 @@ def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(
         assert view._trigger_shapes == [] and window._trigger_overlay_ref is None
 
         window.trigger_overlay_action.setChecked(False)
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", total)
         panel.select_trigger(pair[0])
         panel.select_triggers(pair)
         window.trigger_overlay_action.setChecked(True)
@@ -290,7 +291,6 @@ def test_with_the_overlay_off_a_union_is_not_derived_or_reported_until_it_is_on(
 def test_with_the_overlay_off_and_ghosts_on_a_union_is_derived_for_the_ghosts_alone(monkeypatch) -> None:
     """GH #167's twin of the TASK-352 test: the ghosts' records are derived,
     the overlay's shapes are not, and the overlay's cap never speaks."""
-    import descape.viewer as viewer_module
     from descape import trigger_geometry
 
     window = _window()
@@ -317,7 +317,7 @@ def test_with_the_overlay_off_and_ghosts_on_a_union_is_derived_for_the_ghosts_al
 
         assert window.trigger_ghosts_action.isChecked(), "ghosts default on"
         window.trigger_overlay_action.setChecked(False)
-        monkeypatch.setattr(viewer_module, "MAX_OVERLAY_SHAPES", total - 1)
+        set_viewer_global(monkeypatch, "MAX_OVERLAY_SHAPES", total - 1)
         panel.select_trigger(pair[0])
         shape_calls.clear()
         record_calls.clear()
@@ -400,14 +400,12 @@ def test_the_run_label_reads_the_rulers_own_number() -> None:
 
 
 def test_an_unparseable_trigger_section_clears_the_overlay(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         assert window.map_view._trigger_shapes
         # A scoped context: a bare undo() would also revert the autouse settings isolation.
         with monkeypatch.context() as patch:
-            patch.setattr(viewer_module, "parse_triggers", lambda loaded: None)
+            set_viewer_global(patch, "parse_triggers", lambda loaded: None)
             window._refresh_trigger_overlay()
         assert window.map_view._trigger_shapes == [] and window.map_view.trigger_overlay_items() == []
     finally:
@@ -1284,7 +1282,7 @@ def test_the_four_trigger_overlay_swatches_recolour_the_drawing_at_once(monkeypa
     from PyQt5.QtGui import QColor
     from PyQt5.QtWidgets import QColorDialog
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     gen = _gen()
     window = _window()

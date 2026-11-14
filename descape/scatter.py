@@ -50,7 +50,7 @@ from typing import NamedTuple
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
 # render is already loaded by unit_model, so importing it here costs nothing.
-from descape.render import NON_BUILDING_SPAN, _span_start, snapped_anchor, span_anchor, unit_tile_bounds
+from descape.render_units import NON_BUILDING_SPAN, _span_start, snapped_anchor, span_anchor, unit_tile_bounds
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
@@ -73,7 +73,7 @@ def occupied_tiles(
     scenario: LoadedScenario, exclude: Iterable[Unit] = (), *, multi_tile_only: bool = False
 ) -> set[tuple[int, int]]:
     """Every on-map tile covered by an existing unit's footprint, all nine
-    player lists. Footprints come from render.unit_tile_bounds(), the same
+    player lists. Footprints come from render_units.unit_tile_bounds(), the same
     oracle unit_pick.build_index() uses; off-map units cover nothing.
 
     `exclude` (by identity) skips units about to move, so their own
@@ -104,7 +104,7 @@ def garrison_riders(scenario: LoadedScenario, hosts: Iterable[Unit]) -> list[Uni
 
     Model-free, so the Scatter dialog can ask before the unit model exists.
     A host whose reference_id is -1 holds nothing, since -1 is what every
-    ungarrisoned unit carries; viewer._garrison_referrers() has the same rule."""
+    ungarrisoned unit carries; viewer_common._garrison_referrers() has the same rule."""
     held: dict[int, list[Unit]] = {}
     for player_units in scenario.unit_manager.units:
         for unit in player_units:
@@ -237,7 +237,7 @@ def plan_scatter_units(
     Units sit at tile centres (x + 0.5) unless `jitter` > 0 opts into
     x + 0.5 +/- jitter, clamped to MAX_JITTER. Any multi-tile axis
     (tile_span(): buildings, fish, cliffs, doodads, wrecks) takes
-    render.snapped_anchor() instead, unjittered: `x + 1` on an even span, so a
+    render_units.snapped_anchor() instead, unjittered: `x + 1` on an even span, so a
     Mill or a salmon lands on the game's grid. A multi-tile pick is kept only
     when its whole footprint lies in the eligible tiles, as in
     scatter_existing_units(); otherwise it is dropped, so a "Water only"
@@ -320,7 +320,7 @@ def scatter_existing_units(
 
     Deterministic per seed for a given input order; a caller whose units
     arrive in click order sorts them first. Multi-tile units go first, each
-    snapped to the tile grid with its own span (render.span_anchor(), the
+    snapped to the tile grid with its own span (render_units.span_anchor(), the
     anchor every corpus placement carries) on a footprint wholly inside
     `tiles` and clear of every earlier mover; one with no such spot stays
     put (None) rather than overlapping. A building that stays put keeps its

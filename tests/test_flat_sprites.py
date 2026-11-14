@@ -63,8 +63,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, render_cache, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import asset_source, iso_geometry, render_cache, render_flat, render_paint, render_units, unit_sprites
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from descape.unit_filter import UnitFilter
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -190,7 +190,7 @@ def sprite_install(tmp_path, monkeypatch):
         GATE_TURNED: single(GATE_TURNED_FILE, 1, rotation_is_variant=True),
     }
     monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, BIG_CONST, BIG_SPAN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, BIG_CONST, BIG_SPAN)
     asset_source.set_install_path_override(tmp_path)
     unit_sprites.clear_caches()
     yield
@@ -210,7 +210,7 @@ def _units():
 
 def _mip_levels():
     return sorted(iso_geometry.mip_tile_px_candidates(
-        render.tile_pixels_for_map(MAP_W, MAP_H)
+        render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     ).values())
 
 
@@ -219,7 +219,7 @@ def _full(scn, *, with_sprites):
     render_terrain + overlay_units, the INDEPENDENT implementation, never
     composite_rect_flat. See composite_rect_flat()'s own docstring on why
     sharing one would make the comparison a tautology."""
-    return render.overlay_units(render.render_terrain(scn), scn, with_sprites=with_sprites)
+    return render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=with_sprites)
 
 
 def _stitched(cache, mip=0):
@@ -237,7 +237,7 @@ def _footprint_rects(scn, tile_px):
     rects = []
     for units in scn.unit_manager.units:
         for unit in units:
-            bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+            bounds = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
             if bounds is None:
                 continue
             tx0, tx1, ty0, ty1 = bounds
@@ -247,7 +247,7 @@ def _footprint_rects(scn, tile_px):
             # vertex, not a tile centre -- so those marks legitimately sit
             # half a tile up-left of their own tile and this rect has to
             # follow them or the no-widening assertion tests the wrong box.
-            dx, dy = render.unit_paint_offset(unit)
+            dx, dy = render_units.unit_paint_offset(unit)
             ox, oy = round(dx * tile_px), round(dy * tile_px)
             rects.append((
                 tx0 * tile_px + ox, ty0 * tile_px + oy,
@@ -269,11 +269,11 @@ def test_an_icon_paints_only_inside_its_own_footprint(sprite_install, tile_px):
     headroom this whole design exists to avoid."""
     scn = _scenario(_units())
     mip = {px: level for level, px in
-           iso_geometry.mip_tile_px_candidates(render.tile_pixels_for_map(MAP_W, MAP_H)).items()}[tile_px]
+           iso_geometry.mip_tile_px_candidates(render_paint.tile_pixels_for_map(MAP_W, MAP_H)).items()}[tile_px]
 
-    terrain_only = _stitched(render_cache.FlatChunkCache(scn, render.tile_pixels_for_map(MAP_W, MAP_H),
+    terrain_only = _stitched(render_cache.FlatChunkCache(scn, render_paint.tile_pixels_for_map(MAP_W, MAP_H),
                                                          with_units=False), mip)
-    with_icons = _stitched(render_cache.FlatChunkCache(scn, render.tile_pixels_for_map(MAP_W, MAP_H),
+    with_icons = _stitched(render_cache.FlatChunkCache(scn, render_paint.tile_pixels_for_map(MAP_W, MAP_H),
                                                        sprites=True), mip)
 
     changed = np.any(terrain_only != with_icons, axis=2)
@@ -292,11 +292,11 @@ def test_an_icon_contain_fits_and_leaves_the_footprint_partly_bare(sprite_instal
     alternative) would repaint the whole rect, and so would resolving only the
     composite's parent piece -- which would give a square 1:1 ink."""
     scn = _scenario([[], [Unit(6.0, 5.0, CONST)]])
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     # Bare terrain, NOT the coloured-mark render: a mark fills the whole cell,
     # so diffing against it would report the whole cell as changed and say
     # nothing about where the icon's own ink landed.
-    terrain_only = render.render_terrain(scn)
+    terrain_only = render_flat.render_terrain(scn)
     with_icons = _full(scn, with_sprites=True)
 
     x0, y0, x1, y1 = _footprint_rects(scn, tile_px)[0]
@@ -324,7 +324,7 @@ def test_stitched_chunks_match_the_full_sprite_render(sprite_install):
     chunk and in any full-canvas render.
     """
     scn = _scenario(_units())
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     assert cache._level_icons(0), "no unit resolved to an icon, so this proves nothing"
 
@@ -340,7 +340,7 @@ def test_sprites_off_is_byte_identical_to_the_pre_sprite_render(sprite_install):
     -- but the wiring above it (a cache built with sprites=False still asking
     for a layer, say) is not, and that is what this catches."""
     scn = _scenario(_units())
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     marks = _full(scn, with_sprites=False)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=False)
 
@@ -365,14 +365,14 @@ def test_an_edit_under_a_footprint_patches_to_a_fresh_full_render(sprite_install
     exactly over the building.
     """
     scn = _scenario(_units())
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims()
     cache.render_rect(0, 0, canvas_w, canvas_h)  # warm every chunk
 
     tx, ty = 2, 2  # inside the 3x3 building at (2, 2), which spans tiles 1..3
     building = next(u for units in scn.unit_manager.units for u in units if u.unit_const == BIG_CONST)
-    bx0, bx1, by0, by1 = render.unit_tile_bounds(building, MAP_W, MAP_H)
+    bx0, bx1, by0, by1 = render_units.unit_tile_bounds(building, MAP_W, MAP_H)
     assert bx0 <= tx < bx1 and by0 <= ty < by1, "the edited tile is not under a footprint"
     scn.map_manager.get_tile(tx, ty).terrain_id = 6
     cache.patch_rects([(tx * tile_px, ty * tile_px, (tx + 1) * tile_px, (ty + 1) * tile_px)])
@@ -400,7 +400,7 @@ def test_a_filter_change_drops_icons_in_lockstep_with_draws(sprite_install, mip)
     would leave exactly that level stale.
     """
     scn = _scenario(_units())
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     before = _stitched(cache, mip)
 
@@ -420,7 +420,7 @@ def test_turning_sprites_on_live_matches_a_cache_built_with_them(sprite_install)
     eviction the toggle appears to do nothing until the user scrolls somewhere
     uncached."""
     scn = _scenario(_units())
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=False)
     cache.render_rect(0, 0, *cache.canvas_dims())
     cache.set_sprites_enabled(True)

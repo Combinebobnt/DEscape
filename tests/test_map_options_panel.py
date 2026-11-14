@@ -14,7 +14,7 @@ owns both: options_model verifies the byte-patched scalars and says nothing
 about the trigger execution-order row, while trigger_write_supported says
 nothing about the scalars. The panel is handed the resolved set of field ids.
 
-Same offscreen-ViewerWindow technique as tests/test_trigger_panel.py.
+Same offscreen-ViewerWindow technique as tests/trigger_panel_helpers.py.
 """
 
 from __future__ import annotations
@@ -22,6 +22,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
+from testkit.qt_window import panel_width, set_panel_width
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -36,7 +39,7 @@ TRIGGER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x1
 
 def _window():
     """A shown, fixed-size offscreen ViewerWindow -- show() + processEvents()
-    is load-bearing for the splitter assertions, see test_trigger_panel.py's
+    is load-bearing for the splitter assertions, see trigger_panel_helpers.py's
     own copy of this helper for why."""
     return conftest.shown_window(1500, 900)
 
@@ -114,7 +117,7 @@ def _options_window(path=BLANK_FIXTURE):
 
 
 def test_map_options_mode_swaps_the_left_panel_and_gates_edit_tools() -> None:
-    from descape.viewer import _LEFT_PAGE_MAP_OPTIONS
+    from descape.viewer_common import _LEFT_PAGE_MAP_OPTIONS
 
     window = _window()
     try:
@@ -169,9 +172,9 @@ def test_entering_map_options_widens_a_too_narrow_pane() -> None:
 
     window = _window()
     try:
-        window.content_splitter.setSizes([200, 1000])
+        set_panel_width(window, 200)
         window.mode_combo.setCurrentText("Map Options")
-        assert window.content_splitter.sizes()[0] >= MapOptionsPanel.MIN_USEFUL_WIDTH
+        assert panel_width(window) >= MapOptionsPanel.MIN_USEFUL_WIDTH
     finally:
         _close(window)
 
@@ -194,9 +197,9 @@ def test_widening_uses_this_panels_own_threshold_not_the_trigger_panels() -> Non
     assert MapOptionsPanel.MIN_USEFUL_WIDTH < TriggerPanel.MIN_USEFUL_WIDTH
     window = _window()
     try:
-        window.content_splitter.setSizes([200, 1000])
+        set_panel_width(window, 200)
         window.mode_combo.setCurrentText("Map Options")
-        left = window.content_splitter.sizes()[0]
+        left = panel_width(window)
         assert left >= MapOptionsPanel.MIN_USEFUL_WIDTH
         assert left < TriggerPanel.MIN_USEFUL_WIDTH, (
             f"widened to {left} px -- that is the trigger panel's threshold, "
@@ -644,7 +647,7 @@ def test_browsing_every_row_reports_no_edit() -> None:
 
 def test_browsing_every_row_saves_byte_identically(tmp_path) -> None:
     """The acceptance gate this whole panel is measured by, and the analogue of
-    tests/test_trigger_panel.py's own.
+    tests/test_trigger_panel_basics.py's own.
 
     A phantom record would not just add an undo step: it would dirty the
     document *and* flip a model's has_edits, reserialising a Triggers section
@@ -1121,7 +1124,7 @@ def test_the_status_line_stays_short_enough_to_leave_the_form_visible() -> None:
 def test_every_group_renders_at_the_height_its_layout_asks_for() -> None:
     """The half of the plan's in-session visual check this panel was missing.
 
-    tests/test_trigger_panel.py has the same check because a wrapped row's
+    tests/test_trigger_panel_layout.py has the same check because a wrapped row's
     height depends on its width while a QScrollArea sizes its widget from a
     sizeHint computed as if nothing wrapped -- every row was squeezed to 6 px
     and drew over the next one while host width, scrollbar state and field
@@ -1538,13 +1541,12 @@ def test_picking_undoing_and_saving_a_water_definition(tmp_path, monkeypatch) ->
 
 
 def test_a_failed_string_gate_greys_only_the_water_row(monkeypatch) -> None:
-    from descape import viewer
     from descape.viewer import ViewerWindow
 
     window = _options_window(TRIGGER_FIXTURE)
     try:
         assert "water_definition" in window._editable_option_fields()
-        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded, name: name != "water_definition")
+        set_viewer_global(monkeypatch, "map_strings_write_supported", lambda _loaded, name: name != "water_definition")
         window._show_map_options()
         row = _row(window, "water_definition")
         assert not row.isEnabled()
@@ -1557,13 +1559,12 @@ def test_a_failed_string_gate_greys_only_the_water_row(monkeypatch) -> None:
 
 
 def test_a_failed_string_gate_greys_only_the_mood_row(monkeypatch) -> None:
-    from descape import viewer
     from descape.viewer import ViewerWindow
 
     window = _options_window(TRIGGER_FIXTURE)
     try:
         assert "map_color_mood" in window._editable_option_fields()
-        monkeypatch.setattr(viewer, "map_strings_write_supported", lambda _loaded, name: name != "map_color_mood")
+        set_viewer_global(monkeypatch, "map_strings_write_supported", lambda _loaded, name: name != "map_color_mood")
         window._show_map_options()
         row = _row(window, "map_color_mood")
         assert not row.isEnabled()
@@ -1969,13 +1970,12 @@ def test_surrounding_spaces_are_dropped_from_a_typed_script_filename() -> None:
 
 
 def test_a_file_embedding_its_script_greys_the_row_and_says_why(monkeypatch) -> None:
-    from descape import viewer
     from descape.viewer import ViewerWindow
 
     window = _options_window(TRIGGER_FIXTURE)
     try:
-        monkeypatch.setattr(viewer, "script_name_write_supported", lambda *_: False)
-        monkeypatch.setattr(viewer, "xs_attachment", lambda *_: ("probe", 14))
+        set_viewer_global(monkeypatch, "script_name_write_supported", lambda *_: False)
+        set_viewer_global(monkeypatch, "xs_attachment", lambda *_: ("probe", 14))
         window._show_map_options()
         row = _row(window, "script_name")
         assert not row.isEnabled()
@@ -1997,12 +1997,11 @@ def test_a_refused_script_filename_records_nothing_and_resets_the_row() -> None:
 
 def test_a_gated_script_filename_row_is_read_only_and_says_why(monkeypatch) -> None:
     """Its own gate: a Files failure greys only this row."""
-    from descape import viewer
     from descape.viewer import ViewerWindow
 
     window = _options_window(TRIGGER_FIXTURE)
     try:
-        monkeypatch.setattr(viewer, "script_name_write_supported", lambda *_: False)
+        set_viewer_global(monkeypatch, "script_name_write_supported", lambda *_: False)
         window._show_map_options()
         row = _row(window, "script_name")
         assert not row.isEnabled()

@@ -33,7 +33,7 @@ def _window_on(tmp_path, kind: str):
     """A shown, active window on a copy of the fixture, with `kind`'s field in view."""
     from PyQt5.QtCore import QEvent
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import TRIGGER_FIXTURE, _plant_prose_effect, _row_widget
+    from trigger_panel_helpers import TRIGGER_FIXTURE, _plant_prose_effect, _row_widget
 
     from descape.scenario_io import BLANK_TEMPLATE_PATH
 
@@ -123,7 +123,7 @@ def _recording_question(monkeypatch) -> list[str]:
         asked.append(text)
         return QMessageBox.Cancel
 
-    monkeypatch.setattr("descape.viewer.QMessageBox.question", question)
+    monkeypatch.setattr(QMessageBox, "question", question)
     return asked
 
 
@@ -180,8 +180,10 @@ def test_file_save_from_the_menu_writes_a_focused_boxs_typed_value(tmp_path) -> 
 
 
 def test_save_as_writes_a_focused_boxs_typed_value(tmp_path, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QFileDialog
+
     target = tmp_path / "saved_as.aoe2scenario"
-    monkeypatch.setattr("descape.viewer.QFileDialog.getSaveFileName", lambda *_a, **_k: (str(target), ""))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(target), ""))
     window, box, _path = _window_on(tmp_path, "hints box")
     try:
         _type_into("hints box", box)
@@ -210,12 +212,14 @@ PROMPT_ROUTES = {
 def test_an_unsaved_changes_prompt_counts_a_focused_fields_typed_value(
     tmp_path, monkeypatch, route: str, kind: str
 ) -> None:
-    from PyQt5.QtWidgets import QApplication, QDialog
+    from PyQt5.QtWidgets import QApplication, QDialog, QFileDialog
+
+    from descape.resize_dialog import ResizeDialog
 
     asked = _recording_question(monkeypatch)
     # A route that fails to ask must fail the test, not block in its next dialog.
-    monkeypatch.setattr("descape.viewer.QFileDialog.getOpenFileName", lambda *_a, **_k: ("", ""))
-    monkeypatch.setattr("descape.viewer.ResizeDialog.exec_", lambda _self: QDialog.Rejected)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_a, **_k: ("", ""))
+    monkeypatch.setattr(ResizeDialog, "exec_", lambda _self: QDialog.Rejected)
     window, widget, path = _window_on(tmp_path, kind)
     try:
         _type_into(kind, widget)
@@ -232,7 +236,7 @@ def test_an_unsaved_changes_prompt_counts_a_focused_fields_typed_value(
 
 
 def test_a_locked_documents_prompt_leaves_the_typed_value_for_the_save_after_it_unlocks(tmp_path, monkeypatch) -> None:
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     from descape import game_dataset, settings
 
@@ -290,3 +294,58 @@ def test_an_autosave_tick_leaves_a_focused_fields_typed_value_pending(tmp_path) 
         assert QApplication.focusWidget() is box
     finally:
         conftest.close_window(window)
+
+
+@pytest.mark.parametrize("kind", ["trigger name", "hints box"])
+def test_a_floating_panels_typed_value_is_saved_too(tmp_path, kind: str) -> None:
+    """GH #64: a floating panel is a window of its own, which the main window's
+    focusWidget() and isAncestorOf() never reach."""
+    from PyQt5.QtWidgets import QApplication
+
+    window, widget, path = _window_on(tmp_path, kind)
+    try:
+        window.panel_dock.setFloating(True)
+        QApplication.processEvents()
+        window.panel_dock.activateWindow()
+        QApplication.setActiveWindow(window.panel_dock)
+        _type_into(kind, widget)
+        assert not window.isAncestorOf(widget), "fixture: the field is in the floating panel's window"
+        if kind in BOX_KINDS:
+            assert window._focused_text_box() is widget, "Edit > Undo follows the floating box's own stack"
+        window.save()
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, kind)
+
+
+@pytest.mark.parametrize("two_step", [False, True], ids=["direct", "via-no-window"])
+@pytest.mark.parametrize("kind", BOX_KINDS)
+def test_a_floating_boxs_text_survives_a_click_into_the_main_window(tmp_path, kind: str, two_step: bool) -> None:
+    """GH #64: leaving a floating panel's box for the main window is a window switch, which the
+    box alone does not commit; the mode change after it rebuilds the box from the model. A WM
+    may deactivate the panel's window before activating the main one."""
+    from PyQt5.QtWidgets import QApplication
+
+    window, widget, path = _window_on(tmp_path, kind)
+    try:
+        mode = window.mode_combo.currentText()
+        window.panel_dock.setFloating(True)
+        QApplication.processEvents()
+        window.panel_dock.activateWindow()
+        QApplication.setActiveWindow(window.panel_dock)
+        _type_into(kind, widget)
+        if two_step:
+            QApplication.setActiveWindow(None)
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        window.mode_combo.setFocus()
+        QApplication.processEvents()
+        window.mode_combo.setCurrentText("Units")
+        window.mode_combo.setCurrentText(mode)
+        QApplication.processEvents()
+        window.save()
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, kind)

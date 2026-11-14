@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from descape import asset_source, game_dataset, iso_geometry, particle_art, render, unit_sprites
+from descape import asset_source, game_dataset, games, iso_geometry, particle_art, render_paint, unit_sprites
 
 CONST = 990001
 BLOCK_CONST = 990002
@@ -394,7 +394,7 @@ def test_every_butterfly_draws_specks_near_its_anchor(unit_const):
     assert native is not None and native[1] is None
     assert int((native[0][..., 3] > 0).sum()) == NATIVE_INK[unit_const]
 
-    half_w, _half_h = iso_geometry.half_dims(render.SMALL_MAP_TILE_PIXELS)
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
     pieces = unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)
     assert len(pieces) == 1, f"{unit_const} falls back to the coloured mark"
     (piece,) = pieces
@@ -413,7 +413,7 @@ def test_smoke_and_flames_draw_and_rise_from_their_anchor(unit_const):
     share of its ink above the anchor. Measured 2026-10-31: 0.26 for FLAME1,
     whose pivot sits near the frame's centre, and 0.68-0.73 for the others."""
     _require_install()
-    half_w, _half_h = iso_geometry.half_dims(render.SMALL_MAP_TILE_PIXELS)
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
     pieces = unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)
     assert len(pieces) == 1, f"{unit_const} falls back to the coloured mark"
     (piece,) = pieces
@@ -428,8 +428,8 @@ def test_return_of_rome_draws_smoke_and_flames_from_aoe2s_effects():
     an effect RoR carries itself would make the two disagree."""
     _require_install()
     game_dataset.set_active(game_dataset.ROR)
-    ror_folder = game_dataset.ror_root(asset_source.get_install_path()) / asset_source.PARTICLE_SUBPATH
-    half_w, _half_h = iso_geometry.half_dims(render.SMALL_MAP_TILE_PIXELS)
+    ror_folder = games.ROR.root(asset_source.get_install_path()) / asset_source.PARTICLE_SUBPATH
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
     for unit_const, stem in SMOKE_AND_FLAMES.items():
         assert unit_sprites.graphic_map().get(unit_const, {}).get("file_name") == stem, unit_const
         assert particle_art.native_frame(stem, 0) is not None, stem

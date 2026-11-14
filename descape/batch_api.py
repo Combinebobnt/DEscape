@@ -39,7 +39,7 @@ from AoE2ScenarioParser.datasets.buildings import BuildingInfo
 from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-from descape import game_dataset, object_catalog
+from descape import game_dataset, games, object_catalog
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import MAX_ELEVATION
 from descape.scenario_io import LoadedScenario, load_map_and_units
@@ -85,7 +85,7 @@ def load(path, **kwargs) -> LoadedScenario:
     """load_map_and_units() (its keyword options pass through), then the file's own game
     data made active (GH #67), so names, footprints and is_building() read Return of Rome's for a RoR file."""
     loaded = load_map_and_units(path, **kwargs)
-    game_dataset.set_active(game_dataset.from_variant(loaded.game_variant))
+    game_dataset.set_active(games.for_scenario(loaded).id)
     return loaded
 
 # IMPORTANT: any new elevation-writing helper added to this module must go
@@ -105,8 +105,8 @@ _DIAGONAL_OFFSETS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 def is_building(unit: Unit) -> bool:
     """True if unit's unit_const identifies a building, not a regular unit/hero/other.
-    Under Return of Rome the AoE2 dataset does not apply, so the RoR .dat row decides (GH #67)."""
-    if game_dataset.is_ror():
+    Under a game without library enums (Return of Rome) its own .dat row decides (GH #67)."""
+    if not game_dataset.game().library_enums:
         return object_catalog.is_building(unit.unit_const)
     return unit.unit_const in _BUILDING_IDS
 
@@ -172,7 +172,7 @@ def raise_elevation_under(scenario: LoadedScenario, unit: Unit, amount: int = 1)
     """Raises (or lowers, for a negative amount) the elevation of the tile
     `unit` stands on, propagating to neighbors the same way the Elevate tool
     does (elevation_tools.set_tile_elevation). Result is clamped to
-    [0, MAX_ELEVATION] -- the same clamp viewer.py's Elevate tool applies;
+    [0, MAX_ELEVATION] -- the same clamp the viewer's Elevate tool applies;
     going negative crashes scenario_write.py's raw byte patch at save time,
     and going above MAX_ELEVATION breaks the Stepped-mode renderer's
     fixed-range canvas sizing. Returns False (no-op) if unit's tile is
@@ -256,7 +256,7 @@ def set_terrain(tile: TerrainTile, terrain_id: int) -> None:
     """Sets tile's terrain_id and clears a stale `layer` (double-terrain
     blend) left over from whatever the tile used to be: both the game and
     render.py's terrain blending draw `layer` over terrain_id, so a stale
-    one would keep showing the old terrain (same fix viewer.py's Draw tool
+    one would keep showing the old terrain (same fix the viewer's Draw tool
     applies per-click)."""
     tile.terrain_id = terrain_id
     tile.layer = -1

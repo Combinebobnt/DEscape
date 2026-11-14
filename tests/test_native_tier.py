@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, settings
-from descape.render_cache import _ChunkCacheBase
+from descape import asset_source, iso_geometry, render_paint, settings
+from descape.render_cache_base import _ChunkCacheBase
 
 NATIVE = iso_geometry.NATIVE_TILE_PIXELS
 
@@ -49,26 +49,26 @@ def test_the_ladder_table() -> None:
 def test_a_raised_ceiling_still_keeps_192_off_enhanced(monkeypatch) -> None:
     """Decision 2: TASK-202's 256 ceiling must not bring 192 (and x2 at 1:1, TASK-441) to Enhanced."""
     monkeypatch.setattr(iso_geometry, "MIP_MAX_TILE_PIXELS", 256)
-    monkeypatch.setitem(render.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_MAX, 256)
+    monkeypatch.setitem(render_paint.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_MAX, 256)
     monkeypatch.setattr(settings, "get_graphics_quality", lambda: settings.GRAPHICS_QUALITY_MAX)
-    got = iso_geometry.mip_tile_px_candidates(64, render.finest_tile_pixels(), native_tier=True,
-                                              native_tier_max=render.native_tier_max())
+    got = iso_geometry.mip_tile_px_candidates(64, render_paint.finest_tile_pixels(), native_tier=True,
+                                              native_tier_max=render_paint.native_tier_max())
     assert 256 in got.values(), "the patched ceiling did not reach the ladder -- vacuous"
     assert 192 not in got.values() and NATIVE in got.values()
 
 
-@pytest.mark.parametrize("quality", sorted(render.FINEST_TILE_PIXELS))
+@pytest.mark.parametrize("quality", sorted(render_paint.FINEST_TILE_PIXELS))
 @pytest.mark.parametrize("large", [False, True], ids=["small", "large"])
 def test_the_tier_exists_exactly_at_default_and_enhanced(monkeypatch, quality, large) -> None:
     monkeypatch.setattr(settings, "get_graphics_quality", lambda: quality)
-    side = render.LARGE_MAP_TILE_THRESHOLD + 1 if large else render.LARGE_MAP_TILE_THRESHOLD
-    base = render.tile_pixels_for_map(side, side)
+    side = render_paint.LARGE_MAP_TILE_THRESHOLD + 1 if large else render_paint.LARGE_MAP_TILE_THRESHOLD
+    base = render_paint.tile_pixels_for_map(side, side)
     proj = iso_geometry.canvas_size_and_origin(side, side, base, 0, 7, elev_step_pct=100)
     projs = iso_geometry.mip_projections_for(
-        side, side, proj, 100, max_tile_px=render.finest_tile_pixels(), native_tier_max=render.native_tier_max()
+        side, side, proj, 100, max_tile_px=render_paint.finest_tile_pixels(), native_tier_max=render_paint.native_tier_max()
     )
     iso = {p.tile_px for p in projs.values()}
-    flat = set(iso_geometry.mip_tile_px_candidates(base, render.finest_tile_pixels()).values())
+    flat = set(iso_geometry.mip_tile_px_candidates(base, render_paint.finest_tile_pixels()).values())
     assert (NATIVE in iso) == (quality >= settings.GRAPHICS_QUALITY_DEFAULT)
     assert (2 * NATIVE in iso) == (quality == settings.GRAPHICS_QUALITY_DEFAULT), "192 at Default only (TASK-601)"
     assert NATIVE not in flat and 2 * NATIVE not in flat, "top-down Flat keeps the power-of-two ladder (Decision 5)"
@@ -125,7 +125,7 @@ def test_a_padded_crop_equals_the_modulo_crop(channels, tile_px) -> None:
     straddled = 0
     for x in range(size // 32):
         for y in (0, 5, 16):
-            ox, oy = render._crop_offset(x, y, size, tile_px)
+            ox, oy = render_paint._crop_offset(x, y, size, tile_px)
             got = asset_source.crop_source(tex, tile_px)[oy : oy + tile_px, ox : ox + tile_px]
             rows, cols = (oy + np.arange(tile_px)) % size, (ox + np.arange(tile_px)) % size
             assert np.array_equal(got, tex[np.ix_(rows, cols)]), (x, y)

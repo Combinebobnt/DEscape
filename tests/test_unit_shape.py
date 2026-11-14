@@ -10,7 +10,7 @@ import pytest
 
 from descape import asset_source
 from descape.place_rotation import PlaceRotation, rotation_for
-from descape.render import _span_start, occupied_tiles_for
+from descape.render_units import _span_start, occupied_tiles_for
 from descape.shape_tools import RIGHT_TRIANGLE, TRIANGLE, rect_perimeter_tiles
 from descape.terrain_palette import tile_span
 from descape.unit_shape import (

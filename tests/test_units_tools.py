@@ -38,7 +38,7 @@ _ROW = 63
 
 @pytest.fixture(autouse=True)
 def _no_install_env(monkeypatch):
-    """No test here wants the real install (see test_unit_edit_viewer.py's twin)."""
+    """No test here wants the real install (see unit_edit_viewer_helpers.py's twin)."""
     from descape import asset_source
 
     monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)

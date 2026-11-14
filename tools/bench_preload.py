@@ -38,7 +38,7 @@ through a real MarginWarmer and reports what each tick costs (see
 _bench_per_tick).
 
 A level warm in both modes includes the unit-pack pre-derive the app runs in
-idle ticks after it (render_cache.pack_warm_job); `--lazy-pack` skips it, so
+idle ticks after it (render_cache_mip.pack_warm_job); `--lazy-pack` skips it, so
 the chunk figures include first-touch derivation instead.
 
 `--grid` bakes View > Grid (default blend and thickness) into the Stepped and
@@ -62,7 +62,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, composite_backend, grid_overlay, margin_warm, perf_trace, render, unit_sprites
+from descape import (
+    asset_source,
+    composite_backend,
+    grid_overlay,
+    margin_warm,
+    perf_trace,
+    render_iso,
+    render_paint,
+    render_sloped,
+    unit_sprites,
+)
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 from descape.view_layers import DEFAULT_LAYERS
@@ -90,27 +100,27 @@ def _layers():
 
 def _keyed_share(scenario) -> float:
     """Share of the map's tiles carrying a blend key (0 with blending off)."""
-    keys = render._full_blend_keys(scenario, BLEND)
+    keys = render_paint._full_blend_keys(scenario, BLEND)
     return sum(k is not None for k in keys) / len(keys) if keys else 0.0
 
 
 def _stepped_cache(scenario) -> IsoChunkCache:
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    _img, elevations, proj = render.render_terrain_iso_with_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    _img, elevations, proj = render_iso.render_terrain_iso_with_proj(scenario)
     return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True, layers=_layers())
 
 
 def _flat_cache(scenario) -> FlatChunkCache:
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     return FlatChunkCache(scenario, tile_px, sprites=True, layers=_layers())
 
 
 def _sloped_cache(scenario) -> SlopedChunkCache:
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True, layers=_layers())
 
 
@@ -474,7 +484,7 @@ def main() -> None:
             "coloured mark and every number here would be zero. Pass --install."
         )
 
-    if BLEND and not render.blend_effective():
+    if BLEND and not render_paint.blend_effective():
         raise SystemExit("--blend on: the install has no readable blendomatic. Pass --blend off.")
 
     files = args.scenarios

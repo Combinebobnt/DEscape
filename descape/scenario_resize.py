@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import Enum
 
-from descape import library_compat, player_fields, render, trigger_geometry, unit_references
+from descape import library_compat, player_fields, render_units, trigger_geometry, unit_references
 from descape.messages_model import MessagesEditModel
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import (
@@ -125,7 +125,7 @@ def _off_map(unit, dx: int, dy: int, w: int, h: int, old_w: int, old_h: int) -> 
     if not (0 <= tx < w and 0 <= ty < h):
         return True
     # The cut also takes a footprint it leaves partly off (replace_refusal's state); old-edge overhang is kept.
-    bounds = render.unit_tile_bounds(unit, old_w, old_h)
+    bounds = render_units.unit_tile_bounds(unit, old_w, old_h)
     if bounds is None:
         return False
     x0, x1, y0, y1 = bounds
@@ -136,7 +136,7 @@ def removal_closure(
     units_by_player: Iterable[Iterable], dx: int, dy: int, w: int, h: int, *, old_w: int, old_h: int
 ) -> list:
     """Every unit a resize deletes: those whose translated anchor tile is off
-    the new map or whose footprint (render.unit_tile_bounds() on the old
+    the new map or whose footprint (render_units.unit_tile_bounds() on the old
     `old_w` x `old_h` map) the cut leaves partly off it, plus everything
     garrisoned (transitively) in one of them."""
     units = [u for player_units in units_by_player for u in player_units]

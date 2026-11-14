@@ -1,6 +1,6 @@
 """Multi-line text editors with QLineEdit's commit-on-leave contract:
 _MultiLineEdit and its two flavours, XsTextEdit (monospace, un-wrapped) and
-ProseTextEdit (wrapping). Shared by descape/trigger_panel.py's XS and prose
+ProseTextEdit (wrapping). Shared by descape/trigger_panel_form.py's XS and prose
 fields and descape/messages_panel.py's six Messages boxes.
 
 Every box has a bottom-edge grip that drags its height in whole lines (GH

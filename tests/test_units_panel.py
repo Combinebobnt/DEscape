@@ -8,7 +8,7 @@ show_selection_count()/clear() render, the sticky pending object const, and
 that a programmatic populate never reports through on_unit_field while a
 genuine edit does. The write path and the selection-reconciliation logic
 stay on ViewerWindow and are covered by tests/test_unit_selection_viewer.py
-and tests/test_unit_edit_viewer.py instead.
+and the tests/test_unit_edit_viewer_*.py modules instead.
 """
 
 from __future__ import annotations
@@ -1071,12 +1071,13 @@ def test_clicking_the_pending_random_row_again_keeps_its_roll() -> None:
 
 def _holed_install(tmp_path):
     """The fake install, with the Archer's portrait opaque black but for a
-    transparent centre: DE leaves the player-colour region that way."""
+    transparent centre: DE leaves the player-colour region that way, white
+    (full-bright) shading kept in its colour channels (GH #372)."""
     from PIL import Image
 
     root = _fake_install(tmp_path)
     image = Image.new("RGBA", (32, 32), (0, 0, 0, 255))
-    image.paste((0, 0, 0, 0), (8, 8, 24, 24))
+    image.paste((255, 255, 255, 0), (8, 8, 24, 24))
     image.save(root / "widgetui" / "textures" / "ingame" / "units" / "017_50730.DDS", format="DDS")
     return root
 
@@ -1085,6 +1086,13 @@ def _centre(pixmap) -> tuple[int, int, int]:
     image = pixmap.toImage()
     colour = image.pixelColor(image.width() // 2, image.height() // 2)
     return colour.red(), colour.green(), colour.blue()
+
+
+def _region(rgb):
+    """The holed portrait's centre in `rgb`: full-bright shading tinted as the
+    game does (GH #372), worked by hand from the fit, not through tinted();
+    within 1 for float32 rounding."""
+    return pytest.approx(tuple(min(255.0, c * 1.16 + 56.1) for c in rgb), abs=1)
 
 
 def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path, monkeypatch) -> None:
@@ -1098,20 +1106,20 @@ def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path
         panel.select_object(_ARCHER_CONST)
         _settle(panel)
         assert panel.placing_card.portrait_source == "icon"
-        assert _centre(panel.placing_card.portrait.pixmap()) == PLAYER_COLORS[1]  # the Owner combo's default
+        assert _centre(panel.placing_card.portrait.pixmap()) == _region(PLAYER_COLORS[1])  # the Owner combo's default
         panel.select_owner(2)
-        assert _centre(panel.placing_card.portrait.pixmap()) == PLAYER_COLORS[2]
+        assert _centre(panel.placing_card.portrait.pixmap()) == _region(PLAYER_COLORS[2])
         colors = list(PLAYER_COLORS)
         colors[2] = (10, 20, 30)
         from descape import player_labels
 
         panel.refresh_player_labels(player_labels.DEFAULT_LABELS, colors)
-        assert _centre(panel.placing_card.portrait.pixmap()) == (10, 20, 30), "the scenario's own colour"
+        assert _centre(panel.placing_card.portrait.pixmap()) == _region((10, 20, 30)), "the scenario's own colour"
         panel.show_unit(_entry(player_id=3, unit_const=_ARCHER_CONST))
         _settle(panel)
-        assert _centre(panel.unit_portrait.pixmap()) == colors[3]
+        assert _centre(panel.unit_portrait.pixmap()) == _region(colors[3])
         panel.show_group([_entry(player_id=3), _entry(player_id=4, reference_id=102)])
-        assert _centre(panel.unit_portrait.pixmap()) == colors[GAIA_PLAYER_ID], "mixed owners: neutral"
+        assert _centre(panel.unit_portrait.pixmap()) == _region(colors[GAIA_PLAYER_ID]), "mixed owners: neutral"
     finally:
         asset_source.set_install_path_override(None)
 
@@ -1138,9 +1146,9 @@ def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_p
         def row_centre():
             return _centre(view._items[_ARCHER_CONST].icon().pixmap(px, px))
 
-        assert row_centre() == PLAYER_COLORS[1]
+        assert row_centre() == _region(PLAYER_COLORS[1])
         panel.select_owner(5)
-        assert row_centre() == PLAYER_COLORS[5]
+        assert row_centre() == _region(PLAYER_COLORS[5])
     finally:
         panel.close()
         asset_source.set_install_path_override(None)
@@ -1238,7 +1246,7 @@ def test_the_placing_cards_portrait_is_decoded_before_the_lists_viewport(case, f
         while len(executor.submitted) == served and deadline:
             QApplication.processEvents()
             deadline -= 1
-        _fn, (_install, icon, _building, px), _future = executor.submitted[served]
+        _fn, (_install, _layers, icon, _building, px), _future = executor.submitted[served]
         assert (icon, px) == (object_catalog.icon_for(town_center), unit_card.PORTRAIT_PX)
     finally:
         panel.close()
@@ -3147,3 +3155,26 @@ def test_the_garrison_owner_combo_offers_only_gaia_for_gaia_only_rows() -> None:
     assert not _player_rows_offered(panel.garrison_owner_combo)[2]
     tree.topLevelItem(1).setSelected(True)
     assert _player_rows_offered(panel.garrison_owner_combo)[2], "a mixed selection keeps them"
+
+
+def test_portraits_follow_each_owners_civ(archer_civ_portrait) -> None:
+    """GH #372: the Owner combo's civ for the pick and the list, the inspector
+    Owner's for the selection, GAIA's for a mixed group."""
+    civs = {2: archer_civ_portrait, 3: archer_civ_portrait}
+    panel = _panel(portrait_civ_for=civs.get)
+    panel.select_object(_ARCHER_CONST)
+    _settle(panel)
+    assert _centre(panel.placing_card.portrait.pixmap()) == conftest._UNIT_RED[:3], "P1 has no civ of its own"
+    panel.select_owner(2)
+    _settle(panel)
+    assert _centre(panel.placing_card.portrait.pixmap()) == conftest.CIV_PORTRAIT_BLUE[:3]
+    panel.show_unit(_entry(player_id=3, unit_const=_ARCHER_CONST))
+    _settle(panel)
+    assert _centre(panel.unit_portrait.pixmap()) == conftest.CIV_PORTRAIT_BLUE[:3]
+    panel.show_group([_entry(player_id=3), _entry(player_id=2, reference_id=102)])
+    _settle(panel)
+    assert panel.selection_card._civ is None, "mixed owners: GAIA's portrait"
+    civs[2] = None  # a Players edit: P2 now names no civ with its own portrait
+    panel.refresh_portrait_civs()
+    _settle(panel)
+    assert _centre(panel.placing_card.portrait.pixmap()) == conftest._UNIT_RED[:3]

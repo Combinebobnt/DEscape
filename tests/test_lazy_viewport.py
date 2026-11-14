@@ -60,7 +60,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from descape.render import render_terrain_iso
+from descape.render_iso import render_terrain_iso
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
 

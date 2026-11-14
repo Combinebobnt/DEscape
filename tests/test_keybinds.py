@@ -154,7 +154,8 @@ def test_assigning_a_taken_keybind_auto_clears_the_conflict_and_warns() -> None:
     from PyQt5.QtWidgets import QApplication
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -225,6 +226,8 @@ _TOGGLE_ACTION_IDS = (
     "view_trigger_overlay",
     "view_trigger_ghosts",
     "view_instruction_overlay",
+    "view_panel_dock",
+    "view_log_dock",
     "view_layer_terrain_textures",
     "view_layer_terrain_blend",
     "view_layer_farm_overlay",
@@ -317,7 +320,8 @@ def test_default_button_refuses_to_clear_another_actions_custom_binding() -> Non
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -348,7 +352,8 @@ def test_default_button_still_restores_an_uncontested_default() -> None:
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -372,7 +377,8 @@ def test_default_button_still_restores_an_uncontested_default() -> None:
 
 def test_player_select_actions_default_to_their_own_digit() -> None:
     from descape import settings
-    from descape.viewer import GAIA_PLAYER_ID, MAX_PLAYER_ID, ViewerWindow
+    from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -389,16 +395,18 @@ def test_player_select_action_count_matches_max_player_id() -> None:
     """range(9) in REBINDABLE_ACTIONS can't silently drift away from
     MAX_PLAYER_ID -- the per-digit test above would still pass with a
     tenth player quietly missing."""
-    from descape import settings, viewer
+    from descape import settings
+    from descape.unit_filter import MAX_PLAYER_ID
 
     count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("player_select_")])
-    assert count == viewer.MAX_PLAYER_ID + 1
+    assert count == MAX_PLAYER_ID + 1
 
 
 def test_owner_filter_actions_default_to_ctrl_digit() -> None:
     """GH #207: Ctrl+1..8 toggle each player's Filters checkbox, Ctrl+0 Show GAIA."""
     from descape import settings
-    from descape.viewer import GAIA_PLAYER_ID, MAX_PLAYER_ID, ViewerWindow
+    from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -415,10 +423,11 @@ def test_owner_filter_actions_default_to_ctrl_digit() -> None:
 
 
 def test_filter_player_action_count_matches_max_player_id() -> None:
-    from descape import settings, viewer
+    from descape import settings
+    from descape.unit_filter import MAX_PLAYER_ID
 
     count = len([a for a, _, _ in settings.REBINDABLE_ACTIONS if a.startswith("filter_player_")])
-    assert count == viewer.MAX_PLAYER_ID
+    assert count == MAX_PLAYER_ID
 
 
 def test_default_ctrl_digit_hides_and_shows_that_player() -> None:
@@ -576,7 +585,8 @@ def test_tool_shortcut_fires_while_overflowed_into_more_tools() -> None:
 def test_keybinds_tab_renders_menu_section_headers() -> None:
     from PyQt5.QtWidgets import QLabel
 
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -608,7 +618,8 @@ def test_keybinds_tab_renders_menu_section_headers() -> None:
 
 def test_the_keybinds_search_box_filters_rows_by_label_or_key_and_hides_empty_sections() -> None:
     """GH #116. isHidden(), not isVisible(): nothing in an unshown dialog is visible."""
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -657,7 +668,8 @@ def test_rebinding_a_row_refilters_the_keybinds_search() -> None:
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -736,7 +748,8 @@ def test_the_wheel_combos_list_every_action_and_start_from_the_stored_values() -
     from PyQt5.QtWidgets import QPushButton
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
     from descape.viewer_common import NoWheelComboBox
 
     settings.set_wheel_binding("plain", "tool")
@@ -842,7 +855,7 @@ def test_a_wheel_combo_change_reaches_the_config_file_and_a_real_wheel_event() -
     from test_wheel_bindings import _scale, _terrain_window, _wheel_xy
     from test_wheel_zoom import _notch_scale
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _terrain_window("draw")
     try:
@@ -1027,7 +1040,7 @@ def test_elevation_real_keys_select_persist_rebind_and_clear(style: str) -> None
 
     from descape import settings, terrain_style
     from descape.scenario_io import BLANK_TEMPLATE_PATH
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.stepped_window(BLANK_TEMPLATE_PATH)
     try:
@@ -1162,7 +1175,8 @@ def test_gh211_the_trigger_move_shortcuts_are_six_tree_scoped_rows_under_one_hea
     from PyQt5.QtWidgets import QLabel
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     expected = [
         ("trigger_move_up", "Alt+Up"),
@@ -1263,7 +1277,7 @@ def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bo
 
     from descape import settings
     from descape.autosave_dialog import RecoverAutosaveDialog
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.shown_window(1200, 800)
     try:
@@ -1304,7 +1318,7 @@ def test_reassigning_the_recover_autosave_key_clears_its_row_with_a_warning_and_
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.shown_window(1200, 800)
     try:
@@ -1346,7 +1360,7 @@ def test_a_recover_autosave_binding_survives_a_config_reload_and_a_window_rebuil
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.shown_window(1200, 800)
     try:
@@ -1486,7 +1500,8 @@ def test_the_keybinds_tab_tags_two_rows_sharing_a_key_and_select_clears_both() -
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()

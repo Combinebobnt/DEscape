@@ -41,12 +41,13 @@ sys.path.insert(0, str(ROOT))
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, StartingAge
 
-from descape import object_catalog, render, unit_sprites
+from descape import object_catalog, render_units, unit_sprites
 from descape.batch_api import set_terrain
 from descape.edit_history import EditHistory
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units, refresh_player_render_context
 from descape.scenario_write import WriteBlockedError, write_scenario
+from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
 
 SOURCE = ROOT / "examples" / "blank_map.aoe2scenario"
@@ -85,7 +86,7 @@ class Twin:
 
     def point(self) -> tuple[float, float]:
         """The anchor a placed building sits at: its low corner plus half its span per axis."""
-        span_x, span_y = render.tile_span(self.const, render.NON_BUILDING_SPAN)
+        span_x, span_y = tile_span(self.const, render_units.NON_BUILDING_SPAN)
         return self.tile[0] + span_x / 2, self.tile[1] + span_y / 2
 
 
@@ -96,7 +97,7 @@ def layout() -> list[Twin]:
         for row, const in enumerate(LAND_ROWS):
             x = LAND_ORIGIN[0] + ROW_STEP * row + COLUMN_STEP * column
             y = LAND_ORIGIN[1] - ROW_STEP * row + COLUMN_STEP * column
-            step = render.tile_span(const, render.NON_BUILDING_SPAN)[0] + TWIN_GAP
+            step = tile_span(const, render_units.NON_BUILDING_SPAN)[0] + TWIN_GAP
             twins += [Twin(player, const, (x, y), True), Twin(player, const, (x + step, y + step), False)]
         # From y 40, so no land row's art reaches the docks on screen.
         y0 = 40 + 25 * column
@@ -111,8 +112,8 @@ def _check_layout(twins: list[Twin], width: int, height: int) -> None:
     """Every footprint on the map, on its own terrain side, and clear of every other by a tile."""
     claimed: dict[tuple[int, int], Twin] = {}
     for twin in twins:
-        tiles = render.occupied_tiles_for(twin.const, *twin.point(), width, height)
-        span = render.tile_span(twin.const, render.NON_BUILDING_SPAN)
+        tiles = render_units.occupied_tiles_for(twin.const, *twin.point(), width, height)
+        span = tile_span(twin.const, render_units.NON_BUILDING_SPAN)
         if tiles is None or len(tiles) != span[0] * span[1]:
             raise SystemExit(f"{twin} leaves the {width}x{height} map")
         water = twin.const in (DOCK, TRANSPORT)

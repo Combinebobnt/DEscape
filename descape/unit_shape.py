@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from descape import gate_orientation, unit_brush, unit_kind, unit_sprites
 from descape.place_rotation import PlaceRotation
-from descape.render import NON_BUILDING_SPAN
+from descape.render_units import NON_BUILDING_SPAN
 from descape.shape_tools import (
     RIGHT_TRIANGLE,
     TRIANGLE,
@@ -200,7 +200,7 @@ def cell_block(latch: ShapeLatch, cell: tuple[int, int], map_w: int, map_h: int)
 def plan_candidates(latch: ShapeLatch, cells, rng: random.Random) -> list[tuple[int, float, float]]:
     """(const, x, y) per cell: the const drawn from the pick (no draw for a
     single const, as the Unit Brush does), centred in its cell's W x H block
-    the way render._span_start() reads a footprint back."""
+    the way render_units._span_start() reads a footprint back."""
     out = []
     for ox, oy in cells:
         const = latch.consts[0] if len(latch.consts) == 1 else rng.choice(latch.consts)

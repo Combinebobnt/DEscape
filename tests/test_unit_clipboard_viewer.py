@@ -6,7 +6,7 @@ without tiles) is covered without Qt in tests/test_region_clipboard.py. This
 file is the window half: the copy, the paste write path and where the group
 lands, Cut as one undo step, and which focus the three Edit actions answer.
 
-Window helpers come from tests/test_unit_edit_viewer.py, whose _window() is
+Window helpers come from tests/unit_edit_viewer_helpers.py, whose _window() is
 Flat with Show Garrisoned Units on. Every window is closed through _close().
 """
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from test_unit_edit_viewer import (
+from unit_edit_viewer_helpers import (
     _BARRACKS_CONST,
     _HOUSE_CONST,
     _PLACE_CONST,
@@ -582,7 +582,7 @@ def test_cut_units_is_one_undo_step_that_restores_exact_list_indices() -> None:
 
 
 def test_cutting_one_unit_is_one_record() -> None:
-    from descape.viewer import _unit_name
+    from descape.viewer_common import _unit_name
 
     window = _window()
     try:
@@ -606,7 +606,7 @@ def test_cutting_one_unit_is_one_record() -> None:
 
 
 def test_cutting_a_host_takes_its_hidden_garrison_in_one_record() -> None:
-    from descape.viewer import _unit_name
+    from descape.viewer_common import _unit_name
 
     window = _window()
     try:

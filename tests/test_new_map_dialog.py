@@ -72,7 +72,7 @@ def test_custom_row_shows_the_size_range(dialog_for) -> None:
 
 
 def test_both_games_are_listed_and_pickable(dialog_for) -> None:
-    from descape.new_map_dialog import AOE2, ROR
+    from descape.game_dataset import AOE2, ROR
 
     dialog = dialog_for()
     combo = dialog.game_data_combo
@@ -86,7 +86,8 @@ def test_both_games_are_listed_and_pickable(dialog_for) -> None:
 
 
 def test_an_initial_return_of_rome_choice_is_kept(dialog_for) -> None:
-    from descape.new_map_dialog import ROR, NewMapChoice
+    from descape.game_dataset import ROR
+    from descape.new_map_dialog import NewMapChoice
 
     assert dialog_for(NewMapChoice(game_data=ROR)).current_choice().game_data == ROR
 
@@ -103,7 +104,8 @@ def test_terrain_list_is_the_visible_catalog_by_name(dialog_for) -> None:
 
 
 def test_choice_matches_the_widgets_after_accept(dialog_for) -> None:
-    from descape.new_map_dialog import AOE2, NewMapChoice
+    from descape.game_dataset import AOE2
+    from descape.new_map_dialog import NewMapChoice
 
     dialog = dialog_for()
     assert dialog.choice is None
@@ -291,7 +293,8 @@ def test_the_panel_is_fixed_at_its_contents_size() -> None:
 
 
 def test_set_initial_reshows_a_choice_and_clears_the_last_one(dialog_for) -> None:
-    from descape.new_map_dialog import ROR, NewMapChoice
+    from descape.game_dataset import ROR
+    from descape.new_map_dialog import NewMapChoice
 
     dialog = dialog_for()
     dialog.accept()
@@ -532,9 +535,9 @@ def test_the_plant_row_reads_the_picked_games_tables(dialog_for, monkeypatch) ->
     """Read under the picked game (both shipped tables agree on which terrains
     have trees, so a stand-in tells them apart), and AoE2 is active after."""
     from descape import game_dataset, terrain_units
-    from descape.new_map_dialog import AOE2, ROR
+    from descape.game_dataset import AOE2, ROR
 
-    monkeypatch.setattr(terrain_units, "is_tree_terrain", lambda terrain_id: game_dataset.is_ror())
+    monkeypatch.setattr(terrain_units, "is_tree_terrain", lambda terrain_id: game_dataset.active() == game_dataset.ROR)
     dialog = dialog_for()
     assert not dialog.trees_check.isEnabled()
     dialog.game_data_combo.setCurrentIndex(dialog.game_data_combo.findData(ROR))

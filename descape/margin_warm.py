@@ -30,7 +30,7 @@ pauses (user, 2026-11-10: its load entry running cold put the click back
 behind the same chunk).
 
 **Worker threads (maintainer plan Batch F T2).** Where the cache offers a
-ChunkJob (render_cache.prepare_chunk_job: native backend, Stepped or Sloped),
+ChunkJob (render_cache_base._ChunkCacheBase.prepare_chunk_job: native backend, Stepped or Sloped),
 a tick does only the Python half of each chunk on the GUI thread and hands
 the nogil kernel to a small pool. The budget above then bounds that Python
 half, and "max chunk" in Perf Trace is the GUI-side cost; worker kernel time
@@ -47,7 +47,7 @@ a paint's missing chunks to it and joins before returning, running unstarted
 jobs on the GUI thread too. One pool, so a paint and a margin warm never
 oversubscribe the cores; WORKERS sizes both.
 
-render_cache._ChunkCacheBase.is_level_resident()/has_chunk() are this
+render_cache_mip._ChunkCacheMipMixin.is_level_resident()/has_chunk() are this
 module's other half of the correctness argument -- see MarginWarmer.start()
 and ring_chunks() below for how each is used."""
 

@@ -485,7 +485,7 @@ def test_the_keybind_row_ships_unbound_and_stays_with_the_view_rows() -> None:
 
 
 def _dialog_and_window(path=None):
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.stepped_window(path) if path else _plain_window()
     return SettingsDialog(window), window
@@ -512,7 +512,7 @@ def test_the_sliders_open_at_the_persisted_values(monkeypatch) -> None:
 
 @pytest.mark.parametrize(("blend", "label"), [(-100, "dark 100"), (0, "off"), (72, "light 72")])
 def test_the_blend_label_names_the_side(blend: int, label: str) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     assert SettingsDialog._blend_label(blend) == label
 

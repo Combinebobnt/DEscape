@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.viewer_family import set_viewer_global, viewer_global
+
 import conftest
 
 pytestmark = [
@@ -24,9 +26,7 @@ FOREST_OAK = 10
 
 def _spy_builds(monkeypatch, fail: Exception | None = None) -> list:
     """Counts UnitEditModel constructions (the scenario each one was given)."""
-    import descape.viewer as viewer_module
-
-    real = viewer_module.UnitEditModel
+    real = viewer_global("UnitEditModel")
     built = []
 
     def spy(scenario):
@@ -35,7 +35,7 @@ def _spy_builds(monkeypatch, fail: Exception | None = None) -> list:
             raise fail
         return real(scenario)
 
-    monkeypatch.setattr(viewer_module, "UnitEditModel", spy)
+    set_viewer_global(monkeypatch, "UnitEditModel", spy)
     return built
 
 
@@ -112,14 +112,14 @@ def test_a_hidden_window_keeps_the_lazy_build(monkeypatch) -> None:
 
 
 def test_a_browse_only_save_after_the_idle_build_is_byte_identical(tmp_path, monkeypatch) -> None:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     window, _built, path = _loaded(tmp_path, monkeypatch)
     try:
         _pump()
         assert window.unit_edits is not None
         dest = tmp_path / "saved.aoe2scenario"
-        monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
         window.save_as()
         assert dest.read_bytes() == path.read_bytes()
     finally:
@@ -198,10 +198,9 @@ def test_a_reload_or_close_before_idle_drops_the_build(tmp_path, monkeypatch) ->
 
 
 def test_a_resize_keeps_its_remapped_model_through_idle(tmp_path, monkeypatch) -> None:
-    from PyQt5.QtWidgets import QMessageBox
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
     from test_resize_map import _fake_dialog, _questions
 
-    import descape.viewer as viewer_module
     from descape.scenario_io import load_map_and_units
 
     window, built, _path = _loaded(tmp_path, monkeypatch)
@@ -217,7 +216,7 @@ def test_a_resize_keeps_its_remapped_model_through_idle(tmp_path, monkeypatch) -
         assert len(built) == 1, "an idle build ran over the resize's own model"
         assert window.unit_edits is model, "the idle build replaced the resize's model"
         dest = tmp_path / "resized.aoe2scenario"
-        monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
         window.save_as()
         reloaded = load_map_and_units(dest)
         positions = {u.reference_id: (u.x, u.y) for us in reloaded.unit_manager.units for u in us}

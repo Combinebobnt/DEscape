@@ -31,7 +31,8 @@ def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT", a
     widgets and accepts (size None: reject untouched; accept False: set the
     anchor, then reject). Returns the list of dialogs shown, each with
     `opened` = (anchor, new_size) as it opened."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QDialog
+
     from descape.resize_dialog import ResizeDialog
     from descape.scenario_resize import Anchor
 
@@ -42,19 +43,19 @@ def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT", a
         self.opened = (self.anchor, self.new_size)
         if not accept:
             self.anchor_buttons[Anchor[anchor_name]].setChecked(True)
-            return viewer_module.QDialog.Rejected
+            return QDialog.Rejected
         if size is None:
-            return viewer_module.QDialog.Rejected
+            return QDialog.Rejected
         self.width_spin.setValue(size)
         self.anchor_buttons[Anchor[anchor_name]].setChecked(True)
-        return viewer_module.QDialog.Accepted
+        return QDialog.Accepted
 
     monkeypatch.setattr(ResizeDialog, "exec_", exec_)
     return shown
 
 
 def _questions(monkeypatch, answer):
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     asked = []
 
@@ -62,7 +63,7 @@ def _questions(monkeypatch, answer):
         asked.append((title, text))
         return answer
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(question))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     return asked
 
 
@@ -177,15 +178,13 @@ def test_declining_the_unsaved_prompt_shows_no_dialog(window, monkeypatch) -> No
 
 
 def test_save_as_after_a_resize_writes_the_resized_map(window, monkeypatch, tmp_path) -> None:
-    from PyQt5.QtWidgets import QMessageBox
-
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
     _fake_dialog(monkeypatch, 109, "RIGHT")
     _questions(monkeypatch, QMessageBox.Yes)
     window.resize_map()
     dest = tmp_path / "resized.aoe2scenario"
-    monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
     window.save_as()
     reloaded = load_map_and_units(dest)
     assert reloaded.map_manager.map_width == 109

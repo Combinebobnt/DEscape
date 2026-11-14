@@ -86,7 +86,7 @@ def substitute_newlines(display: str, newline_token: str | None) -> str:
 
     Carries no NUL or length guard: those are encode_for_write()'s, and they
     belong to the Messages block's <h length prefix rather than to every
-    caller (descape/trigger_panel.py's prose fields store a str on a trigger
+    caller (descape/trigger_panel_form.py's prose fields store a str on a trigger
     or effect, with no such prefix in the way).
     """
     token = newline_token if newline_token is not None else "\n"

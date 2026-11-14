@@ -5,7 +5,7 @@ their particle atlas instead of as a coloured mark.
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script like tools/gen_pasture_review_pack.py, whose off-engine render
-it shares: render.composite_rect_iso, Stepped, units and sprites on, no Qt.
+it shares: render_iso.composite_rect_iso, Stepped, units and sprites on, no Qt.
 Needs a configured AoE2:DE install (sprites, particles and terrain).
 
 The PACK_ID and every frame/check name are neutral on purpose: frame paths
@@ -53,7 +53,7 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, particle_art, render, unit_sprites
+from descape import asset_source, particle_art, render_bbox, render_iso, render_sprites, render_units, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
 
@@ -138,13 +138,13 @@ def _render(scn, tiles, pad_px: int, head: int, foot: int) -> np.ndarray:
         mm.map_width, mm.map_height, TILE_PX, grp.ig.MIN_ELEVATION, grp.ig.MAX_ELEVATION, elev_step_pct=50
     )
     elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render.merge_sprite_bboxes(
-        render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_sprites.merge_sprite_bboxes(
+        render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
     )
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, tiles, 0)
-    return render.composite_rect_iso(
+    return render_iso.composite_rect_iso(
         scn, max(0, x0 - pad_px), max(0, y0 - head * proj.half_h), x1 + pad_px, y1 + foot * proj.half_h,
         elevations, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites,
     )

@@ -13,7 +13,7 @@ import pytest
 from test_region_rotate import _add, _close, _last_status, _paste, _setup, _tiles
 from test_region_select import _select_window
 
-from descape import gate_orientation, region_transform, render, unit_model, unit_pick
+from descape import gate_orientation, region_transform, render_units, unit_model, unit_pick
 from descape.mirror_tools import compose, facing_image
 from descape.scatter_dialog import units_region
 
@@ -57,9 +57,9 @@ def _group(window):
         [
             (1, ARCHER, 40.5, 40.5, 1.25, None),
             (1, WALL, 42.5, 44.5, 0.0, None),
-            (1, GATE, *render.span_anchor(43, 44, 4, 1), 7.0, None),
+            (1, GATE, *render_units.span_anchor(43, 44, 4, 1), 7.0, None),
             (1, WALL, 47.5, 44.5, 0.0, None),
-            (1, HOUSE, *render.span_anchor(46, 39, 2, 2), 0.0, None),
+            (1, HOUSE, *render_units.span_anchor(46, 39, 2, 2), 0.0, None),
         ],
     )
     _select(window, units)
@@ -170,7 +170,7 @@ def test_flip_west_north_sends_a_diagonal_gate_and_wall_to_the_other_diagonal():
         units = _add(
             window,
             [
-                (1, diagonal, *render.span_anchor(43, 40, 4, 4), 0.0, None),
+                (1, diagonal, *render_units.span_anchor(43, 40, 4, 4), 0.0, None),
                 (1, WALL, 40.5, 40.5, 3.0, None),
                 (1, ARCHER, 48.5, 45.5, 0.0, None),
             ],
@@ -216,7 +216,7 @@ def test_four_group_turns_give_back_the_first_state_exactly_with_the_lift_alive(
             [
                 (1, ARCHER, 41.29999923706055, 40.70000076293945, 1.25, None),  # off-grid facing and point
                 (1, HOUSE, 44.5, 40.5, 0.0, None),  # off parity
-                (1, GATE, *render.span_anchor(40, 43, 4, 1), 7.0, None),
+                (1, GATE, *render_units.span_anchor(40, 43, 4, 1), 7.0, None),
                 (1, WALL, 46.5, 42.5, 3.0, None),
             ],
         )
@@ -298,7 +298,7 @@ def test_a_selection_change_or_another_edit_between_two_flips_makes_two_records(
 def test_a_refused_turn_mid_lift_changes_nothing_and_free_placement_lets_it_through():
     window = _units_window()
     try:
-        units = _add(window, [(1, HOUSE, *render.span_anchor(40, 40, 2, 2), 0.0, None), (1, ARCHER, 45.5, 40.5, 0.0, None)])
+        units = _add(window, [(1, HOUSE, *render_units.span_anchor(40, 40, 2, 2), 0.0, None), (1, ARCHER, 45.5, 40.5, 0.0, None)])
         _house, archer = units
         firsts = [region_transform.FirstUnit(i, u.unit_const, u.x, u.y, u.rotation) for i, u in enumerate(units)]
         rect = units_region(units, 120, 120)
@@ -352,7 +352,7 @@ def test_a_gate_is_placed_by_its_turned_siblings_footprint():
     (41, 38), well clear of the old row at y = 40, where a wall stands."""
     window = _units_window()
     try:
-        (gate,) = _add(window, [(1, GATE, *render.span_anchor(40, 40, 4, 1), 7.0, None)])
+        (gate,) = _add(window, [(1, GATE, *render_units.span_anchor(40, 40, 4, 1), 7.0, None)])
         _add(window, [(2, WALL, 41.5, 38.5, 0.0, None)])
         _select(window, [gate])
         before = _state(window)
@@ -367,7 +367,7 @@ def test_an_occupant_rides_onto_its_hosts_new_point_and_one_stored_away_leaves_t
     window = _units_window()
     try:
         castle, archer = _add(
-            window, [(1, CASTLE, *render.span_anchor(40, 40, 4, 4), 0.0, None), (1, ARCHER, 47.5, 41.5, 0.0, None)]
+            window, [(1, CASTLE, *render_units.span_anchor(40, 40, 4, 4), 0.0, None), (1, ARCHER, 47.5, 41.5, 0.0, None)]
         )
         (villager,) = _add(window, [(1, VILLAGER, 70.5, 70.5, 0.0, None)])
         model = window._ensure_unit_edits()
@@ -488,7 +488,7 @@ def test_flip_of_a_square_region_turns_its_tiles_and_units_in_place_as_one_recor
         _paint(window, rect, lambda x, y: (_A, _B, _C)[(x * 7 + y * 3) % 3])
         _raise(window, [(41, 41, 1), (42, 41, 1), (41, 42, 1)])
         archer, house = _add(
-            window, [(1, ARCHER, 40.5, 44.5, 1.25, None), (1, HOUSE, *render.span_anchor(43, 41, 2, 2), 0.0, None)]
+            window, [(1, ARCHER, 40.5, 44.5, 1.25, None), (1, HOUSE, *render_units.span_anchor(43, 41, 2, 2), 0.0, None)]
         )
         refs = [archer.reference_id, house.reference_id]
         window.on_region_selected(rect)
@@ -635,12 +635,12 @@ def test_a_fish_flips_with_its_water_and_is_not_refused_by_the_land_it_leaves_fo
     try:
         rect = (40, 40, 46, 46)
         _paint(window, rect, lambda x, y: _C if x < 42 else _GRASS)  # water in the two left columns
-        (fish,) = _add(window, [(0, PERCH, *render.span_anchor(40, 42, 2, 2), 0.0, None)])
+        (fish,) = _add(window, [(0, PERCH, *render_units.span_anchor(40, 42, 2, 2), 0.0, None)])
         window.on_region_selected(rect)
         window.flip_horizontal_action.trigger()
         assert _last_status(window) == "Flipped region West ↔ North (Enter to apply, Esc to undo)"
         mm = window.scenario.map_manager
-        tiles = render.occupied_tiles_for(PERCH, fish.x, fish.y, mm.map_width, mm.map_height)
+        tiles = render_units.occupied_tiles_for(PERCH, fish.x, fish.y, mm.map_width, mm.map_height)
         assert tiles and all(mm.terrain[y * mm.map_width + x].terrain_id == _C for x, y in tiles)
         assert (int(fish.x), int(fish.y)) != (41, 43), "the fish moved with its water"
     finally:
@@ -732,7 +732,7 @@ def test_a_setter_raising_mid_step_leaves_the_document_and_history_as_before_the
         else:
             rect = (40, 40, 46, 46)
             _paint(window, rect, lambda x, y: (_A, _B, _C)[(x * 7 + y * 3) % 3])
-            _add(window, [(1, ARCHER, 40.5, 44.5, 1.25, None), (1, HOUSE, *render.span_anchor(43, 41, 2, 2), 0.0, None)])
+            _add(window, [(1, ARCHER, 40.5, 44.5, 1.25, None), (1, HOUSE, *render_units.span_anchor(43, 41, 2, 2), 0.0, None)])
             window.on_region_selected(rect)
         lift = None
         if not first:

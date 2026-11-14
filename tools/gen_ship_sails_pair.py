@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import civ_art, object_catalog, place_rotation, player_fields, terrain_classes
 from descape.edit_history import EditHistory
-from descape.render import unit_occupied_tiles
+from descape.render_units import unit_occupied_tiles
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.unit_model import UnitEditModel

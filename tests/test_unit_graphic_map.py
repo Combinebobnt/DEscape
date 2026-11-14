@@ -784,9 +784,9 @@ def test_garrisoned_hosts_carry_their_measured_flags(graphics):
 
 def test_return_of_rome_hosts_carry_garrison_flags():
     """GH #261: RoR's transports fly the flag at the offset measured on the issue, and a building has one too."""
-    from descape import game_dataset
+    from descape import games
 
-    ror = json.loads((game_dataset.ROR_TABLES_DIR / GRAPHIC_MAP_PATH.name).read_text())["graphics"]
+    ror = json.loads((games.ROR.tables_dir / GRAPHIC_MAP_PATH.name).read_text())["graphics"]
     for unit_const in (545, 37):
         assert _flag_tuples(ror[str(unit_const)]) == [("e_all_garrison_flag_x1", 2, -24)], unit_const
     assert _flag_tuples(ror["109"]), "Town Center"

@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from testkit import settings_isolation
+from testkit.qt_window import set_panel_width
 
 OUT_DIR = ROOT / "build" / "trigger_panel_eyeball"
 
@@ -85,8 +86,8 @@ def _capture_one(prefix: str, filename: str, expected_sections: int, out_dir: Pa
         print(f"{filename}: grouped={panel._grouped} top_level_rows={panel.tree.topLevelItemCount()} "
               f"(plan expects {expected_sections} sections)")
 
-        # 1. expanded -- the populate-time default (every section starts
-        # expanded, see trigger_panel.py's setExpanded(True) call sites).
+        # 1. expanded -- the populate-time default (a section not in the panel's
+        # collapsed keys starts expanded, see trigger_panel.py's _populate_grouped).
         expanded_path = out_dir / f"{prefix}_expanded.png"
         _grab(window, expanded_path)
         written.append(expanded_path)
@@ -702,13 +703,12 @@ def _capture_multi_entry_states(out_dir: Path) -> list[Path]:
     try:
         window.resize(1500, 1100)
         QApplication.processEvents()
-        total = sum(window.content_splitter.sizes())
         # The trigger list short, so the form under review gets the height.
         panel.splitter.setSizes([180, 820])
 
         def shot(name: str, focus_field: str = "") -> None:
             for width, suffix in ((600, ""), (int(panel.MIN_USEFUL_WIDTH), "_narrow")):
-                window.content_splitter.setSizes([width, total - width])
+                set_panel_width(window, width)
                 QApplication.processEvents()
                 if focus_field:
                     widget = next(w for s, _k, _i, w in panel._rows if s.name == focus_field)
@@ -793,7 +793,6 @@ def _capture_instruction_preview_states(out_dir: Path) -> list[Path]:
     try:
         window.resize(1500, 1100)
         QApplication.processEvents()
-        total = sum(window.content_splitter.sizes())
         panel.splitter.setSizes([180, 820])
         entry = panel._manager().triggers[0].effects[0]
         for name, fields in states:
@@ -803,7 +802,7 @@ def _capture_instruction_preview_states(out_dir: Path) -> list[Path]:
             panel.refresh_entries(select=("effect", 0))
             QApplication.processEvents()
             for width, suffix in ((600, ""), (int(panel.MIN_USEFUL_WIDTH), "_narrow")):
-                window.content_splitter.setSizes([width, total - width])
+                set_panel_width(window, width)
                 QApplication.processEvents()
                 preview = panel._instruction_preview
                 panel.property_area.ensureWidgetVisible(preview)

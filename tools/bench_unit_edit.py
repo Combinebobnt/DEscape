@@ -71,7 +71,8 @@ resident and Sloped, sprites on. Per row: the median `unit_sources`,
 `unit_patch` and per-level in-op build ms from Perf Trace's own phases, and
 the `splice_refused` tokens seen. --counts prints the tokens and build
 counts only, no ms, for a no-timing check. DESCAPE_BENCH_ROOT points the
-import at another checkout's descape/, so one script drives base and head.
+import at another checkout's descape/, so one script drives base and head;
+that checkout must be at or after TASK-629.02 (the render cut).
 
 Informational only, matching tools/bench_pick_plane_patch.py's convention:
 always runs, never pass/fail. Read the ratio each phase takes of the total,
@@ -90,12 +91,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # The --group-move A/B: this script, another checkout's descape/ (read before the import below).
 CODE_ROOT = Path(os.environ.get("DESCAPE_BENCH_ROOT") or ROOT).resolve()
+if not (CODE_ROOT / "descape" / "render_cache_base.py").is_file():
+    sys.exit(
+        f"bench_unit_edit: {CODE_ROOT} predates TASK-629.03 (no descape/render_cache_base.py); DESCAPE_BENCH_ROOT must be at or after it"
+    )
 sys.path.insert(0, str(CODE_ROOT))
 
-from descape import render, unit_pick, unit_sprites
+from descape import render_bbox, render_units, unit_pick, unit_sprites
 from descape.edit_history import EditHistory
-from descape.render import elevations_and_proj, sloped_elevations_and_proj, tile_pixels_for_map
-from descape.render_cache import DEFAULT_CHUNK_PX, FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
+from descape.render_cache import DEFAULT_CHUNK_PX, FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import UnitSplice
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import sloped_elevations_and_proj
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
 from descape.unit_model import UnitEditModel
@@ -198,7 +206,7 @@ def _run_phases(cache, scenario, model: UnitEditModel, player: int, unit, viewpo
 
     if cache.style == "sloped":
         def _bystander():
-            render.build_bystander_grid(cache.building_bboxes, cache.chunk_px)
+            render_bbox.build_bystander_grid(cache.building_bboxes, cache.chunk_px)
 
         lines.append(f"    {'build_bystander_grid()':>28}  {_time_ms(_bystander):7.3f}ms")
 
@@ -244,7 +252,7 @@ def _settle(cache) -> None:
 
 def _footprint(scenario, unit) -> tuple[tuple[int, int], tuple[tuple[int, int], ...]]:
     mm = scenario.map_manager
-    tiles = render.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ()
+    tiles = render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ()
     return (int(unit.x), int(unit.y)), tuple(tiles)
 
 
@@ -326,7 +334,7 @@ def _convert_batch(scenario, k: int, kind: str = "alone") -> tuple[int, int, lis
     footprints: dict[int, list | None] = {}
     for units in manager.units:
         for u in units:
-            tiles = render.unit_occupied_tiles(u, mm.map_width, mm.map_height)
+            tiles = render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height)
             footprints[id(u)] = tiles
             for tile in tiles or ():
                 occupancy.setdefault(tile, []).append(u)
@@ -393,12 +401,12 @@ def _repaint_bbox(cache, splices, pre):
     """(bbox, label): what ViewerWindow._patch_unit_edit_cache() repaints at
     the visible level (mip 0 here) once invalidate_units() has run: the
     tight bbox from the cache's own sprite extents, or the reach-padded one
-    when either extent is REACH_FALLBACK (or the build has no extents)."""
+    when either extent is REACH_FALLBACK (or there are no extents)."""
     import _tight_bbox
 
-    from descape import render_cache
+    from testkit.render_family import render_cache_global
 
-    fallback = getattr(render_cache, "REACH_FALLBACK", None)
+    fallback = render_cache_global("REACH_FALLBACK")
     if pre is not None and pre is not fallback:
         post = cache.sprite_extent_after(splices, 0)
         if post is not fallback:
@@ -505,14 +513,11 @@ def _convert_kind_rows(scenario, cache, model, history, style: str, kind: str) -
 
 
 def _splice_guard(scenario, units_by_tile: dict, unit_filter: UnitFilter):
-    """What Stepped/Sloped can_splice() asks, without building a cache: a
-    module-level _splice_plan() where this build has one, else
-    _batch_splice_eligible(). Feature-detected so the tool runs on either."""
-    from descape import render_cache
+    """What Stepped/Sloped can_splice() asks, without building a cache: the
+    module-level _splice_plan()."""
+    from testkit.render_family import render_cache_global
 
-    plan = getattr(render_cache, "_splice_plan", None)
-    if plan is None:
-        return lambda changed: render_cache._batch_splice_eligible(units_by_tile, changed)
+    plan = render_cache_global("_splice_plan")
     return lambda changed: plan(scenario, units_by_tile, unit_filter, changed) is not None
 
 
@@ -523,7 +528,7 @@ def _fallback_rate(path: Path) -> str:
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
     unit_filter = UnitFilter()
-    units_by_tile = render._units_by_tile(scenario, unit_filter)
+    units_by_tile = render_units._units_by_tile(scenario, unit_filter)
     guard = _splice_guard(scenario, units_by_tile, unit_filter)
     windows: dict[tuple[int, int, int], list[UnitSplice]] = {}
     has_wall: set[tuple[int, int, int]] = set()
@@ -531,7 +536,7 @@ def _fallback_rate(path: Path) -> str:
     for player in range(1, len(scenario.unit_manager.units)):
         destination = 1 if player != 1 else 2
         for i, u in enumerate(scenario.unit_manager.units[player]):
-            tiles = render.unit_occupied_tiles(u, mm.map_width, mm.map_height)
+            tiles = render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height)
             if tiles is None:
                 continue
             own, tiles = (int(u.x), int(u.y)), tuple(tiles)
@@ -568,7 +573,7 @@ def _big_movable_building(scenario) -> tuple[int, int, object]:
     occupancy: dict[tuple[int, int], list] = {}
     for units in manager.units:
         for u in units:
-            for tile in render.unit_occupied_tiles(u, mm.map_width, mm.map_height) or ():
+            for tile in render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height) or ():
                 occupancy.setdefault(tile, []).append(u)
     best = None
     for player in range(1, len(manager.units)):
@@ -577,7 +582,7 @@ def _big_movable_building(scenario) -> tuple[int, int, object]:
                 continue
             if unit_sprites.rotation_variant_eligible(u.unit_const):
                 continue
-            tiles = render.unit_occupied_tiles(u, mm.map_width, mm.map_height)
+            tiles = render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height)
             if not tiles or int(u.x) + 2 >= mm.map_width:
                 continue
             shifted = {(x + 1, y) for x, y in tiles}
@@ -598,9 +603,9 @@ def _bbox_section(path: Path, style: str, chunk_px: int) -> list[str]:
     resident and visible, the cache-only analogue of a zoomed-in view."""
     import _tight_bbox
 
-    from descape import render_cache
+    from testkit.render_family import render_cache_global
 
-    REACH_FALLBACK = getattr(render_cache, "REACH_FALLBACK", None)
+    REACH_FALLBACK = render_cache_global("REACH_FALLBACK")
     scenario = load_map_and_units(path)
     cache = _make_cache(style, scenario, chunk_px, sprites=True)
     model = UnitEditModel(scenario)
@@ -714,7 +719,7 @@ def _player_window(scenario, player: int, want_walls: bool):
         offsets.append((ox, oy))
     by_tile: dict[tuple[int, int], list[tuple[int, object]]] = {}
     for i, u in enumerate(scenario.unit_manager.units[player]):
-        if not render.unit_occupied_tiles(u, w, h):
+        if not render_units.unit_occupied_tiles(u, w, h):
             continue
         if not all(0 <= u.x + dx < w and 0 <= u.y + dy < h for dx, dy in offsets):
             continue

@@ -18,6 +18,7 @@ import pytest
 
 from descape import asset_source, terrain_browser, terrain_catalog
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.qt_window import panel_width, set_panel_width
 
 import conftest
 
@@ -266,7 +267,7 @@ def test_refresh_swatches_replaces_existing_icons(monkeypatch) -> None:
 
 
 def test_terrain_mode_shows_the_picker_page_and_view_does_not() -> None:
-    from descape.viewer import _LEFT_PAGE_INFO, _LEFT_PAGE_TERRAIN
+    from descape.viewer_common import _LEFT_PAGE_INFO, _LEFT_PAGE_TERRAIN
 
     window = _terrain_window()
     try:
@@ -284,9 +285,9 @@ def test_entering_terrain_widens_a_too_narrow_pane() -> None:
     window = _terrain_window()
     try:
         window.mode_combo.setCurrentText("View")
-        window.content_splitter.setSizes([200, 1000])
+        set_panel_width(window, 200)
         window.mode_combo.setCurrentText("Terrain")
-        assert window.content_splitter.sizes()[0] >= TerrainPanel.MIN_USEFUL_WIDTH
+        assert panel_width(window) >= TerrainPanel.MIN_USEFUL_WIDTH
     finally:
         _close(window)
 
@@ -446,7 +447,7 @@ def test_set_terrain_emits_once_and_never_for_a_no_change() -> None:
 
 
 def test_the_hover_readout_reaches_the_panel_line() -> None:
-    from descape.viewer import HOVER_IDLE_TEXT
+    from descape.viewer_common import HOVER_IDLE_TEXT
 
     window = _terrain_window()
     try:
@@ -526,7 +527,7 @@ def test_clear_forgets_the_install_path_and_its_art_caches(tmp_path, monkeypatch
         assert "No install path configured" in dialog.install_status_label.text()
         assert "Install path cleared" in window.status_log.toPlainText()
 
-        from descape.viewer import SettingsDialog
+        from descape.settings_dialog import SettingsDialog
 
         dialog.close()
         asset_source.clear_install_caches()  # the next run re-reads config.yaml

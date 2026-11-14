@@ -1,7 +1,7 @@
 """TASK-031.01: a box-selected group of a few hundred trees deletes in one
 record, and undo and redo each give an exact unit layout.
 
-tests/test_unit_edit_viewer.py's group-delete tests use two or three units.
+tests/test_unit_edit_viewer_group_ops.py's group-delete tests use two or three units.
 This runs the same viewer path (marquee keys -> on_marquee_select ->
 on_unit_delete -> undo/redo) at the in-app check's scale. The default-tier
 case builds its own scenario through the real write path: 420 GAIA trees with
@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_unit_edit_viewer import (
+from unit_edit_viewer_helpers import (
     FIXTURE_PATH,
     _close,
     _no_install_env,  # noqa: F401 -- autouse fixture
@@ -35,7 +35,7 @@ _BLOCK = (40, 40, 82, 60)
 
 
 def _flat_units_window(path: Path):
-    """test_unit_edit_viewer._window() for any file: Flat top-down, garrisoned shown, Units mode."""
+    """unit_edit_viewer_helpers._window() for any file: Flat top-down, garrisoned shown, Units mode."""
     conftest.ensure_qapp()
     from descape.viewer import ViewerWindow
 

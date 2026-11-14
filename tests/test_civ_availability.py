@@ -14,6 +14,7 @@ from descape import civ_availability, disables_fields, game_dataset, player_fiel
 from descape.civ_availability import NO_OVERRIDES, Overrides
 from descape.command_buttons import TECH, UNIT
 from descape.scenario_io import load_map_and_units, parse_triggers
+from testkit.ror_fixture import ROR_VARIANT
 
 TRIGGERS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
@@ -64,7 +65,7 @@ def test_a_return_of_rome_file_reads_its_own_civ_tokens(monkeypatch) -> None:
     loaded = load_map_and_units(TRIGGERS_FIXTURE)
     monkeypatch.setattr(player_fields, "current_value", lambda _loaded, _spec, _player: "PERSIAN-CIV")
     assert civ_availability.player_civ(loaded, 1) == 8
-    loaded.game_variant = game_dataset.ROR_VARIANT
+    loaded.game_variant = ROR_VARIANT
     assert civ_availability.player_civ(loaded, 1) == 9
 
 

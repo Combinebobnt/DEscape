@@ -4,11 +4,11 @@ A sprite piece used to paint once, at its footprint's last tile in depth order
 (or its slot), so a unit standing just outside a building's front-left or
 front-right face sorted before the building and was painted over. Each piece
 is now cut into screen columns, each painting at the earlier of its column's
-front footprint tile and the piece's own key (render._sprite_columns()).
+front footprint tile and the piece's own key (render_sprites._sprite_columns()).
 
 Synthetic throughout: a fake unit_sprites.sprite_pieces_for draws solid
 rectangles sized from the tile, so coverage is countable by colour. The
-behaviour tests read render.SPRITE_COLUMN_SLICING as it stands, so setting it
+behaviour tests read render_sprites.SPRITE_COLUMN_SLICING as it stands, so setting it
 False (the revert) fails them; the structural ones carry non-vacuity asserts.
 """
 
@@ -32,14 +32,16 @@ from test_invalidate_units_splice import _place as _template_place
 from test_invalidate_units_splice import _scenario as _template_scenario
 from test_sprite_chunks import MAP_H, MAP_W, Unit, _scenario
 
-from descape import render, unit_sprites
+from descape import render_sprites, render_units, unit_sprites
+from descape.terrain_palette import BUILDING_TILE_SPANS, DOODAD_TILE_SPANS, tile_span
+from testkit.render_family import set_render_global
 
 from test_unit_sprites import CONST as UNIT
 
 STYLES = ("stepped", "sloped")
 BUILDING = UNIT + 2  # its span comes from the `building` fixture
 DIAGONAL_GATE = 659  # a real BUILDING_TILE_OFFSETS const: six tiles along x == y
-OWN_POINT = next(c for c, span in render.DOODAD_TILE_SPANS.items() if span[0] > 1)
+OWN_POINT = next(c for c, span in DOODAD_TILE_SPANS.items() if span[0] > 1)
 UNIT_COLOUR = (255, 0, 255)
 PIECE_COLOURS = ((0, 200, 40), (40, 0, 200), (200, 120, 0))
 
@@ -77,7 +79,7 @@ class _Art:
             return [unit_sprites.SpritePiece(draw, 0, 0)]
         if unit_const not in (BUILDING, DIAGONAL_GATE, OWN_POINT):
             return []
-        span_x, span_y = render.tile_span(unit_const, render.NON_BUILDING_SPAN)
+        span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
         n = span_x + span_y
         w, h = (n + 2 * self.overhang) * half_w, (n + 4) * half_h
         hotspot_x, hotspot_y = w // 2, h - n * half_h // 2
@@ -96,7 +98,7 @@ class _Art:
 def art(monkeypatch):
     fake = _Art()
     monkeypatch.setattr(unit_sprites, "sprite_pieces_for", fake)
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, BUILDING, (3, 3))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, BUILDING, (3, 3))
     return fake
 
 
@@ -116,7 +118,7 @@ def _unit_px(img: np.ndarray, rect) -> int:
 
 def _unit_rect(style: str, scn) -> tuple[int, int, int, int]:
     _img, elevations, corner_rise, proj = _full(style, scn, with_sprites=True)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
     for entries in layer.by_anchor.values():
         for draw, ax, ay, _rise in entries:
             if tuple(draw.rgba[0, 0, :3]) == UNIT_COLOUR:
@@ -153,7 +155,7 @@ CASES = {
 def test_a_unit_in_front_of_a_face_draws_over_the_building(art, backend, style, case, monkeypatch):  # noqa: F811
     building, front, behind = CASES[case]
     if case == "gate":
-        monkeypatch.setitem(render.BUILDING_TILE_SPANS, BUILDING, (4, 1))
+        monkeypatch.setitem(BUILDING_TILE_SPANS, BUILDING, (4, 1))
     failures = []
     for stitched in (False, True):
         for unit_first in (False, True):
@@ -182,7 +184,7 @@ def test_higher_ground_in_front_of_a_face_hides_its_lower_ink(art, style, raised
     scn.map_manager.get_tile(*raised).elevation = 2
     now = _building_px(_render(style, scn, False))
     with monkeypatch.context() as m:
-        m.setattr(render, "SPRITE_COLUMN_SLICING", False)
+        set_render_global(m, "SPRITE_COLUMN_SLICING", False)
         single = _building_px(_render(style, scn, False))
     assert single <= flat
     assert now < single, f"raised {raised}: {now} building px against the single anchor's {single}"
@@ -195,7 +197,7 @@ def test_a_moved_slice_paints_after_a_unit_on_its_own_tile(art, backend):  # noq
     building = (BUILDING, 5.5, 5.5)
     scn = _units([building])
     _img, elevations, _corner_rise, proj = _full("stepped", scn, with_sprites=True)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert any(type(d) is unit_sprites.MovedSlice for d, *_ in layer.by_anchor[(4, 4)]), "no slice moved to (4, 4)"
     for unit_first in (False, True):
         covered, own = _covered("stepped", building, (4, 4), True, unit_first)
@@ -217,14 +219,14 @@ def test_a_composite_drawn_alone_is_byte_identical_to_the_single_anchor(art, bac
         for stitched in (False, True):
             sliced = _render(style, scn, stitched)
             with monkeypatch.context() as m:
-                m.setattr(render, "SPRITE_COLUMN_SLICING", False)
+                set_render_global(m, "SPRITE_COLUMN_SLICING", False)
                 single = _render(style, scn, stitched)
             assert np.array_equal(sliced, single), (style, stitched)
 
 
 def _layer(scn):
     _img, elevations, _corner_rise, proj = _full("stepped", scn, with_sprites=True)
-    return render.sprite_draws_by_anchor(scn, proj, elevations), proj
+    return render_sprites.sprite_draws_by_anchor(scn, proj, elevations), proj
 
 
 def _piece_of(draw, pieces) -> int:
@@ -257,14 +259,14 @@ def test_slices_partition_each_piece_inside_the_footprint(art, const, at, overha
     art.slots = [None, [0, 0]] if const == BUILDING else None
     scn = _units([(const, *at)])
     layer, proj = _layer(scn)
-    tiles = render.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    tiles = render_units.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     lo = min(x + y for x, y in tiles)
     hi = max(x + y for x, y in tiles) + 1
     pieces = unit_sprites.sprite_pieces_for(const, 0.0, 1, proj.half_w)
     key = unit_sprites.sprite_anchor_tile(tiles)
-    span_x, span_y = render.tile_span(const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(const, render_units.NON_BUILDING_SPAN)
     # A slot counts from the unclamped footprint start, then clamps onto the map (_resolve_unit_sprite()).
-    start = render._span_start(at[0], span_x), render._span_start(at[1], span_y)
+    start = render_units._span_start(at[0], span_x), render_units._span_start(at[1], span_y)
     lo_x, hi_x = min(x for x, _ in tiles), max(x for x, _ in tiles)
     lo_y, hi_y = min(y for _, y in tiles), max(y for _, y in tiles)
 
@@ -303,7 +305,7 @@ def test_a_strip_with_no_tile_takes_its_left_neighbours_front():
     only the strips over (3, 3) stay at the key."""
     proj = _layer(_units([]))[1]
     hw = proj.half_w
-    runs = render._sprite_columns([(0, 0), (3, 3)], (3, 3), proj.origin_x, 8 * hw, proj)
+    runs = render_sprites._sprite_columns([(0, 0), (3, 3)], (3, 3), proj.origin_x, 8 * hw, proj)
     assert runs == [((0, 0), 0, 6 * hw, True), ((3, 3), 6 * hw, 8 * hw, False)]
 
 
@@ -314,7 +316,7 @@ def test_one_tile_units_and_own_point_doodads_paint_whole(art):
     assert len(entries) == 2
     whole = {id(p.draw) for c in (UNIT, OWN_POINT) for p in unit_sprites.sprite_pieces_for(c, 0.0, 1, proj.half_w)}
     assert {id(d) for d, *_ in entries} == whole
-    assert render.tile_span(OWN_POINT, render.NON_BUILDING_SPAN)[0] > 1, "the doodad is one tile, so this proves nothing"
+    assert tile_span(OWN_POINT, render_units.NON_BUILDING_SPAN)[0] > 1, "the doodad is one tile, so this proves nothing"
 
 
 @pytest.mark.parametrize("style", STYLES)

@@ -163,7 +163,7 @@ def test_the_fixture_index_matches_the_generator() -> None:
 
 
 def _splice(player_id, unit, old_own, new_own, old_player_id=None):
-    from descape.render_cache import UnitSplice
+    from descape.render_cache_splice import UnitSplice
 
     # The tile lists are never read by the patch: empty on both sides here.
     return UnitSplice(player_id, 0, unit, old_own, new_own, (), (), old_player_id=old_player_id)

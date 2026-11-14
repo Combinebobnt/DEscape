@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from descape import debug_log, gc_hold, level_warm, margin_warm
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -580,7 +581,6 @@ def test_a_load_holds_for_its_warm_after_the_freeze(qapp, monkeypatch) -> None:
 
 @pytest.mark.gui
 def test_the_next_load_parses_with_the_hold_reset(qapp, monkeypatch) -> None:
-    from descape import viewer
     from descape.scenario_io import BLANK_TEMPLATE_PATH
 
     gc.set_threshold(*ODD)
@@ -588,13 +588,13 @@ def test_the_next_load_parses_with_the_hold_reset(qapp, monkeypatch) -> None:
     try:
         assert gc_hold.is_engaged(), "vacuous: nothing held before the second load"
         seen: list = []
-        real = viewer.load_map_and_units
+        real = viewer_global("load_map_and_units")
 
         def recording(path):
             seen.append((gc.get_threshold(), _idle_armed()))
             return real(path)
 
-        monkeypatch.setattr(viewer, "load_map_and_units", recording)
+        set_viewer_global(monkeypatch, "load_map_and_units", recording)
         window.load_scenario(BLANK_TEMPLATE_PATH)
         assert seen == [(ODD, False)], "the load kept the previous document's hold"
     finally:

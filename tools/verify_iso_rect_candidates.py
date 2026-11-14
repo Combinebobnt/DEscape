@@ -2,7 +2,7 @@
 """Verifies descape.iso_geometry.tiles_in_screen_rect() -- v2.6 completion
 plan's Track B, Phase B-A. tiles_in_screen_rect()
 replaces an O(w*h) full-grid scan (still used directly today by
-render.refresh_region_iso, which this script leaves untouched) with an
+render_iso.refresh_region_iso, which this script leaves untouched) with an
 O(candidates) analytic s=x+y / d=y-x range solve -- this script is the
 proof those two produce the EXACT SAME ordered result, not just the same
 set: order matters for correct depth compositing, so a set-equality check
@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from descape import iso_geometry
-from descape.render import tile_pixels_for_map
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 RNG_SEED = 20260805
@@ -39,7 +39,7 @@ N_RANDOM_RECTS_PER_FILE = 220
 
 def full_scan_candidates(x0: int, y0: int, x1: int, y1: int, w: int, h: int, proj) -> np.ndarray:
     """Reference implementation: the O(w*h) full-grid scan
-    render.refresh_region_iso itself uses for its terrain_intersects mask,
+    render_iso.refresh_region_iso itself uses for its terrain_intersects mask,
     built from the same tile_screen_bounds_swept() primitive
     tiles_in_screen_rect() uses -- so this isolates the enumeration
     STRATEGY as the only thing under test, not the underlying geometry

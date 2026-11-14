@@ -632,6 +632,15 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("ellipse", BLUE, (8.8, 10.4, 1.6, 1.6)),
         ("line", BLUE, (12.7, 6.5, 12.7, 12.5, 1.8)),
     ),
+    # A window with its panel column on the left and the log strip under the map.
+    "view-reset-layout": (
+        ("rect", Role.INK, (2, 3, 20, 1.8)),
+        ("rect", Role.INK, (2, 19.2, 20, 1.8)),
+        ("rect", Role.INK, (2, 4.8, 1.8, 14.4)),
+        ("rect", Role.INK, (20.2, 4.8, 1.8, 14.4)),
+        ("rect", BLUE, (5, 6.5, 5, 11)),
+        ("rect", Role.INK_SOFT, (11.5, 14.5, 7.5, 3)),
+    ),
     # --- Help ---
     "help-about": (
         ("ellipse", BLUE, (2, 2, 20, 20)),

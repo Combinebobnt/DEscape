@@ -4,7 +4,7 @@
 
 A prior attempt at this same measurement was never committed, so its
 "~1410 of 2014" figures are not re-derivable -- this script exists so the
-numbers below always are. Run it any time render.wall_variant_rotation_overrides()
+numbers below always are. Run it any time render_units.wall_variant_rotation_overrides()
 or unit_sprites.wall_connector_consts() changes.
 
 Per file, reports:
@@ -21,7 +21,7 @@ Per file, reports:
   - how many 0.0-rotation walls sit on a non-zero mask whose derived index
     isn't 0 -- the question that decides whether a literal-looking 0.0 can
     be trusted verbatim inside a file that also has real radian-encoded
-    walls (see render.wall_variant_rotation_overrides()'s docstring).
+    walls (see render_units.wall_variant_rotation_overrides()'s docstring).
 
 The connector tile set (for computing neighbour masks) is built over ALL
 units, every player, ignoring any filter -- a wall's real shape does not
@@ -31,7 +31,7 @@ depend on which players a viewer happens to be showing.
 descape/unit_sprites.py** (2026-09-12 generated-replacement plan). It works
 by swapping `unit_sprites.wall_connector_consts()` for the duration of the
 run, so both this tool's own connector-tile walk and
-render.wall_variant_rotation_overrides() (the shipped function under test)
+render_units.wall_variant_rotation_overrides() (the shipped function under test)
 see the same candidate. `hand` is a frozen literal of the pre-2026-09-12
 15-const set, kept independent of the module so the before/after comparison
 stays reproducible even after the shipped set moves again.
@@ -73,7 +73,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from descape import gate_orientation, unit_sprites
-from descape.render import (
+from descape.render_units import (
     _wall_variant_rotation_overrides_uncached,
     stored_rotation,
     unit_occupied_tiles,
@@ -135,7 +135,7 @@ def _connector_set(name: str):
     """Swaps unit_sprites.wall_connector_consts() for `name`'s candidate for
     the duration of the block. Every caller reaches it through the module
     attribute (this tool's own _connector_tiles(), and
-    render.wall_variant_rotation_overrides()), so the swap is picked up by
+    render_units.wall_variant_rotation_overrides()), so the swap is picked up by
     both without either needing a parameter added."""
     consts = _CONNECTOR_SET_FACTORIES[name]()
     original = unit_sprites.wall_connector_consts
@@ -175,7 +175,7 @@ def _neighbour_mask(tx: int, ty: int, connector_tiles: set[tuple[int, int]]) -> 
 
 
 def scan_file(path: Path) -> dict:
-    """Measures the SHIPPED render.wall_variant_rotation_overrides() against
+    """Measures the SHIPPED render_units.wall_variant_rotation_overrides() against
     this file, so a regression in that function shows up here rather than in
     a second, hand-duplicated copy of its logic. The mask/today-index
     diagnostics below (for --correlation and the 0.0-on-nonzero-mask count)
@@ -266,7 +266,7 @@ def _agreement_summary(files: list[Path]) -> dict:
             continue
         # Only integer-only files are scored: a literal-looking value inside a
         # radian-encoded file carries no more shape information than any other
-        # radian value (render.wall_variant_rotation_overrides()'s own
+        # radian value (render_units.wall_variant_rotation_overrides()'s own
         # docstring), so it isn't ground truth there.
         if not all(unit_sprites.is_literal_variant_index(rotation, 5) for _unit, rotation in candidates):
             continue

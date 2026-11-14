@@ -13,7 +13,7 @@ import pytest
 from test_region_move import _drag_region
 from test_region_select import _select_window
 
-from descape import region_transform, render
+from descape import region_transform, render_units
 
 import conftest
 
@@ -62,8 +62,8 @@ def _setup(window, size=(5, 3), units=True):
             [
                 (1, ARCHER, 1.5, 1.5, 1.25, None),
                 (1, WALL, 3.5, 0.5, 3.0, None),
-                (1, HOUSE, *render.span_anchor(3, 1, 2, 2), 0.0, None),
-                (1, VILLAGER, *render.span_anchor(3, 1, 2, 2), 0.0, 2),
+                (1, HOUSE, *render_units.span_anchor(3, 1, 2, 2), 0.0, None),
+                (1, VILLAGER, *render_units.span_anchor(3, 1, 2, 2), 0.0, 2),
             ],
         )
     window.on_region_selected((0, 0, w, h))

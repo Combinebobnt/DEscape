@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from descape import batch_api, garrison, place_rotation, render, scripting, settings, unit_rotation
+from descape import batch_api, garrison, place_rotation, render_units, scripting, settings, unit_rotation
 from descape.edit_history import EditHistory, tile_state
 from descape.scripting import Cancelled, ScriptEntry, ScriptError, ScriptRun
 from descape.unit_model import UnitEditModel
@@ -553,7 +553,7 @@ def test_garrison_co_locates_refuses_type_capacity_and_self_and_unloads_beside_t
         assert (inside.x, inside.y, inside.z) == (tower.x, tower.y, tower.z)
     assert archers[-1].garrisoned_in_id == -1 and (archers[-1].x, archers[-1].y) == (45.5, 40.5)
     mm = doc.loaded.map_manager
-    bounds = render.unit_tile_bounds(tower, mm.map_width, mm.map_height)
+    bounds = render_units.unit_tile_bounds(tower, mm.map_width, mm.map_height)
     tile = garrison.unload_tile(bounds, mm.map_width, mm.map_height)
     assert archers[0].garrisoned_in_id == -1
     assert (archers[0].x, archers[0].y) == (tile[0] + 0.5, tile[1] + 0.5)

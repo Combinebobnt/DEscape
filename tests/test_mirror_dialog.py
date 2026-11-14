@@ -18,6 +18,7 @@ import pytest
 
 from descape.mirror_tools import plan_mirror
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -138,7 +139,7 @@ def test_mirror_end_to_end_and_undo() -> None:
 
 
 def test_preview_auto_undo_on_mode_change() -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -174,7 +175,7 @@ def test_preview_then_cancel_restores_the_pre_preview_state() -> None:
     """GH #77: Cancel after a Preview leaves tiles, cursor and undo tip exactly
     as they were before the dialog opened."""
     from descape.edit_history import tile_state
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -207,7 +208,7 @@ def _mirror_overlay_items(window) -> list:
 def test_the_source_slice_overlay_shows_on_open_and_clears_on_finish(finish: str) -> None:
     """GH #77 step 2: the shaded slice is up as soon as the dialog opens and
     gone once it closes by either button."""
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -232,7 +233,7 @@ def test_preview_auto_undo_declines_when_not_top_record() -> None:
     the dialog tries to auto-undo it, EditHistory.peek_undo() no longer
     matches -- the guard must leave both records alone rather than eating
     the unrelated edit."""
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -277,9 +278,7 @@ def test_stepped_full_rerender_fallback_fires_for_mirror(monkeypatch) -> None:
     tier."""
     from PyQt5.QtWidgets import QApplication
 
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
+    set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
 
     window = _mirror_window()
     try:
@@ -349,7 +348,8 @@ def test_mirror_overlay_every_subpath_is_closed() -> None:
 def test_keybinds_tab_renders_map_section_header() -> None:
     from PyQt5.QtWidgets import QLabel
 
-    from descape.viewer import SettingsDialog, ViewerWindow
+    from descape.settings_dialog import SettingsDialog
+    from descape.viewer import ViewerWindow
 
     conftest.ensure_qapp()
     window = ViewerWindow()
@@ -386,7 +386,7 @@ def _units(window):
 
 
 def test_units_checkbox_is_available_and_off_by_default() -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -491,7 +491,7 @@ def test_the_dialogs_own_units_path_previews_and_auto_undoes() -> None:
     applies terrain and units as one composite, and changing an option undoes
     it again."""
     from descape.edit_history import CompositeDiffRecord
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -526,7 +526,7 @@ def _place_axis_castle(window):
 
 
 def _units_dialog(window, mode_id: int, policy: str | None = None):
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     dialog = MirrorDialog(window)
     dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(mode_id))
@@ -543,8 +543,8 @@ def _log_since(window, before: str) -> str:
 
 
 def test_overlap_control_follows_the_units_box() -> None:
+    from descape.mirror_dialog import MirrorDialog
     from descape.mirror_tools import OVERLAP_POLICIES, OVERLAPS_PLACE, OVERLAPS_REFUSE
-    from descape.viewer import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -757,7 +757,7 @@ def test_a_garrison_block_under_skip_refuses_without_naming_the_straddlers() -> 
 def test_the_angular_modes_are_offered_after_a_disabled_header() -> None:
     """The silent-drop trap: angular modes have an empty `group`, so the
     length buckets alone would never add them."""
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -778,8 +778,8 @@ def test_the_angular_modes_are_offered_after_a_disabled_header() -> None:
 def test_mode_12_draws_three_mirror_axes_and_the_rotations_none() -> None:
     import math
 
+    from descape.mirror_dialog import MirrorDialog
     from descape.mirror_tools import MODE_BY_ID
-    from descape.viewer import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -825,8 +825,8 @@ def test_mode_12_in_the_scene_shades_its_slice_and_draws_axes_in_flat_square_onl
     - closing the dialog takes every overlay item away again."""
     from PyQt5.QtWidgets import QGraphicsLineItem, QGraphicsPathItem
 
+    from descape.mirror_dialog import MirrorDialog
     from descape.mirror_tools import MODE_BY_ID
-    from descape.viewer import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -856,7 +856,7 @@ def test_mode_12_in_the_scene_shades_its_slice_and_draws_axes_in_flat_square_onl
 
 
 def test_angular_modes_default_elevation_off_and_report_unreachable_corners() -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -881,7 +881,7 @@ def test_angular_modes_default_elevation_off_and_report_unreachable_corners() ->
 
 def test_a_six_way_mirror_with_units_is_one_undo_step() -> None:
     from descape.edit_history import CompositeDiffRecord, tile_state
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -977,8 +977,8 @@ def _off_default(dialog) -> None:
 
 
 def test_a_restored_dialog_shows_every_option_and_its_enabled_states() -> None:
+    from descape.mirror_dialog import MirrorDialog
     from descape.mirror_tools import OVERLAPS_SKIP
-    from descape.viewer import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -1017,7 +1017,7 @@ def test_a_restored_dialog_shows_every_option_and_its_enabled_states() -> None:
 
 
 def test_a_restored_slice_is_clamped_to_the_modes_count() -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -1032,7 +1032,7 @@ def test_a_restored_slice_is_clamped_to_the_modes_count() -> None:
 def test_a_restored_elevation_wins_over_the_mode_kinds_default() -> None:
     """The trap: _elevation_default_kind starts at "lattice", so a restored
     angular mode must not see a kind switch on the first _on_mode_changed()."""
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -1054,8 +1054,7 @@ def test_a_restored_elevation_wins_over_the_mode_kinds_default() -> None:
 
 
 def test_a_full_restore_still_plans_once_per_open(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -1065,8 +1064,8 @@ def test_a_full_restore_still_plans_once_per_open(monkeypatch) -> None:
         donor.reject()
 
         calls = []
-        real = viewer_module.plan_mirror
-        monkeypatch.setattr(viewer_module, "plan_mirror", lambda *a, **k: calls.append(1) or real(*a, **k))
+        real = viewer_global("plan_mirror")
+        set_viewer_global(monkeypatch, "plan_mirror", lambda *a, **k: calls.append(1) or real(*a, **k))
         MirrorDialog(window).reject()
         bare = len(calls)
         calls.clear()
@@ -1082,7 +1081,7 @@ def _arm_mirror(monkeypatch, configure=None, accept: bool = True) -> list:
     runs `configure`, then accepts or rejects through the dialog's own slots."""
     from PyQt5.QtWidgets import QDialog
 
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     opened = []
 
@@ -1112,7 +1111,7 @@ def test_an_applied_dialogs_options_open_next_time_even_after_another_file(monke
     import shutil
     from pathlib import Path
 
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     other = tmp_path / "units.aoe2scenario"
     shutil.copyfile(Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario", other)
@@ -1140,7 +1139,7 @@ def test_an_applied_dialogs_options_open_next_time_even_after_another_file(monke
 
 
 def test_a_cancelled_dialog_leaves_the_remembered_options(monkeypatch) -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:
@@ -1168,7 +1167,7 @@ def test_a_cancelled_dialog_leaves_the_remembered_options(monkeypatch) -> None:
 
 
 def test_read_only_units_untick_but_are_remembered(monkeypatch) -> None:
-    from descape.viewer import MirrorDialog
+    from descape.mirror_dialog import MirrorDialog
 
     window = _mirror_window()
     try:

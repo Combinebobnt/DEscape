@@ -13,7 +13,7 @@ threshold, a busy-cursor wrap) ship -- no speculative optimization without a
 real number from this script.
 
 Drives a real offscreen ViewerWindow (QT_QPA_PLATFORM=offscreen) rather than
-calling descape.render's lower-level functions directly the way
+calling the render modules' lower-level functions directly the way
 bench_incremental_latency.py does: _apply_dirty()'s Flat-mode path calls
 real QGraphicsView.invalidate_region() once per patched rect (one per block
 of tiles a fill touches, or once for the whole region when it evicts
@@ -46,7 +46,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import render, settings
+from descape import render_paint, settings
 from descape.edit_history import EditHistory
 from descape.fill_tools import flood_fill_terrain
 from descape.scenario_io import BLANK_TEMPLATE_PATH
@@ -183,7 +183,7 @@ def main() -> None:
         settings_isolation.isolate_settings(Path(tmp))
         # Before any window: ViewerWindow reads its layers from settings at construction.
         settings.set_view_layer("terrain_blend", args.blend == "on")
-        effective = render.blend_effective(settings.get_view_layers())
+        effective = render_paint.blend_effective(settings.get_view_layers())
         output = _run_cases()
     print(f"terrain blending {args.blend} (effective: {effective})")
     print("\n".join(output))

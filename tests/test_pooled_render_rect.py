@@ -29,9 +29,21 @@ from test_native_composite import (
 from test_sprite_edit_bbox import sprite_install  # noqa: F401
 from test_terrain_blend_render import _blend_cache, _scenario, blend_install  # noqa: F401
 
-from descape import composite_backend, debug_log, iso_geometry, native_composite, perf_trace, render
+from descape import (
+    composite_backend,
+    debug_log,
+    iso_geometry,
+    native_composite,
+    perf_trace,
+    render_bbox,
+    render_iso,
+    render_paint,
+    render_sloped,
+)
 from descape.grid_overlay import grid_bake
-from descape.render_cache import ChunkJob, FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_common import ChunkJob
+from testkit.render_family import set_render_global
 
 MIPS = (0, -1)
 WORKERS = 3
@@ -79,12 +91,12 @@ def _make(style: str, scenario, max_chunks: int | None = None):
     if max_chunks is None:
         return _edit_cache(style, scenario, sprites=True)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px, max_chunks=max_chunks, sprites=True)
     else:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, max_chunks=max_chunks, sprites=True)
     cache.set_grid(grid_bake(True, 60, 2))
     return cache
@@ -381,7 +393,7 @@ def test_pooling_engages_only_where_it_can(native_kernel, sprite_install, fake_f
         assert prepared == [] and executor.jobs == [], "no executor still prepared jobs"
 
         mm = scenario.map_manager
-        flat = FlatChunkCache(scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+        flat = FlatChunkCache(scenario, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
         flat.set_chunk_executor(executor, WORKERS)
         flat_prepared = []
         real_flat_prepare = flat.prepare_chunk_job
@@ -610,7 +622,7 @@ def test_a_pooled_batch_bulk_derives_only_when_its_bounding_area_covers_pending(
         pending = pack.pending().size
         assert pending > 0
         derived, scanned = [], []
-        real_bulk, real_over, real_candidates = pack.derive_pending, cache._derive_pack_over, render._rect_candidates
+        real_bulk, real_over, real_candidates = pack.derive_pending, cache._derive_pack_over, render_bbox._rect_candidates
         inside = False
 
         def over(*args):
@@ -628,7 +640,7 @@ def test_a_pooled_batch_bulk_derives_only_when_its_bounding_area_covers_pending(
 
         monkeypatch.setattr(pack, "derive_pending", lambda: (derived.append(pack), real_bulk())[1])
         monkeypatch.setattr(cache, "_derive_pack_over", over)
-        monkeypatch.setattr(render, "_rect_candidates", candidates)
+        set_render_global(monkeypatch, "_rect_candidates", candidates)
         if whole:
             _canvas(cache, mip)
             assert 2 <= len(executor.inputs) <= cache.POOL_BATCH, "not one pooled opening batch"

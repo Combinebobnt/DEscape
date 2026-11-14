@@ -192,17 +192,18 @@ def _classes(objects: dict[int, dict], classes: frozenset[int]) -> frozenset[int
 @game_dataset.cache(maxsize=1)
 def _sets() -> _Sets:
     objects = object_catalog.dat_objects()
-    # Return of Rome (GH #67): the AoE2 enums and fixed consts name other units
-    # there, so the building families, unique units and trebuchets are left
-    # out (its buildings count under other_buildings) and heroes come from
-    # the RoR .dat's hero_mode, as object_catalog.derived_category() reads it.
-    ror = game_dataset.is_ror()
+    # A game without library enums (Return of Rome, GH #67): the AoE2 enums and
+    # fixed consts name other units there, so the building families, unique
+    # units and trebuchets are left out (its buildings count under
+    # other_buildings) and heroes come from its .dat's hero_mode, as
+    # object_catalog.derived_category() reads it.
+    aoe2_ids = game_dataset.game().library_enums
     birds = frozenset(
         c for c, e in objects.items() if e.get("class") == _BIRD_CLASS and e.get("type") == _CREATABLE_TYPE
     )
     economy_buildings = _classes(objects, frozenset({_FARM_CLASS}))
     military_buildings = _classes(objects, frozenset({_TOWER_CLASS}))
-    if not ror:
+    if aoe2_ids:
         economy_buildings |= _EXTRA_ECONOMY_CONSTS | frozenset().union(*(_family(objects, name) for name in _ECONOMY_FAMILIES))
         military_buildings |= frozenset().union(*(_family(objects, name) for name in _MILITARY_FAMILIES))
     return _Sets(
@@ -215,12 +216,13 @@ def _sets() -> _Sets:
         cliffs=_classes(objects, _CLIFF_CLASSES),
         relics=_classes(objects, _RELIC_CLASSES),
         economy_units=_classes(objects, ECONOMY_UNIT_CLASSES),
-        military_units=_classes(objects, MILITARY_UNIT_CLASSES) | (frozenset() if ror else TREBUCHET_CONSTS),
+        military_units=_classes(objects, MILITARY_UNIT_CLASSES) | (TREBUCHET_CONSTS if aoe2_ids else frozenset()),
         water_units=_classes(objects, WATER_UNIT_CLASSES),
-        unique_units=frozenset() if ror else frozenset(m.ID for m in UnitInfo.unique_units(include_chronicles=True)),
+        unique_units=frozenset(m.ID for m in UnitInfo.unique_units(include_chronicles=True)) if aoe2_ids else frozenset(),
         hero_units=(
-            frozenset(c for c, e in objects.items() if object_catalog.derived_category(e) == "Heroes")
-            if ror else frozenset(m.ID for m in HeroInfo)
+            frozenset(m.ID for m in HeroInfo)
+            if aoe2_ids
+            else frozenset(c for c, e in objects.items() if object_catalog.derived_category(e) == "Heroes")
         ),
         economy_buildings=economy_buildings,
         military_buildings=military_buildings,

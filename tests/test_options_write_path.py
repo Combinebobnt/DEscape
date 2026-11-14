@@ -388,7 +388,7 @@ def test_exec_order_is_read_from_the_forward_walk_not_the_sections_last_byte() -
 def test_exec_order_value_reads_without_building_a_model() -> None:
     """The Triggers-mode status line's read path: answerable from a bare
     parse, module-level like exec_order_write_supported(), and specifically
-    NOT routed through TriggerEditModel -- test_trigger_panel.py's
+    NOT routed through TriggerEditModel -- test_trigger_panel_basics.py's
     test_browsing_every_row_saves_byte_identically pins that browsing must
     not build one."""
     loaded = _loaded()

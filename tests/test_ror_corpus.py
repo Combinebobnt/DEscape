@@ -21,7 +21,7 @@ from descape import (
     gate_orientation,
     object_catalog,
     option_fields,
-    render,
+    render_units,
     scenario_io,
     terrain_palette,
     unit_rotation,
@@ -33,6 +33,7 @@ from descape.options_model import diplomacy_write_supported, options_write_suppo
 from descape.scenario_write import write_scenario
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel, span_low_corner
+from testkit.ror_fixture import ROR_VARIANT
 
 pytestmark = pytest.mark.corpus
 
@@ -42,7 +43,7 @@ ZERO = 1e-6
 @functools.cache
 def _is_ror(path) -> bool:
     """One full load per file per session, not one per test: an AoE2 corpus run only skips here."""
-    return scenario_io.load_map_and_units(path).game_variant == game_dataset.ROR_VARIANT
+    return scenario_io.load_map_and_units(path).game_variant == ROR_VARIANT
 
 
 @pytest.fixture
@@ -123,11 +124,11 @@ def test_walls_with_at_most_one_neighbour_store_the_tower(ror_files):
         tiles = set()
         for units in loaded.unit_manager.units:
             for u in units:
-                if u.unit_const in connectors and (occupied := render.unit_occupied_tiles(u, w, h)) is not None:
+                if u.unit_const in connectors and (occupied := render_units.unit_occupied_tiles(u, w, h)) is not None:
                     tiles.update(occupied)
         for units in loaded.unit_manager.units:
             for unit in units:
-                bounds = render.unit_tile_bounds(unit, w, h)
+                bounds = render_units.unit_tile_bounds(unit, w, h)
                 if not unit_sprites.rotation_variant_eligible(unit.unit_const) or bounds is None:
                     continue
                 mask = unit_sprites.neighbour_mask(bounds[0], bounds[2], tiles, diagonals=True)
@@ -160,8 +161,8 @@ def test_gates_carry_no_rotation_and_sit_on_their_span_anchor(ror_files):
             continue
         seen += 1
         assert unit.rotation in (0.0, 7.0), (path.name, unit.rotation)
-        span = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-        assert (unit.x, unit.y) == render.span_anchor(*span_low_corner(unit), *span), path.name
+        span = terrain_palette.tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+        assert (unit.x, unit.y) == render_units.span_anchor(*span_low_corner(unit), *span), path.name
     assert seen, "no gate placement"
 
 
@@ -221,5 +222,5 @@ def test_an_edited_ror_file_round_trips(ror_files, tmp_path):
         new_header = _header_fields(reloaded)
         assert new_header.pop("trigger_count") == old_header.pop("trigger_count") + 1, path.name
         assert new_header == old_header, path.name
-        assert reloaded.game_variant == game_dataset.ROR_VARIANT
+        assert reloaded.game_variant == ROR_VARIANT
         assert len(reloaded.unit_manager.get_all_units()) == before + 3, path.name

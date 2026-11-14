@@ -1,4 +1,4 @@
-"""The coarsest level's box-reduced store (TASK-031.70): render_cache.box_reduce2()
+"""The coarsest level's box-reduced store (TASK-031.70): render_cache_common.box_reduce2()
 and render_reduced_rect(), the cached copy MapCanvasItem.paint() blits zoomed
 out past the coarsest level.
 
@@ -26,12 +26,15 @@ from test_native_composite import TERRAIN_IDS, native_kernel, synthetic_textures
 from test_pooled_render_rect import WORKERS, pool  # noqa: F401 -- a fixture
 from test_sprite_edit_bbox import Unit, sprite_install  # noqa: F401 -- a fixture
 
-from descape import composite_backend, render, render_cache
+from descape import composite_backend, render_bbox, render_cache_common, render_iso, render_paint, render_sloped, render_units
 from descape.grid_overlay import grid_bake
-from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice, _ChunkCacheBase
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_base import _ChunkCacheBase
+from descape.render_cache_splice import UnitSplice
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
 from testkit import qt_capture
+from testkit.render_family import set_render_cache_global
 
 import conftest
 from test_unit_sprites import CONST
@@ -74,12 +77,12 @@ def _scenario():
 
 
 def _make(style: str, scenario, **kw):
-    tile_px = render.tile_pixels_for_map(scenario.map_manager.map_width, scenario.map_manager.map_height)
+    tile_px = render_paint.tile_pixels_for_map(scenario.map_manager.map_width, scenario.map_manager.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=False, **kw)
     elif style == "sloped":
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=False, **kw)
     else:
         cache = FlatChunkCache(scenario, tile_px, sprites=False, **kw)
@@ -108,7 +111,7 @@ def _oracle(cache, k: int) -> np.ndarray:
     mip = _coarsest(cache)
     img = cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
     for _ in range(k):
-        img = render_cache.box_reduce2(img)
+        img = render_cache_common.box_reduce2(img)
     return img
 
 
@@ -155,7 +158,7 @@ def _dirty(style: str, scenario, cache, tiles, with_units: bool = True):
         xs, ys = [x for x, _y in tiles], [y for _x, y in tiles]
         return ((min(xs) - 1) * t, (min(ys) - 1) * t, (max(xs) + 2) * t, (max(ys) + 2) * t), set()
     changed: set = set()
-    fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = fn(
         scenario, [y * w + x for x, y in tiles], cache.elevations, cache.proj, with_units=with_units,
         with_sprites=cache.sprites_enabled, elevation_changed=changed,
@@ -173,7 +176,7 @@ def _op_patch_rects(style, scenario, cache):
     tiles = _paint_band(scenario)
     if style == "flat":
         mm = scenario.map_manager
-        cache.patch_rects(render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, cache.tile_px, cache.layers))
+        cache.patch_rects(render_paint.flat_dirty_rects(tiles, mm.map_width, mm.map_height, cache.tile_px, cache.layers))
         return
     x0, y0, x1, y1 = _dirty(style, scenario, cache, tiles)[0]
     mid = (x0 + x1) // 2
@@ -192,10 +195,10 @@ def _move_units(scenario, cache) -> list[tuple[int, int]]:
     splices, touched = [], []
     for player_id in range(1, len(scenario.unit_manager.units)):
         for index, unit in enumerate(scenario.unit_manager.units[player_id]):
-            old_tiles = tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ())
+            old_tiles = tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ())
             old_own = (int(unit.x), int(unit.y))
             unit.x = unit.x + 9 if unit.x < mm.map_width - 12 else unit.x - 9
-            new_tiles = tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ())
+            new_tiles = tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height) or ())
             splices.append(UnitSplice(player_id, index, unit, old_own, (int(unit.x), int(unit.y)), old_tiles, new_tiles))
             touched += [*old_tiles, *new_tiles]
     assert len(splices) >= 3, "the fixture's units moved nothing"
@@ -207,7 +210,7 @@ def _move_units(scenario, cache) -> list[tuple[int, int]]:
 def _op_units_patch(style, scenario, cache):
     touched = _move_units(scenario, cache)
     if style == "flat":
-        cache.patch_rects(render.flat_tile_rects(touched, cache.tile_px))
+        cache.patch_rects(render_paint.flat_tile_rects(touched, cache.tile_px))
         return
     bbox, changed = _dirty(style, scenario, cache, touched)
     cache.patch(bbox, elevation_changed=changed)
@@ -216,7 +219,7 @@ def _op_units_patch(style, scenario, cache):
 def _op_units_patch_composite_rects(style, scenario, cache):
     touched = _move_units(scenario, cache)
     if style == "flat":
-        cache.patch_composite_rects(render.flat_tile_rects(touched, cache.tile_px))
+        cache.patch_composite_rects(render_paint.flat_tile_rects(touched, cache.tile_px))
         return
     bbox, _changed = _dirty(style, scenario, cache, touched)
     cache.patch_composite_rects(cache.chunk_rects([bbox], _coarsest(cache)))
@@ -308,7 +311,7 @@ def test_box_reduce2_matches_a_pure_python_reference(backend, shape):
     cases.append(alternating)  # a pair of 0 and 255 rounds 127.5 and 191.25 the same way every time
     with composite_backend.use_backend(backend):
         for src in cases:
-            np.testing.assert_array_equal(render_cache.box_reduce2(src), _reference_reduce(src))
+            np.testing.assert_array_equal(render_cache_common.box_reduce2(src), _reference_reduce(src))
 
 
 def test_reduced_dims_round_up():
@@ -401,13 +404,13 @@ def test_a_hit_survives_its_k_minus_1_entries_being_evicted(env, style, monkeypa
 
 def _count_builds(monkeypatch) -> list:
     builds: list = []
-    real = render_cache.box_reduce2
+    real = render_cache_common.box_reduce2
 
     def spy(src):
         builds.append(src.shape)
         return real(src)
 
-    monkeypatch.setattr(render_cache, "box_reduce2", spy)
+    set_render_cache_global(monkeypatch, "box_reduce2", spy)
     return builds
 
 

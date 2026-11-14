@@ -1,7 +1,7 @@
 """Batch D's D4: invalidate_units(changed) splices units_by_tile/
 building_bboxes/sprites for a single-unit edit instead of paying
 _refresh_source_caches()'s full O(all units) rebuild -- see
-render_cache.UnitSplice/_splice_eligible's own docstrings for the guard
+render_cache_splice.UnitSplice/_splice_eligible's own docstrings for the guard
 this file exercises.
 
 Fixture posture matches tests/test_patch_unit_sources.py: BLANK_TEMPLATE_PATH
@@ -23,26 +23,28 @@ import pytest
 from test_bystander_grid_patch import grid_state
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
-from descape import asset_source, debug_log, perf_trace, render, render_cache, unit_sprites
+from descape import (
+    asset_source,
+    debug_log,
+    perf_trace,
+    render_bbox,
+    render_cache_splice,
+    render_flat,
+    render_paint,
+    render_sprites,
+    render_units,
+    unit_sprites,
+)
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import (
-    elevations_and_proj,
-    render_terrain_iso_with_proj,
-    render_terrain_sloped_with_proj,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
-from descape.render_cache import (
-    FlatChunkCache,
-    IsoChunkCache,
-    SlopedChunkCache,
-    UnitSplice,
-    _batch_splice_eligible,
-    _splice_eligible,
-)
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import UnitSplice, _batch_splice_eligible, _splice_eligible
+from descape.render_iso import elevations_and_proj, render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import render_terrain_sloped_with_proj, sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
-from descape.terrain_palette import BUILDING_TILE_SPANS
+from descape.terrain_palette import BUILDING_TILE_SPANS, tile_span
 from descape.unit_filter import UnitFilter
+from testkit.render_family import set_render_cache_global, set_render_global
 
 import conftest
 from test_unit_sprites import CONST as SPRITE_CONST
@@ -85,7 +87,7 @@ def _own_tile(unit) -> tuple[int, int]:
 
 def _occupied(scenario, unit) -> tuple[tuple[int, int], ...]:
     mm = scenario.map_manager
-    tiles = render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+    tiles = render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
     return tuple(tiles) if tiles is not None else ()
 
 
@@ -150,8 +152,8 @@ def _call_counts(monkeypatch):
     counts = {"building_bboxes": 0, "sprites": 0}
     # The sliced generator: every build reaches it, drained (_building_bboxes_iso,
     # a paint's _level()) or stepped by a warm job (_assemble_level).
-    real_bboxes = render._building_bboxes_iso_sliced
-    real_sprites = render.sprite_draws_by_anchor
+    real_bboxes = render_bbox._building_bboxes_iso_sliced
+    real_sprites = render_sprites.sprite_draws_by_anchor
 
     def counted_bboxes(*args, **kwargs):
         counts["building_bboxes"] += 1
@@ -161,8 +163,8 @@ def _call_counts(monkeypatch):
         counts["sprites"] += 1
         return real_sprites(*args, **kwargs)
 
-    monkeypatch.setattr(render, "_building_bboxes_iso_sliced", counted_bboxes)
-    monkeypatch.setattr(render, "sprite_draws_by_anchor", counted_sprites)
+    set_render_global(monkeypatch, "_building_bboxes_iso_sliced", counted_bboxes)
+    set_render_global(monkeypatch, "sprite_draws_by_anchor", counted_sprites)
     return counts
 
 
@@ -182,7 +184,7 @@ def _assert_grid_current(cache) -> None:
     _call_counts() this file's splice-fired checks read. Pixels cover the dict."""
     levels = [lvl for lvl in cache._levels.values() if lvl.gen == cache._source_gen]
     for lvl in levels:
-        want = render.build_bystander_grid(lvl.building_bboxes, cache.chunk_px)
+        want = render_bbox.build_bystander_grid(lvl.building_bboxes, cache.chunk_px)
         assert grid_state(lvl.bystander_grid) == grid_state(want), "the patched grid differs from a full build"
 
 
@@ -200,7 +202,7 @@ def test_a_moved_connector_is_refused_per_splice_and_splices_its_component(style
 
     splice = _move_splice(scenario, 1, 0, unit, *MOVED_TILE)
     assert not _splice_eligible(cache.units_by_tile, splice)
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:move"
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:move"
     _apply(cache, splice)
 
     # IsoChunkCache's wholesale path is lazy (its own _source_gen-gated
@@ -342,7 +344,7 @@ def test_sprite_bearing_unit_move_splices_and_matches_a_fresh_render(style, spri
     _splice_building_and_sprites()'s `sprites is not None` branch --
     by_anchor/bboxes/skip_ids splicing, the piece of D4 that most needed
     the sprite_anchor_tile()-vs-own-tile reconciliation this file's docstring
-    (render_cache._splice_building_and_sprites) describes. A real (if tiny,
+    (render_cache_splice._splice_building_and_sprites) describes. A real (if tiny,
     synthetic) .sld via test_sprite_edit_bbox's own fixture is what lets
     this unit actually resolve to sprite pieces instead of a coloured mark."""
     scenario = _scenario()
@@ -644,7 +646,7 @@ def test_a_batch_over_the_cap_falls_back(style, monkeypatch):
     canvas_w, canvas_h = cache.canvas_dims(0)
     batch = [_remove_splice(scenario, 0, u) for u in doomed]
     assert _batch_splice_eligible(cache.units_by_tile, batch)
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 2)
     assert not _batch_splice_eligible(cache.units_by_tile, batch)
     counts = _call_counts(monkeypatch)
 
@@ -677,7 +679,7 @@ def _flat_counts(monkeypatch):
     columns and _flat_icon_layer all go through these, so zero means no
     rebuild at all."""
     counts = {"rows": 0, "icons": 0}
-    real_rows, real_icons = render._flat_unit_base_rows, render._flat_icon_layer_sliced
+    real_rows, real_icons = render_flat._flat_unit_base_rows, render_flat._flat_icon_layer_sliced
 
     def counted_rows(*args, **kwargs):
         counts["rows"] += 1
@@ -687,8 +689,8 @@ def _flat_counts(monkeypatch):
         counts["icons"] += 1
         return real_icons(*args, **kwargs)
 
-    monkeypatch.setattr(render, "_flat_unit_base_rows", counted_rows)
-    monkeypatch.setattr(render, "_flat_icon_layer_sliced", counted_icons)
+    set_render_global(monkeypatch, "_flat_unit_base_rows", counted_rows)
+    set_render_global(monkeypatch, "_flat_icon_layer_sliced", counted_icons)
     return counts
 
 
@@ -788,12 +790,12 @@ def test_a_multi_player_reassign_batch_keeps_the_row_table_exact(sprites, reques
     assert counts == {"rows": 0, "icons": 0}
 
     for mip in FLAT_MIPS:
-        bboxes, colors, row_uid, row_player = render._flat_unit_rows(scenario, cache.mip_tile_px(mip), unit_filter)
+        bboxes, colors, row_uid, row_player = render_flat._flat_unit_rows(scenario, cache.mip_tile_px(mip), unit_filter)
         got_bboxes, got_colors = cache._level_unit_draws(mip)
         assert np.array_equal(got_bboxes, bboxes) and np.array_equal(got_colors, colors), f"mip {mip}"
         assert np.array_equal(cache._row_uid, row_uid) and np.array_equal(cache._row_player, row_player)
         if sprites:
-            icons, rows = render._flat_icon_layer(scenario, cache.mip_tile_px(mip), unit_filter)
+            icons, rows = render_flat._flat_icon_layer(scenario, cache.mip_tile_px(mip), unit_filter)
             assert sorted(cache._level_icon_layers[mip]) == sorted(icons) and rows == len(row_uid)
     _assert_flat_matches_fresh(cache, scenario, sprites, unit_filter)
 
@@ -810,7 +812,7 @@ def test_a_flat_splice_refuses_an_in_flight_warm(sprite_install, monkeypatch):  
     assert cache._flat_splice_eligible(splices)
     cache.invalidate_units(splices)
 
-    assert job.install(render._drain(job.gen)) is False
+    assert job.install(render_paint._drain(job.gen)) is False
     assert not cache.is_level_resident(1)
 
 
@@ -917,7 +919,7 @@ def run_wall_install(tmp_path, monkeypatch):
 def _derived_variant(scenario, player_id: int, unit) -> int:
     """The shape the wall-connectivity override gives `unit` right now."""
     index = next(i for i, u in enumerate(scenario.unit_manager.units[player_id]) if u is unit)
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     return unit_sprites.variant_index(overrides[(player_id, index)], 5)
 
 
@@ -987,7 +989,7 @@ STATE_MIPS = (0, 1)  # the levels each Convert test below keeps current, Stepped
 RUN_WALL_INTEGER = 2.0  # variant 2 as a literal index, so the file is integer-encoded
 GATE_CONST = 64  # an axis-aligned stone gate, span (4, 1)
 assert GATE_CONST in unit_sprites.wall_connector_consts()
-assert render.tile_span(GATE_CONST, render.NON_BUILDING_SPAN) == (4, 1)
+assert tile_span(GATE_CONST, render_units.NON_BUILDING_SPAN) == (4, 1)
 
 
 def _warm_mips(cache) -> None:
@@ -1063,7 +1065,7 @@ def _wall_run(scenario, player_id: int, rotation: float, xs=(39, 40, 41), y: int
 def _assert_override_disagrees(scenario, splice: UnitSplice, stored: int) -> None:
     """Control 1's non-vacuity: the reassigned wall's derived shape differs
     from its stored one, so resolving it with {} would draw the wrong frame."""
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     derived = overrides.get((splice.player_id, splice.index))
     assert derived is not None, "the wall has no override, so {} and the real dict coincide"
     assert unit_sprites.variant_index(derived, 5) != stored, "the override equals the stored variant"
@@ -1097,7 +1099,7 @@ def test_a_reassigned_wall_in_a_run_splices_with_its_neighbour_derived_shape(
     if encoding == "radian":
         _assert_override_disagrees(scenario, splice, 2)
     else:
-        assert not render.wall_variant_rotation_overrides(scenario), "an integer file should trust its indices"
+        assert not render_units.wall_variant_rotation_overrides(scenario), "an integer file should trust its indices"
     assert _batch_splice_eligible(cache.units_by_tile, [splice]), "fixture is not testing the splice path"
     _apply(cache, splice)
 
@@ -1159,8 +1161,8 @@ def test_a_wall_moved_with_an_owner_change_falls_back(style, run_wall_install, m
     counts = _call_counts(monkeypatch)
 
     splice = replace(_move_splice(scenario, 1, 1, middle, 40.5, 44.5), old_player_id=2)
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:other"
-    assert render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, UnitFilter(), [splice]) == (
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:other"
+    assert render_cache_splice._splice_plan_or_refusal(scenario, cache.units_by_tile, UnitFilter(), [splice]) == (
         None, "const:other",
     )
     _apply(cache, splice)
@@ -1261,7 +1263,7 @@ def _assert_takes_the_component_path(cache, scenario, batch: list[UnitSplice]) -
     """The batch guard refuses it for a shared tile, and the component path
     takes it instead. Returns the component, for size checks."""
     assert not _batch_splice_eligible(cache.units_by_tile, batch), "fixture shares no tile"
-    component, why = render_cache._reassign_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch)
+    component, why = render_cache_splice._reassign_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch)
     assert component is not None, f"the component path refused the batch: {why}"
     return component
 
@@ -1378,7 +1380,7 @@ def test_a_component_over_the_cap_falls_back(style, shared_art_install, monkeypa
     _place(scenario, 1, MILL_CONST, 62.0, 60.0)
     cache = _make_cache(style, scenario, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims(0)
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 2)
     counts = _call_counts(monkeypatch)
 
     splice = _reassign_splice(scenario, 5, 2, a)
@@ -1431,8 +1433,8 @@ def test_the_refusal_names_the_clause_that_refused():
     lead = _place(scenario, 2, MILL_CONST, 30.0, 30.0)  # x 29..30
     trail = _place(scenario, 2, MILL_CONST, 32.0, 30.0)  # x 31..32
     wall = _place(scenario, 3, WALL_CONST, 90.0, 90.0)
-    by_tile = render._units_by_tile(scenario)
-    refusal = render_cache._batch_splice_refusal
+    by_tile = render_units._units_by_tile(scenario)
+    refusal = render_cache_splice._batch_splice_refusal
 
     assert refusal(by_tile, [_move_splice(scenario, 1, 1, mover, 90.0, 20.0)]) is None
     assert refusal(by_tile, [_move_splice(scenario, 1, 1, mover, *MILL_TILE)]) == "occupant:foreign"
@@ -1443,18 +1445,18 @@ def test_the_refusal_names_the_clause_that_refused():
     # const:move outranks an earlier splice's occupant, and the component splice takes both.
     onto_target = _move_splice(scenario, 1, 1, mover, MILL_TILE[0] + 1, MILL_TILE[1])
     assert refusal(by_tile, [onto_target, wall_move]) == "const:move"
-    assert render_cache._splice_plan(scenario, by_tile, UnitFilter(), [onto_target, wall_move]) is not None
+    assert render_cache_splice._splice_plan(scenario, by_tile, UnitFilter(), [onto_target, wall_move]) is not None
     # An added or removed wall anywhere in the batch outranks a moved one, and is final.
     wall_add = _add_splice(scenario, 3, _place(scenario, 3, WALL_CONST, 80.0, 80.0))
     assert refusal(by_tile, [wall_move, wall_add]) == "const:add"
-    assert render_cache._splice_plan_or_refusal(scenario, by_tile, UnitFilter(), [wall_move, wall_add]) == (
+    assert render_cache_splice._splice_plan_or_refusal(scenario, by_tile, UnitFilter(), [wall_move, wall_add]) == (
         None, "const:add",
     )
     assert refusal(by_tile, [wall_move, _remove_splice(scenario, 3, wall_add.unit)]) == "const:remove"
     adds = [_add_splice(scenario, 4, _place(scenario, 4, MILL_CONST, 100.0, 100.0)) for _ in range(2)]
     assert refusal(by_tile, adds) == "claimed"
-    assert render_cache._batch_splice_eligible(by_tile, [_remove_splice(scenario, 1, target)])
-    assert refusal({}, adds[:1] * (render_cache.UNIT_SPLICE_MAX_UNITS + 1)) == "cap"
+    assert render_cache_splice._batch_splice_eligible(by_tile, [_remove_splice(scenario, 1, target)])
+    assert refusal({}, adds[:1] * (render_cache_splice.UNIT_SPLICE_MAX_UNITS + 1)) == "cap"
 
 
 @pytest.fixture
@@ -1500,10 +1502,10 @@ def test_a_wholesale_unit_edit_says_why_on_its_perf_line(style, traced):
 def _assert_takes_the_membership_path(cache, scenario, batch: list[UnitSplice]) -> list[UnitSplice]:
     """The batch guard refuses it for a shared tile and the membership
     component takes it instead. Returns the component."""
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, batch) in (
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, batch) in (
         "occupant:foreign", "occupant:batch", "claimed",
     ), "fixture is not testing the component path"
-    component, why = render_cache._membership_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch)
+    component, why = render_cache_splice._membership_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch)
     assert component is not None, f"the component path refused the batch: {why}"
     return component
 
@@ -1584,7 +1586,7 @@ def test_two_adds_onto_one_tile_splice_in_walk_order(style, sprites, foreign, sh
     second = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
     batch = [_add_splice(scenario, 0, second), _add_splice(scenario, 0, first)]
     want = "occupant:foreign" if foreign else "claimed"
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, batch) == want
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, batch) == want
     _apply_and_check(style, cache, scenario, sprites, counts, batch)
     assert [e[0] for e in cache.units_by_tile[_own_tile(first)]] == [u for u in (other, first, second) if u]
 
@@ -1601,7 +1603,7 @@ def test_a_group_move_onto_its_own_old_tiles_splices(style, sprites, shared_art_
     counts = _call_counts(monkeypatch)
 
     batch = _group_move(scenario, 2, [lead, trail], 1.0, 0.0)
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, batch) == "occupant:batch"
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, batch) == "occupant:batch"
     _apply_and_check(style, cache, scenario, sprites, counts, batch)
 
 
@@ -1636,9 +1638,9 @@ def test_a_membership_component_over_the_cap_falls_back(style, shared_art_instal
     tree = _place(scenario, 0, SPRITE_CONST, *DECOR_TILE)
     batch = [_add_splice(scenario, 0, tree)]
     _assert_takes_the_membership_path(cache, scenario, batch)
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 1)
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 1)
 
-    assert render_cache._membership_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch) == (
+    assert render_cache_splice._membership_component_splices(scenario, cache.units_by_tile, cache.unit_filter, batch) == (
         None, "cap",
     )
     assert not cache.can_splice(batch), "a two-unit component should be over a cap of 1"
@@ -1667,7 +1669,7 @@ def _walls(scenario, owners_and_tiles, rotation: float) -> list[Unit]:
 
 def _shapes(scenario, walls) -> list[int | None]:
     """Each wall's derived variant now, None where the override leaves its stored one."""
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     out = []
     for wall in walls:
         player = next(p for p, units in enumerate(scenario.unit_manager.units) if any(u is wall for u in units))
@@ -1698,8 +1700,8 @@ def _apply_move_and_check(style, cache, scenario, sprites, counts, batch, unit_f
     per batch as `const:move`, spliced as a membership component with no gen
     bump, then every level's units_by_tile, building_bboxes, sprite layer,
     grid and pack equal to a fresh cache's. Returns the plan."""
-    assert render_cache._batch_splice_refusal(cache.units_by_tile, batch) == "const:move"
-    plan, why = render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, cache.unit_filter, batch)
+    assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, batch) == "const:move"
+    plan, why = render_cache_splice._splice_plan_or_refusal(scenario, cache.units_by_tile, cache.unit_filter, batch)
     assert plan is not None, f"the Move went wholesale: {why}"
     gen = cache._source_gen
     counts.update(building_bboxes=0, sprites=0)
@@ -1856,10 +1858,10 @@ def test_a_wall_neighbourhood_past_the_cap_falls_back(style, run_wall_install, m
     counts = _call_counts(monkeypatch)
     batch = _group_move(scenario, 1, [run[2]], 0.0, 4.0)
 
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 3)
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 3)
     assert cache.can_splice(batch)
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 2)
-    assert render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, cache.unit_filter, batch) == (
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 2)
+    assert render_cache_splice._splice_plan_or_refusal(scenario, cache.units_by_tile, cache.unit_filter, batch) == (
         None, "const:move/component:cap",
     )
     _apply_batch(cache, batch)
@@ -1881,9 +1883,9 @@ def test_every_rotation_variant_const_is_1x1_and_never_rotated_by_a_fields_only_
 
     for x, y in ((10.5, 10.5), (10.0, 10.0), (10.99, 10.01)):
         unit = Unit(x, y, const)
-        bounds = render.unit_tile_bounds(unit, 120, 120)
+        bounds = render_units.unit_tile_bounds(unit, 120, 120)
         assert (bounds[0], bounds[2]) == _own_tile(unit) and bounds[1] - bounds[0] == bounds[3] - bounds[2] == 1
-        assert render.unit_occupied_tiles(unit, 120, 120) == [_own_tile(unit)]
+        assert render_units.unit_occupied_tiles(unit, 120, 120) == [_own_tile(unit)]
     assert not unit_rotation.rotation_is_angle(const)
     assert not unit_variant.is_cyclable(const)
 
@@ -1934,13 +1936,13 @@ def _in_place_batch(case: str, scenario) -> tuple[list[UnitSplice], UnitFilter]:
 
 def _count_units_by_tile(monkeypatch) -> list:
     calls = []
-    real = render._units_by_tile
+    real = render_units._units_by_tile
 
     def counted(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(render, "_units_by_tile", counted)
+    set_render_global(monkeypatch, "_units_by_tile", counted)
     return calls
 
 
@@ -1973,7 +1975,7 @@ def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, mo
     batch, flt = _in_place_batch(case, scenario)
     cache = _pre_edit_cache(style, scenario, batch, flt)
     if via == "cap":
-        monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 0)
     version, gen = cache._units_version, cache._source_gen
     walks = _count_units_by_tile(monkeypatch)
 
@@ -2064,8 +2066,8 @@ SECOND_TILE = (80.5, 80.5)  # an empty tile two batch adds claim
 def _pin_caps_below(monkeypatch) -> None:
     """Both all-levels caps at 0, so every batch is past them;
     VISIBLE_SPLICE_MAX_UNITS keeps its default."""
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 0)
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 0)
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 0)
 
 
 def _two_level_cache(style: str, scenario, unit_filter: UnitFilter = UnitFilter(), sprites: bool = True):
@@ -2079,13 +2081,13 @@ def _walk_counts(monkeypatch) -> dict:
     """_call_counts() plus the sliced sprite walk, which every level build runs with sprites on."""
     counts = _call_counts(monkeypatch)
     counts["sprite_walk"] = 0
-    real = render.sprite_draws_by_anchor_sliced
+    real = render_sprites.sprite_draws_by_anchor_sliced
 
     def counted(*args, **kwargs):
         counts["sprite_walk"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(render, "sprite_draws_by_anchor_sliced", counted)
+    set_render_global(monkeypatch, "sprite_draws_by_anchor_sliced", counted)
     return counts
 
 
@@ -2176,7 +2178,7 @@ def test_past_the_caps_the_visible_level_splices_alone(style, case, shared_art_i
     gen = cache._source_gen
     counts = _walk_counts(monkeypatch)
     batch = make_batch()
-    assert render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, unit_filter, batch)[0] is None
+    assert render_cache_splice._splice_plan_or_refusal(scenario, cache.units_by_tile, unit_filter, batch)[0] is None
 
     _apply_visible(cache, batch)
 
@@ -2223,7 +2225,7 @@ def test_past_the_caps_these_batches_keep_todays_fallback(style, case, shared_ar
     cache = _two_level_cache(style, scenario, sprites=case != "sprites_off")
     _pin_caps_below(monkeypatch)
     if case == "past_visible":
-        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 1)
+        set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 1)
     if case == "stale_target":
         # A level built, then made stale by a unit it never saw, while level 0 is rebuilt current.
         cache.render_rect(0, 0, 256, 256, mip=-2)
@@ -2261,7 +2263,7 @@ def _deferred_raise(style: str, cache, scenario, tiles, rebuild_levels) -> None:
     set_tiles_elevation(mm, [(x, y, mm.get_tile(x, y).elevation + 1) for x, y in tiles])
     dirty = [i for i, t in enumerate(mm.terrain) if t.elevation != before[i]]
     changed: set = set()
-    bbox_of = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_of = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = bbox_of(
         scenario, dirty, cache.elevations, cache.proj, with_units=True, with_sprites=True, elevation_changed=changed
     )
@@ -2401,13 +2403,13 @@ def _verdict_scene():
 
 def _verdict_reads(monkeypatch) -> list[int]:
     reads = [0]
-    real = render.walls_file_is_radian
+    real = render_units.walls_file_is_radian
 
     def counted(scenario):
         reads[0] += 1
         return real(scenario)
 
-    monkeypatch.setattr(render, "walls_file_is_radian", counted)
+    set_render_global(monkeypatch, "walls_file_is_radian", counted)
     return reads
 
 
@@ -2450,7 +2452,7 @@ def test_a_moved_wall_that_flips_the_verdict_goes_wholesale(style, traced, monke
     with perf_trace.op("Move"):
         splice = _move_splice(scenario, 0, scenario.unit_manager.units[0].index(lone), lone, 33.5, 30.5)
         lone.rotation = 2.0
-        assert render_cache._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:move"
+        assert render_cache_splice._batch_splice_refusal(cache.units_by_tile, [splice]) == "const:move"
         cache.invalidate_units([splice])
     perf_trace.flush_idle()
     assert refreshes == [1], "the flip did not rebuild the sources wholesale"

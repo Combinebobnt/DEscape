@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -69,12 +71,11 @@ def test_both_entry_points_are_disabled_with_no_document() -> None:
 
 
 def test_a_file_whose_gate_fails_leaves_the_button_disabled_with_a_tooltip(monkeypatch) -> None:
-    from descape import viewer as viewer_module
     from descape.players_panel import PlayersPanel
 
     window = _window()
     try:
-        monkeypatch.setattr(viewer_module, "disables_write_supported", lambda *_: False)
+        set_viewer_global(monkeypatch, "disables_write_supported", lambda *_: False)
         window.mode_combo.setCurrentText("Players")
         window._repopulate_players()
         window._update_tool_enabled()
@@ -102,7 +103,7 @@ def test_the_menu_action_is_registered_as_a_rebindable_keybind() -> None:
 def test_the_menu_action_is_in_the_map_menu_and_the_keybinds_tab_lists_it_under_map() -> None:
     from PyQt5.QtWidgets import QLabel
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.shown_window(1200, 800)
     try:
@@ -132,12 +133,12 @@ def test_a_legacy_edit_disables_binding_reaches_the_map_action_its_key_and_the_k
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication, QLabel
 
-    from descape import viewer as viewer_module
-    from descape.viewer import SettingsDialog
+    from descape.disables_dialog import DisablesDialog
+    from descape.settings_dialog import SettingsDialog
 
     (tmp_path / "config.yaml").write_text("keybinds:\n  edit_disables: F7\n")
     opened = []
-    monkeypatch.setattr(viewer_module.DisablesDialog, "exec_", lambda self: opened.append(self) or 0)
+    monkeypatch.setattr(DisablesDialog, "exec_", lambda self: opened.append(self) or 0)
     window = _window()
     try:
         assert window.disables_action.shortcut() == QKeySequence("F7")
@@ -149,7 +150,7 @@ def test_a_legacy_edit_disables_binding_reaches_the_map_action_its_key_and_the_k
         QTest.keyClick(window, Qt.Key_F7)
         QApplication.processEvents()
         assert len(opened) == 1
-        assert isinstance(opened[0], viewer_module.DisablesDialog)
+        assert isinstance(opened[0], DisablesDialog)
 
         dialog = SettingsDialog(window)
         try:
@@ -468,12 +469,11 @@ def test_a_carrier_gate_failure_names_the_carrier_not_the_disables_region(monkey
     file's disable lists failed" send the reader to different places, so the
     tooltip must name the right one -- the same split the per-player rows
     already make."""
-    from descape import viewer as viewer_module
     from descape.players_panel import PlayersPanel
 
     window = _window()
     try:
-        monkeypatch.setattr(viewer_module, "options_write_supported", lambda *_: False)
+        set_viewer_global(monkeypatch, "options_write_supported", lambda *_: False)
         window.mode_combo.setCurrentText("Players")
         window._repopulate_players()
         button = window.players_panel.disables_button

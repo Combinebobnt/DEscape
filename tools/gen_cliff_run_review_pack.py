@@ -45,7 +45,16 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, cliff_chain, cliff_connectivity, iso_geometry, render, render_cache, unit_sprites
+from descape import (
+    asset_source,
+    cliff_chain,
+    cliff_connectivity,
+    iso_geometry,
+    render_cache,
+    render_iso,
+    render_paint,
+    unit_sprites,
+)
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
 
@@ -135,8 +144,8 @@ def _scenario(cliffs):
 
 def _cache(scn):
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    elevations, proj = render.elevations_and_proj(scn)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
 
 

@@ -448,7 +448,7 @@ def qt_dialog():
 def _answer_import(monkeypatch, path: Path, apply: bool) -> list[str]:
     from PyQt5.QtWidgets import QFileDialog
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     shown: list[str] = []
     monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(path), "")))

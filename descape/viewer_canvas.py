@@ -3,7 +3,7 @@ readers they and MapView size themselves by.
 
 MapCanvasItem paints the composited map; EdgeTickItem paints the
 distance-tick strip outside its border. Both are driven by MapView
-(descape.map_view), which imports this module one way."""
+(descape.map_view and its mixin modules), which import this module one way."""
 
 from __future__ import annotations
 
@@ -221,7 +221,7 @@ def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int
     matching paint()'s own "whole pixels only" discipline -- a gap at the
     edge would leave a real caller's request under-covered.
 
-    `descape.render_cache._ChunkCacheBase._bbox_to_level()` is deliberately
+    `descape.render_cache_mip._ChunkCacheMipMixin._bbox_to_level()` is deliberately
     NOT reused here even though it does a similar floor/ceil conversion: it
     takes an integer REFERENCE-pixel bbox, where both of this function's
     callers start from a float scene-space QRectF, and mixing the two
@@ -313,7 +313,7 @@ class MapCanvasItem(QGraphicsItem):
     (IsoChunkCache); Phase B-E gives Flat mode the same treatment
     (FlatChunkCache) via this SAME class, unchanged -- its paint() has
     nothing style-specific in it (both caches expose the same canvas_dims()/
-    render_rect() contract, see descape.render_cache._ChunkCacheBase), only which
+    render_rect() contract, see descape.render_cache_base._ChunkCacheBase), only which
     cache MapView.set_source() constructs differs.
 
     ItemUsesExtendedStyleOption is the load-bearing flag here: without it

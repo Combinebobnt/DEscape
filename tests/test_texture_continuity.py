@@ -18,11 +18,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, native_composite, render
-from descape.render import tile_pixels_for_map
+from descape import asset_source, iso_geometry, native_composite, render_iso, render_sloped
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
 from descape.view_layers import LayerState
 from testkit.fakes import FakeScenario, SyntheticTile
+from testkit.render_family import set_render_global
 
 TEXTURE_SIZE = 512
 MAP_W = MAP_H = 8
@@ -67,12 +68,12 @@ def _sloping(x: int, y: int) -> int:
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
 def _sloped_cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(
         scn, elevations, corner_rise, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs
     )
@@ -126,8 +127,8 @@ def unshaded(monkeypatch):
     """Slope shading scales the colour, which would break the coordinate
     decode. A factor of exactly 1 leaves every texel byte untouched on both
     backends: native_composite fetches the factor through render too."""
-    monkeypatch.setattr(
-        render, "_slope_shade",
+    set_render_global(
+        monkeypatch, "_slope_shade",
         lambda tile_px, *_a: np.ones(iso_geometry.diamond_indices(tile_px)[0].size, dtype=np.float32),
     )
 
@@ -148,7 +149,7 @@ def test_a_flat_stepped_map_has_no_tile_seam(coord_texture) -> None:
 
 def test_a_sloped_map_has_no_tile_seam(coord_texture, unshaded) -> None:
     scn = _scenario(_sloping)
-    _elevations, corner_rise, _proj = render.sloped_elevations_and_proj(scn)
+    _elevations, corner_rise, _proj = render_sloped.sloped_elevations_and_proj(scn)
     assert len(np.unique(corner_rise)) > 2, "fixture no longer slopes"
     cache = _sloped_cache(scn)
     assert len(cache.mip_levels()) > 1, "no other level to check (Stepped's ladder, TASK-031.60 and TASK-146) -- vacuous"

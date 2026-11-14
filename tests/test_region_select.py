@@ -666,14 +666,14 @@ def _loop_ring_path(map_view, rect):
 
 
 def test_the_sloped_ring_equals_the_per_tile_loop_and_hits_the_edge_cache() -> None:
-    from descape import map_view as map_view_module
+    from descape import map_view_triggers
 
     window = _styled_select_window("Sloped", bumpy=True)
     try:
         map_view = window.map_view
         width = window.scenario.map_manager.map_width
         rects = [(30, 30, 31, 31), (30, 30, 31, 36), (30, 30, 36, 31), (30, 30, 42, 39), (width - 7, 50, width, 58)]
-        map_view_module._sloped_edge_points.cache_clear()
+        map_view_triggers._sloped_edge_points.cache_clear()
         for rect in rects:
             got = map_view._rect_ring_path(rect)
             want = _loop_ring_path(map_view, rect)
@@ -681,6 +681,6 @@ def test_the_sloped_ring_equals_the_per_tile_loop_and_hits_the_edge_cache() -> N
             for i in range(want.elementCount()):
                 g, w = got.elementAt(i), want.elementAt(i)
                 assert (g.type, g.x, g.y) == (w.type, w.x, w.y), (rect, i)
-        assert map_view_module._sloped_edge_points.cache_info().hits > 0
+        assert map_view_triggers._sloped_edge_points.cache_info().hits > 0
     finally:
         conftest.close_window(window)

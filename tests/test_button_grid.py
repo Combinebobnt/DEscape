@@ -1,7 +1,7 @@
 """GH #169: the button grid under button_location on Change Train Location,
 Add Train Location and Change Research Location.
 
-Same offscreen-window technique as tests/test_trigger_panel.py, whose
+Same offscreen-window technique as tests/trigger_panel_helpers.py, whose
 helpers build the effects. No install, so unit cells show elided names.
 """
 
@@ -31,7 +31,7 @@ def _no_install_env(monkeypatch):
 
 
 def _grid_window(type_id: int, *per_entry):
-    from test_trigger_panel import _facet_window
+    from trigger_panel_helpers import _facet_window
 
     return _facet_window(type_id, *per_entry)
 
@@ -137,7 +137,7 @@ def test_the_tooltip_lists_every_occupant() -> None:
 
 def test_the_grid_follows_unit_building_and_slot_edits() -> None:
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     window, _indices = _grid_window(
         _CHANGE_TRAIN, {"object_list_unit_id": _SCOUT, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
@@ -295,7 +295,7 @@ def _combo_values(combo) -> list:
 
 def test_the_builder_offers_slots_1_to_13_and_follows_the_building() -> None:
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     window, indices = _grid_window(
         _CHANGE_TRAIN, {"object_list_unit_id": _CASTLE, "object_list_unit_id_2": _BUILDER, "button_location": 12}
@@ -324,7 +324,7 @@ def test_the_builder_offers_slots_1_to_13_and_follows_the_building() -> None:
 
 
 def test_a_builder_value_outside_1_to_13_keeps_its_row() -> None:
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     window, _indices = _grid_window(
         _CHANGE_TRAIN, {"object_list_unit_id": _CASTLE, "object_list_unit_id_2": _BUILDER, "button_location": 15}
@@ -351,7 +351,7 @@ def test_a_villager_as_trained_at_points_to_the_builder() -> None:
 
 
 def test_unset_or_buttonless_shows_a_hint_instead_of_the_grid() -> None:
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     window, _indices = _grid_window(_CHANGE_TRAIN, {"object_list_unit_id_2": _BARRACKS, "button_location": 1})
     try:
@@ -411,7 +411,7 @@ def test_a_read_only_file_disables_the_cells() -> None:
 
 
 def test_a_multi_selection_shows_no_grid() -> None:
-    from test_trigger_panel import _select_entries
+    from trigger_panel_helpers import _select_entries
 
     window, indices = _grid_window(
         _CHANGE_TRAIN,
@@ -482,7 +482,7 @@ def test_the_grid_shows_only_what_the_players_civ_has(civs) -> None:
 
 def test_the_civ_filter_follows_source_player(civs) -> None:
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     window, _indices = _grid_window(
         _CHANGE_TRAIN,
@@ -626,6 +626,42 @@ def test_a_tech_cell_uses_the_installs_tech_icon(monkeypatch) -> None:
         _close(window)
 
 
+@pytest.mark.parametrize("change", ["mod_art", "data_mod"])
+def test_a_unit_portrait_is_read_again_after_the_art_changes(monkeypatch, tmp_path, change) -> None:
+    """GH #363: a Mod Art toggle moves the install generation, a data mod switch only
+    game_dataset's (TASK-478); either makes the memo miss."""
+    import numpy as np
+
+    from descape import asset_source, game_dataset
+    from testkit import data_mod_fixture
+
+    shade = [100]
+
+    def portrait(*_args):
+        return np.full((8, 8, 4), (shade[0], 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN, {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2}
+    )
+    try:
+        grid = _grid(window)
+        before = grid._icon(_SPEARMAN, "unit")
+        shade[0] = 200
+        assert grid._icon(_SPEARMAN, "unit") is before
+        if change == "mod_art":
+            asset_source.clear_art_caches()
+        else:
+            generation = asset_source.install_generation()
+            (tmp_path / "data_mod").mkdir()
+            assert game_dataset.set_data_mod(data_mod_fixture.mod_tables(tmp_path / "data_mod"))
+            assert asset_source.install_generation() == generation, "the case the install generation misses"
+        assert grid._icon(_SPEARMAN, "unit").toImage().pixelColor(4, 4).red() == 200
+    finally:
+        _close(window)
+
+
 def test_another_effects_hidden_button_gets_a_red_frame() -> None:
     """A tech put on Barracks button 1 by another effect stays under the Militia (measured with Chemistry)."""
     window, _indices = _grid_window(
@@ -633,7 +669,7 @@ def test_another_effects_hidden_button_gets_a_red_frame() -> None:
         {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 8, "source_player": 1},
     )
     try:
-        from test_trigger_panel import _appended_effects
+        from trigger_panel_helpers import _appended_effects
 
         _appended_effects(
             window, _CHANGE_RESEARCH, [{"technology": _LOOM, "object_list_unit_id_2": _BARRACKS, "button_location": 1, "source_player": 1}]
@@ -693,5 +729,66 @@ def test_a_tech_the_starting_age_has_gets_a_red_cell_and_leaves_the_grid(monkeyp
         assert "player 1 starts in the Imperial Age, which already has Loom." in cell.toolTip()
         assert "Enable it" not in cell.toolTip(), "nothing gives a researched tech's button back"
         assert (222, "tech") not in _cell(grid, 2, 1).items, "Man-At-Arms is already researched"
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("player, red", [(1, 200), (-1, 100)], ids=["player", "every_player"])
+def test_a_unit_portrait_follows_the_players_civ(monkeypatch, player, red) -> None:
+    """GH #372: player 1's civ has its own Spearman portrait (icon 999); "every player" shows GAIA's."""
+    import numpy as np
+
+    from descape import asset_source, civ_art, object_catalog
+
+    def portrait(icon, _building):
+        return np.full((8, 8, 4), (200 if icon == 999 else 100, 0, 0, 255), dtype=np.uint8)
+
+    portrait.cache_clear = lambda: None
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        return {**row, "civ_icons": {"46": 999}} if section == "objects" and id_ == _SPEARMAN else row
+
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    monkeypatch.setattr(civ_art, "player_portrait_civ", lambda _scenario, pid: 46 if pid == 1 else None)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": player},
+    )
+    try:
+        grid = _grid(window)
+        assert grid._icon(_SPEARMAN, "unit").toImage().pixelColor(4, 4).red() == red
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("player", [1, -1], ids=["player", "every_player"])
+def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> None:
+    """GH #372: DE leaves the region transparent for the game to fill; "every player" gets GAIA's colour."""
+    import numpy as np
+
+    from descape import asset_source
+
+    def portrait(*_args):
+        arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
+        arr[2:6, 2:6] = (255, 255, 255, 0)  # DE's transparent region, full-bright shading
+        return arr
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": player},
+    )
+    try:
+        image = _grid(window)._icon(_SPEARMAN, "unit").toImage()
+        from descape import catalog_thumbs
+
+        rgb = tuple(window.scenario.player_colors[max(player, 0)][:3])
+        expected = catalog_thumbs.tinted(np.array([[[255, 255, 255, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
+        assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+        assert image.pixelColor(0, 0).getRgb()[:3] == (0, 0, 0), "the opaque art stays"
     finally:
         _close(window)

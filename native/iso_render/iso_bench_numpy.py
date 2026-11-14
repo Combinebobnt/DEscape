@@ -1,7 +1,7 @@
 """Pure Python/numpy prototype of the per-tile isometric blit kernel -- the
 Phase 0 baseline the Cython port in iso_kernel.pyx is benchmarked against.
 
-Deliberately mirrors descape/render.py's render_tile() as closely as
+Deliberately mirrors descape/render_flat.py's render_tile() as closely as
 possible (same crop_offset formula, same elevation-shading formula, same
 block size) so the only thing this changes relative to the flat renderer is
 *where* the shaded block gets blitted -- see this directory's README.md for
@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from descape import asset_source
-from descape.render import _crop_offset
+from descape.render_paint import _crop_offset
 from descape.terrain_palette import color_for_terrain_id
 
 # Matches the QTransform().scale(1, 0.5) baked into today's Flat isometric
@@ -44,7 +44,7 @@ def tile_screen_origin(x: int, y: int, elevation: int, tile_px: int, elev_step: 
 
 
 def render_tile_iso(img: np.ndarray, tile, tile_px: int, elev_step: int, origin_x: int, origin_y: int) -> None:
-    """The exact per-tile body of render.py's render_tile(), just blitted at
+    """The exact per-tile body of render_flat.py's render_tile(), just blitted at
     an isometric screen position instead of tile.x*tile_px, tile.y*tile_px."""
     factor = 1.0 + 0.08 * tile.elevation
 

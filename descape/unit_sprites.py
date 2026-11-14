@@ -73,6 +73,7 @@ from descape import (
     debug_log,
     editor_markers,
     game_dataset,
+    games,
     gate_orientation,
     mod_graphics,
     particle_art,
@@ -428,6 +429,11 @@ class _LRU(OrderedDict):
         while len(self) > self.capacity:
             self.popitem(last=False)
 
+    def drop_where(self, predicate) -> None:
+        """Drops every entry whose key satisfies predicate(key)."""
+        for key in [key for key in self if predicate(key)]:
+            del self[key]
+
 
 class _ByteLRU(OrderedDict):
     """An LRU capped by the total BYTES its values hold, not by entry count.
@@ -481,6 +487,11 @@ class _ByteLRU(OrderedDict):
     def clear(self) -> None:
         super().clear()
         self._bytes = 0
+
+    def drop_where(self, predicate) -> None:
+        """Drops every entry whose key satisfies predicate(key)."""
+        for key in [key for key in self if predicate(key)]:
+            self._bytes -= self._size(self.pop(key))
 
 
 _native_cache = _ByteLRU(NATIVE_CACHE_BYTES)
@@ -662,14 +673,20 @@ def x2_art_installed() -> bool:
     return directory is not None and (directory / X2_PROBE_FILE).is_file()
 
 
-@lru_cache(maxsize=1)
-def ror_x2_art_installed() -> bool:
-    """Whether the Return of Rome folder ships its own _x2 art, which it does
-    without the Enhanced Graphics DLC (1041 files, 2026-10-20). Any one file
-    counts. For the viewer's message only, like x2_art_installed()."""
-    root = game_dataset.ror_root(asset_source.get_install_path())
-    directory = None if root is None else root / GRAPHICS_SUBPATH
-    return directory is not None and directory.is_dir() and next(directory.glob("*_x2.sld"), None) is not None
+def own_x2_art_installed(game: games.Game | None = None) -> bool:
+    """Whether `game`'s own root (default the active game's) ships its own
+    _x2 art, as Return of Rome's does without the Enhanced Graphics DLC (1041
+    files, 2026-10-20). Any one file counts; False for a game without a
+    root_subpath. For the viewer's messages only, like x2_art_installed()."""
+    game = game or game_dataset.game()
+    install = asset_source.get_install_path()
+    return install is not None and game.root_subpath is not None and _ships_x2_art(game.root(install))
+
+
+@lru_cache(maxsize=4)
+def _ships_x2_art(root: Path) -> bool:
+    directory = root / GRAPHICS_SUBPATH
+    return directory.is_dir() and next(directory.glob("*_x2.sld"), None) is not None
 
 
 def hi_res_generation() -> int:
@@ -678,20 +695,30 @@ def hi_res_generation() -> int:
     return _hi_res_generation
 
 
-def clear_caches() -> None:
+def clear_caches(changed: frozenset[str] | None = None) -> None:
     """Drops every LRU. For tests, and for a settings change that repoints the
     install path -- a cached array outlives the file it came from otherwise,
     and every one of these remembers MISSES too, so a first-time install
-    configuration would keep serving "no sprite" without this."""
+    configuration would keep serving "no sprite" without this. `changed` is
+    the content layers a game_dataset switch moved (None: everything); TABLES
+    alone (a data-mod switch, TASK-478) keeps the file-keyed art."""
     global _mod_reach, _reach_epoch, _clear_generation
     # Pending sprite prefetches are forgotten, as asset_source._forget_prefetches() does.
     _clear_generation += 1
     prefetch_discard()
+    # The mod reach is walked over referenced_entries(), so it follows the tables.
+    _mod_reach = None
+    _reach_epoch += 1
+    wall_connector_consts.cache_clear()
+    building_art.cache_clear()
+    _particle_stems.cache_clear()
+    if game_dataset.only_changed(changed, asset_source.FILE_KEYED_SURVIVES):
+        _drop_install_lacking_draws()
+        return
+    # Only file-, stem- or install-keyed caches below: a data-mod switch keeps them (TASK-478).
     _native_cache.clear()
     _sld_index_cache.clear()
     _mod_index_cache.clear()
-    _mod_reach = None
-    _reach_epoch += 1
     _install_sld_names.cache_clear()
     _mod_mismatch_logged.clear()
     _mod_blank_stems.clear()
@@ -704,16 +731,42 @@ def clear_caches() -> None:
     _x2_bytes_cache.clear()
     _x2_mismatch_logged.clear()
     x2_art_installed.cache_clear()
-    ror_x2_art_installed.cache_clear()
+    _ships_x2_art.cache_clear()
     sld_frame_count.cache_clear()
-    wall_connector_consts.cache_clear()
-    building_art.cache_clear()
-    _particle_stems.cache_clear()
     particle_art.clear_caches()
     # The revealer marker reads the game's own icon from the install.
     marker_for.cache_clear()
     rect_marker_for.cache_clear()
     editor_markers.clear_caches()
+
+
+_KEY_MARKERS = frozenset({"wall", "install", "mod"})  # key-shape tags, never stems
+
+
+def _drop_install_lacking_draws() -> None:
+    """A data-mod switch's half of clear_caches(): a stem the install lacks is
+    drawn from a data mod's own file only while one is set (_mod_only_index()),
+    so every draw naming such a stem drops, and every draw at all when the
+    graphics folder will not list."""
+    caches = (_native_cache, _scaled_cache, _icon_cache, _native_x2_cache)
+    directory = _graphics_dir()
+    if directory is None or game_dataset.game().root_subpath is not None:
+        return  # a game with its own root draws stems the install lacks (_install_lacks())
+    names = _install_sld_names(directory)
+    if names is None:
+        for cache in caches:
+            cache.clear()
+        _mod_blank_stems.clear()
+        return
+
+    def names_lacking(key) -> bool:
+        if isinstance(key, str):
+            return key not in _KEY_MARKERS and f"{key}.sld".casefold() not in names
+        return isinstance(key, tuple) and any(names_lacking(part) for part in key)
+
+    for cache in caches:
+        cache.drop_where(names_lacking)
+    _mod_blank_stems.difference_update([stem for stem in _mod_blank_stems if names_lacking(stem)])
 
 
 @game_dataset.cache(maxsize=1)
@@ -1019,16 +1072,25 @@ _ROR_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
 )
 
 
+_ROTATION_VARIANT_BY_GAME = games.PerGame(
+    "unit_sprites: wall consts whose rotation selects a shape",
+    {"aoe2": _ROTATION_VARIANT_CONSTS, "ror": _ROR_ROTATION_VARIANT_CONSTS},
+)
+_CLIFF_VARIANT_BY_GAME = games.PerGame(
+    "unit_sprites: cliff consts (.dat class 34)",
+    {"aoe2": _CLIFF_VARIANT_CONSTS, "ror": _ROR_CLIFF_VARIANT_CONSTS},
+)
+
+
 def rotation_variant_const_set() -> frozenset[int]:
-    """The active game dataset's wall family (GH #67). Reads the module
-    attribute at call time, so a test's monkeypatch of either set holds."""
-    return _ROR_ROTATION_VARIANT_CONSTS if game_dataset.is_ror() else _ROTATION_VARIANT_CONSTS
+    """The active game's wall family (GH #67), read at call time, so a test's
+    monkeypatch.setitem() of one game's set holds."""
+    return _ROTATION_VARIANT_BY_GAME.active()
 
 
 def cliff_const_set() -> frozenset[int]:
-    """The active game dataset's cliff consts (GH #67), read at call time
-    like rotation_variant_const_set()."""
-    return _ROR_CLIFF_VARIANT_CONSTS if game_dataset.is_ror() else _CLIFF_VARIANT_CONSTS
+    """The active game's cliff consts (GH #67), read at call time like rotation_variant_const_set()."""
+    return _CLIFF_VARIANT_BY_GAME.active()
 
 
 def rotation_is_variant(unit_const: int) -> bool:
@@ -1418,13 +1480,20 @@ def _graphics_dir() -> Path | None:
 
 
 def _sld_path(directory: Path, file_name: str) -> Path:
-    """The .sld for a stem: under Return of Rome the RoR root's copy when it
-    has one, else the install's in `directory` (GH #67)."""
-    if game_dataset.is_ror():
-        found = game_dataset.resource_path(f"{GRAPHICS_SUBPATH}/{file_name}.sld")
-        if found is not None:
-            return found
-    return directory / f"{file_name}.sld"
+    """The .sld for a stem: the first copy along the active game's root chain
+    (Return of Rome's root, then the install's, GH #67), else the bottom
+    root's path; `directory`'s without an install. No stat for a game whose
+    chain is the install alone."""
+    name = f"{file_name}.sld"
+    install = asset_source.get_install_path()
+    if install is None:
+        return directory / name
+    *upper, bottom = game_dataset.stack().roots(install)
+    for root in upper:
+        candidate = root / GRAPHICS_SUBPATH / name
+        if candidate.exists():
+            return candidate
+    return bottom / GRAPHICS_SUBPATH / name
 
 
 @lru_cache(maxsize=512)
@@ -1462,9 +1531,9 @@ def _install_sld_names(directory: Path) -> frozenset[str] | None:
 
 def _install_lacks(directory: Path, file_name: str) -> bool:
     """True when the install's graphics folder has no .sld of this stem in any
-    case, so an open would fail. False under Return of Rome, whose root can
-    hold a copy (_sld_path())."""
-    if game_dataset.is_ror():
+    case, so an open would fail. False under a game with its own root
+    (Return of Rome), which can hold a copy (_sld_path())."""
+    if game_dataset.game().root_subpath is not None:
         return False
     names = _install_sld_names(directory)
     return names is not None and f"{file_name}.sld".casefold() not in names

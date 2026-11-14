@@ -77,7 +77,7 @@ def test_dropped_scenario_paths_keeps_local_scenarios_in_order(tmp_path) -> None
     conftest.ensure_qapp()
     from PyQt5.QtCore import QUrl
 
-    from descape.viewer import dropped_scenario_paths
+    from descape.viewer_file import dropped_scenario_paths
 
     b = tmp_path / "b.aoe2scenario"
     a = tmp_path / "A.AOE2SCENARIO"

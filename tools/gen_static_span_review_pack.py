@@ -54,6 +54,7 @@ import numpy as np
 
 from testkit import review_pack as rp
 from testkit import settings_isolation
+from testkit.render_family import RENDER, patch
 
 PACK_ID = "pieces"
 OUT_DIR = grp.OUT_DIR
@@ -113,10 +114,10 @@ def _inject_one_tile():
 
 def _inject_own_point():
     """The flare keeps its own point, as a shipwreck's art does: no invisible-const exception."""
-    from descape import render, terrain_palette
+    from descape import terrain_palette
 
     keeps = lambda unit_const: unit_const in terrain_palette.DOODAD_TILE_SPANS or unit_const in terrain_palette.STATIC_TILE_SPANS  # noqa: E731
-    return [("attr", render, "_sprite_keeps_own_point", keeps)]
+    return [("attr", RENDER, "_sprite_keeps_own_point", keeps)]
 
 
 def _inject_empty_body():
@@ -140,34 +141,24 @@ _HIDE_ALL = False
 _OWN_BOUND = {("empty-body", "d"): 4096}
 
 
-def _get(kind, target, key):
-    if kind == "attr":
-        return getattr(target, key)
-    return target.get(key, _DROP)
-
-
-def _set(kind, target, key, value) -> None:
-    if kind == "attr":
-        setattr(target, key, value)
-    elif value is _DROP:
-        target.pop(key, None)
-    else:
-        target[key] = value
-
-
 @contextmanager
 def _patched(patches):
+    import pytest
+
     from descape import unit_sprites
 
-    saved = [(kind, target, key, _get(kind, target, key)) for kind, target, key, _new in patches]
-    for kind, target, key, new in patches:
-        _set(kind, target, key, new)
-    unit_sprites.clear_caches()
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for kind, target, key, new in patches:
+                if kind == "attr":
+                    patch(mp, target, key, new)
+                elif new is _DROP:
+                    mp.delitem(target, key, raising=False)
+                else:
+                    mp.setitem(target, key, new)
+            unit_sprites.clear_caches()
+            yield
     finally:
-        for kind, target, key, old in reversed(saved):
-            _set(kind, target, key, old)
         unit_sprites.clear_caches()
 
 

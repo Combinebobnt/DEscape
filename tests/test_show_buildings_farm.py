@@ -2,8 +2,8 @@
 Overlay drape, in every view mode.
 
 The iso paths run UnitFilter.matches() before the farm override
-(render._resolve_unit_sprite), but nothing pinned it. Top-down Flat drapes
-through render.flat_farm_tiles() since GH #150, which runs the same filter.
+(render_sprites._resolve_unit_sprite), but nothing pinned it. Top-down Flat drapes
+through render_sprites.flat_farm_tiles() since GH #150, which runs the same filter.
 
 The real FARM const (50) is used, not a synthetic one: the gate is a
 building_consts() membership test, and FARM resolves no .sld but does carry a
@@ -17,9 +17,9 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, render, unit_kind
-from descape.render import tile_pixels_for_map
+from descape import asset_source, render_iso, render_sloped, render_sprites, unit_kind
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
 from descape.unit_filter import UnitFilter
 from testkit.fakes import FakeScenario, SyntheticTile
 
@@ -55,7 +55,7 @@ def _scenario(*, with_farm: bool) -> FakeScenario:
 @pytest.fixture
 def textures(monkeypatch):
     """Solid colours, so a leftover drape would show as the farm terrain's own colour."""
-    farm_terrain = render._terrain_overlay_for(FARM_CONST)
+    farm_terrain = render_sprites._terrain_overlay_for(FARM_CONST)
     assert farm_terrain is not None, "FARM lost its foundation terrain -- this file would prove nothing"
     colours = {BACKGROUND_TERRAIN: (10, 20, 30), farm_terrain: (200, 150, 40)}
     arrays = {tid: np.full((TEXTURE_SIZE, TEXTURE_SIZE, 3), c, dtype=np.uint8) for tid, c in colours.items()}
@@ -63,12 +63,12 @@ def textures(monkeypatch):
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
 def _sloped_cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(
         scn, elevations, corner_rise, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs
     )

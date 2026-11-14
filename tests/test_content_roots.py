@@ -285,6 +285,42 @@ def test_active_profile_id_is_the_newest_status_file(tmp_path):
     assert content_roots.active_profile_id(tmp_path / "missing") is None
 
 
+def _later(path: Path, seconds: int = 1) -> None:
+    """Moves path's mtime a whole second on, past any filesystem timestamp granularity."""
+    import os
+
+    ns = path.stat().st_mtime_ns + seconds * 1_000_000_000
+    os.utime(path, ns=(ns, ns))
+
+
+def test_mod_state_signature_moves_with_the_mod_list_only(tmp_path):
+    """TASK-438: what mod_graphics.refresh() compares. It moves for a status
+    rewrite, a mod folder added and another id's status file, never for a
+    file inside a mod, and an id without mods/ is None entries, not a raise."""
+    _install_dir, profile = _full_tree(tmp_path)
+    sign = content_roots.mod_state_signature
+    first = sign(profile)
+    assert first == sign(profile)
+    assert {pid: rest for pid, *rest in first[1]}["0"] == [None, None, None]
+
+    _touch(profile / "7656" / "mods" / "subscribed" / "12_Alpha AI" / "resources" / "_common" / "ai" / "New.ai")
+    assert sign(profile) == first, "a mod's own files are the Rescan button's"
+
+    status = profile / "7656" / "mods" / "mod-status.json"
+    _later(status)
+    second = sign(profile)
+    assert second != first
+
+    _mod(profile, "7656", "subscribed", "78_Added")
+    _later(profile / "7656" / "mods" / "subscribed")
+    third = sign(profile)
+    assert third != second
+
+    _status(profile, "0", [])
+    assert sign(profile) != third
+    assert sign(tmp_path / "missing") == (str(tmp_path / "missing"), ())
+
+
 def test_capitalised_resources_folder_is_found(tmp_path):
     install = _install(tmp_path)
     profile = _profile(tmp_path)

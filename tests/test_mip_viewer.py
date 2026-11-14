@@ -51,7 +51,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from descape.render_cache import _ChunkCacheBase
+from descape.render_cache_base import _ChunkCacheBase
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
 

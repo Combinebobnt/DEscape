@@ -570,3 +570,53 @@ def test_the_internal_tech_families_mark_the_measured_rows() -> None:
     assert sum(e.internal for e in catalog) == sum(_INTERNAL_TECH_COUNTS.values()) == 74
     assert all(e.internal == bool(families[e.id]) for e in catalog)
     assert not any(e.internal for e in object_catalog.objects()), "objects never carry it"
+
+
+# --- GH #372: a portrait by the owner's architecture civ ---------------------------
+
+MONK, BARRACKS_AGE1 = 125, 12
+BRITONS, CHINESE, EGYPTIAN = 1, 6, 1
+
+
+@pytest.fixture()
+def fake_rows(monkeypatch):
+    rows = {
+        1: {"type": 70, "class": 18, "icon": 33, "civ_icons": {"6": 218, "9": -1}},
+        2: {"type": 80, "class": 3, "icon": 4},
+        3: {"type": 70, "class": 18, "icon": -1, "civ_icons": {"5": 40}},
+    }
+    monkeypatch.setattr(object_catalog, "_dat_entry", lambda section, id_: rows.get(id_))
+    return rows
+
+
+def test_icon_for_takes_the_civs_own_icon(fake_rows) -> None:
+    assert object_catalog.icon_for(1) == 33
+    assert object_catalog.icon_for(1, 6) == 218
+    assert object_catalog.icon_for(1, 1) == 33, "no override for that civ"
+    assert object_catalog.icon_for(2, 6) == 4, "a row without civ_icons"
+    assert object_catalog.icon_for(1, 9) is None, "an override of -1 is no portrait"
+    assert object_catalog.icon_for(3) is None and object_catalog.icon_for(3, 5) == 40
+    assert object_catalog.icon_for(99, 6) is None
+    assert object_catalog.portrait_for(1, 6) == (218, False)
+    assert object_catalog.portrait_for(2, 6) == (4, True)
+
+
+def test_portrait_civ_key_folds_a_civ_without_an_override(fake_rows) -> None:
+    assert object_catalog.portrait_civ_key(1, 6) == 6
+    assert object_catalog.portrait_civ_key(1, 9) == 9
+    assert object_catalog.portrait_civ_key(1, 1) is None
+    assert object_catalog.portrait_civ_key(1, None) is None
+    assert object_catalog.portrait_civ_key(2, 6) is None
+    assert object_catalog.portrait_civ_key(99, 6) is None
+
+
+def test_the_committed_tables_carry_the_measured_civ_portraits() -> None:
+    """Measured in game (2026-11-11): a Chinese-architecture monk has its own
+    portrait, a Britons one GAIA's; Return of Rome's civs have their own Barracks."""
+    from descape import game_dataset
+
+    assert object_catalog.icon_for(MONK, CHINESE) == 218
+    assert object_catalog.icon_for(MONK, BRITONS) == object_catalog.icon_for(MONK) == 33
+    game_dataset.set_active(game_dataset.ROR)
+    assert object_catalog.icon_for(BARRACKS_AGE1) == 10
+    assert object_catalog.icon_for(BARRACKS_AGE1, EGYPTIAN) == 8

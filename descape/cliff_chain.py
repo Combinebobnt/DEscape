@@ -2,7 +2,7 @@
 the pieces and positions that path resolves to.
 
 No Qt here, the same split `cliff_catalog` and `cliff_connectivity` already
-use: `viewer.py` only feeds cursor tiles in and writes the resulting nodes
+use: `viewer_unit_place.py` only feeds cursor tiles in and writes the resulting nodes
 out through `UnitEditModel`, so every rule below is testable headless.
 
 **The path is a list of cardinal steps.** Each node joins the next one by a
@@ -66,7 +66,7 @@ from functools import cache
 
 from descape import cliff_catalog, cliff_connectivity, unit_sprites
 from descape.cliff_connectivity import DRAG_FACE_SIDE, edge_tall, leg_tall
-from descape.render import span_anchor, unit_tile_bounds
+from descape.render_units import span_anchor, unit_tile_bounds
 from descape.terrain_palette import TREE_UNIT_IDS, tile_span
 
 Bounds = tuple[int, int, int, int]

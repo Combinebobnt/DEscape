@@ -97,7 +97,7 @@ sys.path.insert(0, str(ROOT))
 from descape import gate_orientation, shape_tools, unit_shape, unit_sprites, wall_run
 from descape.edit_history import EditHistory
 from descape.place_rotation import PlaceRotation
-from descape.render import occupied_tiles_for, snapped_anchor, span_anchor, unit_occupied_tiles, unit_tile_bounds
+from descape.render_units import occupied_tiles_for, snapped_anchor, span_anchor, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.scenario_write import write_scenario
 from descape.terrain_palette import tile_span

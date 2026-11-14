@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.datasets.effects import EffectId
 
-from descape import civ_art, command_buttons, data_mod_side, disables_fields, game_dataset
+from descape import civ_art, command_buttons, data_mod_side, disables_fields, games
 from descape.command_buttons import TECH, UNIT
 
 Item = tuple[int, str]
@@ -107,10 +107,16 @@ MISSING_CIV = "civ"
 MISSING_LISTED = "disables"
 MISSING_START = "start"
 
+# Whether a later start age's generic techs were measured in the game (module docstring).
+_START_TECHS_MEASURED = games.PerGame(
+    "civ_availability: a later start age researches the earlier ages' generic techs (measured)",
+    {"aoe2": True, "ror": False},
+)
+
 
 def researched_at_start(start_age: int | None, tech: int) -> bool:
     """Whether a player starting in `start_age` already has generic `tech`."""
-    if start_age is None or game_dataset.is_ror():
+    if start_age is None or not _START_TECHS_MEASURED.active():
         return False
     row = command_buttons.catalog_row(tech, TECH)
     return row.get("civ", -1) == -1 and "age" in row and start_age > row["age"]
@@ -168,8 +174,7 @@ def player_civ(loaded, player: int) -> int | None:
     """The .dat civ index `player` plays, or None for a random, unset or
     unknown civilization. The civilization, never the architecture, read
     with the file's own game's civ tokens (civ_art.player_art() does the same)."""
-    ror = game_dataset.from_variant(getattr(loaded, "game_variant", None)) == game_dataset.ROR
-    return civ_art.civ_index(player_civ_value(loaded, player), ror=ror)
+    return civ_art.civ_index(player_civ_value(loaded, player), games.for_scenario(loaded))
 
 
 def civ_name(loaded, player: int) -> str:

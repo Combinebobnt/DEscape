@@ -16,14 +16,16 @@ import numpy as np
 import pytest
 from test_sprite_edit_bbox import CONST, Unit, sprite_install  # noqa: F401 -- fixture
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_iso, render_paint, render_sloped, render_sprites, unit_kind, unit_sprites
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.terrain_palette import FOUNDATION_TERRAIN
 from descape.unit_filter import UnitFilter
 from descape.view_layers import LayerState
+from testkit.render_family import set_render_global
 
 # A const with a foundation terrain and no sprite in the fixture's graphic map: a farm.
-FARM = min(c for c in render.FOUNDATION_TERRAIN if c not in render.DRAPED_SPRITE_CONSTS)
+FARM = min(c for c in FOUNDATION_TERRAIN if c not in render_sprites.DRAPED_SPRITE_CONSTS)
 NO_ART = 999_999
 _DEFAULT_LAYERS = LayerState()
 
@@ -53,19 +55,19 @@ class _Style:
     def __init__(self, sloped: bool, scenario):
         self.sloped = sloped
         self.scenario = scenario
-        _, self.proj = render.elevations_and_proj(scenario)
+        _, self.proj = render_iso.elevations_and_proj(scenario)
         if sloped:
-            _, _, self.proj = render.sloped_elevations_and_proj(scenario)
+            _, _, self.proj = render_sloped.sloped_elevations_and_proj(scenario)
 
     def args(self):
         elevations = _elevations(self.scenario)
         corner_rise = (
-            iso_geometry.corner_rise_px(elevations, self.proj, rule=render.SLOPE_CORNER_RULE) if self.sloped else None
+            iso_geometry.corner_rise_px(elevations, self.proj, rule=render_sloped.SLOPE_CORNER_RULE) if self.sloped else None
         )
         return elevations, corner_rise, iso_geometry.tile_folds(elevations) if self.sloped else None
 
 
-def _normalized(layer: render.SpriteLayer):
+def _normalized(layer: render_sprites.SpriteLayer):
     by_anchor = {
         key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise) for d, x, y, rise in draws]
         for key, draws in layer.by_anchor.items()
@@ -76,13 +78,13 @@ def _normalized(layer: render.SpriteLayer):
 class _ResolveCounter:
     def __init__(self, monkeypatch):
         self.calls = 0
-        real = render._resolve_unit_sprite
+        real = render_sprites._resolve_unit_sprite
 
         def counted(*args, **kwargs):
             self.calls += 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(render, "_resolve_unit_sprite", counted)
+        set_render_global(monkeypatch, "_resolve_unit_sprite", counted)
 
 
 def _walk(
@@ -90,7 +92,7 @@ def _walk(
     wall_alpha=1.0,
 ):
     elevations, corner_rise, fold = style.args()
-    return render._drain(render.sprite_draws_by_anchor_sliced(
+    return render_paint._drain(render_sprites.sprite_draws_by_anchor_sliced(
         style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
         wall_alpha, memo=memo, fold=fold,
     ))
@@ -101,7 +103,7 @@ def _fresh(
     wall_alpha=1.0,
 ):
     elevations, corner_rise, fold = style.args()
-    return render.sprite_draws_by_anchor(
+    return render_sprites.sprite_draws_by_anchor(
         style.scenario, style.proj, elevations, unit_filter, corner_rise, with_farms, tree_scale, hero_glow,
         wall_alpha, fold=fold,
     )
@@ -198,7 +200,7 @@ EDITS = {
 def test_memo_layer_equals_a_fresh_one_and_resolves_only_the_edited_units(monkeypatch, sloped, edit):
     scenario = _scenario()
     style = _Style(sloped, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     fn, stepped_misses, sloped_misses = EDITS[edit]
     fn(scenario)
     counter = _ResolveCounter(monkeypatch)
@@ -217,7 +219,7 @@ def test_a_fold_flip_with_no_corner_change_reresolves_the_unit(monkeypatch):
         scenario.map_manager.get_tile(*tile).elevation = 3
     style = _Style(True, scenario)
     _elevations_before, corners_before, fold_before = style.args()
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     scenario.map_manager.get_tile(*hill[-1]).elevation = 2
     _elevations_after, corners_after, fold_after = style.args()
     assert np.array_equal(corners_before[40:42, 40:42], corners_after[40:42, 40:42]), "the fixture moved a corner"
@@ -239,8 +241,8 @@ def test_a_wall_override_change_reresolves_the_unit(monkeypatch):
     scenario = _scenario()
     style = _Style(False, scenario)
     overrides: dict = {}
-    monkeypatch.setattr(render, "wall_variant_rotation_overrides", lambda _s: overrides)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    set_render_global(monkeypatch, "wall_variant_rotation_overrides", lambda _s: overrides)
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     overrides[(1, 0)] = 3.0
     counter = _ResolveCounter(monkeypatch)
     layer, _ = _walk(style, memo)
@@ -253,7 +255,7 @@ def test_a_filter_change_matches_fresh_without_reresolving(monkeypatch):
     re-showing a player costs no resolves at all."""
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     hide = UnitFilter(players=frozenset({0, 2}))
     counter = _ResolveCounter(monkeypatch)
     hidden, hidden_memo = _walk(style, memo, unit_filter=hide)
@@ -273,12 +275,12 @@ def test_a_layer_toggle_matches_fresh(monkeypatch, toggle):
     """Each build-time layer field is a memo invariant: flipping it must
     re-resolve rather than serve the old art. CONST is patched into the tree,
     hero and wall sets so those toggles change pixels at all."""
-    monkeypatch.setattr(render, "TREE_UNIT_IDS", frozenset({CONST}))
-    monkeypatch.setattr(render, "HERO_GLOW_CONSTS", frozenset({CONST}))
-    monkeypatch.setattr(render.unit_kind, "wall_consts", lambda: frozenset({CONST}))
+    set_render_global(monkeypatch, "TREE_UNIT_IDS", frozenset({CONST}))
+    set_render_global(monkeypatch, "HERO_GLOW_CONSTS", frozenset({CONST}))
+    monkeypatch.setattr(unit_kind, "wall_consts", lambda: frozenset({CONST}))
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     toggled, _ = _walk(style, memo, **toggle)
     fresh = _fresh(style, **toggle)
     assert _normalized(fresh) != _normalized(_fresh(style)), "the toggle must change the layer"
@@ -290,10 +292,10 @@ def test_a_reused_id_with_a_different_unit_is_a_miss(monkeypatch):
     be served. Injected, since the memo's own reference keeps the id alive."""
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     target = _units(scenario)[1][0]
     _unit, key, _contribution = memo.entries[id(target)]
-    bogus = render._SpriteContribution(skip_id=id(target), by_anchor={}, bboxes={}, farm_tiles={})
+    bogus = render_sprites._SpriteContribution(skip_id=id(target), by_anchor={}, bboxes={}, farm_tiles={})
     memo.entries[id(target)] = (Unit(target.x, target.y, CONST), key, bogus)
     counter = _ResolveCounter(monkeypatch)
     layer, _ = _walk(style, memo)
@@ -303,26 +305,26 @@ def test_a_reused_id_with_a_different_unit_is_a_miss(monkeypatch):
 
 def test_no_memo_returns_the_layer_alone():
     style = _Style(False, _scenario())
-    assert isinstance(_walk(style, None), render.SpriteLayer)
+    assert isinstance(_walk(style, None), render_sprites.SpriteLayer)
 
 
 def _cache(sloped: bool, scenario, layers=_DEFAULT_LAYERS):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if sloped:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True, layers=layers)
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True, layers=layers)
 
 
-def _cache_layer(cache, sloped: bool) -> render.SpriteLayer:
+def _cache_layer(cache, sloped: bool) -> render_sprites.SpriteLayer:
     return cache.sprites if sloped else cache._level(0).sprites
 
 
-def _cache_fresh(cache, sloped: bool) -> render.SpriteLayer:
+def _cache_fresh(cache, sloped: bool) -> render_sprites.SpriteLayer:
     proj = cache.proj if sloped else cache._levels[0].proj
-    return render.sprite_draws_by_anchor(
+    return render_sprites.sprite_draws_by_anchor(
         cache.scenario, proj, cache.elevations, cache.unit_filter,
         corner_rise=cache.corner_rise if sloped else None, with_farms=cache.layers.farm_overlay,
         tree_scale=cache.layers.tree_scale, hero_glow=cache.layers.hero_glow,
@@ -344,7 +346,7 @@ def test_the_caches_wholesale_rebuild_reuses_the_memo(monkeypatch, sloped):
 
 @pytest.mark.parametrize("sloped", [False, True], ids=["stepped", "sloped"])
 def test_the_caches_layer_toggle_rebuilds_against_the_new_layers(monkeypatch, sloped):
-    monkeypatch.setattr(render, "TREE_UNIT_IDS", frozenset({CONST}))
+    set_render_global(monkeypatch, "TREE_UNIT_IDS", frozenset({CONST}))
     scenario = _scenario()
     cache = _cache(sloped, scenario)
     before = _normalized(_cache_layer(cache, sloped))
@@ -359,7 +361,7 @@ def test_the_warm_installs_its_memo(monkeypatch):
     cache = _cache(False, scenario)
     mip = next(m for m in cache.mip_levels() if m != 0)
     job = cache.level_warm_job(mip)
-    assert job.install(render._drain(job.gen)) is True
+    assert job.install(render_paint._drain(job.gen)) is True
     assert cache._levels[mip].memo is not None and cache._levels[mip].memo.entries
     _move(scenario)
     cache.invalidate_units()
@@ -385,17 +387,17 @@ def test_a_garrison_link_reresolves_its_host_alone(monkeypatch, sloped):
     which no field of the host carries, so garrison_host_ids() is in the key.
     A link and an unload each re-resolve the host only: under the default
     filter the occupant draws the same either way."""
-    entry = dict(render.unit_sprites.graphic_map()[CONST])
+    entry = dict(unit_sprites.graphic_map()[CONST])
     entry["garrison_flags"] = [
         {"unit_id": CONST, "file_name": entry["file_name"], "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
     ]
-    monkeypatch.setattr(render.unit_sprites, "graphic_map", lambda: {CONST: entry})
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {CONST: entry})
     scenario = _scenario()
     host, occupant = _units(scenario)[1][0], _units(scenario)[2][0]
     host.reference_id, occupant.reference_id, occupant.garrisoned_in_id = 500, 501, -1
     style = _Style(sloped, scenario)
     unlinked = _normalized(_fresh(style))
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     counter = _ResolveCounter(monkeypatch)
     for link in (host.reference_id, -1):
         # UnitEditModel.set_garrisoned_in() bumps unit_gen, which garrison_host_ids() is memoized on.
@@ -440,9 +442,9 @@ def test_a_mod_art_generation_change_invalidates_the_memo(monkeypatch):
 
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     counter = _ResolveCounter(monkeypatch)
-    _walk(style, render.SpriteMemo())
+    _walk(style, render_sprites.SpriteMemo())
     misses, counter.calls = counter.calls, 0
     _walk(style, memo)
     assert counter.calls == 0 < misses
@@ -458,9 +460,9 @@ def test_a_game_data_generation_change_invalidates_the_memo(monkeypatch):
 
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     counter = _ResolveCounter(monkeypatch)
-    _walk(style, render.SpriteMemo())
+    _walk(style, render_sprites.SpriteMemo())
     misses, counter.calls = counter.calls, 0
     _walk(style, memo)
     assert counter.calls == 0 < misses
@@ -478,9 +480,9 @@ def test_a_smooth_shrink_change_invalidates_the_memo(monkeypatch):
 
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     counter = _ResolveCounter(monkeypatch)
-    _walk(style, render.SpriteMemo())
+    _walk(style, render_sprites.SpriteMemo())
     misses, counter.calls = counter.calls, 0
     _walk(style, memo)
     assert counter.calls == 0 < misses
@@ -494,12 +496,12 @@ def test_a_column_slicing_flip_invalidates_the_memo(monkeypatch):
     never serves a contribution sliced under the other setting."""
     scenario = _scenario()
     style = _Style(False, scenario)
-    _layer, memo = _walk(style, render.SpriteMemo())
+    _layer, memo = _walk(style, render_sprites.SpriteMemo())
     counter = _ResolveCounter(monkeypatch)
-    _walk(style, render.SpriteMemo())
+    _walk(style, render_sprites.SpriteMemo())
     misses, counter.calls = counter.calls, 0
     _walk(style, memo)
     assert counter.calls == 0 < misses
-    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", not render.SPRITE_COLUMN_SLICING)
+    set_render_global(monkeypatch, "SPRITE_COLUMN_SLICING", not render_sprites.SPRITE_COLUMN_SLICING)
     _walk(style, memo)
     assert counter.calls == misses

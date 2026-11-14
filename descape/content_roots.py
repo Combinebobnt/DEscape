@@ -32,6 +32,9 @@ as disabled is skipped, and the Priority rides on the root for consumers that
 resolve overrides (mod_graphics). A mod folder it does not list at all is kept (the game adds new
 subscriptions on its next launch), and a missing or malformed status file
 means every mod folder is kept.
+
+A consumer that caches a scan compares mod_state_signature() with the one it
+took before scanning to notice that the game's mod list may have changed.
 """
 
 from __future__ import annotations
@@ -311,6 +314,33 @@ def active_profile_id(profile: Path) -> str | None:
         if newest is None or mtime > newest[0]:
             newest = (mtime, id_dir.name)
     return None if newest is None else newest[1]
+
+
+def _stat_key(path: Path, *, size: bool = False):
+    try:
+        found = path.stat()
+    except OSError:
+        return None
+    return (found.st_mtime_ns, found.st_size) if size else found.st_mtime_ns
+
+
+def mod_state_signature(profile: Path) -> tuple:
+    """A few stats that move when the game's mod list may have: per numeric
+    profile id, mods/mod-status.json's (mtime, size) and the mtimes of
+    mods/subscribed/ and mods/local/ (a mod folder added or removed), None
+    where missing. Blind to a mod's own files changing in place."""
+    profile = Path(profile)
+    per_id = []
+    for id_dir in _sorted_dirs(profile):
+        if not id_dir.name.isdigit():
+            continue
+        mods_dir = id_dir / "mods"
+        per_id.append((
+            id_dir.name,
+            _stat_key(mods_dir / MOD_STATUS_FILE, size=True),
+            *(_stat_key(mods_dir / folder) for _kind, folder in _MOD_KINDS),
+        ))
+    return (str(profile), tuple(per_id))
 
 
 def has_profile_ids(folder: Path) -> bool:

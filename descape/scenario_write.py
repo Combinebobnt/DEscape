@@ -121,6 +121,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from descape import games
 from descape.messages_model import MessagesEditModel
 from descape.option_fields import label_for
 from descape.options_model import (
@@ -727,7 +728,9 @@ def write_scenario(
             map-option one, per
             options_model.diplomacy_write_supported's docstring), or if
             `messages` has edits on a file whose Messages section no longer
-            passes messages_write_supported. All of the above are raised
+            passes messages_write_supported, or if the scenario's own game
+            (games.for_scenario()) is not Game.writable, so a batch script
+            is refused a view-only game as the viewer is. All of the above are raised
             before any backup is written or out_path is touched.
         BackupFailedError (a WriteBlockedError subclass, descape.backup):
             if a `.bak`/`.orig` copy fails partway through. Aborts the save
@@ -755,6 +758,11 @@ def write_scenario(
     if resolved.parent == TEMPLATE_DIR.resolve():
         raise WriteBlockedError(
             f"Refusing to write into the shipped template directory ({TEMPLATE_DIR}): {out_path}"
+        )
+    own_game = games.for_scenario(scenario)
+    if not own_game.writable:
+        raise WriteBlockedError(
+            f"Refusing to write a {own_game.display_name} scenario: DEscape opens that game's files view-only: {out_path}"
         )
 
     header_bytes, patched_body = build_patched_body(scenario, triggers, options, units, messages)

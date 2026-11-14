@@ -333,6 +333,7 @@ def test_the_module_stays_a_stdlib_only_leaf() -> None:
         "descape.terrain_palette",
         "descape.gate_orientation",
         "descape.game_dataset",  # GH #67: a stdlib leaf too; it reaches asset_source only lazily
+        "descape.games",  # stdlib only; PerGame reaches game_dataset at call time
     }
 
 

@@ -1,7 +1,7 @@
 """Stage 1 of off-grid (non-snapped) unit placement: a unit's sub-tile position
 must actually reach the screen.
 
-Until 2026-09-17 it did not, in any render style. `render._span_start(coord, 1)`
+Until 2026-09-17 it did not, in any render style. `render_units._span_start(coord, 1)`
 returns `int(coord)`, so a 1x1 unit's sprite anchored at `int(x) + 0.5` whatever
 `x` was: 35.2, 35.5, 35.9 and 35.0 all produced the same pixel. That made the
 inspector's 0.01 X/Y spinboxes and the 0.1 arrow nudge write coordinates the
@@ -30,8 +30,18 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import (
+    asset_source,
+    iso_geometry,
+    render_bbox,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_sprites,
+)
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS, tile_span
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
@@ -102,8 +112,8 @@ def sprite_install(tmp_path, monkeypatch):
 
 def _only_draw(scn):
     """The single (piece, px, py) a one-unit scenario's sprite layer holds."""
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     draws = [d for v in sprites.by_anchor.values() for d in v]
     assert len(draws) == 1, f"fixture resolved {len(draws)} draws, not 1"
     return draws[0][:3]
@@ -129,13 +139,13 @@ def test_the_centred_case_is_unchanged(sprite_install):
     still anchor where it did before Stage 1, or the flat-map byte-identity
     oracle re-baselines for no reason."""
     _, px, py = _only_draw(_scenario([[], [Unit(5.5, 7.5, CONST)]]))
-    _, elevations, proj = render.render_terrain_iso_with_proj(
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(
         _scenario([[], [Unit(5.5, 7.5, CONST)]]), with_sprites=True
     )
     # The pre-Stage-1 expression, written out: the span-1 quantized centre.
     rise = int(elevations[7, 5]) * proj.elev_step
     want = iso_geometry.map_point_to_screen(
-        render._span_start(5.5, 1) + 0.5, render._span_start(7.5, 1) + 0.5, rise, proj
+        render_units._span_start(5.5, 1) + 0.5, render_units._span_start(7.5, 1) + 0.5, rise, proj
     )
     assert (px, py) == want
 
@@ -144,28 +154,28 @@ def test_a_building_axis_stays_half_tile_quantized(sprite_install, monkeypatch):
     """span > 1 keeps `_span_start(coord, span) + span / 2`. Buildings are
     drawn as half-tile slabs on purpose, and this is the branch with 27,320
     measured corpus values behind it."""
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (3, 3))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, (3, 3))
     _, px, py = _only_draw(_scenario([[], [Unit(5.5, 5.5, CONST)]]))
-    _, elevations, proj = render.render_terrain_iso_with_proj(
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(
         _scenario([[], [Unit(5.5, 5.5, CONST)]]), with_sprites=True
     )
     rise = int(elevations[5, 5]) * proj.elev_step
     want = iso_geometry.map_point_to_screen(
-        render._span_start(5.5, 3) + 1.5, render._span_start(5.5, 3) + 1.5, rise, proj
+        render_units._span_start(5.5, 3) + 1.5, render_units._span_start(5.5, 3) + 1.5, rise, proj
     )
     assert (px, py) == want
 
 
 def test_sprite_axis_centre_splits_per_axis_not_per_unit():
     """A gate segment is (4, 1) and takes both branches at once."""
-    assert render._sprite_axis_centre(10.2, 1) == 10.2
-    assert render._sprite_axis_centre(10.0, 4) == render._span_start(10.0, 4) + 2.0
+    assert render_units._sprite_axis_centre(10.2, 1) == 10.2
+    assert render_units._sprite_axis_centre(10.0, 4) == render_units._span_start(10.0, 4) + 2.0
     # The whole point of the span-1 branch: these used to collapse together.
-    assert render._sprite_axis_centre(35.2, 1) != render._sprite_axis_centre(35.9, 1)
+    assert render_units._sprite_axis_centre(35.2, 1) != render_units._sprite_axis_centre(35.9, 1)
 
 
 def test_map_point_to_screen_is_monotone_and_keeps_the_half_h_shift():
-    proj = render.render_terrain_iso_with_proj(_scenario([[]]))[2]
+    proj = render_iso.render_terrain_iso_with_proj(_scenario([[]]))[2]
     half_w, half_h = proj.half_w, proj.half_h
 
     # The trailing + half_h, isolated: at the origin tile's own centre the
@@ -187,10 +197,10 @@ def test_off_centre_units_paint_different_pixels(sprite_install):
     """The end-to-end form of the first test: two renders of the same unit at
     two sub-tile positions inside ONE tile must differ on the canvas, not just
     in the draw list."""
-    a, _, _ = render.render_terrain_iso_with_proj(
+    a, _, _ = render_iso.render_terrain_iso_with_proj(
         _scenario([[], [Unit(5.15, 5.85, CONST)]]), with_sprites=True
     )
-    b, _, _ = render.render_terrain_iso_with_proj(
+    b, _, _ = render_iso.render_terrain_iso_with_proj(
         _scenario([[], [Unit(5.5, 5.5, CONST)]]), with_sprites=True
     )
     assert not np.array_equal(a, b)
@@ -206,7 +216,7 @@ def test_off_centre_units_paint_different_pixels(sprite_install):
 # compositor's own unit loop painting IDs, then require the picker to agree
 # with it pixel for pixel.
 
-from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS  # noqa: E402
+from descape.terrain_palette import TREE_UNIT_IDS  # noqa: E402
 from descape.unit_pick import build_index, pick_unit, unit_polygons  # noqa: E402
 from testkit.fakes import FakeScenario, SyntheticTile, SyntheticUnit  # noqa: E402
 
@@ -254,7 +264,7 @@ def _offcentre_scenario(elevated: bool = False) -> FakeScenario:
 
 
 def _oc_tile_px() -> int:
-    return render.tile_pixels_for_map(OC_MAP_W, OC_MAP_H)
+    return render_paint.tile_pixels_for_map(OC_MAP_W, OC_MAP_H)
 
 
 def _oc_flat_id_plane(index, tile_px: int) -> np.ndarray:
@@ -264,8 +274,8 @@ def _oc_flat_id_plane(index, tile_px: int) -> np.ndarray:
     wrong shift."""
     plane = np.zeros((OC_MAP_H * tile_px, OC_MAP_W * tile_px), dtype=np.int32)
     for entry in index.entries:
-        tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, OC_MAP_W, OC_MAP_H)
-        span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+        tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(entry.unit, OC_MAP_W, OC_MAP_H)
+        span_x, span_y = tile_span(entry.unit.unit_const, render_units.NON_BUILDING_SPAN)
         dx = entry.unit.x - int(entry.unit.x) - 0.5 if span_x <= 1 else 0.0
         dy = entry.unit.y - int(entry.unit.y) - 0.5 if span_y <= 1 else 0.0
         ox, oy = round(dx * tile_px), round(dy * tile_px)
@@ -284,7 +294,7 @@ def _oc_stepped_id_plane(index, tile_px: int, elevations, proj) -> np.ndarray:
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        for fx, fy in render.unit_occupied_tiles(entry.unit, OC_MAP_W, OC_MAP_H):
+        for fx, fy in render_units.unit_occupied_tiles(entry.unit, OC_MAP_W, OC_MAP_H):
             by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, value):
@@ -299,7 +309,7 @@ def _oc_stepped_id_plane(index, tile_px: int, elevations, proj) -> np.ndarray:
         paint(bx, by, 0)
         for entry in by_footprint_tile.get((x, y), ()):
             ue = int(elevations[entry.own_y, entry.own_x])
-            span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(entry.unit.unit_const, render_units.NON_BUILDING_SPAN)
             dx = entry.unit.x - int(entry.unit.x) - 0.5 if span_x <= 1 else 0.0
             dy = entry.unit.y - int(entry.unit.y) - 0.5 if span_y <= 1 else 0.0
             cx, cy = iso_geometry.map_point_to_screen(
@@ -314,8 +324,8 @@ def test_the_oracle_is_not_vacuous():
     every test below would still pass while proving nothing."""
     scn = _offcentre_scenario()
     index = build_index(scn)
-    moved = [e for e in index.entries if render.unit_paint_offset(e.unit) != (0.0, 0.0)]
-    unmoved = [e for e in index.entries if render.unit_paint_offset(e.unit) == (0.0, 0.0)]
+    moved = [e for e in index.entries if render_units.unit_paint_offset(e.unit) != (0.0, 0.0)]
+    unmoved = [e for e in index.entries if render_units.unit_paint_offset(e.unit) == (0.0, 0.0)]
     assert len(moved) >= 6, "the off-centre population stopped being off-centre"
     assert len(unmoved) >= 2, "no centred/building control left in the population"
 
@@ -360,7 +370,7 @@ def test_stepped_pick_agrees_with_the_offcentre_id_plane(elevated: bool):
     scn = _offcentre_scenario(elevated=elevated)
     index = build_index(scn)
     tile_px = _oc_tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     plane = _oc_stepped_id_plane(index, tile_px, elevations, proj)
 
     rng = np.random.default_rng(OC_SEED)
@@ -394,7 +404,7 @@ def test_the_highlight_follows_the_mark():
     scn = _offcentre_scenario()
     index = build_index(scn)
     tile_px = _oc_tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = next(e for e in index.entries if (e.unit.x, e.unit.y) == (8.15, 8.85))
 
     (flat_poly,) = unit_polygons(entry, "flat", tile_px, OC_MAP_W, OC_MAP_H)
@@ -441,8 +451,8 @@ def test_a_tenth_of_a_tile_nudge_moves_the_render():
     unit on screen in any style."""
     tile_px = _oc_tile_px()
     for style, kwargs in (("flat", {}), ("stepped", {})):
-        before = render.unit_paint_offset(SyntheticUnit(x=8.5, y=8.5, unit_const=_PLAIN_CONST))
-        after = render.unit_paint_offset(SyntheticUnit(x=8.6, y=8.5, unit_const=_PLAIN_CONST))
+        before = render_units.unit_paint_offset(SyntheticUnit(x=8.5, y=8.5, unit_const=_PLAIN_CONST))
+        after = render_units.unit_paint_offset(SyntheticUnit(x=8.6, y=8.5, unit_const=_PLAIN_CONST))
         assert before != after, style
         assert round((after[0] - before[0]) * tile_px) != 0, (
             f"0.1 tile is under half a pixel at tile_px={tile_px}, so {style} "
@@ -465,11 +475,11 @@ def test_a_tenth_of_a_tile_nudge_moves_the_render():
 
 def _oc_sloped_geometry(scn, elev_step_pct: int):
     """(corner_rise, proj) at a chosen elev_step_pct stop. Built here rather
-    than via render.sloped_elevations_and_proj purely so the stop is a
+    than via render_sloped.sloped_elevations_and_proj purely so the stop is a
     parameter; everything else matches that function, corner_headroom_steps
     included."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
     for tile in mm.terrain:
         elevations[tile.y, tile.x] = tile.elevation
@@ -478,7 +488,7 @@ def _oc_sloped_geometry(scn, elev_step_pct: int):
         iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION,
         elev_step_pct=elev_step_pct, corner_headroom_steps=1,
     )
-    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
+    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render_sloped.SLOPE_CORNER_RULE)
     return corner_rise, proj
 
 
@@ -489,7 +499,7 @@ def _oc_sloped_id_plane(index, tile_px: int, corner_rise, proj) -> np.ndarray:
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        for fx, fy in render.unit_occupied_tiles(entry.unit, OC_MAP_W, OC_MAP_H):
+        for fx, fy in render_units.unit_occupied_tiles(entry.unit, OC_MAP_W, OC_MAP_H):
             by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, dy, dx, value):
@@ -508,7 +518,7 @@ def _oc_sloped_id_plane(index, tile_px: int, corner_rise, proj) -> np.ndarray:
         paint(bx, by - min(corners), s_dst_y, s_dst_x, 0)
         for entry in by_footprint_tile.get((x, y), ()):
             unit = entry.unit
-            span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
             dx = unit.x - int(unit.x) - 0.5 if span_x <= 1 else 0.0
             dy = unit.y - int(unit.y) - 0.5 if span_y <= 1 else 0.0
             if span_x <= 1 and span_y <= 1 and (dx, dy) == (0.0, 0.0):
@@ -535,7 +545,7 @@ def test_sloped_pick_agrees_with_the_offcentre_id_plane(elev_step_pct: int):
     tile_px = _oc_tile_px()
     corner_rise, proj = _oc_sloped_geometry(scn, elev_step_pct)
     plane = _oc_sloped_id_plane(index, tile_px, corner_rise, proj)
-    terrain = render.composite_ids_rect_sloped(
+    terrain = render_sloped.composite_ids_rect_sloped(
         scn, 0, 0, proj.canvas_w, proj.canvas_h, corner_rise, proj, tile_px
     )
 
@@ -545,7 +555,7 @@ def test_sloped_pick_agrees_with_the_offcentre_id_plane(elev_step_pct: int):
     hits = 0
     for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         tid = int(terrain[sy, sx])
-        tile = None if tid == render.PICK_ID_NONE else (tid % OC_MAP_W, tid // OC_MAP_W)
+        tile = None if tid == render_sloped.PICK_ID_NONE else (tid % OC_MAP_W, tid // OC_MAP_W)
         got = pick_unit(
             index, "sloped", sx, sy, tile_px, OC_MAP_W, OC_MAP_H,
             corner_rise=corner_rise, proj=proj, terrain_tile=tile,
@@ -565,13 +575,13 @@ def _stepped_chunked(scn, full, elevations, proj, tile_px, bboxes, chunk=128):
     """Every chunk-sized rect composited in isolation, stitched back together
     -- the same shape tests/test_sprite_chunks.py's own stitching check uses,
     and the only place a bbox that under-covers actually shows."""
-    units_by_tile = render._units_by_tile(scn)
+    units_by_tile = render_units._units_by_tile(scn)
     out = np.zeros_like(full)
     h, w = full.shape[:2]
     for y0 in range(0, h, chunk):
         for x0 in range(0, w, chunk):
             x1, y1 = min(x0 + chunk, w), min(y0 + chunk, h)
-            out[y0:y1, x0:x1] = render.composite_rect_iso(
+            out[y0:y1, x0:x1] = render_iso.composite_rect_iso(
                 scn, x0, y0, x1, y1, elevations, proj, tile_px, units_by_tile, bboxes,
             )
     return out
@@ -594,8 +604,8 @@ def _straddling_scenario():
 def test_a_straddling_mark_survives_chunked_compositing():
     scn = _straddling_scenario()
     tile_px = _oc_tile_px()
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn)
-    bboxes = render._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn)
+    bboxes = render_bbox._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations)
     assert bboxes, (
         "no unit earned a bbox, so _building_bboxes_iso' span-1 skip is still swallowing "
         "the off-centre tail and this test would prove nothing"
@@ -620,15 +630,15 @@ def test_an_off_centre_span_1_unit_earns_a_screen_bbox():
     silently start relying on.
     """
     scn = _straddling_scenario()
-    _full, elevations, proj = render.render_terrain_iso_with_proj(scn)
-    bboxes = render._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations)
+    _full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn)
+    bboxes = render_bbox._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations)
 
     unit = scn.unit_manager.units[1][0]
     key = (int(unit.x), int(unit.y))
     assert key in bboxes, "an off-centre span-1 unit is still being skipped"
 
     # And the bbox really covers the mark, corner to corner.
-    dx, dy = render.unit_paint_offset(unit)
+    dx, dy = render_units.unit_paint_offset(unit)
     cx, cy = iso_geometry.map_point_to_screen(
         key[0] + 0.5 + dx, key[1] + 0.5 + dy, 0, proj
     )
@@ -644,5 +654,5 @@ def test_a_centred_span_1_unit_still_earns_no_bbox():
     units = [[] for _ in range(9)]
     units[1] = [SyntheticUnit(x=5.5, y=5.5, unit_const=_PLAIN_CONST, reference_id=1)]
     scn = FakeScenario(OC_MAP_W, OC_MAP_H, tiles, units)
-    _full, elevations, proj = render.render_terrain_iso_with_proj(scn)
-    assert render._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations) == {}
+    _full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn)
+    assert render_bbox._building_bboxes_iso(scn, OC_MAP_W, OC_MAP_H, proj, elevations) == {}

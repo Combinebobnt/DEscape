@@ -91,13 +91,14 @@ def _subjects(window):
     capture whose subject is a lone rock in a forest is one a human cannot
     actually eyeball, and these PNGs exist for exactly that pass. GAIA is the
     fallback only so a unit-free player never leaves a style uncaptured."""
-    from descape import render
+    from descape import render_units
+    from descape.terrain_palette import tile_span
     from descape.unit_filter import GAIA_PLAYER_ID
 
     index = window.map_view._unit_index
     picks: dict[tuple[str, bool], object] = {}
     for entry in index.entries:
-        span = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+        span = tile_span(entry.unit.unit_const, render_units.NON_BUILDING_SPAN)
         label = "building" if span[0] > 2 else ("unit" if span == (1, 1) else None)
         if label is None:
             continue

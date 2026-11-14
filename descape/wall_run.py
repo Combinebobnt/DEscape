@@ -2,7 +2,7 @@
 Place Unit with a wall const picked since GH #98 folded the Wall Run tool in.
 
 Qt-free and scenario-shaped, the same split cliff_chain.py has: everything a
-wall drag will write is decided here, and viewer.py's _commit_wall_run() only
+wall drag will write is decided here, and viewer_unit_place.py's _commit_wall_run() only
 opens the undo record and reports. That is what lets the before/after pair
 the in-game verification needs go through the real write path without
 instantiating a window.
@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from descape import gate_orientation, unit_kind, unit_sprites
-from descape.render import occupied_tiles_for, span_anchor, stored_rotation, unit_occupied_tiles, unit_tile_bounds
+from descape.render_units import occupied_tiles_for, span_anchor, stored_rotation, unit_occupied_tiles, unit_tile_bounds
 
 # A wall piece is 1x1 for all 9 eligible consts (verified against
 # BUILDING_TILE_SPANS), which is why a run is a tile path and never a
@@ -96,7 +96,7 @@ class SceneCensus:
 
     # id(unit) -> owner, for every connector the walk left out by exclude_ids.
     owners: dict[int, int] = field(default_factory=dict)
-    # Eligible walls whose render.stored_rotation() is not a literal index,
+    # Eligible walls whose render_units.stored_rotation() is not a literal index,
     # excluded and off-map ones included: unit_sprites.file_is_radian()'s inputs.
     radian: int = 0
 
@@ -293,7 +293,7 @@ def plan_gate_over_walls(gate_tiles, *, existing_tiles: set[tuple[int, int]], ex
     """Everything placing a gate on `gate_tiles` changes in the walls around
     it, in-game's replace rule. Pure, like plan_wall_run().
 
-    `gate_tiles` is the sparse render.occupied_tiles_for() footprint, so a
+    `gate_tiles` is the sparse render_units.occupied_tiles_for() footprint, so a
     diagonal gate's bounding-box corners keep their walls. Only the 9
     wall-family consts are removed (existing_walls holds nothing else);
     a gate already under the footprint stays. Every wall is 1x1, so its
@@ -340,7 +340,7 @@ def gate_run_line(tiles) -> tuple[list[tuple[int, int]], tuple[int, int]] | None
 @dataclass(frozen=True)
 class GateMove:
     """One gate whose tiles change (GH #194): its sparse
-    render.occupied_tiles_for() footprint before and after. A move carries
+    render_units.occupied_tiles_for() footprint before and after. A move carries
     it, or a const change gives it a new footprint (an orientation cycle, or
     Replace into a gate const), scenario_gate_changes()."""
 

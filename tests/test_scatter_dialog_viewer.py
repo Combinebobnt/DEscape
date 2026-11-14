@@ -1,7 +1,7 @@
 """Edit > Scatter Units in Region's real modal dialog (GH #105), opened by
 ViewerWindow.scatter_units_in_region() with exec_() left alone.
 
-tests/test_unit_edit_viewer.py patches ScatterDialog.exec_ to answer the dialog;
+tests/test_unit_edit_viewer_scatter.py patches ScatterDialog.exec_ to answer the dialog;
 this file lets the real exec_() run its own event loop and answers the shown
 dialog from a polling QTimer instead. The poller always closes the
 ScatterDialog it finds, by OK or by reject, so a failed check can never leave

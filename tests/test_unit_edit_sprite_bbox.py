@@ -1,5 +1,5 @@
 """A unit edit's repaint sized from the edited units' real sprite extents, not
-render._sprite_reach_px() (maintainer plan 2026-09-26 sprite-bbox, Steps 1-3,
+render_bbox._sprite_reach_px() (maintainer plan 2026-09-26 sprite-bbox, Steps 1-3,
 as amended on 2026-09-27: the tight bbox covers the VISIBLE level only, and
 every other resident level evicts today's reach-padded bbox).
 
@@ -26,10 +26,24 @@ import math
 import numpy as np
 import pytest
 
-from descape import asset_source, render, render_cache, unit_rotation, unit_sprites
+from descape import (
+    asset_source,
+    render_bbox,
+    render_cache_base,
+    render_cache_splice,
+    render_iso,
+    render_paint,
+    render_sprites,
+    render_units,
+    unit_rotation,
+    unit_sprites,
+)
 from descape.elevation_tools import set_tile_elevation
-from descape.render_cache import REACH_FALLBACK, FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import REACH_FALLBACK, UnitSplice
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import set_render_cache_global, set_render_global
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 from test_unit_sprites import build_sld
@@ -145,7 +159,7 @@ def _focus_rect(cache, mip: int, tiles) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = tiles
     corners = ((x0, y0), (x1, y0), (x0, y1), (x1, y1))
     boxes = np.array([iso_geometry.tile_screen_bounds_swept(x, y, cache.proj) for x, y in corners])
-    left, up, right, down = render._sprite_reach_px(cache.proj)
+    left, up, right, down = render_bbox._sprite_reach_px(cache.proj)
     ref = (int(boxes[:, 0].min()) - left, int(boxes[:, 1].min()) - up, int(boxes[:, 2].max()) + right, int(boxes[:, 3].max()) + down)
     lx0, ly0, lx1, ly1 = cache._bbox_to_level(mip, ref)
     w, h = cache.canvas_dims(mip)
@@ -225,7 +239,7 @@ def layer_extents(monkeypatch) -> list:
     each (mip, units resolved while answering) it checked."""
     checked = []
     resolves = [0]
-    real, real_resolve = render_cache._ChunkCacheBase.sprite_extent_after, render._resolve_unit_sprite
+    real, real_resolve = render_cache_base._ChunkCacheBase.sprite_extent_after, render_sprites._resolve_unit_sprite
 
     def resolve(*args, **kwargs):
         resolves[0] += 1
@@ -241,8 +255,8 @@ def layer_extents(monkeypatch) -> list:
             assert _shares_a_tile(self, changed) or box == resolved, f"layer {box} != resolved {resolved}"
         return box
 
-    monkeypatch.setattr(render, "_resolve_unit_sprite", resolve)
-    monkeypatch.setattr(render_cache._ChunkCacheBase, "sprite_extent_after", after)
+    set_render_global(monkeypatch, "_resolve_unit_sprite", resolve)
+    monkeypatch.setattr(render_cache_base._ChunkCacheBase, "sprite_extent_after", after)
     return checked
 
 
@@ -391,11 +405,9 @@ def _draw(window, terrain_id: int, tiles) -> None:
 def _ratio(monkeypatch, repaint: str) -> None:
     """Forces a batch's outcome: patch everything, evict everything, or
     (`rects`, Stepped) patch per-chunk rects in place of that eviction."""
-    import descape.viewer as viewer_module
-
     value = float("inf") if repaint == "patch" else 0.0
-    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
-    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", float("inf") if repaint == "rects" else 0.0)
+    set_viewer_global(monkeypatch, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
+    set_viewer_global(monkeypatch, "_RECT_PATCH_AREA_RATIO", float("inf") if repaint == "rects" else 0.0)
 
 
 # --- the fresh-render oracles ----------------------------------------------
@@ -420,11 +432,11 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
     pre side covers. Each is checked patched and evicted, and on Stepped
     patched by per-chunk rects."""
     _ratio(monkeypatch, repaint)
-    real_cap = render_cache._COMPONENT_SPLICE_MAX_UNITS
-    real_visible = render_cache.VISIBLE_SPLICE_MAX_UNITS
+    real_cap = render_cache_splice._COMPONENT_SPLICE_MAX_UNITS
+    real_visible = render_cache_splice.VISIBLE_SPLICE_MAX_UNITS
     if a_path == "wholesale":
-        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
-        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 0)
     window = _window(style)
     try:
         _add(window, 1, VILLAGER, STROKE_TILES[3][0] + 0.5, STROKE_TILES[3][1] + 0.5)
@@ -448,8 +460,8 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
         repainted(mip)
         after_a = _check(window, mip, "stroke A")
         # Back to the real cap, so stroke B and the undo/redo run as they would.
-        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", real_cap)
-        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", real_visible)
+        set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", real_cap)
+        set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", real_visible)
         spy.reset()
         _draw(window, FOREST_PALM, SHIFTED_TILES)
         repainted(mip)
@@ -485,12 +497,12 @@ def test_place_move_and_delete_a_tall_unit(style, mip, const, art, monkeypatch) 
 
         unit = _place(window, monkeypatch, player, const, 60.0, 60.0)
         cache = window._cache
-        contribution = render._resolve_unit_sprite(
+        contribution = render_sprites._resolve_unit_sprite(
             window.scenario, cache.proj, cache.elevations, cache.unit_filter, None, {}, True, player,
             window.scenario.unit_manager.units[player].index(unit), unit,
         )
         mm = window.scenario.map_manager
-        tiles = render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+        tiles = render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height)
         x0, y1 = min(x for x, _ in tiles), max(y for _, y in tiles)
         faces = {t for t in tiles if t[0] == x0 or t[1] == y1}
         assert set(contribution.bboxes) == (faces if const == CASTLE else set(tiles))
@@ -523,11 +535,11 @@ def test_moving_a_mark_only_building_across_an_elevation_step(style, mip, art, m
     window = _window(style, slope=True)
     try:
         dock = _add(window, 1, DOCK, 39.5, 37.5)
-        assert render._resolve_unit_sprite(
+        assert render_sprites._resolve_unit_sprite(
             window.scenario, window._cache.proj, window._cache.elevations, window._cache.unit_filter, None, {},
             True, 1, 0, dock,
         ) is None
-        tiles = render.unit_occupied_tiles(dock, 120, 120)
+        tiles = render_units.unit_occupied_tiles(dock, 120, 120)
         assert len({int(window._cache.elevations[y, x]) for x, y in tiles}) > 1, "the footprint is flat"
         _show_level(window, monkeypatch, mip, FOCUS_DOCK)
         spy = _Spy(window, monkeypatch)
@@ -562,11 +574,9 @@ def test_a_visible_level_with_no_resident_chunks_takes_the_reach_fallback(style,
 @pytest.mark.parametrize(("tight", "expected"), [(0.0, "evict"), (float("inf"), "patch")])
 def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, expected, art, monkeypatch) -> None:
     """The tight split's patch-or-evict choice reads _TIGHT_PATCH_AREA_RATIO."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": tight, "sloped": tight})
+    set_viewer_global(monkeypatch, "_TIGHT_PATCH_AREA_RATIO", {"stepped": tight, "sloped": tight})
     # No per-chunk rects (TASK-031.61 C1): past the ratio this evicts, as pinned.
-    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", 0.0)
+    set_viewer_global(monkeypatch, "_RECT_PATCH_AREA_RATIO", 0.0)
     window = _window("Stepped")
     try:
         window.mode_combo.setCurrentText("Terrain")
@@ -588,9 +598,7 @@ def test_the_tight_split_prices_its_batch_on_the_tight_ratio(tight, expected, ar
 def test_the_area_check_answers_false_with_no_viewport_target(art, monkeypatch) -> None:
     """Even at a zero ratio: with no target there is no visible area to price
     an eviction against, which is why the no-target reach patch never asks."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": 0.0, "sloped": 0.0})
+    set_viewer_global(monkeypatch, "_TIGHT_PATCH_AREA_RATIO", {"stepped": 0.0, "sloped": 0.0})
     window = _window("Stepped")
     try:
         _level(window, 0)
@@ -617,13 +625,13 @@ def test_placing_a_wall_beside_walls_takes_the_reach_fallback(style, mip, art, m
             wall.rotation = 2 * math.pi / 5
         window.scenario.unit_gen += 1
         window._after_unit_mutation()
-        drawn = render.wall_variant_rotation_overrides(window.scenario)
+        drawn = render_units.wall_variant_rotation_overrides(window.scenario)
         assert sorted(drawn.values()) == [2.0, 2.0], "a two-wall run's ends draw as towers"
         _show_level(window, monkeypatch, mip)
         spy = _Spy(window, monkeypatch)
         before = _level(window, mip)
         _place(window, monkeypatch, 1, STONE_WALL, 52.5, 50.5)
-        after = render.wall_variant_rotation_overrides(window.scenario)
+        after = render_units.wall_variant_rotation_overrides(window.scenario)
         middle = next(i for i, u in enumerate(window.scenario.unit_manager.units[1]) if u is walls[1])
         assert len(after) == 3 and after[(1, middle)] == 0.0, "the run did not reshape"
         assert not np.array_equal(_check(window, mip, "wall place"), before)
@@ -682,7 +690,7 @@ def test_a_convert_of_a_reshaped_wall_and_a_gate_is_sized_tight(style, mip, art,
             wall.rotation = 2 * math.pi / 5
         gate = _add(window, 1, GATE_NE, 60.0, 60.5)
         window._after_unit_mutation()
-        shapes = render.wall_variant_rotation_overrides(window.scenario)
+        shapes = render_units.wall_variant_rotation_overrides(window.scenario)
         assert len(shapes) == 3, "the run did not reshape -- the overrides path is vacuous"
         window.units_panel.select_owner(2)
         window.brush_size_spin.setValue(1)
@@ -692,7 +700,7 @@ def test_a_convert_of_a_reshaped_wall_and_a_gate_is_sized_tight(style, mip, art,
         # post extent resolved: record the overrides it passes for the wall instead.
         seen: list[dict] = []
         inside = [False]
-        real_after, real_resolve = window._cache.sprite_extent_after, render._resolve_unit_sprite
+        real_after, real_resolve = window._cache.sprite_extent_after, render_sprites._resolve_unit_sprite
 
         def after(changed, level):
             inside[0] = True
@@ -707,14 +715,14 @@ def test_a_convert_of_a_reshaped_wall_and_a_gate_is_sized_tight(style, mip, art,
             return real_resolve(*args, **kwargs)
 
         monkeypatch.setattr(window._cache, "sprite_extent_after", after)
-        monkeypatch.setattr(render, "_resolve_unit_sprite", resolve)
+        set_render_global(monkeypatch, "_resolve_unit_sprite", resolve)
         before = _level(window, mip)
         window._begin_convert_stroke()
         for unit in (walls[1], gate):
             window._convert_stroke_tile(int(unit.x), int(unit.y))
         window._end_convert_stroke()
         assert walls[1] in window.scenario.unit_manager.units[2] and gate in window.scenario.unit_manager.units[2]
-        now = render.wall_variant_rotation_overrides(window.scenario)
+        now = render_units.wall_variant_rotation_overrides(window.scenario)
         assert sorted(now.values()) == sorted(shapes.values()), "the convert reshaped the run"
         key = (2, window.scenario.unit_manager.units[2].index(walls[1]))
         assert seen and all(o.get(key) == now[key] for o in seen), "the post extent resolved without the real overrides"
@@ -890,7 +898,12 @@ def _literal_walls(window, shapes: dict) -> dict:
 def _file_is_radian(window) -> bool:
     units = window.scenario.unit_manager.units
     return unit_sprites.file_is_radian(
-        [render.stored_rotation(p, u) for p, us in enumerate(units) for u in us if unit_sprites.rotation_variant_eligible(u.unit_const)],
+        [
+            render_units.stored_rotation(p, u)
+            for p, us in enumerate(units)
+            for u in us
+            if unit_sprites.rotation_variant_eligible(u.unit_const)
+        ],
         5,
     )
 
@@ -1044,7 +1057,7 @@ def _drawn(window, unit) -> int:
     """The shape `unit` draws: its override, else its stored index."""
     player = next(p for p, units in enumerate(window.scenario.unit_manager.units) if any(u is unit for u in units))
     i = next(i for i, u in enumerate(window.scenario.unit_manager.units[player]) if u is unit)
-    rotation = render.wall_variant_rotation_overrides(window.scenario).get((player, i), unit.rotation)
+    rotation = render_units.wall_variant_rotation_overrides(window.scenario).get((player, i), unit.rotation)
     return unit_sprites.variant_index(rotation, 5)
 
 
@@ -1333,15 +1346,15 @@ def test_a_wholesale_wall_move_rebuilds_no_off_screen_level(art, monkeypatch) ->
     mips -2/-1/0 resident and 0 on screen. The reach bbox patches mip 0 alone
     and evicts itself from -2 and -1, which stay stale for LevelWarmer instead
     of rebuilding inside the handler. A forced read then matches a fresh cache."""
-    monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
-    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
+    set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+    set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 0)
     mips = (-2, -1, 0)
     window = _window("Stepped")
     try:
         cache = window._cache
         assert set(mips) <= set(cache.mip_levels()), cache.mip_levels()
         walls = _wall_run(window)
-        assert len(render.wall_variant_rotation_overrides(window.scenario)) == 3, "the run did not reshape"
+        assert len(render_units.wall_variant_rotation_overrides(window.scenario)) == 3, "the run did not reshape"
         _show_level(window, monkeypatch, 0)
         # Whole coarse levels, but only a region of mip 0: the whole of it alone fills the chunk budget.
         cache.render_rect(2048, 1024, 5632, 3584, mip=0)
@@ -1403,7 +1416,7 @@ def _bare_cache(*units: _Unit, sprites: bool = True) -> IsoChunkCache:
     """An IsoChunkCache over the blank template holding `units` for GAIA."""
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     scenario.unit_manager.units[0].extend(units)
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     return IsoChunkCache(scenario, elevations, proj, proj.tile_px, sprites=sprites)
 
 
@@ -1436,7 +1449,7 @@ def test_sprite_extents_of_a_tree_equal_its_contribution_converted(mip, art) -> 
     index = scenario.unit_manager.units[0].index(tree)
 
     def contribution_box():
-        c = render._resolve_unit_sprite(
+        c = render_sprites._resolve_unit_sprite(
             scenario, proj, cache.elevations, cache.unit_filter, None, {}, True, 0, index, tree
         )
         (box,) = c.bboxes.values()
@@ -1505,7 +1518,7 @@ def test_a_pending_level_still_takes_the_reach_fallback(art, layer_extents) -> N
     mm = scenario.map_manager
     set_tiles_elevation(mm, [(30, 30, mm.get_tile(30, 30).elevation + 1)])
     elevation_changed: set = set()
-    bbox = render.dirty_screen_bbox_iso(
+    bbox = render_bbox.dirty_screen_bbox_iso(
         scenario, [30 * mm.map_width + 30], cache.elevations, cache.proj, with_units=True, with_sprites=True,
         elevation_changed=elevation_changed,
     )
@@ -1532,7 +1545,7 @@ def test_the_layer_extent_oracle_fails_on_a_layer_read_before_its_splice(art) ->
 def test_flat_has_no_unit_edit_sprite_extent() -> None:
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     mm = scenario.map_manager
-    cache = FlatChunkCache(scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    cache = FlatChunkCache(scenario, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
     cache.render_rect(0, 0, 64, 64, mip=0)
     unit = _Unit(1.5, 1.5, TREE_OAK)
     changed = [UnitSplice(0, 0, unit, None, (1, 1), (), ((1, 1),))]
@@ -1542,7 +1555,7 @@ def test_flat_has_no_unit_edit_sprite_extent() -> None:
 
 
 def test_the_reach_fallback_sentinel_is_one_named_object() -> None:
-    assert render_cache.REACH_FALLBACK is REACH_FALLBACK
+    assert render_cache_splice.REACH_FALLBACK is REACH_FALLBACK
     assert repr(REACH_FALLBACK) == "REACH_FALLBACK"
 
 
@@ -1566,8 +1579,8 @@ def test_an_erase_flush_over_a_stale_level_still_repaints_its_erased_sprites(art
     order: tiles first, the cleared tile's _apply_dirty() rebuilds the
     level without the oak before the unit step reads it, and the oak stays
     in its resident chunk."""
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
-    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)  # the stale level comes from the gen bump
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 4)
+    set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 0)  # the stale level comes from the gen bump
     _ratio(monkeypatch, "evict")
     window = _window("Stepped")
     try:
@@ -1615,8 +1628,8 @@ def _stale_erase_window(style: str, monkeypatch, overlay: bool, extra_level: int
     mip 0 on screen. Leaves an Eraser stroke open with the visible level
     stale and the patch ratio in force. extra_level is rendered whole before
     the drag, so it is resident and goes stale too."""
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 4)
-    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 4)
+    set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 0)
     _ratio(monkeypatch, "evict")
     window = _window(style)
     try:

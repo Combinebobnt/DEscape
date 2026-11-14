@@ -47,8 +47,23 @@ from test_terrain_units_viewer import (  # noqa: F401 -- fixtures
     tree_sprites,
 )
 
-from descape import composite_backend, debug_log, iso_geometry, native_composite, perf_trace, render, render_cache
-from descape.render_cache import FlatChunkCache, RectJob, UnitSplice
+from descape import (
+    composite_backend,
+    debug_log,
+    iso_geometry,
+    native_composite,
+    perf_trace,
+    render_bbox,
+    render_cache,
+    render_cache_common,
+    render_cache_splice,
+    render_paint,
+    render_units,
+)
+from descape.render_cache import FlatChunkCache
+from descape.render_cache_common import RectJob
+from descape.render_cache_splice import UnitSplice
+from testkit.render_family import set_render_cache_global
 
 import conftest
 
@@ -93,10 +108,10 @@ def _move_units(scenario, caches) -> list[tuple[int, int]]:
         (farm, 2, (FARM_X + 4.5, FARM_Y - 3.5)),
     ):
         index = scenario.unit_manager.units[player_id].index(unit)
-        old_tiles = tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+        old_tiles = tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
         old_own = (int(unit.x), int(unit.y))
         unit.x, unit.y = nx, ny
-        new_tiles = tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+        new_tiles = tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
         splices.append(UnitSplice(player_id, index, unit, old_own, (int(nx), int(ny)), old_tiles, new_tiles))
         tiles += [*old_tiles, *new_tiles]
     scenario.unit_gen += 1
@@ -119,7 +134,7 @@ def _dirty_bbox(cache, style: str, scenario, tiles, pad: int = 0) -> tuple[int, 
     """The viewer's dirty bbox of `tiles` (REFERENCE pixels), units and sprites
     in, padded by `pad`. Syncs this cache's elevations, as the viewer's does."""
     w = scenario.map_manager.map_width
-    fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = fn(scenario, [y * w + x for x, y in tiles], cache.elevations, cache.proj, with_units=True, with_sprites=True)
     assert bbox is not None
     return bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad
@@ -171,7 +186,7 @@ def test_a_pooled_patch_equals_its_serial_twin_and_a_fresh_cache(
     synchronously to the same pixels and hide a pool doing nothing."""
     with composite_backend.use_backend("native"):
         scenario, pooled, serial, executor = _twins(style, pool)
-        assert render.blend_effective(pooled.layers), "blending is off -- the blend path goes unchecked"
+        assert render_paint.blend_effective(pooled.layers), "blending is off -- the blend path goes unchecked"
         landed: list = []
         real_install = pooled.install_slice
 
@@ -187,7 +202,7 @@ def test_a_pooled_patch_equals_its_serial_twin_and_a_fresh_cache(
         rects = [_dirty_bbox(pooled, style, scenario, group, pad=8) for group in groups]
         union = rects[0]
         for rect in rects[1:]:
-            union = render_cache._union_bbox(union, rect)
+            union = render_cache_splice._union_bbox(union, rect)
         before = dict(pooled._cache)
         lru = list(pooled._cache)
         for cache in (pooled, serial):
@@ -246,7 +261,7 @@ def test_evicting_levels_evict_the_serial_keys_and_a_stale_visible_level_builds_
         for cache in (pooled, serial):
             changed: set = set()
             w = mm.map_width
-            fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+            fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
             bbox = fn(
                 scenario, [y * w + x for x, y in tiles], cache.elevations, cache.proj, with_units=True,
                 with_sprites=True, elevation_changed=changed,
@@ -483,7 +498,7 @@ def test_pooling_engages_only_where_it_can(native_kernel, sprite_install, fake_f
         mm = scenario.map_manager
         brush = [(EDIT_X + dx, EDIT_Y + dy) for dx in range(-4, 5) for dy in range(-4, 5)]
         w = mm.map_width
-        draw = render.dirty_screen_bbox_iso(
+        draw = render_bbox.dirty_screen_bbox_iso(
             scenario, [y * w + x for x, y in brush], cache.elevations, cache.proj, with_units=True, with_sprites=True
         )
         n, area = tiles(draw, levels=None)
@@ -504,7 +519,7 @@ def test_pooling_engages_only_where_it_can(native_kernel, sprite_install, fake_f
         assert tiles(small)[0] >= 2, "no mip-0 slices left to pool -- vacuous"
         assert submits(small) == 0, "no executor still pooled"
 
-        flat = FlatChunkCache(scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+        flat = FlatChunkCache(scenario, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
         _pooled(flat, executor)
         _canvas(flat, 0)
         executor.jobs.clear()
@@ -524,8 +539,8 @@ def test_a_two_slice_batch_gives_the_same_pixels_and_joins_every_batch(
         scenario, pooled, serial, executor = _twins("stepped", pool)
         pooled.POOL_BATCH = 2
         joins: list[int] = []
-        real_join = render_cache.join_chunk_jobs
-        monkeypatch.setattr(render_cache, "join_chunk_jobs", lambda s: (joins.append(len(s)), real_join(s))[1])
+        real_join = render_cache_common.join_chunk_jobs
+        set_render_cache_global(monkeypatch, "join_chunk_jobs", lambda s: (joins.append(len(s)), real_join(s))[1])
         landed: list = []
         real_install = pooled.install_slice
 
@@ -632,7 +647,7 @@ def test_the_slice_pre_derive_takes_pending_tiles_or_the_slices_candidates(
         sx, sy = iso_geometry.tile_screen_origin(x, y, int(cache.elevations[y, x]), cache.proj)
         tiny = (int(sx), int(sy), int(sx) + 2, int(sy) + 2)
         cache._derive_pack_for_slices(0, [tiny])
-        candidates = render._rect_candidates(
+        candidates = render_bbox._rect_candidates(
             scenario, *tiny, lvl.proj, cache.with_units, lvl.building_bboxes, lvl.bystander_grid
         )
         idx = candidates[:, 1].astype(np.int64) * w + candidates[:, 0]
@@ -663,7 +678,7 @@ def test_a_pooled_sloped_patch_rewrites_a_partly_covered_pick_plane(
             tile.elevation = max(0, tile.elevation - 1)
         changed: set = set()
         w = mm.map_width
-        bbox = render.dirty_screen_bbox_sloped(
+        bbox = render_bbox.dirty_screen_bbox_sloped(
             scenario, [y * w + x for x, y in tiles], cache.elevations, cache.proj, with_units=True,
             with_sprites=True, elevation_changed=changed,
         )

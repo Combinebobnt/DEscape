@@ -87,10 +87,10 @@ held its queue, not only the largest, and the part no holder covers.
 
 Each level warm primes the level's native composite inputs as in the app (TASK-031.85: a
 chained `native` job fills the index tables, blend masks and Sloped shapes a first chunk
-reads, at levels up to render_cache.NATIVE_PRIME_MAX_TILE_PX), and a re-arm re-queues a
+reads, at levels up to render_cache_leveled.NATIVE_PRIME_MAX_TILE_PX), and a re-arm re-queues a
 prime a crossing cancelled (TASK-031.82 D6). Margin warms defer a cold level's first chunk
 while input is live (TASK-031.82 D3, margin_warm.DEFER_COLD_FIRST). --no-margin-fix keeps
-all three off (render_cache.WARM_NATIVE_INPUTS and DEFER_COLD_FIRST), the A arm of
+all three off (render_cache_leveled.WARM_NATIVE_INPUTS and DEFER_COLD_FIRST), the A arm of
 TASK-031.82's margin-chunk bench. Each margin chunk records level_warmed and primed at its
 start, and GATES' margin_warm block lists the deferrals.
 
@@ -141,9 +141,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 try:  # imported as tools.bench_gui_zoom (the tests)
-    from tools.bench_gui_drag import _csv, _loadavg, _size, _xdotool
+    from tools.bench_gui_drag import AB_ROOT_FLOOR, _csv, _loadavg, _size, _xdotool, require_render_family
 except ModuleNotFoundError:  # run as a script: tools/ is sys.path[0]
-    from bench_gui_drag import _csv, _loadavg, _size, _xdotool
+    from bench_gui_drag import AB_ROOT_FLOOR, _csv, _loadavg, _size, _xdotool, require_render_family
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCENARIO = ROOT / "examples" / "old-allies-final-v2.aoe2scenario"
@@ -1170,7 +1170,7 @@ class _Recorder:
 
         from PyQt5.QtCore import QEvent
 
-        from descape import map_view, perf_trace, render_cache, viewer, viewer_canvas
+        from descape import map_view, perf_trace, render_cache, render_cache_base, viewer, viewer_canvas
 
         rec = self
         now = time.perf_counter
@@ -1430,8 +1430,8 @@ class _Recorder:
         self._wrap(perf_trace, "warm_deferred", warm_deferred)
         self._wrap(perf_trace, "stall", stall)
         self._wrap(perf_trace, "preframe_tick", preframe_tick)
-        self._wrap(render_cache._ChunkCacheBase, "get_chunk", lambda original: chunk_call(original, False))
-        self._wrap(render_cache._ChunkCacheBase, "prepare_chunk_job", lambda original: chunk_call(original, True))
+        self._wrap(render_cache_base._ChunkCacheBase, "get_chunk", lambda original: chunk_call(original, False))
+        self._wrap(render_cache_base._ChunkCacheBase, "prepare_chunk_job", lambda original: chunk_call(original, True))
         gc.callbacks.append(self._on_gc)
 
     def _on_gc(self, phase: str, info: dict) -> None:
@@ -1501,9 +1501,9 @@ class _Bench:
     def wait_settled(self) -> str:
         """A pass's final wait (TASK-031.25 P4): pumps until no placeholder is pending,
         at most PLACEHOLDER_STUCK_MS. "none", or the level still pending."""
-        from descape import viewer
+        from descape import viewer_render
 
-        deadline = time.perf_counter() + viewer.PLACEHOLDER_STUCK_MS / 1000
+        deadline = time.perf_counter() + viewer_render.PLACEHOLDER_STUCK_MS / 1000
         while True:
             item = self.view._canvas_item
             pending = None if item is None else item.pending_mip()
@@ -1644,24 +1644,30 @@ def _finish_report(output, frozen, rec, bench, bounds) -> None:
     output.append("GATES " + json.dumps(gate))
 
 
-def apply_module_arms(args) -> None:
-    """The A arms that are module switches, set in the child before the window."""
-    from descape import level_warm, margin_warm, render_cache
+def apply_module_arms(args, monkeypatch=None) -> None:
+    """The A arms that are module switches, set in the child before the window.
 
+    The child passes no `monkeypatch`: its switches last the process, so the one made here is never undone."""
+    import pytest
+
+    from descape import level_warm, margin_warm
+    from testkit.render_family import set_render_cache_global
+
+    mp = monkeypatch if monkeypatch is not None else pytest.MonkeyPatch()
     # The level warmer's input budget (TASK-031.80 D1); --no-input-budget is the A arm.
     if args.no_input_budget:
-        level_warm.INPUT_BUDGET_MS = level_warm.BUDGET_MS
+        mp.setattr(level_warm, "INPUT_BUDGET_MS", level_warm.BUDGET_MS)
     # Native input priming and its re-queue (TASK-031.85 D5, TASK-031.82 D6) and the cold-first
     # defer (TASK-031.82 D3); --no-margin-fix is the A arm.
     if args.no_margin_fix:
-        render_cache.WARM_NATIVE_INPUTS = False
-        margin_warm.DEFER_COLD_FIRST = False
+        set_render_cache_global(mp, "WARM_NATIVE_INPUTS", False)
+        mp.setattr(margin_warm, "DEFER_COLD_FIRST", False)
 
 
 def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     from PyQt5.QtWidgets import QApplication
 
-    from descape import composite_backend, debug_log, margin_warm, perf_trace, render_cache, viewer
+    from descape import composite_backend, debug_log, margin_warm, perf_trace, render_cache_leveled, viewer
     from testkit.qt_window import ScenarioLoadError
 
     if composite_backend.active_backend() != "native" and not args.allow_numpy:
@@ -1813,7 +1819,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             },
             "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
             "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
-            "native_prime": render_cache.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
+            "native_prime": render_cache_leveled.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
             "level_warm_passes": warm_json,
             "runtime": runtime,
         }, rec, bench, bounds)
@@ -1859,7 +1865,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile-warm", type=int, default=0, metavar="N", help="cProfile the N slowest margin chunks separately")
     parser.add_argument("--json", type=Path, help="write GATES data, raw warm/stall diagnostics and runtime versions to JSON")
     parser.add_argument("--out-dir", type=Path, help="also write each process's output to <dir>/<style>_<sprites>_<passes>.txt")
-    parser.add_argument("--root", type=Path, help="DEscape checkout to import descape and testkit from")
+    parser.add_argument(
+        "--root", type=Path, help=f"DEscape checkout to import descape and testkit from (at or after {AB_ROOT_FLOOR[0]})"
+    )
     parser.add_argument("--allow-numpy", action="store_true", help="run on the numpy fallback (figures not comparable)")
     parser.add_argument("--no-placeholders", action="store_true",
                         help="the window keeps placeholder paints off (TASK-031.25's A arm; the app's default is on)")
@@ -1931,6 +1939,7 @@ def main() -> None:
     _validate_outputs(args, runs, parser)
     if not os.environ.get("DISPLAY"):
         sys.exit("needs a real X display (see the Xvfb recipe in --help)")
+    require_render_family((args.root or ROOT).resolve(), "bench_gui_zoom")
     if args.child:
         _child(args)
         return

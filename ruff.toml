@@ -133,7 +133,7 @@ known-local-folder = ["conftest", "test_unit_sprites", "iso_bench_numpy"]
 # panel's prose fields latch the same token, so its tests name it too.
 "descape/messages_fields.py" = ["S105"]
 "tests/test_messages_fields.py" = ["S105"]
-"tests/test_trigger_panel.py" = ["S105"]
+"tests/test_trigger_panel_text_fields.py" = ["S105"]
 
 # test_library_compat.py's bare `condition.local_technology` statements are the
 # test, not dead code: reading a version-gated attribute is what triggers the

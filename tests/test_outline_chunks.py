@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import outline_chunks, render, unit_pick
+from descape import outline_chunks, render_units, unit_pick
 from descape.outline_chunks import HeightField, OutlineChunks
 
 _MAP = 40
@@ -35,7 +35,7 @@ def _index(units) -> unit_pick.UnitIndex:
     """`units`: (player_id, unit) pairs."""
     index = unit_pick.UnitIndex()
     for player_id, unit in units:
-        bounds = render.unit_tile_bounds(unit, _MAP, _MAP)
+        bounds = render_units.unit_tile_bounds(unit, _MAP, _MAP)
         assert bounds is not None, unit
         unit_pick._append_entry(index, player_id, unit, bounds)
     return index

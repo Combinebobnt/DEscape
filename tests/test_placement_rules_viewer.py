@@ -316,7 +316,7 @@ def test_a_diagonal_gate_still_replaces_its_six_walls_beside_one_in_its_empty_co
     window = _window()
     try:
         mm = window.scenario.map_manager
-        from descape.render import occupied_tiles_for
+        from descape.render_units import occupied_tiles_for
 
         gate_tiles = set(occupied_tiles_for(GATE_DIAGONAL, 60, 60, mm.map_width, mm.map_height))
         assert len(gate_tiles) == 6

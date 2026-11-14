@@ -469,14 +469,15 @@ def window(tmp_path):
 
 
 def _cancelled_dialogs(monkeypatch) -> list:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QDialog
+
     from descape.resize_dialog import ResizeDialog
 
     shown = []
 
     def exec_(self):
         shown.append(self)
-        return viewer_module.QDialog.Rejected
+        return QDialog.Rejected
 
     monkeypatch.setattr(ResizeDialog, "exec_", exec_)
     return shown

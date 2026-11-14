@@ -70,7 +70,7 @@ def _inject_k0():
 def _wrap_painted_reduction(transform):
     """render_reduced_rect() with `transform(block, x0, chunk_px)` applied to the
     block paint() asked for, never to the k-1 builds nested under it."""
-    from descape.render_cache import _ChunkCacheBase
+    from descape.render_cache_base import _ChunkCacheBase
 
     real = _ChunkCacheBase.render_reduced_rect
     depth = [0]
@@ -115,7 +115,7 @@ def _inject_ghost():
 
 def _inject_stale():
     """_write_slice() without its stamp: a reduced entry built before an edit stays valid."""
-    from descape.render_cache import _ChunkCacheBase
+    from descape.render_cache_base import _ChunkCacheBase
 
     def write_slice(self, chunk, mip, cx, cy, ix0, iy0, ix1, iy1, pixels):
         x0, y0 = cx * self.chunk_px, cy * self.chunk_px

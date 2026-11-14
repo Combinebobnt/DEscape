@@ -5,19 +5,19 @@
     "size": 11963833
   },
   "genieutils": "0.1.2",
-  "refreshed": "2026-10-30",
+  "refreshed": "2026-11-14",
   "ror": {
     "dat": {
       "sha256": "fe4d566b98b0e40b05af749fc61c48b3317194d5cefd2ed5d40b80cefbd4b00d",
       "size": 2573146
     },
     "genieutils": "0.1.2",
-    "refreshed": "2026-11-06",
-    "steam_buildid": "26249352",
+    "refreshed": "2026-11-11",
+    "steam_buildid": "26272505",
     "tables": {
       "building_art_map.json": "3e8fdc8947ff3854d7bc7d43230a7f385a74452b2637059ce9686c6a87fbff22",
       "garrison_table.json": "0704f43f9e76392631ab5807428356b03a3f3ecc70d5f9a9f130444b74bdf9be",
-      "object_catalog.json": "0c6e3045a434706729c24938d45353f7bf8b4598c715452afe3046c3971e895a",
+      "object_catalog.json": "8dbb7589f5b66accaa1794fd3f5ddd5884206ad0139f128428a45bf685dce5ca",
       "terrain_blend_map.json": "8cd898fc51d0a9b88a776ae2fd75b23c0b8e8b85323651c010966bd4eeb9c066",
       "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
       "terrain_texture_map.json": "18f9706e224f9da6b06a48ca38958685ec9a26ff3da69fd589c54fde0fe30f95",
@@ -32,7 +32,7 @@
   "tables": {
     "building_art_map.json": "0eb01d23d98c84ad2893514acf989aa4ceab18ccb5d861a1dea419e38e6c5cf2",
     "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
-    "object_catalog.json": "0740a67aaaf9fc9fc25f9174edac7e242be3bb4b4b89d8a27ae94015bb2c33e1",
+    "object_catalog.json": "d400d90685b86bf3c3f6bd7572ed7c095d60cdcf3b9a0e4d9f97e801eb5070bc",
     "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",
     "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
     "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",

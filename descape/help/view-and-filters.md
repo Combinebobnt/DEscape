@@ -44,10 +44,16 @@ No technology effects are applied, and siege units get no ring.
 - Hero Glow: a gold outline round hero units, as in the game.
 - Fish Outlines: a ring round every fish, so they are easy to find on the water. A deep-water fish, dolphin or whale is ringed round its whole footprint. Fish the Filters hide get no ring, and the colour is set in **Settings > Appearance**. The ring also shows round Place Unit's and the Unit Brush's preview when a fish is picked.
 - Translucent Walls: see-through walls and gates, at the opacity set in **Settings > Appearance**.
-- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all. With a data mod picked in **File > Data Mod**, it also draws that mod's own units and terrains from its art mod; the status log names any art file nothing provides.
+- Mod Art: the art your enabled cosmetic mods ship, plus any mod disabled in the game that you tick in **Settings > Mods**, which lists them all. With a data mod picked in **File > Data Mod**, it also draws that mod's own units and terrains from its art mod; the status log names any art file nothing provides. The data mod's unit and building portraits come from the same mods.
 - Colour Mood: off by default. On, it tints the map with the scenario's colour mood (Map Options), as the game does, approximately. It covers brightness and tint only, not fog, bloom or shadows, and the water definition is not previewed. DEscape's own overlays keep their colours. To see a mood a trigger would set, pick it in Map Options, look, then undo.
 
 A greyed layer has nothing to do in the current view, and its tooltip says why.
+
+### Panels
+
+The side panel and the status log can leave their places. Drag either by its title bar to float it as its own window, say on a second monitor so the map gets the whole main window. Drag a floating one back onto an edge of the main window to dock it there: the left or right edge for the side panel, any edge for the log. The side panel's title names the current mode.
+
+**View > Panels** shows or hides the Editor Panel and the Status Log; the close button on a title bar hides it too. Switching mode brings a hidden side panel back. **View > Panels > Reset Layout** docks the side panel on the left and the log under the map again, and brings back a toolbar hidden from the right-click menu. DEscape remembers where both are between launches; a panel left on a monitor that is gone comes back on a live one.
 
 ## Filters
 

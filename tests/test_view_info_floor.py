@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.qt_window import panel_width, set_panel_width
+
 import conftest
 
 pytestmark = [
@@ -26,24 +28,23 @@ _NARROW_PX = 150
 def test_entering_view_from_a_narrow_pane_fits_the_info_page() -> None:
     from PyQt5.QtWidgets import QApplication
 
-    from descape.viewer import _LEFT_PAGE_INFO
+    from descape.viewer_common import _LEFT_PAGE_INFO
 
     window = conftest.shown_window(1500, 900)
     try:
         window.load_scenario(BLANK_FIXTURE)
         # Not Units or Terrain: their drag floors are their pages' own widths (TASK-362, TASK-551).
         window.mode_combo.setCurrentText("Players")
-        total = sum(window.content_splitter.sizes())
-        window.content_splitter.setSizes([_NARROW_PX, total - _NARROW_PX])
+        set_panel_width(window, _NARROW_PX)
         QApplication.processEvents()
-        assert window.content_splitter.sizes()[0] == _NARROW_PX, "the narrow setup did not take"
+        assert panel_width(window) == _NARROW_PX, "the narrow setup did not take"
 
         window.mode_combo.setCurrentText("View")
         QApplication.processEvents()
         page = window.left_stack.widget(_LEFT_PAGE_INFO)
         assert window.left_stack.currentWidget() is page
         assert window.player_stats_rows, "no stats table shown -- the page would measure too narrow"
-        left = window.content_splitter.sizes()[0]
+        left = panel_width(window)
         needed = page.minimumSizeHint().width()
         assert left >= needed, f"View pane {left} px, info page needs {needed} px"
     finally:
@@ -57,10 +58,9 @@ def test_a_pane_already_wider_than_the_floor_is_left_alone() -> None:
     try:
         window.load_scenario(BLANK_FIXTURE)
         window.mode_combo.setCurrentText("Units")
-        total = sum(window.content_splitter.sizes())
-        window.content_splitter.setSizes([500, total - 500])
+        set_panel_width(window, 500)
         window.mode_combo.setCurrentText("View")
         QApplication.processEvents()
-        assert window.content_splitter.sizes()[0] == 500
+        assert panel_width(window) == 500
     finally:
         conftest.close_window(window)

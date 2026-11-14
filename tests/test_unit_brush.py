@@ -10,7 +10,7 @@ import pytest
 
 from descape import asset_source, brush, placement_rules, unit_kind, unit_rotation, unit_sprites, unit_variant
 from descape.place_rotation import PlaceRotation, rotation_for
-from descape.render import occupied_tiles_for
+from descape.render_units import occupied_tiles_for
 from descape.unit_brush import BrushStroke, Spec, hover_anchor, is_refused_const, paint_dab
 from testkit.fakes import FakeScenario, SyntheticTile
 

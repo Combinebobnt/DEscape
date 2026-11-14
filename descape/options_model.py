@@ -446,7 +446,7 @@ class OptionsEditModel:
     the byte patches that writes them back.
 
     Construct one per open scenario, on the first real edit rather than at
-    panel populate -- the same lazy contract viewer.py's _ensure_trigger_edits()
+    panel populate -- the same lazy contract viewer_triggers.py's _ensure_trigger_edits()
     has, and for the same reason: a browse-only session must save
     byte-identically.
 

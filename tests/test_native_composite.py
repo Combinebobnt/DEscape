@@ -32,14 +32,21 @@ from descape import (
     grid_overlay,
     iso_geometry,
     native_composite,
-    render,
-    render_cache,
+    render_bbox,
+    render_cache_common,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
     settings,
 )
 from descape.grid_overlay import grid_bake
-from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import UnitSplice
 from descape.scenario_io import load_map_and_units
 from descape.view_layers import DEFAULT_LAYERS, LayerState
+from testkit.render_family import set_render_cache_global, set_render_global
 
 import conftest
 
@@ -167,9 +174,9 @@ def test_stepped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_t
     - a nofarms row composites with the farm undraped (Farm Overlay off, sprites on)"""
     scenario = _cliff_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     cache = IsoChunkCache(
-        scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height),
+        scenario, elevations, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height),
         sprites=sprites, layers=LayerState(terrain_textures=textures, farm_overlay=farms),
     )
     assert cache.farms_draped() == (sprites and farms)
@@ -188,8 +195,8 @@ def test_stepped_elevation_step_extremes(native_kernel, sprite_install, fake_far
     monkeypatch.setattr(settings, "get_elev_step_pct", lambda: pct)
     scenario = _cliff_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
-    cache = IsoChunkCache(scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    elevations, proj = render_iso.elevations_and_proj(scenario)
+    cache = IsoChunkCache(scenario, elevations, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
     anchors = _anchor_origins(proj, elevations, [(EDIT_X, EDIT_Y), *_corner_tiles(mm)])
     _assert_backends_agree(lambda *r: cache._composite_rect(0, *r), _rects(cache, 0, anchors))
 
@@ -201,7 +208,7 @@ def test_flat_every_mip(native_kernel, sprite_install, fake_farm, synthetic_text
     scenario = _cliff_scenario()
     mm = scenario.map_manager
     cache = FlatChunkCache(
-        scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height),
+        scenario, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height),
         sprites=sprites, layers=LayerState(terrain_textures=textures),
     )
     if grid:
@@ -244,14 +251,14 @@ def _per_tile_iso(cache, mip: int = 0):
     pack: the per-tile native path every non-cache caller takes, and the N2
     fallback."""
     lvl = cache._level(mip)
-    return lambda *r: render.composite_rect_iso(
+    return lambda *r: render_iso.composite_rect_iso(
         cache.scenario, *r, cache.elevations, lvl.proj, lvl.tile_px, cache.units_by_tile, lvl.building_bboxes,
         cache.with_units, sprites=lvl.sprites, bystander_grid=lvl.bystander_grid, layers=cache.layers, grid=cache.grid,
     )
 
 
 def _per_tile_sloped(cache):
-    return lambda *r: render.composite_rect_sloped(
+    return lambda *r: render_sloped.composite_rect_sloped(
         cache.scenario, *r, cache.corner_rise, cache.proj, cache.tile_px, cache.units_by_tile, cache.building_bboxes,
         cache.with_units, sprites=cache.sprites, bystander_grid=cache.bystander_grid, layers=cache.layers, grid=cache.grid,
         fold=cache.fold,
@@ -260,11 +267,11 @@ def _per_tile_sloped(cache):
 
 def _all_on_caches(tile_px: int):
     scenario = _cliff_scenario()
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     stepped = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
     stepped.set_grid(grid_bake(True, 60, 2))
     s_scenario = _sloped_scenario()
-    s_elevations, corner_rise, s_proj = render.sloped_elevations_and_proj(s_scenario)
+    s_elevations, corner_rise, s_proj = render_sloped.sloped_elevations_and_proj(s_scenario)
     sloped = SlopedChunkCache(s_scenario, s_elevations, corner_rise, s_proj, tile_px, sprites=True)
     sloped.set_grid(grid_bake(True, 60, 2))
     # Both levels built up front, so a counted composite never pays a level build's .sld walk.
@@ -274,12 +281,12 @@ def _all_on_caches(tile_px: int):
 
 
 def test_native_path_is_actually_taken(native_kernel, sprite_install, fake_farm, synthetic_textures):  # noqa: F811
-    """Guards the oracle itself: equal output means nothing if render.py
+    """Guards the oracle itself: equal output means nothing if the render modules
     never reaches the kernel. A cache composite is exactly one whole-rect
     call, never the per-tile fallback; a pack-less composite takes every
     per-tile entry point."""
     mm = _cliff_scenario().map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     scenario, stepped, sloped = _all_on_caches(tile_px)
 
     calls = _count_native_calls(lambda *r: stepped._composite_rect(0, *r), stepped.canvas_dims())
@@ -306,7 +313,7 @@ def test_native_path_is_actually_taken_at_coarse_mips(native_kernel, sprite_inst
     - each of _count_native_calls()' three composites at that level is exactly one whole-rect kernel
       call, never the per-tile fallback: three calls of that one entry point, nothing else"""
     mm = _cliff_scenario().map_manager
-    _scenario, stepped, sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    _scenario, stepped, sloped = _all_on_caches(render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
     for cache, entry in ((stepped, "composite_iso"), (sloped, "composite_sloped")):
         assert mip in cache.mip_levels(), (cache.style, cache.mip_levels())
         cache._level(mip)
@@ -342,7 +349,7 @@ def test_the_kernel_refuses_an_unpadded_texture_at_the_native_tier(native_kernel
     """A crop at 96 on an unpadded 512 texture would read past it under
     nogil; the kernel raises instead (TASK-599)."""
     mm = _cliff_scenario().map_manager
-    _scenario, stepped, sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    _scenario, stepped, sloped = _all_on_caches(render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
     for cache in (stepped, sloped):
         (mip,) = [m for m in cache.mip_levels() if cache.mip_tile_px(m) == 96]
         cache._level(mip)
@@ -357,7 +364,7 @@ def test_per_tile_path_backends_agree(native_kernel, sprite_install, fake_farm, 
     """N1's per-tile kernel stays covered: it is every pack-less caller's path
     and the whole-rect path's fallback."""
     mm = _cliff_scenario().map_manager
-    _scenario, stepped, sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+    _scenario, stepped, sloped = _all_on_caches(render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
     for mip in stepped.mip_levels():
         anchors = _anchor_origins(stepped._level(mip).proj, stepped.elevations, [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y)])
         _assert_backends_agree(_per_tile_iso(stepped, mip), _rects(stepped, mip, anchors))
@@ -372,7 +379,7 @@ def test_a_rise_past_the_tables_falls_back_per_tile(native_kernel, sprite_instal
     native_composite.stepped_tables.cache_clear()
     try:
         mm = _cliff_scenario().map_manager
-        _scenario, stepped, _sloped = _all_on_caches(render.tile_pixels_for_map(mm.map_width, mm.map_height))
+        _scenario, stepped, _sloped = _all_on_caches(render_paint.tile_pixels_for_map(mm.map_width, mm.map_height))
         composite = lambda *r: stepped._composite_rect(0, *r)  # noqa: E731
         calls = _count_native_calls(composite, stepped.canvas_dims())
         assert {"composite_iso", "render_tile_iso"} <= calls.keys(), calls
@@ -416,9 +423,9 @@ def test_sloped_every_tile_px(
     Pass conditions:
     - each rect composites equal on both backends and not all-black
     - the nofarms row composites with the farm undraped (Farm Overlay off, sprites on)"""
-    monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: tile_px)
+    set_render_global(monkeypatch, "tile_pixels_for_map", lambda w, h: tile_px)
     scenario = _sloped_scenario()
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     cache = SlopedChunkCache(
         scenario, elevations, corner_rise, proj, tile_px, sprites=sprites,
         layers=LayerState(terrain_textures=textures, farm_overlay=farms),
@@ -438,9 +445,9 @@ def test_sloped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_te
     - at every mip, each rect composites equal on both backends and not all-black"""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     cache = SlopedChunkCache(
-        scenario, elevations, corner_rise, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height),
+        scenario, elevations, corner_rise, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height),
         sprites=sprites, layers=LayerState(terrain_textures=textures),
     )
     if grid:
@@ -471,17 +478,17 @@ TWO_PASS_CASES = {
 
 
 def _count_restored(monkeypatch) -> list[int]:
-    """Ink pixels each render._restore_under call gave back to the terrain,
+    """Ink pixels each render_paint._restore_under call gave back to the terrain,
     one entry per call: empty when the pre-scan skipped the occlusion pass."""
     restored: list[int] = []
-    real = render._restore_under
+    real = render_paint._restore_under
 
     def counted(img, terrain, ink, *args, **kwargs):
-        before = int((ink != render.INK_NONE).sum())
+        before = int((ink != render_paint.INK_NONE).sum())
         real(img, terrain, ink, *args, **kwargs)
-        restored.append(before - int((ink != render.INK_NONE).sum()))
+        restored.append(before - int((ink != render_paint.INK_NONE).sum()))
 
-    monkeypatch.setattr(render, "_restore_under", counted)
+    set_render_global(monkeypatch, "_restore_under", counted)
     return restored
 
 
@@ -544,10 +551,10 @@ def test_unit_pack_rows_carry_each_units_base_rise(ink_sprite, style):  # noqa: 
             for tile in (centred, off_centre)
         }
     else:
-        floor = render._sloped_tile_floor(cache.corner_rise, *off_centre)
+        floor = render_sloped._sloped_tile_floor(cache.corner_rise, *off_centre)
         want = {
-            centred: (native_composite.ROW_CONFORM, render._sloped_tile_floor(cache.corner_rise, *centred)),
-            off_centre: (native_composite.ROW_MARK, render._sloped_mark_rise(off_unit, cache.corner_rise)),
+            centred: (native_composite.ROW_CONFORM, render_sloped._sloped_tile_floor(cache.corner_rise, *centred)),
+            off_centre: (native_composite.ROW_MARK, render_sloped._sloped_mark_rise(off_unit, cache.corner_rise)),
         }
         assert want[off_centre][1] != floor, "the off-centre mark sits on its tile's floor -- pick a steeper tile"
     for tile, (want_kind, want_rise) in want.items():
@@ -563,12 +570,12 @@ NEW_TERRAIN_ID = 17  # not in TERRAIN_IDS, so a paint adds a texture the map nev
 
 def _edit_cache(style: str, scenario, sprites: bool, layers: LayerState = DEFAULT_LAYERS, grid=None):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, layers=layers)
     else:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, layers=layers)
     cache.set_grid(grid_bake(True, 60, 2) if grid is None else grid)
     return cache
@@ -580,7 +587,7 @@ def _patch_tiles(cache, style: str, scenario, tiles, sprites: bool) -> None:
     w = scenario.map_manager.map_width
     dirty = [y * w + x for x, y in tiles]
     changed: set = set()
-    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = bbox_fn(
         scenario, dirty, cache.elevations, cache.proj, with_units=True, with_sprites=sprites,
         elevation_changed=changed,
@@ -703,12 +710,12 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
     ):
         index = scenario.unit_manager.units[player_id].index(unit)
         old_own = (int(unit.x), int(unit.y))
-        old_tiles = tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+        old_tiles = tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
         unit.x, unit.y = nx, ny
         scenario.unit_gen += 1
         splice = UnitSplice(
             player_id, index, unit, old_own, (int(nx), int(ny)), old_tiles,
-            tuple(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height)),
+            tuple(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height)),
         )
         with composite_backend.use_backend("native"):
             assert cache.can_splice([splice])
@@ -719,7 +726,7 @@ def test_edits_through_the_real_funnels_match_a_fresh_render(
 
     # The viewer's single Delete: a removal splice, new tiles empty.
     index = scenario.unit_manager.units[1].index(mark)
-    old_tiles = tuple(render.unit_occupied_tiles(mark, mm.map_width, mm.map_height))
+    old_tiles = tuple(render_units.unit_occupied_tiles(mark, mm.map_width, mm.map_height))
     scenario.unit_manager.units[1].remove(mark)
     scenario.unit_gen += 1
     splice = UnitSplice(1, index, mark, (int(mark.x), int(mark.y)), None, old_tiles, ())
@@ -867,7 +874,7 @@ def test_bulk_pending_refresh_keeps_derived_tiles_and_shared_inputs(native_backe
     tilewise.ensure(tilewise.pending())
     _assert_packs_equal(bulk, tilewise)
     building = next(u for units in cache.scenario.unit_manager.units for u in units if u.unit_const == DIAGONAL_GATE)
-    tiles = set(render.unit_occupied_tiles(building, bulk.w, bulk.h))
+    tiles = set(render_units.unit_occupied_tiles(building, bulk.w, bulk.h))
     layer = bulk._sprites
     sprite_tiles = tiles & layer.by_anchor.keys()
     assert len(sprite_tiles) > 1, "no multi-tile sprite -- vacuous"
@@ -875,7 +882,7 @@ def test_bulk_pending_refresh_keeps_derived_tiles_and_shared_inputs(native_backe
     farm_tiles = list(farms)[:2]
     assert len(farm_tiles) == 2
     farms.pop(farm_tiles[0])
-    farms[farm_tiles[1]] = (17, (23, 45, 67), render.EDGE_LEFT)
+    farms[farm_tiles[1]] = (17, (23, 45, 67), render_sprites.EDGE_LEFT)
     tiles.update(farm_tiles)
     anchors = dict(layer.by_anchor)
     for key in sprite_tiles:
@@ -936,7 +943,7 @@ def test_a_sparse_pending_refresh_never_scans_whole_level_sources(native_backend
     if sprites:
         farms = TileLookupsOnly(layer.farm_by_tile)
         key = next(iter(farms))
-        farms[key] = (17, (23, 45, 67), render.EDGE_LEFT)
+        farms[key] = (17, (23, 45, 67), render_sprites.EDGE_LEFT)
         layer = dataclasses.replace(layer, by_anchor=TileLookupsOnly(layer.by_anchor), farm_by_tile=farms)
     else:
         key = next(key for key, units in bulk._ubt.items() if units)
@@ -950,7 +957,7 @@ def test_a_sparse_pending_refresh_never_scans_whole_level_sources(native_backend
     _assert_packs_equal(bulk, tilewise)
     if sprites:
         t = key[1] * bulk.w + key[0]
-        assert bulk.farm_tid[t] == 17 and bulk.farm_mask[t] == render.EDGE_LEFT
+        assert bulk.farm_tid[t] == 17 and bulk.farm_mask[t] == render_sprites.EDGE_LEFT
         assert bulk.farm_rgb[3 * t : 3 * t + 3].tolist() == [23, 45, 67]
     else:
         assert bulk.garbage > 0 and bulk.n > len(before), "refresh did not rewrite occupied rows"
@@ -962,8 +969,8 @@ def test_unit_pack_compaction_keeps_every_tiles_rows(sprite_install, fake_farm, 
     exactly those, keeping every live tile's rows in order."""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
-    cache = IsoChunkCache(scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
+    cache = IsoChunkCache(scenario, elevations, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
     lvl = cache._level(0)
     pack = native_composite.UnitPack(
         False, mm.map_width, mm.map_height, lvl.proj, cache.units_by_tile, lvl.sprites, 0, cache.elevations,
@@ -1183,9 +1190,8 @@ def test_a_pack_warm_composites_byte_identical(
     """A completed pack warm, then the whole canvas (+1: its _fine_rect())
     natively, equals a fresh numpy render and a lazy native one, using the
     pack the warm derived into. Small slices so slice boundaries land mid-map."""
-    from descape import render_cache
 
-    monkeypatch.setattr(render_cache, "PACK_WARM_TILES", 3)
+    set_render_cache_global(monkeypatch, "PACK_WARM_TILES", 3)
     scenario = _sloped_scenario()
     with composite_backend.use_backend("native"):
         cache = _edit_cache(style, scenario, sprites=True)
@@ -1236,12 +1242,12 @@ def test_a_pack_warm_then_splices_matches_a_fresh_render(
 
     index = scenario.unit_manager.units[1].index(mark)
     old_own = (int(mark.x), int(mark.y))
-    old_tiles = tuple(render.unit_occupied_tiles(mark, mm.map_width, mm.map_height))
+    old_tiles = tuple(render_units.unit_occupied_tiles(mark, mm.map_width, mm.map_height))
     mark.x, mark.y = EDIT_X - 12.25, EDIT_Y + 7.75
     scenario.unit_gen += 1
     splice = UnitSplice(
         1, index, mark, old_own, (int(mark.x), int(mark.y)), old_tiles,
-        tuple(render.unit_occupied_tiles(mark, mm.map_width, mm.map_height)),
+        tuple(render_units.unit_occupied_tiles(mark, mm.map_width, mm.map_height)),
     )
     with composite_backend.use_backend("native"):
         assert cache.can_splice([splice])
@@ -1292,8 +1298,8 @@ def test_a_pack_warm_stops_when_its_pack_is_replaced(native_kernel, sprite_insta
 def test_pack_warm_has_nothing_to_do(native_kernel, sprite_install, fake_farm, synthetic_textures):  # noqa: F811
     scenario = _sloped_scenario()
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    elevations, proj = render.elevations_and_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     with composite_backend.use_backend("native"):
         stepped = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
         stepped._level(0)
@@ -1306,7 +1312,7 @@ def test_pack_warm_has_nothing_to_do(native_kernel, sprite_install, fake_farm, s
         no_units._level(0)
         assert no_units.pack_warm_job(0) is None
         assert FlatChunkCache(scenario, tile_px, sprites=True).pack_warm_job(0) is None
-        s_elev, corner_rise, s_proj = render.sloped_elevations_and_proj(scenario)
+        s_elev, corner_rise, s_proj = render_sloped.sloped_elevations_and_proj(scenario)
         sloped = SlopedChunkCache(scenario, s_elev, corner_rise, s_proj, tile_px, sprites=True)
         assert sloped.pack_warm_job(0) is None, "a standalone warm of a not-yet-built Sloped level"
         sloped._level(0)
@@ -1325,12 +1331,12 @@ MIRROR_TILES = [(EDIT_X + k, EDIT_Y + k) for k in range(-12, 13)]
 
 def _mirror_cache(style: str, scenario, chunk_px: int = 512):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px, chunk_px=chunk_px, sprites=False)
     else:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, chunk_px=chunk_px, sprites=False)
     cache.set_grid(grid_bake(True, 60, 2))
     return cache
@@ -1340,7 +1346,7 @@ def _mirror_bbox(cache, style: str, scenario) -> tuple[int, int, int, int]:
     """The viewer's dirty bbox over MIRROR_TILES, for a terrain-only paint."""
     w = scenario.map_manager.map_width
     changed: set = set()
-    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = bbox_fn(
         scenario, [y * w + x for x, y in MIRROR_TILES], cache.elevations, cache.proj, with_units=True,
         with_sprites=False, elevation_changed=changed,
@@ -1508,7 +1514,7 @@ def test_the_numpy_composite_reads_live_terrain_ids_not_the_mirror(sprite_instal
     is what checks that."""
     scenario = _sloped_scenario()
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     with composite_backend.use_backend("numpy"):
         caches = {style: _mirror_cache(style, scenario) for style in ("stepped", "sloped")}
         flat = FlatChunkCache(scenario, tile_px)
@@ -1703,16 +1709,16 @@ def test_corpus_scenario_backends_agree(native_kernel, scenario_path):
     mip plus Sloped, sprites on, a handful of rects each."""
     scenario = load_map_and_units(str(scenario_path))
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     centre = [(mm.map_width // 2, mm.map_height // 2), (mm.map_width // 4, mm.map_height * 3 // 4)]
 
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
     for mip in cache.mip_levels():
         anchors = _anchor_origins(cache._level(mip).proj, elevations, centre + _corner_tiles(mm))
         _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), _rects(cache, mip, anchors))
 
-    s_elevations, corner_rise, s_proj = render.sloped_elevations_and_proj(scenario)
+    s_elevations, corner_rise, s_proj = render_sloped.sloped_elevations_and_proj(scenario)
     s_cache = SlopedChunkCache(scenario, s_elevations, corner_rise, s_proj, tile_px, sprites=True)
     anchors = _anchor_origins(s_proj, s_elevations, centre + _corner_tiles(mm))
     _assert_backends_agree(lambda *r: s_cache._composite_rect(0, *r), _rects(s_cache, 0, anchors))
@@ -1725,9 +1731,9 @@ def test_box_reduce2_backends_agree(native_kernel, shape):
     src[0, 0] = 255  # the extremes, so the + 2 rounding and the uint16 sum are both reached
     src[-1, -1] = 0
     with composite_backend.use_backend("numpy"):
-        want = render_cache.box_reduce2(src)
+        want = render_cache_common.box_reduce2(src)
     with composite_backend.use_backend("native"):
-        got = render_cache.box_reduce2(src)
+        got = render_cache_common.box_reduce2(src)
     assert got.shape == want.shape == ((shape[0] + 1) // 2, (shape[1] + 1) // 2, 3)
     np.testing.assert_array_equal(got, want)
 

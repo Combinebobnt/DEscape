@@ -1,4 +1,4 @@
-"""Verifies building footprint sizing -- descape.render.unit_tile_bounds.
+"""Verifies building footprint sizing -- descape.render_units.unit_tile_bounds.
 
 **Why this file exists separately.** Every footprint assertion already in the
 suite is a consistency oracle built on unit_tile_bounds itself
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import render
+from descape import render_units
 from descape.terrain_palette import (
     BLOCKER_TILE_SPANS,
     BUILDING_TILE_OFFSETS,
@@ -69,7 +69,7 @@ class Unit:
 
 
 def bounds(x: float, y: float, unit_const: int) -> tuple[int, int, int, int]:
-    result = render.unit_tile_bounds(Unit(x=x, y=y, unit_const=unit_const), MAP_W, MAP_H)
+    result = render_units.unit_tile_bounds(Unit(x=x, y=y, unit_const=unit_const), MAP_W, MAP_H)
     assert result is not None
     return result
 
@@ -154,7 +154,7 @@ def test_the_anchor_always_keeps_the_units_own_tile_inside_the_span(frac, span):
     data has no square building at span 6 or 7 to drive it with.
     """
     coord = 32.0 + frac
-    start = render._span_start(coord, span)
+    start = render_units._span_start(coord, span)
     assert start <= int(coord) < start + span, (span, frac, start)
 
 
@@ -231,7 +231,7 @@ def test_the_own_tile_is_always_inside_the_sparse_occupied_set(unit_const):
     # coordinate parities a building can legally sit at.
     for frac in (0.0, 0.5):
         x = y = 32.0 + frac
-        tiles = render.unit_occupied_tiles(Unit(x=x, y=y, unit_const=unit_const), MAP_W, MAP_H)
+        tiles = render_units.unit_occupied_tiles(Unit(x=x, y=y, unit_const=unit_const), MAP_W, MAP_H)
         assert (int(x), int(y)) in tiles, (unit_const, frac)
 
 
@@ -239,7 +239,7 @@ def test_the_own_tile_is_always_inside_the_sparse_occupied_set(unit_const):
 def test_a_sparse_gate_occupies_exactly_6_of_its_16_bbox_tiles(unit_const):
     x = y = 32.0
     unit = Unit(x=x, y=y, unit_const=unit_const)
-    tiles = render.unit_occupied_tiles(unit, MAP_W, MAP_H)
+    tiles = render_units.unit_occupied_tiles(unit, MAP_W, MAP_H)
     x0, x1, y0, y1 = bounds(x, y, unit_const)
     assert len(tiles) == 6
     assert set(tiles).issubset({(tx, ty) for tx in range(x0, x1) for ty in range(y0, y1)})
@@ -257,7 +257,7 @@ def test_non_gate_buildings_stay_fully_occupied(unit_const):
     x = 32.0 if expected[0] % 2 == 0 else 32.5
     y = 32.0 if expected[1] % 2 == 0 else 32.5
     unit = Unit(x=x, y=y, unit_const=unit_const)
-    tiles = render.unit_occupied_tiles(unit, MAP_W, MAP_H)
+    tiles = render_units.unit_occupied_tiles(unit, MAP_W, MAP_H)
     x0, x1, y0, y1 = bounds(x, y, unit_const)
     assert set(tiles) == {(tx, ty) for tx in range(x0, x1) for ty in range(y0, y1)}, name
 
@@ -265,11 +265,11 @@ def test_non_gate_buildings_stay_fully_occupied(unit_const):
 def test_unit_occupies_tile_agrees_with_unit_occupied_tiles():
     for unit_const in sorted(BUILDING_TILE_OFFSETS)[:5]:
         unit = Unit(x=32.0, y=32.0, unit_const=unit_const)
-        tiles = set(render.unit_occupied_tiles(unit, MAP_W, MAP_H))
+        tiles = set(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H))
         x0, x1, y0, y1 = bounds(32.0, 32.0, unit_const)
         for tx in range(x0, x1):
             for ty in range(y0, y1):
-                assert render.unit_occupies_tile(unit, tx, ty) == ((tx, ty) in tiles)
+                assert render_units.unit_occupies_tile(unit, tx, ty) == ((tx, ty) in tiles)
 
 
 # -- clamping ------------------------------------------------------------
@@ -282,8 +282,8 @@ def test_a_footprint_reaching_off_the_map_is_clamped_not_wrapped():
 
 
 def test_a_unit_whose_own_tile_is_off_the_map_has_no_bounds():
-    assert render.unit_tile_bounds(Unit(x=-1.0, y=5.0, unit_const=70), MAP_W, MAP_H) is None
-    assert render.unit_tile_bounds(Unit(x=5.0, y=MAP_H + 1.0, unit_const=70), MAP_W, MAP_H) is None
+    assert render_units.unit_tile_bounds(Unit(x=-1.0, y=5.0, unit_const=70), MAP_W, MAP_H) is None
+    assert render_units.unit_tile_bounds(Unit(x=5.0, y=MAP_H + 1.0, unit_const=70), MAP_W, MAP_H) is None
 
 
 # -- snapped placement's anchor (GH #206) ---------------------------------
@@ -310,18 +310,18 @@ def test_the_snapped_anchor_centres_an_even_span_on_the_cursor(tile, point, span
     """Snapped placement lands on the game's grid, an odd span at tile + 0.5
     and an even span on the whole number nearest the cursor, clamped so the
     whole footprint stays on a 120x120 map."""
-    assert render.snapped_anchor(tile, point, span, 120, 120) == expected
+    assert render_units.snapped_anchor(tile, point, span, 120, 120) == expected
 
 
 def test_the_snapped_anchors_edge_clamp_keeps_a_4x4_on_the_map():
     """Unclamped, a 4x4 hovered at w - 0.5 anchors at x = w, an off-map unit
     unit_tile_bounds drops; clamped, its four tiles end on the map's last."""
     assert BUILDING_TILE_SPANS[82] == (4, 4)
-    x, y = render.snapped_anchor((119, 119), (119.6, 119.9), (4, 4), 120, 120)
-    assert render.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (116, 120, 116, 120)
-    assert render.unit_tile_bounds(Unit(x=120.0, y=120.0, unit_const=82), 120, 120) is None
-    x, y = render.snapped_anchor((0, 0), (0.2, 0.1), (4, 4), 120, 120)
-    assert render.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (0, 4, 0, 4)
+    x, y = render_units.snapped_anchor((119, 119), (119.6, 119.9), (4, 4), 120, 120)
+    assert render_units.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (116, 120, 116, 120)
+    assert render_units.unit_tile_bounds(Unit(x=120.0, y=120.0, unit_const=82), 120, 120) is None
+    x, y = render_units.snapped_anchor((0, 0), (0.2, 0.1), (4, 4), 120, 120)
+    assert render_units.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (0, 4, 0, 4)
 
 
 # -- against real placement data -----------------------------------------
@@ -347,7 +347,7 @@ def test_real_buildings_span_their_real_footprints(scenario_path):
             if expected is None:
                 continue
             name, span = expected
-            result = render.unit_tile_bounds(unit, width, height)
+            result = render_units.unit_tile_bounds(unit, width, height)
             if result is None:
                 continue
             x0, x1, y0, y1 = result
@@ -484,7 +484,7 @@ def test_a_cliffs_footprint_centre_lands_on_its_own_coordinate(unit_const, x, y,
     """
     # A 200-tile map, because these are real corpus coordinates and MAP_W is 64.
     unit = Unit(x=x, y=y, unit_const=unit_const)
-    result = render.unit_tile_bounds(unit, 200, 200)
+    result = render_units.unit_tile_bounds(unit, 200, 200)
     assert result is not None
     x0, x1, y0, y1 = result
     assert (x0 + (x1 - x0) / 2, y0 + (y1 - y0) / 2) == expected_centre
@@ -537,9 +537,9 @@ def test_a_1x3_blocker_occupies_three_tiles_centred_on_its_own():
     """Every corpus blocker sits at x.5/y.5, so an odd span centres on the
     placed tile: no placement or coordinate changes with the span."""
     unit = Unit(x=3.5, y=9.5, unit_const=2423)
-    assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(3, 8), (3, 9), (3, 10)}
+    assert set(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(3, 8), (3, 9), (3, 10)}
     unit = Unit(x=3.5, y=9.5, unit_const=2424)
-    assert set(render.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(2, 9), (3, 9), (4, 9)}
+    assert set(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H)) == {(2, 9), (3, 9), (4, 9)}
 
 
 # -- deep-water fish (GH #178) --------------------------------------------
@@ -587,7 +587,7 @@ def test_a_dorado_on_a_whole_coordinate_centres_its_2x2_on_that_point():
     """Where 1028/1049 corpus deep fish sit: an even span centres on a tile corner."""
     x0, x1, y0, y1 = bounds(10.0, 12.0, 455)
     assert (x0, x1, y0, y1) == (9, 11, 11, 13)
-    assert render.unit_paint_offset(Unit(x=10.0, y=12.0, unit_const=455)) == (0.0, 0.0)
+    assert render_units.unit_paint_offset(Unit(x=10.0, y=12.0, unit_const=455)) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize("frac", [0.0, 0.13, 0.5, 0.77, 0.99])
@@ -681,7 +681,7 @@ def test_big_outline_decorations_without_a_collision_box_stay_one_tile(unit_cons
 
 def test_a_mountain_on_a_whole_coordinate_covers_6x6_centred_on_it():
     assert bounds(20.0, 20.0, _MNTN3) == (17, 23, 17, 23)
-    assert render.unit_paint_offset(Unit(x=20.0, y=20.0, unit_const=_MNTN3)) == (0.0, 0.0)
+    assert render_units.unit_paint_offset(Unit(x=20.0, y=20.0, unit_const=_MNTN3)) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize("frac", [0.0, 0.13, 0.5, 0.77, 0.99])

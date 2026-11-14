@@ -11,7 +11,7 @@ files, 23,313 cliff placements) -- re-run it against any richer corpus to
 reproduce or update.
 
 **Adjacency is tile-block, not centre-distance.** Two cliffs are neighbours
-when their `render.unit_tile_bounds()` footprints share an edge (cardinal)
+when their `render_units.unit_tile_bounds()` footprints share an edge (cardinal)
 or touch at exactly one corner (diagonal) -- the same approach
 `scan_wall_rotation.py`'s `_neighbour_mask` uses for walls, generalised from
 4 directions to 8 since cliff footprints vary in size (3x3 down to 1x3) and
@@ -90,7 +90,7 @@ from descape import cliff_catalog, unit_sprites
 from descape.cliff_connectivity import NOMINAL_SPAN, SHAPE_FLOOR, ShapeTables, edge_tall, leg_tall
 from descape.cliff_connectivity import adjacency_dir as _adjacency_dir
 from descape.cliff_connectivity import offset as _offset
-from descape.render import NON_BUILDING_SPAN, unit_tile_bounds
+from descape.render_units import NON_BUILDING_SPAN, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import tile_span
 

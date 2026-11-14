@@ -58,6 +58,7 @@ import numpy as np
 
 from testkit import review_pack as rp
 from testkit import settings_isolation
+from testkit.render_family import RENDER, patch
 
 PACK_ID = "features"
 OUT_DIR = grp.OUT_DIR
@@ -103,18 +104,12 @@ def _inject_one_tile():
     """The pre-TASK-134 footprint: every doodad back to 1x1 (mark, outline, occupied tiles)."""
     from descape import terrain_palette
 
-    return [(terrain_palette, "DOODAD_TILE_SPANS", {}), (_render_module(), "DOODAD_TILE_SPANS", {})]
+    return [(terrain_palette, "DOODAD_TILE_SPANS", {}), (RENDER, "DOODAD_TILE_SPANS", {})]
 
 
 def _inject_front_anchor():
     """The rejected building-like anchor: a doodad's sprite sorts at its footprint's front corner."""
-    return [(_render_module(), "_sprite_keeps_own_point", lambda unit_const: False)]
-
-
-def _render_module():
-    from descape import render
-
-    return render
+    return [(RENDER, "_sprite_keeps_own_point", lambda unit_const: False)]
 
 
 INJECTS = {
@@ -128,17 +123,17 @@ _HIDE_ALL = False
 
 @contextmanager
 def _patched(patches):
+    import pytest
+
     from descape import unit_sprites
 
-    saved = [(mod, name, getattr(mod, name)) for mod, name, _new in patches]
-    for mod, name, new in patches:
-        setattr(mod, name, new)
-    unit_sprites.clear_caches()
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for target, name, new in patches:
+                patch(mp, target, name, new)
+            unit_sprites.clear_caches()
+            yield
     finally:
-        for mod, name, old in saved:
-            setattr(mod, name, old)
         unit_sprites.clear_caches()
 
 

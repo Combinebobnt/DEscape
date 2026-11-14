@@ -31,8 +31,9 @@ import numpy as np
 import pytest
 
 from descape import iso_geometry as ig
-from descape import render
+from descape import render_iso
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import render_global, set_render_global
 
 TILE_PX = [8, 16, 32, 64, 128]
 SIDES = ["up_left", "up_right"]
@@ -183,7 +184,7 @@ def test_a_terrace_run_is_one_unbroken_column_span(tile_px, side):
     cols: set[int] = set()
     for k in range(run):
         # This side qualified, so this tile draws its side pass AND the
-        # apex pass -- exactly what render._render_tile_iso does.
+        # apex pass -- exactly what render_iso._render_tile_iso does.
         cols |= {k * half_w + int(c) for c in side_x}
         cols |= {k * half_w + int(c) for c in apex_x}
 
@@ -243,13 +244,13 @@ def test_seam_factors_dtype_and_alignment(tile_px, side):
     scalar breaks it; float64 breaks the documented full-canvas/scratch-
     canvas bit identity instead, silently.
     """
-    factors = render._seam_factors(tile_px, side)
+    factors = render_iso._seam_factors(tile_px, side)
     dst_y, _dst_x = ig.seam_edge_indices(tile_px, side)
     assert factors.dtype == np.float32
     assert factors.ndim == 1
     assert factors.shape == dst_y.shape
     assert (factors > 0).all(), "a zero factor would make a painted pixel read as unpainted"
-    assert (factors == np.float32(render.SEAM_SHADE)).all()
+    assert (factors == np.float32(render_iso.SEAM_SHADE)).all()
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX)
@@ -285,7 +286,7 @@ def _band_pixels_landing_on_the_neighbours_seam(tile_px, rise_px, side):
     s_dst_y, s_dst_x, _depth, _span = ig.shadow_quad_indices(tile_px, rise_px, side)
     if s_dst_y.size == 0:
         return [], []
-    band_factors = render._shadow_factors(tile_px, rise_px, side)
+    band_factors = render_iso._shadow_factors(tile_px, rise_px, side)
     # The neighbour's diamond sits at (-half_w, -half_h + rise_px) from the
     # caster's for up_left, (+half_w, same) for up_right -- so invert that.
     off_x = half_w if side == "up_left" else -half_w
@@ -334,8 +335,8 @@ def test_compounding_with_the_band_stays_bounded(tile_px, elev_step_pct):
         where = f"tile_px={tile_px} pct={elev_step_pct} side={side}"
         assert len(compounding) <= 2, f"{where}: {len(compounding)} compounding px, expected at most 2"
         for f in compounding:
-            assert f >= render.CONTACT_SHADE - 1e-6, f"{where}: band factor {f} below CONTACT_SHADE"
-            product = f * render.SEAM_SHADE
+            assert f >= render_iso.CONTACT_SHADE - 1e-6, f"{where}: band factor {f} below CONTACT_SHADE"
+            product = f * render_iso.SEAM_SHADE
             assert product > 0.3, f"{where}: compounded factor {product:.3f} is nearly black"
 
 
@@ -377,15 +378,14 @@ def test_flat_ground_draws_no_seam_at_all():
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     flat = _flat_scenario()
 
-    original = render.SEAM_SHADE
     try:
-        with_seam = render.render_terrain_iso(flat, with_units=False)
-        render.SEAM_SHADE = 1.0  # exact no-op multiply in _clipped_darken
-        render._seam_factors.cache_clear()
-        without_seam = render.render_terrain_iso(flat, with_units=False)
+        with_seam = render_iso.render_terrain_iso(flat, with_units=False)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "SEAM_SHADE", 1.0)  # exact no-op multiply in _clipped_darken
+            render_iso._seam_factors.cache_clear()
+            without_seam = render_iso.render_terrain_iso(flat, with_units=False)
     finally:
-        render.SEAM_SHADE = original
-        render._seam_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
     assert np.array_equal(with_seam, without_seam), "a flat map drew a seam somewhere"
 
 
@@ -404,30 +404,30 @@ def test_seam_changes_a_hill_at_every_pct_including_200():
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     hill = _pyramid_scenario()
 
-    original_shade = render.SEAM_SHADE
+    original_shade = render_global("SEAM_SHADE")
     original_pct = settings._elev_step_pct
     shapes = set()
     try:
-        for pct in (25, 50, 100, 200):
-            settings._elev_step_pct = pct
-            render.SEAM_SHADE = original_shade
-            render._seam_factors.cache_clear()
-            with_seam = render.render_terrain_iso(hill, with_units=False)
-            shapes.add(with_seam.shape)
-            render.SEAM_SHADE = 1.0
-            render._seam_factors.cache_clear()
-            without_seam = render.render_terrain_iso(hill, with_units=False)
-            assert with_seam.dtype == np.uint8 and with_seam.ndim == 3
-            changed = int(np.count_nonzero(np.any(with_seam != without_seam, axis=2)))
-            assert changed > 0, f"pct={pct}: the seam changed nothing on a 4-level pyramid"
-            # And it never drove a painted pixel to black -- the oracle
-            # verify_iso_render.check_full_coverage depends on.
-            newly_black = np.all(with_seam == 0, axis=2) & np.any(without_seam.astype(bool), axis=2)
-            assert not newly_black.any(), f"pct={pct}: {int(newly_black.sum())} painted px turned black"
+        with pytest.MonkeyPatch.context() as mp:
+            for pct in (25, 50, 100, 200):
+                settings._elev_step_pct = pct
+                set_render_global(mp, "SEAM_SHADE", original_shade)
+                render_iso._seam_factors.cache_clear()
+                with_seam = render_iso.render_terrain_iso(hill, with_units=False)
+                shapes.add(with_seam.shape)
+                set_render_global(mp, "SEAM_SHADE", 1.0)
+                render_iso._seam_factors.cache_clear()
+                without_seam = render_iso.render_terrain_iso(hill, with_units=False)
+                assert with_seam.dtype == np.uint8 and with_seam.ndim == 3
+                changed = int(np.count_nonzero(np.any(with_seam != without_seam, axis=2)))
+                assert changed > 0, f"pct={pct}: the seam changed nothing on a 4-level pyramid"
+                # And it never drove a painted pixel to black -- the oracle
+                # verify_iso_render.check_full_coverage depends on.
+                newly_black = np.all(with_seam == 0, axis=2) & np.any(without_seam.astype(bool), axis=2)
+                assert not newly_black.any(), f"pct={pct}: {int(newly_black.sum())} painted px turned black"
     finally:
-        render.SEAM_SHADE = original_shade
         settings._elev_step_pct = original_pct
-        render._seam_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
 
     # Without this the test passes whether or not the pct reached the
     # renderer at all: the seam draws at EVERY pct, so `changed > 0` four
@@ -488,15 +488,14 @@ def test_rendered_seam_mask_equals_the_predicted_pixel_set():
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     hill = _pyramid_scenario()
 
-    original = render.SEAM_SHADE
     try:
-        with_seam, elevations, proj = render.render_terrain_iso_with_proj(hill, with_units=False)
-        render.SEAM_SHADE = 1.0
-        render._seam_factors.cache_clear()
-        without_seam, _e, _p = render.render_terrain_iso_with_proj(hill, with_units=False)
+        with_seam, elevations, proj = render_iso.render_terrain_iso_with_proj(hill, with_units=False)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "SEAM_SHADE", 1.0)
+            render_iso._seam_factors.cache_clear()
+            without_seam, _e, _p = render_iso.render_terrain_iso_with_proj(hill, with_units=False)
     finally:
-        render.SEAM_SHADE = original
-        render._seam_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
 
     ys, xs = np.nonzero(np.any(with_seam != without_seam, axis=2))
     changed = set(zip(ys.tolist(), xs.tolist(), strict=True))
@@ -526,7 +525,7 @@ def test_rendered_seam_mask_equals_the_predicted_pixel_set():
     # from the two renders already taken.
     ys_a, xs_a = np.nonzero(np.any(with_seam != without_seam, axis=2))
     src = without_seam[ys_a, xs_a].astype(np.float32)
-    once = np.clip(src * render.SEAM_SHADE, 0, 255).astype(np.uint8)
+    once = np.clip(src * render_iso.SEAM_SHADE, 0, 255).astype(np.uint8)
     not_once = ~np.all(with_seam[ys_a, xs_a] == once, axis=1)
     assert not not_once.any(), (
         f"{int(not_once.sum())} of {len(ys_a)} seam px are not exactly one SEAM_SHADE "
@@ -551,15 +550,14 @@ def test_apex_columns_are_drawn_exactly_once():
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     hill = _pyramid_scenario()
 
-    original = render.SEAM_SHADE
     try:
-        with_seam, elevations, proj = render.render_terrain_iso_with_proj(hill, with_units=False)
-        render.SEAM_SHADE = 1.0
-        render._seam_factors.cache_clear()
-        without_seam, _e, _p = render.render_terrain_iso_with_proj(hill, with_units=False)
+        with_seam, elevations, proj = render_iso.render_terrain_iso_with_proj(hill, with_units=False)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "SEAM_SHADE", 1.0)
+            render_iso._seam_factors.cache_clear()
+            without_seam, _e, _p = render_iso.render_terrain_iso_with_proj(hill, with_units=False)
     finally:
-        render.SEAM_SHADE = original
-        render._seam_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
 
     tile_px = proj.tile_px
     apex_dy, apex_dx = ig.seam_apex_indices(tile_px)
@@ -580,12 +578,12 @@ def test_apex_columns_are_drawn_exactly_once():
             src = without_seam[y, x].astype(np.float32)
             if not src.any():
                 continue  # black underneath -- darkening is unobservable
-            once = np.clip(src * render.SEAM_SHADE, 0, 255).astype(np.uint8)
+            once = np.clip(src * render_iso.SEAM_SHADE, 0, 255).astype(np.uint8)
             got = with_seam[y, x]
             assert np.array_equal(got, once), (
                 f"tile ({tile.x},{tile.y}) apex px ({y},{x}): got {got.tolist()}, "
                 f"expected one SEAM_SHADE application {once.tolist()} "
-                f"(twice would be {np.clip(src * render.SEAM_SHADE**2, 0, 255).astype(np.uint8).tolist()})"
+                f"(twice would be {np.clip(src * render_iso.SEAM_SHADE**2, 0, 255).astype(np.uint8).tolist()})"
             )
             checked += 1
 

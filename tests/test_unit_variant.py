@@ -194,10 +194,10 @@ def _sprite_hashes(loaded):
     """One digest per sprite anchor, over every draw's rgba bytes."""
     import hashlib
 
-    from descape import render
+    from descape import render_iso, render_sprites
 
-    _img, elevations, proj = render.render_terrain_iso_with_proj(loaded, with_sprites=True)
-    layer = render.sprite_draws_by_anchor(loaded, proj, elevations)
+    _img, elevations, proj = render_iso.render_terrain_iso_with_proj(loaded, with_sprites=True)
+    layer = render_sprites.sprite_draws_by_anchor(loaded, proj, elevations)
     hashes = {}
     for anchor, draws in layer.by_anchor.items():
         digest = hashlib.sha1(usedforsecurity=False)
@@ -242,7 +242,7 @@ def test_cycling_barrels_changes_its_sprite_and_leaves_its_twin_alone():
     """GH #52's Barrels Next/Previous step: each Next draws a new frame,
     Previous draws the prior one again, and an identical Barrels on the next
     tile stays byte-identical throughout."""
-    from descape import asset_source, render
+    from descape import asset_source, render_units
     from descape.scenario_io import load_map_and_units
     from descape.unit_model import UnitEditModel
 
@@ -252,8 +252,8 @@ def test_cycling_barrels_changes_its_sprite_and_leaves_its_twin_alone():
     loaded = load_map_and_units(_UNITS_FIXTURE)
     model = UnitEditModel(loaded)
     # GAIA doodads on empty tiles, both starting at literal variant 0.
-    barrels = model.add(0, BARRELS, *render.span_anchor(8, 8, 1, 1), rotation=0.0)
-    twin = model.add(0, BARRELS, *render.span_anchor(9, 8, 1, 1), rotation=0.0)
+    barrels = model.add(0, BARRELS, *render_units.span_anchor(8, 8, 1, 1), rotation=0.0)
+    twin = model.add(0, BARRELS, *render_units.span_anchor(9, 8, 1, 1), rotation=0.0)
 
     barrels_anchor, twin_anchor = (int(barrels.x), int(barrels.y)), (int(twin.x), int(twin.y))
     seen = [_sprite_hashes(loaded)]

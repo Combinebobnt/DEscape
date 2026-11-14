@@ -35,6 +35,7 @@ from test_terrain_blend_render import (  # noqa: F401
 )
 
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -262,7 +263,7 @@ def _layers(window) -> dict[tuple[int, int], int]:
 
 
 def test_same_terrain_fill_clears_the_regions_layers_in_one_undo_step(monkeypatch) -> None:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("a small layer clear must not ask")
@@ -273,7 +274,7 @@ def test_same_terrain_fill_clears_the_regions_layers_in_one_undo_step(monkeypatc
         window.on_fill(0, 0, 0)  # the whole map is _FILL_TERRAIN now
         layered = {(3, 5): 9, (4, 5): 9, (40, 41): 11}
         _layer_tiles(window, layered)
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
         # Trees on: a layer clear changes no terrain_id, so the unit plan must not even run.
         window.paint_trees_check.setChecked(True)
         monkeypatch.setattr(window, "_apply_terrain_unit_plan", fail_if_called)
@@ -305,9 +306,7 @@ def test_same_terrain_fill_clears_the_regions_layers_in_one_undo_step(monkeypatc
 def test_large_same_terrain_fill_asks_and_cancel_leaves_everything(monkeypatch) -> None:
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
     window = _edit_window("fill")
     try:
         mm = window.scenario.map_manager
@@ -320,7 +319,7 @@ def test_large_same_terrain_fill_asks_and_cancel_leaves_everything(monkeypatch) 
             calls.append(args)
             return QMessageBox.Cancel
 
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(cancel))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(cancel))
         window.on_fill(60, 60, 0)
 
         assert len(calls) == 1
@@ -329,7 +328,7 @@ def test_large_same_terrain_fill_asks_and_cancel_leaves_everything(monkeypatch) 
         assert len(window.edit_history.records) == 1
         assert not window._busy
 
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
         window.on_fill(60, 60, 0)
         assert _layers(window) == {}
         assert len(window.edit_history.records) == 2
@@ -340,17 +339,17 @@ def test_large_same_terrain_fill_asks_and_cancel_leaves_everything(monkeypatch) 
 
 
 def test_same_terrain_fill_at_the_threshold_does_not_ask(monkeypatch) -> None:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("a clear of exactly the threshold must not ask")
 
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
     window = _edit_window("fill")
     try:
         window.on_fill(0, 0, 0)
         _layer_tiles(window, {(x, 7): 9 for x in range(20, 30)})  # exactly 10
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
         window.on_fill(60, 60, 0)
         assert _layers(window) == {}
         assert len(window.edit_history.records) == 2
@@ -473,9 +472,7 @@ def test_stepped_full_rerender_fallback_actually_fires(monkeypatch) -> None:
     bug that nothing else here would catch."""
     from PyQt5.QtWidgets import QApplication
 
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
+    set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
 
     window = _edit_window("fill")
     try:
@@ -509,7 +506,7 @@ def _blended_flat_window(levels):
     from PyQt5.QtGui import QTransform
     from PyQt5.QtWidgets import QApplication
 
-    from descape import render
+    from descape import render_paint
 
     window = conftest.shown_terrain_window()
     window.paint_trees_check.setChecked(False)
@@ -529,7 +526,7 @@ def _blended_flat_window(levels):
     view.center_on_tile((x0 + x1) // 2, (y0 + y1) // 2)
     QApplication.processEvents()
     cache = window._cache
-    assert render.blend_effective(cache.layers), "blending is off, so the outline would prove nothing"
+    assert render_paint.blend_effective(cache.layers), "blending is off, so the outline would prove nothing"
     assert view.viewport_chunk_target()[0] == 0, "mip 0 is not the visible level"
     cache.max_bytes *= 4  # room for every level at once, and for whatever a warm tick adds
     for mip in levels:
@@ -586,8 +583,6 @@ def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_in
     past the ratio must not fill the log (TASK-338)."""
     from PyQt5.QtWidgets import QApplication
 
-    import descape.viewer as viewer_module
-
     def no_dilation(*args, **kwargs):
         raise AssertionError("the count pre-check dilated the dirty set")
 
@@ -596,11 +591,11 @@ def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_in
         cache = window._cache
         if rule == "count":
             # Only the dirty count may evict here, before any rect is built.
-            monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
-            monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", float("inf"))
-            monkeypatch.setattr(viewer_module, "flat_dirty_rects", no_dilation)
+            set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", 100)
+            set_viewer_global(monkeypatch, "_FLAT_EVICT_RATIO", float("inf"))
+            set_viewer_global(monkeypatch, "flat_dirty_rects", no_dilation)
         else:
-            monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", 0.01)
+            set_viewer_global(monkeypatch, "_FLAT_EVICT_RATIO", 0.01)
         handed = _count_patch_rects(cache, monkeypatch)
         original = _levels(cache, levels)
         line = f"Flat view: {_INSIDE_TILES} tiles dirty, {_EVICTED}"
@@ -730,8 +725,6 @@ def test_the_flat_evict_rule_weighs_covered_tiles_against_the_tiles_an_eviction_
     edge chunk at its real size, strictly greater, whatever the resident
     levels. A bbox off screen evicts at any finite ratio; never with no
     viewport target."""
-    import descape.viewer as viewer_module
-
     window = _edit_window("draw")
     try:
         window.iso_action.setChecked(False)
@@ -768,10 +761,10 @@ def test_the_flat_evict_rule_weighs_covered_tiles_against_the_tiles_an_eviction_
         # A bbox wholly off screen: an eviction recomposites nothing now.
         off = [(100 * t, 100 * t, 101 * t, 101 * t)]
         assert exceeds(off, (0, 0, 0, 1, 1)), "an off-screen bbox patched at ratio 1"
-        monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", float("inf"))
+        set_viewer_global(monkeypatch, "_FLAT_EVICT_RATIO", float("inf"))
         assert not exceeds(off, (0, 0, 0, 1, 1)), "an off-screen bbox evicted at ratio inf"
         assert not exceeds([(0, 0, 120 * t, 120 * t)], (0, 0, 0, 1, 1))
-        monkeypatch.setattr(viewer_module, "_FLAT_EVICT_RATIO", 0.0)
+        set_viewer_global(monkeypatch, "_FLAT_EVICT_RATIO", 0.0)
         assert exceeds([(0, 0, t, t)], (0, 0, 0, 1, 1))
         assert not exceeds([(0, 0, 120 * t, 120 * t)], None), "no viewport target, yet it priced an eviction"
         assert not exceeds([], (0, 0, 0, 1, 1))

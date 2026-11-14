@@ -26,9 +26,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render, unit_kind, unit_pick
+from descape import iso_geometry, render_iso, render_paint, render_sloped, render_sprites, render_units, unit_kind, unit_pick
 from descape.scenario_io import load_map_and_units
-from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS
+from descape.terrain_palette import BUILDING_TILE_OFFSETS, BUILDING_TILE_SPANS, TREE_UNIT_IDS, tile_span
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
 from descape.unit_pick import (
     build_index,
@@ -122,7 +122,7 @@ def _scenario(elevated: bool = False, ramped: bool = False) -> FakeScenario:
 
 
 def _tile_px() -> int:
-    return render.tile_pixels_for_map(MAP_W, MAP_H)
+    return render_paint.tile_pixels_for_map(MAP_W, MAP_H)
 
 
 # --- index ------------------------------------------------------------
@@ -138,7 +138,7 @@ def test_index_expands_footprints_not_just_own_tiles() -> None:
     # an odd span on an integer coordinate, and this fixture is neither, so a
     # hardcoded offset would silently assert about a tile well inside the
     # footprint and prove less than it looks like it does.
-    x0, x1, y0, y1 = render.unit_tile_bounds(building.unit, MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(building.unit, MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (4, 4)
     for corner in ((x0, y0), (x1 - 1, y0), (x0, y1 - 1), (x1 - 1, y1 - 1)):
         assert building.order in index.by_tile[corner], corner
@@ -185,14 +185,14 @@ def _paint_offset(unit) -> tuple[float, float]:
     """How far off its own tile a unit's mark paints, in continuous tile
     units -- off-grid placement's Stage 1.
 
-    Re-derived here rather than calling render.unit_paint_offset(), matching
+    Re-derived here rather than calling render_units.unit_paint_offset(), matching
     how _unit_rise() re-derives the rise below and for the same reason: an
     oracle that reused the code under test could not catch the renderer and
     the picker agreeing on a wrong shift. Zero on a span > 1 axis (buildings
     stay half-tile-quantized slabs) and `coord - int(coord) - 0.5` otherwise,
     which is 0.0 for the 88.0% of corpus units sitting at an exact `.5`.
     """
-    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
     dx = unit.x - int(unit.x) - 0.5 if span_x <= 1 else 0.0
     dy = unit.y - int(unit.y) - 0.5 if span_y <= 1 else 0.0
     return dx, dy
@@ -209,7 +209,7 @@ def _flat_id_plane(scn, index, tile_px: int) -> np.ndarray:
     """
     plane = np.zeros((MAP_H * tile_px, MAP_W * tile_px), dtype=np.int32)
     for entry in index.entries:
-        bounds = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+        bounds = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
         tx0, tx1, ty0, ty1 = bounds
         dx, dy = _paint_offset(entry.unit)
         ox, oy = round(dx * tile_px), round(dy * tile_px)
@@ -232,7 +232,7 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
     that whole slab at its own tile's moment in the walk.
 
     Since off-grid placement's Stage 1 the diamond is positioned by its CENTRE
-    whenever _paint_offset() is nonzero, matching render._draw_unit_iso.
+    whenever _paint_offset() is nonzero, matching render_units._draw_unit_iso.
 
     Skirts are deliberately not painted. pick_unit() treats a
     screen_to_tile()-None pixel (which is what a skirt pixel is) as
@@ -248,7 +248,7 @@ def _stepped_id_plane(scn, index, tile_px: int, elevations, proj, map_w=None, ma
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        for fx, fy in render.unit_occupied_tiles(entry.unit, map_w, map_h):
+        for fx, fy in render_units.unit_occupied_tiles(entry.unit, map_w, map_h):
             by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, value):
@@ -279,7 +279,7 @@ def _sloped_geometry(scn, elev_step_pct: int = 50):
     """(elevations, corner_rise, proj) for a synthetic scenario, at a chosen
     elev_step_pct stop.
 
-    Built here rather than through render.sloped_elevations_and_proj()
+    Built here rather than through render_sloped.sloped_elevations_and_proj()
     purely so the stop is a parameter: that function reads
     settings.get_elev_step_pct(), and the candidate-loop bound below has to
     be exercised at several stops (the persisted value on a real machine is
@@ -287,7 +287,7 @@ def _sloped_geometry(scn, elev_step_pct: int = 50):
     the loop -- four times longer). Everything else matches that function
     exactly, corner_headroom_steps=1 included."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
     for tile in mm.terrain:
         elevations[tile.y, tile.x] = tile.elevation
@@ -300,12 +300,12 @@ def _sloped_geometry(scn, elev_step_pct: int = 50):
         elev_step_pct=elev_step_pct,
         corner_headroom_steps=1,
     )
-    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
+    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render_sloped.SLOPE_CORNER_RULE)
     return elevations, corner_rise, proj
 
 
 def _unit_rise(entry, corner_rise) -> int:
-    """The rise render._paint_tile_and_units_sloped places this unit at,
+    """The rise render_sloped._paint_tile_and_units_sloped places this unit at,
     derived the way the RENDERER derives it (iso_geometry.unit_rise_px on
     the unit's own tile and sub-tile fractions) rather than by calling
     unit_pick's own helper -- an oracle that reused the picker's code could
@@ -345,7 +345,7 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
 
     by_footprint_tile: dict[tuple[int, int], list] = {}
     for entry in index.entries:
-        for fx, fy in render.unit_occupied_tiles(entry.unit, map_w, map_h):
+        for fx, fy in render_units.unit_occupied_tiles(entry.unit, map_w, map_h):
             by_footprint_tile.setdefault((fx, fy), []).append(entry)
 
     def paint(base_x, base_y, dy, dx, value):
@@ -365,7 +365,7 @@ def _sloped_id_plane(index, tile_px, corner_rise, proj, map_w=None, map_h=None) 
         s_dst_y, s_dst_x, _ssy, _ssx, _uv = iso_geometry.sloped_quad_indices(tile_px, *corners)
         paint(bx, by - min(corners), s_dst_y, s_dst_x, 0)
         for entry in by_footprint_tile.get((x, y), ()):
-            span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(entry.unit.unit_const, render_units.NON_BUILDING_SPAN)
             dx, dy = _paint_offset(entry.unit)
             if span_x <= 1 and span_y <= 1 and (dx, dy) == (0.0, 0.0):
                 paint(bx, by - min(corners), s_dst_y, s_dst_x, entry.order + 1)
@@ -386,7 +386,7 @@ def _sloped_terrain_tiles(scn, corner_rise, proj, tile_px) -> np.ndarray:
     """The whole canvas as one tile-id plane -- what
     render_cache.SlopedChunkCache.pick_tile() resolves a click through, built here
     without a cache so this file stays Qt-free and chunk-free."""
-    return render.composite_ids_rect_sloped(
+    return render_sloped.composite_ids_rect_sloped(
         scn, 0, 0, proj.canvas_w, proj.canvas_h, corner_rise, proj, tile_px
     )
 
@@ -411,7 +411,7 @@ def test_stepped_pick_agrees_with_the_id_plane(elevated: bool) -> None:
     scn = _scenario(elevated=elevated)
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     plane = _stepped_id_plane(scn, index, tile_px, elevations, proj)
 
     rng = np.random.default_rng(RNG_SEED)
@@ -454,7 +454,7 @@ def test_stepped_pick_takes_an_already_resolved_terrain_tile() -> None:
     scn = _scenario(elevated=True)
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
 
     rng = np.random.default_rng(RNG_SEED)
     ys = rng.integers(0, proj.canvas_h, SAMPLE_PIXELS)
@@ -500,7 +500,7 @@ def test_sloped_pick_takes_an_already_resolved_terrain_tile() -> None:
     assert pixels.size, "the building is not visible anywhere, so there is nothing to pick"
     sy, sx = (int(v) for v in pixels[len(pixels) // 2])
     tile_id = int(terrain[sy, sx])
-    tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+    tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
 
     def _pick(**kwargs):
         return pick_unit(
@@ -533,8 +533,8 @@ def test_stepped_pick_agrees_with_the_id_plane_on_a_real_file(scenario_path) -> 
     scenario = load_map_and_units(scenario_path)
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
-    tile_px = render.tile_pixels_for_map(w, h)
-    elevations, proj = render.elevations_and_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
 
     plane_bytes = proj.canvas_w * proj.canvas_h * 4
     if plane_bytes > 512 * 1024**2:
@@ -595,7 +595,7 @@ def test_sloped_pick_agrees_with_the_id_plane(kwargs) -> None:
     hits = 0
     for sx, sy in zip(xs.tolist(), ys.tolist(), strict=True):
         tile_id = int(terrain[sy, sx])
-        tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+        tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
         got = pick_unit(
             index,
             "sloped",
@@ -622,7 +622,7 @@ def test_sloped_pick_agrees_with_the_id_plane(kwargs) -> None:
 def test_sloped_pick_covers_every_pixel_of_a_1x1_units_own_tile_and_no_other() -> None:
     """Track C6's pick-vs-paint agreement check for the conforming 1x1
     marker: since a 1x1 unit's pixel set IS its own tile's warped pixel set
-    (render._draw_unit_sloped's `corners` mode), pick_unit must return it at
+    (render_sloped._draw_unit_sloped's `corners` mode), pick_unit must return it at
     every one of those pixels, and at none outside them -- the unit-side
     analogue of test_sloped_geometry.py's tile-vs-tile agreement checks.
 
@@ -661,7 +661,7 @@ def test_sloped_pick_covers_every_pixel_of_a_1x1_units_own_tile_and_no_other() -
     for sy in range(y0, y1):
         for sx in range(x0, x1):
             tile_id = int(terrain[sy, sx])
-            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+            tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
             got = pick_unit(
                 index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
                 corner_rise=corner_rise, terrain_tile=tile,
@@ -690,7 +690,7 @@ _FARM_CONST = 50
 
 def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() -> None:
     """The multi-tile twin of the 1x1 check above: a draped farm's pixel
-    set is its own 9 footprint tiles' warped pixel set (render.py's farm
+    set is its own 9 footprint tiles' warped pixel set (render_sloped.py's farm
     case in _paint_tile_and_units_sloped), so pick_unit must agree at every
     one of those pixels, and at none outside them.
 
@@ -712,7 +712,7 @@ def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() 
     terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
 
     entry = index.entries[0]
-    own_tiles = render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+    own_tiles = render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
     assert len(own_tiles) == 9, "fixture must be a real 3x3 farm or this proves nothing"
     own_ids = {ty * MAP_W + tx for tx, ty in own_tiles}
     half_w, half_h = proj.half_w, proj.half_h
@@ -733,7 +733,7 @@ def test_sloped_pick_covers_every_pixel_of_a_farms_own_footprint_and_no_other() 
     for sy in range(y0, y1):
         for sx in range(x0, x1):
             tile_id = int(terrain[sy, sx])
-            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+            tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
             got = pick_unit(
                 index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
                 corner_rise=corner_rise, terrain_tile=tile, farms_draped=True,
@@ -781,7 +781,7 @@ def test_sloped_pick_returns_a_1x1_unit_standing_on_a_draped_farm_in_either_inde
     farm_entry = next(e for e in index.entries if e.unit is farm)
     assert (farm_entry.order > unit_entry.order) is not farm_first, "index order is not the one parametrized"
     own = (unit_entry.own_x, unit_entry.own_y)
-    assert own in render.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
+    assert own in render_units.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
 
     pixels = np.argwhere(terrain == own[1] * MAP_W + own[0])
     assert pixels.size, "the unit's tile painted no pixels"
@@ -801,7 +801,7 @@ def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() ->
     and unit_polygons must agree with the plain-diamond mark
     _paint_tile_and_units_sloped still paints in that case -- not silently
     keep testing "is this pixel on the farm's terrain tile", which is a
-    DIFFERENT shape and would disagree with what render.py paints whenever
+    DIFFERENT shape and would disagree with what the render modules paint whenever
     sprites are off. Regression for exactly the gap this parameter closes.
     """
     tiles = [
@@ -828,7 +828,7 @@ def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() ->
 
     terrain = _sloped_terrain_tiles(scn, corner_rise, proj, tile_px)
     tile_id = int(terrain[sy, sx])
-    tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+    tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
     got = pick_unit(
         index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
         corner_rise=corner_rise, terrain_tile=tile, farms_draped=False,
@@ -841,7 +841,7 @@ def test_sloped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() ->
         entry, "sloped", tile_px, MAP_W, MAP_H, None, proj, corner_rise=corner_rise, farms_draped=False,
     )
     assert len(polygons) == 9, "a non-draped farm's highlight must still be one diamond per footprint tile"
-    for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H):
+    for tx, ty in render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_H):
         ox, oy = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
         expected = [
             (ox + proj.half_w, oy - rise),
@@ -873,9 +873,9 @@ def test_stepped_pick_covers_every_pixel_of_a_draped_farms_own_footprint_and_no_
     scn = _ramped_farm_scenario()
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = index.entries[0]
-    own_tiles = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H))
+    own_tiles = set(render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_H))
     assert len(own_tiles) == 9, "fixture must be a real 3x3 farm or this proves nothing"
     assert len({int(elevations[ty, tx]) for tx, ty in own_tiles}) == 3, "the farm must straddle three levels"
 
@@ -921,13 +921,13 @@ def test_stepped_pick_returns_a_1x1_unit_standing_on_a_draped_farm_in_either_ind
     scn.unit_manager.units[1] = [farm, unit] if farm_first else [unit, farm]
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
 
     unit_entry = next(e for e in index.entries if e.unit is unit)
     farm_entry = next(e for e in index.entries if e.unit is farm)
     assert (farm_entry.order > unit_entry.order) is not farm_first, "index order is not the one parametrized"
     own = (unit_entry.own_x, unit_entry.own_y)
-    assert own in render.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
+    assert own in render_units.unit_occupied_tiles(farm, MAP_W, MAP_H), "the unit must stand on the farm"
 
     ox, oy = iso_geometry.tile_screen_origin(own[0], own[1], int(elevations[own[1], own[0]]), proj)
     cx, cy = ox + proj.half_w, oy + proj.half_h
@@ -943,7 +943,7 @@ def _iso_terrain_tile(style: str, scn, sx: int, sy: int, elevations, corner_rise
     if style == "stepped":
         return iso_geometry.screen_to_tile(sx, sy, elevations, proj)
     tile_id = int(_sloped_terrain_tiles(scn, corner_rise, proj, tile_px)[sy, sx])
-    return None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+    return None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
 
 
 def _iso_pick(style: str, index, sx: int, sy: int, tile_px: int, elevations, corner_rise, proj, tile):
@@ -967,7 +967,7 @@ def test_a_units_mark_overhanging_a_nearer_draped_farm_tile_picks_like_flat(styl
     scn = FakeScenario(MAP_W, MAP_H, tiles, units)
     index = build_index(scn)
     tile_px = _tile_px()
-    assert render.unit_paint_offset(villager) != (0.0, 0.0), "the villager's mark must be off-centre to overhang"
+    assert render_units.unit_paint_offset(villager) != (0.0, 0.0), "the villager's mark must be off-centre to overhang"
 
     flat = pick_unit(
         index, "flat", int(10.5 * tile_px), int(11.2 * tile_px), tile_px, MAP_W, MAP_H,
@@ -976,13 +976,13 @@ def test_a_units_mark_overhanging_a_nearer_draped_farm_tile_picks_like_flat(styl
     assert flat is not None and flat.unit is villager, "Flat is the reference: the villager's rect covers (10.5, 11.2)"
 
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         corner_rise = None
     else:
         elevations, corner_rise, proj = _sloped_geometry(scn)
     sx, sy = (int(v) for v in iso_geometry.map_point_to_screen(10.5, 11.2, 0, proj))
     tile = _iso_terrain_tile(style, scn, sx, sy, elevations, corner_rise, proj, tile_px)
-    assert tile == (10, 11) and tile in render.unit_occupied_tiles(farm, MAP_W, MAP_H), (
+    assert tile == (10, 11) and tile in render_units.unit_occupied_tiles(farm, MAP_W, MAP_H), (
         f"the pixel must sit on the farm tile nearer the camera than the villager's own, got {tile}"
     )
     got = _iso_pick(style, index, sx, sy, tile_px, elevations, corner_rise, proj, tile)
@@ -1002,7 +1002,7 @@ def test_a_draped_farm_still_picks_where_it_occludes_a_lower_units_overhang(styl
     index = build_index(scn)
     tile_px = _tile_px()
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         corner_rise = None
     else:
         elevations, corner_rise, proj = _sloped_geometry(scn)
@@ -1013,7 +1013,7 @@ def test_a_draped_farm_still_picks_where_it_occludes_a_lower_units_overhang(styl
         if style == "stepped"
         else unit_rise_px_for(entry, corner_rise)
     )
-    own_tiles = set(render.unit_occupied_tiles(farm, MAP_W, MAP_H))
+    own_tiles = set(render_units.unit_occupied_tiles(farm, MAP_W, MAP_H))
     farm_hits = villager_hits = 0
     # Every sample lies inside the villager's own diamond, centred on (9.9, 10.5).
     for fx in np.linspace(9.45, 10.35, 10):
@@ -1041,7 +1041,7 @@ def test_stepped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -
     scn = _ramped_farm_scenario()
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = index.entries[0]
     own_e = int(elevations[entry.own_y, entry.own_x])
 
@@ -1052,7 +1052,7 @@ def test_stepped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -
     polygons = unit_polygons(entry, "stepped", tile_px, MAP_W, MAP_H, elevations, proj, farms_draped=False)
     expected = [
         unit_pick.diamond_points(*iso_geometry.tile_screen_origin(tx, ty, own_e, proj), proj.half_w, proj.half_h)
-        for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+        for tx, ty in render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
     ]
     assert len(polygons) == 9 and polygons == expected
 
@@ -1060,14 +1060,14 @@ def test_stepped_pick_and_highlight_keep_a_farm_as_a_diamond_when_not_draped() -
 def test_stepped_highlight_of_a_draped_farm_traces_each_tile_at_its_own_elevation() -> None:
     scn = _ramped_farm_scenario()
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = index.entries[0]
     polygons = unit_polygons(entry, "stepped", _tile_px(), MAP_W, MAP_H, elevations, proj, farms_draped=True)
     expected = [
         unit_pick.diamond_points(
             *iso_geometry.tile_screen_origin(tx, ty, int(elevations[ty, tx]), proj), proj.half_w, proj.half_h
         )
-        for tx, ty in render.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
+        for tx, ty in render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_H)
     ]
     assert len(polygons) == 9 and polygons == expected
     own_e = int(elevations[entry.own_y, entry.own_x])
@@ -1098,7 +1098,7 @@ def test_sloped_pick_finds_every_unit_at_every_elev_step_stop(pct: int) -> None:
             continue  # fully occluded by later terrain; nothing to pick
         sy, sx = (int(v) for v in pixels[len(pixels) // 2])
         tile_id = int(terrain[sy, sx])
-        tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+        tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
         got = pick_unit(
             index, "sloped", sx, sy, tile_px, MAP_W, MAP_H, None, proj,
             corner_rise=corner_rise, terrain_tile=tile,
@@ -1112,7 +1112,7 @@ def test_sloped_pick_finds_every_unit_at_every_elev_step_stop(pct: int) -> None:
 def test_stepped_pick_never_returns_a_filtered_unit() -> None:
     scn = _scenario()
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     index = build_index(scn, UnitFilter(show_trees=False))
 
     rng = np.random.default_rng(RNG_SEED)
@@ -1131,7 +1131,7 @@ def test_sloped_pick_returns_none_without_its_own_height_field() -> None:
     scn = _scenario()
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     assert pick_unit(index, "sloped", 10, 10, tile_px, MAP_W, MAP_H, elevations, proj) is None
 
 
@@ -1152,7 +1152,7 @@ def test_flat_polygon_matches_the_drawn_rect() -> None:
     entry = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST)
     polygons = unit_polygons(entry, "flat", tile_px, MAP_W, MAP_H)
     assert len(polygons) == 1
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
     assert polygons[0] == [
         (tx0 * tile_px, ty0 * tile_px),
         (tx1 * tile_px, ty0 * tile_px),
@@ -1171,10 +1171,10 @@ def test_stepped_polygons_sit_at_the_units_own_elevation_not_each_tiles() -> Non
     scn = _scenario(elevated=True)
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST)
 
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
     footprint_elevs = {int(elevations[fy, fx]) for fy in range(ty0, ty1) for fx in range(tx0, tx1)}
     assert len(footprint_elevs) > 1, "fixture must span two terrain heights or this proves nothing"
 
@@ -1205,7 +1205,7 @@ def test_sloped_polygons_return_none_without_corner_rise() -> None:
 def test_sloped_polygons_sit_at_the_units_own_rise_not_each_tiles() -> None:
     """Asymmetry 2 in Sloped's own terms: every diamond of a multi-tile
     building must sit at the unit's own interpolated PIXEL rise, matching
-    render._draw_unit_sloped's flat pad -- not at each footprint tile's own
+    render_sloped._draw_unit_sloped's flat pad -- not at each footprint tile's own
     surface, which would look right on flat ground and drift apart on the
     ramp this fixture puts the building on.
     """
@@ -1215,7 +1215,7 @@ def test_sloped_polygons_sit_at_the_units_own_rise_not_each_tiles() -> None:
     _elevations, corner_rise, proj = _sloped_geometry(scn)
     entry = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST)
 
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
     spread = corner_rise[ty0 : ty1 + 1, tx0 : tx1 + 1]
     assert int(spread.max() - spread.min()) > 0, "fixture went flat -- per-tile heights would agree"
 
@@ -1258,7 +1258,7 @@ def test_units_in_rect_dedupes_a_multi_tile_footprint() -> None:
     scn = _scenario()
     index = build_index(scn)
     building = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST and e.player_id == 1)
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(building.unit, MAP_W, MAP_H)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(building.unit, MAP_W, MAP_H)
     assert (tx1 - tx0, ty1 - ty0) == (4, 4)
     # A rect covering the whole 4x4 footprint must return the building
     # exactly once, not once per covered tile.
@@ -1290,7 +1290,7 @@ def _footprint_anchor(entry, rise_px: int, proj) -> tuple[int, int]:
     """Where the unit's drawn footprint centre lands on screen, re-derived
     here rather than through unit_pick: bbox midpoint on a span > 1 axis,
     the stored coordinate on a span-1 axis."""
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
     cx = (tx0 + tx1) / 2 if tx1 - tx0 > 1 else entry.unit.x
     cy = (ty0 + ty1) / 2 if ty1 - ty0 > 1 else entry.unit.y
     return iso_geometry.map_point_to_screen(cx, cy, rise_px, proj)
@@ -1329,7 +1329,7 @@ def test_marquee_strip_below_a_base_selects_only_what_stands_in_it() -> None:
     base and grabbed the building; the anchor rule returns only the stack."""
     scn = _scenario(elevated=True)
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     stack = [e for e in index.entries if e.player_id == 2]
     building = next(e for e in index.entries if e.unit.unit_const == _BUILDING_CONST and e.player_id == 1)
     ax, ay = _stepped_anchor(stack[0], elevations, proj)
@@ -1363,9 +1363,9 @@ def test_sloped_marquee_selects_an_elevated_unit_where_it_is_drawn() -> None:
 def test_marquee_selects_a_building_by_its_footprint_centre_not_a_corner() -> None:
     scn = _stack_scenario((10.5, 10.5, _BUILDING_CONST))
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     (building,) = index.entries
-    tx0, _tx1, ty0, _ty1 = render.unit_tile_bounds(building.unit, MAP_W, MAP_H)
+    tx0, _tx1, ty0, _ty1 = render_units.unit_tile_bounds(building.unit, MAP_W, MAP_H)
     corner = iso_geometry.map_point_to_screen(tx0 + 0.5, ty0 + 0.5, 0, proj)
     kwargs = {"elevations": elevations, "proj": proj}
     assert units_in_screen_rect(index, "stepped", *_around(corner), **kwargs) == []
@@ -1376,7 +1376,7 @@ def test_marquee_selects_a_building_by_its_footprint_centre_not_a_corner() -> No
 def test_marquee_selects_an_off_centre_unit_by_its_real_position() -> None:
     scn = _stack_scenario((6.9, 6.5, _PLAIN_CONST))
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     (entry,) = index.entries
     kwargs = {"elevations": elevations, "proj": proj}
     tile_centre = iso_geometry.map_point_to_screen(6.5, 6.5, 0, proj)
@@ -1388,7 +1388,7 @@ def test_marquee_selects_an_off_centre_unit_by_its_real_position() -> None:
 def test_marquee_over_a_stack_returns_every_member() -> None:
     scn = _scenario()
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     stack = [e for e in index.entries if e.player_id == 2]
     assert len(stack) == 2
     rect = _around(_stepped_anchor(stack[0], elevations, proj))
@@ -1398,14 +1398,14 @@ def test_marquee_over_a_stack_returns_every_member() -> None:
 def test_marquee_whole_canvas_returns_every_entry_in_order() -> None:
     scn = _scenario(elevated=True)
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     rect = (0, 0, proj.canvas_w, proj.canvas_h)
     assert units_in_screen_rect(index, "stepped", *rect, elevations=elevations, proj=proj) == index.entries
 
 
 def test_screen_rect_marquee_never_returns_a_filtered_unit() -> None:
     scn = _scenario()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     shown = build_index(scn)
     tree = next(e for e in shown.entries if e.unit.unit_const == _TREE_CONST)
     rect = _around(_stepped_anchor(tree, elevations, proj))
@@ -1441,7 +1441,7 @@ def test_screen_rect_prefilters_agree_with_a_plain_anchor_scan(style: str) -> No
     anchor-tests every entry."""
     scn = _dense_scenario(_scenario(elevated=style == "stepped", ramped=style == "sloped"))
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         kwargs = {"elevations": elevations, "proj": proj}
     else:
         _elevations, corner_rise, proj = _sloped_geometry(scn)
@@ -1486,10 +1486,10 @@ def test_screen_rect_marquee_skips_an_entry_moved_off_map() -> None:
     whole-canvas scan must skip it rather than index past the height field."""
     scn = _stack_scenario((10.5, 10.5, _BUILDING_CONST), (6.5, 6.5, _PLAIN_CONST))
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     building, plain = index.entries
     for entry in (building, plain):
-        old_bounds = render.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
+        old_bounds = render_units.unit_tile_bounds(entry.unit, MAP_W, MAP_H)
         entry.unit.x = entry.unit.y = MAP_W + 5.5
         unit_pick.patch_index_for_move(scn, index, entry.player_id, entry.unit, old_bounds)
     rect = (0, 0, proj.canvas_w, proj.canvas_h)
@@ -1506,7 +1506,7 @@ def test_screen_rect_marquee_rejects_other_styles(style: str) -> None:
 def test_screen_rect_marquee_is_empty_without_its_height_field() -> None:
     scn = _scenario()
     index = build_index(scn)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     _elev, corner_rise, sloped_proj = _sloped_geometry(scn)
     rect = (0, 0, proj.canvas_w, proj.canvas_h)
     assert units_in_screen_rect(index, "stepped", *rect, proj=proj) == []
@@ -1567,9 +1567,9 @@ def _tile_center(tx: int, ty: int, proj) -> tuple[int, int]:
 def test_a_diagonal_gate_occupies_exactly_6_bbox_tiles() -> None:
     scn = _gate_scenario()
     gate = scn.unit_manager.units[1][0]
-    bounds = render.unit_tile_bounds(gate, MAP_W, MAP_W)
+    bounds = render_units.unit_tile_bounds(gate, MAP_W, MAP_W)
     assert bounds == (_GATE_BBOX0, _GATE_BBOX0 + 4, _GATE_BBOX0, _GATE_BBOX0 + 4)
-    tiles = render.unit_occupied_tiles(gate, MAP_W, MAP_W)
+    tiles = render_units.unit_occupied_tiles(gate, MAP_W, MAP_W)
     assert len(tiles) == 6
     assert _GATE_OCCUPIED_TILE in tiles
     assert _GATE_GAP_TILE not in tiles
@@ -1602,7 +1602,7 @@ def test_stepped_pick_hits_an_occupied_tile_and_misses_a_gap_tile(unit_const, ga
     scn = _gate_scenario(unit_const)
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
 
     ox, oy = _tile_center(*_GATE_OCCUPIED_TILE, proj)
     hit = pick_unit(index, "stepped", ox, oy, tile_px, MAP_W, MAP_W, elevations, proj)
@@ -1637,13 +1637,13 @@ def test_stepped_unit_polygons_only_covers_the_occupied_set() -> None:
     scn = _gate_scenario()
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     entry = index.entries[0]
 
     polygons = unit_polygons(entry, "stepped", tile_px, MAP_W, MAP_W, elevations=elevations, proj=proj)
     assert len(polygons) == 6
 
-    occupied = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
+    occupied = set(render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
     expected_centers = {_tile_center(tx, ty, proj) for tx, ty in occupied}
     got_centers = set()
     for poly in polygons:
@@ -1666,7 +1666,7 @@ def test_sloped_unit_polygons_only_covers_the_occupied_set(unit_const) -> None:
     polygons = unit_polygons(entry, "sloped", tile_px, MAP_W, MAP_W, None, proj, corner_rise=corner_rise)
     assert len(polygons) == 6
 
-    occupied = set(render.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
+    occupied = set(render_units.unit_occupied_tiles(entry.unit, MAP_W, MAP_W))
     # Flat ground, so the unit's rise is 0 and each diamond centres on its tile.
     expected_centers = {_tile_center(tx, ty, proj) for tx, ty in occupied}
     got_centers = set()
@@ -1743,7 +1743,7 @@ def test_picking_a_1x3_blockers_side_tile_selects_it(style) -> None:
     scn = _stack_scenario((3.5, 9.5, _BLOCKER_1X3))
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     for ty in (8, 10):
         if style == "flat":
             sx, sy = 3 * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
@@ -1812,7 +1812,7 @@ def test_the_stack_test_consts_are_what_they_say() -> None:
     assert _ROCK_CONST in unit_kind.obstacle_consts()
     assert _PLAIN_CONST not in unit_kind.eye_candy_consts()
     for const in (_GRASS_CONST, _ROCK_CONST):
-        assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+        assert tile_span(const, render_units.NON_BUILDING_SPAN) == (1, 1)
 
 
 def test_grass_under_a_building_is_not_a_stack() -> None:
@@ -1854,7 +1854,7 @@ def test_pick_unit_cover_returns_pick_units_winner_and_its_covering_tile(style) 
     scn = _stack_scenario((9.5, 9.5, _PLAIN_CONST), (10.5, 10.5, _BUILDING_CONST))
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     if style == "flat":
         sx, sy = 9 * tile_px + tile_px // 2, 9 * tile_px + tile_px // 2
     else:
@@ -1892,7 +1892,7 @@ def test_an_appended_unit_does_not_outrank_a_later_players_unit(style) -> None:
         sx, sy = 6 * tile_px + tile_px // 2, 6 * tile_px + tile_px // 2
         entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H)
     elif style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         sx, sy = _tile_center(6, 6, proj)
         entry = pick_unit(index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj)
     else:
@@ -1997,7 +1997,7 @@ def _one_unit_entry(unit_const: int, x: float, y: float, map_w: int = MAP_W, map
 
 def _stepped_polygons(unit_const: int, x: float, y: float):
     scn, entry = _one_unit_entry(unit_const, x, y)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return unit_polygons(entry, "stepped", _tile_px(), MAP_W, MAP_H, elevations=elevations, proj=proj)
 
 
@@ -2037,7 +2037,7 @@ _BLOCKER_3X1 = 2424
 
 
 def test_merge_turns_a_3x1_blocker_into_one_ring() -> None:
-    assert render.tile_span(_BLOCKER_3X1, render.NON_BUILDING_SPAN) == (3, 1)
+    assert tile_span(_BLOCKER_3X1, render_units.NON_BUILDING_SPAN) == (3, 1)
     polygons = _stepped_polygons(_BLOCKER_3X1, 10.5, 10.5)
     assert len(polygons) == 3
     merged = unit_pick.merge_footprint_polygons(polygons)
@@ -2065,7 +2065,7 @@ def test_a_deep_fishs_stepped_outline_is_one_ring_centred_on_the_fish(const, x, 
     merged = unit_pick.merge_footprint_polygons(polygons)
     _assert_one_ring_tracing(merged, polygons)
     scn, _entry = _one_unit_entry(const, x, x)
-    _elevations, proj = render.elevations_and_proj(scn)
+    _elevations, proj = render_iso.elevations_and_proj(scn)
     centre = iso_geometry.map_point_to_screen(x, x, 0, proj)
     xs = [p[0] for p in merged[0]]
     ys = [p[1] for p in merged[0]]
@@ -2082,7 +2082,7 @@ def test_picking_a_mountains_outer_tile_selects_it(style) -> None:
     scn = _stack_scenario((10.0, 10.0, _MNTN3))
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     for tx, ty in ((7, 7), (12, 12), (7, 12), (12, 7)):
         if style == "flat":
             sx, sy = tx * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
@@ -2112,7 +2112,7 @@ def test_picking_a_leviathan_wrecks_outer_tile_selects_it(style) -> None:
     scn = _stack_scenario((10.0, 10.0, _LEVIATHAN_WRECK))
     index = build_index(scn)
     tile_px = _tile_px()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     for tx, ty in ((8, 8), (11, 11), (8, 11), (11, 8)):
         if style == "flat":
             sx, sy = tx * tile_px + tile_px // 2, ty * tile_px + tile_px // 2
@@ -2176,7 +2176,7 @@ _FARM_MULTI_LEVEL_RISE = np.array(
 
 def _draped_farm_polygons(corner_rise):
     _scn, entry = _one_unit_entry(_FARM_CONST, 2.5, 2.5, 5, 5)
-    assert render._terrain_overlay_for(_FARM_CONST) is not None
+    assert render_sprites._terrain_overlay_for(_FARM_CONST) is not None
     proj = iso_geometry.canvas_size_and_origin(*_FARM_MERGE_PROJ_ARGS, corner_headroom_steps=1)
     polygons = unit_polygons(entry, "sloped", 64, 5, 5, None, proj, corner_rise=corner_rise, farms_draped=True)
     assert len(polygons) == 9

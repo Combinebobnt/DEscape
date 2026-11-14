@@ -3,14 +3,14 @@
 Duplicate adds copies of the selected rows inside the same host, through
 Paste's own checks and writes (ViewerWindow._add_garrison_copies()), and
 leaves the garrison clipboard and a pending Cut alone. Driven on
-test_unit_edit_viewer.py's fixture and helpers, as test_garrison_cut.py is.
+unit_edit_viewer_helpers.py's fixture and helpers, as test_garrison_cut.py is.
 """
 
 from __future__ import annotations
 
 import pytest
-import test_unit_edit_viewer as viewer_tests
-from test_unit_edit_viewer import _no_install_env  # noqa: F401 -- autouse fixture
+import unit_edit_viewer_helpers as viewer_tests
+from unit_edit_viewer_helpers import _no_install_env  # noqa: F401 -- autouse fixture
 
 import conftest
 

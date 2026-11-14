@@ -15,8 +15,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import render, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import render_iso, render_sprites, unit_sprites
+from descape.terrain_palette import FOUNDATION_TERRAIN, PLAYER_COLORS
 
 PASTURE = 1897
 PASTURE_TERRAIN = 117
@@ -154,8 +154,8 @@ def stub_pieces(monkeypatch):
 
 
 def _layer(scn):
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=False)
-    return render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=False)
+    return render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
 
 
 def test_a_pasture_keeps_its_drape_under_its_sprite(stub_pieces):
@@ -176,7 +176,7 @@ def test_a_unit_without_reference_id_resolves_unseeded(stub_pieces):
 
 def test_an_ordinary_sprite_building_still_gets_no_drape(stub_pieces):
     """House (70) has a foundation terrain too; its sprite still wins outright."""
-    assert 70 in render.FOUNDATION_TERRAIN
+    assert 70 in FOUNDATION_TERRAIN
     sprites = _layer(_Scenario([[], [Unit(6.0, 6.0, 70)]]))
     assert sprites.farm_by_tile == {}
     assert sprites.by_anchor

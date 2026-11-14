@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -52,16 +54,16 @@ def _scatter_dialog(window, monkeypatch):
     """The Scatter dialog scatter_units_in_region() builds, captured instead of shown."""
     from PyQt5.QtWidgets import QDialog
 
-    from descape import viewer
+    from descape.scatter_dialog import ScatterDialog
 
     built = []
 
-    class _Captured(viewer.ScatterDialog):
+    class _Captured(ScatterDialog):
         def exec_(self):
             built.append(self)
             return QDialog.Rejected
 
-    monkeypatch.setattr(viewer, "ScatterDialog", _Captured)
+    set_viewer_global(monkeypatch, "ScatterDialog", _Captured)
     window._region = (0, 0, 10, 10)
     window.units_panel.select_object(_VILLAGER)
     window.scatter_units_in_region()
@@ -221,7 +223,7 @@ def test_closing_the_document_resets_the_labels_and_drops_the_swatches() -> None
 
 
 def _player_id_rows(panel):
-    from descape.trigger_panel import PLAYER_ID_PRESENTATION
+    from descape.trigger_panel_form import PLAYER_ID_PRESENTATION
 
     return [w for spec, _k, _i, w in panel._rows if spec.presentation == PLAYER_ID_PRESENTATION]
 

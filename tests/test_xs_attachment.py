@@ -30,7 +30,7 @@ def test_the_accessor_never_forces_a_trigger_parse() -> None:
 
 
 def test_a_failed_trigger_parse_reports_unknown_not_zero() -> None:
-    from descape.viewer import _xs_info_lines
+    from descape.viewer_info import _xs_info_lines
 
     loaded = load_map_and_units(TRIGGER_FIXTURE)
     loaded.trigger_read_supported = False

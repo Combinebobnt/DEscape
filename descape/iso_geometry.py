@@ -117,7 +117,7 @@ ELEV_STEP_DEFAULT_PCT = 100 // ELEV_STEP_DIVISOR
 # The real legal elevation range -- 0..15, DE's own editor authoring ceiling
 # (the scenario format stores elevation as a u8, so a generator-made file
 # could in principle exceed 15, but no editor-authored file ever will).
-# viewer.py's Set Elevation spinbox is capped the same way. Phase 2/3 sized
+# viewer_toolbar.py's Set Elevation spinbox is capped the same way. Phase 2/3 sized
 # the Stepped canvas from each file's own *observed* min/max elevation
 # instead of this fixed range, which is exactly what makes Phase 4's
 # incremental redraw unsafe: raising a tile above a file's observed max
@@ -138,7 +138,7 @@ ELEV_STEP_DEFAULT_PCT = 100 // ELEV_STEP_DIVISOR
 # from 8 to 16 iterations of cheap float ops -- negligible. A file with any
 # tile above this ceiling still degrades gracefully rather than corrupting:
 # refresh_region_iso / dirty_screen_bbox_iso (render.py) decline any edit
-# touching an out-of-range tile and viewer.py's _apply_dirty falls back to
+# touching an out-of-range tile and viewer_render.py's _apply_dirty falls back to
 # a full re-render, which is the deliberate backstop for that case, not a
 # bug.
 MIN_ELEVATION = 0

@@ -180,7 +180,7 @@ def exec_order_value(loaded: LoadedScenario) -> int | None:
 
     The Triggers-mode status line uses this for its read-only execution-order
     readout, which must not build an edit model just to show it --
-    tests/test_trigger_panel.py's test_browsing_every_row_saves_byte_identically
+    tests/test_trigger_panel_basics.py's test_browsing_every_row_saves_byte_identically
     pins "browsing must not build an edit model", and the window's own
     _pending_option_values() only reaches `exec_order` through the lazily
     constructed self.trigger_edits, which is the wrong path for a passive
@@ -265,7 +265,7 @@ class TriggerSnapshot:
 
     Unlike `triggers`, `variables` is always a full deep copy rather than a
     list of live references: the list is capped at 256 entries (see
-    viewer.py's `_MAX_VARIABLES`), so there is no equivalent of the
+    viewer_triggers.py's `_MAX_VARIABLES`), so there is no equivalent of the
     per-trigger deepcopy budget to worry about, and a rename mutates a
     `Variable` object's `name` in place rather than replacing it in the list.
     A snapshot holding references to those same objects would have its
@@ -339,7 +339,7 @@ def display_order_with_copy_inserted(
     identity). The new trigger -- the one object in `after_triggers` with no
     match in `before_triggers` -- is inserted directly after the source's
     display slot, matching where copy_trigger() places it in the physical
-    list (`viewer.py`'s trigger_structural_edit(): "the copy lands at
+    list (`viewer_triggers.py`'s trigger_structural_edit(): "the copy lands at
     index + 1, not at the end").
     """
     new_index_of = {id(t): i for i, t in enumerate(after_triggers)}
@@ -1216,7 +1216,7 @@ class TriggerEditModel:
         mutation left them, with no record to undo them by. Deliberate, since
         the document really is in that state, but it means an abort path has to
         pair with restore() to be a true no-op. No caller aborts today --
-        viewer.py's _trigger_edit() always commits, on purpose.
+        viewer_triggers.py's _trigger_edit() always commits, on purpose.
         """
         self._pending = None
 

@@ -2,7 +2,7 @@
 
 Qt-free, like backup.py and settings.py, so it runs in the default test tier.
 Owns everything about *where* a recovery snapshot lives and which ones
-survive; it never serializes a scenario itself -- descape/viewer.py's tick
+survive; it never serializes a scenario itself -- descape/viewer_file.py's tick
 calls write_scenario() and hands the resulting path back here.
 
 An autosave slot is a legitimate, fully-formed .aoe2scenario written through

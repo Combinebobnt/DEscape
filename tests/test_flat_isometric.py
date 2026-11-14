@@ -277,19 +277,21 @@ def test_flat_iso_terrain_has_no_residual_skirt_at_a_real_elevation_step() -> No
     assertions elsewhere in this module cannot see: the elevations array was
     already all zero in every case above, precisely because that bug never
     touched the array itself, only what the compositor did with it."""
-    import descape.render as render
+    import descape.render_bbox as render_bbox
+    import descape.render_iso as render_iso
+    import descape.render_paint as render_paint
 
     stepped = _stepped_scenario()
     flat_control = _stepped_scenario()
     for tile in flat_control.map_manager.terrain:
         tile.elevation = 0
 
-    elevations, proj = render.elevations_and_proj(stepped)
+    elevations, proj = render_iso.elevations_and_proj(stepped)
     assert {int(e) for e in elevations.flatten()} == {0, 4}, (
         "fixture assumption: a genuine elevation step must exist to reproduce this bug at all"
     )
-    tile_px = render.tile_pixels_for_map(stepped.map_manager.map_width, stepped.map_manager.map_height)
-    canvas_w, canvas_h = render._canvas_pixel_dims(proj)
+    tile_px = render_paint.tile_pixels_for_map(stepped.map_manager.map_width, stepped.map_manager.map_height)
+    canvas_w, canvas_h = render_bbox._canvas_pixel_dims(proj)
 
     # A tight rect around the raised block only, generous enough to catch a
     # skirt/shadow reaching outward from it -- not the whole canvas.
@@ -298,12 +300,12 @@ def test_flat_iso_terrain_has_no_residual_skirt_at_a_real_elevation_step() -> No
     x1, y1 = min(canvas_w, ox + 1200), min(canvas_h, oy + 600)
 
     zeroed = np.zeros_like(elevations)
-    rendered_flat_iso = render.composite_rect_iso(
+    rendered_flat_iso = render_iso.composite_rect_iso(
         stepped, x0, y0, x1, y1, zeroed, proj, tile_px, {}, {}, with_units=False,
     )
-    control_elevations, control_proj = render.elevations_and_proj(flat_control)
+    control_elevations, control_proj = render_iso.elevations_and_proj(flat_control)
     assert control_proj == proj, "fixture assumption: same map size must yield the same projection"
-    rendered_control = render.composite_rect_iso(
+    rendered_control = render_iso.composite_rect_iso(
         flat_control, x0, y0, x1, y1, control_elevations, proj, tile_px, {}, {}, with_units=False,
     )
 

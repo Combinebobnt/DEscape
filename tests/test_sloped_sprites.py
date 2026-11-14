@@ -39,19 +39,16 @@ import numpy as np
 import pytest
 from test_sloped_pick import _edit_and_bbox
 
-from descape import asset_source, render, settings, terrain_palette, unit_pick, unit_sprites
+from descape import asset_source, render_bbox, render_sloped, render_sprites, settings, terrain_palette, unit_pick, unit_sprites
 from descape import iso_geometry as ig
-from descape.render import (
-    _dirty_screen_bbox,
-    dirty_screen_bbox_sloped,
-    render_terrain_iso_with_proj,
-    render_terrain_sloped_with_proj,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import _dirty_screen_bbox, dirty_screen_bbox_sloped
 from descape.render_cache import SlopedChunkCache
+from descape.render_iso import render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import render_terrain_sloped_with_proj, sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit.fakes import FakeScenario, SyntheticTile
+from testkit.render_family import set_render_global
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
@@ -184,7 +181,7 @@ def _whole_level(cache, mip: int) -> np.ndarray:
 def _full_at(scenario, tile_px: int) -> np.ndarray:
     """A full sprite render with tile_pixels_for_map forced to tile_px, the patch scoped to this call."""
     with pytest.MonkeyPatch.context() as m:
-        m.setattr(render, "tile_pixels_for_map", lambda _w, _h: tile_px)
+        set_render_global(m, "tile_pixels_for_map", lambda _w, _h: tile_px)
         img, _e, _c, _proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
     return img
 
@@ -250,7 +247,7 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
     # `_span_start(coord, 1) + 0.5` (which quantized 60.3 to 60.5) with the
     # coordinate itself, which is the whole point of that stage.
     unit.unit_const = CONST
-    sprites = render.sprite_draws_by_anchor(
+    sprites = render_sprites.sprite_draws_by_anchor(
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
     )
     assert sprites.by_anchor, "fixture painted nothing -- the sprite never resolved"
@@ -269,7 +266,7 @@ def test_farms_drape_as_terrain_in_sloped(mip):
     warped-outline path, sprite_draws_by_anchor's with_farms default flipped
     to True at every Sloped call site, and this goes red if that ever
     reverts). With sprites on, a farm must resolve into farm_by_tile (so
-    render._paint_tile_and_units_sloped's drape branch actually runs) and
+    render_sloped._paint_tile_and_units_sloped's drape branch actually runs) and
     into skip_ids (so it never also falls through to the plain-diamond mark
     path). Read off the cache's own level `mip` layer."""
     scenario = _flat_scenario_with_unit(elevation=0, ux=30.5, uy=30.5, unit_const=FARM_CONST)
@@ -284,7 +281,7 @@ def test_farms_drape_as_terrain_in_sloped(mip):
     # The sprites-off residual: with_farms=False (still an explicit opt-out,
     # matching _paint_tile_and_units_sloped's own sprites-off fallback to
     # the plain mark) must never populate farm_by_tile.
-    sprites_off = render.sprite_draws_by_anchor(
+    sprites_off = render_sprites.sprite_draws_by_anchor(
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
     )
     assert sprites_off.farm_by_tile == {}, "with_farms=False must never populate farm_by_tile"
@@ -345,12 +342,12 @@ def test_farm_perimeter_stroke_lands_on_the_warped_quad_not_the_elevation_based_
     )
 
     img = _whole_level(cache, mip)
-    base_x, base_y, _dy, _dx, _sy, _sx, _uv = render._sloped_tile_quad(
+    base_x, base_y, _dy, _dx, _sy, _sx, _uv = render_sloped._sloped_tile_quad(
         tx, ty, tile_px, proj, d_nw, d_ne, d_sw, d_se
     )
 
     checked = 0
-    for bit, side in render._FARM_EDGE_BITS:
+    for bit, side in render_sprites._FARM_EDGE_BITS:
         if not (edge_mask & bit):
             continue
         edge_y, edge_x = ig.sloped_tile_edge_indices(tile_px, side, d_nw, d_ne, d_sw, d_se)
@@ -455,7 +452,7 @@ def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):
     scenario = _ramped_scenario_with_unit(ux=61.5, uy=60.5)
     mm = scenario.map_manager
     elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
-    sprites = render.sprite_draws_by_anchor(
+    sprites = render_sprites.sprite_draws_by_anchor(
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
     )
     assert sprites.bboxes, "fixture painted nothing -- the sprite never resolved"
@@ -469,7 +466,7 @@ def test_dirty_bbox_widens_for_a_neighbour_edit(oversized_sprite_install):
     assert dirty_indices, "test setup: neighbour tile not found"
     mm.terrain[dirty_indices[0]].elevation += 1
 
-    canvas_dims = render._canvas_pixel_dims(proj)
+    canvas_dims = render_bbox._canvas_pixel_dims(proj)
     exact = _dirty_screen_bbox(
         scenario, dirty_indices, elevations.copy(), proj, canvas_dims, with_units=False,
         with_sprites=True, sprite_band_radius=0,

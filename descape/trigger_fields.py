@@ -343,8 +343,8 @@ def resolve_reference(presentation: str, value: Any) -> str:
         return ""
     if presentation in _COMBINED_OBJECT_PRESENTATIONS:
         return object_catalog.combined_object_name(value)
-    if presentation == "TechInfo" and game_dataset.is_ror():
-        # GH #67: TechInfo is AoE2's; Return of Rome names its own techs.
+    if presentation == "TechInfo" and not game_dataset.game().library_enums:
+        # GH #67: TechInfo is AoE2's; a game without library enums (Return of Rome) names its own techs.
         return object_catalog.name_for(object_catalog.techs(), value)
     dataset = _REFERENCE_DATASETS.get(presentation)
     if dataset is None:

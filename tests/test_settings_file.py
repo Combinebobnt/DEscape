@@ -796,7 +796,7 @@ def qt_dialog():
 def _answer_import(monkeypatch, path: Path, apply: bool, quit_now: bool = False) -> tuple[list[str], list[int]]:
     from PyQt5.QtWidgets import QFileDialog
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     shown: list[str] = []
     asked: list[int] = []
@@ -821,6 +821,7 @@ _LOCAL_KEY_WORDS: dict[str, str | None] = {
     "new_map": "New Map dialog's last choices",
     "data_mod_by_scenario": "Data Mod",
     "window_size": "window",
+    "window_state": "window",
     "split_sizes": "window",
     "log_height": "window",
     "xwayland_on_wayland": "X11 compatibility on Wayland",
@@ -879,7 +880,7 @@ def test_an_import_stages_and_shows_the_pending_line_and_discard_removes_both(tm
 
 @pytest.mark.gui
 def test_a_dialog_opened_with_an_import_staged_shows_the_pending_line(tmp_path, qt_dialog) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     _stage(tmp_path, _doc({"pan_speed": 900}))
     second = SettingsDialog(qt_dialog._window)
@@ -892,7 +893,7 @@ def test_a_dialog_opened_with_an_import_staged_shows_the_pending_line(tmp_path, 
 
 @pytest.mark.gui
 def test_the_pending_line_says_when_this_build_will_not_apply_the_staged_file(qt_dialog) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     _write_yaml(settings_file.pending_path(), _pending_doc(mode="merge"))
     second = SettingsDialog(qt_dialog._window)

@@ -147,6 +147,22 @@ def show_and_settle(window, size: int | None = None) -> None:
     QApplication.processEvents()
 
 
+def set_panel_width(window, width: int) -> None:
+    """Drag the docked editor panel to `width` px (GH #64) and let the layout
+    settle. Like the splitter it replaced, resizeDocks() clamps to the panel's
+    floor and to the map's MIN_SPLIT_PANE."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window.resizeDocks([window.panel_dock], [width], Qt.Horizontal)
+    QApplication.processEvents()
+
+
+def panel_width(window) -> int:
+    """The editor panel's width; docked, the dock has no frame, so it is the page's too."""
+    return window.panel_dock.width()
+
+
 def stepped_window(
     path,
     *,

@@ -29,12 +29,16 @@ from test_invalidate_units_splice import _call_counts, _occupied, _own_tile
 from test_native_composite import native_kernel  # noqa: F401 -- fixture
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- fixture
 
-from descape import composite_backend, level_warm, margin_warm, render_cache
+from descape import composite_backend, level_warm, margin_warm
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import dirty_screen_bbox_iso, elevations_and_proj, tile_pixels_for_map
-from descape.render_cache import REACH_FALLBACK, FlatChunkCache, IsoChunkCache, UnitSplice
+from descape.render_bbox import dirty_screen_bbox_iso
+from descape.render_cache import FlatChunkCache, IsoChunkCache
+from descape.render_cache_splice import REACH_FALLBACK, UnitSplice
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.unit_filter import UnitFilter
+from testkit.render_family import set_render_cache_global
 
 import conftest
 from test_unit_sprites import CONST as SPRITE_CONST
@@ -310,7 +314,7 @@ def test_a_flat_level_built_outside_a_window_keeps_the_row_splice(sprite_install
 def test_a_union_past_the_cap_rebuilds_the_level_wholesale(sprite_install, monkeypatch):  # noqa: F811
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 2)
     gen = cache._source_gen
     _stroke(cache, scenario)
     assert cache._source_gen == gen, "a single step went over the cap, so the union case is untested"
@@ -394,7 +398,7 @@ def test_a_pending_level_is_not_resident_and_a_chunk_warm_refuses_it(cap, sprite
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
     if cap is not None:
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", cap)
+        set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", cap)
     bboxes = _stroke(cache, scenario)
     calls = _level_work(monkeypatch)
     for mip in OFFSCREEN:
@@ -419,7 +423,7 @@ def test_a_level_warm_flushes_a_pending_level_then_its_load_warm_runs(
         scenario, _units = _scenario()
         cache = _resident_cache(scenario)
         if cap is not None:
-            monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", cap)
+            set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", cap)
         gen = cache._source_gen
         bboxes = _stroke(cache, scenario)
         assert cache._source_gen == gen, "a stroke step fell back to the wholesale path"
@@ -449,7 +453,7 @@ def test_a_level_warm_flushes_a_pending_level_then_its_load_warm_runs(
 def test_an_over_cap_flush_job_rebuilds_the_bboxes_with_sprites_off(sprite_install, monkeypatch):  # noqa: F811
     scenario, _units = _scenario()
     cache = _resident_cache(scenario, sprites=False)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 2)
     _stroke(cache, scenario)
     assert all(cache._levels[mip].pending_elev for mip in OFFSCREEN), "vacuous"
     counts = _call_counts(monkeypatch)
@@ -484,7 +488,7 @@ def test_a_unit_edit_mid_rebuild_drops_the_flush_jobs_result(sprite_install, mon
     ticks; a mutation after the flush step must not get that rebuild installed."""
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 2)
     monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
     _stroke(cache, scenario)
     warmer = level_warm.LevelWarmer()
@@ -503,7 +507,7 @@ def test_a_model_only_unit_mutation_mid_rebuild_drops_the_flush_jobs_result(spri
     with no invalidate_units() until its flush, so only unit_gen moves."""
     scenario, _units = _scenario()
     cache = _resident_cache(scenario)
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 2)
     monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
     _stroke(cache, scenario)
     warmer = level_warm.LevelWarmer()

@@ -666,7 +666,7 @@ def test_the_anchor_round_trips_through_render_s_own_span_start(const):
     """span_anchor is _span_start's inverse (test_cliffs.py pins that
     directly); this asserts the chain actually places on it, so a node's
     tile bounds are the ones the renderer will report for it."""
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     node = _drag(_stroke(const=const), [(10, 10)])[0]
     placed = type("U", (), {"x": node.x, "y": node.y, "unit_const": const})()

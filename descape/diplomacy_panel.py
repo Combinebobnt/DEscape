@@ -121,7 +121,7 @@ class DiplomacyPanel(QWidget):
 
     _NO_DOCUMENT = "No map open."
     # Fallback only -- the window always resolves a specific per-cell reason
-    # (see viewer.py's _diplomacy_read_only_reasons()); this covers a panel
+    # (see viewer_options.py's _diplomacy_read_only_reasons()); this covers a panel
     # built directly, e.g. by a test, with no reasons supplied.
     _READ_ONLY_REASON = "Read-only for this file."
     _STANCE_TOOLTIP = (

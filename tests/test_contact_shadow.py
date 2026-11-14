@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from descape import iso_geometry as ig
-from descape import render
+from descape import render_iso
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 TILE_PX = [16, 32, 64]
@@ -230,16 +230,16 @@ def test_shadow_factors_dtype_and_range(tile_px):
     _half_w, half_h = ig.half_dims(tile_px)
     for side in ("up_left", "up_right"):
         for rise_px in (1, max(1, half_h // 2), 2 * half_h - 3):
-            factors = render._shadow_factors(tile_px, rise_px, side)
+            factors = render_iso._shadow_factors(tile_px, rise_px, side)
             _dst_y, _dst_x, depth, _span = ig.shadow_quad_indices(tile_px, rise_px, side)
             assert factors.dtype == np.float32
             assert factors.shape == depth.shape
             if factors.size == 0:
                 continue
-            assert (factors >= render.CONTACT_SHADE).all()
+            assert (factors >= render_iso.CONTACT_SHADE).all()
             assert (factors <= 1.0).all()
             # Darkest exactly at the contact row.
-            assert np.allclose(factors[depth == 0], render.CONTACT_SHADE)
+            assert np.allclose(factors[depth == 0], render_iso.CONTACT_SHADE)
 
 
 @pytest.mark.parametrize("tile_px", TILE_PX)
@@ -258,13 +258,13 @@ def test_falloff_ramps_out_within_a_fixed_fraction_of_a_tile(tile_px):
     `depth / span` it replaced left a 3-row apex column ending at 0.88.
     """
     _half_w, half_h = ig.half_dims(tile_px)
-    ramp = max(1, half_h // render.CONTACT_RAMP_DIVISOR)
+    ramp = max(1, half_h // render_iso.CONTACT_RAMP_DIVISOR)
     for side in ("up_left", "up_right"):
         for rise_px in (1, max(1, half_h // 2), 2 * half_h - 3):
             _dy, dst_x, depth, span = ig.shadow_quad_indices(tile_px, rise_px, side)
             if depth.size == 0:
                 continue
-            factors = render._shadow_factors(tile_px, rise_px, side)
+            factors = render_iso._shadow_factors(tile_px, rise_px, side)
             where = f"tile_px={tile_px} rise_px={rise_px} side={side}"
             denom = np.maximum(np.minimum(span, ramp) - 1, 1)
             assert (factors[depth >= denom] == 1.0).all(), f"{where}: still darkening past the ramp"
@@ -296,14 +296,14 @@ def test_hill_renders_differently_from_flat_and_never_raises():
 
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     settings.set_elev_step_pct(50)
-    hill_img = render.render_terrain_iso(hill, with_units=False)
-    flat_img = render.render_terrain_iso(flat, with_units=False)
+    hill_img = render_iso.render_terrain_iso(hill, with_units=False)
+    flat_img = render_iso.render_terrain_iso(flat, with_units=False)
     assert hill_img.shape == flat_img.shape
     assert not np.array_equal(hill_img, flat_img), "a 4-level pyramid rendered identically to flat ground"
 
     for pct in (50, 200):
         settings.set_elev_step_pct(pct)
-        img = render.render_terrain_iso(hill, with_units=False)
+        img = render_iso.render_terrain_iso(hill, with_units=False)
         assert img.dtype == np.uint8 and img.ndim == 3
 
 
@@ -412,9 +412,9 @@ def test_apex_wedge_depth_and_span_contract(tile_px):
             continue
         assert dst_y.shape == dst_x.shape == depth.shape == span.shape
         assert np.all(depth >= 0) and np.all(depth < span)
-        factors = render._shadow_factors(tile_px, rise_px, "apex")
+        factors = render_iso._shadow_factors(tile_px, rise_px, "apex")
         assert factors.dtype == np.float32 and factors.shape == dst_y.shape
-        assert np.all(factors >= render.CONTACT_SHADE) and np.all(factors <= 1.0)
+        assert np.all(factors >= render_iso.CONTACT_SHADE) and np.all(factors <= 1.0)
 
 
 def test_apex_wedge_rejects_a_nonpositive_rise():
@@ -431,11 +431,11 @@ def test_apex_wedge_is_thinner_than_the_band_it_bridges(tile_px):
     the A/B render before this was added)."""
     _half_w, half_h = ig.half_dims(tile_px)
     rise_px = max(1, half_h // 2)
-    apex = render._shadow_factors(tile_px, rise_px, "apex")
+    apex = render_iso._shadow_factors(tile_px, rise_px, "apex")
     darkened = int(np.count_nonzero(apex < 1.0))
     _dy, _dx, _d, _span = ig.shadow_apex_indices(tile_px, rise_px)
     per_column = darkened / max(1, len(np.unique(_dx)))
-    full_ramp = max(1, half_h // render.CONTACT_RAMP_DIVISOR)
+    full_ramp = max(1, half_h // render_iso.CONTACT_RAMP_DIVISOR)
     assert per_column <= full_ramp, f"apex ramp {per_column} not thinner than band ramp {full_ramp}"
 
 
@@ -485,8 +485,8 @@ def test_apex_wedge_never_darkens_a_diagonal_level_with_the_caster():
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     settings.set_elev_step_pct(50)
 
-    img, _elev, proj = render.render_terrain_iso_with_proj(_level_diagonal_scenario(anchor), with_units=False)
-    ctrl, _celev, cproj = render.render_terrain_iso_with_proj(_flat_at_one(), with_units=False)
+    img, _elev, proj = render_iso.render_terrain_iso_with_proj(_level_diagonal_scenario(anchor), with_units=False)
+    ctrl, _celev, cproj = render_iso.render_terrain_iso_with_proj(_flat_at_one(), with_units=False)
     assert (proj.tile_px, proj.elev_step) == (cproj.tile_px, cproj.elev_step)
 
     dy, dx, _sy, _sx = ig.diamond_indices(proj.tile_px)

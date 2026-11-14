@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from descape import gate_orientation, placement_rules, unit_kind, unit_sprites
 from descape.place_rotation import PlaceRotation, random_rotation, rotation_for
-from descape.render import NON_BUILDING_SPAN, _span_start, occupied_tiles_for, snapped_anchor
+from descape.render_units import NON_BUILDING_SPAN, _span_start, occupied_tiles_for, snapped_anchor
 from descape.scatter import MAX_JITTER
 from descape.terrain_palette import tile_span
 

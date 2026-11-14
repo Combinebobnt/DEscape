@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from descape import render, unit_sprites
+from descape import render_units, unit_sprites
 from descape.scenario_io import load_map_and_units
 
 _OLD_VARIANT_CONSTS = unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIFF_VARIANT_CONSTS
@@ -44,7 +44,7 @@ _OLD_VARIANT_CONSTS = unit_sprites._ROTATION_VARIANT_CONSTS | unit_sprites._CLIF
 def _old_resolved_frame(player_id: int, unit, angle_count: int, frame_count: int) -> int:
     """The frame index this placement resolved to before Tier B: verbatim
     rotation through angle_index(), except GAIA zeroed to rotation 0.0 --
-    render.stored_rotation()'s own pre-Tier-B rule, replayed here rather than
+    render_units.stored_rotation()'s own pre-Tier-B rule, replayed here rather than
     called, since the shipped function now implements the NEW rule."""
     old_rotation = 0.0 if player_id == 0 else float(unit.rotation)
     return unit_sprites.angle_index(old_rotation, angle_count) * frame_count
@@ -75,7 +75,7 @@ def scan_file(path: Path) -> dict:
                 max(1, real_frames // frame_count) if real_frames is not None else angle_count
             )
 
-            new_rotation = render.stored_rotation(player_id, unit)
+            new_rotation = render_units.stored_rotation(player_id, unit)
             literal = unit_sprites.is_literal_variant_index(new_rotation, variant_count)
             out_of_file = (
                 not literal

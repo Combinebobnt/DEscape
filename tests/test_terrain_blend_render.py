@@ -38,12 +38,25 @@ from test_native_composite import (
 )
 from test_sprite_edit_bbox import EDIT_X, EDIT_Y, sprite_install  # noqa: F401
 
-from descape import asset_source, composite_backend, native_composite, render, terrain_blend
+from descape import (
+    asset_source,
+    composite_backend,
+    native_composite,
+    render,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_units,
+    terrain_blend,
+)
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.grid_overlay import grid_bake
-from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache, UnitSplice
+from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_cache_splice import UnitSplice
 from descape.terrain_blend import BlendEntry
 from descape.view_layers import LayerState
+from testkit.render_family import set_render_global
 
 LAYER_ID = 21  # not in TERRAIN_IDS
 KINDS = ("flat", "stepped", "sloped", "sloped-flat-map")
@@ -72,7 +85,7 @@ def blend_install(sprite_install, fake_farm, synthetic_textures, monkeypatch):  
     monkeypatch.setattr(asset_source, "get_terrain_mask_array", _fake(lambda _name: mask))
     monkeypatch.setattr(terrain_blend, "BLEND_TABLE", table)
     asset_source.clear_install_caches()
-    assert render.blend_effective(LayerState())
+    assert render_paint.blend_effective(LayerState())
 
 
 @pytest.fixture(params=["numpy", "native"])
@@ -97,7 +110,7 @@ def blend_keys_match_the_mirrors(monkeypatch):
     A failed check is also kept on `failures` and re-raised at teardown, since
     MarginWarmer's tick catches Exception around its composites and only logs."""
     seen = SimpleNamespace(composites=0, derives=0, inside=False, failures=[])
-    real_keys, real_influences = render._rect_blend_keys, terrain_blend.influences
+    real_keys, real_influences = render_paint._rect_blend_keys, terrain_blend.influences
 
     def influences(*args, **kwargs):
         seen.derives += seen.inside
@@ -109,10 +122,10 @@ def blend_keys_match_the_mirrors(monkeypatch):
             blend = real_keys(scenario, candidates, layers, terrain_ids, layer_ids, key_map)
         finally:
             seen.inside = False
-        if candidates.shape[0] and render.blend_effective(layers):
+        if candidates.shape[0] and render_paint.blend_effective(layers):
             try:
                 # influences() also raises on a candidate off the map, which the gather would wrap.
-                want = render._blend_keys(scenario, candidates[:, 0], candidates[:, 1], terrain_ids, layer_ids)
+                want = render_paint._blend_keys(scenario, candidates[:, 0], candidates[:, 1], terrain_ids, layer_ids)
                 got = [None] * len(want) if blend is None else blend.as_list()
                 assert got == want, "a composite's blend keys disagree with influences() over its own mirrors"
             except Exception as exc:
@@ -122,7 +135,7 @@ def blend_keys_match_the_mirrors(monkeypatch):
         return blend
 
     monkeypatch.setattr(terrain_blend, "influences", influences)
-    monkeypatch.setattr(render, "_rect_blend_keys", checked)
+    set_render_global(monkeypatch, "_rect_blend_keys", checked)
     yield seen
     assert not seen.failures, f"{len(seen.failures)} blend key check(s) failed, first: {seen.failures[0]!r}"
 
@@ -155,24 +168,24 @@ def _style(kind: str) -> str:
 
 def _cache(kind: str, scenario, layers: LayerState = BLEND_ON, sprites: bool = False):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     style = _style(kind)
     if style == "flat":
         return FlatChunkCache(scenario, tile_px, with_units=False, sprites=sprites, layers=layers)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites, layers=layers)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites, layers=layers)
 
 
 def _full(kind: str, scenario, blend: bool = True, sprites: bool = False) -> np.ndarray:
     style = _style(kind)
     if style == "flat":
-        return render.render_terrain(scenario, blend=blend)
+        return render_flat.render_terrain(scenario, blend=blend)
     if style == "stepped":
-        return render.render_terrain_iso_with_proj(scenario, with_sprites=sprites, blend=blend)[0]
-    return render.render_terrain_sloped_with_proj(scenario, with_sprites=sprites, blend=blend)[0]
+        return render_iso.render_terrain_iso_with_proj(scenario, with_sprites=sprites, blend=blend)[0]
+    return render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=sprites, blend=blend)[0]
 
 
 def _stitched(cache, mip: int = 0) -> np.ndarray:
@@ -189,7 +202,7 @@ def _assert_equal(got: np.ndarray, want: np.ndarray, what: str) -> None:
 
 def _keys(scenario, tiles) -> list:
     xs, ys = zip(*tiles, strict=True)
-    return render._blend_keys(scenario, list(xs), list(ys))
+    return render_paint._blend_keys(scenario, list(xs), list(ys))
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -202,7 +215,7 @@ def test_blending_engages_and_off_is_the_pre_blending_render(blend_install, monk
     _assert_equal(_stitched(_cache(kind, scenario, BLEND_OFF)), off, "row off vs blend=False")
     monkeypatch.setattr(asset_source, "get_blendomatic", _fake(lambda: None))
     asset_source.clear_install_caches()
-    assert not render.blend_effective(LayerState())
+    assert not render_paint.blend_effective(LayerState())
     _assert_equal(_full(kind, scenario), off, "no blendomatic vs blend=False")
 
 
@@ -212,7 +225,7 @@ def test_textures_off_ignores_blending(blend_install, kind):
     changes nothing."""
     scenario = _scenario(kind)
     textures_off = LayerState(terrain_textures=False)
-    assert not render.blend_effective(textures_off)
+    assert not render_paint.blend_effective(textures_off)
     _assert_equal(
         _stitched(_cache(kind, scenario, textures_off)),
         _stitched(_cache(kind, scenario, LayerState(terrain_textures=False, terrain_blend=False))),
@@ -229,17 +242,17 @@ def test_stitched_chunks_match_the_full_render(blend_install, backend, kind):
 def test_stepped_equals_sloped_on_a_flat_map(blend_install):
     """The shared square top block makes this hold by construction."""
     scenario = _scenario("sloped-flat-map")
-    stepped = render.render_terrain_iso(scenario)
-    sloped = render.render_terrain_sloped(scenario)
+    stepped = render_iso.render_terrain_iso(scenario)
+    sloped = render_sloped.render_terrain_sloped(scenario)
     assert np.array_equal(stepped, sloped)
-    assert not np.array_equal(stepped, render.render_terrain_iso(scenario, blend=False)), "vacuous"
+    assert not np.array_equal(stepped, render_iso.render_terrain_iso(scenario, blend=False)), "vacuous"
 
 
 def _patch_edit(kind: str, cache, scenario, x: int, y: int) -> None:
     """The viewer's own dirty funnel for a one-tile terrain edit."""
     if _style(kind) == "flat":
         mm = scenario.map_manager
-        cache.patch_rects(render.flat_dirty_rects([(x, y)], mm.map_width, mm.map_height, cache.tile_px, cache.layers))
+        cache.patch_rects(render_paint.flat_dirty_rects([(x, y)], mm.map_width, mm.map_height, cache.tile_px, cache.layers))
     else:
         _patch_tiles(cache, _style(kind), scenario, [(x, y)], sprites=False)
 
@@ -302,12 +315,12 @@ def test_a_farm_moved_onto_a_blended_boundary_matches_a_fresh_render(blend_insta
     cache = _cache(kind, scenario, sprites=True)
     _stitched(cache)
     nx, ny = 33.5, 41.5
-    new_tiles = tuple(render.unit_occupied_tiles(_At(farm, nx, ny), mm.map_width, mm.map_height))
+    new_tiles = tuple(render_units.unit_occupied_tiles(_At(farm, nx, ny), mm.map_width, mm.map_height))
     assert any(k is not None for k in _keys(scenario, new_tiles)), "the farm lands on no blended tile -- vacuous"
 
     index = scenario.unit_manager.units[2].index(farm)
     old_own = (int(farm.x), int(farm.y))
-    old_tiles = tuple(render.unit_occupied_tiles(farm, mm.map_width, mm.map_height))
+    old_tiles = tuple(render_units.unit_occupied_tiles(farm, mm.map_width, mm.map_height))
     farm.x, farm.y = nx, ny
     scenario.unit_gen += 1
     splice = UnitSplice(2, index, farm, old_own, (int(nx), int(ny)), old_tiles, new_tiles)
@@ -331,14 +344,14 @@ class _At:
 
 def test_flat_dirty_rects_dilate_only_while_blending_is_effective(blend_install):
     """Blending on, the two tiles and their ring are one block rect, not six tile rects."""
-    assert render.flat_dirty_rects([(0, 0), (1, 0)], 4, 4, 8, LayerState()) == [(0, 0, 24, 16)]
-    assert render.flat_dirty_rects([(0, 0)], 4, 4, 8, BLEND_OFF) == [(0, 0, 8, 8)]
+    assert render_paint.flat_dirty_rects([(0, 0), (1, 0)], 4, 4, 8, LayerState()) == [(0, 0, 24, 16)]
+    assert render_paint.flat_dirty_rects([(0, 0)], 4, 4, 8, BLEND_OFF) == [(0, 0, 8, 8)]
 
 
 def _tile_sets() -> dict[str, list]:
     """Seeded tile sets on a 120x120 map for flat_tile_rects()' properties."""
     rng = np.random.default_rng(20261012)
-    block = render.FLAT_PATCH_BLOCK_TILES
+    block = render_paint.FLAT_PATCH_BLOCK_TILES
     full_block = [(2 * block + dx, block + dy) for dx in range(block) for dy in range(block)]
     scatter = [tuple(t) for t in rng.integers(0, 120, size=(40, 2)).tolist()]
     disc = brush_tiles(3 * block, 3 * block, 9, BRUSH_SHAPE_CIRCLE, 120, 120)
@@ -360,8 +373,8 @@ def test_flat_tile_rects_cover_their_tiles_in_disjoint_block_rects(name):
     block, and a block's rects cover at most FLAT_PATCH_DENSITY times the
     tiles asked for there."""
     tiles = _tile_sets()[name]
-    tile_px, block, density = 32, render.FLAT_PATCH_BLOCK_TILES, render.FLAT_PATCH_DENSITY
-    rects = render.flat_tile_rects(iter(tiles), tile_px)
+    tile_px, block, density = 32, render_paint.FLAT_PATCH_BLOCK_TILES, render_paint.FLAT_PATCH_DENSITY
+    rects = render_paint.flat_tile_rects(iter(tiles), tile_px)
     assert rects == sorted(rects) and len(set(rects)) == len(rects)
     covered: dict[tuple[int, int], int] = {}
     per_block: dict[tuple[int, int], int] = {}
@@ -393,7 +406,7 @@ def test_flat_tile_rects_cover_their_tiles_in_disjoint_block_rects(name):
 
 
 def test_flat_tile_rects_of_nothing_is_empty():
-    assert render.flat_tile_rects([], 32) == []
+    assert render_paint.flat_tile_rects([], 32) == []
 
 
 def _straddling_and_sparse_edit(monkeypatch) -> tuple[list, int]:
@@ -401,7 +414,7 @@ def _straddling_and_sparse_edit(monkeypatch) -> tuple[list, int]:
     two lone tiles whose rings each put one corner tile into block (2, 2),
     which is then sparse. Returns the tiles and the block side."""
     block = 8
-    monkeypatch.setattr(render, "FLAT_PATCH_BLOCK_TILES", block)
+    set_render_global(monkeypatch, "FLAT_PATCH_BLOCK_TILES", block)
     patch = [(EDIT_X + dx, EDIT_Y + dy) for dx in range(4) for dy in range(3)]
     return [*patch, (2 * block - 1, 2 * block - 1), (3 * block, 3 * block)], block
 
@@ -435,7 +448,7 @@ def test_a_multi_tile_flat_edit_patches_to_a_fresh_render(blend_install, backend
         before = _stitched(cache, m).copy()
         warm = {k: id(chunk) for k, chunk in cache._cache.items()}
         apply()
-        rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+        rects = render_paint.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
         sizes = [((x1 - x0) // t, (y1 - y0) // t) for x0, y0, x1, y1 in rects]
         sparse = [(2 * block * t, 2 * block * t, (2 * block + 1) * t, (2 * block + 1) * t)]
         sparse.append(((3 * block - 1) * t, (3 * block - 1) * t, 3 * block * t, 3 * block * t))
@@ -698,8 +711,8 @@ def test_replaced_mirrors_reach_a_warm_cache(blend_install, backend, kind):
     before = _stitched(cache).copy()
     key_map = cache._blend_key_map
     mm.terrain[EDIT_Y * mm.map_width + EDIT_X].terrain_id = NEW_TERRAIN_ID
-    cache._terrain_ids = render.tile_field_mirror(scenario, "terrain_id")
-    cache._layer_ids = render.tile_field_mirror(scenario, "layer")
+    cache._terrain_ids = render_paint.tile_field_mirror(scenario, "terrain_id")
+    cache._layer_ids = render_paint.tile_field_mirror(scenario, "layer")
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
     after = _stitched(cache)
     assert cache._blend_key_map is key_map, "the cache made a new map, so the binding was not what dropped the keys"
@@ -709,14 +722,14 @@ def test_replaced_mirrors_reach_a_warm_cache(blend_install, backend, kind):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_a_rebound_derive_function_reaches_a_warm_cache(blend_install, backend, kind, monkeypatch):
-    """The key map is bound to render._blend_keys by identity too (the
+    """The key map is bound to render_paint._blend_keys by identity too (the
     review pack's one-tile-plain inject rebinds it): with a derive that
     gives no tile a key, a warm cache repaints unblended like the full
     render, not from the keys it already held."""
     scenario = _scenario(kind)
     cache = _cache(kind, scenario)
     before = _stitched(cache).copy()
-    monkeypatch.setattr(render, "_blend_keys", lambda _scenario, xs, _ys, *_mirrors: [None] * len(xs))
+    set_render_global(monkeypatch, "_blend_keys", lambda _scenario, xs, _ys, *_mirrors: [None] * len(xs))
     cache.invalidate_region((0, 0, *cache.canvas_dims(0)), terrain_changed=False)
     after = _stitched(cache)
     assert not np.array_equal(after, before), "dropping every key changed no pixel (vacuous)"
@@ -747,7 +760,7 @@ def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend
     once for all of them, not once per rect, and the patched canvas equals
     a fresh cache."""
     seen = blend_keys_match_the_mirrors
-    monkeypatch.setattr(render, "FLAT_PATCH_DENSITY", 0)
+    set_render_global(monkeypatch, "FLAT_PATCH_DENSITY", 0)
     scenario = _scenario("flat")
     mm = scenario.map_manager
     cache = _cache("flat", scenario)
@@ -755,7 +768,7 @@ def test_a_flat_patch_derives_its_keys_in_one_call(blend_install, backend, blend
     tiles = [(EDIT_X + dx, EDIT_Y + dy) for dx in range(4) for dy in range(3)]
     for x, y in tiles:
         mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
-    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, cache.tile_px, cache.layers)
+    rects = render_paint.flat_dirty_rects(tiles, mm.map_width, mm.map_height, cache.tile_px, cache.layers)
     assert len(rects) == 6 * 5, "the dirty set was not dilated by the ring"
     seen.derives = seen.composites = 0
     cache.patch_rects(rects)
@@ -797,12 +810,12 @@ def test_a_flat_edit_inside_one_block_composites_once_per_chunk(blend_install, b
     before = _stitched(cache).copy()
     t = cache.tile_px
     assert cache.resident_levels() == [0] and cache.chunk_px == 8 * t
-    block = render.FLAT_PATCH_BLOCK_TILES
+    block = render_paint.FLAT_PATCH_BLOCK_TILES
     x0 = y0 = 3 * block + 4
     tiles = [(x0 + dx, y0 + dy) for dx in range(6) for dy in range(6)]
     for x, y in tiles:
         mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
-    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+    rects = render_paint.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
     calls = _count_composites(cache, monkeypatch)
     cache.patch_rects(rects)
     composites = len(calls)
@@ -827,11 +840,11 @@ def test_a_multi_block_flat_edit_derives_no_tile_key_twice(blend_install, backen
     cache = _cache("flat", scenario)
     before = _stitched(cache).copy()
     assert cache.resident_levels() == [0]
-    block = render.FLAT_PATCH_BLOCK_TILES
+    block = render_paint.FLAT_PATCH_BLOCK_TILES
     tiles = brush_tiles(3 * block, 3 * block, 9, BRUSH_SHAPE_CIRCLE, w, mm.map_height)
     for x, y in tiles:
         mm.terrain[y * w + x].terrain_id = NEW_TERRAIN_ID
-    rects = render.flat_dirty_rects(tiles, w, mm.map_height, cache.tile_px, cache.layers)
+    rects = render_paint.flat_dirty_rects(tiles, w, mm.map_height, cache.tile_px, cache.layers)
     derived: list[int] = []
     counted = terrain_blend.influences  # the autouse fixture's fake, which delegates
 
@@ -874,7 +887,7 @@ def test_a_flat_patch_of_one_level_evicts_the_others_under_its_rects(blend_insta
     tiles = [(x, y) for x in range(20, 25) for y in range(20, 25)] + [(81, 81), (93, 93)]
     for x, y in tiles:
         mm.terrain[y * mm.map_width + x].terrain_id = NEW_TERRAIN_ID
-    rects = render.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
+    rects = render_paint.flat_dirty_rects(tiles, mm.map_width, mm.map_height, t, cache.layers)
     block = [r for r in rects if r[0] < 40 * t]
     sparse = [r for r in rects if r[0] >= 40 * t]
     assert block == [(19 * t, 19 * t, 26 * t, 26 * t)], block
@@ -957,6 +970,6 @@ def test_the_terrain_mirrors_have_one_in_place_writer():
     them in place. A new writer must invalidate the map itself, and then
     belongs in this pin."""
     assert sorted(_in_place_mirror_writes()) == [
-        ("render_cache.py", "_refresh_terrain_ids", "_layer_ids"),
-        ("render_cache.py", "_refresh_terrain_ids", "_terrain_ids"),
+        ("render_cache_base.py", "_refresh_terrain_ids", "_layer_ids"),
+        ("render_cache_base.py", "_refresh_terrain_ids", "_terrain_ids"),
     ]

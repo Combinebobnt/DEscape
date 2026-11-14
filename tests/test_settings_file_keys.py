@@ -27,6 +27,8 @@ _WRITE = re.compile(r'\bconfig\["([^"]+)"\]\s*=(?!=)')
 NOT_CONFIG_KEYS: frozenset[str] = frozenset()
 # Read but never written, and not legacy: set by hand in config.yaml only.
 READ_ONLY_KEYS = frozenset({"language"})
+# GH #64: the splitter layout's local keys, read only to seed the docks when no window_state is saved.
+SEED_ONLY_KEYS = frozenset({"split_sizes", "log_height"})
 
 
 def _scan() -> tuple[set[str], set[str]]:
@@ -77,7 +79,8 @@ def test_every_portable_key_has_its_controls_label() -> None:
 
 def test_every_legacy_key_has_a_successor_the_registry_carries() -> None:
     discovered, written = _scan()
-    legacy = discovered - written - READ_ONLY_KEYS
+    legacy = discovered - written - READ_ONLY_KEYS - SEED_ONLY_KEYS
+    assert set(settings_file.LOCAL_KEYS) >= SEED_ONLY_KEYS
     assert legacy == set(settings_file.LEGACY_SUCCESSORS)
     for legacy_key, (successor, option) in settings_file.LEGACY_SUCCESSORS.items():
         assert legacy_key in settings_file.PORTABLE_KEYS, legacy_key

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies descape/render.py's refresh_region_iso() -- Phase 4 of the real
+"""Verifies descape/render_iso.py's refresh_region_iso() -- Phase 4 of the real
 isometric Z-height terrain rendering plan.
 Phase 2's tools/verify_iso_render.py checks the full-map compositor;
 Phase 1's tools/verify_iso_geometry.py checks the projection primitives in
@@ -68,12 +68,8 @@ import numpy as np
 from descape import iso_geometry
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    refresh_region_iso,
-    render_terrain_iso,
-    render_terrain_iso_with_proj,
-    tile_pixels_for_map,
-)
+from descape.render_iso import refresh_region_iso, render_terrain_iso, render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 

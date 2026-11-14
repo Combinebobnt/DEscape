@@ -19,6 +19,7 @@ import pytest
 from descape import library_compat, scenario_io
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.scenario_write import _patch_terrain_block
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -588,30 +589,24 @@ def test_load_failure_modal_explains_an_unsupported_version() -> None:
     conftest = pytest.importorskip("conftest")
     if not conftest.PYQT5_AVAILABLE:
         pytest.skip("PyQt5 not importable")
-    from descape import viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     shown: list[tuple[str, str]] = []
     window = conftest.shown_window(1200, 800)
     try:
         window.load_scenario(BLANK_TEMPLATE_PATH)
         open_document = window.scenario
-        real_critical = viewer_module.QMessageBox.critical
 
         def _capture(_parent, title, text, *_args, **_kwargs):
             shown.append((title, text))
 
-        viewer_module.QMessageBox.critical = staticmethod(_capture)
-        real_load = viewer_module.load_map_and_units
-
         def _unsupported(_path):
             raise scenario_io.UnsupportedStructureVersion("1.32")
 
-        viewer_module.load_map_and_units = _unsupported
-        try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(QMessageBox, "critical", staticmethod(_capture))
+            set_viewer_global(patch, "load_map_and_units", _unsupported)
             window.load_scenario(Path("tests/fixtures/does_not_matter.aoe2scenario"))
-        finally:
-            viewer_module.QMessageBox.critical = real_critical
-            viewer_module.load_map_and_units = real_load
 
         assert len(shown) == 1
         title, text = shown[0]

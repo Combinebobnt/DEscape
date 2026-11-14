@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies descape/render.py's render_terrain_iso() -- Phase 2 of the real
+"""Verifies descape/render_iso.py's render_terrain_iso() -- Phase 2 of the real
 isometric Z-height terrain rendering plan.
 Phase 1's tools/verify_iso_geometry.py checks the projection primitives in
 isolation; this script checks their *integration* into a real compositor --
@@ -12,7 +12,7 @@ Checks:
   2. Full coverage: on small synthetic maps (flat and elevated), every
      pixel an independent oracle says should be painted (replaying
      depth_order/diamond_indices/skirt_quad_indices directly, not calling
-     render.py's internals) is non-background in the real render, and
+     render_iso.py's internals) is non-background in the real render, and
      every pixel outside that footprint is exactly background -- no gaps,
      no leaks past the expected silhouette.
   3. Occlusion, scripted: a single raised tile on flat ground partially
@@ -29,7 +29,7 @@ Checks:
   5. Shadow clipping: the v2.6 contact shadow (descape.iso_geometry.
      shadow_quad_indices) can reach a genuinely negative ABSOLUTE canvas
      row near the map's own worst-case corner -- confirms
-     render._clipped_darken() clips that away instead of crashing or
+     render_iso._clipped_darken() clips that away instead of crashing or
      wrapping via numpy fancy-index underflow into the wrong rows.
 
 PNG output for a manual eyeball pass (2_Joan_coop_2, C2_ElCid_coop_4,
@@ -51,7 +51,7 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
-from descape import iso_geometry, render, settings
+from descape import iso_geometry, render_iso, render_paint, settings
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import PLAYER_COLORS
 
@@ -77,7 +77,7 @@ class _FakeUnitManager:
     without an AttributeError. These synthetic maps test terrain compositing
     in isolation, not unit placement (see tools/verify_iso_units.py for
     that), so "no units, on purpose" rather than a defensive getattr in
-    render.py itself -- silently skipping units in production code would be
+    the render modules themselves -- silently skipping units in production code would be
     the worse failure mode."""
 
     def __init__(self):
@@ -122,20 +122,20 @@ def _replay_expected_paint(scenario, elevations: np.ndarray):
     """Independent oracle: replays the same paint order render_terrain_iso()
     uses (skirts then top diamond, per tile, in depth_order) via
     iso_geometry's own primitives directly -- NOT by calling
-    render._render_tile_iso() -- to check render.py's *integration* of
+    render_iso._render_tile_iso() -- to check render_iso.py's *integration* of
     those primitives (right neighbor per side, right order, right edge
-    handling), independent of render.py's own code. Returns
+    handling), independent of render_iso.py's own code. Returns
     (owner_x, owner_y, owner_skirt, proj, tile_px): owner_x/owner_y are
     int32 canvas-shaped arrays (-1 where nothing paints), owner_skirt is a
     bool canvas-shaped array (True where the last paint at that pixel was
     a skirt, not a top diamond)."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     # Fixed legal range and the real configured elev_step_pct, matching
     # render_terrain_iso_with_proj() -- not this synthetic scenario's own
     # observed min/max, and not canvas_size_and_origin's own default. Must
-    # track render.py's real sizing decision (see iso_geometry.MIN_ELEVATION/
+    # track render_iso.py's real sizing decision (see iso_geometry.MIN_ELEVATION/
     # MAX_ELEVATION's own comment on why, added for Phase 4) or this
     # independent oracle computes a differently-shaped canvas than the real
     # renderer and every check below fails on a shape mismatch, not a real
@@ -193,8 +193,8 @@ def _replay_expected_paint(scenario, elevations: np.ndarray):
 def check_determinism(files: list[Path]) -> tuple[bool, str]:
     path = min(files, key=lambda p: p.stat().st_size)
     scenario = load_map_and_units(path)
-    img1 = render.render_terrain_iso(scenario)
-    img2 = render.render_terrain_iso(scenario)
+    img1 = render_iso.render_terrain_iso(scenario)
+    img2 = render_iso.render_terrain_iso(scenario)
     if not np.array_equal(img1, img2):
         return False, f"{path.name}: two renders of the same scenario differ"
     return True, f"OK ({path.name}, {img1.shape}, byte-identical across two renders)"
@@ -213,7 +213,7 @@ def check_full_coverage() -> tuple[bool, str]:
     # fallback color is itself near-black.
     #
     # Still sound with the v2.6 contact shadow in the mix, for two
-    # independent reasons (see render._clipped_darken's own docstring):
+    # independent reasons (see render_iso._clipped_darken's own docstring):
     # multiplicative darkening never turns a real zero (background,
     # "leaks" half of this check) into anything else (0 * f == 0 exactly),
     # and CONTACT_SHADE floors every darkening factor at 0.65 (never 0),
@@ -229,7 +229,7 @@ def check_full_coverage() -> tuple[bool, str]:
     for label, w, h, elev_fn in configs:
         scenario, elevations = synthetic_scenario(w, h, elev_fn)
         owner_x, _owner_y, _owner_skirt, _proj, _tile_px = _replay_expected_paint(scenario, elevations)
-        img = render.render_terrain_iso(scenario)
+        img = render_iso.render_terrain_iso(scenario)
         if img.shape[:2] != owner_x.shape:
             problems.append(f"{label}: render shape {img.shape[:2]} != oracle shape {owner_x.shape}")
             continue
@@ -257,10 +257,10 @@ def check_occlusion_scripted() -> tuple[bool, str]:
     cx, cy = 2, 2
     flat_scn, _ = synthetic_scenario(w, h, lambda x, y: 0)
     raised_scn, _ = synthetic_scenario(w, h, lambda x, y: 1 if (x, y) == (cx, cy) else 0)
-    flat_img = render.render_terrain_iso(flat_scn)
-    raised_img = render.render_terrain_iso(raised_scn)
+    flat_img = render_iso.render_terrain_iso(flat_scn)
+    raised_img = render_iso.render_terrain_iso(raised_scn)
 
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     # Fixed legal range and the real configured elev_step_pct, matching
     # render_terrain_iso_with_proj() (Phase 4) -- both scenarios render onto
     # the identically-shaped/positioned canvas the real renderer now always
@@ -343,7 +343,7 @@ def check_pick_oracle() -> tuple[bool, str]:
 
 def check_shadow_clipping() -> tuple[bool, str]:
     """Two halves, both about the contact-shadow band and
-    render._clipped_darken().
+    render_iso._clipped_darken().
 
     Name kept deliberately (it is a tests/migration_manifest.py key, so a
     rename is a manifest change), but the BODY was retargeted when the
@@ -371,7 +371,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
     canvas instead of being dropped."""
     w, h = 6, 6
     cx, cy = w - 2, 0
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     proj = iso_geometry.canvas_size_and_origin(
         w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
     )
@@ -417,7 +417,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
                     )
 
     try:
-        img = render.render_terrain_iso(scenario, with_units=False)
+        img = render_iso.render_terrain_iso(scenario, with_units=False)
     except Exception as e:
         return False, f"render_terrain_iso raised {type(e).__name__}: {e}"
 
@@ -434,7 +434,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
     for off in ((cbx - 2, cby - 2), (cbx + tile_px, cby + tile_px), (cbx - 3 * tile_px, cby - 3 * tile_px)):
         before = scratch.copy()
         try:
-            render._render_tile_iso(scratch, caster, tile_px, proj, elevations, w, h, offset=off)
+            render_iso._render_tile_iso(scratch, caster, tile_px, proj, elevations, w, h, offset=off)
         except Exception as e:
             return False, f"_render_tile_iso raised {type(e).__name__}: {e} at scratch offset {off}"
         if off == (cbx - 3 * tile_px, cby - 3 * tile_px) and not np.array_equal(scratch, before):
@@ -450,7 +450,7 @@ def check_shadow_clipping() -> tuple[bool, str]:
     # which this seam should never touch at all (it's confined to the
     # caster's own column range near x=cx).
     flat_scenario, _ = synthetic_scenario(w, h, lambda x, y: 0)
-    flat_img = render.render_terrain_iso(flat_scenario, with_units=False)
+    flat_img = render_iso.render_terrain_iso(flat_scenario, with_units=False)
     if img.shape != flat_img.shape:
         return False, f"shape drifted: raised {img.shape} vs flat {flat_img.shape}"
     if not np.array_equal(img[0], flat_img[0]) or not np.array_equal(img[-1], flat_img[-1]):

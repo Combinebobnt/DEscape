@@ -4,7 +4,7 @@ held index in place instead of rebuilding it, and every result equals a
 fresh build_reference_index() over the same scenario state. An edit with
 changed=None still drops the index for a lazy rebuild.
 
-Uses units_120x120.aoe2scenario in Flat, like test_unit_edit_viewer.py."""
+Uses units_120x120.aoe2scenario in Flat, like unit_edit_viewer_helpers.py."""
 
 from __future__ import annotations
 
@@ -130,13 +130,13 @@ def _make_gate(window) -> None:
 
 def _convert_targets(window, count: int = 2):
     """`count` player-1 non-building units on distinct tiles holding only player-1 units."""
-    from descape import render
+    from descape.terrain_palette import BUILDING_TILE_SPANS
 
     index = window.map_view._unit_index
     picked, seen = [], set()
     for entry in index.entries:
         tile = (entry.own_x, entry.own_y)
-        if entry.player_id != 1 or tile in seen or entry.unit.unit_const in render.BUILDING_TILE_SPANS:
+        if entry.player_id != 1 or tile in seen or entry.unit.unit_const in BUILDING_TILE_SPANS:
             continue
         if all(index.entries[o].player_id == 1 for o in index.by_tile[tile]):
             seen.add(tile)

@@ -32,7 +32,8 @@ import math
 import numpy as np
 import pytest
 
-from descape.render_cache import _ChunkCacheBase, box_reduce2
+from descape.render_cache_base import _ChunkCacheBase
+from descape.render_cache_common import box_reduce2
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from testkit import qt_capture
 

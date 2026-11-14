@@ -9,7 +9,7 @@ base: a raised step still hides what is behind it.
 
 Every test builds its expected image itself, from the terrain-only render and
 its own alpha blend, and holds three renders to it on both composite
-backends: the full render (render._paint_candidates_*, the reference loop)
+backends: the full render (render_iso/render_sloped._paint_candidates_*, the reference loop)
 and the chunk cache's stitched chunks, which on the native backend are the
 kernel's own two passes. The sprite is a fake resolved through
 unit_sprites.sprite_pieces_for, so it can carry what synthetic .sld bytes
@@ -24,7 +24,19 @@ import numpy as np
 import pytest
 from test_sprite_chunks import CHUNK, MAP_H, MAP_W, Unit, _scenario
 
-from descape import asset_source, composite_backend, iso_geometry, render, render_cache, unit_sprites
+from descape import (
+    asset_source,
+    composite_backend,
+    iso_geometry,
+    render_cache,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_sprites,
+)
+from testkit.render_family import set_render_global
 
 from test_unit_sprites import CONST
 
@@ -121,19 +133,19 @@ def scenario_map(heights: dict | None = None, base: int = 0, marks=()):
 def _full(style: str, scn, **kwargs):
     """(image, elevations, corner_rise or None, proj) of the full render."""
     if style == "stepped":
-        img, elevations, proj = render.render_terrain_iso_with_proj(scn, **kwargs)
+        img, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, **kwargs)
         return img, elevations, None, proj
-    return render.render_terrain_sloped_with_proj(scn, **kwargs)
+    return render_sloped.render_terrain_sloped_with_proj(scn, **kwargs)
 
 
 def chunk_cache(style: str, scn):
     """A sprites-on chunk cache over scn, CHUNK px a chunk: the ink crosses
     several chunk seams."""
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, chunk_px=CHUNK, sprites=True)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, chunk_px=CHUNK, sprites=True)
 
 
@@ -147,7 +159,7 @@ def _stitched(style: str, scn) -> np.ndarray:
 def _ink_origin(style: str, scn, elevations, corner_rise, proj) -> tuple[int, int]:
     """Top-left canvas pixel of the sprite, from the production anchor."""
     fold = None if corner_rise is None else iso_geometry.tile_folds(elevations)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
     ((draw, ax, ay, _rise),) = layer.by_anchor[(UX, UY)]
     assert draw.rgba is INK
     return ax - draw.hotspot_x, ay - draw.hotspot_y
@@ -251,7 +263,7 @@ def test_ink_based_above_nearer_ground_survives(ink_sprite, backend, style):
 
 
 def _tile_diamond(shape, tx: int, ty: int, level: int, proj) -> np.ndarray:
-    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render.tile_pixels_for_map(MAP_W, MAP_H))
+    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render_paint.tile_pixels_for_map(MAP_W, MAP_H))
     base_x, base_y = iso_geometry.tile_screen_origin(tx, ty, level, proj)
     mask = np.zeros(shape[:2], dtype=bool)
     mask[base_y + dst_y, base_x + dst_x] = True
@@ -267,7 +279,7 @@ def test_marks_keep_their_depth_order_against_a_sprite(ink_sprite, backend, styl
     terrain, *_ = _full(style, scn, with_units=False)
     full, elevations, corner_rise, proj = _full(style, scn, with_sprites=True)
     x0, y0 = _ink_origin(style, scn, elevations, corner_rise, proj)
-    colour = render.unit_mark_color(scn.unit_manager.units[1][1], scn.player_colors[1])
+    colour = render_units.unit_mark_color(scn.unit_manager.units[1][1], scn.player_colors[1])
 
     near_px, far_px = (_tile_diamond(full.shape, *tile, 1, proj) for tile in (near, far))
     opaque = _ink_mask(full.shape, x0, y0, 255, 255)
@@ -302,11 +314,11 @@ def doodad_sprite(monkeypatch):
 def _sprite_positions(style: str, scn) -> dict:
     """by_anchor key -> [(px, py, rise)] of the production sprite layer."""
     if style == "stepped":
-        (elevations, proj), corner_rise = render.elevations_and_proj(scn), None
+        (elevations, proj), corner_rise = render_iso.elevations_and_proj(scn), None
     else:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     fold = None if corner_rise is None else iso_geometry.tile_folds(elevations)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
     return {key: [entry[1:] for entry in entries] for key, entries in layer.by_anchor.items()}
 
 
@@ -321,14 +333,14 @@ def test_a_doodads_sprite_keeps_its_point_and_tile_with_a_footprint(doodad_sprit
     scn = _scenario([[], [Unit(*point, DOODAD)]])
     for (x, y), level in {(5, 5): 1, (6, 5): 2, (6, 6): 1, (7, 7): 1}.items():
         scn.map_manager.get_tile(x, y).elevation = level
-    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (6, 6)
     with_footprint = _sprite_positions(style, scn)
     assert list(with_footprint) == [(int(point[0]), int(point[1]))]
 
     for const in list(DOODAD_TILE_SPANS):
         monkeypatch.delitem(DOODAD_TILE_SPANS, const)
-    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (1, 1)
     assert _sprite_positions(style, scn) == with_footprint
 
@@ -367,7 +379,7 @@ def test_a_wrecks_sprite_keeps_its_point_and_tile_with_a_footprint(monkeypatch, 
     scn = _scenario([[], [Unit(*point, WRECK)]])
     for (x, y), level in {(5, 5): 1, (6, 5): 2, (6, 6): 1, (7, 7): 1}.items():
         scn.map_manager.get_tile(x, y).elevation = level
-    x0, x1, y0, y1 = render.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (3, 3)
     with_footprint = _sprite_positions(style, scn)
     assert list(with_footprint) == [(int(point[0]), int(point[1]))]
@@ -381,7 +393,7 @@ def test_an_off_parity_flares_marker_moves_onto_its_footprint(monkeypatch):
     anchor, so its 2x2 marker stays on its outline. All 230 corpus flares sit on
     whole coordinates, where both anchors agree."""
     _one_sprite(monkeypatch, FLARE4)
-    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", False)  # one entry per sprite
+    set_render_global(monkeypatch, "SPRITE_COLUMN_SLICING", False)  # one entry per sprite
 
     def pixel(x, y):
         (entries,) = _sprite_positions("stepped", _scenario([[], [Unit(x, y, FLARE4)]])).values()

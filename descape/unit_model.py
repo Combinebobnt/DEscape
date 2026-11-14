@@ -88,7 +88,7 @@ from descape import (
     gate_orientation,
     library_compat,
     object_catalog,
-    render,
+    render_units,
     scenario_io,
     terrain_palette,
     unit_rotation,
@@ -360,14 +360,14 @@ def span_low_corner(unit: Unit) -> tuple[int, int]:
     """The (tile_x, tile_y) low corner of `unit`'s footprint, the anchor
     set_unit_const() preserves across a swap.
 
-    Deliberately render._span_start() per axis and never unit_tile_bounds(),
+    Deliberately render_units._span_start() per axis and never unit_tile_bounds(),
     which clamps to the map: a clamped corner would re-anchor a map-edge gate
     onto a different tile than it started on. Public because the viewer's
     map-edge fit check has to measure the same corner the model re-anchors
     from, rather than re-deriving the parity rule on its own side.
     """
-    span_x, span_y = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-    return render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+    span_x, span_y = terrain_palette.tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+    return render_units._span_start(unit.x, span_x), render_units._span_start(unit.y, span_y)
 
 
 def reanchored(unit: Unit, new_const: int) -> tuple[float, float]:
@@ -375,7 +375,7 @@ def reanchored(unit: Unit, new_const: int) -> tuple[float, float]:
     set_unit_const()'s re-anchor, shared with a Move drag's pending turn so a
     stand-in and the real swap cannot drift."""
     low_x, low_y = span_low_corner(unit)
-    return render.span_anchor(low_x, low_y, *terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN))
+    return render_units.span_anchor(low_x, low_y, *terrain_palette.tile_span(new_const, render_units.NON_BUILDING_SPAN))
 
 
 BATCH_CONFLICT = "garrison conflict with another object in this Replace"
@@ -386,10 +386,10 @@ def replaced_position(unit: Unit, new_const: int) -> tuple[float, float]:
     whose span is unchanged, re-anchored on the footprint's low corner only on
     an axis whose span changes. Always re-anchoring would snap free-float units
     and trees to tile centres and shift off-parity buildings by half a tile."""
-    old_span = terrain_palette.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-    new_span = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
+    old_span = terrain_palette.tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+    new_span = terrain_palette.tile_span(new_const, render_units.NON_BUILDING_SPAN)
     low_x, low_y = span_low_corner(unit)
-    anchor_x, anchor_y = render.span_anchor(low_x, low_y, *new_span)
+    anchor_x, anchor_y = render_units.span_anchor(low_x, low_y, *new_span)
     x = unit.x if old_span[0] == new_span[0] else anchor_x
     y = unit.y if old_span[1] == new_span[1] else anchor_y
     return x, y
@@ -442,7 +442,7 @@ def new_unit(
     no list. add() places what this returns; Place Unit's hover ghost (GH
     #128) only draws it, with a sentinel `reference_id=-1`.
 
-    **Never hand a ghost to a write path**, the same warning render.unit_at()
+    **Never hand a ghost to a write path**, the same warning render_units.unit_at()
     carries: it belongs to no list, so a model call on it would misfile it.
     Unit/AoE2Object.__init__ only assign attributes, so a hover may call this
     once per tile crossing; the only shared state it touches is depoison's.
@@ -858,7 +858,7 @@ class UnitEditModel:
         rather than from ViewerWindow, so it covers the two call sites that
         drive begin_unit_edit()/commit_unit_edit() by hand (the terrain-unit
         record and paste region) and a batch-edit script with no viewer at
-        all. render.py's memoized functions read scenario.unit_gen to decide
+        all. render_units.py's memoized functions read scenario.unit_gen to decide
         whether their cached answer is still valid -- see LoadedScenario.
         unit_gen's own docstring for the contract this counter carries."""
         self.loaded.unit_gen += 1
@@ -1138,7 +1138,7 @@ class UnitEditModel:
         different spans ((4, 1), (1, 4) and two 4x4 diagonals), and every
         corpus placement sits at `tile + span/2` per axis, so passing x/y
         through verbatim would leave the gate half a footprint off its own
-        tiles. span_low_corner() forward and render.span_anchor() back is that
+        tiles. span_low_corner() forward and render_units.span_anchor() back is that
         rule and its exact inverse, which is what makes four steps land on the
         original coordinates rather than drifting.
 
@@ -1188,11 +1188,11 @@ class UnitEditModel:
         siblings = gate_orientation.orientation_siblings(old_const)
         if siblings is not None and new_const in siblings:
             return "same gate in another orientation (use Rotate)"
-        if render.unit_tile_bounds(unit, map_w, map_h) is None:
+        if render_units.unit_tile_bounds(unit, map_w, map_h) is None:
             return "off the map"
         x, y = replaced_position(unit, new_const)
-        span_x, span_y = terrain_palette.tile_span(new_const, render.NON_BUILDING_SPAN)
-        x0, y0 = render._span_start(x, span_x), render._span_start(y, span_y)
+        span_x, span_y = terrain_palette.tile_span(new_const, render_units.NON_BUILDING_SPAN)
+        x0, y0 = render_units._span_start(x, span_x), render_units._span_start(y, span_y)
         if x0 < 0 or y0 < 0 or x0 + span_x > map_w or y0 + span_y > map_h:
             return "new footprint leaves the map"
         name = object_catalog.display_name
@@ -1311,7 +1311,7 @@ class UnitEditModel:
         # _garrison is deliberately untouched. Reassign changes which list a
         # unit lives in, not the set of units; reference_id is never written
         # after construction, and garrisoned_in_id only by set_garrisoned_in().
-        # Resyncs the cached _player that render.py/unit_filter.py read for
+        # Resyncs the cached _player that render_units.py/unit_filter.py read for
         # colour -- reassign never touches it otherwise, since ownership here
         # is purely which list the unit lives in.
         self.loaded.unit_manager.update_unit_player_values()
@@ -1341,7 +1341,7 @@ class UnitEditModel:
             lists[b][:] = old_a
         self._reindex_pos_tail(a, 0)
         self._reindex_pos_tail(b, 0)
-        # The cached _player render.py reads for colour; never the banned `unit.player` setter.
+        # The cached _player render_units.py reads for colour; never the banned `unit.player` setter.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
         self._bump_unit_gen()

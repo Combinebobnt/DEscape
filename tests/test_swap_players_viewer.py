@@ -99,10 +99,10 @@ def _player_attributes(window) -> list:
 
 
 def test_the_panel_button_and_the_menu_open_the_dialog_with_the_right_first_player(before_path, monkeypatch) -> None:
-    from descape import viewer as viewer_module
+    from descape.swap_players_dialog import SwapPlayersDialog
 
     opened = []
-    monkeypatch.setattr(viewer_module.SwapPlayersDialog, "exec_", lambda self: opened.append(self.choice()) or 0)
+    monkeypatch.setattr(SwapPlayersDialog, "exec_", lambda self: opened.append(self.choice()) or 0)
     window = _window(before_path)
     try:
         window.mode_combo.setCurrentText("Players")
@@ -133,13 +133,13 @@ def test_the_menu_action_is_registered_rebindable_and_global(tmp_path, before_pa
     from PyQt5.QtWidgets import QApplication
 
     from descape import settings
-    from descape import viewer as viewer_module
+    from descape.swap_players_dialog import SwapPlayersDialog
 
     assert ("map_swap_players", "Swap Players…", "") in settings.REBINDABLE_ACTIONS
     assert settings.keybind_modes("map_swap_players") == settings.keybind_modes("map_disables") == frozenset()
     (tmp_path / "config.yaml").write_text("keybinds:\n  map_swap_players: F8\n")
     opened = []
-    monkeypatch.setattr(viewer_module.SwapPlayersDialog, "exec_", lambda self: opened.append(self) or 0)
+    monkeypatch.setattr(SwapPlayersDialog, "exec_", lambda self: opened.append(self) or 0)
     window = _window(before_path)
     try:
         assert window._keybind_actions["map_swap_players"] is window.swap_players_action

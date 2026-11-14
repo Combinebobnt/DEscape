@@ -10,6 +10,8 @@ The Units, Buildings, Heroes and Other buttons show one category of the catalog.
 
 Owner sets who owns what you place. Objects the game's editor lists only for GAIA (wild animals, resources, trees, rocks, relics and more) are hidden while Owner is a player, and always go to GAIA; **Settings > Advanced** can keep them listed. Clicking an object, or moving to it with the arrow keys, shows its portrait, Unit ID and base stats in the Inspector, even with units selected. The selection stays selected, and Delete and the Edit menu still act on it; its fields show again when you select, place or edit units, or click Show selection.
 
+Portraits follow the owner, as Age of Empires II shows them in play: a player whose architecture (or, with no architecture set, civilization) has its own portrait for an object shows that one, in the catalog for the Owner and in the Inspector for the selected unit's owner. GAIA, and a selection with more than one owner, show the standard portrait.
+
 ## Placing objects
 
 **Place Unit** puts the picked object down one click at a time, for the chosen owner, snapped to the grid and centred on the cursor. A preview follows the cursor. Each click is one undo step, and the new unit becomes the selection; after a place into a building or unit, that host is selected instead.

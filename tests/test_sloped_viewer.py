@@ -298,7 +298,7 @@ def test_pick_map_point_resolves_the_continuous_point_under_a_pixel(style: str) 
     Flat is absent here and covered elsewhere, not skipped: this file's
     fixture window will not actually leave Stepped for Flat (the combo change
     is gated), and Flat's own branch is exercised end to end by the
-    off-grid tests in tests/test_unit_edit_viewer.py, which force Flat
+    off-grid tests in tests/test_unit_edit_viewer_off_grid_drag.py, which force Flat
     on purpose."""
     from PyQt5.QtCore import QPointF
 
@@ -388,12 +388,12 @@ def test_cached_sloped_tile_polygon_matches_a_fresh_build_point_for_point() -> N
     from PyQt5.QtCore import QPointF
     from PyQt5.QtGui import QPolygonF
 
-    from descape import iso_geometry, map_view
+    from descape import iso_geometry, map_view_highlight
 
     window = _bumpy_sloped_window()
     try:
         mv = window.map_view
-        map_view._sloped_outline_polygon.cache_clear()
+        map_view_highlight._sloped_outline_polygon.cache_clear()
         block = [(tx, ty) for ty in range(30, 46) for tx in range(30, 46)]
         assert len({_normalized_shape(mv, tx, ty) for tx, ty in block}) >= 8, "fixture lost its shape mix"
         for tx, ty in block:
@@ -403,7 +403,7 @@ def test_cached_sloped_tile_polygon_matches_a_fresh_build_point_for_point() -> N
                 expected = QPolygonF([QPointF(ox + px, oy + py) for px, py in fn(mv._tile_pixels, *corners)])
                 got = mv._tile_polygon(tx, ty, coarse=coarse)
                 assert got == expected, f"tile ({tx}, {ty}) coarse={coarse}: cached polygon differs"
-        assert map_view._sloped_outline_polygon.cache_info().hits > 0, "the block never hit the cache"
+        assert map_view_highlight._sloped_outline_polygon.cache_info().hits > 0, "the block never hit the cache"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -413,7 +413,7 @@ def test_sloped_highlight_rebuild_builds_only_shapes_it_has_not_seen(monkeypatch
     """TASK-031.38: a brush-9 highlight at a neighbouring tile calls
     sloped_tile_outline_coarse once per corner shape the cache has not seen,
     not once per tile (81). Counted, not timed."""
-    from descape import brush, iso_geometry, map_view
+    from descape import brush, iso_geometry, map_view_highlight
 
     window = _bumpy_sloped_window()
     try:
@@ -427,7 +427,7 @@ def test_sloped_highlight_rebuild_builds_only_shapes_it_has_not_seen(monkeypatch
             return real(*args)
 
         monkeypatch.setattr(iso_geometry, "sloped_tile_outline_coarse", counting)
-        map_view._sloped_outline_polygon.cache_clear()
+        map_view_highlight._sloped_outline_polygon.cache_clear()
 
         def shapes(cx: int, cy: int) -> set:
             tiles = brush.brush_tiles(cx, cy, 9, brush.BRUSH_SHAPE_SQUARE, mv._map_width, mv._map_height)
@@ -461,7 +461,7 @@ def test_scene_space_reads_stay_at_level_0_while_another_level_is_shown(monkeypa
     from PyQt5.QtGui import QTransform
     from PyQt5.QtWidgets import QApplication
 
-    from descape import render, settings, unit_pick
+    from descape import render_sloped, settings, unit_pick
     from descape.render_cache import SlopedChunkCache
 
     if shown == "finer":
@@ -512,7 +512,7 @@ def test_scene_space_reads_stay_at_level_0_while_another_level_is_shown(monkeypa
         assert builds == [] and cache._levels[0].gen == -1, "a scene-space read built level 0"
         assert 0 not in {key[0] for key in cache._cache}, "a scene-space read composited level 0"
 
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(window.scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(window.scenario)
         fresh = SlopedChunkCache(window.scenario, elevations, corner_rise, proj, proj.tile_px)
 
         def stand_in(rise):

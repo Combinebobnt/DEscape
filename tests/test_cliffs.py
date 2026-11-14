@@ -6,7 +6,7 @@ chunks instead of connected runs and corners. Three separate defects produced
 it, and each is pinned separately below because fixing any two of them still
 leaves cliffs broken:
 
-1. `render.stored_rotation` zeroed every GAIA unit's rotation before lookup, so
+1. `render_units.stored_rotation` zeroed every GAIA unit's rotation before lookup, so
    the shape index never reached the sprite path at all.
 2. Un-zeroing alone is worse than the bug: without cliffs in the variant set
    the index goes through `angle_index()`, which scrambles it and can return an
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import asset_source, render, unit_rotation, unit_sprites
+from descape import asset_source, render_units, unit_rotation, unit_sprites
 from descape.scenario_io import load_map_and_units
 
 # Two cliff consts whose graphics bracket the angle_count-vs-real-frames
@@ -61,7 +61,7 @@ def _require_install():
 def test_a_gaia_cliff_keeps_its_stored_rotation():
     """The whole reported symptom in one assertion: this returned 0.0 for every
     GAIA unit, and every cliff is GAIA."""
-    assert render.stored_rotation(0, Unit(DEFAULT_CLIFF, 7.0)) == 7.0
+    assert render_units.stored_rotation(0, Unit(DEFAULT_CLIFF, 7.0)) == 7.0
 
 
 def test_a_gaia_tree_now_keeps_its_stored_rotation():
@@ -72,7 +72,7 @@ def test_a_gaia_tree_now_keeps_its_stored_rotation():
     test_cliffs.py's own module docstring names it as the deliberately
     deferred item Track A2 left open."""
     assert unit_sprites.rotation_is_variant(TREE_CONST)
-    assert render.stored_rotation(0, Unit(TREE_CONST, 19.0)) == 19.0
+    assert render_units.stored_rotation(0, Unit(TREE_CONST, 19.0)) == 19.0
 
 
 def test_a_gaia_creatable_unit_keeps_its_facing():
@@ -82,7 +82,7 @@ def test_a_gaia_creatable_unit_keeps_its_facing():
     path like a player's unit does."""
     assert not unit_sprites.rotation_is_variant(CREATABLE_GAIA_CONST)
     assert unit_rotation.rotation_is_angle(CREATABLE_GAIA_CONST)
-    assert render.stored_rotation(0, Unit(CREATABLE_GAIA_CONST, 3.0)) == 3.0
+    assert render_units.stored_rotation(0, Unit(CREATABLE_GAIA_CONST, 3.0)) == 3.0
 
 
 def test_a_gaia_const_that_is_neither_angle_nor_variant_still_zeroes():
@@ -91,11 +91,11 @@ def test_a_gaia_const_that_is_neither_angle_nor_variant_still_zeroes():
     it is a decision rather than an accident."""
     assert not unit_sprites.rotation_is_variant(INERT_CONST)
     assert not unit_rotation.rotation_is_angle(INERT_CONST)
-    assert render.stored_rotation(0, Unit(INERT_CONST, 7.0)) == 0.0
+    assert render_units.stored_rotation(0, Unit(INERT_CONST, 7.0)) == 0.0
 
 
 def test_a_non_gaia_units_rotation_was_never_touched():
-    assert render.stored_rotation(3, Unit(TREE_CONST, 19.0)) == 19.0
+    assert render_units.stored_rotation(3, Unit(TREE_CONST, 19.0)) == 19.0
 
 
 # -- 2. the frame dispatch -----------------------------------------------
@@ -120,7 +120,7 @@ def test_cliffs_are_not_wall_connectors():
     entries in _ROTATION_VARIANT_CONSTS: wall_connector_consts() is built from
     that one, so folding cliffs in would make every cliff count as a wall
     neighbour and reshape real walls through
-    render.wall_variant_rotation_overrides()."""
+    render_units.wall_variant_rotation_overrides()."""
     assert not (unit_sprites._CLIFF_VARIANT_CONSTS & unit_sprites.wall_connector_consts())
 
 
@@ -206,9 +206,9 @@ def test_span_anchor_is_the_inverse_of_span_start():
     Cliff tool's own snap formula, used forward (tile -> coordinate) instead
     of _span_start's backward (coordinate -> tile)."""
     for span_x, span_y in [(3, 3), (1, 3), (3, 1), (2, 3), (3, 2), (2, 2)]:
-        x, y = render.span_anchor(10, 20, span_x, span_y)
-        assert render._span_start(x, span_x) == 10
-        assert render._span_start(y, span_y) == 20
+        x, y = render_units.span_anchor(10, 20, span_x, span_y)
+        assert render_units._span_start(x, span_x) == 10
+        assert render_units._span_start(y, span_y) == 20
 
 
 def test_cliff_catalog_covers_every_cliff_const():
@@ -296,7 +296,7 @@ def test_tier_b_introduces_no_new_none_sprite(corpus_files):
                 old_ok = unit_sprites._native_frame(str(entry["file_name"]), old_index) is not None
                 if not old_ok:
                     continue
-                new_rotation = render.stored_rotation(player_id, unit)
+                new_rotation = render_units.stored_rotation(player_id, unit)
                 if unit_sprites.sprite_for(const, new_rotation, player_id, 32) is None:
                     regressions.append((path.name, const, unit.rotation))
     assert not regressions, regressions
@@ -323,7 +323,7 @@ def test_a_forest_heavy_file_now_draws_many_distinct_tree_frames(corpus_files):
             if unit.unit_const != TREE_CONST:
                 continue
             placements += 1
-            rotation = render.stored_rotation(player_id, unit)
+            rotation = render_units.stored_rotation(player_id, unit)
             indices.add(unit_sprites._frame_for(TREE_CONST, entry, rotation))
 
     assert placements > 1000, "forest-heavy fixture no longer has enough oak placements to be meaningful"

@@ -85,7 +85,7 @@ def _set_stance(loaded, row_player: int, col_player: int, value: int) -> None:
 
 
 def test_diplomacy_mode_swaps_the_left_panel_and_gates_edit_tools() -> None:
-    from descape.viewer import _LEFT_PAGE_DIPLOMACY
+    from descape.viewer_common import _LEFT_PAGE_DIPLOMACY
 
     window = _window()
     try:

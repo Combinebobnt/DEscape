@@ -9,13 +9,16 @@ or `garrisoned_in_id`, or adding a write path. A new exception adds its
 one-line entry to `AGENTS.md` and its scope here. The `garrisoned_in_id`
 rule has no exception scope beyond `AGENTS.md`'s bullet.
 
-## Per game dataset (GH #67)
+## Per game (GH #67)
 
-Return of Rome scenarios (header variant 2)
-are edited with Return of Rome game data (`descape/game_dataset.py`). The
-viewer refuses every edit and save of a document shown with the other
-game's data (`ViewerWindow.game_data_lock_reason()`). That lock is the
-viewer's; the model guards below still raise in a batch script. A data
+A scenario is edited with its own game's data. Each game is a descriptor
+in `descape/games.py`, and Return of Rome claims header variant 2
+(`docs/GAME_DATA.md` has the registry). The viewer refuses every edit and
+save of a document shown with another game's data
+(`game_dataset.lock_reason()`, behind `ViewerWindow.game_data_lock_reason()`).
+That lock is the viewer's; the model guards below still raise in a batch
+script. The hand-measured sets below (wall and cliff consts, the GAIA-only
+objects) are `games.PerGame` tables, one entry per game. A data
 mod (GH #58, File > Data Mod) swaps the AoE2 dataset's tables for ones
 derived from its own `.dat` (`game_dataset.set_data_mod()`): the
 classifiers below then read the mod's tables, and no write rule changes.
@@ -381,7 +384,7 @@ may use it.
   gate takes `reorient_gate_const()`'s sibling, then its planned position),
   all inside that same sibling-only scope. It
   must re-anchor `x`/`y` by preserving the footprint's low corner
-  (`span_low_corner()` forward, `render.span_anchor()` back), because the
+  (`span_low_corner()` forward, `render_units.span_anchor()` back), because the
   four orientations have four different spans and every corpus placement
   sits at `tile + span/2` per axis. `rotation` and `z` pass through
   verbatim as above: a gate's stored rotation is `0.0` or the junk sentinel

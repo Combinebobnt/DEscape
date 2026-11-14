@@ -1,6 +1,6 @@
 """Phase 4b.6c: the trigger variables dialog and the fifth edit funnel.
 
-Its own file rather than more of tests/test_trigger_panel.py, because the risk
+Its own file rather than more of the tests/test_trigger_panel_*.py modules, because the risk
 is a different one. The panel's tests protect "browsing is not editing"; these
 protect the thing variables have that triggers do not, which is that **nothing
 raises when the contract is broken.**
@@ -43,7 +43,7 @@ FIXTURE_VARIABLES = [(0, "fixture_var")]
 def _triggers_window():
     """A shown, offscreen ViewerWindow in Triggers mode on the fixture.
 
-    show() matters for the same reason it does in tests/test_trigger_panel.py:
+    show() matters for the same reason it does in tests/trigger_panel_helpers.py:
     an unshown window's layout is Qt's fallback, not the code under test.
     """
     from PyQt5.QtWidgets import QApplication
@@ -87,10 +87,10 @@ def _add(dialog, name: str) -> None:
 def _rename(dialog, monkeypatch, name: str) -> None:
     """Drive the Rename button through its QInputDialog, faked with
     getText returning (name, True)."""
-    import descape.trigger_panel as trigger_panel_module
+    from PyQt5.QtWidgets import QInputDialog
 
     monkeypatch.setattr(
-        trigger_panel_module.QInputDialog,
+        QInputDialog,
         "getText",
         staticmethod(lambda *a, **k: (name, True)),
     )
@@ -239,10 +239,10 @@ def test_double_clicking_a_row_opens_rename(monkeypatch) -> None:
     window = _triggers_window()
     try:
         dialog = _dialog(window)
-        import descape.trigger_panel as trigger_panel_module
+        from PyQt5.QtWidgets import QInputDialog
 
         monkeypatch.setattr(
-            trigger_panel_module.QInputDialog,
+            QInputDialog,
             "getText",
             staticmethod(lambda *a, **k: ("gold_target", True)),
         )
@@ -490,7 +490,7 @@ def test_closing_the_window_closes_the_dialog() -> None:
 def _bind_variable_shortcuts(window) -> None:
     from PyQt5.QtGui import QKeySequence
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     dialog = SettingsDialog(window)
     try:
@@ -523,7 +523,7 @@ def test_variables_opener_real_key_follows_browse_and_mode_gates() -> None:
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.shown_window()
     try:
@@ -573,11 +573,11 @@ def test_variables_opener_real_key_follows_browse_and_mode_gates() -> None:
 def test_variable_real_keys_mutate_once_rebind_clear_and_refresh_after_mode_switch(op, monkeypatch) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtWidgets import QInputDialog
 
     from descape import settings
+    from descape.settings_dialog import SettingsDialog
     from descape.trigger_model import TriggerEditModel
-    from descape.trigger_panel import QInputDialog
-    from descape.viewer import SettingsDialog
 
     window = _triggers_window()
     try:
@@ -651,8 +651,7 @@ def test_variable_real_keys_mutate_once_rebind_clear_and_refresh_after_mode_swit
 
 def test_variable_shortcuts_follow_read_only_and_individual_button_gates(monkeypatch) -> None:
     from PyQt5.QtCore import Qt
-
-    from descape.trigger_panel import QInputDialog
+    from PyQt5.QtWidgets import QInputDialog
 
     window = _triggers_window()
     try:
@@ -759,7 +758,7 @@ def test_variable_real_key_close_reopen_and_document_recreation_dispatch_once(mo
 
 
 def test_standalone_variables_dialog_keeps_existing_constructor_and_buttons() -> None:
-    from descape.trigger_panel import VariablesDialog
+    from descape.trigger_panel_variables import VariablesDialog
 
     conftest.ensure_qapp()
     calls = []

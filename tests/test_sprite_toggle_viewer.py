@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import pytest
 
-from descape import asset_source, render_cache, unit_sprites, viewer
+from descape import asset_source, render_cache, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -360,13 +361,13 @@ def test_the_dirty_bbox_call_matches_the_cache_flag(sprite_install, monkeypatch)
     window = conftest.blank_window()
     try:
         seen: list[tuple[bool, bool]] = []
-        real = viewer.dirty_screen_bbox_iso
+        real = viewer_global("dirty_screen_bbox_iso")
 
         def recording(*args, **kwargs):
             seen.append((kwargs.get("with_sprites"), window._cache.sprites_enabled))
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(viewer, "dirty_screen_bbox_iso", recording)
+        set_viewer_global(monkeypatch, "dirty_screen_bbox_iso", recording)
 
         mm = window.scenario.map_manager
         for enabled in (True, False):
@@ -404,13 +405,13 @@ def test_the_sloped_dirty_bbox_call_matches_the_cache_flag(sprite_install, monke
     try:
         window.terrain_style_combo.setCurrentText("Sloped")
         seen: list[tuple[bool, bool]] = []
-        real = viewer.dirty_screen_bbox_sloped
+        real = viewer_global("dirty_screen_bbox_sloped")
 
         def recording(*args, **kwargs):
             seen.append((kwargs.get("with_sprites"), window._cache.sprites_enabled))
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(viewer, "dirty_screen_bbox_sloped", recording)
+        set_viewer_global(monkeypatch, "dirty_screen_bbox_sloped", recording)
 
         mm = window.scenario.map_manager
         for enabled in (True, False):

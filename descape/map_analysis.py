@@ -99,7 +99,7 @@ from descape.fill_tools import connected_regions
 from descape.iso_geometry import MAX_ELEVATION, MIN_ELEVATION
 from descape.messages_fields import STRING_ID_UNSET
 from descape.player_fields import defined_player_ids
-from descape.render import unit_tile_bounds
+from descape.render_units import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_kind import gaia_only_consts, invisible_consts, mobile_unit_consts
@@ -200,7 +200,7 @@ def _on_half_grid(v: float) -> bool:
 
 
 def _on_span_grid(v: float, span: int) -> bool:
-    # render.span_anchor()'s rule: tile + span/2, so odd spans end in .5 and even ones in .0.
+    # render_units.span_anchor()'s rule: tile + span/2, so odd spans end in .5 and even ones in .0.
     return v - math.floor(v) == (span % 2) / 2
 
 

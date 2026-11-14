@@ -50,7 +50,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import batch_api, object_catalog, player_labels, scatter
-from descape.render import unit_tile_bounds
+from descape.render_units import unit_tile_bounds
 from descape.terrain_palette import name_for_terrain_id, terrain_ids
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.viewer_common import _add_player_item

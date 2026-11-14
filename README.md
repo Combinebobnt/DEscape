@@ -396,8 +396,10 @@ same file. **View > Layers > Mod Art** turns it off, and the Mod art list in
 Settings > Mods leaves single mods out. That list also shows the mods the
 game's own mod list disables, off until ticked: a ticked one draws in DEscape
 only, at its place in the game's mod order, and the game's list is not
-changed. Mods are read once per launch; after enabling or disabling one in
-the game, restart DEscape or reload the profile folder.
+changed. A mod enabled, disabled or reordered in the game while DEscape is
+open is picked up on the next scenario open, Mod Art toggle or Settings
+open; **Rescan mods** in Settings > Mods re-reads every mod folder, for a
+mod the game updated in place.
 
 Data mods (a mod that ships its own `resources/_common/dat/empires2_x2_p1.dat`,
 the kind the game's lobby selects rather than enables) are picked in
@@ -444,6 +446,8 @@ generators extract from the game's own `empires2_x2_p1.dat`, parsed with
 install is not needed for them; genieutils-py runs at runtime only for
 **File > Data Mod**, which derives a data mod's tables with these same
 generators. The tables only need regenerating when the game updates its data.
+Each game DEscape reads (AoE2, Return of Rome) is a descriptor with its own
+tables folder; `docs/GAME_DATA.md` covers the games, data mods and adding a game.
 
 They regenerate together with `tools/regen_game_data.py`. It runs every
 generator against your install, replaces the tables only if all of them

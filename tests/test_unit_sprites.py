@@ -1912,7 +1912,7 @@ def test_each_piece_dispatches_rotation_through_its_own_resolving_unit_id(instal
         {"unit_id": piece_const, "file_name": "t_variant_piece_x1",
          "angle_count": 5, "frame_count": 1, "dx": 0, "dy": 0},
     ])
-    monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({piece_const}))
+    monkeypatch.setitem(unit_sprites._ROTATION_VARIANT_BY_GAME, "aoe2", frozenset({piece_const}))
     assert unit_sprites.variant_index(4.0, 5) != unit_sprites.angle_index(4.0, 5)
 
     got = unit_sprites.sprite_pieces_for(CONST, 4.0, 0, 32)[0]

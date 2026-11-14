@@ -5,7 +5,7 @@ unit_sprites.flat_art().
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script like tools/gen_ship_sails_review_pack.py. Qt-free: Flat's own
-oracle render, render.render_terrain() plus render.overlay_units(
+oracle render, render_flat.render_terrain() plus render_flat.overlay_units(
 with_sprites=True), on one synthetic scenario, cropped per frame and enlarged
 by an integer nearest-neighbour factor. Needs a configured AoE2:DE install.
 
@@ -50,8 +50,9 @@ import gen_seam_eyeball as seam_eyeball
 import numpy as np
 import verify_flat_facing as vf
 
-from descape import asset_source, gate_orientation, render, unit_sprites
+from descape import asset_source, gate_orientation, render_flat, render_paint, render_units, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.terrain_palette import tile_span
 from testkit import review_pack as rp
 
 PACK_ID = "top_view_objects"
@@ -98,18 +99,18 @@ def _ref(tile: tuple[int, int]) -> int:
 def _units() -> list[tuple[int, int, int, float]]:
     """(const, tile x, tile y, rotation) for every unit, walls carrying the
     stored shape a Place Unit wall run writes (neighbours8, a lone piece 2)."""
-    span = render.tile_span
+    span = tile_span
     connectors: set[tuple[int, int]] = set()
     gates = []
     for _box, walls, placed in _FRAMES.values():
         connectors.update(walls)
         for const, (tx, ty) in placed:
             sx, sy = span(const, (1, 1))
-            x, y = render.span_anchor(tx, ty, sx, sy)
+            x, y = render_units.span_anchor(tx, ty, sx, sy)
             gates.append((const, x, y))
             if gate_orientation.is_gate(const):
                 unit = SimpleNamespace(unit_const=const, x=x, y=y)
-                connectors.update(render.unit_occupied_tiles(unit, 120, 120))
+                connectors.update(render_units.unit_occupied_tiles(unit, 120, 120))
     out = []
     for _box, walls, _placed in _FRAMES.values():
         for tx, ty in walls:
@@ -205,7 +206,7 @@ def _patched(inject: str | None):
 
 
 def _tile_px(scn) -> int:
-    return render.tile_pixels_for_map(scn.map_manager.map_width, scn.map_manager.map_height)
+    return render_paint.tile_pixels_for_map(scn.map_manager.map_width, scn.map_manager.map_height)
 
 
 def _crop(img: np.ndarray, box, tile_px: int) -> np.ndarray:
@@ -216,9 +217,9 @@ def _crop(img: np.ndarray, box, tile_px: int) -> np.ndarray:
 def _full_images(inject: str | None, scn=None, terrain=None) -> tuple[np.ndarray, np.ndarray]:
     """(terrain only, terrain plus Flat icons) for the whole map."""
     scn = scn or _scenario()
-    terrain = render.render_terrain(scn) if terrain is None else terrain
+    terrain = render_flat.render_terrain(scn) if terrain is None else terrain
     with _patched(inject):
-        full = render.overlay_units(terrain, scn, with_sprites=True)
+        full = render_flat.overlay_units(terrain, scn, with_sprites=True)
     return terrain, full
 
 
@@ -235,7 +236,7 @@ def _frame_images(inject: str | None, scn=None, terrain=None) -> dict[str, np.nd
 def _footprint_axis(full: np.ndarray, terrain: np.ndarray, const: int, x: float, y: float, tile_px: int):
     """The principal axis (and elongation) of what one unit painted over the terrain."""
     unit = SimpleNamespace(unit_const=const, x=x, y=y)
-    tx0, tx1, ty0, ty1 = render.unit_tile_bounds(unit, 120, 120)
+    tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(unit, 120, 120)
     sl = np.s_[ty0 * tile_px : ty1 * tile_px, tx0 * tile_px : tx1 * tile_px]
     mask = rp.changed_pixels(full[sl], terrain[sl]).astype(np.uint8) * 255
     if not mask.any():
@@ -258,8 +259,8 @@ def _axes(full: np.ndarray, terrain: np.ndarray, tile_px: int) -> dict[str, list
             if got is not None:
                 rows.append((f"wall {tile}", *got))
         for const, (tx, ty) in gates:
-            sx, sy = render.tile_span(const, (1, 1))
-            x, y = render.span_anchor(tx, ty, sx, sy)
+            sx, sy = tile_span(const, (1, 1))
+            x, y = render_units.span_anchor(tx, ty, sx, sy)
             got = _footprint_axis(full, terrain, const, x, y, tile_px)
             if got is not None:
                 rows.append((f"const {const}", *got))
@@ -409,7 +410,7 @@ def check() -> None:
         failures.append(f"spec: {exc}")
     scn = _scenario()
     tile_px = _tile_px(scn)
-    terrain = render.render_terrain(scn)
+    terrain = render_flat.render_terrain(scn)
     bare = {fid: _crop(terrain, box, tile_px) for fid, (box, _w, _g) in _FRAMES.items()}
     _t, clean_full = _full_images(None, scn, terrain)
     clean = {fid: _crop(clean_full, box, tile_px) for fid, (box, _w, _g) in _FRAMES.items()}

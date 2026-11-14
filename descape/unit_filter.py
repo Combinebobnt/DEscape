@@ -39,7 +39,7 @@ class UnitFilter:
     caches key correctness on "did the filter change", and a mutable filter
     edited in place would silently skip the invalidation that makes a filter
     change visible (units are baked into cached chunk pixels -- see
-    render_cache._ChunkCacheBase.set_unit_filter).
+    render_cache_base._ChunkCacheBase.set_unit_filter).
 
     show_trees is deliberately separate from show_gaia rather than folded
     into it. Trees are the bulk of the GAIA object count, but cliffs, gold

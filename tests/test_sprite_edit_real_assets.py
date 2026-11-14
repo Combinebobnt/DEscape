@@ -28,7 +28,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render_iso, render_paint, unit_sprites
 from descape.elevation_tools import set_tile_elevation
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
@@ -145,7 +145,7 @@ def test_a_stroke_beside_a_real_wonder_repaints_its_whole_sprite_in_a_live_windo
         mm = window.scenario.map_manager
         window._apply_dirty(window.edit_history.apply("elevation", mm.terrain, lambda: _edit_and_dirty(mm)))
 
-        full, _elev, _proj = render.render_terrain_iso_with_proj(window.scenario, with_sprites=True)
+        full, _elev, _proj = render_iso.render_terrain_iso_with_proj(window.scenario, with_sprites=True)
         assert np.array_equal(
             window._cache.render_rect(0, 0, canvas_w, canvas_h), full[:canvas_h, :canvas_w]
         ), (
@@ -171,15 +171,15 @@ def test_the_real_wonder_sprite_actually_out_reaches_the_plain_dilation():
     mutation involves the viewer wiring, and a window costs a full re-render.
     """
     _require_install()
-    from descape.render import dirty_screen_bbox_iso
+    from descape.render_bbox import dirty_screen_bbox_iso
     from descape.render_cache import IsoChunkCache
     from descape.scenario_io import load_map_and_units
 
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     _place_wonder(scenario)
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
 
     cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims(0)
@@ -200,7 +200,7 @@ def test_the_real_wonder_sprite_actually_out_reaches_the_plain_dilation():
         assert bbox is not None
         cache.patch(bbox)
 
-    full, _elev, _proj = render.render_terrain_iso_with_proj(scenario, with_sprites=True)
+    full, _elev, _proj = render_iso.render_terrain_iso_with_proj(scenario, with_sprites=True)
     assert not np.array_equal(cache.render_rect(0, 0, canvas_w, canvas_h), full[:canvas_h, :canvas_w]), (
         "with the sprite reaches zeroed the patch STILL matched a fresh full render, so the "
         "widening is not what makes the live-window oracle pass -- the real Wonder sprite is "

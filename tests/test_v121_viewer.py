@@ -68,13 +68,13 @@ def test_save_as_after_every_mode_is_byte_identical(name: str, tmp_path: Path, m
     mode follows), the document stays clean throughout, and the real
     ViewerWindow.save_as(), with only its file dialog stubbed, writes a copy
     byte-identical to the original and retargets the window to it."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     path = _resolve(name)
     original = path.read_bytes()
     dest = tmp_path / "copy.aoe2scenario"
     monkeypatch.setattr(
-        viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
+        QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
     )
     window = _v121_window(path)
     try:

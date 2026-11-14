@@ -5,17 +5,17 @@ host then moves those same units there through ViewerWindow._garrison_units(),
 the path a drop on a host takes, so each keeps its reference_id and the type
 and capacity checks still run. The panel half is standalone, on
 test_units_panel.py's convention; the viewer half drives a real offscreen
-window on test_unit_edit_viewer.py's fixture and helpers.
+window on unit_edit_viewer_helpers.py's fixture and helpers.
 """
 
 from __future__ import annotations
 
 import pytest
-import test_unit_edit_viewer as viewer_tests
 import test_units_panel as panel_tests
+import unit_edit_viewer_helpers as viewer_tests
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette
-from test_unit_edit_viewer import _no_install_env  # noqa: F401 -- autouse fixture
+from unit_edit_viewer_helpers import _no_install_env  # noqa: F401 -- autouse fixture
 
 from descape.units_panel import UnitsPanel
 

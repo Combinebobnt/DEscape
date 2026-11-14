@@ -1,5 +1,5 @@
 """TASK-031.56: `_dirty_screen_bbox` finds the units an elevation edit
-triggers through `render.unit_own_tile_index()` (`_units_owning_tiles`)
+triggers through `render_units.unit_own_tile_index()` (`_units_owning_tiles`)
 instead of walking every unit on every step.
 
 The oracle is the walk itself, kept here as `_old_walk`. Every case runs the
@@ -23,13 +23,15 @@ import numpy as np
 import pytest
 from test_invalidate_units_splice import MILL_CONST, WALL_CONST, Unit
 
-from descape import render
+from descape import render_bbox, render_units
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import _canvas_pixel_dims, elevations_and_proj
+from descape.render_bbox import _canvas_pixel_dims
+from descape.render_iso import elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_filter import UnitFilter
 from descape.unit_model import UnitEditModel
+from testkit.render_family import set_render_global
 
 import conftest
 
@@ -60,7 +62,7 @@ def _old_walk(scenario, tiles) -> list:
 @pytest.fixture
 def checked(monkeypatch):
     """Spies on the shipped _units_owning_tiles: each call must return exactly the walk's units."""
-    real = render._units_owning_tiles
+    real = render_bbox._units_owning_tiles
     stats = {"calls": 0, "units": 0}
 
     def spy(scenario, tiles):
@@ -71,7 +73,7 @@ def checked(monkeypatch):
         stats["units"] += len(want)
         return got
 
-    monkeypatch.setattr(render, "_units_owning_tiles", spy)
+    set_render_global(monkeypatch, "_units_owning_tiles", spy)
     return stats
 
 
@@ -79,10 +81,10 @@ def _bbox(scenario, dirty, pre, proj, *, walk=False, threshold=LOOP, **kw):
     elevations = pre.copy()
     changed: set = set()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(render, "BBOX_ARRAY_PATH_MIN_TILES", threshold)
+        set_render_global(mp, "BBOX_ARRAY_PATH_MIN_TILES", threshold)
         if walk:
-            mp.setattr(render, "_units_owning_tiles", _old_walk)
-        rect = render._dirty_screen_bbox(
+            set_render_global(mp, "_units_owning_tiles", _old_walk)
+        rect = render_bbox._dirty_screen_bbox(
             scenario, dirty, elevations, proj, _canvas_pixel_dims(proj), elevation_changed=changed, **kw
         )
     return rect, changed, elevations
@@ -232,7 +234,7 @@ def _covers_footprint(scenario, unit, kw):
         bare = _bbox(scenario, dirty, pre, proj, with_units=False, **kw)[0]
         assert rect != bare
         assert rect[0] <= bare[0] and rect[1] <= bare[1] and rect[2] >= bare[2] and rect[3] >= bare[3]
-    assert [id(u) for u in render._units_owning_tiles(scenario, {(int(unit.x), int(unit.y))})] == [id(unit)]
+    assert [id(u) for u in render_bbox._units_owning_tiles(scenario, {(int(unit.x), int(unit.y))})] == [id(unit)]
 
 
 @pytest.mark.parametrize("shape", SHAPES, ids=["stepped", "sloped", "sloped_sprites"])
@@ -245,7 +247,7 @@ def _covers_footprint(scenario, unit, kw):
     ids=["player_hidden", "garrisoned_hidden"],
 )
 def test_a_unit_the_filter_hides_still_widens_the_bbox(checked, shape, unit_filter, add_kw):
-    assert "unit_filter" not in inspect.signature(render._dirty_screen_bbox).parameters
+    assert "unit_filter" not in inspect.signature(render_bbox._dirty_screen_bbox).parameters
     scenario, _, unit = _blank_with(3, **add_kw)
     assert not unit_filter.matches(3, unit)
     _covers_footprint(scenario, unit, _shape_kw(shape))
@@ -267,21 +269,21 @@ def test_the_memo_survives_elevation_edits_and_follows_unit_edits(checked, shape
     mm = scenario.map_manager
     pre, proj = elevations_and_proj(scenario)
     pre = _assert_matches_walk(scenario, _raise_edit(scenario), pre, proj, "first", **kw)[2]
-    index = render.unit_own_tile_index(scenario)
+    index = render_units.unit_own_tile_index(scenario)
     gen = scenario.unit_gen
 
     # An elevation edit, propagation included, neither bumps unit_gen nor rebuilds the index.
     dirty = _raise_around(mm, *EDIT, 9, 2)
     pre = _assert_matches_walk(scenario, dirty, pre, proj, "elevation", **kw)[2]
     assert scenario.unit_gen == gen
-    assert render.unit_own_tile_index(scenario) is index
+    assert render_units.unit_own_tile_index(scenario) is index
 
     # A unit move bumps it, and the next lookup sees the new own tile, not the old one.
     new_xy = (EDIT[0] + 20, EDIT[1] + 15)
     model.set_position(unit, new_xy[0] + 0.5, new_xy[1] + 0.5, unit.z)
     assert scenario.unit_gen != gen
-    assert render._units_owning_tiles(scenario, {EDIT}) == []
-    assert [id(u) for u in render._units_owning_tiles(scenario, {new_xy})] == [id(unit)]
+    assert render_bbox._units_owning_tiles(scenario, {EDIT}) == []
+    assert [id(u) for u in render_bbox._units_owning_tiles(scenario, {new_xy})] == [id(unit)]
     before = checked["units"]
     pre = _assert_matches_walk(scenario, _raise_edit(scenario, EDIT), pre, proj, "old tile", **kw)[2]
     assert checked["units"] == before, "the moved unit was still found at its old tile"

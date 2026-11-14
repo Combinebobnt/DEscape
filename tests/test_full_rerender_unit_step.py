@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 from test_region_paste_render import _block_window, _paste
 
-from descape import render
+from descape import render_iso, render_sloped, render_units
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -39,9 +40,9 @@ def _fresh(window, style: str) -> np.ndarray:
     canvas_w, canvas_h = window._cache.canvas_dims(0)
     sprites = window._cache.sprites_enabled
     if style == "Stepped":
-        full = render.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_iso.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     else:
-        full = render.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_sloped.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     return full[:canvas_h, :canvas_w]
 
 
@@ -51,15 +52,13 @@ def _ids(by_tile: dict) -> dict:
 
 def _check(window, style: str, step: str) -> None:
     cache = window._cache
-    fresh = render._units_by_tile(window.scenario, cache.unit_filter)
+    fresh = render_units._units_by_tile(window.scenario, cache.unit_filter)
     assert _ids(cache.units_by_tile) == _ids(fresh), f"{step}: units_by_tile differs from a fresh build"
     assert np.array_equal(_canvas(window), _fresh(window, style)), f"{step}: differs from a fresh render"
 
 
 def _pin_threshold(monkeypatch, value: int) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", value)
+    set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", value)
 
 
 def _fill(window, terrain_id: int) -> int:
@@ -77,9 +76,7 @@ def _filled_window(style: str, monkeypatch):
     Trees-on Paint Cans into it: FOREST_OAK (144 trees added), then FOREST_PALM
     over it (each oak removed, a palm added), so both the undo and the redo of
     the second bring units back. 144 tiles, 288 unit changes."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
     window = conftest.terrain_edit_window()
     if style != "Stepped":
         window.terrain_style_combo.setCurrentText(style)

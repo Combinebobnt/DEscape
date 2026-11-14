@@ -16,9 +16,12 @@ from descape import (
     cliff_catalog,
     command_buttons,
     game_dataset,
+    games,
     gate_orientation,
     player_fields,
-    render,
+    render_paint,
+    render_sprites,
+    render_units,
     scenario_io,
     trigger_fields,
     unit_kind,
@@ -28,7 +31,7 @@ from descape import (
 )
 from descape.options_model import players_write_supported
 from descape.unit_model import UnitEditModel
-from testkit.ror_fixture import ror_copy
+from testkit.ror_fixture import ROR_VARIANT, ror_copy
 
 ROR_WALLS = (72, 117, 119, 155, 231, 370, 788, 1062)
 SHORT_MARBLE = range(2190, 2226)
@@ -188,7 +191,7 @@ def test_a_ror_civ_token_is_encodable_and_keeps_players_writable(tmp_path):
     spec = next(s for s in player_fields.specs_for(reloaded) if s.field_id == "civilization")
     assert player_fields.current_value(reloaded, spec, 1) == "EGYPTIAN-CIV"
     assert players_write_supported(reloaded), "a stored RoR token must re-encode"
-    assert reloaded.game_variant == game_dataset.ROR_VARIANT
+    assert reloaded.game_variant == ROR_VARIANT
 
 
 def test_ror_starting_ages_are_its_four_ages():
@@ -201,10 +204,10 @@ def test_ror_starting_ages_are_its_four_ages():
 
 def test_ror_civs_index_their_own_dat():
     assert civ_art.civ_index("PERSIAN-CIV") not in (None, 9)
-    assert civ_art.civ_index("PERSIAN-CIV", ror=True) == 9
-    assert civ_art.civ_index(17, ror=True) == 17
-    assert civ_art.civ_index(18, ror=True) is None
-    assert civ_art.civ_index("RANDOM", ror=True) is None
+    assert civ_art.civ_index("PERSIAN-CIV", games.ROR) == 9
+    assert civ_art.civ_index(17, games.ROR) == 17
+    assert civ_art.civ_index(18, games.ROR) is None
+    assert civ_art.civ_index("RANDOM", games.ROR) is None
 
 
 def test_a_ror_players_barracks_draws_its_civ_and_age_art(tmp_path):
@@ -222,21 +225,21 @@ def test_a_ror_players_barracks_draws_its_civ_and_age_art(tmp_path):
 def test_a_ror_file_gets_player_art_and_a_mismatched_display_none(tmp_path):
     loaded = scenario_io.load_map_and_units(ror_copy(tmp_path))
     assert loaded.player_art is not None
-    assert render.player_art_for(loaded, 1) is None, "AoE2 data shown on a RoR file"
+    assert render_units.player_art_for(loaded, 1) is None, "AoE2 data shown on a RoR file"
     _ror()
-    assert render.player_art_for(loaded, 1) == loaded.player_art[1]
+    assert render_units.player_art_for(loaded, 1) == loaded.player_art[1]
 
 
 # -- farms, triggers -------------------------------------------------------------
 
 
 def test_ror_farms_drape_their_foundation_terrain_under_the_sprite():
-    assert render._terrain_overlay_for(FARM) == 7
+    assert render_sprites._terrain_overlay_for(FARM) == 7
     _ror()
     assert FARM in unit_sprites.graphic_map(), "RoR farms carry a sprite (the vases)"
-    assert render._terrain_overlay_for(FARM) == 7
-    assert render._terrain_overlay_for(RICE_FARM) == 63
-    assert render._terrain_overlay_for(PASTURE) == 117
+    assert render_sprites._terrain_overlay_for(FARM) == 7
+    assert render_sprites._terrain_overlay_for(RICE_FARM) == 63
+    assert render_sprites._terrain_overlay_for(PASTURE) == 117
 
 
 def test_a_ror_tech_reference_shows_its_ror_name():
@@ -305,12 +308,12 @@ def test_a_ror_zoomed_out_tile_crops_the_shrunk_texture(tmp_path, monkeypatch):
     monkeypatch.setattr(asset_source, "get_terrain_texture_path", functools.cache(lambda _tid: path))
     full = asset_source.get_terrain_texture_array(7)
     tile = SimpleNamespace(x=1, y=0, terrain_id=7)
-    assert np.array_equal(render._top_block(tile, 32), full[0:32, 32:64]), "AoE2: one size at every level"
+    assert np.array_equal(render_paint._top_block(tile, 32), full[0:32, 32:64]), "AoE2: one size at every level"
     _ror()
     half = asset_source.terrain_texture_at(7, 256)
     assert half.shape == (256, 256, 3)
-    assert np.array_equal(render._top_block(tile, 32), half[0:32, 32:64])
-    assert np.array_equal(render._top_block(tile, 64), full[0:64, 64:128]), "the reference level is unchanged"
+    assert np.array_equal(render_paint._top_block(tile, 32), half[0:32, 32:64])
+    assert np.array_equal(render_paint._top_block(tile, 64), full[0:64, 64:128]), "the reference level is unchanged"
 
 
 def test_ror_shared_hidden_relics_and_wild_animals_stay_gaia_only():

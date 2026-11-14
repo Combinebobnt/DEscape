@@ -11,13 +11,13 @@ Why an index rather than a scan
 This project's example scenarios reach ~10,871 units in one file. Neither
 existing per-unit structure can answer "which unit is under this pixel":
 
-- render._units_by_tile() is keyed on footprint tiles too, but it is a paint
+- render_units._units_by_tile() is keyed on footprint tiles too, but it is a paint
   structure, not an identity one: its values are (unit, color) pairs with no
   `order`, no player_id, and no stable address, so it cannot disambiguate
   stacked units or survive a selection across a rebuild. It is also rebuilt
   on a different schedule -- it is filter-scoped like this index, but lives
   inside the chunk caches.
-- render._flat_unit_draws() is pixel-space, drops unit identity entirely,
+- render_flat._flat_unit_draws() is pixel-space, drops unit identity entirely,
   and is a construction-time snapshot held inside a chunk cache.
 
 UnitIndex is therefore a third structure, keyed on every tile in a unit's
@@ -29,7 +29,7 @@ The two asymmetries this module exists to respect
 -------------------------------------------------
 Both are load-bearing, and both make the obvious reuse wrong:
 
-1. render._unit_iso_footprint() paints every footprint tile at the unit's
+1. render_units._unit_iso_footprint() paints every footprint tile at the unit's
    OWN tile's elevation, so a multi-tile building is a flat slab at one
    height. iso_geometry.screen_to_tile() is therefore NOT reusable for unit
    picking: it gates each candidate on `int(elevations[y, x]) == e`, which
@@ -49,7 +49,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from descape import iso_geometry, render, unit_kind
+from descape import iso_geometry, render_sloped, render_sprites, render_units, unit_kind
+from descape.terrain_palette import BUILDING_TILE_SPANS, tile_span
 from descape.unit_filter import UnitFilter
 
 # pick_unit()'s "the caller did not resolve a tile" default, distinct from an
@@ -68,7 +69,7 @@ class UnitEntry:
     """
 
     player_id: int
-    unit: object  # AoE2ScenarioParser Unit; duck-typed, see render.py
+    unit: object  # AoE2ScenarioParser Unit; duck-typed, see render_units.py
     own_x: int
     own_y: int
     order: int
@@ -111,7 +112,7 @@ def unit_key(player_id: int, unit) -> tuple[int, int]:
 
 
 def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
-    """Builds the index in EXACTLY render._flat_unit_draws()/_units_by_tile()'s
+    """Builds the index in EXACTLY render_flat._flat_unit_draws()/render_units._units_by_tile()'s
     own player-then-unit-list iteration order. UnitEntry.rank, not `order`,
     is the paint order: patch_index_for_add() appends, and `rank` sorts that
     append into its owner's block where a rebuild would put it.
@@ -120,7 +121,7 @@ def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
     is not pickable -- the same object drives what's drawn and what's
     selectable, and the two cannot disagree.
 
-    Off-map units (render.unit_tile_bounds() returns None) are dropped,
+    Off-map units (render_units.unit_tile_bounds() returns None) are dropped,
     exactly as _flat_unit_draws() already drops them. `order` is therefore a
     dense index over the SURVIVING units, not a position in
     unit_manager.units. That is fine because rank only ever compares it
@@ -135,7 +136,7 @@ def build_index(scenario, unit_filter: UnitFilter = UnitFilter()) -> UnitIndex:
         for unit in units:
             if not unit_filter.matches(player_id, unit):
                 continue
-            bounds = render.unit_tile_bounds(unit, tile_w, tile_h)
+            bounds = render_units.unit_tile_bounds(unit, tile_w, tile_h)
             if bounds is None:
                 continue
             _append_entry(index, player_id, unit, bounds)
@@ -178,7 +179,7 @@ def patch_index_for_add(
     if not unit_filter.matches(player_id, unit):
         return
     mm = scenario.map_manager
-    bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+    bounds = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
     if bounds is None:
         return
     _append_entry(index, player_id, unit, bounds)
@@ -193,9 +194,9 @@ def patch_index_for_move(
     its own by_tile membership need to change.
 
     `unit` must already hold its POST-edit x/y (this is called after the
-    model mutation, mirroring render_cache.UnitSplice's own convention) --
+    model mutation, mirroring render_cache_splice.UnitSplice's own convention) --
     `old_bounds` is the caller's (D5's) own pre-edit
-    render.unit_tile_bounds() result, since this function has no other way
+    render_units.unit_tile_bounds() result, since this function has no other way
     to recover the unit's old footprint once its coordinates have already
     moved. Uses unit_tile_bounds()'s RECT throughout, exactly as
     build_index() does -- not unit_occupied_tiles()'s sparse footprint --
@@ -205,7 +206,7 @@ def patch_index_for_move(
     orientation's set_unit_const) needs its OLD and NEW rects individually,
     which this function's single `old_bounds` parameter doesn't carry, and
     is out of scope here the same way it is for
-    render_cache._splice_eligible()'s wall/connector guard -- a caller
+    render_cache_splice._splice_eligible()'s wall/connector guard -- a caller
     should route that case through a full build_index() instead.
 
     `old_bounds` None is an entry this function itself left off-map (the
@@ -236,7 +237,7 @@ def patch_index_for_move(
     index.by_key[unit_key(player_id, unit)] = new_entry
 
     mm = scenario.map_manager
-    new_bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+    new_bounds = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
     if new_bounds is None:
         return
     new_x0, new_x1, new_y0, new_y1 = new_bounds
@@ -257,7 +258,7 @@ def _flat_key(entry: UnitEntry, draped: bool = False) -> tuple[int, tuple[int, i
 def _stepped_key(rank: tuple[int, int], x: int, y: int) -> tuple[int, int, tuple[int, int]]:
     """Stepped's paint order, reproduced exactly.
 
-    depth_order() lexsorts (d = y - x, x), and render._units_by_tile()
+    depth_order() lexsorts (d = y - x, x), and render_units._units_by_tile()
     buckets a unit into EVERY footprint tile, so each of its diamonds paints
     at the position of the tile it covers -- not at the unit's own tile. The
     key is therefore a function of the COVERING tile (x, y), which for a
@@ -327,13 +328,13 @@ def _pick_unit_flat(
                 continue
             for order in index.by_tile.get((x, y), ()):
                 entry = index.entries[order]
-                dx, dy = render.unit_paint_offset(entry.unit)
+                dx, dy = render_units.unit_paint_offset(entry.unit)
                 off_x, off_y = round(dx * tile_px), round(dy * tile_px)
                 if not (x * tile_px + off_x <= sx < (x + 1) * tile_px + off_x):
                     continue
                 if not (y * tile_px + off_y <= sy < (y + 1) * tile_px + off_y):
                     continue
-                draped = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+                draped = farms_draped and render_sprites._terrain_overlay_for(entry.unit.unit_const) is not None
                 key = _flat_key(entry, draped)
                 if best_key is None or key > best_key:
                     best, best_key = (entry, (x, y)), key
@@ -399,7 +400,7 @@ def _pick_unit_stepped(
                 origin_sx, origin_sy = iso_geometry.tile_screen_origin(x, y, e, proj)
                 for order in orders:
                     entry = index.entries[order]
-                    is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+                    is_draped_farm = farms_draped and render_sprites._terrain_overlay_for(entry.unit.unit_const) is not None
                     if is_draped_farm:
                         # Every e that reaches this tile gives the same key.
                         if (x, y) != terrain_tile:
@@ -410,7 +411,7 @@ def _pick_unit_stepped(
                         # is the single height its whole footprint is drawn at.
                         if int(elevations[entry.own_y, entry.own_x]) != e:
                             continue
-                        dx, dy = render.unit_paint_offset(entry.unit)
+                        dx, dy = render_units.unit_paint_offset(entry.unit)
                         if dx or dy:
                             cen_x, cen_y = iso_geometry.map_point_to_screen(
                                 x + 0.5 + dx, y + 0.5 + dy, e * proj.elev_step, proj
@@ -426,7 +427,7 @@ def _pick_unit_stepped(
                     # docstring); narrow to the real occupied set for the 36
                     # sparse diagonal-gate consts, so a click on a bbox "gap"
                     # tile a gate doesn't actually occupy correctly misses.
-                    if not render.unit_occupies_tile(entry.unit, x, y):
+                    if not render_units.unit_occupies_tile(entry.unit, x, y):
                         continue
                     hits.offer(entry, x, y, is_draped_farm)
     return hits
@@ -481,7 +482,7 @@ def _pick_unit_sloped(
     diamond_membership() against that unit's OWN rise.
 
     No ID plane and no new cache, deliberately: Track C4's pick plane stays
-    terrain-only (render.composite_ids_rect_sloped's own note), which is
+    terrain-only (render_sloped.composite_ids_rect_sloped's own note), which is
     what keeps this branch clear of that plane's cost re-measurement.
 
     **A CENTRED 1x1 unit's membership test collapses onto `terrain_tile`
@@ -489,7 +490,7 @@ def _pick_unit_sloped(
     placement's Stage 1: an off-centre unit is not painted through its tile's
     quad at all, so the collapse's whole justification stops applying to it
     and it takes the plain-diamond branch at its own shifted centre.
-    Since render._draw_unit_sloped()
+    Since render_sloped._draw_unit_sloped()
     now paints a 1x1 unit's marker through the exact same call that paints
     its own tile's terrain, "is (sx, sy) inside this unit's marker" and "is
     (sx, sy) inside this tile's own painted footprint" are the same
@@ -541,9 +542,9 @@ def _pick_unit_sloped(
             row = proj.origin_y + (y - x) * half_h
             for order in orders:
                 entry = index.entries[order]
-                span_x, span_y = render.tile_span(entry.unit.unit_const, render.NON_BUILDING_SPAN)
-                paint_off = render.unit_paint_offset(entry.unit)
-                is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+                span_x, span_y = tile_span(entry.unit.unit_const, render_units.NON_BUILDING_SPAN)
+                paint_off = render_units.unit_paint_offset(entry.unit)
+                is_draped_farm = farms_draped and render_sprites._terrain_overlay_for(entry.unit.unit_const) is not None
                 if span_x <= 1 and span_y <= 1 and paint_off == (0.0, 0.0):
                     # Only at zero offset, matching the render path's own
                     # gate: the collapse is occlusion-correct BY CONSTRUCTION
@@ -584,7 +585,7 @@ def _pick_unit_sloped(
                 # See _pick_unit_stepped's matching comment: index.by_tile is
                 # Flat's full-rect bucketing, narrowed here to the real
                 # occupied set for the 36 sparse diagonal-gate consts.
-                if not render.unit_occupies_tile(entry.unit, x, y):
+                if not render_units.unit_occupies_tile(entry.unit, x, y):
                     continue
                 hits.offer(entry, x, y, is_draped_farm)
     return hits
@@ -593,7 +594,7 @@ def _pick_unit_sloped(
 def unit_rise_px_for(entry: UnitEntry, corner_rise: np.ndarray, fold: np.ndarray | None = None) -> int:
     """The canvas-pixel rise one unit's whole footprint sits at in Sloped --
     the single place picking and highlighting resolve it, so neither can
-    drift from render._paint_tile_and_units_sloped's own call.
+    drift from render_sloped._paint_tile_and_units_sloped's own call.
 
     Reads the unit's OWN tile's corners at its OWN sub-tile fractions, the
     asymmetry-1 rule expressed in pixels (see this module's header): a
@@ -706,7 +707,7 @@ def pick_unit_cover(
     3. With sprites_on, a later terrain tile no longer covers the winner by
        painting after it: objects paint after all terrain, and a nearer tile
        covers ink only where it stands strictly higher than the ink's base
-       (render._occlude_iso/_occlude_sloped). So step 2 discards only when the
+       (render_iso._occlude_iso/render_sloped._occlude_sloped). So step 2 discards only when the
        terrain tile is also strictly higher than the winner's base rise, both
        measured the way the paint measures them (_occluded_with_sprites).
        Measured against the real render (TASK-319): exact wherever the
@@ -774,7 +775,7 @@ def _occluded_with_sprites(
 ) -> bool:
     """Step 3 of pick_unit_cover(): whether the later terrain tile under a
     winner covers it in the sprites-on paint. A tile's height and an ink base
-    are the ones render._occlude_iso/_occlude_sloped and the objects pass use:
+    are the ones render_iso._occlude_iso/render_sloped._occlude_sloped and the objects pass use:
     Stepped, elevation times elev_step for both (the mark's at its own tile);
     Sloped, the tile's lowest corner, against the mark's own rise (a centred
     1x1 mark's is its tile's lowest corner, but it never reaches here: its
@@ -785,26 +786,26 @@ def _occluded_with_sprites(
     unit = entry.unit
     tx, ty = terrain
     if style == "sloped":
-        height = render._sloped_tile_floor(corner_rise, tx, ty)
-        if render._sloped_mark_conforms(unit):
-            base = render._sloped_tile_floor(corner_rise, entry.own_x, entry.own_y)
+        height = render_sloped._sloped_tile_floor(corner_rise, tx, ty)
+        if render_sloped._sloped_mark_conforms(unit):
+            base = render_sloped._sloped_tile_floor(corner_rise, entry.own_x, entry.own_y)
         else:
             base = unit_rise_px_for(entry, corner_rise, fold)
     else:
         height = int(elevations[ty, tx]) * proj.elev_step
-        base = render._unit_mark_rise_iso(unit, proj, elevations)
+        base = render_units._unit_mark_rise_iso(unit, proj, elevations)
     return height > base
 
 
 def _is_multi_tile(unit) -> bool:
-    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
     return span_x > 1 or span_y > 1
 
 
 def _mark_tiles(unit) -> list[tuple[int, int]]:
     """The tiles a span-1 unit's one-tile mark paints on: its own, plus the
-    neighbour on each axis its render.unit_paint_offset() leans into."""
-    dx, dy = render.unit_paint_offset(unit)
+    neighbour on each axis its render_units.unit_paint_offset() leans into."""
+    dx, dy = render_units.unit_paint_offset(unit)
     tx, ty = int(unit.x), int(unit.y)
     xs = (tx,) if dx == 0 else (tx, tx + (1 if dx > 0 else -1))
     ys = (ty,) if dy == 0 else (ty, ty + (1 if dy > 0 else -1))
@@ -813,10 +814,10 @@ def _mark_tiles(unit) -> list[tuple[int, int]]:
 
 def _slab_covers(unit, tx: int, ty: int) -> bool:
     """Whether multi-tile `unit` occupies (tx, ty): inside its span's rect,
-    then render.unit_occupies_tile() for a diagonal gate's gaps."""
-    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-    x0, y0 = render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
-    return x0 <= tx < x0 + span_x and y0 <= ty < y0 + span_y and render.unit_occupies_tile(unit, tx, ty)
+    then render_units.unit_occupies_tile() for a diagonal gate's gaps."""
+    span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+    x0, y0 = render_units._span_start(unit.x, span_x), render_units._span_start(unit.y, span_y)
+    return x0 <= tx < x0 + span_x and y0 <= ty < y0 + span_y and render_units.unit_occupies_tile(unit, tx, ty)
 
 
 def _hides(top: UnitEntry, under: UnitEntry) -> bool:
@@ -829,8 +830,8 @@ def _hides(top: UnitEntry, under: UnitEntry) -> bool:
         return all(_slab_covers(top.unit, x, y) for x, y in _mark_tiles(under.unit))
     if (top.unit.x, top.unit.y) != (under.unit.x, under.unit.y):
         return False
-    top_span = render.tile_span(top.unit.unit_const, render.NON_BUILDING_SPAN)
-    return top_span == render.tile_span(under.unit.unit_const, render.NON_BUILDING_SPAN)
+    top_span = tile_span(top.unit.unit_const, render_units.NON_BUILDING_SPAN)
+    return top_span == tile_span(under.unit.unit_const, render_units.NON_BUILDING_SPAN)
 
 
 def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry], int]]:
@@ -844,7 +845,7 @@ def stack_scan(index: UnitIndex) -> dict[tuple[int, int], tuple[list[UnitEntry],
             continue
         # by_tile is the unnarrowed bbox rect; the sparse diagonal gates must
         # not produce a phantom group on a gap tile.
-        bucket = [index.entries[o] for o in orders if render.unit_occupies_tile(index.entries[o].unit, *tile)]
+        bucket = [index.entries[o] for o in orders if render_units.unit_occupies_tile(index.entries[o].unit, *tile)]
         if len(bucket) < 2:
             continue
         members: set[int] = set()
@@ -919,9 +920,9 @@ FOOTPRINT_SCOPE_DEFAULT = FOOTPRINT_SCOPE_MULTITILE
 def footprint_entries(index: UnitIndex, scope: str) -> list[UnitEntry]:
     """The units one scope draws an outline around.
 
-    "Multi-tile" reuses render.tile_span, the same span lookup every render
+    "Multi-tile" reuses terrain_palette.tile_span, the same span lookup every render
     path asks, rather than inventing a fourth is-this-a-building rule;
-    "buildings" is BUILDING_TILE_SPANS membership, which render._unit_color
+    "buildings" is BUILDING_TILE_SPANS membership, which render_units._unit_color
     already treats as that test. Iterates index.entries, so the overlay
     inherits the unit filter for free and can never disagree with what is
     drawn.
@@ -937,7 +938,7 @@ def footprint_entries(index: UnitIndex, scope: str) -> list[UnitEntry]:
     if scope == FOOTPRINT_SCOPE_ALL:
         return list(index.entries)
     if scope == FOOTPRINT_SCOPE_BUILDINGS:
-        return [e for e in index.entries if e.unit.unit_const in render.BUILDING_TILE_SPANS]
+        return [e for e in index.entries if e.unit.unit_const in BUILDING_TILE_SPANS]
     if scope == FOOTPRINT_SCOPE_UNITS:
         excluded = unit_kind.building_consts() | unit_kind.wall_consts()
         return [e for e in index.entries if e.unit.unit_const not in excluded]
@@ -948,7 +949,7 @@ def footprint_entries(index: UnitIndex, scope: str) -> list[UnitEntry]:
         const = e.unit.unit_const
         is_multi = multi.get(const)
         if is_multi is None:
-            span_x, span_y = render.tile_span(const, render.NON_BUILDING_SPAN)
+            span_x, span_y = tile_span(const, render_units.NON_BUILDING_SPAN)
             is_multi = multi[const] = span_x > 1 or span_y > 1
         if is_multi:
             kept.append(e)
@@ -1054,21 +1055,21 @@ def unit_polygons(
     Qt-free; the viewer converts.
 
     Every style's shape is additionally shifted by
-    render.unit_paint_offset() (off-grid placement, Stage 1), which is zero for
+    render_units.unit_paint_offset() (off-grid placement, Stage 1), which is zero for
     every building and for every unit at an exact `.5`.
 
-    - Flat: one axis-aligned rect, matching render._draw_unit() exactly.
+    - Flat: one axis-aligned rect, matching render_units._draw_unit() exactly.
     - Stepped: one diamond per footprint tile, ALL at the unit's own tile's
-      elevation, matching render._draw_unit_iso(). This is asymmetry 2 --
+      elevation, matching render_units._draw_unit_iso(). This is asymmetry 2 --
       using each footprint tile's own terrain elevation here would look
       right on flat ground and drift apart on a slope.
     - Stepped, farm with farms_draped=True: one diamond per footprint tile at
-      that tile's OWN elevation, the shape map_view._tile_polygon() gives
+      that tile's OWN elevation, the shape map_view_highlight._tile_polygon() gives
       it, since the drape paints the farm as each tile's terrain.
     - Sloped, CENTRED 1x1 span: not a diamond at all -- the tile's own
-      sloped_tile_outline(), placed exactly where map_view._tile_polygon()
+      sloped_tile_outline(), placed exactly where map_view_highlight._tile_polygon()
       places the terrain highlight for that same tile (Track C6). This
-      matches render._draw_unit_sloped()'s `corners` mode, which paints
+      matches render_sloped._draw_unit_sloped()'s `corners` mode, which paints
       this unit's marker through the tile's own warped pixel set rather
       than a diamond; the highlight tracks the marker, so it must trace
       the same shape.
@@ -1086,10 +1087,10 @@ def unit_polygons(
     - Sloped, other multi-tile spans, an OFF-CENTRE 1x1 span, and a farm
       when farms_draped=False: one diamond per footprint tile, all at the
       unit's own PIXEL rise (unit_rise_px_for()), matching
-      render._draw_unit_sloped()'s plain-diamond mode. Needs corner_rise;
+      render_sloped._draw_unit_sloped()'s plain-diamond mode. Needs corner_rise;
       returns None without it.
     """
-    bounds = render.unit_tile_bounds(entry.unit, tile_w, tile_h)
+    bounds = render_units.unit_tile_bounds(entry.unit, tile_w, tile_h)
     if bounds is None:
         return None
     tile_x0, tile_x1, tile_y0, tile_y1 = bounds
@@ -1098,7 +1099,7 @@ def unit_polygons(
     # a tile per span-1 axis, and the outline's whole contract is that it
     # matches the pixels actually painted -- so it takes the same shift, from
     # the same single source, in every style below.
-    off_x, off_y = render.unit_paint_offset(entry.unit)
+    off_x, off_y = render_units.unit_paint_offset(entry.unit)
 
     if style == "flat":
         x0 = tile_x0 * tile_px + round(off_x * tile_px)
@@ -1110,13 +1111,13 @@ def unit_polygons(
     if style == "sloped":
         if corner_rise is None or proj is None:
             return None
-        is_draped_farm = farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None
+        is_draped_farm = farms_draped and render_sprites._terrain_overlay_for(entry.unit.unit_const) is not None
         is_conforming = (
             tile_x1 - tile_x0 == 1 and tile_y1 - tile_y0 == 1 and (off_x, off_y) == (0.0, 0.0)
         )
         if is_conforming or is_draped_farm:
             polygons = []
-            for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+            for tx, ty in render_units.unit_occupied_tiles(entry.unit, tile_w, tile_h):
                 d_nw = int(corner_rise[ty, tx])
                 d_ne = int(corner_rise[ty, tx + 1])
                 d_sw = int(corner_rise[ty + 1, tx])
@@ -1131,10 +1132,10 @@ def unit_polygons(
     elif style == "stepped":
         if elevations is None or proj is None:
             return None
-        if farms_draped and render._terrain_overlay_for(entry.unit.unit_const) is not None:
+        if farms_draped and render_sprites._terrain_overlay_for(entry.unit.unit_const) is not None:
             # A draped farm paints each footprint tile at that tile's own elevation.
             polygons = []
-            for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+            for tx, ty in render_units.unit_occupied_tiles(entry.unit, tile_w, tile_h):
                 ox, oy = iso_geometry.tile_screen_origin(tx, ty, int(elevations[ty, tx]), proj)
                 polygons.append(diamond_points(ox, oy, proj.half_w, proj.half_h))
             return polygons
@@ -1145,7 +1146,7 @@ def unit_polygons(
 
     half_w, half_h = proj.half_w, proj.half_h
     polygons = []
-    for tx, ty in render.unit_occupied_tiles(entry.unit, tile_w, tile_h):
+    for tx, ty in render_units.unit_occupied_tiles(entry.unit, tile_w, tile_h):
         if off_x or off_y:
             # Shifted the same way both _draw_unit_iso and _draw_unit_sloped
             # shift their diamonds. `rise` is an int, so folding it in here
@@ -1198,10 +1199,10 @@ def _footprint_centre(unit, tile_w: int, tile_h: int) -> tuple[float, float]:
     """The map point at the centre of the unit's drawn footprint: the
     unit_tile_bounds() midpoint on a span > 1 axis, the stored coordinate
     (tile + 0.5 + unit_paint_offset) on a span-1 axis."""
-    span_x, span_y = render.tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
     if span_x <= 1 and span_y <= 1:
         return unit.x, unit.y
-    tile_x0, tile_x1, tile_y0, tile_y1 = render.unit_tile_bounds(unit, tile_w, tile_h)
+    tile_x0, tile_x1, tile_y0, tile_y1 = render_units.unit_tile_bounds(unit, tile_w, tile_h)
     cx = (tile_x0 + tile_x1) / 2 if span_x > 1 else unit.x
     cy = (tile_y0 + tile_y1) / 2 if span_y > 1 else unit.y
     return cx, cy

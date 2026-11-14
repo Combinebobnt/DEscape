@@ -6,7 +6,7 @@ Gaia keep the Gaia-table art, and is a town centre drawn as one age.
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script like tools/gen_pasture_review_pack.py. Needs a real AoE2:DE
 install (sprites) and the examples/ corpus; renders off-engine via
-render.composite_rect_iso, Stepped, on each file's own terrain and elevation,
+render_iso.composite_rect_iso, Stepped, on each file's own terrain and elevation,
 with only the units under review kept so nothing else crowds the crop.
 
 Each style question pairs a scene with two reference frames: the same building
@@ -41,8 +41,9 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, civ_art, render, unit_sprites
+from descape import asset_source, civ_art, render_bbox, render_iso, render_sprites, render_units, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.terrain_palette import tile_span
 from testkit import review_pack as rp
 
 PACK_ID = "civ_art"
@@ -94,8 +95,8 @@ _REFERENCES = {
 
 
 def _arch_from_civ(real):
-    def resolve(civilization, architecture, starting_age, ror=False):
-        return real(civilization, None, starting_age, ror=ror)
+    def resolve(civilization, architecture, starting_age, game=None):
+        return real(civilization, None, starting_age, game=game)
     return resolve
 
 
@@ -199,17 +200,17 @@ def _render_units(base, units_by_player: list[list], player_art, headroom: int =
     proj = grp.ig.canvas_size_and_origin(
         mm.map_width, mm.map_height, TILE_PX, grp.ig.MIN_ELEVATION, grp.ig.MAX_ELEVATION, elev_step_pct=50
     )
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render.merge_sprite_bboxes(
-        render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_sprites.merge_sprite_bboxes(
+        render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
     )
-    tiles = [t for units in units_by_player for u in units for t in render.unit_occupied_tiles(u, mm.map_width, mm.map_height)]
+    tiles = [t for units in units_by_player for u in units for t in render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height)]
     xs, ys = [t[0] for t in tiles], [t[1] for t in tiles]
     corners = [(min(xs) - 1, min(ys) - 1), (max(xs) + 1, max(ys) + 1), (min(xs) - 1, max(ys) + 1), (max(xs) + 1, min(ys) - 1)]
     x0, y0, x1, y1 = grp._tiles_bbox_px(proj, corners, max_elev)
     y0 = max(0, y0 - headroom * proj.half_h)
-    return render.composite_rect_iso(
+    return render_iso.composite_rect_iso(
         scn, x0, y0, x1, y1, elevations, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites,
     )
 
@@ -243,7 +244,7 @@ def _reference(ref_id: str) -> np.ndarray:
     units = [[] for _ in base.unit_manager.units]
     x = 60.0
     for i, const in enumerate(consts):
-        span = render.tile_span(const, render.NON_BUILDING_SPAN)[0]
+        span = tile_span(const, render_units.NON_BUILDING_SPAN)[0]
         units[1].append(_unit(const, x + span / 2, 60.0 + span / 2, 8000 + i))
         x += span + 1
     player_art = (civ_art.GAIA_ART, art, *(civ_art.GAIA_ART,) * (len(units) - 2))

@@ -9,6 +9,7 @@ once and written straight through to disk on change.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import os
 from dataclasses import dataclass
@@ -1236,7 +1237,7 @@ def set_elev_step_pct(value: int) -> None:
 # hardcoded beside the configurable RGB below. Three groups also carry a
 # user opacity multiplier on top of those fixed alphas: OVERLAY_OPACITIES
 # below (GH #129). Stored as "#rrggbb" strings --
-# this module is Qt-free, and STATUS_OK_COLOR (viewer.py) is already a
+# this module is Qt-free, and STATUS_OK_COLOR (viewer_common.py) is already a
 # hex-string precedent. One row per named constant even where two rows share
 # a default (unit_select/unit_select_fill, region_fill/region_ants): each is
 # a genuinely separate paint call and must stay independently overridable.
@@ -1373,7 +1374,7 @@ def set_overlay_opacity(group_id: str, pct: int) -> None:
 
 # GH #166: the Triggers panel's status marker, Settings > Appearance > Trigger
 # status. Apart from OVERLAY_COLORS because apply_overlay_colors() only reaches
-# the map view. The defaults are viewer.STATUS_OK_COLOR / STATUS_ERROR_COLOR.
+# the map view. The defaults are viewer_common.STATUS_OK_COLOR / STATUS_ERROR_COLOR.
 TRIGGER_STATUS_COLORS: list[tuple[str, str, str]] = [
     ("ok", "Complete", "#4caf50"),
     ("problem", "Something missing", "#e05252"),
@@ -1785,19 +1786,46 @@ def set_window_size(width: int, height: int) -> None:
     _save_config(config)
 
 
-# Left info/trigger panel vs. map view. The first thing besides the main window
-# itself to persist geometry -- the trigger browser needs far more width than
-# the info panel ever did, and a draggable split beats guessing a number that
-# every later panel would have to be re-guessed for.
+# GH #64: QMainWindow.saveState()'s blob, the panel and log docks and the toolbars. Base64 in YAML.
+_window_state: bytes | None = None
+
+
+def get_window_state() -> bytes | None:
+    """The last saved dock and toolbar arrangement, or None if never saved or
+    the stored value is not base64 text. None means "build the default layout"."""
+    global _window_state
+    if _window_state is None:
+        raw = _load_config().get("window_state")
+        if isinstance(raw, str):
+            # binascii.Error and UnicodeEncodeError are both ValueErrors.
+            with contextlib.suppress(ValueError):
+                _window_state = base64.b64decode(raw.encode("ascii"), validate=True) or None
+    return _window_state
+
+
+def set_window_state(state: bytes) -> None:
+    """Also drops the splitter layout's two seed keys, so a later unreadable state falls back to
+    the default layout rather than to a pre-GH #64 width."""
+    global _window_state, _split_sizes, _log_height
+    _window_state = bytes(state)
+    _split_sizes = _log_height = None
+    config = _load_config()
+    config["window_state"] = base64.b64encode(_window_state).decode("ascii")
+    config.pop("split_sizes", None)
+    config.pop("log_height", None)
+    _save_config(config)
+
+
+# The editor panel's floor width, docked or floating, and the map's.
 MIN_SPLIT_PANE = 120
 
 _split_sizes: tuple[int, int] | None = None
 
 
 def get_split_sizes() -> tuple[int, int] | None:
-    """Last persisted (left, right) content-splitter widths, or None if never
-    saved or the stored value is missing/malformed. None means "let Qt size it
-    from the layout", which is what a first run wants."""
+    """The (panel, map) widths the splitter layout before GH #64 persisted, or
+    None if never saved or malformed. Read only to seed the panel dock's width
+    the first time a window opens without a saved window_state."""
     global _split_sizes
     if _split_sizes is None:
         raw = _load_config().get("split_sizes")
@@ -1809,16 +1837,6 @@ def get_split_sizes() -> tuple[int, int] | None:
             except (TypeError, ValueError):
                 pass
     return _split_sizes
-
-
-def set_split_sizes(left: int, right: int) -> None:
-    global _split_sizes
-    if left < MIN_SPLIT_PANE or right < MIN_SPLIT_PANE:
-        return
-    _split_sizes = (left, right)
-    config = _load_config()
-    config["split_sizes"] = [left, right]
-    _save_config(config)
 
 
 # GH #68: how the Units panel's catalog lists objects. Category and class filter do not persist.
@@ -1870,7 +1888,7 @@ def set_browse_catalog_mode(mode: str) -> None:
     _save_config(config)
 
 
-# Map view vs. system log, inside the right pane. Their own constants rather
+# The status log's and the map's floor heights. Their own constants rather
 # than reusing MIN_SPLIT_PANE, which is a width -- one name for both axes
 # would lie.
 MIN_LOG_PANE = 48
@@ -1880,9 +1898,9 @@ _log_height: int | None = None
 
 
 def get_log_height() -> int | None:
-    """Last persisted system-log height in pixels, or None if never saved or
-    the stored value is missing/malformed. None means "use the built-in
-    four-line default", which is what a first run wants."""
+    """The status log's height the splitter layout before GH #64 persisted, or
+    None if never saved or malformed. Read only to seed the log dock's height
+    the first time a window opens without a saved window_state."""
     global _log_height
     if _log_height is None:
         raw = _load_config().get("log_height")
@@ -1894,16 +1912,6 @@ def get_log_height() -> int | None:
             if value >= MIN_LOG_PANE:
                 _log_height = value
     return _log_height
-
-
-def set_log_height(height: int) -> None:
-    global _log_height
-    if height < MIN_LOG_PANE:
-        return
-    _log_height = height
-    config = _load_config()
-    config["log_height"] = height
-    _save_config(config)
 
 
 # GH #139: a multi-line text box's dragged height, in lines, per field key
@@ -2251,7 +2259,7 @@ class ToolDef:
     # MapView.on_click_edit instead of the on_stroke_start/tile/end trio.
     click_only: bool = False
     # Toolbar param widget this tool reads, if any: "" | "terrain" | "level".
-    # Drives which of the two tool-param widgets viewer.py shows/hides for
+    # Drives which of the two tool-param widgets viewer_tool_state.py shows/hides for
     # the active tool -- see _TOOL_PARAM in viewer_common.py.
     param_widget: str = ""
     # Whether this tool's stroke applies across a brush footprint (size +
@@ -2451,7 +2459,7 @@ TOOLS: list[ToolDef] = [
 ]
 
 # (action_id, display label, default key sequence string) -- the one source
-# of truth for what's rebindable, consumed by both viewer.py (to build the
+# of truth for what's rebindable, consumed by both viewer_menus.py (to build the
 # actual QAction shortcuts) and the Keybinds settings tab (to build its
 # rows). The tool_* entries are generated from TOOLS above, not hand-listed,
 # so every tool automatically gets a row here. No Qt dependency here on
@@ -2572,6 +2580,10 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_trigger_ghosts", "Trigger-Created Units", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_instruction_overlay", "Instruction on Map", ""),
+    # GH #64's View > Panels. Ship unbound, same reasoning as view_distance_ticks above.
+    ("view_panel_dock", "Editor Panel", ""),
+    ("view_log_dock", "Status Log", ""),
+    ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
     # below are generated from TOOLS, so the table stays single-source.
@@ -2716,7 +2728,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
 ] + [(f"tool_{t.tool_id}", f"{t.label} Tool", t.default_key) for t in TOOLS] + [
     # The active tool's own "primary value" -- today that's only Set
     # Elevation's Level spinbox (elevation_level_spin), gated the same way
-    # its toolbar spinbox is (viewer.py's _update_tool_enabled). "]"/"["
+    # its toolbar spinbox is (viewer_tool_state.py's _update_tool_enabled). "]"/"["
     # rather than a bare letter for the same reason edit_copy/paste picked
     # a non-letter binding: an established convention (brush-size style
     # inc/dec) to follow instead of inventing one.
@@ -2747,7 +2759,7 @@ _DEFAULT_KEYBINDS: dict[str, str] = {action_id: default for action_id, _, defaul
 _ACTION_LABELS: dict[str, str] = {action_id: label for action_id, label, _ in REBINDABLE_ACTIONS}
 
 # Mode id -> the mode combo's text, in combo order: the one list of modes
-# (viewer.py builds mode_combo from its values).
+# (viewer_toolbar.py builds mode_combo from its values).
 MODE_LABELS: dict[str, str] = {
     "view": "View",
     "terrain": "Terrain",

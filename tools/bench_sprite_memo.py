@@ -9,18 +9,17 @@ mip 0 and one other level, Sloped), against the real caches' own levels, with
 the art caches warmed by one untimed walk first:
 
   full          sprite_draws_by_anchor(), today's whole walk
-  overrides     render._wall_variant_rotation_overrides_uncached(), paid by
+  overrides     render_units._wall_variant_rotation_overrides_uncached(), paid by
                 every walk (the memoized wrapper hides it after the first)
   resolve       _resolve_unit_sprite() for every unit, nothing else
   merge         re-merging already-resolved contributions into a SpriteLayer
   key           building a memo key per unit (the bench's own replica of the
-                memo's key, so the row exists on a checkout without one)
-  memo hit      the real memo walk with every unit a hit (lane only)
-  memo 1 miss   the same after moving one unit (lane only)
+                memo's key)
+  memo hit      the real memo walk with every unit a hit
+  memo 1 miss   the same after moving one unit
   units_by_tile / building_bboxes / bystander_grid / merge_bboxes
                 the other passes a wholesale rebuild pays
-  memo MB       tracemalloc'd size of one level's memo (the real one when the
-                checkout has it, else the bench's replica)
+  memo MB       tracemalloc'd size of one level's memo
 
 Each timing is the median of --repeat runs.
 """
@@ -42,6 +41,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from testkit import settings_isolation
+from testkit.render_family import render_global
 
 FILES = ["old-allies-final-v2.aoe2scenario", "2_Joan_coop_1_v0_13.aoe2scenario"]
 
@@ -63,7 +63,7 @@ def _units(scenario):
 
 
 def _replica_key(scenario, proj, heights, sloped: bool, overrides, player_id, i, unit):
-    from descape import render
+    from descape import render_units
 
     ux, uy = int(unit.x), int(unit.y)
     try:
@@ -75,7 +75,7 @@ def _replica_key(scenario, proj, heights, sloped: bool, overrides, player_id, i,
         rise = None
     return (
         unit.x, unit.y, unit.unit_const,
-        overrides.get((player_id, i), render.stored_rotation(player_id, unit)),
+        overrides.get((player_id, i), render_units.stored_rotation(player_id, unit)),
         getattr(unit, "reference_id", None), player_id,
         scenario.team_indices[player_id], scenario.player_colors[player_id], rise,
     )
@@ -83,7 +83,7 @@ def _replica_key(scenario, proj, heights, sloped: bool, overrides, player_id, i,
 
 def _merge(contributions):
     """sprite_draws_by_anchor_sliced()'s own accumulation, over a prebuilt list."""
-    from descape import render
+    from descape import render_sprites
 
     by_anchor: dict = {}
     bboxes: dict = {}
@@ -91,12 +91,12 @@ def _merge(contributions):
     farm_by_tile: dict = {}
     for contribution in contributions:
         if contribution is not None:
-            render._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
-    return render.SpriteLayer(by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile)
+            render_sprites._accumulate_contribution(contribution, by_anchor, bboxes, skip_ids, farm_by_tile)
+    return render_sprites.SpriteLayer(by_anchor=by_anchor, bboxes=bboxes, skip_ids=frozenset(skip_ids), farm_by_tile=farm_by_tile)
 
 
 def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) -> list[str]:
-    from descape import render
+    from descape import render_bbox, render_paint, render_sloped, render_sprites, render_units
 
     mm = scenario.map_manager
     sloped = corner_rise is not None
@@ -109,15 +109,15 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
     uf = cache.unit_filter
 
     def full():
-        return render.sprite_draws_by_anchor(scenario, proj, elevations, uf, **kwargs)
+        return render_sprites.sprite_draws_by_anchor(scenario, proj, elevations, uf, **kwargs)
 
     full()  # warm the art caches
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     units = list(_units(scenario))
 
     def resolve_all():
         return [
-            render._resolve_unit_sprite(
+            render_sprites._resolve_unit_sprite(
                 scenario, proj, elevations, uf, corner_rise, overrides, layers.farm_overlay,
                 pid, i, u, layers.tree_scale, layers.hero_glow, layers.wall_alpha, fold=cache._level_fold(),
             )
@@ -133,85 +133,72 @@ def _bench_level(scenario, cache, proj, elevations, corner_rise, repeat: int) ->
 
     rows = {
         "full": _median_ms(full, repeat),
-        "overrides": _median_ms(lambda: render._wall_variant_rotation_overrides_uncached(scenario), repeat),
+        "overrides": _median_ms(lambda: render_units._wall_variant_rotation_overrides_uncached(scenario), repeat),
         "resolve": _median_ms(resolve_all, repeat),
         "merge": _median_ms(lambda: _merge(contributions), repeat),
         "key": _median_ms(keys, repeat),
     }
 
-    memo_cls = getattr(render, "SpriteMemo", None)
-    if memo_cls is not None:
-        _layer, memo = render._drain(render.sprite_draws_by_anchor_sliced(
-            scenario, proj, elevations, uf, memo=memo_cls(), **kwargs
+    memo_cls = render_global("SpriteMemo")
+    _layer, memo = render_paint._drain(render_sprites.sprite_draws_by_anchor_sliced(
+        scenario, proj, elevations, uf, memo=memo_cls(), **kwargs
+    ))
+
+    def memo_walk():
+        return render_paint._drain(render_sprites.sprite_draws_by_anchor_sliced(
+            scenario, proj, elevations, uf, memo=memo, **kwargs
         ))
 
-        def memo_walk():
-            return render._drain(render.sprite_draws_by_anchor_sliced(
-                scenario, proj, elevations, uf, memo=memo, **kwargs
-            ))
+    rows["memo hit"] = _median_ms(memo_walk, repeat)
+    victim = next(u for _pid, _i, u in units if 1 <= u.x < mm.map_width - 2)
+    victim.x += 1
+    try:
+        rows["memo 1 miss"] = _median_ms(memo_walk, repeat)
+    finally:
+        victim.x -= 1
 
-        rows["memo hit"] = _median_ms(memo_walk, repeat)
-        victim = next(u for _pid, _i, u in units if 1 <= u.x < mm.map_width - 2)
-        victim.x += 1
-        try:
-            rows["memo 1 miss"] = _median_ms(memo_walk, repeat)
-        finally:
-            victim.x -= 1
-
-    headroom = render._unit_rise_headroom_px(corner_rise, elevations, proj) if sloped else 0
-    bboxes = render._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations, headroom, unit_filter=uf)
+    headroom = render_sloped._unit_rise_headroom_px(corner_rise, elevations, proj) if sloped else 0
+    bboxes = render_bbox._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations, headroom, unit_filter=uf)
     layer = full()
-    merged = render.merge_sprite_bboxes(bboxes, layer)
-    rows["units_by_tile"] = _median_ms(lambda: render._units_by_tile(scenario, uf), repeat)
+    merged = render_sprites.merge_sprite_bboxes(bboxes, layer)
+    rows["units_by_tile"] = _median_ms(lambda: render_units._units_by_tile(scenario, uf), repeat)
     rows["building_bboxes"] = _median_ms(
-        lambda: render._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations, headroom, unit_filter=uf),
+        lambda: render_bbox._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations, headroom, unit_filter=uf),
         repeat,
     )
-    rows["merge_bboxes"] = _median_ms(lambda: render.merge_sprite_bboxes(bboxes, layer), repeat)
-    rows["bystander_grid"] = _median_ms(lambda: render.build_bystander_grid(merged, cache.chunk_px), repeat)
+    rows["merge_bboxes"] = _median_ms(lambda: render_sprites.merge_sprite_bboxes(bboxes, layer), repeat)
+    rows["bystander_grid"] = _median_ms(lambda: render_bbox.build_bystander_grid(merged, cache.chunk_px), repeat)
 
     gc.collect()
     tracemalloc.start()
-    if memo_cls is not None:
-        before = tracemalloc.get_traced_memory()[0]
-        held = render._drain(render.sprite_draws_by_anchor_sliced(
-            scenario, proj, elevations, uf, memo=memo_cls(), **kwargs
-        ))
-        # The layer is built alongside the memo; measure the memo alone.
-        layer_bytes_probe = held[0]
-        del layer_bytes_probe
-        held = held[1]
-        gc.collect()
-        memo_bytes = tracemalloc.get_traced_memory()[0] - before
-        memo_label = "memo MB"
-    else:
-        before = tracemalloc.get_traced_memory()[0]
-        heights = heights_src.tolist()
-        held = {
-            id(u): (u, _replica_key(scenario, proj, heights, sloped, overrides, pid, i, u), c)
-            for (pid, i, u), c in zip(units, resolve_all(), strict=True)
-        }
-        gc.collect()
-        memo_bytes = tracemalloc.get_traced_memory()[0] - before
-        memo_label = "memo MB (replica)"
+    before = tracemalloc.get_traced_memory()[0]
+    held = render_paint._drain(render_sprites.sprite_draws_by_anchor_sliced(
+        scenario, proj, elevations, uf, memo=memo_cls(), **kwargs
+    ))
+    # The layer is built alongside the memo; measure the memo alone.
+    layer_bytes_probe = held[0]
+    del layer_bytes_probe
+    held = held[1]
+    gc.collect()
+    memo_bytes = tracemalloc.get_traced_memory()[0] - before
     tracemalloc.stop()
     del held
 
     line = " ".join(f"{k} {v:.1f}" for k, v in rows.items())
-    return [f"      {line} | {memo_label} {memo_bytes / 1e6:.1f}"]
+    return [f"      {line} | memo MB {memo_bytes / 1e6:.1f}"]
 
 
 def bench_file(path: Path, styles, repeat: int) -> None:
-    from descape import render
+    from descape import render_iso, render_paint, render_sloped
     from descape.render_cache import IsoChunkCache, SlopedChunkCache
     from descape.scenario_io import load_map_and_units
 
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     print(f"  {path.name} units {sum(len(u) for u in scenario.unit_manager.units)}", flush=True)
     if "stepped" in styles:
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
         levels = cache.mip_levels()
         other = next((m for m in levels if m != 0 and m > 0), next(m for m in levels if m != 0))
@@ -221,7 +208,7 @@ def bench_file(path: Path, styles, repeat: int) -> None:
             for line in _bench_level(scenario, cache, lvl.proj, elevations, None, repeat):
                 print(line, flush=True)
     if "sloped" in styles:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True)
         print("    sloped", flush=True)
         for line in _bench_level(scenario, cache, cache.proj, cache.elevations, cache.corner_rise, repeat):

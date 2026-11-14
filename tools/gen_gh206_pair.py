@@ -7,7 +7,7 @@ Same source, flat-area finder and write path as gen_building_place_pair.py:
 "before" is a zero-edit write_scenario(), "after" adds the probes with
 UnitEditModel.add() then write_scenario(), the code Place Unit runs.
 
-- Row A (the fix): a Mill (2x2) and a Market (4x4) at render.snapped_anchor(),
+- Row A (the fix): a Mill (2x2) and a Market (4x4) at render_units.snapped_anchor(),
   the values snapped Place Unit now writes. Each has a Villager on the tile
   just outside its footprint's low corner and one just outside its high one.
 - Row B (the tester's repro): a Mill at (t + 0.5, u + 0.5), the old snapped
@@ -36,7 +36,7 @@ import gen_building_place_pair as base
 
 from descape import object_catalog
 from descape.edit_history import EditHistory
-from descape.render import snapped_anchor
+from descape.render_units import snapped_anchor
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.terrain_palette import BUILDING_TILE_SPANS

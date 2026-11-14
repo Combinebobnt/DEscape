@@ -36,7 +36,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from descape import composite_backend, mod_graphics, render, unit_kind, unit_sprites
+from descape import composite_backend, mod_graphics, render_units, unit_kind, unit_sprites
 from descape.sld_decoder import LayerKind, SLDFile
 from descape.unit_filter import UnitFilter
 
@@ -127,13 +127,13 @@ def _hints(scenario, unit_filter: UnitFilter) -> tuple[dict[str, list[tuple]], f
     """{file_name: [dispatch args]} in the walk's first-need order, plus the
     ms of the wall overrides' computation (moved cost: memoized per unit
     generation, so the walk's own call reuses it). Mirrors
-    render._resolve_unit_sprite() -> unit_sprites.sprite_pieces_for() and
+    render_sprites._resolve_unit_sprite() -> unit_sprites.sprite_pieces_for() and
     garrison_flag_pieces_for(): the same filter, bounds, rotation, art,
     pieces and seeds, at the iso zero point."""
     t0 = time.perf_counter()
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     overrides_ms = (time.perf_counter() - t0) * 1000
-    flag_hosts = render.garrison_host_ids(scenario)
+    flag_hosts = render_units.garrison_host_ids(scenario)
     mm = scenario.map_manager
     tile_w, tile_h = mm.map_width, mm.map_height
     skipped_stems = unit_sprites._particle_stems()
@@ -152,7 +152,7 @@ def _hints(scenario, unit_filter: UnitFilter) -> tuple[dict[str, list[tuple]], f
             by_file.setdefault(file_name, []).append(hint)
 
     for player_id, units in enumerate(scenario.unit_manager.units):
-        art = render.player_art_for(scenario, player_id)
+        art = render_units.player_art_for(scenario, player_id)
         # const -> (entry, whether a piece is seeded), or None for a const that draws no .sld.
         entries: dict[int, tuple[dict, bool] | None] = {}
         # Per player, stored_rotation() is a function of (const, raw rotation), so a group is resolved once.
@@ -178,10 +178,10 @@ def _hints(scenario, unit_filter: UnitFilter) -> tuple[dict[str, list[tuple]], f
             if group in seen:
                 continue
             # The walk skips an off-map unit; an on-map one later in the group still counts.
-            if render.unit_tile_bounds(unit, tile_w, tile_h) is None:
+            if render_units.unit_tile_bounds(unit, tile_w, tile_h) is None:
                 continue
             seen.add(group)
-            rotation = override if override is not None else render.stored_rotation(player_id, unit)
+            rotation = override if override is not None else render_units.stored_rotation(player_id, unit)
             pieces = entry.get("pieces")
             if not pieces:
                 add(const, entry, rotation, None, 0)

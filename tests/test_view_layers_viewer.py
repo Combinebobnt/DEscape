@@ -25,7 +25,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from descape import asset_source, settings, unit_sprites, view_layers, viewer
+from descape import asset_source, settings, unit_sprites, view_layers, viewer_unit_place
+from descape.settings_dialog import SettingsDialog
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -47,8 +49,8 @@ def sprite_install(tmp_path, monkeypatch):
     same name, for the same reason (the farm layer is requires_sprites, so
     without this it is permanently greyed and half this file is vacuous)."""
     # A hover can cache the fake table's empty wall set for later tests in the same worker.
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "cache the real wall family before patching its source"
+    viewer_unit_place._wall_consts.cache_clear()
+    assert viewer_unit_place._wall_consts(), "cache the real wall family before patching its source"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
@@ -63,7 +65,7 @@ def sprite_install(tmp_path, monkeypatch):
 
 
 def test_the_synthetic_sprite_install_keeps_the_real_wall_run_consts(sprite_install) -> None:
-    assert {72, 117, 231} <= viewer._wall_consts(), "the fake sprite table poisoned the cached wall family"
+    assert {72, 117, 231} <= viewer_unit_place._wall_consts(), "the fake sprite table poisoned the cached wall family"
 
 
 def test_the_submenu_has_one_checked_action_per_registry_row() -> None:
@@ -494,8 +496,8 @@ def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkey
         window.terrain_style_combo.setCurrentText("Sloped")
         window.show_sprites_action.setChecked(True)
         seen: list[float] = []
-        monkeypatch.setattr(
-            viewer, "unit_sprite_draws_at",
+        set_viewer_global(
+            monkeypatch, "unit_sprite_draws_at",
             lambda *args, **kwargs: (seen.append(kwargs["tree_scale"]), [])[1],
         )
         monkeypatch.setattr(window, "_ghost_rotation_override", lambda entry: None)
@@ -540,8 +542,8 @@ def test_the_drag_ghost_takes_the_windows_own_wall_alpha(sprite_install, monkeyp
         window.terrain_style_combo.setCurrentText("Sloped")
         window.show_sprites_action.setChecked(True)
         seen: list[float] = []
-        monkeypatch.setattr(
-            viewer, "unit_sprite_draws_at",
+        set_viewer_global(
+            monkeypatch, "unit_sprite_draws_at",
             lambda *args, **kwargs: (seen.append(kwargs["wall_alpha"]), [])[1],
         )
         monkeypatch.setattr(window, "_ghost_rotation_override", lambda entry: None)
@@ -566,7 +568,7 @@ def test_the_opacity_setting_reaches_the_cache_only_while_translucent_walls_is_o
     called at all: its equality guard would miss on the raw pct and evict the
     whole canvas for nothing."""
     window = conftest.blank_window()
-    dialog = viewer.SettingsDialog(window)
+    dialog = SettingsDialog(window)
     try:
         window.terrain_style_combo.setCurrentText("Sloped")
         calls = []
@@ -598,7 +600,7 @@ def test_the_opacity_slider_keeps_focus_through_an_applied_step(sprite_install) 
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.blank_window()
-    dialog = viewer.SettingsDialog(window)
+    dialog = SettingsDialog(window)
     try:
         window.terrain_style_combo.setCurrentText("Sloped")
         window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
@@ -705,7 +707,7 @@ def test_the_mod_art_toggle_and_an_opt_out_redraw_from_the_files_that_win(mod_ar
         action.setChecked(True)
         assert _draws_mod_green(window)
 
-        dialog = viewer.SettingsDialog(window)
+        dialog = SettingsDialog(window)
         item = dialog.mod_art_list.item(0)
         assert item.data(Qt.UserRole) == mod_art_profile and item.checkState() == Qt.Checked
         item.setCheckState(Qt.Unchecked)
@@ -808,7 +810,7 @@ def test_a_mod_disabled_in_the_game_lists_off_and_draws_once_ticked(disabled_mod
         assert not _draws_mod_green(window)
         assert window._mod_art_status() == ""
 
-        dialog = viewer.SettingsDialog(window)
+        dialog = SettingsDialog(window)
         item = dialog.mod_art_list.item(0)
         assert item.data(Qt.UserRole) == disabled_mod_art_profile
         assert item.text() == "1_Green (disabled in game)" and item.checkState() == Qt.Unchecked
@@ -821,7 +823,7 @@ def test_a_mod_disabled_in_the_game_lists_off_and_draws_once_ticked(disabled_mod
         log = window.status_log.toPlainText()
         assert "Mod art from 1_Green: on" in log and "(disabled in game)" not in log
 
-        reopened = viewer.SettingsDialog(window)
+        reopened = SettingsDialog(window)
         assert reopened.mod_art_list.item(0).checkState() == Qt.Checked
 
         item.setCheckState(Qt.Unchecked)
@@ -864,9 +866,216 @@ def test_a_window_seeds_disabled_mod_opt_ins_before_any_panel(disabled_mod_art_p
         conftest.close_window(window)
 
 
+def _mods_dir():
+    import os
+    from pathlib import Path
+
+    return Path(os.environ["AOE2DE_PROFILE_PATH"]) / "7656" / "mods"
+
+
+def _set_in_game(**enabled: bool) -> None:
+    """The game's mod-status.json listing these mods in this order, its mtime
+    a whole second past the previous file's, so no timestamp granularity hides it."""
+    import json
+    import os
+
+    status_file = _mods_dir() / "mod-status.json"
+    before = status_file.stat().st_mtime_ns if status_file.exists() else None
+    mods = [{"Enabled": on, "Path": f"subscribed//{name}", "Priority": n} for n, (name, on) in enumerate(enabled.items(), 1)]
+    status_file.write_text(json.dumps({"Mods": mods}))
+    if before is not None:
+        ns = before + 1_000_000_000
+        os.utime(status_file, ns=(ns, ns))
+
+
+def _log(window) -> str:
+    return window.status_log.toPlainText()
+
+
+def _spy_refresh_map(window) -> list:
+    calls = []
+    real = window.refresh_map
+    window.refresh_map = lambda: (calls.append(1), real())[1]
+    return calls
+
+
+PICKED_UP = "Picked up a change in the game's mod list"
+
+
+def test_an_in_game_disable_waits_for_an_action_and_a_touch_is_nothing(mod_art_profile) -> None:
+    """TASK-438: an in-game toggle changes nothing by itself (explicit-only,
+    Decision 2); a pick-up redraws and says so, and the game's identical
+    rewrite at launch neither logs nor re-renders."""
+    window = _mod_art_window("Stepped")
+    try:
+        _set_in_game(**{"1_Green": False})
+        assert _draws_mod_green(window), "no action, no change"
+        assert window._pick_up_mod_changes()
+        assert not _draws_mod_green(window)
+        assert f"{PICKED_UP}. Mod art: none drawn" in _log(window)
+
+        _set_in_game(**{"1_Green": True})
+        assert window._pick_up_mod_changes()
+        assert _draws_mod_green(window)
+
+        logged = _log(window)
+        renders = _spy_refresh_map(window)
+        _set_in_game(**{"1_Green": True})  # the same list, rewritten
+        assert not window._pick_up_mod_changes()
+        assert renders == [] and _log(window) == logged
+        _set_in_game(**{"1_Green": True})
+        window.layer_actions[MOD_ART_LAYER].setChecked(False)
+        assert renders == [1] and PICKED_UP not in _log(window)[len(logged):]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("action", ["toggle", "open", "settings"])
+def test_each_explicit_action_picks_up_an_in_game_disable(mod_art_profile, action, monkeypatch) -> None:
+    from descape import mod_graphics
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = _mod_art_window("Stepped")
+    try:
+        assert _draws_mod_green(window)
+        _set_in_game(**{"1_Green": False})
+        logged = _log(window)
+        if action == "toggle":
+            window.layer_actions[MOD_ART_LAYER].setChecked(False)
+            assert f"{PICKED_UP}. Mod Art: off" in _log(window)[len(logged):]
+            window.layer_actions[MOD_ART_LAYER].setChecked(True)
+            assert not _draws_mod_green(window)
+        elif action == "open":
+            # The same document again, unit included: the load's one render draws the pick-up.
+            renders, prefetched = [], []
+            real, real_prefetch = window._render_current, window._start_sprite_prefetch
+            window._render_current = lambda **kw: (renders.append(1), real(**kw))[1]
+            window._start_sprite_prefetch = lambda: (prefetched.append(mod_graphics.generation()), real_prefetch())[1]
+            window.load_scenario(BLANK_TEMPLATE_PATH, loaded=window.scenario)
+            assert PICKED_UP in _log(window)[len(logged):]
+            assert renders == [1] and not _draws_mod_green(window)
+            assert prefetched == [mod_graphics.generation()], "a bump after the prefetch discards its work"
+        else:
+            monkeypatch.setattr(SettingsDialog, "exec_", lambda self: 0)
+            window._show_settings()
+            assert PICKED_UP in _log(window)[len(logged):]
+            assert not _draws_mod_green(window)
+        assert mod_graphics.resolve_sprite(FILE_NAME) is None
+    finally:
+        conftest.close_window(window)
+
+
+def test_with_mod_art_off_a_pick_up_redraws_nothing_and_settings_lists_the_new_state(mod_art_profile) -> None:
+    from PyQt5.QtCore import Qt
+
+    window = _mod_art_window("Stepped")
+    dialog = None
+    try:
+        action = window.layer_actions[MOD_ART_LAYER]
+        action.setChecked(False)
+        _set_in_game(**{"1_Green": False})
+        renders = _spy_refresh_map(window)
+        assert window._pick_up_mod_changes()
+        assert renders == [] and _log(window).rstrip().endswith(PICKED_UP)
+        dialog = SettingsDialog(window)
+        item = dialog.mod_art_list.item(0)
+        assert item.text() == "1_Green (disabled in game)" and item.checkState() == Qt.Unchecked
+        assert action.isEnabled(), "a disabled mod's art still counts for the row"
+    finally:
+        if dialog is not None:
+            dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_an_opt_out_with_settings_open_relists_a_mod_disabled_meanwhile(mod_art_profile) -> None:
+    """Settings is modal, so a mod toggled in the game while it is open shows
+    on the next tick there, in a deferred refresh; the path field is left alone."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    graphics = _mods_dir() / "subscribed" / "2_Blue" / "resources" / "_common" / "drs" / "graphics"
+    graphics.mkdir(parents=True)
+    (graphics / "other_x1.smx").write_bytes(b"x")
+    _set_in_game(**{"1_Green": True, "2_Blue": True})
+    window = _mod_art_window("Stepped")
+    dialog = SettingsDialog(window)
+    try:
+        dialog.profile_path_edit.setText("half typed")
+        rows = {dialog.mod_art_list.item(i).data(Qt.UserRole): i for i in range(dialog.mod_art_list.count())}
+        _set_in_game(**{"1_Green": False, "2_Blue": True})
+        dialog.mod_art_list.item(rows["subscribed//2_Blue"]).setCheckState(Qt.Unchecked)
+        assert settings.get_mod_art_excluded() == {"subscribed//2_Blue"}
+        QApplication.processEvents()
+        texts = {dialog.mod_art_list.item(i).data(Qt.UserRole): dialog.mod_art_list.item(i) for i in range(2)}
+        green = texts[mod_art_profile]
+        assert green.text() == "1_Green (disabled in game)" and green.checkState() == Qt.Unchecked
+        assert texts["subscribed//2_Blue"].checkState() == Qt.Unchecked
+        assert dialog.profile_path_edit.text() == "half typed"
+        assert not _draws_mod_green(window)
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_a_busy_window_picks_up_nothing(mod_art_profile) -> None:
+    from descape import mod_graphics
+
+    window = _mod_art_window("Stepped")
+    try:
+        _set_in_game(**{"1_Green": False})
+        before = mod_graphics.generation()
+        window._busy = True
+        try:
+            assert not window._pick_up_mod_changes()
+        finally:
+            window._busy = False
+        assert mod_graphics.generation() == before
+    finally:
+        conftest.close_window(window)
+
+
+def test_rescan_mods_redraws_a_mod_the_game_updated_in_place(mod_art_profile) -> None:
+    """The signature cannot see a mod's own folder change (the game updated
+    the mod), so only Rescan mods re-reads it: the update ships the stem as
+    an .sld too, which beats the green .smx inside the mod and draws like
+    the install's (playercolour-tinted, never green)."""
+    window = _mod_art_window("Stepped")
+    dialog = SettingsDialog(window)
+    try:
+        assert _draws_mod_green(window)
+        graphics = _mods_dir() / "subscribed" / "1_Green" / "resources" / "_common" / "drs" / "graphics"
+        (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
+        assert not window._pick_up_mod_changes()
+        assert _draws_mod_green(window)
+        dialog.mod_rescan_button.click()
+        assert not _draws_mod_green(window)
+        assert "Rescanned mods" in _log(window)
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)
+
+
+def test_an_ai_mod_enabled_in_the_game_joins_personality_on_a_pick_up(mod_art_profile) -> None:
+    ai = _mods_dir() / "subscribed" / "3_Ai" / "resources" / "_common" / "ai"
+    ai.mkdir(parents=True)
+    (ai / "ModAi.ai").write_bytes(b"")
+    (ai / "ModAi.per").write_bytes(b"(defrule)")
+    _set_in_game(**{"1_Green": True, "3_Ai": False})
+    window = _mod_art_window("Stepped")
+    try:
+        assert "ModAi.ai" not in {c.stored_name for c in window._ai_scan()}
+        _set_in_game(**{"1_Green": True, "3_Ai": True})
+        renders = _spy_refresh_map(window)
+        assert window._pick_up_mod_changes()
+        assert "ModAi.ai" in {c.stored_name for c in window._ai_scan()}
+        assert renders == [] and _draws_mod_green(window), "a mod without art redraws nothing"
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_profile_change_rescans_the_mod_folders(mod_art_profile, tmp_path, monkeypatch) -> None:
     window = _mod_art_window("Stepped")
-    dialog = viewer.SettingsDialog(window)
+    dialog = SettingsDialog(window)
     try:
         assert _draws_mod_green(window)
         empty = tmp_path / "empty_profile"

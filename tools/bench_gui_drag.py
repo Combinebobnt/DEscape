@@ -128,7 +128,8 @@ release and the crossing (the warm's ticks and chunks), and the crossing's
 two terrains, so a row drawn again still changes every tile.
 
 --root DIR imports descape and testkit from another checkout, so one copy of
-this script drives a baseline worktree and a lane branch alike.
+this script drives a baseline worktree and a lane branch alike. The checkout
+must be at or after AB_ROOT_FLOOR's render cut.
 """
 
 from __future__ import annotations
@@ -155,6 +156,18 @@ FLOW_DRAW_ROWS = 4
 FLOW_ELEV_ROWS = 9
 
 
+# The oldest A/B root the benches accept: the cut that last moved a name they import (TASK-629 cut 2),
+# and a file only it and later checkouts have.
+AB_ROOT_FLOOR = ("TASK-629.03", "descape/render_cache_base.py")
+
+
+def require_render_family(root: Path, tool: str) -> None:
+    """Exits on a checkout older than AB_ROOT_FLOOR's cut: its render names are not where this script imports them."""
+    cut, marker = AB_ROOT_FLOOR
+    if not (root / marker).is_file():
+        sys.exit(f"{tool}: {root} predates {cut} (no {marker}); an A/B root must be at or after it")
+
+
 def _pump(seconds: float) -> None:
     from PyQt5.QtWidgets import QApplication
 
@@ -173,11 +186,13 @@ def _hist(values) -> str:
     return " ".join(f"{k}:{counts[k]}" for k in sorted(counts)) or "-"
 
 
-def _splice_fallback_reason(render_cache, original, scenario, units_by_tile, unit_filter, tiles, cap=None) -> str:
+def _splice_fallback_reason(original, scenario, units_by_tile, unit_filter, tiles, cap=None) -> str:
     """Why _elevation_splices() returned None, via `original` re-run with no cap.
     `cap` is the one the caller passed (Sloped's), else Stepped's module cap."""
+    from testkit.render_family import render_cache_global
+
     name = "_ELEV_SPLICE_MAX_UNITS" if cap is None else "the caller's cap"
-    cap = render_cache._ELEV_SPLICE_MAX_UNITS if cap is None else cap
+    cap = render_cache_global("_ELEV_SPLICE_MAX_UNITS") if cap is None else cap
     out = original(scenario, units_by_tile, unit_filter, tiles, 10**9)
     if out is not None and len(out) > cap:
         return f"over {name} ({cap}): component would be {len(out)}"
@@ -188,12 +203,11 @@ class _PatchProfile:
     """Wraps the chunk caches' patch path to log what one stroke step costs."""
 
     def __init__(self) -> None:
-        from descape import render_cache
+        import pytest
 
-        self.rc = render_cache
         self.lines: list[str] = []
         self._current: dict | None = None
-        self._saved: list[tuple[object, str, object]] = []
+        self._patch = pytest.MonkeyPatch()  # never undone: the wraps last the bench process
         self._gc_t0: float | None = None
         self._gc_events: list[tuple[int, float, bool]] = []  # (generation, ms, inside a patch)
 
@@ -210,12 +224,15 @@ class _PatchProfile:
             self._current["gc"].append((info["generation"], ms))
 
     def _wrap(self, owner, name: str, make) -> None:
-        original = owner.__dict__[name] if name in owner.__dict__ else getattr(owner, name)
-        self._saved.append((owner, name, original))
-        setattr(owner, name, make(original))
+        """`owner` is a cache class or the RENDER_CACHE family."""
+        from testkit.render_family import current, patch
+
+        original = owner.__dict__[name] if isinstance(owner, type) and name in owner.__dict__ else current(owner, name)
+        patch(self._patch, owner, name, make(original))
 
     def install(self) -> None:
-        rc = self.rc
+        from testkit.render_family import RENDER_CACHE, render_cache_global
+
         prof = self
 
         def patch(original):
@@ -266,7 +283,7 @@ class _PatchProfile:
                 out = original(scenario, units_by_tile, unit_filter, tiles, cap)
                 if prof._current is not None:
                     if out is None:
-                        why = _splice_fallback_reason(rc, original, scenario, units_by_tile, unit_filter, tiles, cap)
+                        why = _splice_fallback_reason(original, scenario, units_by_tile, unit_filter, tiles, cap)
                         prof._current["splice"] = f"None[{why}]"
                     else:
                         seeds = sum(1 for s in out if s.new_own_tile in tiles)
@@ -297,13 +314,13 @@ class _PatchProfile:
                         comp[mip] = comp.get(mip, 0.0) + (time.perf_counter() - t0) * 1000
             return wrapper
 
-        self._wrap(rc._ChunkCacheBase, "patch", patch)
-        self._wrap(rc, "_elevation_splices", splices)
-        for cls in (rc.IsoChunkCache, rc.SlopedChunkCache, rc.FlatChunkCache):
+        self._wrap(render_cache_global("_ChunkCacheBase"), "patch", patch)
+        self._wrap(RENDER_CACHE, "_elevation_splices", splices)
+        for cls in map(render_cache_global, ("IsoChunkCache", "SlopedChunkCache", "FlatChunkCache")):
             self._wrap(cls, "_refresh_source_caches", refresh)
             self._wrap(cls, "_composite_rect", composite)
-        # The shared base times Sloped's lazy build too; a pre-TASK-031.59 --root has only Iso's.
-        self._wrap(getattr(rc, "_LeveledChunkCache", rc.IsoChunkCache), "_level", level)
+        # The shared base times Sloped's lazy build too.
+        self._wrap(render_cache_global("_LeveledChunkCache"), "_level", level)
         gc.callbacks.append(self._on_gc)
 
     def take(self) -> list[str]:
@@ -1019,7 +1036,9 @@ def _run_flow_gh180(args) -> list[str]:
     saved = [
         (viewer_canvas.MapCanvasItem, "paint"), (viewer.ViewerWindow, "on_edit_stroke_end"), (viewer.ViewerWindow, "undo"),
     ]
-    originals = {(owner, name): owner.__dict__[name] for owner, name in saved}
+    # A method a mixin defines is not in the class's own __dict__ (TASK-517), so read it through getattr.
+    owned = {(owner, name) for owner, name in saved if name in owner.__dict__}
+    originals = {(owner, name): owner.__dict__[name] if (owner, name) in owned else getattr(owner, name) for owner, name in saved}
 
     def timed_paint(self, *a, **k):
         t0 = time.perf_counter()
@@ -1174,7 +1193,10 @@ def _run_flow_gh180(args) -> list[str]:
             output.append(raw.get(name, ""))
     finally:
         for (owner, name), original in originals.items():
-            setattr(owner, name, original)
+            if (owner, name) in owned:
+                setattr(owner, name, original)
+            else:
+                delattr(owner, name)
         if window.scenario is not None:
             window.edit_history.mark_saved()
         window.close()
@@ -1194,12 +1216,12 @@ def _undo_stroke_tiles(mm, target: int) -> list[list[tuple[int, int]]]:
 
 
 def _bbox_split(scenario, dirty_indices, elevations, proj, canvas, with_sprites: bool):
-    """render._dirty_screen_bbox() for Stepped (radii 0), re-run on a COPY of the
+    """render_bbox._dirty_screen_bbox() for Stepped (radii 0), re-run on a COPY of the
     pre-edit elevations with each phase timed. Returns (rect, {phase: ms}).
     The caller checks the rect against the real call's, which keeps this honest."""
     import numpy as np
 
-    from descape import iso_geometry, render
+    from descape import iso_geometry, render_bbox, render_units
 
     t = time.perf_counter
     ms: dict[str, float] = {}
@@ -1235,7 +1257,7 @@ def _bbox_split(scenario, dirty_indices, elevations, proj, canvas, with_sprites:
             for u in units:
                 if (int(u.x), int(u.y)) not in changed:
                     continue
-                bounds = render.unit_tile_bounds(u, w, h)
+                bounds = render_units.unit_tile_bounds(u, w, h)
                 if bounds is None:
                     continue
                 fx0, fx1, fy0, fy1 = bounds
@@ -1251,10 +1273,10 @@ def _bbox_split(scenario, dirty_indices, elevations, proj, canvas, with_sprites:
     sys_ = np.fromiter((y for _, y in seed_tiles), dtype=np.int64, count=len(seed_tiles))
     ms["fromiter"] = (t() - t0) * 1000
     t0 = t()
-    lo, hi = render._observed_elevation_range(elevations, pre_elevation, sxs, sys_)
+    lo, hi = render_bbox._observed_elevation_range(elevations, pre_elevation, sxs, sys_)
     if footprint_owners:
         owners = list({o for owns in footprint_owners.values() for o in owns})
-        olo, ohi = render._observed_elevation_range(
+        olo, ohi = render_bbox._observed_elevation_range(
             elevations, pre_elevation,
             np.array([x for x, _ in owners], dtype=np.int64), np.array([y for _, y in owners], dtype=np.int64),
         )
@@ -1270,12 +1292,12 @@ def _bbox_split(scenario, dirty_indices, elevations, proj, canvas, with_sprites:
     ms["range_merge"] = (t() - t0) * 1000
     t0 = t()
     if with_sprites:
-        pad_l, pad_u, pad_r, pad_d = render._sprite_reach_px(proj)
-        band = [(x, y) for x, y in changed & render.anchor_tiles(scenario) if 0 <= x < w and 0 <= y < h]
+        pad_l, pad_u, pad_r, pad_d = render_bbox._sprite_reach_px(proj)
+        band = [(x, y) for x, y in changed & render_units.anchor_tiles(scenario) if 0 <= x < w and 0 <= y < h]
         if band:
             bxs = np.array([x for x, _ in band], dtype=np.int64)
             bys = np.array([y for _, y in band], dtype=np.int64)
-            blo, bhi = render._observed_elevation_range(elevations, pre_elevation, bxs, bys)
+            blo, bhi = render_bbox._observed_elevation_range(elevations, pre_elevation, bxs, bys)
             tx0, ty_hi = iso_geometry.tile_screen_origin(bxs, bys, bhi, proj)
             ty_lo = ty_hi + (bhi - blo) * proj.elev_step
             x0 = min(x0, int(tx0.min()) - pad_l)
@@ -1293,13 +1315,13 @@ def _early_exit_estimate(scenario, dirty_xy, elevations, proj, canvas, with_spri
     range, plus the sprite reach. (rect, covers_canvas)."""
     import numpy as np
 
-    from descape import iso_geometry, render
+    from descape import iso_geometry, render_bbox, render_units
 
     h, w = elevations.shape
     span = 1
     for units in scenario.unit_manager.units:
         for u in units:
-            b = render.unit_tile_bounds(u, w, h)
+            b = render_units.unit_tile_bounds(u, w, h)
             if b is not None:
                 span = max(span, b[1] - b[0], b[3] - b[2])
     r = 1 + span
@@ -1314,7 +1336,7 @@ def _early_exit_estimate(scenario, dirty_xy, elevations, proj, canvas, with_spri
     tx0, ty0, tx1, ty1 = iso_geometry.tile_screen_bounds_over(cx, cy, lo, hi, proj)
     x0, y0, x1, y1 = int(tx0.min()), int(ty0.min()), int(tx1.max()), int(ty1.max())
     if with_sprites:
-        pad_l, pad_u, pad_r, pad_d = render._sprite_reach_px(proj)
+        pad_l, pad_u, pad_r, pad_d = render_bbox._sprite_reach_px(proj)
         x0, y0, x1, y1 = x0 - pad_l, y0 - pad_u - proj.half_h, x1 + pad_r, y1 + pad_d + 2 * proj.half_h
     cw, ch = canvas
     return (x0, y0, x1, y1), x0 <= 0 and y0 <= 0 and x1 >= cw and y1 >= ch
@@ -1325,18 +1347,18 @@ class _SpliceTimer:
     refresh) while --undo runs an undo with the cap lifted."""
 
     def __init__(self) -> None:
-        from descape import render, render_cache
+        import pytest
+
+        from testkit.render_family import RENDER, RENDER_CACHE, current, patch
 
         self.ms: dict[str, float] = {}
-        self._saved = []
+        self._patch = pytest.MonkeyPatch()
         for owner, name, key in (
-            (render_cache, "_reanchor_units", "reanchor"),
-            (render, "patch_bystander_grid", "grid_patch"),
-            (render_cache, "_refreshed_pack", "pack_refresh"),
+            (RENDER_CACHE, "_reanchor_units", "reanchor"),
+            (RENDER, "patch_bystander_grid", "grid_patch"),
+            (RENDER_CACHE, "_refreshed_pack", "pack_refresh"),
         ):
-            original = getattr(owner, name)
-            self._saved.append((owner, name, original))
-            setattr(owner, name, self._timed(original, key))
+            patch(self._patch, owner, name, self._timed(current(owner, name), key))
 
     def _timed(self, original, key):
         def wrapper(*a, **k):
@@ -1348,14 +1370,13 @@ class _SpliceTimer:
         return wrapper
 
     def remove(self) -> None:
-        for owner, name, original in self._saved:
-            setattr(owner, name, original)
+        self._patch.undo()
 
 
 def _splice_costs(cache, mip: int, changed: set) -> list[str]:
     """The undo's would-be elevation component on level `mip` (seeds and
     members, uncapped) and the full grid and pack build times there."""
-    from descape import native_composite, render, render_cache
+    from descape import native_composite, render_bbox, render_cache_splice, render_units
     from descape.composite_backend import native
 
     t = time.perf_counter
@@ -1363,16 +1384,16 @@ def _splice_costs(cache, mip: int, changed: set) -> list[str]:
     mm = scen.map_manager
     w, h = mm.map_width, mm.map_height
     t0 = t()
-    own_index = render.unit_own_tile_index(scen)
+    own_index = render_units.unit_own_tile_index(scen)
     seeds = []
     for own in changed:
         for player_id, i, unit in own_index.get(own, ()):
             if not cache.unit_filter.matches(player_id, unit):
                 continue
-            occupied = render.unit_occupied_tiles(unit, w, h)
+            occupied = render_units.unit_occupied_tiles(unit, w, h)
             if occupied is not None:
                 seeds.append((player_id, i, unit, own, tuple(occupied)))
-    members = render_cache._shared_tile_component(
+    members = render_cache_splice._shared_tile_component(
         scen, cache.units_by_tile, cache.unit_filter, own_index, seeds, 10**9
     )
     t_component = (t() - t0) * 1000
@@ -1380,7 +1401,7 @@ def _splice_costs(cache, mip: int, changed: set) -> list[str]:
         return [f"      component: None (a unit missing from the own-tile index), {len(seeds)} seeds"]
     lvl = cache._level(mip)
     t0 = t()
-    render.build_bystander_grid(lvl.building_bboxes, cache.chunk_px)
+    render_bbox.build_bystander_grid(lvl.building_bboxes, cache.chunk_px)
     t_grid_full = (t() - t0) * 1000
     t_pack_full = 0.0
     if native is not None:
@@ -1391,7 +1412,7 @@ def _splice_costs(cache, mip: int, changed: set) -> list[str]:
         t_pack_full = (t() - t0) * 1000
     return [
         (
-            f"      component: {len(seeds)} seeds -> {len(members)} members (cap {render_cache._ELEV_SPLICE_MAX_UNITS}),"
+            f"      component: {len(seeds)} seeds -> {len(members)} members (cap {render_cache_splice._ELEV_SPLICE_MAX_UNITS}),"
             f" walk {t_component:.1f}ms; full grid build {t_grid_full:.1f}ms, full pack build {t_pack_full:.1f}ms"
         ),
     ]
@@ -1400,10 +1421,13 @@ def _splice_costs(cache, mip: int, changed: set) -> list[str]:
 def _run_undo(args) -> list[str]:
     """--undo: a large Set elevation or Elevate stroke at one zoom, then a timed
     window.undo(), per tool and rep. See the module docstring."""
+    import pytest
     from PyQt5.QtCore import Qt
 
-    from descape import composite_backend, debug_log, perf_trace, render, render_cache, settings, viewer
+    from descape import composite_backend, debug_log, perf_trace, render_bbox, settings
     from testkit import qt_window
+    from testkit.render_family import set_render_cache_global
+    from testkit.viewer_family import set_viewer_global, viewer_global
 
     settings._distance_ticks = False
     perf_trace.enable(True)
@@ -1424,7 +1448,7 @@ def _run_undo(args) -> list[str]:
         mip = target[0]
         cache = window._cache
         mm = window.scenario.map_manager
-        canvas = render._canvas_pixel_dims(window._iso_proj)
+        canvas = render_bbox._canvas_pixel_dims(window._iso_proj)
         output.append(
             f"{args.style}, zoom fit x{args.undo_zoom:g} (scale {view.transform().m11():.3f}, visible mip {mip}),"
             f" map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1433,14 +1457,14 @@ def _run_undo(args) -> list[str]:
         output.append(composite_backend.describe())
 
         captured: dict = {}
-        real_bbox = viewer.dirty_screen_bbox_iso
+        real_bbox = viewer_global("dirty_screen_bbox_iso")
 
         def bbox_probe(scenario, dirty_indices, elevations, proj, **kw):
             pre = elevations.copy()
 
             def split():
                 captured["split"] = _bbox_split(
-                    scenario, dirty_indices, pre.copy(), proj, render._canvas_pixel_dims(proj),
+                    scenario, dirty_indices, pre.copy(), proj, render_bbox._canvas_pixel_dims(proj),
                     kw.get("with_sprites", False),
                 )
 
@@ -1482,25 +1506,22 @@ def _run_undo(args) -> list[str]:
                 written = len(window.edit_history.records[window.edit_history.cursor - 1].touched_indices())
                 debug_log.clear()
                 captured.clear()
-                cap = render_cache._ELEV_SPLICE_MAX_UNITS
-                sloped_cap = render_cache._SLOPED_ELEV_SPLICE_MAX_UNITS
                 timer = None
+                probe_patch = pytest.MonkeyPatch()
                 if args.undo_plain:
                     pass
                 elif capped:
-                    viewer.dirty_screen_bbox_iso = bbox_probe
+                    set_viewer_global(probe_patch, "dirty_screen_bbox_iso", bbox_probe)
                 else:
-                    render_cache._ELEV_SPLICE_MAX_UNITS = 10**9
-                    render_cache._SLOPED_ELEV_SPLICE_MAX_UNITS = 10**9
+                    set_render_cache_global(probe_patch, "_ELEV_SPLICE_MAX_UNITS", 10**9)
+                    set_render_cache_global(probe_patch, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 10**9)
                     timer = _SpliceTimer()
                 try:
                     t0 = time.perf_counter()
                     window.undo()
                     wall = (time.perf_counter() - t0) * 1000
                 finally:
-                    viewer.dirty_screen_bbox_iso = real_bbox
-                    render_cache._ELEV_SPLICE_MAX_UNITS = cap
-                    render_cache._SLOPED_ELEV_SPLICE_MAX_UNITS = sloped_cap
+                    probe_patch.undo()
                     if timer is not None:
                         timer.remove()
                 perf_trace.flush_idle()
@@ -1590,7 +1611,9 @@ def main() -> None:
     parser.add_argument("--settle", type=float, default=5.0, help="seconds to let the viewport warm before dragging")
     parser.add_argument("--no-preload", action="store_true", help="turn off neighbouring zoom-level preload")
     parser.add_argument("--profile-patch", action="store_true", help="one line per cache patch() (see above)")
-    parser.add_argument("--root", type=Path, help="DEscape checkout to import descape and testkit from")
+    parser.add_argument(
+        "--root", type=Path, help=f"DEscape checkout to import descape and testkit from (at or after {AB_ROOT_FLOOR[0]})"
+    )
     zoom = parser.add_mutually_exclusive_group()
     zoom.add_argument("--fit", action="store_true", help="per-brush drags at fit zoom, not 1:1 (see above)")
     zoom.add_argument("--scale", type=float, help="per-brush drags at this zoom, not 1:1 (see above)")
@@ -1648,6 +1671,7 @@ def main() -> None:
     if not os.environ.get("DISPLAY"):
         sys.exit("needs a real X display (see the Xvfb recipe in --help)")
     root = (args.root or ROOT).resolve()
+    require_render_family(root, "bench_gui_drag")
     sys.path.insert(0, str(root))
     from testkit import qt_window, settings_isolation
 

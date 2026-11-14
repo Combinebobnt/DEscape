@@ -1,4 +1,4 @@
-"""The per-tile early reject in render._render_tile_iso, _render_tile_sloped
+"""The per-tile early reject in render_iso._render_tile_iso, _render_tile_sloped
 and _render_tile_sloped_ids (Batch C).
 
 The Stepped reject skips a candidate tile when iso_geometry.iso_tile_extent's
@@ -30,7 +30,7 @@ tip pixels, which a random rect rarely lands on.
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render
+from descape import asset_source, iso_geometry, render_iso, render_sloped
 
 TILE_PX = (8, 16, 32, 64, 128)
 ELEV_STEP_PCT = (25, 50, 100, 200)
@@ -153,11 +153,11 @@ def test_reject_never_drops_a_pixel_and_actually_fires(tile_px, pct, monkeypatch
             on, off = noise.copy(), noise.copy()
 
             before = reached["n"]
-            render._render_tile_iso(on, tiles[(cx, cy)], tile_px, proj, elevations, MAP_W, MAP_H, offset=(x0, y0))
+            render_iso._render_tile_iso(on, tiles[(cx, cy)], tile_px, proj, elevations, MAP_W, MAP_H, offset=(x0, y0))
             was_rejected = reached["n"] == before
 
             monkeypatch.setattr(iso_geometry, "iso_tile_extent", lambda *key: None)
-            render._render_tile_iso(off, tiles[(cx, cy)], tile_px, proj, elevations, MAP_W, MAP_H, offset=(x0, y0))
+            render_iso._render_tile_iso(off, tiles[(cx, cy)], tile_px, proj, elevations, MAP_W, MAP_H, offset=(x0, y0))
             monkeypatch.setattr(iso_geometry, "iso_tile_extent", real_extent)
 
             assert np.array_equal(on, off), (tile_px, pct, (x0, y0, x1, y1), (cx, cy))
@@ -190,7 +190,7 @@ def test_sloped_reject_never_drops_a_pixel_or_an_id_and_actually_fires(tile_px, 
         MAP_W, MAP_H, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION,
         elev_step_pct=pct, corner_headroom_steps=1,
     )
-    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
+    corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=render_sloped.SLOPE_CORNER_RULE)
     rng = np.random.default_rng(pct + 7)
     real_extent = iso_geometry.index_extent
     real_texture = asset_source.get_terrain_texture_array
@@ -208,17 +208,17 @@ def test_sloped_reject_never_drops_a_pixel_or_an_id_and_actually_fires(tile_px, 
         for cx, cy in candidates.tolist():
             tile = tiles[(cx, cy)]
             noise = rng.integers(1, 256, size=(y1 - y0, x1 - x0, 3), dtype=np.uint8)
-            ids = np.full((y1 - y0, x1 - x0), render.PICK_ID_NONE, dtype=np.int32)
+            ids = np.full((y1 - y0, x1 - x0), render_sloped.PICK_ID_NONE, dtype=np.int32)
             on, off, ids_on, ids_off = noise.copy(), noise.copy(), ids.copy(), ids.copy()
 
             before = reached["n"]
-            render._render_tile_sloped(on, tile, tile_px, proj, corner_rise, offset=(x0, y0))
-            render._render_tile_sloped_ids(ids_on, tile, tile_px, proj, corner_rise, MAP_W, offset=(x0, y0))
+            render_sloped._render_tile_sloped(on, tile, tile_px, proj, corner_rise, offset=(x0, y0))
+            render_sloped._render_tile_sloped_ids(ids_on, tile, tile_px, proj, corner_rise, MAP_W, offset=(x0, y0))
             was_rejected = reached["n"] == before
 
             monkeypatch.setattr(iso_geometry, "index_extent", lambda *key: None)
-            render._render_tile_sloped(off, tile, tile_px, proj, corner_rise, offset=(x0, y0))
-            render._render_tile_sloped_ids(ids_off, tile, tile_px, proj, corner_rise, MAP_W, offset=(x0, y0))
+            render_sloped._render_tile_sloped(off, tile, tile_px, proj, corner_rise, offset=(x0, y0))
+            render_sloped._render_tile_sloped_ids(ids_off, tile, tile_px, proj, corner_rise, MAP_W, offset=(x0, y0))
             monkeypatch.setattr(iso_geometry, "index_extent", real_extent)
 
             assert np.array_equal(on, off), (tile_px, pct, (x0, y0, x1, y1), (cx, cy))

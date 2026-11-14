@@ -3,7 +3,7 @@
 and to paint, per terrain style.
 
 On one scenario, the union selection is the largest prefix of triggers whose
-drawable shapes stay within `viewer.MAX_OVERLAY_SHAPES` (walls are never drawn,
+drawable shapes stay within `viewer_trigger_overlay.MAX_OVERLAY_SHAPES` (walls are never drawn,
 so they do not count), as Select All up to the cap would draw. Printed once:
 
 - the selection's shapes, rects (areas plus unit footprints on the map),
@@ -93,7 +93,7 @@ def main() -> None:
     from PyQt5.QtGui import QImage, QPainter
     from PyQt5.QtWidgets import QApplication
 
-    from descape import library_compat, trigger_geometry, viewer
+    from descape import library_compat, trigger_geometry, viewer_trigger_overlay
     from descape.scenario_io import parse_triggers
 
     qt_window.ensure_qapp()
@@ -130,7 +130,7 @@ def main() -> None:
         shapes = []
         for index in range(len(manager.triggers)):
             more = drawable(index)
-            if len(shapes) + len(more) > viewer.MAX_OVERLAY_SHAPES:
+            if len(shapes) + len(more) > viewer_trigger_overlay.MAX_OVERLAY_SHAPES:
                 break
             shapes.extend(more)
             selection.append(index)

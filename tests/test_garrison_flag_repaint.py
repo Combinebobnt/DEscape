@@ -10,8 +10,8 @@ the host's tiles, so the viewer adds a re-anchor splice per flipped host
 window's cache serves it, against a fresh cache built from the same scenario:
 a flag left on, or one never drawn, shows as stale pixels.
 
-Its own module, not tests/test_unit_edit_viewer.py: that one strips the
-install (its autouse _no_install_env), so no sprite and no flag would draw
+Its own module, not a tests/test_unit_edit_viewer_*.py one: those strip the
+install (their autouse _no_install_env), so no sprite and no flag would draw
 and every check there would pass vacuously. The synthetic install below
 draws every const these edits touch, each host with a flag at a real offset.
 """
@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 from PyQt5.QtCore import Qt
 
-from descape import asset_source, iso_geometry, render, unit_sprites
+from descape import asset_source, iso_geometry, render_bbox, render_units, unit_sprites
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 
 import conftest
@@ -105,7 +105,7 @@ def _focus_rect(cache) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = FOCUS
     corners = ((x0, y0), (x1, y0), (x0, y1), (x1, y1))
     boxes = np.array([iso_geometry.tile_screen_bounds_swept(x, y, cache.proj) for x, y in corners])
-    left, up, right, down = render._sprite_reach_px(cache.proj)
+    left, up, right, down = render_bbox._sprite_reach_px(cache.proj)
     w, h = cache.canvas_dims(0)
     return (
         max(0, int(boxes[:, 0].min()) - left), max(0, int(boxes[:, 1].min()) - up),
@@ -178,9 +178,9 @@ class _Steps:
     def run(self, what: str, edit, host_ref: int, flagged_after: bool) -> None:
         window = self.window
         before = _check(window, f"before {what}")
-        assert (host_ref in render.garrison_host_ids(window.scenario)) is not flagged_after
+        assert (host_ref in render_units.garrison_host_ids(window.scenario)) is not flagged_after
         edit()
-        assert (host_ref in render.garrison_host_ids(window.scenario)) is flagged_after, what
+        assert (host_ref in render_units.garrison_host_ids(window.scenario)) is flagged_after, what
         after = _check(window, what)
         assert not np.array_equal(before, after), f"{what} changed no pixel"
         window.undo()
@@ -215,7 +215,7 @@ def _off_tile_occupant(window):
     villager = _live(window, REF_VILLAGER_IN_HOUSE)
     house = _live(window, REF_HOUSE)
     assert villager.garrisoned_in_id == REF_HOUSE
-    assert (int(villager.x), int(villager.y)) not in set(render.unit_occupied_tiles(house, 120, 120))
+    assert (int(villager.x), int(villager.y)) not in set(render_units.unit_occupied_tiles(house, 120, 120))
     return villager
 
 
@@ -257,7 +257,7 @@ def test_without_the_flip_splices_an_off_tile_occupants_host_is_left_stale(art, 
             _delete_off_tile_occupant(window)
         else:
             window.undo()
-        assert (REF_HOUSE in render.garrison_host_ids(window.scenario)) is (step == "undo")
+        assert (REF_HOUSE in render_units.garrison_host_ids(window.scenario)) is (step == "undo")
         stale = int((_level(window) != _fresh(window)).any(axis=2).sum())
         # One whole synthetic flag, T // 2 native px square at the template's 2/3 scale.
         assert stale == (round(T // 2 * unit_sprites.sprite_scale(window._cache.proj.half_w))) ** 2, stale
@@ -278,7 +278,7 @@ def test_a_wholesale_garrison_delete_then_its_scoped_undo(art, monkeypatch, styl
         window._selection = [(1, REF_HOUSE)]
         window._refresh_selection_view()
         window._on_garrison_delete([REF_VILLAGER_IN_HOUSE])
-        assert REF_HOUSE not in render.garrison_host_ids(window.scenario)
+        assert REF_HOUSE not in render_units.garrison_host_ids(window.scenario)
         after = _check(window, "garrison delete")
         assert not np.array_equal(before, after)
         assert steps.flips == [], "Garrison Delete is the wholesale path"

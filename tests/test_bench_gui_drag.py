@@ -104,3 +104,10 @@ def test_window_sizes_parse(text, size):
 def test_bad_window_sizes_are_refused(text):
     with pytest.raises(argparse.ArgumentTypeError):
         bench_gui_drag._size(text)
+
+
+def test_an_ab_root_without_the_render_families_is_refused(tmp_path):
+    """A root older than the last render cut has its render names elsewhere."""
+    with pytest.raises(SystemExit, match=bench_gui_drag.AB_ROOT_FLOOR[0]):
+        bench_gui_drag.require_render_family(tmp_path, "bench_gui_drag")
+    bench_gui_drag.require_render_family(bench_gui_drag.ROOT, "bench_gui_drag")

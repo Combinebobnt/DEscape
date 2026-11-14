@@ -21,9 +21,20 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from descape import asset_source, render, unit_sprites
+from descape import (
+    asset_source,
+    render_bbox,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_sprites,
+)
 from descape import iso_geometry as ig
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import render_global, set_render_global
 
 import conftest
 
@@ -48,7 +59,7 @@ GROUND_TERRAIN = 14
 ALT_GROUND_TERRAIN = 47
 # Twice the app's small-map tile: a corner post is ~3 px wide at 64 and the
 # 1 px mask erosion would leave almost nothing of it.
-TILE_PX = 2 * render.SMALL_MAP_TILE_PIXELS
+TILE_PX = 2 * render_paint.SMALL_MAP_TILE_PIXELS
 ELEV_STEP_PCT = 50
 # Both buildings are 4x4 and centred here, so their footprint is tiles 58..61.
 CENTRE = 60.0
@@ -205,19 +216,16 @@ def _sprite_layer(style: str, scn):
     mm = scn.map_manager
     proj = _projection(style)
     elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
-    corner_rise = ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE) if style == "sloped" else None
-    return elevations, corner_rise, render.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
+    corner_rise = ig.corner_rise_px(elevations, proj, rule=render_sloped.SLOPE_CORNER_RULE) if style == "sloped" else None
+    return elevations, corner_rise, render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
 
 
 @contextmanager
 def _slicing(sliced: bool):
-    """True leaves render.SPRITE_COLUMN_SLICING as it stands, so flipping it is a revert check."""
-    saved = render.SPRITE_COLUMN_SLICING
-    render.SPRITE_COLUMN_SLICING = saved and sliced
-    try:
+    """True leaves render_sprites.SPRITE_COLUMN_SLICING as it stands, so flipping it is a revert check."""
+    with pytest.MonkeyPatch.context() as mp:
+        set_render_global(mp, "SPRITE_COLUMN_SLICING", render_global("SPRITE_COLUMN_SLICING") and sliced)
         yield
-    finally:
-        render.SPRITE_COLUMN_SLICING = saved
 
 
 # Bounded: each render is ~2 MB and the module makes ~170 distinct ones.
@@ -229,27 +237,27 @@ def _render(
     """One style's composite over _box(style). `placed` is ((const, x, y), ...)
     in list order; `patch` is ("keep", const, indices) or ("no-slots", const);
     `art` is PLAYER's building art (see _scenario); `sliced=False` is the
-    single-anchor render from before TASK-221 (render.SPRITE_COLUMN_SLICING)."""
+    single-anchor render from before TASK-221 (render_sprites.SPRITE_COLUMN_SLICING)."""
     const, transform = _transform(patch)
     scn = _scenario(placed, terrain_id, art)
     mm = scn.map_manager
     box = _box(style)
     with _patched(const, transform, art), _slicing(sliced):
         if style == "flat":
-            draws = render._flat_unit_draws(scn, TILE_PX)
-            icons, _rows = render._flat_icon_layer(scn, TILE_PX)
-            return render.composite_rect_flat(scn, *box, TILE_PX, unit_draws=draws, icons=icons)
+            draws = render_flat._flat_unit_draws(scn, TILE_PX)
+            icons, _rows = render_flat._flat_icon_layer(scn, TILE_PX)
+            return render_flat.composite_rect_flat(scn, *box, TILE_PX, unit_draws=draws, icons=icons)
         proj = _projection(style)
         elevations, corner_rise, sprites = _sprite_layer(style, scn)
-        units_by_tile = render._units_by_tile(scn)
-        bboxes = render.merge_sprite_bboxes(
-            render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
+        units_by_tile = render_units._units_by_tile(scn)
+        bboxes = render_sprites.merge_sprite_bboxes(
+            render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
         )
         if style == "sloped":
-            return render.composite_rect_sloped(
+            return render_sloped.composite_rect_sloped(
                 scn, *box, corner_rise, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites
             )
-        return render.composite_rect_iso(
+        return render_iso.composite_rect_iso(
             scn, *box, elevations, proj, TILE_PX, units_by_tile, bboxes, with_units=True, sprites=sprites
         )
 
@@ -286,7 +294,7 @@ def _depth_key(tile: tuple[int, int]) -> tuple[int, int]:
 
 def _unit_tile(const: int, x: float, y: float) -> tuple[int, int]:
     mm = _base().map_manager
-    return unit_sprites.sprite_anchor_tile(render.unit_occupied_tiles(_unit(const, x, y), mm.map_width, mm.map_height))
+    return unit_sprites.sprite_anchor_tile(render_units.unit_occupied_tiles(_unit(const, x, y), mm.map_width, mm.map_height))
 
 
 def _own_columns(style: str, tile: tuple[int, int]) -> np.ndarray:
@@ -304,7 +312,7 @@ def _slot_tiles(const: int, art: tuple | None = None) -> list[tuple[int, int]]:
     """Each piece's depth-slot tile for a building centred on CENTRE, from the committed slots
     of the entry PLAYER draws with `art`."""
     mm = _base().map_manager
-    occupied = render.unit_occupied_tiles(_unit(const, CENTRE, CENTRE), mm.map_width, mm.map_height)
+    occupied = render_units.unit_occupied_tiles(_unit(const, CENTRE, CENTRE), mm.map_width, mm.map_height)
     x0, y0 = min(t[0] for t in occupied), min(t[1] for t in occupied)
     entry = unit_sprites.graphic_map()[const] if art is None else unit_sprites.resolve_entry(const, *art)
     return [(x0 + p["slot"][0], y0 + p["slot"][1]) for p in entry["pieces"]]
@@ -318,7 +326,7 @@ def _piece_ink(style: str, const: int, keep: frozenset[int], art: tuple | None =
     # A pasture's drape stays when its pieces are hidden, so the drape alone is the baseline.
     ground = (
         _render(style, building, ("keep", const, frozenset()))
-        if const in render.DRAPED_SPRITE_CONSTS
+        if const in render_sprites.DRAPED_SPRITE_CONSTS
         else _render(style, ())
     )
     return _changed(_render(style, building, ("keep", const, keep), art=art), ground)
@@ -363,7 +371,7 @@ def _tc_unit_tiles(art: tuple | None = None) -> list[tuple[int, int]]:
     keys = sorted({_depth_key(t) for t in slots})
     assert len(keys) >= 2, f"town centre slots collapsed onto one tile: {slots}"
     mm = _base().map_manager
-    footprint = render.unit_occupied_tiles(_unit(TOWN_CENTRE, CENTRE, CENTRE), mm.map_width, mm.map_height)
+    footprint = render_units.unit_occupied_tiles(_unit(TOWN_CENTRE, CENTRE, CENTRE), mm.map_width, mm.map_height)
     return sorted(t for t in footprint if keys[0] < _depth_key(t) < keys[-1] and _depth_key(t) not in keys)
 
 

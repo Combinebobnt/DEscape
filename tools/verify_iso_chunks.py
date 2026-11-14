@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies descape.render.composite_rect_iso() and IsoChunkCache -- v2.6
+"""Verifies descape.render_iso.composite_rect_iso() and IsoChunkCache -- v2.6
 completion plan's Track B, Phase B-B. This is the
 load-bearing check for Phase B-B: a chunk cache is only useful if it's
 provably indistinguishable, pixel-for-pixel, from the existing full-canvas
@@ -57,14 +57,10 @@ import numpy as np
 from descape import iso_geometry
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    composite_rect_iso,
-    dirty_screen_bbox_iso,
-    render_terrain_iso,
-    render_terrain_iso_with_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_iso
 from descape.render_cache import IsoChunkCache
+from descape.render_iso import composite_rect_iso, render_terrain_iso, render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 RNG_SEED = 20260805
@@ -356,7 +352,8 @@ def check_composite_rect_iso_elevations_untouched(files: list[Path]) -> tuple[bo
     _img, elevations, proj = render_terrain_iso_with_proj(scenario)
     before = elevations.copy()
 
-    from descape.render import _building_bboxes_iso, _units_by_tile
+    from descape.render_bbox import _building_bboxes_iso
+    from descape.render_units import _units_by_tile
 
     units_by_tile = _units_by_tile(scenario)
     building_bboxes = _building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations)

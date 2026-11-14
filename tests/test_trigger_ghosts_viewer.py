@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 from PyQt5.QtCore import Qt
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render_sprites, unit_sprites
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 from test_unit_sprites import CONST as SPRITE_CONST
@@ -40,12 +41,12 @@ _PLACE_FOUNDATION = 25
 @pytest.fixture
 def sprite_install(tmp_path, monkeypatch):
     """test_place_preview.py's fixture: one synthetic sprite for SPRITE_CONST
-    only, so every other const resolves no sprite. Warms viewer._wall_consts()
+    only, so every other const resolves no sprite. Warms viewer_unit_place._wall_consts()
     first, for the reason given there."""
-    from descape import viewer
+    from descape import viewer_unit_place
 
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    viewer_unit_place._wall_consts.cache_clear()
+    assert viewer_unit_place._wall_consts(), "the real wall set must be cached before the patch"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
@@ -111,7 +112,7 @@ def _sprite_content(item) -> list:
 def _expected_draws(window, entry) -> list:
     view = window.map_view
     cache = view._sloped_cache()
-    draws = render.unit_sprite_draws_at(
+    draws = render_sprites.unit_sprite_draws_at(
         window.scenario, view._iso_proj, view._iso_elevations, None if cache is None else cache.corner_rise,
         entry.player_id, entry.unit, tree_scale=window._layers.tree_scale, hero_glow=window._layers.hero_glow,
         wall_alpha=window._layers.wall_alpha,
@@ -161,6 +162,20 @@ def test_a_place_foundation_added_through_the_panel_ghosts_its_const_on_its_loca
         assert strong.sceneBoundingRect().contains(_tile_centre(view, tile))
         # A 4x4 castle's mark is wider than its one location tile.
         assert strong.sceneBoundingRect().width() > view._tile_polygon(*tile).boundingRect().width() * 2
+    finally:
+        _close(window)
+
+
+def test_an_even_sized_building_ghost_centres_on_the_location_tiles_low_corner(monkeypatch) -> None:
+    """GH #369: a 4x4 castle the game spawns on 68..71 for location 70, not 69..72."""
+    built: list = []
+    real = viewer_global("new_unit")
+    set_viewer_global(monkeypatch, "new_unit", lambda *a, **k: (built.append(a[2:5]), real(*a, **k))[1])
+    window = _window()
+    try:
+        _set(window, CREATE, object_list_unit_id=_CASTLE, source_player=1)
+        assert (_CASTLE, 70.0, 80.0) in built
+        assert _strong(window.map_view).sceneBoundingRect().contains(_tile_centre(window.map_view, CREATE_TILE))
     finally:
         _close(window)
 
@@ -508,8 +523,6 @@ def _place_unit(window, tile) -> None:
 def test_a_unit_edit_parses_no_triggers_for_a_ghosts_only_union(monkeypatch) -> None:
     """The work TASK-352 removed: with the overlay off a union draws only
     ghosts, read off trigger fields alone, so a unit edit leaves them be."""
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         view = window.map_view
@@ -523,8 +536,8 @@ def test_a_unit_edit_parses_no_triggers_for_a_ghosts_only_union(monkeypatch) -> 
         owned = window.scenario.unit_manager.units[1]
         before = len(owned)
         parses = []
-        real = viewer_module.parse_triggers
-        monkeypatch.setattr(viewer_module, "parse_triggers", lambda loaded: (parses.append(1), real(loaded))[1])
+        real = viewer_global("parse_triggers")
+        set_viewer_global(monkeypatch, "parse_triggers", lambda loaded: (parses.append(1), real(loaded))[1])
         _place_unit(window, (40, 40))
         assert len(owned) == before + 1, "the unit edit must land, or this test proves nothing"
         assert parses == [], "a unit edit re-derived a ghosts-only union"
@@ -540,13 +553,11 @@ def test_a_unit_edit_parses_no_triggers_for_a_ghosts_only_union(monkeypatch) -> 
 
 
 def test_turning_the_ghosts_back_on_says_a_union_cap_again(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         _set(window, CREATE, source_player=1)
         window.trigger_overlay_action.setChecked(False)
-        monkeypatch.setattr(viewer_module, "MAX_UNION_GHOSTS", 1)
+        set_viewer_global(monkeypatch, "MAX_UNION_GHOSTS", 1)
         pair = _copy_geometry_trigger(window)
         window.trigger_panel.select_triggers(pair)
         line = "Trigger-created units hidden"
@@ -559,14 +570,12 @@ def test_turning_the_ghosts_back_on_says_a_union_cap_again(monkeypatch) -> None:
 
 
 def test_turning_the_ghosts_back_on_re_derives_one_trigger_and_says_the_sprite_cap_again(sprite_install, monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         view = window.map_view
         _set(window, CREATE, object_list_unit_id=SPRITE_CONST, source_player=1)
         _new_effect(window, _CREATE_OBJECT, object_list_unit_id=SPRITE_CONST, source_player=1, location_x=20, location_y=30)
-        monkeypatch.setattr(viewer_module, "MAX_SPRITE_GHOSTS", 1)
+        set_viewer_global(monkeypatch, "MAX_SPRITE_GHOSTS", 1)
         window._refresh_trigger_overlay()
         line = "drawn as marks"
         assert window.status_log.toPlainText().count(line) == 1
@@ -583,8 +592,6 @@ def test_turning_the_ghosts_back_on_re_derives_one_trigger_and_says_the_sprite_c
 
 
 def test_past_the_sprite_cap_every_ghost_is_a_mark_said_once(sprite_install, monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         view = window.map_view
@@ -594,7 +601,7 @@ def test_past_the_sprite_cap_every_ghost_is_a_mark_said_once(sprite_install, mon
         assert sum(len(i._images) for i in items) == 2 and not any(i._marks for i in items)
         assert "drawn as marks" not in window.status_log.toPlainText()
 
-        monkeypatch.setattr(viewer_module, "MAX_SPRITE_GHOSTS", 1)
+        set_viewer_global(monkeypatch, "MAX_SPRITE_GHOSTS", 1)
         window._refresh_trigger_overlay()
         items = view.trigger_ghost_items()
         assert not any(i._images for i in items), "never a mix by count"
@@ -607,14 +614,12 @@ def test_past_the_sprite_cap_every_ghost_is_a_mark_said_once(sprite_install, mon
 
 
 def test_a_union_past_the_ghost_cap_with_the_overlay_off_names_the_ghosts(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
     window = _window()
     try:
         view = window.map_view
         _set(window, CREATE, source_player=1)
         window.trigger_overlay_action.setChecked(False)
-        monkeypatch.setattr(viewer_module, "MAX_UNION_GHOSTS", 1)
+        set_viewer_global(monkeypatch, "MAX_UNION_GHOSTS", 1)
         pair = _copy_geometry_trigger(window)
         window.trigger_panel.select_triggers(pair)
         assert view.trigger_ghost_items() == [] and view._trigger_ghost_records == []

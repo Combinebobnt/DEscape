@@ -3,7 +3,7 @@
 Three layers: the generated HERO_GLOW_CONSTS set (the .dat's hero_mode bits
 and hero_glow_graphic), unit_sprites._with_glow() (a ring dilated off the
 scaled sprite's alpha), and the View > Layers > Hero Glow row threaded through
-render.py and the chunk caches the way Small Trees is.
+the render modules and the chunk caches the way Small Trees is.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, render, render_cache, unit_sprites
-from descape.render import tile_pixels_for_map
+from descape import asset_source, render_cache_splice, render_iso, render_sloped, render_sprites, unit_sprites
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
 from descape.terrain_palette import HERO_GLOW_CONSTS
 from descape.unit_sprites import HERO_GLOW_GOLD, HERO_GLOW_RADIUS, SpriteDraw
 from descape.view_layers import LayerState
@@ -114,7 +114,7 @@ def test_the_sprite_itself_is_byte_identical_and_the_hotspot_follows_the_pad():
 @pytest.fixture
 def install(tmp_path, monkeypatch):
     """One synthetic .sld registered for a real hero const and a non-hero one,
-    so only the const test in render._resolve_unit_sprite() can tell them apart."""
+    so only the const test in render_sprites._resolve_unit_sprite() can tell them apart."""
     assert NON_HERO_CONST not in HERO_GLOW_CONSTS
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
@@ -181,8 +181,8 @@ def _scenario(*, overlap: bool = False) -> FakeScenario:
 
 
 def _shapes(scn, **kwargs) -> dict[tuple[int, int], tuple[int, int]]:
-    elevations, proj = render.elevations_and_proj(scn)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, **kwargs)
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, **kwargs)
     return {tile: draws[0][0].rgba.shape[:2] for tile, draws in layer.by_anchor.items()}
 
 
@@ -199,9 +199,9 @@ def test_only_hero_consts_are_ringed(install):
 
 def test_the_render_default_is_byte_identical_to_passing_false(install):
     scn = _scenario()
-    elevations, proj = render.elevations_and_proj(scn)
-    omitted = render.sprite_draws_by_anchor(scn, proj, elevations)
-    passed = render.sprite_draws_by_anchor(scn, proj, elevations, hero_glow=False)
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    omitted = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    passed = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, hero_glow=False)
     assert omitted.bboxes == passed.bboxes
     for tile, draws in omitted.by_anchor.items():
         for (draw, px, py, _rise), (pdraw, ppx, ppy, _prise) in zip(draws, passed.by_anchor[tile], strict=True):
@@ -212,20 +212,20 @@ def test_the_render_default_is_byte_identical_to_passing_false(install):
 def test_the_bbox_widens_with_the_ring(install):
     """The dirty-rect math reads these bboxes, so the ring has to be inside them."""
     scn = _scenario()
-    elevations, proj = render.elevations_and_proj(scn)
-    plain = render.sprite_draws_by_anchor(scn, proj, elevations).bboxes[(5, 5)]
-    glowed = render.sprite_draws_by_anchor(scn, proj, elevations, hero_glow=True).bboxes[(5, 5)]
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    plain = render_sprites.sprite_draws_by_anchor(scn, proj, elevations).bboxes[(5, 5)]
+    glowed = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, hero_glow=True).bboxes[(5, 5)]
     r = HERO_GLOW_RADIUS
     assert glowed == (plain[0] - r, plain[1] - r, plain[2] + r, plain[3] + r)
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
 def _sloped_cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(
         scn, elevations, corner_rise, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs
     )
@@ -266,7 +266,7 @@ def test_the_ring_survives_a_unit_splice(install):
     _whole_canvas(cache)
     hero = scn.unit_manager.units[1][0]
     hero.x, hero.y = 8.5, 8.5
-    splice = render_cache.UnitSplice(
+    splice = render_cache_splice.UnitSplice(
         player_id=1, index=0, unit=hero,
         old_own_tile=(5, 5), new_own_tile=(8, 8),
         old_tiles=frozenset({(5, 5)}), new_tiles=frozenset({(8, 8)}),
@@ -309,7 +309,7 @@ def test_a_sprite_in_front_hides_the_ring(install):
     assert (front[hy0:hy0 + hh, hx0:hx0 + hw] & ring).any(), "the front sprite hides none of the ring"
 
 
-@pytest.mark.parametrize("full_render", [render.render_terrain_iso_with_proj, render.render_terrain_sloped_with_proj])
+@pytest.mark.parametrize("full_render", [render_iso.render_terrain_iso_with_proj, render_sloped.render_terrain_sloped_with_proj])
 def test_the_full_render_rings_heroes_like_the_default_caches(full_render, install):
     """The full renders are the stitched-vs-full oracle for caches built on the
     default layer state, so they have to draw the ring too."""
@@ -319,10 +319,10 @@ def test_the_full_render_rings_heroes_like_the_default_caches(full_render, insta
 
 def test_the_drag_ghost_path_takes_the_layer(install):
     scn = _scenario()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     hero = scn.unit_manager.units[1][0]
-    plain = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, hero)
-    glowed = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, hero, hero_glow=True)
+    plain = render_sprites.unit_sprite_draws_at(scn, proj, elevations, None, 1, hero)
+    glowed = render_sprites.unit_sprite_draws_at(scn, proj, elevations, None, 1, hero, hero_glow=True)
     assert plain and glowed
     pad = 2 * HERO_GLOW_RADIUS
     assert glowed[0][0].rgba.shape[0] == plain[0][0].rgba.shape[0] + pad

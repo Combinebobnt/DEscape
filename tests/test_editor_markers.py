@@ -14,8 +14,22 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, editor_markers, iso_geometry, render, render_cache, unit_kind, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import (
+    asset_source,
+    editor_markers,
+    iso_geometry,
+    render_bbox,
+    render_cache,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_kind,
+    unit_sprites,
+)
+from descape.terrain_palette import PLAYER_COLORS, tile_span
 
 INVISIBLE_OBJECT_A = 1291
 MAP_REVEALER = 837
@@ -192,7 +206,7 @@ def test_a_flat_multi_tile_marker_icon_is_its_footprint_rect(const, span):
     and carries exactly one symbol's worth of white ink at one tile's size."""
     tile = 32
     w, h = span[0] * tile, span[1] * tile
-    assert render.tile_span(const, render.NON_BUILDING_SPAN) == span
+    assert tile_span(const, render_units.NON_BUILDING_SPAN) == span
     icon = unit_sprites.icon_for(const, 0.0, 1, w, h)
     assert icon.rgba.shape == (h, w, 4)
     assert (icon.hotspot_x, icon.hotspot_y) == (0, 0)
@@ -300,16 +314,16 @@ def _scenario(*, elevation=0):
 
 def _chunked_iso(scn, full, elevations, proj, sprites):
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
-    merged = render.merge_sprite_bboxes(bboxes, sprites)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
+    merged = render_sprites.merge_sprite_bboxes(bboxes, sprites)
     out = np.zeros_like(full)
     h, w = full.shape[:2]
     for y0 in range(0, h, CHUNK):
         for x0 in range(0, w, CHUNK):
             x1, y1 = min(x0 + CHUNK, w), min(y0 + CHUNK, h)
-            out[y0:y1, x0:x1] = render.composite_rect_iso(
+            out[y0:y1, x0:x1] = render_iso.composite_rect_iso(
                 scn, x0, y0, x1, y1, elevations, proj, tile_px, units_by_tile, merged, sprites=sprites,
             )
     return out
@@ -317,8 +331,8 @@ def _chunked_iso(scn, full, elevations, proj, sprites):
 
 def test_stepped_draws_markers_instead_of_marks_and_stitches():
     scn = _scenario()
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     every = {id(u) for units in scn.unit_manager.units for u in units}
     assert sprites.skip_ids == every, "every invisible object should resolve to a marker, hiding its mark"
     assert np.array_equal(_chunked_iso(scn, full, elevations, proj, sprites), full)
@@ -327,8 +341,8 @@ def test_stepped_draws_markers_instead_of_marks_and_stitches():
 def test_a_stepped_marker_lands_on_its_own_tile():
     scn = _Scenario([Tile(x, y, 0) for y in range(MAP_H) for x in range(MAP_W)],
                     [[], [Unit(5.5, 5.5, INVISIBLE_OBJECT_A)]])
-    bare, _e, _p = render.render_terrain_iso_with_proj(_Scenario(scn.map_manager.terrain, [[], []]), with_sprites=True)
-    full, _elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    bare, _e, _p = render_iso.render_terrain_iso_with_proj(_Scenario(scn.map_manager.terrain, [[], []]), with_sprites=True)
+    full, _elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
     changed = np.argwhere(np.any(bare != full, axis=2))
     assert len(changed), "the marker painted nothing"
     sx, sy = iso_geometry.tile_screen_origin(5, 5, 0, proj)
@@ -350,7 +364,7 @@ def test_a_1x3_blocker_marker_covers_all_three_footprint_tiles(style):
     bare = _render(style, _Scenario(tiles, [[], []]), True)
     full = _render(style, scn, True)
     changed = np.any(bare != full, axis=2)
-    proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)[2]
+    proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)[2]
     ly, lx = np.mgrid[0:2 * proj.half_h, 0:2 * proj.half_w]
     inside = iso_geometry.diamond_membership(lx, ly, proj.half_w, proj.half_h)
     union = np.zeros_like(changed)
@@ -374,10 +388,10 @@ def test_a_1x3_blocker_marker_covers_all_three_footprint_tiles(style):
 def test_a_flat_1x3_blocker_marker_covers_all_three_footprint_tiles(const, tiles):
     """The Flat twin of the iso check above: one badge filling the footprint rect
     (it inked 28% of the centre tile and none of the ends), and nothing past it."""
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     grid = [Tile(x, y, 0) for y in range(MAP_H) for x in range(MAP_W)]
     scn = _Scenario(grid, [[], [Unit(3.5, 9.5, const)]])
-    assert render.tile_span(const, render.NON_BUILDING_SPAN) in ((1, 3), (3, 1))
+    assert tile_span(const, render_units.NON_BUILDING_SPAN) in ((1, 3), (3, 1))
     changed = np.any(_render("flat", _Scenario(grid, [[], []]), True) != _render("flat", scn, True), axis=2)
     inside = np.zeros_like(changed)
     for tx, ty in tiles:
@@ -392,7 +406,7 @@ def test_a_flat_1x3_blocker_marker_covers_all_three_footprint_tiles(const, tiles
 def test_a_1x1_flat_marker_icon_is_todays_contain_fitted_diamond(category, w, h):
     """Multi-tile only (decided 2026-10-05): a 1x1 marker keeps its pre-GH #121 Flat icon."""
     const = {"invisible": INVISIBLE_OBJECT_A, "revealer": MAP_REVEALER, "blocker": BLOCKER, "other": EMPTY_TC_ANNEX}[category]
-    assert render.tile_span(const, render.NON_BUILDING_SPAN) == (1, 1)
+    assert tile_span(const, render_units.NON_BUILDING_SPAN) == (1, 1)
     icon = unit_sprites.icon_for(const, 0.0, 2, w, h)
     old = unit_sprites.marker_for(category, 2, max(1, min(w // 2, h)))
     assert np.array_equal(icon.rgba, old.rgba)
@@ -423,8 +437,8 @@ def test_a_1x1_flat_marker_icon_matches_its_pre_badge_hash(category, w, h):
 
 def test_sloped_matches_stepped_on_a_flat_map_with_markers():
     scn = _scenario(elevation=2)
-    sloped, _e, _c, _sp = render.render_terrain_sloped_with_proj(scn, with_sprites=True)
-    stepped, _e2, _p = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sloped, _e, _c, _sp = render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=True)
+    stepped, _e2, _p = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
     assert sloped.shape == stepped.shape
     assert np.array_equal(sloped, stepped)
 
@@ -434,12 +448,12 @@ def test_the_sloped_cache_stitches_markers_on_a_ramp():
     for tile in scn.map_manager.terrain:
         tile.elevation = 1 if tile.x >= MAP_W // 2 else 0
     mm = scn.map_manager
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     cache = render_cache.SlopedChunkCache(
-        scn, elevations, corner_rise, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True
+        scn, elevations, corner_rise, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True
     )
     w, h = cache.canvas_dims()
-    full, _e, _c, _p = render.render_terrain_sloped_with_proj(scn, with_sprites=True)
+    full, _e, _c, _p = render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=True)
     assert np.array_equal(cache.render_rect(0, 0, w, h), full[:h, :w])
 
 
@@ -455,10 +469,10 @@ def _stitched_flat(cache, mip=0):
 
 def test_flat_icons_stay_in_their_footprints_and_match_the_full_render():
     scn = _scenario()
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     cache = render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     assert len(cache._level_icons(0)) == 4, "every invisible object should resolve to a Flat icon"
-    full = render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    full = render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=True)
     assert np.array_equal(_stitched_flat(cache), full)
 
     terrain_only = _stitched_flat(render_cache.FlatChunkCache(scn, tile_px, with_units=False))
@@ -466,8 +480,8 @@ def test_flat_icons_stay_in_their_footprints_and_match_the_full_render():
     inside = np.zeros_like(changed)
     for units in scn.unit_manager.units:
         for unit in units:
-            tx0, tx1, ty0, ty1 = render.unit_tile_bounds(unit, MAP_W, MAP_H)
-            dx, dy = render.unit_paint_offset(unit)
+            tx0, tx1, ty0, ty1 = render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
+            dx, dy = render_units.unit_paint_offset(unit)
             ox, oy = round(dx * tile_px), round(dy * tile_px)
             inside[ty0 * tile_px + oy:ty1 * tile_px + oy, tx0 * tile_px + ox:tx1 * tile_px + ox] = True
     assert changed.any()
@@ -476,10 +490,10 @@ def test_flat_icons_stay_in_their_footprints_and_match_the_full_render():
 
 def _render(style, scn, with_sprites):
     if style == "flat":
-        return render.overlay_units(render.render_terrain(scn), scn, with_sprites=with_sprites)
+        return render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=with_sprites)
     if style == "iso":
-        return render.render_terrain_iso_with_proj(scn, with_sprites=with_sprites)[0]
-    return render.render_terrain_sloped_with_proj(scn, with_sprites=with_sprites)[0]
+        return render_iso.render_terrain_iso_with_proj(scn, with_sprites=with_sprites)[0]
+    return render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=with_sprites)[0]
 
 
 @pytest.mark.parametrize("style", ["flat", "iso", "sloped"])

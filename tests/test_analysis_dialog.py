@@ -692,7 +692,7 @@ def test_the_map_analysis_marker_swatch_recolours_the_live_markers(monkeypatch) 
     from PyQt5.QtWidgets import QColorDialog
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _marker_window()
     dialog = SettingsDialog(window)

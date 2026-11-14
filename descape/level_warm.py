@@ -21,8 +21,8 @@ needs none of that machinery, and is race-free by construction: a tick only
 ever resumes between event-loop iterations, and every mutating path cancels
 the warm before it mutates, so a warm slice and a mutation cannot interleave.
 
-The cache owns what a level is and how one is installed (render_cache.
-LevelWarmJob); this module owns only pacing, so render_cache.py stays Qt-free
+The cache owns what a level is and how one is installed (render_cache_common.
+LevelWarmJob); this module owns only pacing, so the render_cache modules stay Qt-free
 and every check below is drivable with no QApplication at all via
 run_to_completion().
 """
@@ -45,7 +45,7 @@ from descape import debug_log, gc_hold, perf_trace
 # (10.3ms measured) at the coarse levels.
 #
 # The honest worst tick is the budget plus one step. Since the 2026-09-29
-# warm-tick plan a level's assembly is sliced too (render.ASSEMBLY_SLICE),
+# warm-tick plan a level's assembly is sliced too (render_paint.ASSEMBLY_SLICE),
 # its install only commits, and a job's unsliced first step (walk setup,
 # UnitPack(), a flush) only starts a tick, so the step past the budget is one
 # unit's resolve, an assembly slice or a native prime atom (TASK-031.85, under
@@ -121,11 +121,11 @@ def _step_name(label: str, cache, unit) -> str:
     that becomes the line's worst (perf_trace.level_warm_tick)."""
     if unit is None:
         return label
-    from descape import render
+    from descape import render_units
 
     scenario = getattr(cache, "scenario", None)
     if scenario is not None:
-        for player_id, i, u in render.unit_own_tile_index(scenario).get((int(unit.x), int(unit.y)), ()):
+        for player_id, i, u in render_units.unit_own_tile_index(scenario).get((int(unit.x), int(unit.y)), ()):
             if u is unit:
                 return f"{label} p{player_id} #{i} const {unit.unit_const}"
     return f"{label} const {unit.unit_const}"

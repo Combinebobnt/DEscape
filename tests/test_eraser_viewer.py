@@ -2,7 +2,7 @@
 erases live, records one undo step per drag in Units and Terrain mode, takes
 a host's garrison, and clears layered terrain in the same record.
 
-Same fixture and Flat setup as tests/test_unit_edit_viewer.py. Its units:
+Same fixture and Flat setup as tests/unit_edit_viewer_helpers.py. Its units:
 GAIA trees 100/101 on (5, 5)/(6, 5) and a GAIA wall 102 on (7, 5); Player 1's
 House 200 on (10, 10) holding Villager 203, an Archer 201 on (11, 10);
 Player 2's Archer 300 on (20, 20) and Villager 301 on (21, 20).

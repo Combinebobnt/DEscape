@@ -20,11 +20,11 @@ import numpy as np
 import pytest
 from test_invalidate_units_splice import _make_cache, _oracle
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render_iso, render_sprites, unit_sprites
 from descape.options_model import OptionsEditModel
 from descape.player_fields import parse_player_field_id, player_field_id
-from descape.render import tile_pixels_for_map
 from descape.render_cache import FlatChunkCache
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, refresh_player_colors
 from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS, resolve_player_colors
 from descape.unit_model import UnitEditModel
@@ -177,7 +177,7 @@ def sprite_install(tmp_path, monkeypatch):
 
 
 def test_two_scenarios_player_1_never_share_a_cached_tint(sprite_install):
-    """The regression this whole plan closes: render.py used to pass a
+    """The regression this whole plan closes: render_sprites.py used to pass a
     scenario-agnostic player_id into unit_sprites, so any two scenarios'
     player 1 always resolved to the SAME tint no matter what color each
     file actually stored. With team_indices threaded through
@@ -189,10 +189,10 @@ def test_two_scenarios_player_1_never_share_a_cached_tint(sprite_install):
     blue_scn = _Scenario([[], [_Unit(4.0, 4.0, CONST)]], team_index_for_player_1=1)
     red_scn = _Scenario([[], [_Unit(4.0, 4.0, CONST)]], team_index_for_player_1=2)
 
-    _, blue_elev, blue_proj = render.render_terrain_iso_with_proj(blue_scn, with_sprites=True)
-    blue_sprites = render.sprite_draws_by_anchor(blue_scn, blue_proj, blue_elev)
-    _, red_elev, red_proj = render.render_terrain_iso_with_proj(red_scn, with_sprites=True)
-    red_sprites = render.sprite_draws_by_anchor(red_scn, red_proj, red_elev)
+    _, blue_elev, blue_proj = render_iso.render_terrain_iso_with_proj(blue_scn, with_sprites=True)
+    blue_sprites = render_sprites.sprite_draws_by_anchor(blue_scn, blue_proj, blue_elev)
+    _, red_elev, red_proj = render_iso.render_terrain_iso_with_proj(red_scn, with_sprites=True)
+    red_sprites = render_sprites.sprite_draws_by_anchor(red_scn, red_proj, red_elev)
 
     (blue_draw, _ax, _ay, _rise), = next(iter(blue_sprites.by_anchor.values()))
     (red_draw, _ax, _ay, _rise), = next(iter(red_sprites.by_anchor.values()))

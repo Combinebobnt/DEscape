@@ -58,7 +58,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, iso_geometry, render, unit_sprites
+from descape import asset_source, iso_geometry, render_units, unit_sprites
+from descape.terrain_palette import tile_span
 
 HALF_W = unit_sprites.NATIVE_TILE_W // 2
 HALF_H = HALF_W // 2
@@ -178,7 +179,7 @@ def measure(unit_const: int, entry: dict | None = None) -> dict | None:
         entry = unit_sprites.graphic_map().get(unit_const)
     if entry is None or "pieces" not in entry:
         return None
-    span_x, span_y = render.tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     footprint = {(x, y) for x in range(span_x) for y in range(span_y)}
     order = sorted(footprint, key=_depth_key)
     cx, cy = span_x / 2, span_y / 2
@@ -195,9 +196,9 @@ def measure(unit_const: int, entry: dict | None = None) -> dict | None:
         sy0 = hot_y + int(piece["dy"]) + iy0
         box = (sx0, sy0, sx0 + mask.shape[1], sy0 + mask.shape[0])
 
-        p_span_x, p_span_y = render.tile_span(int(piece["unit_id"]), render.NON_BUILDING_SPAN)
-        px0 = render._span_start(cx + float(piece["mx"]), p_span_x)
-        py0 = render._span_start(cy + float(piece["my"]), p_span_y)
+        p_span_x, p_span_y = tile_span(int(piece["unit_id"]), render_units.NON_BUILDING_SPAN)
+        px0 = render_units._span_start(cx + float(piece["mx"]), p_span_x)
+        py0 = render_units._span_start(cy + float(piece["my"]), p_span_y)
         own = [(x, y) for x in range(px0, px0 + p_span_x) for y in range(py0, py0 + p_span_y)]
         dx_, dy_ = unit_sprites.sprite_anchor_tile(own)
         derived = (min(max(dx_, 0), span_x - 1), min(max(dy_, 0), span_y - 1))

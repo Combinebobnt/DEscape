@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import QApplication, QPushButton
 
 from descape import crash_report
 from descape.viewer_dialogs import CrashReportDialog
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -72,10 +73,8 @@ class _FakeDialog:
 
 @pytest.fixture
 def _fake_dialog(monkeypatch):
-    from descape import viewer as viewer_module
-
     _FakeDialog.opened = []
-    monkeypatch.setattr(viewer_module, "CrashReportDialog", _FakeDialog)
+    set_viewer_global(monkeypatch, "CrashReportDialog", _FakeDialog)
     return _FakeDialog
 
 
@@ -89,6 +88,8 @@ def _crash_hooks_installed(monkeypatch, request):
     old_excepthook = sys.excepthook
     old_thread_excepthook = threading.excepthook
     faulthandler_was_on = faulthandler.is_enabled()
+    set_viewer_global(monkeypatch, "_crash_host_ref", None)
+    set_viewer_global(monkeypatch, "_crash_rate_limiter", crash_report.RateLimiter())
     viewer_module.install_crash_hooks()
     try:
         yield viewer_module
@@ -99,8 +100,6 @@ def _crash_hooks_installed(monkeypatch, request):
         if faulthandler_was_on:
             # Back to pytest's own stderr dup, not fd 2, which is the capture file mid-test.
             faulthandler.enable(file=request.config.stash[fault_handler_stderr_fd_key])
-        viewer_module._crash_host_ref = None
-        viewer_module._crash_rate_limiter = crash_report.RateLimiter()
 
 
 @pytest.mark.gui

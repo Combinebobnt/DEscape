@@ -89,9 +89,9 @@ def test_new_map_does_not_touch_recent_files(tmp_path) -> None:
 
 
 def _answer_save_dialog(monkeypatch, dest: Path) -> None:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
-    monkeypatch.setattr(viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "")))
 
 
 def _recent_menu_names(window) -> list[str]:
@@ -158,13 +158,14 @@ def test_gh215_save_as_under_a_new_name_puts_it_first(tmp_path, monkeypatch) -> 
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_gh215_a_blocked_save_as_lists_nothing(tmp_path, monkeypatch) -> None:
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.viewer import ViewerWindow
 
     blocked = tmp_path / "mods" / "subscribed" / "x.aoe2scenario"
     blocked.parent.mkdir(parents=True)
     _answer_save_dialog(monkeypatch, blocked)
-    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: None))
     window = ViewerWindow()
     try:
         window.new_map()

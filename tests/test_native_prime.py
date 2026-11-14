@@ -30,12 +30,15 @@ from descape import (
     iso_geometry,
     level_warm,
     native_composite,
-    render,
-    render_cache,
+    render_cache_leveled,
+    render_iso,
+    render_paint,
+    render_sloped,
     terrain_blend,
 )
 from descape.render_cache import FlatChunkCache, IsoChunkCache
 from descape.view_layers import LayerState
+from testkit.render_family import RENDER, current, set_render_cache_global, set_render_global
 
 KINDS = ("stepped", "sloped", "iso-flat")
 # The seed paint at 16 px derives every blend key (and loads every layer mask); 32 px is primed.
@@ -48,18 +51,18 @@ PRIMED = (
     )),
     (native_composite, "stepped_tables"),
     (native_composite, "sloped_shapes"),
-    *((render, name) for name in ("_seam_factors", "_shadow_factors", "_skirt_lut", "_slope_shade")),
+    *((RENDER, name) for name in ("_seam_factors", "_shadow_factors", "_skirt_lut", "_slope_shade")),
     (asset_source, "get_blend_mask"),
 )
 
 
 def _cold() -> None:
-    for mod, name in PRIMED:
-        getattr(mod, name).cache_clear()
+    for owner, name in PRIMED:
+        current(owner, name).cache_clear()
 
 
 def _misses() -> dict[str, int]:
-    return {name: getattr(mod, name).cache_info().misses for mod, name in PRIMED}
+    return {name: current(owner, name).cache_info().misses for owner, name in PRIMED}
 
 
 def _fills(before: dict[str, int]) -> dict[str, int]:
@@ -71,9 +74,9 @@ def _make(kind: str, scenario=None):
         return _blend_cache(kind, scenario if scenario is not None else _blend_scenario(kind))
     # Flat + Isometric View: an IsoChunkCache over zero elevations, as the viewer builds it.
     scenario = scenario if scenario is not None else _blend_scenario("stepped")
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     return IsoChunkCache(scenario, np.zeros_like(elevations), proj, tile_px, sprites=False, layers=LayerState())
 
 
@@ -140,7 +143,7 @@ def test_a_primed_level_builds_nothing_primed_while_compositing(blend_install, n
     with composite_backend.use_backend("native"):
         scenario = _make(kind).scenario
         _image, primed, new_shapes = _arm(kind, scenario)
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
         _image, control, _ = _arm(kind, scenario)
     first = "sloped_shapes" if kind == "sloped" else "stepped_tables"
     assert first in control and "get_blend_mask" in control, f"vacuous: the control built {control}"
@@ -155,7 +158,7 @@ def test_priming_changes_no_pixel(blend_install, native_kernel, monkeypatch, kin
     with composite_backend.use_backend("native"):
         scenario = _make(kind).scenario
         primed, _fills_on, _ = _arm(kind, scenario)
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
         control, _fills_off, _ = _arm(kind, scenario)
     assert primed.shape == control.shape
     assert np.array_equal(primed, control)
@@ -187,7 +190,7 @@ def test_sloped_priming_interleaved_with_prepares_changes_no_pixel(blend_install
                 cache.get_chunk(TARGET_MIP, *chunks[interleaved])
                 interleaved += 1
         interleaved_image = _level(cache)
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
         control, _fills, _ = _arm("sloped", cache.scenario)
     assert interleaved >= 4, f"vacuous: {interleaved} chunks between slices"
     assert len(rebuilds) >= 2, f"vacuous: the walk and the chunks packed {rebuilds}"
@@ -240,7 +243,7 @@ def test_no_native_job_on_numpy_top_down_flat_or_the_switch_off(blend_install, n
         warmer.start(cache, [TARGET_MIP])
         assert not [job for _m, job, _n in warmer._queue if job.kind == "native"]
         warmer.cancel()
-    monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+    set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
     with composite_backend.use_backend("native"):
         assert cache.native_prime_job(TARGET_MIP, after_level_warm=True) is None
         warmer = level_warm.LevelWarmer()
@@ -253,7 +256,7 @@ def test_levels_above_the_cap_get_no_native_job(blend_install, native_kernel) ->
     with composite_backend.use_backend("native"):
         cache = _make("sloped")
         by_px = {cache.mip_tile_px(m): m for m in cache.mip_levels()}
-        cap = render_cache.NATIVE_PRIME_MAX_TILE_PX
+        cap = render_cache_leveled.NATIVE_PRIME_MAX_TILE_PX
         assert any(px > cap for px in by_px) and any(px <= cap for px in by_px), f"vacuous ladder {sorted(by_px)}"
         for px, mip in by_px.items():
             job = cache.native_prime_job(mip, after_level_warm=True)
@@ -277,7 +280,7 @@ def test_a_pending_level_chains_flush_pack_then_native(native_kernel, sprite_ins
         scenario, _units = _defer_scenario()
         cache = _resident_cache(scenario)
         _stroke(cache, scenario)
-        mips = [m for m in OFFSCREEN if cache.mip_tile_px(m) <= render_cache.NATIVE_PRIME_MAX_TILE_PX]
+        mips = [m for m in OFFSCREEN if cache.mip_tile_px(m) <= render_cache_leveled.NATIVE_PRIME_MAX_TILE_PX]
         assert mips and all(cache._levels[m].pending_elev for m in mips), "vacuous: no deferred level"
         warmer = level_warm.LevelWarmer()
         notifying = warmer.start(cache, mips)
@@ -398,7 +401,7 @@ def test_a_pack_only_mip_gets_pack_then_native_both_last_and_silent(native_kerne
         scenario, _units = _defer_scenario()
         cache = _resident_cache(scenario)
         neighbour, anchor = OFFSCREEN
-        assert all(cache.mip_tile_px(m) <= render_cache.NATIVE_PRIME_MAX_TILE_PX for m in OFFSCREEN)
+        assert all(cache.mip_tile_px(m) <= render_cache_leveled.NATIVE_PRIME_MAX_TILE_PX for m in OFFSCREEN)
         cache._levels[anchor].unit_pack = None  # as a wholesale rebuild leaves it: the derive has work
         assert cache.pack_warm_job(anchor) is not None, "vacuous: the anchor has no derive to queue"
         warmer = level_warm.LevelWarmer()
@@ -415,7 +418,7 @@ def test_the_switch_off_queues_no_re_arm_prime(blend_install, native_kernel, mon
         _level(cache)  # the paint builds the level: resident, never primed
         assert cache.is_level_resident(TARGET_MIP) and not cache.native_primed(TARGET_MIP)
         assert cache.native_prime_job(TARGET_MIP) is not None, "control: the switch on re-queues"
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
         assert cache.native_prime_job(TARGET_MIP) is None
         warmer = level_warm.LevelWarmer()
         assert warmer.start(cache, [TARGET_MIP], pack_only=(SEED_MIP,)) == set()
@@ -448,9 +451,9 @@ def test_a_cancelled_or_stale_walk_stops_harmlessly(blend_install, native_kernel
     factory = "sloped_shapes" if kind == "sloped" else "stepped_tables"
     with composite_backend.use_backend("native"):
         scenario = _make(kind).scenario
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", False)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", False)
         reference, _f, _s = _arm(kind, scenario)
-        monkeypatch.setattr(render_cache, "WARM_NATIVE_INPUTS", True)
+        set_render_cache_global(monkeypatch, "WARM_NATIVE_INPUTS", True)
 
         # cancel() mid-walk
         _cold()
@@ -645,7 +648,7 @@ def _charged(clock: _Clock, monkeypatch, cache) -> None:
     monkeypatch.setattr(nc, "stepped_tables", on_miss(nc.stepped_tables, "assembly"))
     monkeypatch.setattr(nc, "sloped_shapes", on_miss(nc.sloped_shapes, "sloped_init"))
     monkeypatch.setattr(asset_source, "get_blend_mask", on_miss(asset_source.get_blend_mask, "mask"))
-    monkeypatch.setattr(render, "_slope_shade", on_miss(render._slope_shade, "shade"))
+    set_render_global(monkeypatch, "_slope_shade", on_miss(render_sloped._slope_shade, "shade"))
     real_tables, real_ids, real_packed = nc.SteppedTables.kernel_tables, nc.SlopedShapes.shape_ids, nc.SlopedShapes.packed
 
     def kernel_tables(self):
@@ -718,11 +721,11 @@ def _every_tile_px(monkeypatch) -> set[int]:
     for quality in settings.GRAPHICS_QUALITY_LABELS:
         # The cached value get_graphics_quality() returns; set_graphics_quality() would also save config.
         monkeypatch.setattr(settings, "_graphics_quality", quality)
-        for side in (render.LARGE_MAP_TILE_THRESHOLD, 2 * render.LARGE_MAP_TILE_THRESHOLD):
-            base = render.tile_pixels_for_map(side, side)
-            finest = render.finest_tile_pixels()
+        for side in (render_paint.LARGE_MAP_TILE_THRESHOLD, 2 * render_paint.LARGE_MAP_TILE_THRESHOLD):
+            base = render_paint.tile_pixels_for_map(side, side)
+            finest = render_paint.finest_tile_pixels()
             sizes.update(iso_geometry.mip_tile_px_candidates(
-                base, finest, native_tier=True, native_tier_max=render.native_tier_max()).values())
+                base, finest, native_tier=True, native_tier_max=render_paint.native_tier_max()).values())
             sizes.update(iso_geometry.mip_tile_px_candidates(base, finest).values())
     return sizes
 

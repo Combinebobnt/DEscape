@@ -182,13 +182,14 @@ _FOREST_OAK_CONST = 411
 def test_a_forest_line_with_trees_on_plants_a_tree_per_tile_in_one_undo_step(monkeypatch) -> None:
     """GH #88, per tests/test_terrain_units_viewer.py's Draw version: the
     shape commit routes through the same Trees path as a stroke."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.edit_history import CompositeDiffRecord
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("a short line must not reach the large-edit confirm")
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
     window = _shape_window("draw_line")
     try:
         window.terrain_panel.set_terrain(_FOREST_OAK)

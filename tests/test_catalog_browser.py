@@ -188,7 +188,7 @@ def test_only_the_rows_on_screen_are_requested(fake_install) -> None:
     view = _view(executor)
     requested = []
     real_request = view._loader.request
-    view._loader.request = lambda consts, px, client=None: (requested.append(list(consts)), real_request(consts, px, client))
+    view._loader.request = lambda consts, px, client=None, **kw: (requested.append(list(consts)), real_request(consts, px, client, **kw))
     view.resize(380, 300)
     view.show()
     try:
@@ -294,6 +294,75 @@ def test_the_random_row_shows_its_preview_villager_with_a_badge(fake_install) ->
     assert badge.red() < 100 or badge.red() == badge.green() == badge.blue(), "a dark or white question-mark badge in the corner"
     plain = view._items[83].icon().pixmap(32, 32).toImage()
     assert plain.pixelColor(image.width() - 4, image.height() - 7).getRgb() == conftest._UNIT_RED
+
+
+# --- GH #372: the Owner's civ picks the rows' portraits ----------------------------
+
+
+def test_an_owner_switch_mid_decode_never_puts_the_old_civs_portrait_on_a_row(archer_civ_portrait) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    executor = ManualExecutor()
+    view = _view(executor)
+
+    def run_last() -> None:
+        executor.run(len(executor.submitted) - 1)
+        QApplication.processEvents()
+
+    view.display_buttons["icons"].click()
+    view.filter_edit.setText("archer 4")
+    view.set_civ(archer_civ_portrait)
+    view.resize(380, 300)
+    view.show()
+    try:
+        QApplication.processEvents()
+        assert _ARCHER in _shown(view)
+        while executor.icons()[-1] != conftest.CIV_PORTRAIT_ICON:
+            run_last()
+        view.set_civ(1)  # an owner without an Archer portrait of its own
+        run_last()  # the first owner's portrait lands late
+        image = view._items[_ARCHER].icon().pixmap(32, 32).toImage()
+        assert image.pixelColor(16, 16).getRgb() != conftest.CIV_PORTRAIT_BLUE
+        while not view._loader.idle():
+            run_last()
+        image = view._items[_ARCHER].icon().pixmap(32, 32).toImage()
+        assert image.pixelColor(16, 16).getRgb() == conftest._UNIT_RED
+        view.set_civ(archer_civ_portrait)
+        QApplication.processEvents()
+        image = view._items[_ARCHER].icon().pixmap(32, 32).toImage()
+        assert image.pixelColor(16, 16).getRgb() == conftest.CIV_PORTRAIT_BLUE, "back from the memo"
+    finally:
+        view.close()
+
+
+def test_an_owner_with_no_portrait_never_keeps_the_previous_owners(fake_install, monkeypatch) -> None:
+    """An override of -1 is no portrait: the row goes back to the placeholder."""
+    from PyQt5.QtWidgets import QApplication
+
+    real = object_catalog._dat_entry
+
+    def entry(section, id_):
+        row = real(section, id_)
+        return {**row, "civ_icons": {"9": -1}} if section == "objects" and id_ == _ARCHER else row
+
+    monkeypatch.setattr(object_catalog, "_dat_entry", entry)
+    monkeypatch.setattr(catalog_browser.catalog_thumbs, "sprite_thumb", lambda *_args: None)
+    view = _view(real_pool=True)
+    view.display_buttons["icons"].click()
+    view.filter_edit.setText("archer 4")
+    view.resize(380, 300)
+    view.show()
+    try:
+        QApplication.processEvents()
+        conftest.settle_thumbs(view._loader)
+        QApplication.processEvents()
+        assert view._items[_ARCHER].icon().pixmap(32, 32).toImage().pixelColor(16, 16).getRgb() == conftest._UNIT_RED
+        view.set_civ(9)
+        conftest.settle_thumbs(view._loader)
+        QApplication.processEvents()
+        assert view._items[_ARCHER].icon().pixmap(32, 32).toImage().pixelColor(16, 16).alpha() == 0
+    finally:
+        view.close()
 
 
 # --- GH #32: GAIA-only objects hidden for a player owner ------------------------

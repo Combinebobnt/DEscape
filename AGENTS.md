@@ -27,14 +27,19 @@ scope.
 - GAIA units' `rotation` field is not an angle for ~65% of GAIA objects — it's a
   tree/doodad graphic-variant index (integer values well outside `[0, 2π)`, e.g.
   7..53). Every write path must pass it through verbatim, never normalize it.
-- **Per game dataset (GH #67).** Return of Rome scenarios (header variant 2)
-  are edited with Return of Rome game data (`descape/game_dataset.py`), and
-  the viewer refuses every edit and save of a document shown with the other
-  game's data (`ViewerWindow.game_data_lock_reason()`), while the model
-  guards below still raise in a batch script. Every const set the rules
-  below name is the active dataset's (under AoE2, a loaded data mod's, GH
-  #58), activated by the viewer on open and by a script through
-  `batch_api.load()`, not a bare `scenario_io.load_map_and_units()`.
+- **Per game (GH #67).** A scenario is edited with its own game's data.
+  Each game is a descriptor in `descape/games.py` (Return of Rome claims
+  header variant 2, AoE2 every other). The viewer refuses every edit and
+  save of a document shown with another game's data
+  (`game_dataset.lock_reason()`, behind
+  `ViewerWindow.game_data_lock_reason()`), while the model guards below
+  still raise in a batch script. Every const set the rules below name is
+  the active game's: a generated table through `game_dataset.table_path()`
+  (under AoE2, a loaded data mod's, GH #58), a hand-measured set through
+  its `games.PerGame` table. The viewer activates the game on open, a
+  script through `batch_api.load()`, not a bare
+  `scenario_io.load_map_and_units()`. `docs/GAME_DATA.md` has the
+  registry, the per-game tables and adding a game.
 - **The exceptions to "verbatim".** This list is
   exhaustive: every other write path stays verbatim as above, and each
   exception that goes through a model method raises rather than silently
@@ -159,7 +164,9 @@ page shows the live keys); `tests/test_help_guide.py` lints the rest.
 If you are working on a contribution for a pull request, follow
 `CONTRIBUTING.md`. Run `./run_quick_tests.sh` (`run_quick_tests.bat` on Windows)
 and report what it printed before calling a change done. The Hard rules above
-are not negotiable. A contributed PR leaves `CHANGELOG.md` alone.
+are not negotiable. A contributed PR leaves `CHANGELOG.md` alone. A
+`tests/test_module_size.py` failure means a file outgrew its line ceiling:
+follow `CONTRIBUTING.md`'s rule for it rather than just raising the number.
 
 ## Changelog
 

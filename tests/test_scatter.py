@@ -166,13 +166,13 @@ def test_a_one_tile_region_places_no_multi_tile_object(const) -> None:
 def test_an_l_shaped_region_never_gets_a_fish_tile_outside_it() -> None:
     """A "Water only" region's edge: a snapped 2x2 picked on it would put three
     of its tiles on shore, so that pick is dropped instead."""
-    from descape import render
+    from descape import render_units
 
     tiles = _block(0, 0, 10, 3) | _block(0, 0, 3, 10)
     placed = _scatter_every_tile(tiles, _DORADO)
     assert placed
     for unit in placed:
-        x0, x1, y0, y1 = render.unit_tile_bounds(unit, 20, 20)
+        x0, x1, y0, y1 = render_units.unit_tile_bounds(unit, 20, 20)
         assert _block(x0, y0, x1 - x0, y1 - y0) <= tiles, (unit.x, unit.y)
 
 
@@ -391,7 +391,7 @@ def test_existing_jitter_stays_on_its_tile() -> None:
 
 
 def test_existing_buildings_snap_to_their_span_and_never_overlap() -> None:
-    from descape.render import span_anchor
+    from descape.render_units import span_anchor
 
     tiles = {(x, y) for x in range(10) for y in range(10)}
     units = [_unit(_HOUSE) for _ in range(6)] + [_unit() for _ in range(30)]
@@ -426,7 +426,7 @@ def test_existing_a_building_that_cannot_fit_stays_put() -> None:
 
 def _final_tiles(unit, position) -> set[tuple[int, int]]:
     """Tiles `unit` covers after the plan: its new footprint, or its old one if it stays put."""
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     placed = unit if position is None else SimpleNamespace(unit_const=unit.unit_const, x=position[0], y=position[1])
     x0, x1, y0, y1 = unit_tile_bounds(placed, 20, 20)

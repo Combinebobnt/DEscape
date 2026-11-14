@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from descape import brush, render
+from descape import brush, render_bbox, render_iso
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
@@ -58,7 +58,7 @@ def _drag(scenario, elevations, proj, level, steps, *, state_keyed):
             all_dirty = history.stroke_dirty_indices(mm.terrain)
             new_dirty = set(all_dirty) - seen_indices
             seen_indices = set(all_dirty)
-        render.dirty_screen_bbox_iso(scenario, new_dirty, elevations, proj, with_units=True)
+        render_bbox.dirty_screen_bbox_iso(scenario, new_dirty, elevations, proj, with_units=True)
     return history
 
 
@@ -72,7 +72,7 @@ def _out_of_sync(scenario, elevations):
 
 def _fresh():
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     return scenario, elevations, proj
 
 

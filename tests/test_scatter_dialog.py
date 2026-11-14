@@ -2,7 +2,7 @@
 
 Eligibility runs against synthetic grids (testkit.fakes), the dialog against
 an offscreen QDialog. Nothing here loads a real scenario: the write path and
-the undo step are test_unit_edit_viewer.py's job.
+the undo step are test_unit_edit_viewer_scatter.py's job.
 """
 
 from __future__ import annotations
@@ -449,7 +449,7 @@ _VILLAGER = 83
 
 
 def _footprint(x, y, const):
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     x0, x1, y0, y1 = unit_tile_bounds(fakes.SyntheticUnit(x=x, y=y, unit_const=const), 20, 20)
     return _blob(x0, y0, x1, y1)

@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
-from descape import gate_orientation, mirror_tools, render, unit_rotation, unit_sprites
+from descape import gate_orientation, mirror_tools, render_units, unit_rotation, unit_sprites
 from descape.region_clipboard import RegionBlock
 from descape.terrain_palette import tile_span
 
@@ -48,7 +48,7 @@ class BlockTransform:
 def _keeps_orientation(unit_const: int, element: str) -> bool:
     if unit_const in unit_sprites.cliff_consts():
         return True
-    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     return span_x != span_y and element in mirror_tools.AXIS_SWAPPING and not gate_orientation.is_gate(unit_const)
 
 
@@ -239,7 +239,7 @@ def _rotation_write(first: FirstUnit, rotation: float, file_radian: bool) -> tup
 
 def image_on_map(unit_const: int, x: float, y: float, map_width: int, map_height: int) -> bool:
     """Whether a `unit_const` at (x, y) has its whole footprint on the map."""
-    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     return _axis_on_map(x, span_x, map_width) and _axis_on_map(y, span_y, map_height)
 
 
@@ -247,7 +247,7 @@ def _axis_on_map(coord: float, span: int, size: int) -> bool:
     if span == 1:
         # The sign is tested on the float: int() truncates toward zero, so -0.5 would pass as tile 0.
         return coord >= 0 and int(coord) < size
-    low = render._span_start(coord, span)
+    low = render_units._span_start(coord, span)
     return 0 <= low <= size - span
 
 

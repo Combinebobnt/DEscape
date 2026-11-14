@@ -5,7 +5,7 @@ wording per mode is pinned panel-level in tests/test_units_panel.py; since
 GH #198 it leads the Rotation caption's tooltip rather than a label under it.
 
 Uses the units_120x120 fixture, whose GAIA wall (102) or oak (100) is re-pointed
-at a stone gate const where a test needs one, as tests/test_unit_edit_viewer.py's
+at a stone gate const where a test needs one, as tests/test_unit_edit_viewer_rotate_variant.py's
 gate tests do: the fixture holds no gate.
 """
 
@@ -92,7 +92,7 @@ def test_a_rebound_rotate_key_is_named_in_the_group_note_after_a_reselect() -> N
     from PyQt5.QtGui import QKeySequence
 
     from descape import settings
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _window()
     try:

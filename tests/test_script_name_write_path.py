@@ -327,7 +327,7 @@ def test_the_layout_is_read_through_the_module(monkeypatch) -> None:
 
 
 def test_the_info_line_shows_a_pending_name() -> None:
-    from descape.viewer import _xs_info_lines
+    from descape.viewer_info import _xs_info_lines
 
     loaded = load_map_and_units(FIXTURE_PATH)
     assert _xs_info_lines(loaded)[0] == "XS script file: (none)"

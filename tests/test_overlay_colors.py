@@ -113,7 +113,7 @@ def test_overlay_opacity_round_trips_through_the_file_and_keeps_the_others(tmp_p
 
 # The "every OVERLAY_COLORS prefix has a section title" reflective check
 # lives in test_overlay_colors_viewer.py instead of here: _OVERLAY_SECTION_
-# TITLES is a SettingsDialog class attribute (descape/viewer.py), which needs
+# TITLES is a SettingsDialog class attribute (descape/settings_dialog.py), which needs
 # Qt to import, and this file is deliberately Qt-free like test_settings.py.
 
 

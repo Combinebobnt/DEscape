@@ -935,7 +935,7 @@ def test_is_level_resident_agrees_with_level_warm_job_after_a_completed_warm(_sp
 
     # A current level with deferred elevation work (2026-09-29 warm-tick plan):
     # neither resident nor warm-free until its flush job has run.
-    from descape.render import dirty_screen_bbox_iso
+    from descape.render_bbox import dirty_screen_bbox_iso
 
     iso._level(0)
     scenario.map_manager.get_tile(6, 6).elevation += 1
@@ -1317,7 +1317,7 @@ def _window_with_a_load_warm_in_flight(monkeypatch):
 def test_turning_preload_off_drops_the_load_warm_and_its_queue(monkeypatch) -> None:
     """Batch F T0: the toggle used to cancel only the level and margin
     warms, so the load warm kept ticking with the setting off."""
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _window_with_a_load_warm_in_flight(monkeypatch)
     try:

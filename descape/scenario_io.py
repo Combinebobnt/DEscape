@@ -252,7 +252,7 @@ def _initialise_repo_vocabulary(scenario_version: str) -> None:
 
 def _version_key(scenario_version: str) -> tuple[int, ...] | None:
     """`"1.21"` -> `(1, 21)`, for ordering. None if it isn't dotted numbers
-    (viewer.py's File > New sentinel, or anything else unexpected)."""
+    (viewer_file.py's File > New sentinel, or anything else unexpected)."""
     try:
         return tuple(int(part) for part in scenario_version.split("."))
     except ValueError:
@@ -313,7 +313,7 @@ _LAYER_OFFSET = 5
 @dataclass(eq=False)
 class LoadedScenario:
     path: Path  # display + Save-As-default only -- write_scenario() takes an explicit
-    # destination and never reads this. descape/viewer.py may replace it with a
+    # destination and never reads this. descape/viewer_file.py may replace it with a
     # display-only sentinel that does not exist on disk (a File > New document).
     scenario_version: str
     structure_source: str  # "library", or "repo" for a version only
@@ -468,7 +468,7 @@ class LoadedScenario:
 
     # GH #67: the header's game variant (FileHeader.unknown_value_2: 1 AoE2,
     # 2 Return of Rome), read off the parsed header rather than the library's
-    # byte-pattern guess; game_dataset.from_variant() maps it. None if unread.
+    # byte-pattern guess; games.for_variant() maps it. None if unread.
     game_variant: int | None = None
 
     # Files section bounds within decompressed_body, captured by parse_triggers()'s
@@ -1439,7 +1439,7 @@ def refresh_player_colors(loaded: LoadedScenario, pending_colors: dict[int, int]
     a Players-mode colour edit is an in-place byte patch to decompressed_body
     for the save path -- it never mutates the retriever _read_player_colors()
     reads, so nothing re-derives them and the map keeps drawing the pre-edit
-    colour. This is what descape/viewer.py's _after_player_color_change()
+    colour. This is what descape/viewer_options.py's _after_player_color_change()
     calls to close that gap.
 
     Wholesale, not an incremental patch of the cached tuple: the base ids are

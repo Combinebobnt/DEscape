@@ -2,7 +2,7 @@
 
 A building stored off its span's parity (a 4x4 Town Center at `.5`) draws its
 footprint half a tile from its stored coordinate, and the ring used to stay
-on the coordinate. Two layers: render.unit_footprint_centre() against
+on the coordinate. Two layers: render_units.unit_footprint_centre() against
 unit_tile_bounds(), Qt-free, and the live ring item against the live
 selection outline in each terrain style.
 """
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from descape import range_overlay, render
+from descape import range_overlay, render_units
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 from descape.terrain_palette import BUILDING_TILE_SPANS
 
@@ -48,7 +48,7 @@ def test_the_fixture_consts_are_what_the_cases_assume() -> None:
 
 @pytest.mark.parametrize(("label", "const", "x", "y", "expected"), _CASES, ids=_IDS)
 def test_footprint_centre_per_placement(label, const, x, y, expected) -> None:
-    assert render.unit_footprint_centre(SimpleNamespace(x=x, y=y, unit_const=const)) == expected
+    assert render_units.unit_footprint_centre(SimpleNamespace(x=x, y=y, unit_const=const)) == expected
 
 
 @pytest.mark.parametrize(
@@ -59,13 +59,13 @@ def test_a_buildings_footprint_centre_is_the_middle_of_its_drawn_tiles(const, x,
     """Tied to unit_tile_bounds(), the box the footprint is painted and
     outlined from, so the two cannot drift if the anchor rule changes."""
     unit = SimpleNamespace(x=x, y=y, unit_const=const)
-    x0, x1, y0, y1 = render.unit_tile_bounds(unit, 120, 120)
-    assert render.unit_footprint_centre(unit) == ((x0 + x1) / 2, (y0 + y1) / 2)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(unit, 120, 120)
+    assert render_units.unit_footprint_centre(unit) == ((x0 + x1) / 2, (y0 + y1) / 2)
 
 
 @pytest.mark.parametrize(("x", "y"), [(50.5, 50.5), (50.13, 50.87), (50.99, 50.01)])
 def test_a_free_placed_villager_keeps_its_true_position(x, y) -> None:
-    assert render.unit_footprint_centre(SimpleNamespace(x=x, y=y, unit_const=_VILLAGER)) == (x, y)
+    assert render_units.unit_footprint_centre(SimpleNamespace(x=x, y=y, unit_const=_VILLAGER)) == (x, y)
 
 
 # --- the live ring item ------------------------------------------------

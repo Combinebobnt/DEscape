@@ -5,13 +5,13 @@ Two separate bars here, and the second one is the reason this file exists.
 The first is that one shared memo is legal for all nine index producers:
 every one of them returns dst_y as element 0 and dst_x as element 1,
 whatever trails behind (src arrays, depth/span, uv_idx). Every unpack site
-in render.py reads them that way (`dst_y, dst_x, ... =
+in the render modules reads them that way (`dst_y, dst_x, ... =
 iso_geometry.<producer>(...)`), so the convention is asserted here rather
 than left implicit, and the extents themselves are checked against a
 brute-force min/max over the very same arrays.
 
-The second is the pre-check inside render._clipped_paint /
-render._clipped_darken. That fast path is byte-identity work, and the
+The second is the pre-check inside render_paint._clipped_paint /
+render_iso._clipped_darken. That fast path is byte-identity work, and the
 repo's existing pixel oracles cannot catch a break in it: they are
 self-consistency checks that run both sides of the comparison through the
 same helper, so a predicate that is wrong in the same way on both sides
@@ -25,10 +25,10 @@ one pixel past each edge, and wholly clear of each edge.
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_iso, render_paint
 
 TILE_PX = (8, 16, 32, 64, 128)
-"""The full live tile_px set: render.SMALL/LARGE_MAP_TILE_PIXELS (64, 32)
+"""The full live tile_px set: render_paint.SMALL/LARGE_MAP_TILE_PIXELS (64, 32)
 plus the mip ladder either side of them."""
 
 DROP_PX = (1, 2, 3, 7, 16, 40)
@@ -235,8 +235,8 @@ def test_clipped_paint_extent_matches_the_mask_path(pair):
     values = rng.integers(0, 256, size=(dst_y.size, 3), dtype=np.uint8)
     for label, base_y, base_x in _offset_cases(extent, h, w):
         masked, fast = base.copy(), base.copy()
-        render._clipped_paint(masked, base_y, base_x, dst_y, dst_x, values)
-        render._clipped_paint(fast, base_y, base_x, dst_y, dst_x, values, extent=extent)
+        render_paint._clipped_paint(masked, base_y, base_x, dst_y, dst_x, values)
+        render_paint._clipped_paint(fast, base_y, base_x, dst_y, dst_x, values, extent=extent)
         assert np.array_equal(masked, fast), label
 
 
@@ -255,8 +255,8 @@ def test_clipped_paint_extent_matches_on_an_id_plane(pair):
     values = np.full(dst_y.size, 7, dtype=np.int32)
     for label, base_y, base_x in _offset_cases(extent, h, w):
         masked, fast = base.copy(), base.copy()
-        render._clipped_paint(masked, base_y, base_x, dst_y, dst_x, values)
-        render._clipped_paint(fast, base_y, base_x, dst_y, dst_x, values, extent=extent)
+        render_paint._clipped_paint(masked, base_y, base_x, dst_y, dst_x, values)
+        render_paint._clipped_paint(fast, base_y, base_x, dst_y, dst_x, values, extent=extent)
         assert np.array_equal(masked, fast), label
 
 
@@ -278,8 +278,8 @@ def test_clipped_darken_extent_matches_the_mask_path(pair):
     factors = rng.uniform(0.3, 1.0, size=dst_y.size).astype(np.float32)
     for label, base_y, base_x in _offset_cases(extent, h, w):
         masked, fast = base.copy(), base.copy()
-        render._clipped_darken(masked, base_y, base_x, dst_y, dst_x, factors.copy())
-        render._clipped_darken(fast, base_y, base_x, dst_y, dst_x, factors.copy(), extent=extent)
+        render_iso._clipped_darken(masked, base_y, base_x, dst_y, dst_x, factors.copy())
+        render_iso._clipped_darken(fast, base_y, base_x, dst_y, dst_x, factors.copy(), extent=extent)
         assert np.array_equal(masked, fast), label
 
 
@@ -292,5 +292,5 @@ def test_extent_none_keeps_todays_path_on_an_empty_set():
     dst_y, dst_x = iso_geometry.shadow_quad_indices(8, 16, "up_left")[:2]
     img = np.full((10, 10, 3), 200, dtype=np.uint8)
     before = img.copy()
-    render._clipped_darken(img, 0, 0, dst_y, dst_x, np.zeros(0, dtype=np.float32), extent=extent)
+    render_iso._clipped_darken(img, 0, 0, dst_y, dst_x, np.zeros(0, dtype=np.float32), extent=extent)
     assert np.array_equal(img, before)

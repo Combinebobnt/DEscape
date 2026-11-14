@@ -3,7 +3,7 @@ shipped donor template (descape.scenario_new.blank_scenario_bytes) and loads
 the result through the normal load path, marking the document untitled --
 rather than building a scenario from scratch through AoE2ScenarioParser's own
 (unverified, non-byte-stable) serializer. See scenario_new.py's docstring and
-descape/viewer.py's new_map()/new_map_dialog().
+descape/viewer_file.py's new_map()/new_map_dialog().
 
 Non-GUI tests pin the donor template asset's own shape (dimensions, version,
 emptiness) and the write-guard that keeps Save As from ever overwriting a
@@ -16,7 +16,7 @@ to keep this file's own runtime down, on the understanding that the
 generator underneath every size is already covered there.
 
 GUI tests exercise the actual QAction/dialog wiring and the untitled-state
-bookkeeping in descape/viewer.py (ViewerWindow._untitled, UNTITLED_PATH,
+bookkeeping in descape/viewer_file.py (ViewerWindow._untitled, UNTITLED_PATH,
 save_as() adoption). Every ViewerWindow() constructed here must end its test
 with edit_history.mark_saved() before close() -- close() runs
 _confirm_discard_changes(), which pops a modal QMessageBox on a dirty
@@ -40,6 +40,7 @@ from descape.scenario_io import (
 )
 from descape.scenario_new import LARGE_MAP_CONFIRM_TILES
 from descape.scenario_write import WriteBlockedError, write_scenario
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -91,7 +92,8 @@ def test_new_map_action_creates_untitled_document() -> None:
     conftest.ensure_qapp()
     from PyQt5.QtGui import QKeySequence
 
-    from descape.viewer import UNTITLED_NAME, ViewerWindow
+    from descape.viewer import ViewerWindow
+    from descape.viewer_file import UNTITLED_NAME
 
     window = ViewerWindow()
     try:
@@ -312,13 +314,14 @@ def test_preset_480_does_not_confirm(monkeypatch) -> None:
     none). Fails loudly (instead of hanging on an unclickable modal) if a
     future 'consistency fix' routes presets through the same confirm."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.viewer import ViewerWindow
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("QMessageBox.question must not be called for the 480 preset")
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
     _patch_new_map_dialog(monkeypatch, tiles=480)
 
     window = ViewerWindow()
@@ -364,7 +367,6 @@ def test_new_map_dialog_on_dirty_document_confirms_discard_exactly_once(monkeypa
     conftest.ensure_qapp()
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
 
     _patch_new_map_dialog(monkeypatch, tiles=168)
@@ -382,7 +384,7 @@ def test_new_map_dialog_on_dirty_document_confirms_discard_exactly_once(monkeypa
             discard_calls.append(args)
             return QMessageBox.Discard
 
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fake_discard_prompt))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_discard_prompt))
         window.new_map_dialog()
 
         assert len(discard_calls) == 1
@@ -421,7 +423,6 @@ def test_custom_size_above_threshold_confirms_before_creating(monkeypatch) -> No
     conftest.ensure_qapp()
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
 
     tiles = LARGE_MAP_CONFIRM_TILES + 60
@@ -435,13 +436,13 @@ def test_custom_size_above_threshold_confirms_before_creating(monkeypatch) -> No
             calls.append(args)
             return QMessageBox.Cancel
 
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(cancel))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(cancel))
         window.new_map_action.trigger()
         assert len(calls) == 1
         assert window.scenario is None  # cancelled -- nothing created
 
         monkeypatch.setattr(
-            viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
         )
         window.new_map_action.trigger()
         mm = window.scenario.map_manager
@@ -457,7 +458,8 @@ def test_custom_set_to_a_preset_size_does_not_confirm(monkeypatch) -> None:
     """Custom 480 is the Ludicrous size, so it gets the preset's no-prompt
     treatment, and the saved 480 reopens on the Ludicrous row."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QDialog, QMessageBox
+
     from descape.viewer import ViewerWindow
 
     def fail_if_called(*args, **kwargs):
@@ -468,11 +470,11 @@ def test_custom_set_to_a_preset_size_does_not_confirm(monkeypatch) -> None:
         dialog.custom_spin.setValue(480)
         assert dialog.is_custom
         dialog.accept()
-        return viewer_module.QDialog.Accepted
+        return QDialog.Accepted
 
     from descape.new_map_dialog import NewMapDialog
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
     monkeypatch.setattr(NewMapDialog, "exec_in", custom_480)
 
     window = ViewerWindow()
@@ -483,7 +485,7 @@ def test_custom_set_to_a_preset_size_does_not_confirm(monkeypatch) -> None:
         reopened: list = []
         window.edit_history.mark_saved()
         monkeypatch.setattr(
-            NewMapDialog, "exec_in", lambda dialog, window: reopened.append(dialog.is_custom) or viewer_module.QDialog.Rejected
+            NewMapDialog, "exec_in", lambda dialog, window: reopened.append(dialog.is_custom) or QDialog.Rejected
         )
         window.new_map_action.trigger()
         assert reopened == [False]
@@ -498,12 +500,11 @@ def test_choice_is_saved_even_when_the_large_map_question_is_cancelled(monkeypat
     conftest.ensure_qapp()
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
     from descape import settings
     from descape.viewer import ViewerWindow
 
     _patch_new_map_dialog(monkeypatch, tiles=300, elevation=4)
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Cancel))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Cancel))
 
     window = ViewerWindow()
     try:
@@ -520,11 +521,12 @@ def test_choice_is_saved_even_when_the_large_map_question_is_cancelled(monkeypat
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_create_new_map_reports_an_out_of_range_fill(monkeypatch) -> None:
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.viewer import ViewerWindow
 
     errors = []
-    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
 
     window = ViewerWindow()
     try:
@@ -585,7 +587,8 @@ def test_return_of_rome_choice_creates_a_ror_map_and_switches_back(monkeypatch) 
 def test_a_new_return_of_rome_map_saves_and_reloads(tmp_path, monkeypatch) -> None:
     """A RoR map from New Map… goes through Save As and reloads as a RoR 1.59 file of the picked size, terrain and height."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
+
     from descape import game_dataset
     from descape.new_map_dialog import NewMapDialog
     from descape.viewer import ViewerWindow
@@ -601,7 +604,7 @@ def test_a_new_return_of_rome_map_saves_and_reloads(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(NewMapDialog, "exec_in", fake_exec)
     dest = tmp_path / "ror_new.aoe2scenario"
     monkeypatch.setattr(
-        viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
+        QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
     )
     window = ViewerWindow()
     try:
@@ -664,12 +667,13 @@ def test_save_as_on_new_map_adopts_path(tmp_path, monkeypatch, tiles: int) -> No
     a *generated* (not shipped-file) size too. 220 is GH #94's size: its far
     corner is painted, and must read back at the same index."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
+
     from descape.viewer import ViewerWindow
 
     dest = tmp_path / "mymap.aoe2scenario"
     monkeypatch.setattr(
-        viewer_module.QFileDialog,
+        QFileDialog,
         "getSaveFileName",
         staticmethod(lambda *args, **kwargs: (str(dest), "")),
     )
@@ -737,12 +741,14 @@ def _unit_counts(window) -> tuple[int, int]:
 
 def _no_question(monkeypatch, *, ask=True) -> None:
     """Fails on the plain large-map question, and on _ask_new_map_confirm unless `ask`."""
+    from PyQt5.QtWidgets import QMessageBox
+
     import descape.viewer as viewer_module
 
     def fail_question(*args, **kwargs):
         raise AssertionError("QMessageBox.question must not be called here")
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_question))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_question))
     if not ask:
 
         def fail_ask(self, *args, **kwargs):
@@ -945,9 +951,8 @@ def test_a_large_custom_size_that_plants_asks_once_naming_each_reason(
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_a_planting_failure_reaches_the_error_box_and_frees_the_window(monkeypatch) -> None:
     conftest.ensure_qapp()
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication, QMessageBox
 
-    import descape.viewer as viewer_module
     from descape import scenario_new
     from descape.unit_model import UnitEditsUnavailableError
     from descape.viewer import ViewerWindow
@@ -957,7 +962,7 @@ def test_a_planting_failure_reaches_the_error_box_and_frees_the_window(monkeypat
 
     errors = []
     monkeypatch.setattr(scenario_new, "UnitEditModel", refuse)
-    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a)))
     window = ViewerWindow()
     try:
         window._create_new_map(120, terrain_id=_FOREST_OAK, trees=True)
@@ -981,12 +986,11 @@ def test_planting_runs_disabled_under_a_wait_cursor_and_frees_the_window_before_
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
-    import descape.viewer as viewer_module
     from descape.viewer import ViewerWindow
 
     events: list = []
     window = ViewerWindow()
-    real_generate = viewer_module.blank_scenario_bytes
+    real_generate = viewer_global("blank_scenario_bytes")
     real_load = ViewerWindow.load_scenario
     real_cancel = ViewerWindow._cancel_warms
 
@@ -1003,7 +1007,7 @@ def test_planting_runs_disabled_under_a_wait_cursor_and_frees_the_window_before_
         events.append(("cancel",))
         return real_cancel(self)
 
-    monkeypatch.setattr(viewer_module, "blank_scenario_bytes", generate)
+    set_viewer_global(monkeypatch, "blank_scenario_bytes", generate)
     monkeypatch.setattr(ViewerWindow, "load_scenario", load)
     monkeypatch.setattr(ViewerWindow, "_cancel_warms", cancel)
     try:
@@ -1023,7 +1027,8 @@ def test_planting_runs_disabled_under_a_wait_cursor_and_frees_the_window_before_
 @pytest.mark.parametrize(("click", "expected"), (("Create", "create"), ("Create without trees", "bare"), ("Cancel", "cancel")))
 def test_the_planting_question_has_three_buttons_and_maps_each(monkeypatch, click, expected) -> None:
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.viewer import ViewerWindow
 
     seen = []
@@ -1033,7 +1038,7 @@ def test_the_planting_question_has_three_buttons_and_maps_each(monkeypatch, clic
         next(b for b in box.buttons() if b.text() == click).click()
         return 0
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "exec_", exec_)
+    monkeypatch.setattr(QMessageBox, "exec_", exec_)
     window = ViewerWindow()
     try:
         assert window._ask_new_map_confirm("Plants a lot.", bare_label="Create without trees") == expected

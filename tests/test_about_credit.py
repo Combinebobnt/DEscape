@@ -27,7 +27,7 @@ def _dist():
 
 
 def test_the_parser_credit_matches_the_installed_distribution() -> None:
-    from descape.viewer import PARSER_CREDIT
+    from descape.viewer_menus import PARSER_CREDIT
 
     meta = _dist().metadata
     author = meta["Author-email"].split("<", 1)[0].strip()
@@ -46,7 +46,8 @@ def test_the_parser_credit_matches_the_installed_distribution() -> None:
 def test_the_about_box_shows_the_parser_credit(monkeypatch) -> None:
     from PyQt5.QtWidgets import QMessageBox
 
-    from descape.viewer import PARSER_CREDIT, ViewerWindow
+    from descape.viewer import ViewerWindow
+    from descape.viewer_menus import PARSER_CREDIT
 
     conftest.ensure_qapp()
     shown: list[str] = []

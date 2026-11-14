@@ -15,7 +15,7 @@ Structured in three layers:
   3. Corpus-marked checks that need real per-file content the unit-free
      120x120 fixture donor can't provide: building_bboxes genuinely
      differing per level (the real gap this whole mip design exists to
-     close -- see IsoChunkCache._level() in descape/render_cache.py), patch()
+     close -- see _LeveledChunkCache._level() in descape/render_cache_leveled.py), patch()
      rebuilding exactly as many levels as are resident (not enumerated),
      patch() re-establishing byte-identity at a non-reference level after
      scripted edits, and invalidate_region()'s high-edge fix for a finer
@@ -27,21 +27,19 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox, render_iso
 from descape.edit_history import EditHistory
-from descape.render import (
-    dirty_screen_bbox_iso,
-    elevations_and_proj,
-    render_scenario,
-    render_terrain_iso,
-    tile_pixels_for_map,
-)
+from descape.render import render_scenario
+from descape.render_bbox import dirty_screen_bbox_iso
 from descape.render_cache import (
     FlatChunkCache,
     IsoChunkCache,
 )
+from descape.render_iso import elevations_and_proj, render_terrain_iso
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
+from testkit.render_family import set_render_global
 
 import conftest
 
@@ -92,7 +90,7 @@ def test_exactness_matrix(w, h, base_tile_px, pct) -> None:
 def test_pct10_at_base_16_is_a_singleton() -> None:
     """Base-relative, not absolute: the matrix above is all measured at
     base 32/64. At base 16, elev_step_pct=10 has NO exact neighbor at
-    all -- a reachable configuration (render.tile_pixels_for_map returns
+    all -- a reachable configuration (render_paint.tile_pixels_for_map returns
     16 on a small map at Potato/Potatest quality). mip_levels() == [0] is
     a normal answer here, not a failure this phase forgot to handle."""
     base = iso_geometry.canvas_size_and_origin(480, 480, 16, 0, 7, elev_step_pct=10)
@@ -119,8 +117,8 @@ def test_every_level_is_field_by_field_exact(w, h) -> None:
         assert proj.min_elev == base.min_elev
         assert proj.max_elev == base.max_elev
 
-        ref_w, ref_h = render._canvas_pixel_dims(base)
-        lvl_w, lvl_h = render._canvas_pixel_dims(proj)
+        ref_w, ref_h = render_bbox._canvas_pixel_dims(base)
+        lvl_w, lvl_h = render_bbox._canvas_pixel_dims(proj)
         assert lvl_w * base.tile_px == ref_w * proj.tile_px
         assert lvl_h * base.tile_px == ref_h * proj.tile_px
 
@@ -178,7 +176,7 @@ def _check_iso_level_matches_forced_render(scenario, level: int, monkeypatch) ->
     monkeypatch -- strictly stronger than merely scoping the patch
     narrowly, since it makes it structurally impossible for the patch to
     have influenced the cache path at all. Only AFTER that does
-    render.tile_pixels_for_map get patched, scoped to a single fresh
+    render_paint.tile_pixels_for_map get patched, scoped to a single fresh
     ground-truth render_terrain_iso() call. Forcing both sides to the same
     tile_px would make the cache's own reference equal `level`, so
     "level `level`" would secretly be level 0 -- passing against an
@@ -211,8 +209,8 @@ def _check_iso_level_matches_forced_render(scenario, level: int, monkeypatch) ->
 
     stitched = cache.render_rect(0, 0, lvl_w, lvl_h, mip=level)  # BEFORE any monkeypatch
 
-    monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: lvl_tile_px)
-    truth = render.render_terrain_iso(scenario)
+    set_render_global(monkeypatch, "tile_pixels_for_map", lambda w, h: lvl_tile_px)
+    truth = render_iso.render_terrain_iso(scenario)
     monkeypatch.undo()
     assert truth.shape[:2] == (lvl_h, lvl_w)
     assert np.array_equal(stitched, truth)
@@ -240,7 +238,7 @@ def test_flat_level_minus_one_matches_a_forced_half_tile_px_render(monkeypatch) 
 
     stitched = cache.render_rect(0, 0, lvl_w, lvl_h, mip=-1)  # BEFORE any monkeypatch
 
-    monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(-1))
+    set_render_global(monkeypatch, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(-1))
     truth = render_scenario(scenario, isometric=False)
     assert truth.shape[:2] == (lvl_h, lvl_w)
     assert np.array_equal(stitched, truth)
@@ -332,13 +330,13 @@ def _patch_rebuilds_only_resident_levels(files, monkeypatch) -> int:
             continue
 
         calls = []
-        real_fn = render._building_bboxes_iso_sliced
+        real_fn = render_bbox._building_bboxes_iso_sliced
 
         def counting(*args, **kwargs):
             calls.append(1)
             return real_fn(*args, **kwargs)
 
-        monkeypatch.setattr(render, "_building_bboxes_iso_sliced", counting)
+        set_render_global(monkeypatch, "_building_bboxes_iso_sliced", counting)
 
         tile = mm.get_tile(min(2, mm.map_width - 1), 0)
 
@@ -442,8 +440,8 @@ def _patch_at_a_non_reference_level(files, monkeypatch) -> int | None:
         assert np.array_equal(stitched0, truth0), f"{path.name}: level 0 diverged after patch()"
 
         stitched_lvl = cache.render_rect(0, 0, lvl_w, lvl_h, mip=-1)
-        monkeypatch.setattr(render, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(-1))
-        truth_lvl = render.render_terrain_iso(scenario)
+        set_render_global(monkeypatch, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(-1))
+        truth_lvl = render_iso.render_terrain_iso(scenario)
         monkeypatch.undo()
         assert np.array_equal(stitched_lvl, truth_lvl), f"{path.name}: level -1 diverged after patch()"
         return patched

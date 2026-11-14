@@ -129,7 +129,7 @@ def _menu_resolver():
     Settings tabs, the Filters popup and the focus-only aliases."""
     from PyQt5.QtWidgets import QTabWidget
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = conftest.blank_window()
     try:

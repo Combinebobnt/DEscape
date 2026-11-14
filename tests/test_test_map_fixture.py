@@ -47,7 +47,7 @@ from descape import (
 from descape.garrison import capacity
 from descape.messages_model import MessagesEditModel
 from descape.options_model import OptionsEditModel
-from descape.render import unit_tile_bounds
+from descape.render_units import unit_tile_bounds
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.terrain_palette import is_dat_only_terrain
 from descape.trigger_model import exec_order_value

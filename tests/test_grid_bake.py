@@ -18,10 +18,11 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, grid_overlay, iso_geometry, render, unit_sprites
+from descape import asset_source, grid_overlay, iso_geometry, render, render_bbox, render_iso, render_paint, render_sloped, unit_sprites
 from descape.grid_overlay import DEFAULT_GRID, GridBake
-from descape.render import tile_pixels_for_map
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
+from descape.terrain_palette import BUILDING_TILE_SPANS
 from testkit.fakes import FakeScenario, SyntheticTile
 
 from test_unit_sprites import build_sld
@@ -61,12 +62,12 @@ def _bumpy(x: int, y: int) -> int:
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
 def _sloped_cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(scn, elevations, corner_rise, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
@@ -81,9 +82,9 @@ def _whole(cache, mip: int = 0) -> np.ndarray:
 
 def _full(style: str, scn, grid: GridBake, *, sprites: bool = False) -> np.ndarray:
     if style == "stepped":
-        return render.render_terrain_iso_with_proj(scn, with_sprites=sprites, grid=grid)[0]
+        return render_iso.render_terrain_iso_with_proj(scn, with_sprites=sprites, grid=grid)[0]
     if style == "sloped":
-        return render.render_terrain_sloped_with_proj(scn, with_sprites=sprites, grid=grid)[0]
+        return render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=sprites, grid=grid)[0]
     return render.render_scenario(scn, isometric=False, grid=grid)
 
 
@@ -93,7 +94,7 @@ _BUILDERS = {"stepped": _iso_cache, "sloped": _sloped_cache, "flat": _flat_cache
 @pytest.fixture
 def building_sprite(tmp_path, monkeypatch):
     """A synthetic 3x3 building drawn as one solid, fully opaque square."""
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, BUILDING_CONST, BUILDING_SPAN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, BUILDING_CONST, BUILDING_SPAN)
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{SPRITE_FILE}.sld").write_bytes(build_sld(1, canvas=SPRITE_CANVAS, playercolor=False))
@@ -198,7 +199,7 @@ def _changed(style: str, scn, spec: GridBake) -> np.ndarray:
 
 def test_stepped_grid_pixels_land_on_tile_edges_and_nowhere_else() -> None:
     scn = _scenario()
-    _, proj = render.elevations_and_proj(scn)
+    _, proj = render_iso.elevations_and_proj(scn)
     tile_px = tile_pixels_for_map(MAP_W, MAP_H)
     changed = _changed("stepped", scn, GRID)
     allowed = np.zeros_like(changed)
@@ -239,7 +240,7 @@ def _stepped_edge_mask(shape, proj, tile_px: int, wanted) -> np.ndarray:
             bx, by = iso_geometry.tile_screen_origin(x, y, 0, proj)
             for edge, _ in grid_overlay.owned_edges(x, y, MAP_W, MAP_H):
                 if wanted(edge, index_of[edge](x, y)):
-                    dy, dx = iso_geometry.tile_edge_indices(tile_px, render._ISO_GRID_SIDES[edge])
+                    dy, dx = iso_geometry.tile_edge_indices(tile_px, render_paint._ISO_GRID_SIDES[edge])
                     mask[by + dy, bx + dx] = True
     return mask
 
@@ -247,7 +248,7 @@ def _stepped_edge_mask(shape, proj, tile_px: int, wanted) -> np.ndarray:
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_iso_majors_land_on_every_eighth_line_and_not_the_fourth(style) -> None:
     scn = _scenario()
-    _, proj = render.elevations_and_proj(scn)
+    _, proj = render_iso.elevations_and_proj(scn)
     tile_px = tile_pixels_for_map(MAP_W, MAP_H)
     changed = _changed(style, scn, MAJORS_ONLY_8)
     if style == "sloped":
@@ -291,7 +292,7 @@ def test_a_shared_interior_edge_is_composited_once(style) -> None:
     if style == "flat":
         py, px = ty * tile_px + tile_px // 2, tx * tile_px
     else:
-        _, proj = render.elevations_and_proj(scn)
+        _, proj = render_iso.elevations_and_proj(scn)
         bx, by = iso_geometry.tile_screen_origin(tx, ty, 0, proj)
         dy, dx = iso_geometry.tile_edge_indices(tile_px, "left")
         mid = dy.size // 4
@@ -308,7 +309,7 @@ def test_a_stepped_cliff_lip_carries_its_own_line() -> None:
     scn_flat = _scenario()
     scn = _scenario(lambda x, y: 2 if (x, y) == raised else 0)
     tile_px = tile_pixels_for_map(MAP_W, MAP_H)
-    _, proj = render.elevations_and_proj(scn)
+    _, proj = render_iso.elevations_and_proj(scn)
     bx, by = iso_geometry.tile_screen_origin(*raised, 2, proj)
     dy, dx = iso_geometry.tile_edge_indices(tile_px, "up_right")
     changed = _changed("stepped", scn, GRID)
@@ -393,7 +394,7 @@ def test_a_stepped_patch_after_an_elevation_edit_matches_a_fresh_composite() -> 
     index = next(i for i, t in enumerate(mm.terrain) if (t.x, t.y) == (7, 7))
     mm.terrain[index].elevation += 2
     changed: set = set()
-    bbox = render.dirty_screen_bbox_iso(scn, [index], cache.elevations, cache._levels[0].proj, elevation_changed=changed)
+    bbox = render_bbox.dirty_screen_bbox_iso(scn, [index], cache.elevations, cache._levels[0].proj, elevation_changed=changed)
     assert bbox is not None
     cache.patch(bbox, elevation_changed=changed)
     stitched = _whole(cache)
@@ -413,7 +414,7 @@ def test_a_sloped_patch_after_an_elevation_edit_matches_a_fresh_composite() -> N
     index = next(i for i, t in enumerate(mm.terrain) if (t.x, t.y) == (7, 7))
     mm.terrain[index].elevation += 1
     changed: set = set()
-    bbox = render.dirty_screen_bbox_sloped(scn, [index], cache.elevations, cache.proj, elevation_changed=changed)
+    bbox = render_bbox.dirty_screen_bbox_sloped(scn, [index], cache.elevations, cache.proj, elevation_changed=changed)
     assert bbox is not None
     cache.patch(bbox, elevation_changed=changed)
     fresh = _sloped_cache(scn)

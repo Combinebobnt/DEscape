@@ -34,7 +34,7 @@ Snapshots go in an `autosave` folder beside DEscape's `config.yaml`, or a folder
 
 A Return of Rome scenario opens with Return of Rome's own units, names, art, civilizations and terrain, and the window title says `[Return of Rome]`. Without the Return of Rome DLC installed, a name the two games share shows Age of Empires II's, and the rest show the name in Return of Rome's game data. **Settings > Advanced** can show a file with the other game's data instead. A file shown that way is read-only, and the status bar says why. Set Game data back to Auto to edit it.
 
-**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on.
+**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on. Unit and building portraits come from the mod's own files first, then from that art mod, then from the game.
 
 ## Move around the map
 
@@ -49,7 +49,7 @@ A Return of Rome scenario opens with Return of Rome's own units, names, art, civ
 
 ## Modes
 
-The Mode box at the left of the toolbar picks what the side panel shows and which tools appear. Each mode also has a command in **Settings > Keybinds**. Pan and Ruler work in every mode; the other tools show only where they apply.
+The Mode box at the left of the toolbar picks what the side panel shows and which tools appear. The side panel can float as its own window or dock on the right; see [View and Filters](view-and-filters.md). Each mode also has a command in **Settings > Keybinds**. Pan and Ruler work in every mode; the other tools show only where they apply.
 
 | Mode | For | Page |
 |---|---|---|

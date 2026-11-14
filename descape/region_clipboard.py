@@ -16,7 +16,7 @@ and Cut): RegionBlock.has_tiles tells the two apart, and only the unit half
 
 Units are dropped by copy_region()'s own bounds check, not gathered via
 unit_pick.units_in_rect(): that index is built lazily on entering Units mode
-(viewer.py's _rebuild_unit_index()) and is current or None in Terrain mode,
+(viewer_unit_move.py's _rebuild_unit_index()) and is current or None in Terrain mode,
 where the Select tool lives: it may survive outside Units mode, but it is
 often None there, so a pick-index lookup could silently return no units here.
 A direct walk over the 9 player lists costs one pass over the whole

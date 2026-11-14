@@ -50,11 +50,12 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, batch_api, civ_art, player_fields, render, unit_sprites, wall_run
+from descape import asset_source, batch_api, civ_art, player_fields, render_units, unit_sprites, wall_run
 from descape.edit_history import EditHistory
 from descape.options_model import OptionsEditModel
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
+from descape.terrain_palette import tile_span
 from descape.unit_model import UnitEditModel
 from testkit import review_pack as rp
 
@@ -111,11 +112,11 @@ def _place_walls(model, loaded, player: int) -> None:
     spec = WALLS[player]
     gate = spec[2]
     if gate is not None:
-        span = render.tile_span(STONE_GATE, render.NON_BUILDING_SPAN)
+        span = tile_span(STONE_GATE, render_units.NON_BUILDING_SPAN)
         gate_tiles = [(gate[0] + i, gate[1] + j) for i in range(span[0]) for j in range(span[1])]
         tiles, walls = wall_run.wall_scene(loaded, mm.map_width, mm.map_height)
         plan = wall_run.plan_gate_over_walls(gate_tiles, existing_tiles=tiles, existing_walls=walls)
-        wall_run.apply_gate_plan(model, player, STONE_GATE, *render.span_anchor(*gate, *span), plan)
+        wall_run.apply_gate_plan(model, player, STONE_GATE, *render_units.span_anchor(*gate, *span), plan)
     tiles, walls = wall_run.wall_scene(loaded, mm.map_width, mm.map_height)
     plan = wall_run.plan_wall_run(_wall_tiles(spec), unit_const=STONE_WALL, existing_tiles=tiles, existing_walls=walls)
     wall_run.apply_wall_plan(model, player, plan)
@@ -136,7 +137,7 @@ def write_fixture(path: Path = FIXTURE) -> Path:
     units.begin_unit_edit(sorted(PLAYERS))
     for player, (_civ, _arch, _age, placed) in PLAYERS.items():
         for const, tx, ty in placed:
-            units.add(player, const, *render.span_anchor(tx, ty, *render.tile_span(const, render.NON_BUILDING_SPAN)))
+            units.add(player, const, *render_units.span_anchor(tx, ty, *tile_span(const, render_units.NON_BUILDING_SPAN)))
         if player in WALLS:
             _place_walls(units, loaded, player)
     units.commit_unit_edit("Place the TASK-205 fixture", EditHistory())
@@ -210,8 +211,8 @@ def _table(transform):
 
 
 def _tech_from_architecture(real):
-    def resolve(civilization, architecture, starting_age, ror=False):
-        art_civ, age, _tech = real(civilization, architecture, starting_age, ror=ror)
+    def resolve(civilization, architecture, starting_age, game=None):
+        art_civ, age, _tech = real(civilization, architecture, starting_age, game=game)
         return art_civ, age, art_civ
     return resolve
 

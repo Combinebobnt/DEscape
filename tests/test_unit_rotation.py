@@ -282,7 +282,7 @@ def test_rotating_changes_the_rendered_sprite_and_leaves_its_neighbour_alone():
     different const is byte-identical, so a global repaint or a mirrored write
     cannot pass.
     """
-    from descape import asset_source, render, unit_rotation
+    from descape import asset_source, render_iso, render_sprites, unit_rotation
     from descape.scenario_io import load_map_and_units
     from descape.unit_model import UnitEditModel
 
@@ -296,8 +296,8 @@ def test_rotating_changes_the_rendered_sprite_and_leaves_its_neighbour_alone():
     assert unit_rotation.rotation_is_angle(archer.unit_const)
 
     def sprite_shapes():
-        _img, elevations, proj = render.render_terrain_iso_with_proj(loaded, with_sprites=True)
-        layer = render.sprite_draws_by_anchor(loaded, proj, elevations)
+        _img, elevations, proj = render_iso.render_terrain_iso_with_proj(loaded, with_sprites=True)
+        layer = render_sprites.sprite_draws_by_anchor(loaded, proj, elevations)
         shapes = {}
         for anchor, draws in layer.by_anchor.items():
             for item in draws:

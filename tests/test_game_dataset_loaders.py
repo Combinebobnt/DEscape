@@ -9,6 +9,7 @@ place rather than rebound."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,9 @@ from descape import (
     asset_source,
     batch_api,
     game_dataset,
+    games,
     garrison,
+    mod_graphics,
     object_catalog,
     placement_rules,
     terrain_blend,
@@ -215,7 +218,7 @@ def test_ror_strings_are_read_over_the_base_strings(ror_install):
     base = ror_install / asset_source.STRINGS_SUBPATH_TEMPLATE.format(lang="en")
     base.parent.mkdir(parents=True)
     base.write_text('5078 "Spearman"\n305188 "Base Hoplite"\n1 "Only base"\n', encoding="utf-8")
-    ror = ror_install / game_dataset.ROR_SUBPATH / asset_source.ROR_STRINGS_SUBPATH_TEMPLATE.format(lang="en")
+    ror = ror_install / games.ROR.root_subpath / asset_source.ROR_STRINGS_SUBPATH_TEMPLATE.format(lang="en")
     ror.parent.mkdir(parents=True)
     ror.write_text('305188 "Hoplite"\n', encoding="utf-8")
     assert asset_source.resource_string(305188, "en") == "Base Hoplite"
@@ -281,25 +284,26 @@ def test_without_ror_strings_a_ror_terrain_keeps_its_panel_label(ror_install):
 def test_with_ror_strings_a_key_they_lack_still_reads_the_base_file(ror_install):
     _aoe2_row, ror_row = _both_rows(object_catalog.dat_techs, 101)
     _write_base_string(ror_install, ror_row["string_id"], "Base text")
-    assert not asset_source.has_ror_strings("en")
-    ror = ror_install / game_dataset.ROR_SUBPATH / asset_source.ROR_STRINGS_SUBPATH_TEMPLATE.format(lang="en")
+    assert not game_dataset.has_own_strings("en", games.ROR)
+    assert game_dataset.has_own_strings("en"), "the active game, AoE2: the install's base file"
+    ror = ror_install / games.ROR.root_subpath / asset_source.ROR_STRINGS_SUBPATH_TEMPLATE.format(lang="en")
     ror.parent.mkdir(parents=True)
     ror.write_text('1 "Unrelated"\n', encoding="utf-8")
     asset_source.clear_install_caches()
-    assert asset_source.has_ror_strings("en")
+    assert game_dataset.has_own_strings("en", games.ROR)
     _ror()
     assert object_catalog.tech_name(101) == "Base text"
 
 
 def test_ror_icons_and_textures_come_from_the_ror_root_first(ror_install):
-    for root in (ror_install, ror_install / game_dataset.ROR_SUBPATH):
+    for root in (ror_install, ror_install / games.ROR.root_subpath):
         folder = root / asset_source.UNIT_ICON_DIR
         folder.mkdir(parents=True)
         (folder / asset_source.UNIT_ICON_NAME.format(icon=16)).write_bytes(b"x")
     (ror_install / asset_source.UNIT_ICON_DIR / asset_source.UNIT_ICON_NAME.format(icon=31)).write_bytes(b"x")
     assert asset_source.unit_icon_path(16).parent == ror_install / asset_source.UNIT_ICON_DIR
     _ror()
-    assert asset_source.unit_icon_path(16).parent == ror_install / game_dataset.ROR_SUBPATH / asset_source.UNIT_ICON_DIR
+    assert asset_source.unit_icon_path(16).parent == ror_install / games.ROR.root_subpath / asset_source.UNIT_ICON_DIR
     assert asset_source.unit_icon_path(31).parent == ror_install / asset_source.UNIT_ICON_DIR, "falls back to the install"
 
 
@@ -310,7 +314,7 @@ def _atlas(*textures: tuple[str, str]) -> str:
 
 def test_ror_portraits_follow_its_icon_table(ror_install):
     """GH #67: RoR's icons.json renumbers portraits; an index names a RoR atlas file or an AoE2 one."""
-    ror_ui = ror_install / game_dataset.ROR_SUBPATH / asset_source.UI_DIR
+    ror_ui = ror_install / games.ROR.root_subpath / asset_source.UI_DIR
     aoe2_ui = ror_install / asset_source.UI_DIR
     for path in (
         ror_ui / "textures/ingame/units/016_50730.dds",
@@ -349,9 +353,242 @@ def test_ror_portraits_follow_its_icon_table(ror_install):
     assert asset_source.unit_icon_path(99) is None, "an unknown RefName falls back to the index lookup"
 
 
+# --- GH #363: a data mod's portraits ------------------------------------------------------
+
+PID = "7656"
+DESCAPE = Path(game_dataset.__file__).resolve().parent
+
+
+def _ui_file(root: Path, rel: str, color: tuple[int, int, int, int] | None = None) -> Path:
+    """root/widgetui/<rel>: a 4 px PNG under the .dds name when color is given (Pillow reads it), else a stub."""
+    path = root / asset_source.UI_DIR / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if color is None:
+        path.write_bytes(b"x")
+    else:
+        from PIL import Image
+
+        Image.new("RGBA", (4, 4), color).save(path, format="PNG")
+    return path
+
+
+def _ui_json(root: Path, name: str, text: str) -> None:
+    folder = root / asset_source.UI_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(text, encoding="utf-8")
+
+
+def _icon_table(root: Path, units: dict | None = None, buildings: dict | None = None) -> None:
+    _ui_json(root, asset_source.ICON_TABLE_NAME, json.dumps({"Units": units or {}, "Buildings": buildings or {}}))
+
+
+@pytest.fixture()
+def portrait_mods(tmp_path, monkeypatch):
+    """An install and a profile with a data mod in effect (disabled in game, as every data
+    mod is; its tables are the AoE2 ones) and two art mods, High over Low; Mod Art on."""
+    mods = tmp_path / "profile" / PID / "mods"
+    found = SimpleNamespace(
+        install=tmp_path / "install",
+        data=mods / "subscribed" / "1_Data",
+        high=mods / "subscribed" / "2_High",
+        low=mods / "subscribed" / "3_Low",
+    )
+    for root in (found.install, found.data, found.high, found.low):
+        root.mkdir(parents=True)
+    status = {"Mods": [
+        {"Enabled": False, "Path": "subscribed//1_Data", "Priority": 3},
+        {"Enabled": True, "Path": "subscribed//2_High", "Priority": 1},
+        {"Enabled": True, "Path": "subscribed//3_Low", "Priority": 2},
+    ]}
+    (mods / "mod-status.json").write_text(json.dumps(status))
+    monkeypatch.setenv("AOE2DE_INSTALL_PATH", str(found.install))
+    monkeypatch.setenv("AOE2DE_PROFILE_PATH", str(tmp_path / "profile"))
+    asset_source.clear_install_caches()
+    mod_graphics.set_enabled(True)
+    found.tables = game_dataset.DataModTables("key", DESCAPE, found.data, "Stand-in")
+    game_dataset.set_data_mod(found.tables)
+    return found
+
+
+def test_portrait_layers_are_the_data_mod_then_the_drawn_art_mods(portrait_mods):
+    m = portrait_mods
+    assert asset_source.portrait_layers() == (m.data, m.high, m.low)
+    mod_graphics.set_included({"subscribed//1_Data"})
+    assert asset_source.portrait_layers() == (m.data, m.high, m.low), "the data mod is never listed twice"
+    mod_graphics.set_excluded({"subscribed//2_High"})
+    assert asset_source.portrait_layers() == (m.data, m.low)
+    mod_graphics.set_enabled(False)
+    assert asset_source.portrait_layers() == (m.data,)
+
+
+def test_a_data_mods_table_and_materials_name_its_own_files(portrait_mods):
+    m = portrait_mods
+    unit = _ui_file(m.data, "textures/ingame/units/EmpUnitIcons_001.dds")
+    building = _ui_file(m.data, "textures/ingame/buildings/EmpBuildingIcons_002.dds")
+    _icon_table(m.data, {"1000": "EmpUnit1"}, {"118": "EmpBuilding2"})
+    _ui_json(m.data, asset_source.MATERIALS_NAME, _atlas(
+        ("EmpUnit1", "textures/ingame/units/EmpUnitIcons_001.dds"),
+        ("EmpBuilding2", "textures/ingame/buildings/EmpBuildingIcons_002.dds"),
+    ))
+    assert asset_source.unit_icon_path(1000) == unit
+    assert asset_source.unit_icon_path(118, building=True) == building
+
+
+def test_an_unknown_refname_falls_to_the_index_lookup(portrait_mods):
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/005_50730.dds")
+    _icon_table(m.data, {"005": "Nowhere"})
+    _ui_json(m.data, asset_source.MATERIALS_NAME, _atlas(("Elsewhere", "textures/ingame/units/005_50730.dds")))
+    assert asset_source.unit_icon_path(5) == install_unit
+
+
+def test_an_index_the_mod_lacks_falls_to_the_install_portrait(portrait_mods):
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    install_building = _ui_file(m.install, "textures/ingame/buildings/007_castle.dds")
+    _ui_file(m.data, "textures/ingame/units/mod.dds")
+    _icon_table(m.data, {"1000": "Mod"})
+    _ui_json(m.data, asset_source.MATERIALS_NAME, _atlas(("Mod", "textures/ingame/units/mod.dds")))
+    assert asset_source.unit_icon_path(17) == install_unit
+    assert asset_source.unit_icon_path(7, building=True) == install_building
+
+
+def test_a_table_entry_resolves_through_the_installs_materials_and_files(portrait_mods):
+    """GB's 921 shared portraits: the mod's table names an install RefName and an install file."""
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/294_50730.dds")
+    _icon_table(m.data, {"016": "UnitIcons29450730"})
+    _ui_json(m.install, asset_source.MATERIALS_NAME, _atlas(("UnitIcons29450730", "textures/ingame/units/294_50730.dds")))
+    assert asset_source.unit_icon_path(16) == install_unit
+
+
+def test_with_no_data_mod_or_under_ror_the_install_portrait_shows(portrait_mods):
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    mod_unit = _ui_file(m.data, "textures/ingame/units/mod.dds")
+    _icon_table(m.data, {"017": "Mod"})
+    _ui_json(m.data, asset_source.MATERIALS_NAME, _atlas(("Mod", "textures/ingame/units/mod.dds")))
+    assert asset_source.unit_icon_path(17) == mod_unit
+    game_dataset.set_data_mod(None)
+    assert asset_source.portrait_layers() == ()
+    assert asset_source.unit_icon_path(17) == install_unit
+    game_dataset.set_data_mod(m.tables)
+    _ror()
+    assert asset_source.portrait_layers() == ()
+    assert asset_source.unit_icon_path(17) == install_unit
+
+
+def test_the_installs_own_icon_table_is_never_read(portrait_mods):
+    """A real install ships widgetui/icons.json; AoE2 portraits still go by file name."""
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    _ui_file(m.install, "textures/ingame/units/elsewhere.dds")
+    _icon_table(m.install, {"017": "Elsewhere"})
+    _ui_json(m.install, asset_source.MATERIALS_NAME, _atlas(("Elsewhere", "textures/ingame/units/elsewhere.dds")))
+    assert asset_source.unit_icon_path(17) == install_unit, "a data mod with no table"
+    game_dataset.set_data_mod(None)
+    assert asset_source.unit_icon_path(17) == install_unit, "no data mod"
+
+
+def test_wrong_shaped_or_escaping_mod_tables_count_as_absent(portrait_mods):
+    m = portrait_mods
+    install_unit = _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    outside = m.data.parent / "outside.dds"
+    outside.write_bytes(b"x")
+    _ui_file(m.data, "textures/ingame/units/002_ok.dds")
+    # "²" passes str.isdigit() but not int(): skipped, never a ValueError.
+    table = {"Units": {"017": ["x"], "018": "Up", "019": "Num", "²": "Ok"}, "Buildings": []}
+    _ui_json(m.data, asset_source.ICON_TABLE_NAME, json.dumps(table))
+    _ui_json(m.data, asset_source.MATERIALS_NAME, json.dumps({"AtlasTextures": [
+        3, {"AtlasDef": []}, {"AtlasDef": {"Textures": [7, {"RefName": "Num", "FileName": 5}, {"RefName": ["x"], "FileName": "a"}]}},
+        {"AtlasDef": {"Textures": [{"RefName": "Up", "FileName": "../../outside.dds"}]}},
+        {"AtlasDef": {"Textures": [{"RefName": "Ok", "FileName": "textures/ingame/units/002_ok.dds"}]}},
+    ]}))
+    assert asset_source.unit_icon_path(17) == install_unit
+    assert asset_source.unit_icon_path(18) is None, "a FileName never leaves the mod's widgetui"
+    assert asset_source.unit_icon_path(19) is None
+    assert asset_source.unit_icon_path(7, building=True) is None
+
+
+def test_a_mods_widgetui_and_table_names_match_case_insensitively(portrait_mods):
+    m = portrait_mods
+    folder = m.data / "WidgetUI" / "Textures" / "InGame" / "Units"
+    folder.mkdir(parents=True)
+    (folder / "Mod.DDS").write_bytes(b"x")
+    (m.data / "WidgetUI" / "Icons.json").write_text(json.dumps({"Units": {"1000": "Mod"}}))
+    (m.data / "WidgetUI" / "Materials.JSON").write_text(_atlas(("Mod", "textures/ingame/units/mod.dds")))
+    assert asset_source.unit_icon_path(1000).samefile(folder / "Mod.DDS")
+
+
+def test_an_art_mod_counts_only_while_mod_art_draws_it(portrait_mods):
+    m = portrait_mods
+    high = _ui_file(m.high, "textures/ingame/units/017_50730.dds")
+    low = _ui_file(m.low, "textures/ingame/units/017_50730.dds")
+    install_unit = _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    assert asset_source.unit_icon_path(17) == high
+    mod_graphics.set_excluded({"subscribed//2_High"})
+    assert asset_source.unit_icon_path(17) == low, "an opted-out mod is ignored"
+    mod_graphics.set_enabled(False)
+    assert asset_source.unit_icon_path(17) == install_unit
+
+
+def test_the_data_mod_beats_an_art_mod(portrait_mods):
+    """Its icons.json replaces the art mod's whole, and its loose files come first."""
+    m = portrait_mods
+    data_unit = _ui_file(m.data, "textures/ingame/units/data.dds")
+    _ui_file(m.high, "textures/ingame/units/art.dds")
+    _icon_table(m.data, {"1000": "Data"})
+    _icon_table(m.high, {"1000": "Art", "1001": "Art"})
+    _ui_json(m.high, asset_source.MATERIALS_NAME, _atlas(
+        ("Data", "textures/ingame/units/data.dds"), ("Art", "textures/ingame/units/art.dds"),
+    ))
+    assert asset_source.unit_icon_path(1000) == data_unit
+    assert asset_source.unit_icon_path(1001) is None, "the art mod's table is not read"
+    data_loose = _ui_file(m.data, "textures/ingame/units/017_50730.dds")
+    _ui_file(m.high, "textures/ingame/units/017_50730.dds")
+    assert asset_source.unit_icon_path(17) == data_loose
+
+
+def test_the_first_layers_materials_replace_later_ones(portrait_mods):
+    m = portrait_mods
+    first = _ui_file(m.high, "textures/ingame/units/first.dds")
+    _ui_file(m.high, "textures/ingame/units/later.dds")
+    _icon_table(m.high, {"1000": "First", "1001": "Later"})
+    _ui_json(m.data, asset_source.MATERIALS_NAME, _atlas(("First", "textures/ingame/units/first.dds")))
+    _ui_json(m.high, asset_source.MATERIALS_NAME, _atlas(("Later", "textures/ingame/units/later.dds")))
+    _ui_json(m.install, asset_source.MATERIALS_NAME, _atlas(("Later", "textures/ingame/units/later.dds")))
+    assert asset_source.unit_icon_path(1000) == first, "the file comes from the first folder that has it"
+    assert asset_source.unit_icon_path(1001) is None
+    more = _ui_file(m.low, "textures/ingame/units/more.dds")
+    _ui_json(m.low, asset_source.ROR_MATERIALS_NAME, _atlas(("First", "textures/ingame/units/more.dds")))
+    asset_source.clear_art_caches()
+    assert asset_source.unit_icon_path(1000) == more, "morematerials beats materials"
+
+
+def test_loose_portraits_in_a_mod_without_a_table_beat_the_installs(portrait_mods):
+    m = portrait_mods
+    _ui_file(m.install, "textures/ingame/units/017_50730.dds")
+    _ui_file(m.install, "textures/ingame/buildings/007_castle.dds")
+    unit = _ui_file(m.data, "textures/ingame/units/017_50730.DDS")
+    building = _ui_file(m.data, "textures/ingame/buildings/007_fort.dds")
+    assert asset_source.unit_icon_path(17).samefile(unit), "file name case varies"
+    assert asset_source.unit_icon_path(7, building=True) == building
+
+
+def test_a_mod_art_toggle_with_clear_art_caches_changes_the_cached_portrait(portrait_mods):
+    m = portrait_mods
+    _ui_file(m.high, "textures/ingame/units/017_50730.dds", (255, 0, 0, 255))
+    _ui_file(m.install, "textures/ingame/units/017_50730.dds", (0, 0, 255, 255))
+    assert tuple(asset_source.get_unit_icon(17)[0, 0]) == (255, 0, 0, 255)
+    mod_graphics.set_enabled(False)
+    assert tuple(asset_source.get_unit_icon(17)[0, 0]) == (255, 0, 0, 255), "cached until the viewer clears"
+    asset_source.clear_art_caches()
+    assert tuple(asset_source.get_unit_icon(17)[0, 0]) == (0, 0, 255, 255)
+
+
 def test_ror_sld_lookup_prefers_the_ror_graphics(ror_install):
     base = ror_install / unit_sprites.GRAPHICS_SUBPATH
-    ror = ror_install / game_dataset.ROR_SUBPATH / unit_sprites.GRAPHICS_SUBPATH
+    ror = ror_install / games.ROR.root_subpath / unit_sprites.GRAPHICS_SUBPATH
     ror.mkdir(parents=True)
     (ror / "u_all_hoplite_idleA_x1.sld").write_bytes(b"")
     assert unit_sprites._sld_path(base, "u_all_hoplite_idleA_x1") == base / "u_all_hoplite_idleA_x1.sld"
@@ -363,7 +600,7 @@ def test_ror_sld_lookup_prefers_the_ror_graphics(ror_install):
 def test_ror_sld_bytes_reread_the_ror_file_after_eviction(ror_install):
     """GH #67: a decode whose walked bytes left the cache re-reads the file the walk read, not the install's."""
     base = ror_install / unit_sprites.GRAPHICS_SUBPATH
-    ror = ror_install / game_dataset.ROR_SUBPATH / unit_sprites.GRAPHICS_SUBPATH
+    ror = ror_install / games.ROR.root_subpath / unit_sprites.GRAPHICS_SUBPATH
     base.mkdir(parents=True)
     ror.mkdir(parents=True)
     (base / "u_all_bowman_idleA_x1.sld").write_bytes(b"aoe2")

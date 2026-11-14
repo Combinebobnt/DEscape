@@ -479,17 +479,17 @@ def test_only_mode_9_needs_disambiguation_suffixes() -> None:
 
 
 def _gate_shape(unit_const: int, n: int = 40):
-    from descape import render
+    from descape import render_units
 
-    tiles = render.occupied_tiles_for(unit_const, *render.span_anchor(10, 10, *_gate_span(unit_const)), n, n)
+    tiles = render_units.occupied_tiles_for(unit_const, *render_units.span_anchor(10, 10, *_gate_span(unit_const)), n, n)
     return _normalized(tiles)
 
 
 def _gate_span(unit_const: int):
-    from descape import render
+    from descape import render_units
     from descape.terrain_palette import tile_span
 
-    return tile_span(unit_const, render.NON_BUILDING_SPAN)
+    return tile_span(unit_const, render_units.NON_BUILDING_SPAN)
 
 
 def _normalized(tiles):

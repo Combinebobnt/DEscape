@@ -1,4 +1,4 @@
-"""render.wall_variant_rotation_overrides() -- a wall/gate's shape derived
+"""render_units.wall_variant_rotation_overrides() -- a wall/gate's shape derived
 from its neighbours when the stored `rotation` carries no shape signal at all
 (some scenario files encode every wall rotation in radians, which turns out
 to carry no shape information at all; see that function's own docstring).
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import gate_orientation, render, unit_sprites
+from descape import gate_orientation, render_flat, render_iso, render_sprites, render_units, unit_sprites
 from descape.terrain_palette import PLAYER_COLORS
 
 MAP_W = MAP_H = 12
@@ -103,7 +103,7 @@ def wall_install(monkeypatch):
     connector -- no real .sld install needed, since every test here checks
     the rotation VALUE handed to the frame-dispatch functions, not decoded
     pixels."""
-    monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({WALL_CONST}))
+    monkeypatch.setitem(unit_sprites._ROTATION_VARIANT_BY_GAME, "aoe2", frozenset({WALL_CONST}))
     monkeypatch.setattr(
         unit_sprites, "graphic_map",
         lambda: {WALL_CONST: {"graphic_id": 1, "file_name": "wall_synth_x1",
@@ -165,15 +165,15 @@ def test_wall_connector_consts_excludes_the_colliding_corner_const():
 def test_clear_caches_actually_clears_wall_connector_consts(monkeypatch):
     # Leaves the cache holding a monkeypatched value if it exits early --
     # clear_caches() at the end re-derives from the real table once
-    # monkeypatch reverts _ROTATION_VARIANT_CONSTS at teardown, which is what
+    # monkeypatch reverts AoE2's _ROTATION_VARIANT_BY_GAME entry at teardown, which is what
     # keeps this test from poisoning every test that runs after it.
-    monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({111}))
+    monkeypatch.setitem(unit_sprites._ROTATION_VARIANT_BY_GAME, "aoe2", frozenset({111}))
     unit_sprites.clear_caches()
     try:
         first = unit_sprites.wall_connector_consts()
         assert 111 in first
 
-        monkeypatch.setattr(unit_sprites, "_ROTATION_VARIANT_CONSTS", frozenset({222}))
+        monkeypatch.setitem(unit_sprites._ROTATION_VARIANT_BY_GAME, "aoe2", frozenset({222}))
         stale = unit_sprites.wall_connector_consts()
         assert stale == first, "sanity: still cached, or this test proves nothing"
 
@@ -194,7 +194,7 @@ def test_a_run_along_x_resolves_to_index_0(wall_install):
         Unit(6.0, 5.0, WALL_CONST, _RADIAN[3]),  # deliberately the WRONG shape
         Unit(7.0, 5.0, WALL_CONST, _RADIAN[3]),
     ]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides[(1, 1)] == 0.0  # the middle piece has neighbours on +-x only
 
 
@@ -204,7 +204,7 @@ def test_a_run_along_y_resolves_to_index_1(wall_install):
         Unit(5.0, 6.0, WALL_CONST, _RADIAN[3]),
         Unit(5.0, 7.0, WALL_CONST, _RADIAN[3]),
     ]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides[(1, 1)] == 1.0
 
 
@@ -214,7 +214,7 @@ def test_an_l_junction_resolves_to_index_2(wall_install):
         Unit(6.0, 5.0, WALL_CONST, _RADIAN[3]),  # east neighbour of the corner
         Unit(5.0, 4.0, WALL_CONST, _RADIAN[3]),  # north neighbour of the corner
     ]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides[(1, 0)] == 2.0
 
 
@@ -223,7 +223,7 @@ def test_an_isolated_piece_in_a_radian_file_draws_as_the_tower(wall_install):
     as AoE2:DE does, rather than the stored radian value, which carries no
     shape (it used to fall through to that stored value)."""
     scn = _scenario([[], [Unit(2.0, 2.0, WALL_CONST, _RADIAN[3])]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides[(1, 0)] == 2.0
 
 
@@ -269,7 +269,7 @@ def test_an_integer_files_lone_wall_and_run_end_draw_as_towers(wall_install):
         Unit(6.0, 8.0, WALL_CONST, 0.0),  # run middle
         Unit(7.0, 8.0, WALL_CONST, 2.0),  # run end, already a tower
     ]])
-    assert render.wall_variant_rotation_overrides(scn) == {(1, 0): 2.0, (1, 2): 2.0}
+    assert render_units.wall_variant_rotation_overrides(scn) == {(1, 0): 2.0, (1, 2): 2.0}
 
 
 def test_an_integer_wall_with_an_orthogonal_neighbour_and_a_diagonal_pair_keeps_its_stored_run(wall_install):
@@ -281,7 +281,7 @@ def test_an_integer_wall_with_an_orthogonal_neighbour_and_a_diagonal_pair_keeps_
         Unit(4.0, 6.0, WALL_CONST, 2.0),  # SW
         Unit(5.0, 4.0, WALL_CONST, 2.0),  # N
     ]])
-    assert (1, 0) not in render.wall_variant_rotation_overrides(scn)
+    assert (1, 0) not in render_units.wall_variant_rotation_overrides(scn)
 
 
 @pytest.mark.parametrize(("step", "interior"), [((1, -1), 4.0), ((1, 1), 3.0)])
@@ -290,7 +290,7 @@ def test_a_radian_diagonal_run_draws_its_diagonal_shape(wall_install, step, inte
     NW+SE 3) and its ends the tower, whatever the radian values store."""
     dx, dy = step
     scn = _scenario([[], [Unit(5.0 + k * dx, 5.0 + k * dy, WALL_CONST, _RADIAN[1]) for k in range(3)]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides == {(1, 0): 2.0, (1, 1): interior, (1, 2): 2.0}
 
 
@@ -307,7 +307,7 @@ def test_a_literal_integer_rotation_is_untouched_when_the_file_has_no_radian_evi
         Unit(6.0, 5.0, WALL_CONST, 2.0),
         Unit(7.0, 5.0, WALL_CONST, 2.0),
     ]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides == {}
 
 
@@ -321,7 +321,7 @@ def test_a_literal_zero_rotation_is_overridden_inside_a_radian_file(wall_install
         Unit(6.0, 5.0, WALL_CONST, 0.0),
         Unit(7.0, 5.0, WALL_CONST, _RADIAN[3]),  # real radian evidence elsewhere in the file
     ]])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert overrides[(1, 1)] == 0.0
 
 
@@ -341,7 +341,7 @@ def test_gaia_never_overrides_a_variant_rotation(wall_install):
         ],
         [Unit(0.0, 0.0, WALL_CONST, _RADIAN[3])],  # player 1: establishes file_is_radian
     ])
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     # A single neighbour is a non-{WEST,EAST}/{NORTH,SOUTH} mask, so the
     # derived shape is 2 -- computed off the FORCED 0.0, never off 999.0.
     assert overrides[(0, 0)] == 2.0
@@ -352,7 +352,7 @@ def test_the_table_ignores_unit_filter(wall_install):
     hiding player 2 must not reshape player 1's wall. Built by construction
     over ALL units; there is no unit_filter parameter to even pass."""
     import inspect
-    assert "unit_filter" not in inspect.signature(render.wall_variant_rotation_overrides).parameters
+    assert "unit_filter" not in inspect.signature(render_units.wall_variant_rotation_overrides).parameters
 
 
 # --- cross-path consistency, and the row-vs-position key hazard ---------
@@ -387,12 +387,12 @@ def test_all_three_paths_resolve_the_same_unit_to_the_same_derived_rotation(wall
         Unit(6.0, 5.0, WALL_CONST, _RADIAN[3]),  # the unit under test: derives to index 0
         Unit(7.0, 5.0, WALL_CONST, _RADIAN[3]),
     ]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
 
-    render.sprite_draws_by_anchor(scn, proj, elevations)
-    render._flat_icon_layer(scn, tile_px=16)
-    img = render.render_terrain(scn)
-    render.overlay_units(img, scn, with_sprites=True)
+    render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    render_flat._flat_icon_layer(scn, tile_px=16)
+    img = render_flat.render_terrain(scn)
+    render_flat.overlay_units(img, scn, with_sprites=True)
 
     for site, calls in rotation_spy.items():
         matching = [rotation for const, rotation in calls if const == WALL_CONST]
@@ -413,8 +413,8 @@ def real_gate_wall_install(monkeypatch):
     point of the test below is exercising real gate membership across a full
     orientation cycle (789/797/793 all in), which a wholesale replacement
     would erase."""
-    monkeypatch.setattr(
-        unit_sprites, "_ROTATION_VARIANT_CONSTS",
+    monkeypatch.setitem(
+        unit_sprites._ROTATION_VARIANT_BY_GAME, "aoe2",
         unit_sprites._ROTATION_VARIANT_CONSTS | frozenset({WALL_CONST}),
     )
     monkeypatch.setattr(
@@ -461,11 +461,11 @@ def test_a_real_gate_orientation_cycle_never_changes_a_neighbouring_walls_connec
     scn = _scenario([[], [probe, gate]])
 
     def _probe_rotations() -> set[float]:
-        _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-        render.sprite_draws_by_anchor(scn, proj, elevations)
-        render._flat_icon_layer(scn, tile_px=16)
-        img = render.render_terrain(scn)
-        render.overlay_units(img, scn, with_sprites=True)
+        _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+        render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+        render_flat._flat_icon_layer(scn, tile_px=16)
+        img = render_flat.render_terrain(scn)
+        render_flat.overlay_units(img, scn, with_sprites=True)
         return {
             rotation
             for calls in rotation_spy.values()
@@ -503,7 +503,7 @@ def test_the_override_key_is_position_not_the_filtered_row_count(wall_install, r
         Unit(6.0, 5.0, WALL_CONST, _RADIAN[3]),  # is skipped here -- this one just needs
         Unit(5.0, 6.0, WALL_CONST, _RADIAN[1]),  # SOME non-zero mask so it has a derived
     ]])                                          # value distinct from its stored one.
-    overrides = render.wall_variant_rotation_overrides(scn)
+    overrides = render_units.wall_variant_rotation_overrides(scn)
     assert (1, 1) in overrides, "sanity: the wall at list position 1 must have a derived override"
 
     # UnitFilter itself has no per-unit-const knob, so a small local predicate
@@ -514,7 +514,7 @@ def test_the_override_key_is_position_not_the_filtered_row_count(wall_install, r
         def matches(self, player_id, unit):
             return unit.unit_const != decoy_const
 
-    render._flat_icon_layer(scn, tile_px=16, unit_filter=_HideDecoy())
+    render_flat._flat_icon_layer(scn, tile_px=16, unit_filter=_HideDecoy())
     wall_calls = [rotation for const, rotation in rotation_spy["icon_for"] if const == WALL_CONST]
     assert overrides[(1, 1)] in wall_calls, (
         f"expected the position-1 override {overrides[(1, 1)]} to reach icon_for "

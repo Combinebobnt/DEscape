@@ -1,6 +1,6 @@
 """Verifies descape.iso_geometry's Phase 6 (Sloped) additions --
 corner_rise_px and sloped_quad_indices -- the load-bearing partition proof
-for the sloped warp, written before render.py's compositor was built on top
+for the sloped warp, written before render_sloped.py's compositor was built on top
 of it.
 
 Checks:
@@ -14,7 +14,7 @@ Checks:
      touching-tile count from 1 (map corner) to 4 (interior vertex).
   3. corner_rise_px's max/min rules pick the real max/min of touching tile
      elevations, scaled by elev_step, at a deliberately non-flat corner.
-  3b. The rule render.py actually ships is the one the game was measured to
+  3b. The rule render_sloped.py actually ships is the one the game was measured to
      use. Nothing else here depends on WHICH rule ships, so without this
      the constant could be changed back and no test would notice.
   3c. On real corpus terrain, at every elev_step_pct stop: no tile paints
@@ -34,7 +34,7 @@ Checks:
      became variable-length, and the check that actually rules out the seam
      lattice rather than merely the within-tile arcs.
   7. uv_idx alignment: every output pixel resamples a diamond pixel in its
-     OWN column, so render._slope_shade gathered through it stays 1:1 with
+     OWN column, so render_sloped._slope_shade gathered through it stays 1:1 with
      the resampled output.
 """
 
@@ -121,7 +121,7 @@ def test_corner_rise_max_min_rules():
 
 
 def test_shipped_corner_rule_matches_the_in_game_captures():
-    """Pins render.SLOPE_CORNER_RULE against what DE was measured to do.
+    """Pins render_sloped.SLOPE_CORNER_RULE against what DE was measured to do.
 
     Nothing else in this suite depends on WHICH rule ships -- the partition,
     abutment and clamp checks all hold under any of the three, and the
@@ -136,7 +136,7 @@ def test_shipped_corner_rule_matches_the_in_game_captures():
     "average" a quarter of one; only "max" predicts the null that was
     actually observed.
     """
-    from descape.render import SLOPE_CORNER_RULE
+    from descape.render_sloped import SLOPE_CORNER_RULE
 
     assert SLOPE_CORNER_RULE == "max"
 
@@ -158,7 +158,7 @@ def test_corner_rise_rejects_bad_rule():
 def _partition_check(elevations: np.ndarray, tile_px: int, rule: str) -> tuple[int, int, int, int]:
     """(overlaps, unique, interior_gaps, emitted) for rendering every tile
     of `elevations` through sloped_quad_indices at elevation-0 baseline
-    placement -- the same construction render.py's own _render_tile_sloped
+    placement -- the same construction render_sloped.py's own _render_tile_sloped
     uses (tile_screen_origin(x, y, 0, proj), base_y -= d_min, paint at
     dst_y/dst_x), just without a real image or texture.
 
@@ -683,7 +683,7 @@ def test_sloped_quad_indices_key_cardinality(corpus_files):
     bound assertion), it doesn't require an exact number. Each fold has its
     own cache (TASK-008), so the keys are counted per fold, on the corner
     rule and fold Sloped renders with."""
-    from descape.render import sloped_elevations_and_proj
+    from descape.render_sloped import sloped_elevations_and_proj
     from descape.scenario_io import load_map_and_units
 
     seen: dict[bool, set[tuple[int, int, int, int]]] = {False: set(), True: set()}
@@ -773,7 +773,8 @@ def test_sloped_output_stays_on_canvas_on_test_map(pct):
 
 def _sloped_output_on_canvas_count(files, pct) -> int:
     """Asserts test_sloped_output_stays_on_canvas_on_real_maps' three properties on every tile; returns the tile count."""
-    from descape.render import SLOPE_CORNER_RULE, tile_pixels_for_map
+    from descape.render_paint import tile_pixels_for_map
+    from descape.render_sloped import SLOPE_CORNER_RULE
     from descape.scenario_io import load_map_and_units
 
     # Contiguity and a tile's pixel EXTENT depend only on (tile_px,

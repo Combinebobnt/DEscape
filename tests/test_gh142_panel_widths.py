@@ -9,7 +9,9 @@ that DPI directly. tests/test_view_info_floor.py holds View's own widen.
 from __future__ import annotations
 
 import pytest
-from test_unit_edit_viewer import _no_install_env  # noqa: F401 -- autouse fixture
+from unit_edit_viewer_helpers import _no_install_env  # noqa: F401 -- autouse fixture
+
+from testkit.qt_window import panel_width, set_panel_width
 
 import conftest
 
@@ -36,10 +38,9 @@ def _panel_class(mode: str):
 def _set_left(window, px: int) -> None:
     from PyQt5.QtWidgets import QApplication
 
-    total = sum(window.content_splitter.sizes())
-    window.content_splitter.setSizes([px, total - px])
+    set_panel_width(window, px)
     QApplication.processEvents()
-    assert window.content_splitter.sizes()[0] == px, "the pane setup did not take"
+    assert panel_width(window) == px, "the pane setup did not take"
 
 
 def _enter(window, mode: str, *, from_px: int, from_mode: str = "View") -> int:
@@ -52,7 +53,7 @@ def _enter(window, mode: str, *, from_px: int, from_mode: str = "View") -> int:
     window.mode_combo.setCurrentText(mode)
     QApplication.processEvents()
     assert window.mode_combo.currentText() == mode
-    return window.content_splitter.sizes()[0]
+    return panel_width(window)
 
 
 def _blank_window():
@@ -318,7 +319,7 @@ def test_the_garrison_buttons_show_in_full_with_a_tower_selected() -> None:
     wholly inside the inspector's viewport at no less than its own minimum width; no
     horizontal scroll bar shows.
     """
-    import test_unit_edit_viewer as viewer_tests
+    import unit_edit_viewer_helpers as viewer_tests
     from PyQt5.QtCore import QPoint
     from PyQt5.QtWidgets import QApplication, QPushButton
 
@@ -382,10 +383,9 @@ def check_terrain_fits_its_drag_floor(window) -> int:
     # Relative, not a fixed 600 px: at 168 DPI the floor itself passes 600.
     _set_left(window, window.terrain_panel.drag_floor() + 200)
     wide_placeholder = _filter_placeholder_image(window)
-    total = sum(window.content_splitter.sizes())
-    window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+    set_panel_width(window, settings.MIN_SPLIT_PANE)
     QApplication.processEvents()
-    pane = window.content_splitter.sizes()[0]
+    pane = panel_width(window)
     assert pane > settings.MIN_SPLIT_PANE, "Terrain has no drag floor"
 
     panel = window.terrain_panel
@@ -418,9 +418,8 @@ def test_terrain_mode_cannot_be_dragged_below_its_names_and_controls() -> None:
         assert floor < window.terrain_panel.MIN_USEFUL_WIDTH, "the drag floor should stay below Terrain's entry widen"
         window.mode_combo.setCurrentText("View")
         QApplication.processEvents()
-        total = sum(window.content_splitter.sizes())
-        window.content_splitter.setSizes([settings.MIN_SPLIT_PANE, total - settings.MIN_SPLIT_PANE])
+        set_panel_width(window, settings.MIN_SPLIT_PANE)
         QApplication.processEvents()
-        assert window.content_splitter.sizes()[0] == settings.MIN_SPLIT_PANE
+        assert panel_width(window) == settings.MIN_SPLIT_PANE
     finally:
         conftest.close_window(window)

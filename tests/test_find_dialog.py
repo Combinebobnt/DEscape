@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -952,7 +954,7 @@ def wall_art(tmp_path, monkeypatch):
             "angle_count": 5,
             "mirroring_mode": 0,
             "frame_count": 1,
-            # Else a GAIA wall's stored rotation reads as 0.0 (render.stored_rotation).
+            # Else a GAIA wall's stored rotation reads as 0.0 (render_units.stored_rotation).
             "rotation_is_variant": True,
         }
     }
@@ -965,19 +967,19 @@ def wall_art(tmp_path, monkeypatch):
 
 
 def _fresh_canvas(window, style: str, sprites: bool = True) -> np.ndarray:
-    from descape import render
+    from descape import render_iso, render_sloped
 
     canvas_w, canvas_h = window._cache.canvas_dims(0)
     if style == "Stepped":
-        full = render.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_iso.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     else:
-        full = render.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_sloped.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     return full[:canvas_h, :canvas_w]
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_replacing_a_wall_beside_a_wall_repaints_like_a_fresh_render(style, wall_art) -> None:
-    from descape import render
+    from descape import render_units
 
     window, _boxes = _window(style)
     try:
@@ -990,7 +992,7 @@ def test_replacing_a_wall_beside_a_wall_repaints_like_a_fresh_render(style, wall
         with window._unit_edit(model, "Add walls", [0]):
             model.add(0, _STONE_WALL, 8.5, 5.5, rotation=2.5132741928100586)
             model.add(0, _STONE_WALL, 9.5, 5.5, rotation=2.5132741928100586)
-        assert render.wall_variant_rotation_overrides(window.scenario)[(0, 3)] == 0.0
+        assert render_units.wall_variant_rotation_overrides(window.scenario)[(0, 3)] == 0.0
         canvas_w, canvas_h = window._cache.canvas_dims(0)
         start = window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
         assert np.array_equal(start, _fresh_canvas(window, style))
@@ -1002,7 +1004,7 @@ def test_replacing_a_wall_beside_a_wall_repaints_like_a_fresh_render(style, wall
         tab.replace_edit.set_value(_OAK)
         tab.replace_button.click()
         assert _unit(window, _REF_WALL).unit_const == _OAK
-        assert render.wall_variant_rotation_overrides(window.scenario)[(0, 3)] == 2.0
+        assert render_units.wall_variant_rotation_overrides(window.scenario)[(0, 3)] == 2.0
         replaced =window._cache.render_rect(0, 0, canvas_w, canvas_h).copy()
         assert np.array_equal(replaced, _fresh_canvas(window, style)), "stale pixels after Replace"
         assert not np.array_equal(replaced, start)
@@ -1489,11 +1491,9 @@ def test_a_half_typed_panel_name_is_committed_before_an_op_which_then_refuses_th
 
 
 def test_the_tab_is_disabled_when_triggers_do_not_parse(monkeypatch) -> None:
-    from descape import viewer as viewer_module
-
     window, _boxes = _trigger_window()
     try:
-        monkeypatch.setattr(viewer_module, "parse_triggers", lambda loaded: None)
+        set_viewer_global(monkeypatch, "parse_triggers", lambda loaded: None)
         dialog = _dialog(window)
         dialog.tabs.setCurrentWidget(dialog.triggers_tab)
         tab = dialog.triggers_tab
@@ -1716,7 +1716,7 @@ _GAIA_ONLY_NOTE = "1 object(s) left as they were (GAIA-only or holding one)"
 
 
 def test_replace_refuses_a_players_unit_for_a_gaia_only_type_and_allows_gaia() -> None:
-    from descape.viewer import GAIA_ONLY_REPLACE_REASON
+    from descape.viewer_unit_ops import GAIA_ONLY_REPLACE_REASON
 
     window, _boxes = _window()
     try:

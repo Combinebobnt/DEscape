@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from test_sprite_edit_bbox import CONST, Unit, sprite_install  # noqa: F401 -- fixture
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox, render_iso, render_paint
 from descape.brush import BRUSH_SHAPE_SQUARE, brush_tiles
 from descape.elevation_tools import set_tiles_elevation
 from descape.render_cache import FlatChunkCache, IsoChunkCache
@@ -57,7 +57,7 @@ def _edit(scenario) -> None:
 
 def _iso_window(proj, canvas_dims):
     ex, ey = RAISE_AT
-    pad_l, pad_u, pad_r, pad_d = render._sprite_reach_px(proj)
+    pad_l, pad_u, pad_r, pad_d = render_bbox._sprite_reach_px(proj)
     bounds = [
         iso_geometry.tile_screen_bounds_swept(x, y, proj)
         for x in range(ex - WINDOW_RADIUS, ex + WINDOW_RADIUS + 1)
@@ -76,13 +76,13 @@ def _render(style: str, scenario) -> np.ndarray:
     """A fresh cache for `style`, built as ViewerWindow._render_current builds
     it, rendered over a fixed window around the edits."""
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "flat":
         cache = FlatChunkCache(scenario, tile_px, sprites=True)
         ex, ey = RAISE_AT
         r = WINDOW_RADIUS
         return cache.render_rect((ex - r) * tile_px, (ey - r) * tile_px, (ex + r + 1) * tile_px, (ey + r + 1) * tile_px).copy()
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     if style == "flat-iso":
         elevations = np.zeros_like(elevations)
     cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
@@ -195,7 +195,7 @@ def test_switching_to_stepped_after_a_flat_elevate_shows_the_real_heights(style)
         mm = window.scenario.map_manager
         _drag(window)
         window.terrain_style_combo.setCurrentText("Stepped")
-        real, _ = render.elevations_and_proj(window.scenario)
+        real, _ = render_iso.elevations_and_proj(window.scenario)
         assert real.any(), "fixture assumption: the Flat stroke must have raised something"
         assert np.array_equal(window._iso_elevations, real), "Stepped must show the heights the Flat stroke wrote"
 

@@ -43,6 +43,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     asset_source,
     game_dataset,
+    games,
     iso_geometry,
     settings,
     terrain_browser,
@@ -57,7 +58,6 @@ from descape.scenario_new import (
     STANDARD_MAP_SIZES,
 )
 
-AOE2, ROR = game_dataset.AOE2, game_dataset.ROR
 CUSTOM_LABEL = "Custom"
 # Terrain swatches decoded per timer tick after the dialog shows: a .dds
 # decode is ~28 ms (terrain_browser), so ~112 at once held the dialog back,
@@ -71,7 +71,7 @@ _BACKDROP = QColor(0, 0, 0, 110)
 @dataclass(frozen=True)
 class NewMapChoice:
     tiles: int = BLANK_TEMPLATE_TILES
-    game_data: str = AOE2
+    game_data: str = games.DEFAULT_ID
     terrain_id: int = settings.NEW_MAP_DEFAULT_TERRAIN_ID
     elevation: int = settings.NEW_MAP_DEFAULT_ELEVATION
     trees: bool = settings.NEW_MAP_DEFAULT_TREES
@@ -139,7 +139,9 @@ class NewMapDialog(QDialog):
         self.game_data_combo = QComboBox()
         for game_data in settings.new_map_game_data():
             self.game_data_combo.addItem(game_dataset.DISPLAY_NAMES[game_data], game_data)
-        self.game_data_combo.setToolTip("Which game the new map is for: Age of Empires II or Return of Rome")
+        names = [game_dataset.DISPLAY_NAMES[game_data] for game_data in settings.new_map_game_data()]
+        listed = " or ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else names[0]
+        self.game_data_combo.setToolTip(f"Which game the new map is for: {listed}")
         form.addRow("Game data:", self.game_data_combo)
 
         self.terrain_combo = QComboBox()

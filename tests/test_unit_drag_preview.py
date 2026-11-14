@@ -5,7 +5,7 @@ tile's elevation.
 **Which layer each test asserts on is the point here.** b1's postmortem is
 this module's trap, inverted: that slice asserted only on the model, shipped
 a cache-invalidation bug, and the repo answered with pixel-level tests reading
-window._cache.get_chunk() directly (tests/test_unit_edit_viewer.py). Those
+window._cache.get_chunk() directly (tests/test_unit_edit_viewer_*.py). Those
 tests cannot see this feature at all -- the ghost is a scene item, not cache
 pixels, and it is the design that it never becomes cache pixels. So:
 
@@ -31,8 +31,10 @@ from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication
 from test_place_preview import _ghost_draws, _placed_draws
 
-from descape import iso_geometry, object_catalog, placement_rules, render, unit_pick, unit_rotation
+from descape import iso_geometry, object_catalog, placement_rules, render_units, unit_pick, unit_rotation
+from descape.terrain_palette import tile_span
 from testkit import fakes
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -121,11 +123,11 @@ def test_a_stand_in_recomputes_its_bounds_at_a_map_edge_rather_than_translating(
     the whole reason this test exists)."""
     w = h = 120
     unit = fakes.SyntheticUnit(x=60.0, y=60.0, unit_const=_MULTI_TILE_CONST)
-    span_x, span_y = render.tile_span(_MULTI_TILE_CONST, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(_MULTI_TILE_CONST, render_units.NON_BUILDING_SPAN)
     assert span_x > 1 and span_y > 1, "this const must be multi-tile for the clamp to bite"
 
-    middle = render.unit_tile_bounds(render.unit_at(unit, 60.0, 60.0), w, h)
-    edge = render.unit_tile_bounds(render.unit_at(unit, w - 1.0, h - 1.0), w, h)
+    middle = render_units.unit_tile_bounds(render_units.unit_at(unit, 60.0, 60.0), w, h)
+    edge = render_units.unit_tile_bounds(render_units.unit_at(unit, w - 1.0, h - 1.0), w, h)
     assert middle is not None and edge is not None
     # The clamped box at the edge is genuinely narrower than the same unit's
     # box in open ground; translating the open-ground box could not produce
@@ -144,7 +146,7 @@ def test_a_stand_in_leaves_the_real_unit_untouched() -> None:
     try:
         unit = _an_entry(window).unit
         before = (unit.x, unit.y)
-        ghost = render.unit_at(unit, 12.5, 34.5)
+        ghost = render_units.unit_at(unit, 12.5, 34.5)
         assert (ghost.x, ghost.y) == (12.5, 34.5)
         assert (unit.x, unit.y) == before
         assert ghost is not unit
@@ -170,7 +172,7 @@ def test_a_sloped_ghost_sits_at_its_destinations_height_not_its_sources() -> Non
     unit = fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=83)
 
     def entry_at(tx: int, ty: int):
-        ghost = render.unit_at(unit, tx + 0.5, ty + 0.5)
+        ghost = render_units.unit_at(unit, tx + 0.5, ty + 0.5)
         return unit_pick.UnitEntry(1, ghost, tx, ty, 0)
 
     low, high = entry_at(1, 1), entry_at(1, 4)
@@ -493,11 +495,9 @@ def test_a_group_drag_draws_one_ghost_per_member_at_its_destination() -> None:
 
 
 def test_past_the_cap_only_the_grabbed_unit_is_ghosted_and_the_status_says_so(monkeypatch) -> None:
-    from descape import viewer
-
     window = _window()
     try:
-        monkeypatch.setattr(viewer, "GROUP_GHOST_CAP", 1)
+        set_viewer_global(monkeypatch, "GROUP_GHOST_CAP", 1)
         logged = []
         real_log = window._log_status
         window._log_status = lambda text, *a, **k: (logged.append(text), real_log(text, *a, **k))
@@ -745,11 +745,9 @@ def test_one_blocker_grid_serves_every_move_and_the_drop_and_a_rebound_selection
 
 @pytest.mark.parametrize("blocked, tinted", [(1, True), (2, False)], ids=["inside_cap", "outside_cap"])
 def test_past_the_cap_the_grabbed_ghost_tints_for_a_blocked_member_inside_the_cap(monkeypatch, blocked, tinted) -> None:
-    from descape import viewer
-
     window = _window()
     try:
-        monkeypatch.setattr(viewer, "GROUP_GHOST_CAP", 2)
+        set_viewer_global(monkeypatch, "GROUP_GHOST_CAP", 2)
         logged = []
         real_log = window._log_status
         window._log_status = lambda text, *a, **k: (logged.append(text), real_log(text, *a, **k))
@@ -1112,7 +1110,9 @@ def test_a_turned_gates_own_corner_pieces_never_block_it() -> None:
         gate = _at(window, _GATE_Y, 60.5, 60.0)
         piece = _at(window, _CORNER_Y, 60.5, 58.5)
         assert placement_rules.gate_companions(window.scenario, gate) == [piece]
-        point = window._resolve_placement_point(_scene_tile(window, (60, 58)), Qt.NoModifier, unit_const=_GATE)[0]
+        # From the pixel the release lands on: a tile centre ties two of an even gate's corner snaps.
+        drop = window.map_view.mapToScene(_viewport_pos(window, 60, 58).toPoint())
+        point = window._resolve_placement_point(drop, Qt.NoModifier, unit_const=_GATE)[0]
         assert placement_rules.refused(window.scenario, _GATE, *point, exclude=[gate])
         _select_units(window, gate)
         _start(window, (60, 61), (60, 58))

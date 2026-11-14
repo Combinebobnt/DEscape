@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Review pack for TASK-221: a unit standing beside a building's front faces
 draws in front of it, because each screen column of a multi-tile sprite paints
-at its own front footprint tile (render._sprite_columns()).
+at its own front footprint tile (render_sprites._sprite_columns()).
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script like tools/gen_clipped_sprite_review_pack.py, whose scenario
@@ -41,10 +41,11 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, composite_backend, render, render_cache, settings, unit_sprites
+from descape import asset_source, composite_backend, render_cache, render_iso, render_paint, render_sprites, settings, unit_sprites
 from descape import iso_geometry as ig
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
+from testkit.render_family import RENDER, patch
 
 # In every frame path REVIEW.md prints, so it must not name the artifact.
 PACK_ID = "figures_buildings"
@@ -56,7 +57,7 @@ PLAYER = 1
 RAISED = 2
 # The corpus tests' scale (tests/test_composite_depth_real_assets.py), where the
 # single anchor's cover was measured; the blank map's own 64 px leaves figures tiny.
-TILE_PX = 2 * render.SMALL_MAP_TILE_PIXELS
+TILE_PX = 2 * render_paint.SMALL_MAP_TILE_PIXELS
 _PAD = 16
 # A figure frame's window at TILE_PX: about two tiles each way round the figure.
 _FIGURE_W, _FIGURE_H = 288, 224
@@ -122,7 +123,7 @@ def _scenario(placed, ground, terrain_id: int | None = None):
 
 def _elevations_and_proj(scn):
     """Pinned to TILE_PX and the default step, so the user's settings never move a frame."""
-    elevations, _proj = render.elevations_and_proj(scn)
+    elevations, _proj = render_iso.elevations_and_proj(scn)
     mm = scn.map_manager
     proj = ig.canvas_size_and_origin(
         mm.map_width, mm.map_height, TILE_PX, ig.MIN_ELEVATION, ig.MAX_ELEVATION,
@@ -141,7 +142,7 @@ def _sprite_box(unit, ground) -> tuple[int, int, int, int]:
     """One unit's sprite bbox, the union of its column slices."""
     scn = _scenario([unit], ground)
     elevations, proj = _elevations_and_proj(scn)
-    boxes = list(render.sprite_draws_by_anchor(scn, proj, elevations).bboxes.values())
+    boxes = list(render_sprites.sprite_draws_by_anchor(scn, proj, elevations).bboxes.values())
     return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
 
 
@@ -175,14 +176,14 @@ def _render(frame_id: str, keep: str = "both", terrain_id: int | None = None) ->
 def _inject_single_anchor():
     """COARSE: every multi-tile sprite paints whole at its front corner, the
     render from before TASK-221."""
-    return render, "SPRITE_COLUMN_SLICING", False
+    return RENDER, "SPRITE_COLUMN_SLICING", False
 
 
 def _rekeyed(back_on_key):
-    """render._sprite_columns() with each screen strip s (tile_screen_origin():
+    """render_sprites._sprite_columns() with each screen strip s (tile_screen_origin():
     [origin_x + s*half_w, origin_x + (s+1)*half_w)) put back on the piece's
     own key wherever back_on_key(s, key) holds."""
-    real = render._sprite_columns
+    real = render_sprites._sprite_columns
 
     def columns(occupied, key, x0, w, proj):
         runs: list[list] = []
@@ -199,7 +200,7 @@ def _rekeyed(back_on_key):
                 a = b
         return [(anchor, c0, c1, anchor != key) for anchor, c0, c1 in runs]
 
-    return render, "_sprite_columns", columns
+    return RENDER, "_sprite_columns", columns
 
 
 def _inject_left_face_only():
@@ -233,15 +234,15 @@ def _patched(inject: str | None):
     patches = [(settings, "get_elev_step_pct", lambda: ig.ELEV_STEP_DEFAULT_PCT)]
     if inject is not None:
         patches.append(INJECTS[inject]())
-    saved = [(mod, name, getattr(mod, name)) for mod, name, _new in patches]
-    for mod, name, new in patches:
-        setattr(mod, name, new)
-    unit_sprites.clear_caches()
+    import pytest
+
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for target, name, new in patches:
+                patch(mp, target, name, new)
+            unit_sprites.clear_caches()
+            yield
     finally:
-        for mod, name, old in saved:
-            setattr(mod, name, old)
         unit_sprites.clear_caches()
 
 

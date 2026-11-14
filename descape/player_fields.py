@@ -38,7 +38,7 @@ from AoE2ScenarioParser.datasets.object_support import Civilization, Civilizatio
 from AoE2ScenarioParser.datasets.players import ColorId
 from AoE2ScenarioParser.helper.bytes_conversions import fixed_chars_to_bytes
 
-from descape import ai_scripts, data_mod_side, game_dataset
+from descape import ai_scripts, data_mod_side, game_dataset, games
 from descape.option_fields import CHECKBOX, COMBO, SPINBOX
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -114,6 +114,10 @@ _STARTING_AGE_CHOICES = tuple((m.value, m.name.replace("_", " ").title()) for m 
 # plus Post-Iron Age (the user, 2026-10-17) in AoE2's Post-Imperial slot, 6.
 _ROR_STARTING_AGE_CHOICES = (
     (2, "Stone Age"), (3, "Tool Age"), (4, "Bronze Age"), (5, "Iron Age"), (6, "Post-Iron Age"),
+)
+_STARTING_AGES_BY_GAME = games.PerGame(
+    "player_fields: the game editor's starting ages as (stored value, label)",
+    {"aoe2": _STARTING_AGE_CHOICES, "ror": _ROR_STARTING_AGE_CHOICES},
 )
 _COLOR_CHOICES = tuple((m.value, m.name.title()) for m in ColorId if not m.name.startswith("INVALID"))
 # ai_type follows Personality, not the Human/Computer/Either control:
@@ -435,10 +439,24 @@ ROR_CIVILIZATIONS: tuple[tuple[int, str, str], ...] = (
     (16, "MACEDONIAN-CIV", "Macedonian"),
     (17, "LAC-VIET-CIV", "Lac Viet"),
 )
-_ROR_CIV_NAMES: dict[int | str, str] = {
-    **{civ_id: name for civ_id, _token, name in ROR_CIVILIZATIONS},
-    **{token: name for _civ_id, token, name in ROR_CIVILIZATIONS},
-}
+# None: the library's Civilization and CivilizationOld enums name the game's civs.
+_CIVILIZATIONS_BY_GAME = games.PerGame(
+    "player_fields: the game's civilizations as (id, token, name) rows, or None for the library's",
+    {"aoe2": None, "ror": ROR_CIVILIZATIONS},
+)
+
+
+def civilizations(game: games.Game) -> tuple[tuple[int, str, str], ...] | None:
+    """`game`'s own civilizations as (int id, token, name) rows, or None when
+    the library's Civilization enums name them (AoE2, a data mod's civs on top)."""
+    return _CIVILIZATIONS_BY_GAME.for_game(game)
+
+
+def _own_civ_name(game: games.Game, value: int | str) -> str | None:
+    for civ_id, token, name in civilizations(game) or ():
+        if value in (civ_id, token):
+            return name
+    return None
 
 
 def resolve_civilization_name(value: int | str) -> str:
@@ -451,8 +469,9 @@ def resolve_civilization_name(value: int | str) -> str:
     by name already) rather than raising -- an unrecognized row should
     display as itself, not break the panel.
     """
-    if game_dataset.is_ror() and value in _ROR_CIV_NAMES:
-        return _ROR_CIV_NAMES[value]
+    own = _own_civ_name(game_dataset.game(), value)
+    if own is not None:
+        return own
     civ = data_mod_side.find_civ(value)
     if civ is not None:
         return data_mod_side.civ_name(civ)
@@ -539,11 +558,11 @@ _STR16_LENGTH_STRUCT = struct.Struct("<h")
 # also what verify_player_block() re-encodes GAIA's slot with to check for
 # an offset shift, and GAIA's own slot is real per-file data this module
 # must be able to round-trip, not reject. Computed once at import time
-# since Civilization's membership is fixed. GH #67: the Return of Rome
-# tokens too, whatever the active dataset, so a 1.56+ RoR file's stored
-# civs re-encode and its Players rows stay writable.
+# since Civilization's membership is fixed. GH #67: every game's own
+# tokens too (Return of Rome's), whatever game is active, so a 1.56+ RoR
+# file's stored civs re-encode and its Players rows stay writable.
 _ENCODABLE_CIVILIZATIONS = frozenset(m.value for m in Civilization) | frozenset(
-    token for _civ_id, token, _name in ROR_CIVILIZATIONS
+    token for rows in _CIVILIZATIONS_BY_GAME.values() for _civ_id, token, _name in rows or ()
 )
 # GH #263: every civ token of a data mod put in effect in this process. It only
 # grows: the token check runs again at save, undo and redo, so a mod switch with
@@ -602,7 +621,7 @@ NUM_PLAYERS = 8
 def player_field_id(field_id: str, player_id: int) -> str:
     """The synthetic OptionsEditModel id for one player's one field --
     write_targets()'s own key format, factored out so options_model.py and
-    viewer.py construct and parse it the same way rather than each
+    viewer_options.py construct and parse it the same way rather than each
     hardcoding the "player:<field>:<player>" string."""
     return f"player:{field_id}:{player_id}"
 
@@ -668,12 +687,11 @@ def starting_age_choices(civ_value: object = None) -> tuple[tuple[int, str], ...
     """(value, label) pairs for the Starting age combo in the active game
     dataset (GH #67); under a data mod with eras, the ages of the era of the civ
     `civ_value` names (GH #263)."""
-    if game_dataset.is_ror():
-        return _ROR_STARTING_AGE_CHOICES
+    own = _STARTING_AGES_BY_GAME.active()
     labels = data_mod_side.age_labels(civ_value)
     if labels is None:
-        return _STARTING_AGE_CHOICES
-    return tuple((value, label) for (value, _name), label in zip(_STARTING_AGE_CHOICES, labels, strict=True))
+        return own
+    return tuple((value, label) for (value, _name), label in zip(own, labels, strict=True))
 
 
 def unlisted_civ_shown(field_id: str, value: object, choices: tuple[tuple[int | str, str], ...]):
@@ -706,11 +724,12 @@ def unlisted_civ_tooltip(field_id: str, value: object, choices: tuple[tuple[int 
 def starting_age_tooltip(civ_value: object = None) -> str:
     """Why a data mod's age names differ from the game's editor, or "" when they do not (GH #263)."""
     choices = starting_age_choices(civ_value)
-    if game_dataset.is_ror() or choices == _STARTING_AGE_CHOICES:
+    own = _STARTING_AGES_BY_GAME.active()
+    if choices == own:
         return ""
     return (
         "The names this data mod shows in the game. The game's editor lists these "
-        f"as {_STARTING_AGE_CHOICES[0][1]} to {_STARTING_AGE_CHOICES[-1][1]}."
+        f"as {own[0][1]} to {own[-1][1]}."
     )
 
 
@@ -737,8 +756,9 @@ def civilization_choices(loaded: LoadedScenario) -> tuple[tuple[int | str, str],
         pairs = [(civ.token if is_str16 else civ.index, name) for civ, name in mod_civs]
         members = Civilization if is_str16 else CivilizationOld
         return (*pairs, (members.FULL_RANDOM.value, "Full Random"), (members.RANDOM.value, "Random"))
-    if game_dataset.is_ror():
-        pairs = [(token if is_str16 else civ_id, name) for civ_id, token, name in ROR_CIVILIZATIONS]
+    own = civilizations(game_dataset.game())
+    if own is not None:
+        pairs = [(token if is_str16 else civ_id, name) for civ_id, token, name in own]
         # Random is the parser's own value in both encodings, as RoR files store it.
         pairs.append((Civilization.RANDOM.value if is_str16 else CivilizationOld.RANDOM.value, "Random"))
         return tuple(sorted(pairs, key=lambda pair: pair[1]))
@@ -1376,7 +1396,7 @@ def defined_player_ids(
     does not yet exist, since this reader does not depend on it.
 
     `pending` is OptionsEditModel.pending_values() verbatim -- the same
-    dict viewer.py already filters by key prefix for per-player rows, so
+    dict viewer_options.py already filters by key prefix for per-player rows, so
     callers need no second convention.
     """
     if pending is not None and PLAYER_COUNT_FIELD_ID in pending:

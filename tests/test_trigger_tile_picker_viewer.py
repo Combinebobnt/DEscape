@@ -261,7 +261,7 @@ def test_group_rows_do_not_overlap_or_squeeze() -> None:
     """At the 340 px pane the three buttons wrap below their caption at the
     pinned font (WrapLongRows), which is the row class GOTCHAS says passes
     every widget assertion while squeezed. Walked at every swept DPI."""
-    from test_trigger_panel import _assert_form_rows_do_not_overlap
+    from trigger_panel_helpers import _assert_form_rows_do_not_overlap
 
     window = _window()
     try:
@@ -679,8 +679,8 @@ def test_arming_a_tile_pick_disarms_the_unit_pick_and_back() -> None:
 
 
 def test_a_tile_pick_and_the_garrison_pick_disarm_each_other() -> None:
-    from test_unit_edit_viewer import _close, _place_tower
-    from test_unit_edit_viewer import _window as _units_window
+    from unit_edit_viewer_helpers import _close, _place_tower
+    from unit_edit_viewer_helpers import _window as _units_window
 
     window = _units_window()
     try:

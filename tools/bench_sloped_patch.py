@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Times descape.render.composite_rect_sloped against composite_rect_iso at
+"""Times descape.render_sloped.composite_rect_sloped against composite_rect_iso at
 edit-sized rects and at a cold full chunk -- Track C4's "Gate 2" measurement,
 the per-tile sloped composite cost this project flags as
 "unestimated -- a Phase 6 deliverable to measure, not assume". Informational
@@ -61,14 +61,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import composite_backend, iso_geometry, render
-from descape.render import (
-    composite_ids_rect_sloped,
-    elevations_and_proj,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape import composite_backend, iso_geometry, render_paint
 from descape.render_cache import DEFAULT_CHUNK_PX, IsoChunkCache, SlopedChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import composite_ids_rect_sloped, sloped_elevations_and_proj
 from descape.scenario_io import load_map_and_units
 from descape.view_layers import DEFAULT_LAYERS
 
@@ -119,13 +116,13 @@ def _warm_cache(cache):
 
 def _keyed(cache, rect: tuple[int, int, int, int]) -> int:
     """How many of the rect's candidate tiles carry a blend key (0 with blending off)."""
-    if not render.blend_effective(cache.layers):
+    if not render_paint.blend_effective(cache.layers):
         return 0
     mm = cache.scenario.map_manager
     tiles = iso_geometry.tiles_in_screen_rect(*rect, mm.map_width, mm.map_height, cache.proj)
     if not tiles.shape[0]:
         return 0
-    keys = render._blend_keys(cache.scenario, tiles[:, 0], tiles[:, 1], cache._terrain_ids, cache._layer_ids)
+    keys = render_paint._blend_keys(cache.scenario, tiles[:, 0], tiles[:, 1], cache._terrain_ids, cache._layer_ids)
     return sum(k is not None for k in keys)
 
 
@@ -225,7 +222,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     blend = args.blend == "on"
-    if blend and not render.blend_effective():
+    if blend and not render_paint.blend_effective():
         raise SystemExit("--blend on: no blendomatic readable (no AoE2:DE install configured). Pass --blend off.")
 
     if args.file:

@@ -21,6 +21,10 @@ module derives that triple from the scenario's own player fields. Qt-free.
   tokens through `player_fields.ROR_CIVILIZATIONS` (its PERSIAN-CIV is RoR 9,
   not AoE2's Persians). Its ages are stored 2..6 like AoE2's; its table has
   no `max_age`, so Post-Iron draws as Iron.
+- A player's unit and building portraits follow `art_civ` too (GH #372,
+  `portrait_civ()`): in play AoE2 shows the architecture civ's portrait,
+  though its own editor mostly shows the civilization's. Return of Rome
+  measured mixed and follows the same rule (user decision).
 
 Civilization values are ints below scenario version 1.56 (CivilizationOld,
 equal to the .dat civ index) and str16 tokens such as 'HUN-CIV' from 1.56 on
@@ -36,7 +40,7 @@ from collections.abc import Mapping
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld
 
-from descape import data_mod_side
+from descape import data_mod_side, games
 
 Art = tuple[int | None, int, int | None]
 """(art_civ, age, tech_civ), one player's building art."""
@@ -64,20 +68,31 @@ PLAYER_COUNT = 9
 """player_id 0 (GAIA) .. 8, the length of every per-player render tuple."""
 
 
-def civ_index(value: object, ror: bool = False) -> int | None:
+_MAX_CIV_INDEX_BY_GAME = games.PerGame(
+    "civ_art: the game .dat's last civ index",
+    {"aoe2": MAX_CIV_INDEX, "ror": ROR_MAX_CIV_INDEX},
+)
+
+
+def civ_index(value: object, game: games.Game | None = None) -> int | None:
     """The .dat civ index a raw civilization/architecture value names, or None
     when it names no concrete civ (GAIA, a random choice, an unknown token).
-    `ror`: the value comes from a Return of Rome file (GH #67). Otherwise a data
+    `game`: the file's own game (default the default game's), whose own civ
+    rows decide where it has them (Return of Rome, GH #67). Otherwise a data
     mod's civilizations.json decides, when one is in effect (GH #263)."""
     if isinstance(value, bool):
         return None
-    if ror:
-        return _ror_civ_index(value)
+    game = game or games.default()
+    from descape import player_fields
+
+    own = player_fields.civilizations(game)
+    if own is not None:
+        return _own_civ_index(value, own, _MAX_CIV_INDEX_BY_GAME.for_game(game))
     if data_mod_side.civilizations() is not None:
         civ = data_mod_side.find_civ(value)
         return civ.index if civ is not None and civ.index >= 1 else None
     if isinstance(value, int):
-        return value if 1 <= value <= MAX_CIV_INDEX else None
+        return value if 1 <= value <= _MAX_CIV_INDEX_BY_GAME.for_game(game) else None
     if not isinstance(value, str):
         return None
     try:
@@ -90,15 +105,13 @@ def civ_index(value: object, ror: bool = False) -> int | None:
         index = CivilizationOld[name].value
     except KeyError:
         return None
-    return index if 1 <= index <= MAX_CIV_INDEX else None
+    return index if 1 <= index <= _MAX_CIV_INDEX_BY_GAME.for_game(game) else None
 
 
-def _ror_civ_index(value: object) -> int | None:
+def _own_civ_index(value: object, rows: tuple[tuple[int, str, str], ...], last: int) -> int | None:
     if isinstance(value, int):
-        return value if 1 <= value <= ROR_MAX_CIV_INDEX else None
-    from descape import player_fields
-
-    return next((civ_id for civ_id, token, _name in player_fields.ROR_CIVILIZATIONS if token == value), None)
+        return value if 1 <= value <= last else None
+    return next((civ_id for civ_id, token, _name in rows if token == value), None)
 
 
 def art_age(value: object) -> int:
@@ -110,11 +123,11 @@ def art_age(value: object) -> int:
 
 
 def resolve(
-    civilization: object, architecture: object, starting_age: object, ror: bool = False,
+    civilization: object, architecture: object, starting_age: object, game: games.Game | None = None,
 ) -> Art:
-    """One player's (art_civ, age, tech_civ) from its three raw values; `ror` as civ_index()."""
-    tech_civ = civ_index(civilization, ror)
-    art_civ = civ_index(architecture, ror)
+    """One player's (art_civ, age, tech_civ) from its three raw values; `game` as civ_index()."""
+    tech_civ = civ_index(civilization, game)
+    art_civ = civ_index(architecture, game)
     if art_civ is None:
         art_civ = tech_civ
     return art_civ, art_age(starting_age), tech_civ
@@ -131,9 +144,9 @@ def player_art(
     pending Players-mode edits). A field the file does not carry reads as
     missing, which falls through like a random value. Civs are indexed in
     the file's own game (GH #67), whatever dataset is active."""
-    from descape import game_dataset, player_fields
+    from descape import player_fields
 
-    ror = game_dataset.from_variant(getattr(loaded, "game_variant", None)) == game_dataset.ROR
+    game = games.for_scenario(loaded)
 
     specs = {s.field_id: s for s in player_fields.specs_for(loaded) if s.field_id in _FIELDS}
     pending = pending or {}
@@ -148,5 +161,20 @@ def player_art(
                 values.append(player_fields.current_value(loaded, specs[field_id], player_id))
             else:
                 values.append(None)
-        result.append(resolve(*values, ror=ror))
+        result.append(resolve(*values, game=game))
     return tuple(result)
+
+
+def portrait_civ(art: Art | None) -> int | None:
+    """The civ whose portraits a player shows (GH #372): `art_civ`, the
+    architecture else the civilization; None for GAIA and for no art."""
+    return None if art is None else art[0]
+
+
+def player_portrait_civ(scenario, player_id: int) -> int | None:
+    """portrait_civ() of player_id's art on scenario, through
+    render_units.player_art_for(): None for a file shown with the other game's data
+    or a scenario with no player_art (or None)."""
+    from descape import render_units
+
+    return portrait_civ(render_units.player_art_for(scenario, player_id))

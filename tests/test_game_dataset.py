@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from AoE2ScenarioParser.datasets.scenario_variant import ScenarioVariant
 
-from descape import game_dataset
+from descape import game_dataset, games
 from tools import regen_game_data as regen
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +34,7 @@ def test_from_variant(variant, expected):
 def test_aoe2_is_the_default_and_set_active_reports_a_change():
     assert game_dataset.active() == game_dataset.AOE2
     assert game_dataset.set_active(game_dataset.ROR) is True
-    assert game_dataset.is_ror()
+    assert game_dataset.active() == game_dataset.ROR
     assert game_dataset.set_active(game_dataset.ROR) is False
     with pytest.raises(ValueError, match="unknown game dataset"):
         game_dataset.set_active("aoe3")
@@ -46,7 +46,7 @@ def test_table_path_picks_the_ror_copy_but_not_a_shared_table():
     assert game_dataset.table_path(catalog) == catalog
     assert game_dataset.table_path("object_catalog.json") == catalog
     game_dataset.set_active(game_dataset.ROR)
-    assert game_dataset.table_path(catalog) == game_dataset.ROR_TABLES_DIR / "object_catalog.json"
+    assert game_dataset.table_path(catalog) == games.ROR.tables_dir / "object_catalog.json"
     for shared in game_dataset.SHARED_TABLES:
         assert game_dataset.table_path(shared) == game_dataset.TABLES_DIR / shared
 
@@ -65,7 +65,7 @@ def test_resource_path_prefers_the_ror_root_and_falls_back_to_the_install(tmp_pa
     (tmp_path / "resources/_common/x").mkdir(parents=True)
     (tmp_path / "resources/_common/x/both.txt").write_text("base")
     (tmp_path / "resources/_common/x/base.txt").write_text("base")
-    ror = tmp_path / game_dataset.ROR_SUBPATH / "resources/_common/x"
+    ror = tmp_path / games.ROR.root_subpath / "resources/_common/x"
     ror.mkdir(parents=True)
     (ror / "both.txt").write_text("ror")
 
@@ -106,15 +106,61 @@ def test_cache_keeps_one_result_per_dataset_and_clears_both():
     assert len(calls) == 3
 
 
-def test_a_switch_runs_the_hooks_and_clears_the_install_caches(monkeypatch):
+def test_a_switch_names_its_layers_to_the_clear_then_runs_the_hooks_on_the_new_stack(monkeypatch):
     from descape import asset_source
 
-    ran, cleared = [], []
-    monkeypatch.setattr(game_dataset, "_switch_hooks", [lambda: ran.append(game_dataset.active())])
-    monkeypatch.setattr(asset_source, "clear_install_caches", lambda: cleared.append(True))
+    events = []
+
+    def seen() -> tuple:
+        stack = game_dataset.stack()
+        return stack.game.id, stack.wanted_mod, game_dataset.cache_key()
+
+    monkeypatch.setattr(game_dataset, "_switch_hooks", [lambda: events.append(("hook", *seen()))])
+    monkeypatch.setattr(asset_source, "clear_install_caches", lambda changed=None: events.append(("clear", changed, *seen())))
+    mod = game_dataset.DataModTables("test-layers", game_dataset.TABLES_DIR, game_dataset.TABLES_DIR, "a mod")
     game_dataset.set_active(game_dataset.ROR)
     game_dataset.set_active(game_dataset.ROR)
-    assert ran == [game_dataset.ROR] and cleared == [True]
+    assert not game_dataset.set_data_mod(mod), "inert under RoR"
+    game_dataset.set_active(game_dataset.AOE2)
+    game_dataset.set_data_mod(None)
+    ror, modded, plain = (
+        (game_dataset.ROR, None, game_dataset.ROR),
+        (game_dataset.AOE2, mod, (game_dataset.AOE2, mod)),
+        (game_dataset.AOE2, None, game_dataset.AOE2),
+    )
+    assert events == [
+        ("clear", game_dataset.GAME_SWITCH, *ror), ("hook", *ror),
+        ("clear", game_dataset.GAME_SWITCH, *modded), ("hook", *modded),
+        ("clear", game_dataset.DATA_MOD_SWITCH, *plain), ("hook", *plain),
+    ], "the new stack is in place before the clear, and the hooks run after it"
+
+
+def test_strings_merge_bottom_up_along_the_chain_then_the_data_mod(tmp_path, monkeypatch):
+    """Return of Rome takes no data mod, so a fake game with a fallback that does shows all three layers."""
+    from descape import asset_source, games
+    from testkit import data_mod_fixture, fake_game
+
+    def write(folder: Path, name: str, rows: dict[int, str]) -> None:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("".join(f'{key} "{text}"\n' for key, text in rows.items()), encoding="utf-8")
+
+    install = tmp_path / "install"
+    key_value = "resources/en/strings/key-value"
+    write(install / key_value, "key-value-strings-utf8.txt", {1: "base", 2: "base", 3: "base", 4: "base"})
+    write(install / "modes/Fake" / key_value, "key-value-strings-utf8.txt", {2: "own", 3: "own", 4: "own"})
+    mod = data_mod_fixture.mod_tables(tmp_path)
+    write(mod.root / key_value, "key-value-strings-utf8.txt", {3: "mod", 4: "mod"})
+    write(mod.root / key_value, "key-value-modded-strings-utf8.txt", {4: "modded"})
+    monkeypatch.setenv("AOE2DE_INSTALL_PATH", str(install))
+    asset_source.clear_install_caches()
+    with fake_game.registered(fake_game.fake(games.ROR.tables_dir)):
+        game_dataset.set_active(fake_game.FAKE_ID)
+        game_dataset.set_data_mod(mod)
+        assert [asset_source.resource_string(key, "en") for key in (1, 2, 3, 4)] == ["base", "own", "mod", "modded"]
+        assert game_dataset.stack().strings_paths(install, "en")[:2] == [
+            install / key_value / "key-value-strings-utf8.txt",
+            install / "modes/Fake" / key_value / "key-value-strings-utf8.txt",
+        ]
 
 
 def test_activated_switches_for_the_block_and_back_even_on_a_raise(monkeypatch):

@@ -66,7 +66,7 @@ from descape import (
     garrison,
     object_catalog,
     place_rotation,
-    render,
+    render_units,
     scenario_io,
     unit_kind,
     unit_rotation,
@@ -1169,7 +1169,7 @@ class Editor:
         )
         x, y = unit.x, unit.y
         if host is not None:
-            bounds = render.unit_tile_bounds(host, self.width, self.height)
+            bounds = render_units.unit_tile_bounds(host, self.width, self.height)
             tile = None if bounds is None else garrison.unload_tile(bounds, self.width, self.height)
             if tile is None:
                 raise ScriptError(f"no tile beside {_name(host.unit_const)} is on the map")

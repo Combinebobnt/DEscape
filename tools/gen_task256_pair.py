@@ -40,11 +40,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import gate_orientation, region_clipboard, region_transform, render, terrain_classes, unit_rotation
+from descape import gate_orientation, region_clipboard, region_transform, render_units, terrain_classes, unit_rotation
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
 from descape.mirror_tools import walls_are_radian
-from descape.render import unit_occupied_tiles
+from descape.render_units import unit_occupied_tiles
 from descape.scatter_dialog import units_region
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units
 from descape.scenario_write import WriteBlockedError, write_scenario
@@ -106,9 +106,9 @@ def _group_a(ax: int, ay: int) -> list[tuple[int, float, float, float]]:
     the flip rewrite the gate const and the wall index."""
     units = [(KNIGHT, ax + 2.5, ay + 2.5, _facing(KNIGHT, 3))]
     units += [(WALL, ax + d + 0.5, ay + d - 5 + 0.5, DIAGONAL_WALL) for d in (6, 7, 8)]
-    units.append((DIAGONAL_GATE, *render.span_anchor(ax + 9, ay + 4, 4, 4), 0.0))
+    units.append((DIAGONAL_GATE, *render_units.span_anchor(ax + 9, ay + 4, 4, 4), 0.0))
     units += [(WALL, ax + d + 0.5, ay + d - 5 + 0.5, DIAGONAL_WALL) for d in (13, 14, 15)]
-    units.append((HOUSE, *render.span_anchor(ax + 3, ay + 11, 2, 2), 0.0))
+    units.append((HOUSE, *render_units.span_anchor(ax + 3, ay + 11, 2, 2), 0.0))
     return units
 
 
@@ -117,7 +117,7 @@ def _region_b(rx: int, ry: int) -> list[tuple[int, float, float, float]]:
         (VILLAGER, rx + 1.5, ry + 5.5, _facing(VILLAGER, 2)),
         (OAK, rx + 6.5, ry + 1.5, 5.0),
         (OAK, rx + 6.5, ry + 2.5, 11.0),
-        (HOUSE, *render.span_anchor(rx + 4, ry + 5, 2, 2), 0.0),
+        (HOUSE, *render_units.span_anchor(rx + 4, ry + 5, 2, 2), 0.0),
     ]
 
 

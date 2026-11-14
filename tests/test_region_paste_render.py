@@ -21,7 +21,8 @@ from test_region_paste import _TERRAIN_A, _make_region
 from test_sprite_edit_bbox import CONST as SPRITE_CONST
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
-from descape import render, render_cache
+from descape import render_iso
+from testkit.render_family import set_render_cache_global
 
 import conftest
 
@@ -52,7 +53,7 @@ def _visible_mip(window) -> int:
 
 def _fresh(window) -> np.ndarray:
     canvas_w, canvas_h = window._cache.canvas_dims(0)
-    full = render.render_terrain_iso_with_proj(
+    full = render_iso.render_terrain_iso_with_proj(
         window.scenario, with_units=True, with_sprites=window._cache.sprites_enabled
     )[0]
     return full[:canvas_h, :canvas_w]
@@ -153,7 +154,7 @@ def test_a_units_and_elevation_paste_builds_the_level_once(elevation_splice, mon
     cap, so the paste skips the level splice (_elevation_bumps_anyway()),
     updates units_by_tile in place and the patch's gen bump costs one build."""
     if elevation_splice == "wholesale":
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 0)
     window = _seeded_window(MARK_CONST)
     try:
         cache = window._cache
@@ -195,9 +196,9 @@ def _block_window(block: str, monkeypatch):
     Elevation category unchecked."""
     window = _seeded_window(MARK_CONST, block=block)
     if block == "over_cap":
-        monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", 1)
-        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 1)
-        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 1)
+        set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", 1)
+        set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 1)
+        set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 1)
     if block == "no_elevation":
         window.paste_elevation_check.setChecked(False)
     return window
@@ -292,7 +293,7 @@ def test_the_undo_and_redo_of_a_units_and_elevation_paste_build_the_level_at_mos
     the op and the next full paint, where the tiles-first order paid two.
     `spliced`: none, and the gen does not move."""
     if elevation_splice == "wholesale":
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 0)
     window = _seeded_window(MARK_CONST)
     try:
         cache = window._cache
@@ -393,7 +394,7 @@ def test_the_paste_perf_line_says_whether_it_skipped_the_level_splice(elevation_
     op line reports as `splice_refused=skipped` plus `units_in_place`; under
     it the units splice and no refusal is reported."""
     if elevation_splice == "wholesale":
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 0)
     window = _seeded_window(MARK_CONST)
     try:
         from descape import debug_log, perf_trace
@@ -420,7 +421,7 @@ def test_the_elevation_predictor_is_its_own_phase_on_the_paste_undo_and_redo_lin
     import re
 
     if elevation_splice == "wholesale":
-        monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 0)
     window = _seeded_window(MARK_CONST)
     try:
         from descape import debug_log, perf_trace
@@ -458,14 +459,14 @@ def test_the_elevation_predictor_counts_the_seed_set_each_cache_starts_from(styl
         window._after_unit_mutation()
         window.scenario.map_manager.get_tile(31, 30).elevation += 1
         cap_name = "_SLOPED_ELEV_SPLICE_MAX_UNITS" if style == "Sloped" else "_ELEV_SPLICE_MAX_UNITS"
-        monkeypatch.setattr(render_cache, cap_name, 0)
+        set_render_cache_global(monkeypatch, cap_name, 0)
         assert window._elevation_bumps_anyway({(30, 30)})
         assert window._elevation_bumps_anyway({(31, 30)}) is (style == "Sloped")
         assert not window._elevation_bumps_anyway({(60, 60)})
         assert not window._elevation_bumps_anyway(set())
-        monkeypatch.setattr(render_cache, cap_name, 1)
+        set_render_cache_global(monkeypatch, cap_name, 1)
         assert not window._elevation_bumps_anyway({(30, 30), (31, 30)}), "one seed is not past a cap of 1"
-        monkeypatch.setattr(render_cache, cap_name, 0)
+        set_render_cache_global(monkeypatch, cap_name, 0)
         window.player_actions[1].setChecked(False)
         assert not window._elevation_bumps_anyway({(30, 30)}), "a hidden unit seeds nothing"
     finally:

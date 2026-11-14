@@ -22,8 +22,9 @@ import numpy as np
 import pytest
 from test_bbox_elev_sweep import EDIT, ONE_LEVEL_BASE, WINDOW_RADIUS, _make_cache, _window
 
-from descape import iso_geometry, settings, viewer
+from descape import iso_geometry, settings
 from descape.elevation_tools import set_tile_elevation
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -92,13 +93,13 @@ def test_viewer_one_level_edit_patches_to_a_fresh_render(monkeypatch, style, pct
 
         bboxes: list = []
         name = "dirty_screen_bbox_iso" if style == "stepped" else "dirty_screen_bbox_sloped"
-        real = getattr(viewer, name)
+        real = viewer_global(name)
 
         def recording(*args, **kwargs):
             bboxes.append(real(*args, **kwargs))
             return bboxes[-1]
 
-        monkeypatch.setattr(viewer, name, recording)
+        set_viewer_global(monkeypatch, name, recording)
 
         def mutate():
             for x, y in _edit_tiles(style, delta):
@@ -181,13 +182,13 @@ def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypa
 
         bboxes: list = []
         name = "dirty_screen_bbox_iso" if style == "stepped" else "dirty_screen_bbox_sloped"
-        real = getattr(viewer, name)
+        real = viewer_global(name)
 
         def recording(*args, **kwargs):
             bboxes.append(real(*args, **kwargs))
             return bboxes[-1]
 
-        monkeypatch.setattr(viewer, name, recording)
+        set_viewer_global(monkeypatch, name, recording)
 
         def mutate():
             for x, y in _edit_tiles(style, delta):

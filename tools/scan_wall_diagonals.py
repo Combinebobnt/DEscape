@@ -11,7 +11,7 @@ or the diagonal bit sense changes.
 The masks come from the SHIPPED unit_sprites.neighbour_mask() rather than a
 local copy, so the NE/SE/SW/NW sense measured here is by construction the
 one the write path uses. Connector tiles come from
-render.unit_occupied_tiles(), not (int(x), int(y)) -- a gate is multi-tile.
+render_units.unit_occupied_tiles(), not (int(x), int(y)) -- a gate is multi-tile.
 
 Reports, over the 20 loadable files (8193 wall placements as of
 2026-09-19):
@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from descape import unit_sprites
-from descape.render import stored_rotation, unit_occupied_tiles, unit_tile_bounds
+from descape.render_units import stored_rotation, unit_occupied_tiles, unit_tile_bounds
 from descape.scenario_io import load_map_and_units
 
 NE_SW = unit_sprites.NE | unit_sprites.SW

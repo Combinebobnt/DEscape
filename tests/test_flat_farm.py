@@ -20,11 +20,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from descape import asset_source, grid_overlay, render, unit_pick, unit_sprites
-from descape.render_cache import FlatChunkCache, UnitSplice
-from descape.terrain_palette import PLAYER_COLORS
+from descape import asset_source, grid_overlay, render_flat, render_paint, render_sprites, render_units, unit_pick, unit_sprites
+from descape.render_cache import FlatChunkCache
+from descape.render_cache_splice import UnitSplice
+from descape.terrain_palette import BUILDING_TILE_SPANS, FOUNDATION_TERRAIN, PLAYER_COLORS
 from descape.unit_filter import UnitFilter
 from descape.view_layers import LayerState
+from testkit.render_family import set_render_global
 
 from test_unit_sprites import FILE_NAME, build_sld
 
@@ -108,8 +110,8 @@ def _farm(ref: int = 1, xy=FARM_XY) -> Unit:
 def fake_farm(monkeypatch):
     """A const with no .sld and a foundation terrain, plus solid textures."""
     assert FAKE_FARM_CONST not in unit_sprites.graphic_map(), "picked const collides with a real one"
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
-    monkeypatch.setitem(render.FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
+    monkeypatch.setitem(FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
     textures = {
         tid: np.full((TEXTURE_SIZE, TEXTURE_SIZE, 3), color, dtype=np.uint8) for tid, color in TEXTURE_COLORS.items()
     }
@@ -117,7 +119,7 @@ def fake_farm(monkeypatch):
 
 
 def _tile_px() -> int:
-    return render.tile_pixels_for_map(MAP_W, MAP_H)
+    return render_paint.tile_pixels_for_map(MAP_W, MAP_H)
 
 
 def _cache(scn, **kwargs) -> FlatChunkCache:
@@ -140,22 +142,22 @@ def _stitched(cache, mip: int = 0) -> np.ndarray:
 
 
 def _oracle(scn, grid=grid_overlay.DEFAULT_GRID) -> np.ndarray:
-    farm_tiles, _ids = render.flat_farm_tiles(scn)
-    terrain = render.render_terrain(scn, grid=grid, farm_tiles=farm_tiles)
-    return render.overlay_units(terrain, scn, with_sprites=True, with_farms=True)
+    farm_tiles, _ids = render_sprites.flat_farm_tiles(scn)
+    terrain = render_flat.render_terrain(scn, grid=grid, farm_tiles=farm_tiles)
+    return render_flat.overlay_units(terrain, scn, with_sprites=True, with_farms=True)
 
 
 def _rect_render(scn) -> np.ndarray:
     """Today's Flat render: every unit its own coloured rect or icon, no drape."""
-    return render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    return render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=True)
 
 
 def _owner(unit, player_id: int = 1) -> np.ndarray:
-    return np.array(render._unit_color(unit, PLAYER_COLORS[player_id]), dtype=np.uint8)
+    return np.array(render_units._unit_color(unit, PLAYER_COLORS[player_id]), dtype=np.uint8)
 
 
 def _bounds(unit) -> tuple[int, int, int, int]:
-    return render.unit_tile_bounds(unit, MAP_W, MAP_H)
+    return render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
 
 
 # --- the drape's tiles ------------------------------------------------------------
@@ -163,7 +165,7 @@ def _bounds(unit) -> tuple[int, int, int, int]:
 
 def test_flat_farm_tiles_cover_the_footprint_with_a_closed_perimeter(fake_farm) -> None:
     farm = _farm()
-    by_tile, unit_ids = render.flat_farm_tiles(_scenario((1, farm)))
+    by_tile, unit_ids = render_sprites.flat_farm_tiles(_scenario((1, farm)))
     x0, x1, y0, y1 = _bounds(farm)
     footprint = {(x, y) for x in range(x0, x1) for y in range(y0, y1)}
     assert len(footprint) == 9 and set(by_tile) == footprint
@@ -177,9 +179,9 @@ def test_flat_farm_tiles_cover_the_footprint_with_a_closed_perimeter(fake_farm) 
     union = 0
     for _tid, _c, mask in by_tile.values():
         union |= mask
-    assert union == render.EDGE_LEFT | render.EDGE_RIGHT | render.EDGE_UP_LEFT | render.EDGE_UP_RIGHT
+    assert union == render_sprites.EDGE_LEFT | render_sprites.EDGE_RIGHT | render_sprites.EDGE_UP_LEFT | render_sprites.EDGE_UP_RIGHT
 
-    hidden, hidden_ids = render.flat_farm_tiles(_scenario((1, farm)), UnitFilter(players=frozenset({2})))
+    hidden, hidden_ids = render_sprites.flat_farm_tiles(_scenario((1, farm)), UnitFilter(players=frozenset({2})))
     assert hidden == {} and hidden_ids == set()
 
 
@@ -256,7 +258,7 @@ def test_sprites_off_or_the_layer_off_is_todays_rect_render(fake_farm) -> None:
     scn = _scenario((1, _farm()))
     off = _cache(scn, sprites=False)
     assert off._farm_tiles is None
-    assert np.array_equal(_stitched(off), render.overlay_units(render.render_terrain(scn), scn))
+    assert np.array_equal(_stitched(off), render_flat.overlay_units(render_flat.render_terrain(scn), scn))
     layer_off = _cache(scn, layers=LayerState(farm_overlay=False))
     assert layer_off._farm_tiles is None
     assert np.array_equal(_stitched(layer_off), _rect_render(scn))
@@ -290,7 +292,7 @@ def _own(unit) -> tuple[int, int]:
 
 
 def _occupied(unit) -> tuple[tuple[int, int], ...]:
-    return tuple(render.unit_occupied_tiles(unit, MAP_W, MAP_H) or ())
+    return tuple(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H) or ())
 
 
 def _renders(cache) -> list[np.ndarray]:
@@ -346,13 +348,13 @@ def test_a_spliced_edit_patches_to_a_fresh_cache(fake_farm, op, monkeypatch) -> 
     cache = _cache(scn)
     before = _renders(cache)
     builds = []
-    real = render.flat_farm_tiles
-    monkeypatch.setattr(render, "flat_farm_tiles", lambda *a, **k: (builds.append(1), real(*a, **k))[1])
+    real = render_sprites.flat_farm_tiles
+    set_render_global(monkeypatch, "flat_farm_tiles", lambda *a, **k: (builds.append(1), real(*a, **k))[1])
 
     splice = _edit(op, scn)
     assert cache.can_splice([splice]), "fixture is not testing the splice path"
     cache.invalidate_units([splice])
-    cache.patch_rects(render.flat_tile_rects(splice.changed_tiles, _tile_px()))
+    cache.patch_rects(render_paint.flat_tile_rects(splice.changed_tiles, _tile_px()))
 
     after = _renders(cache)
     assert not np.array_equal(after[0], before[0]), "the edit changed nothing on screen"
@@ -380,9 +382,9 @@ def fake_pasture(fake_farm, tmp_path, monkeypatch):
     entry = {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 4,
              "mirroring_mode": 6, "frame_count": 1, "pieces": [piece, below]}
     monkeypatch.setattr(unit_sprites, "graphic_map", lambda: {FAKE_PASTURE_CONST: entry})
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, FAKE_PASTURE_CONST, FAKE_PASTURE_SPAN)
-    monkeypatch.setitem(render.FOUNDATION_TERRAIN, FAKE_PASTURE_CONST, FAKE_FARM_TERRAIN)
-    monkeypatch.setattr(render, "DRAPED_SPRITE_CONSTS", frozenset({FAKE_PASTURE_CONST}))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_PASTURE_CONST, FAKE_PASTURE_SPAN)
+    monkeypatch.setitem(FOUNDATION_TERRAIN, FAKE_PASTURE_CONST, FAKE_FARM_TERRAIN)
+    monkeypatch.setitem(render_sprites._DRAPED_BY_GAME, "aoe2", frozenset({FAKE_PASTURE_CONST}))
     asset_source.set_install_path_override(tmp_path)
     unit_sprites.clear_caches()
     yield
@@ -396,7 +398,7 @@ def test_a_draping_const_with_art_paints_drape_and_icon(fake_pasture) -> None:
     cache = _cache(scn)
     assert len(cache._farm_tiles) == 16, "the pasture did not drape"
     icon = cache._level_icons(0)[0]
-    assert icon is not render.FLAT_DRAPED and icon.rgba.size, "the pasture lost its icon"
+    assert icon is not render_flat.FLAT_DRAPED and icon.rgba.size, "the pasture lost its icon"
     canvas = _stitched(cache)
     assert np.array_equal(canvas, _oracle(scn))
     x0, x1, y0, y1 = _bounds(pasture)
@@ -447,23 +449,23 @@ def test_every_farms_interior_tile_is_its_farm_terrain_on_a_real_file() -> None:
 
     scn = load_map_and_units(path)
     mm = scn.map_manager
-    tp = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tp = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     cache = FlatChunkCache(scn, tp, sprites=True)
     index = unit_pick.build_index(scn)
     checked = 0
     for units in scn.unit_manager.units:
         for unit in units:
-            terrain_id = render._terrain_overlay_for(unit.unit_const)
-            if terrain_id is None or unit.unit_const in render.DRAPED_SPRITE_CONSTS:
+            terrain_id = render_sprites._terrain_overlay_for(unit.unit_const)
+            if terrain_id is None or unit.unit_const in render_sprites.DRAPED_SPRITE_CONSTS:
                 continue
-            x0, x1, y0, y1 = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+            x0, x1, y0, y1 = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
             if (x1 - x0, y1 - y0) != (3, 3):
                 continue
             cx, cy = x0 + 1, y0 + 1
             if len(index.by_tile.get((cx, cy), ())) != 1 or cache._farm_tiles.get((cx, cy), (None,))[0] != terrain_id:
                 continue  # a unit on it, or an overlapping farm's drape
             got = cache._composite_rect(0, cx * tp, cy * tp, (cx + 1) * tp, (cy + 1) * tp)
-            want = render._top_block(mm.get_tile(cx, cy), tp, True, None, terrain_override=terrain_id)
+            want = render_paint._top_block(mm.get_tile(cx, cy), tp, True, None, terrain_override=terrain_id)
             assert np.array_equal(got, want), (unit.unit_const, cx, cy)
             checked += 1
     assert checked > 0, "no farm interior checked -- the file has no farms in reach"

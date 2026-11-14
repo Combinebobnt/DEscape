@@ -67,14 +67,13 @@ install's blendomatic and fails without it).
 
 --force-wholesale sends _after_unit_mutation's `changed` to None, i.e. the
 pre-splice path, for a same-build comparison row. --cap overrides
-render_cache.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover;
+render_cache_splice.UNIT_SPLICE_MAX_UNITS, for finding the splice/wholesale crossover;
 with sprites on, a row past it takes the visible-only splice unless
 --visible-cap 0 is also passed.
---visible-cap overrides render_cache.VISIBLE_SPLICE_MAX_UNITS, the bound on the
+--visible-cap overrides render_cache_splice.VISIBLE_SPLICE_MAX_UNITS, the bound on the
 visible-only splice of a batch past both 1000 caps (0: never, today's stale
 level; inf: always). A row that took it logs `splice_visible <splices>`.
---area-ratio overrides viewer._TIGHT_PATCH_AREA_RATIO and, on an older build
-that still has it, the retired _SCOPED_PATCH_AREA_RATIO, for every style (inf:
+--area-ratio overrides viewer._TIGHT_PATCH_AREA_RATIO for every style (inf:
 always patch the bbox eagerly, 0: always evict it), for finding the crossover.
 --rect-ratio overrides viewer._RECT_PATCH_AREA_RATIO, Stepped's second choice
 once a batch is past --area-ratio: patch one rect per visible-level chunk
@@ -150,6 +149,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import _tight_bbox
 
 from testkit import qt_window, settings_isolation
+from testkit.render_family import render_cache_global, render_cache_global_bound, set_render_cache_global
+from testkit.viewer_family import set_viewer_global, viewer_global, viewer_global_bound
 
 FILES = ["old-allies-final-v2.aoe2scenario", "2_Joan_coop_1_v0_13.aoe2scenario"]
 # flat is the app default (Flat + Isometric View, an IsoChunkCache); flat2d unchecks
@@ -215,7 +216,7 @@ _IN_PAINT = [False]
 def _fallback_kind(cache, changed, mip) -> str:
     """Why sprite_extent_before()/after() answered REACH_FALLBACK, mirroring
     _ChunkCacheBase._extent_fallback()'s checks in order."""
-    from descape.render_cache import _const_splice_eligible
+    from descape.render_cache_splice import _const_splice_eligible
 
     if any(not _const_splice_eligible(s.unit) for s in changed):
         return "wall"
@@ -299,10 +300,7 @@ class _Timers:
     def _install_unit_edit_probe(self, window) -> None:
         """Marks _patch_unit_edit_cache() (for unit_patch), whether the tight
         split ran, why not when it didn't, and the bbox(es) it was sized with."""
-        from descape import render_cache
-
-        # Absent on a build without the split; then no extent wrapper is installed either.
-        REACH_FALLBACK = getattr(render_cache, "REACH_FALLBACK", object())
+        REACH_FALLBACK = render_cache_global("REACH_FALLBACK")
         cache = window._cache
         inner_edit = window._patch_unit_edit_cache
         split = getattr(window, "_repaint_unit_edit_split", None)
@@ -960,9 +958,9 @@ def main() -> None:
     parser.add_argument("--resident", choices=("viewport", "canvas"), default="viewport")
     parser.add_argument("--tool", choices=("draw", "fill"), default="draw")
     parser.add_argument("--force-wholesale", action="store_true")
-    parser.add_argument("--cap", type=int, help="Override render_cache.UNIT_SPLICE_MAX_UNITS")
+    parser.add_argument("--cap", type=int, help="Override render_cache_splice.UNIT_SPLICE_MAX_UNITS")
     parser.add_argument(
-        "--visible-cap", help="Override render_cache.VISIBLE_SPLICE_MAX_UNITS (0: never, inf: always)",
+        "--visible-cap", help="Override render_cache_splice.VISIBLE_SPLICE_MAX_UNITS (0: never, inf: always)",
     )
     parser.add_argument("--area-ratio", type=float, help="Override viewer._TIGHT_PATCH_AREA_RATIO")
     parser.add_argument(
@@ -998,42 +996,36 @@ def main() -> None:
     )
     args = parser.parse_args()
     fill_sides = [int(s) for s in args.fill_side.split(",")] if args.fill_side else None
-    if fill_sides and args.trees == "on":
-        from descape import viewer
+    if fill_sides and args.trees == "on" and max(fill_sides) ** 2 > viewer_global("TERRAIN_UNIT_CONFIRM_THRESHOLD"):
+        raise SystemExit("--fill-side: a fill this large with --trees on opens the modal Large-fill box. Pass --trees off.")
+    if (args.flat_ratio, args.area_ratio, args.rect_ratio) != (None, None, None):
+        import pytest
 
-        if max(fill_sides) ** 2 > viewer.TERRAIN_UNIT_CONFIRM_THRESHOLD:
-            raise SystemExit("--fill-side: a fill this large with --trees on opens the modal Large-fill box. Pass --trees off.")
-    if args.flat_ratio is not None:
-        from descape import viewer
-
+        # Held for the whole run, never undone.
+        knobs = pytest.MonkeyPatch()
         # Absent on a build that patches one rect a tile and never evicts.
-        if hasattr(viewer, "_FLAT_EVICT_RATIO"):
-            viewer._FLAT_EVICT_RATIO = args.flat_ratio
-    if args.area_ratio is not None:
-        from descape import viewer
-
-        for name in ("_TIGHT_PATCH_AREA_RATIO", "_SCOPED_PATCH_AREA_RATIO"):
-            if hasattr(viewer, name):
-                setattr(viewer, name, dict.fromkeys(getattr(viewer, name), args.area_ratio))
-    if args.rect_ratio is not None:
-        from descape import viewer
-
+        if args.flat_ratio is not None and viewer_global_bound("_FLAT_EVICT_RATIO"):
+            set_viewer_global(knobs, "_FLAT_EVICT_RATIO", args.flat_ratio)
+        if args.area_ratio is not None and viewer_global_bound("_TIGHT_PATCH_AREA_RATIO"):
+            ratios = dict.fromkeys(viewer_global("_TIGHT_PATCH_AREA_RATIO"), args.area_ratio)
+            set_viewer_global(knobs, "_TIGHT_PATCH_AREA_RATIO", ratios)
         # Absent on a build without the rects, where every over-ratio batch evicts.
-        if hasattr(viewer, "_RECT_PATCH_AREA_RATIO"):
-            viewer._RECT_PATCH_AREA_RATIO = args.rect_ratio
+        if args.rect_ratio is not None and viewer_global_bound("_RECT_PATCH_AREA_RATIO"):
+            set_viewer_global(knobs, "_RECT_PATCH_AREA_RATIO", args.rect_ratio)
+    if args.cap is not None or args.visible_cap is not None:
+        import pytest
+
+        # Held for the whole run, never undone.
+        caps = pytest.MonkeyPatch()
     if args.cap is not None:
-        from descape import render_cache
-
-        render_cache.UNIT_SPLICE_MAX_UNITS = args.cap
+        set_render_cache_global(caps, "UNIT_SPLICE_MAX_UNITS", args.cap)
     if args.visible_cap is not None:
-        from descape import render_cache
-
         # Absent on a build without the visible-only splice.
-        if not hasattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS"):
+        if not render_cache_global_bound("VISIBLE_SPLICE_MAX_UNITS"):
             raise SystemExit("--visible-cap: this build has no VISIBLE_SPLICE_MAX_UNITS.")
-        render_cache.VISIBLE_SPLICE_MAX_UNITS = 10**9 if args.visible_cap == "inf" else int(args.visible_cap)
+        set_render_cache_global(caps, "VISIBLE_SPLICE_MAX_UNITS", 10**9 if args.visible_cap == "inf" else int(args.visible_cap))
 
-    from descape import composite_backend, render, settings
+    from descape import composite_backend, render_paint, settings
 
     names = [n.strip() for n in args.files.split(",")] if args.files else FILES
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
@@ -1049,7 +1041,7 @@ def main() -> None:
         settings_isolation.isolate_settings(Path(tmp))
         # Before any window: ViewerWindow reads its layers from settings at construction.
         settings.set_view_layer("terrain_blend", args.blend == "on")
-        effective = render.blend_effective(settings.get_view_layers())
+        effective = render_paint.blend_effective(settings.get_view_layers())
         if args.blend == "on" and not effective:
             raise SystemExit("--blend on: no blendomatic readable (no AoE2:DE install configured). Pass --blend off.")
         print(f"terrain blending {args.blend}", flush=True)

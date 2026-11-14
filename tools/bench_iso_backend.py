@@ -3,7 +3,7 @@
 terrain rendering" plan.
 
 Times four things on the same tile data, for each dataset:
-  1. the existing flat renderer (descape.render.render_terrain) -- today's
+  1. the existing flat renderer (descape.render_flat.render_terrain) -- today's
      shipped baseline, unchanged.
   2. the Phase 0 numpy prototype iso-blit kernel
      (native/iso_render/iso_bench_numpy.py) -- same crop+shade cost as (1),
@@ -45,7 +45,8 @@ sys.path.insert(0, str(ROOT / "native" / "iso_render"))
 import numpy as np
 
 from descape import asset_source
-from descape.render import render_terrain, tile_pixels_for_map
+from descape.render_flat import render_terrain
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 from iso_bench_numpy import iso_canvas_size_and_origin, render_terrain_iso_numpy, render_tile_iso

@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import pytest
 
-from descape import render_cache
+from descape import render_cache_base
 from descape.grid_overlay import grid_bake
-from descape.render import elevations_and_proj, sloped_elevations_and_proj, tile_pixels_for_map
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.unit_filter import UnitFilter
 from descape.view_layers import LayerState
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -23,7 +26,7 @@ import conftest
 def reads(monkeypatch) -> list:
     calls: list = []
     monkeypatch.setattr(
-        render_cache._ChunkCacheBase, "_refresh_terrain_ids", lambda self, bbox: calls.append((type(self).__name__, bbox))
+        render_cache_base._ChunkCacheBase, "_refresh_terrain_ids", lambda self, bbox: calls.append((type(self).__name__, bbox))
     )
     return calls
 
@@ -67,8 +70,6 @@ def test_a_non_terrain_whole_canvas_invalidate_skips_the_mirror_reread(reads, st
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 def test_the_viewer_unit_and_recolour_invalidates_skip_the_mirror_reread(reads, monkeypatch) -> None:
-    from descape import viewer
-
     window = conftest.blank_window()
     try:
         assert window._cache is not None
@@ -77,7 +78,7 @@ def test_the_viewer_unit_and_recolour_invalidates_skip_the_mirror_reread(reads, 
         assert reads == [], "_after_unit_mutation's wholesale invalidate re-read the mirror"
 
         window._ensure_option_edits()
-        monkeypatch.setattr(viewer, "refresh_player_render_context", lambda *_args: True)
+        set_viewer_global(monkeypatch, "refresh_player_render_context", lambda *_args: True)
         epoch = window._cache._mutation_epoch
         window._apply_player_color_change()
         assert window._cache._mutation_epoch > epoch, "the recolour evicted nothing -- vacuous"

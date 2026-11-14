@@ -59,7 +59,7 @@ _STYLES = {"stepped": "Stepped", "sloped": "Sloped"}
 
 
 def _footprints():
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     out = {}
     for unit in (CASTLE, ARCHER):

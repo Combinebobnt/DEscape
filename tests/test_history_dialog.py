@@ -420,9 +420,9 @@ _UNIT_OPERATIONS = ["nudge", "rotate", "variant"]
 
 def _unit_operation(name: str):
     """(reference_id, operate) for one fixture unit edit; imported late, as
-    test_unit_edit_viewer needs PyQt5 at import time."""
+    unit_edit_viewer_helpers needs PyQt5 at import time."""
     from PyQt5.QtCore import Qt
-    from test_unit_edit_viewer import _REF_ARCHER_P1, _REF_TREE_OAK
+    from unit_edit_viewer_helpers import _REF_ARCHER_P1, _REF_TREE_OAK
 
     return {
         "nudge": (_REF_ARCHER_P1, lambda w: w.on_unit_nudge(1, 0, Qt.NoModifier)),
@@ -433,8 +433,8 @@ def _unit_operation(name: str):
 
 @pytest.mark.parametrize("name", _UNIT_OPERATIONS)
 def test_a_jump_over_unit_edits_leaves_the_inspector_on_the_model(name: str) -> None:
-    from test_unit_edit_viewer import _close, _select
-    from test_unit_edit_viewer import _window as _units_window
+    from unit_edit_viewer_helpers import _close, _select
+    from unit_edit_viewer_helpers import _window as _units_window
 
     reference_id, operate = _unit_operation(name)
     window = _units_window()
@@ -469,8 +469,8 @@ def test_a_jump_that_deletes_the_selected_unit_empties_the_inspector() -> None:
     """Delete, jump back so the unit returns, select it, then jump forward
     past its delete: the inspector must not keep showing a unit that is gone."""
     from PyQt5.QtCore import Qt
-    from test_unit_edit_viewer import _REF_ARCHER_P1, _REF_VILLAGER_P2, _close, _select
-    from test_unit_edit_viewer import _window as _units_window
+    from unit_edit_viewer_helpers import _REF_ARCHER_P1, _REF_VILLAGER_P2, _close, _select
+    from unit_edit_viewer_helpers import _window as _units_window
 
     window = _units_window()
     try:
@@ -587,7 +587,7 @@ def _paint_in_terrain_mode(window) -> None:
 
 def _unit_edits(window) -> None:
     from PyQt5.QtCore import Qt
-    from test_unit_edit_viewer import _REF_ARCHER_P1, _REF_VILLAGER_P2, _select
+    from unit_edit_viewer_helpers import _REF_ARCHER_P1, _REF_VILLAGER_P2, _select
 
     window.iso_action.setChecked(False)
     window.terrain_style_combo.setCurrentText("Flat")
@@ -607,7 +607,7 @@ def _trigger_edits(window) -> None:
 
 def _fixture(name: str):
     from test_trigger_undo_viewer import TRIGGER_FIXTURE
-    from test_unit_edit_viewer import FIXTURE_PATH
+    from unit_edit_viewer_helpers import FIXTURE_PATH
 
     return {"units": (FIXTURE_PATH, _unit_edits), "triggers": (TRIGGER_FIXTURE, _trigger_edits)}[name]
 
@@ -686,8 +686,9 @@ def _tile_states(window):
 
 
 def _fresh_render(window, canvas_w: int, canvas_h: int):
-    from descape.render import render_terrain_iso_with_proj, render_terrain_sloped_with_proj
     from descape.render_cache import SlopedChunkCache
+    from descape.render_iso import render_terrain_iso_with_proj
+    from descape.render_sloped import render_terrain_sloped_with_proj
 
     sprites = window._cache.sprites_enabled  # priv: the live cache's own sprite flag
     if isinstance(window._cache, SlopedChunkCache):
@@ -764,7 +765,7 @@ def test_jumps_over_terrain_spans_repaint_like_a_fresh_render(style: str) -> Non
     from test_region_move import _drag_region
 
     from descape.render_cache import IsoChunkCache, SlopedChunkCache
-    from descape.viewer import STEPPED_FULL_RERENDER_THRESHOLD
+    from descape.viewer_render import STEPPED_FULL_RERENDER_THRESHOLD
 
     window = _terrain_span_window(style)
     try:

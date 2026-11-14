@@ -226,9 +226,9 @@ def _x_run(x0: int, x1: int, y: int) -> list[FakeUnit]:
 
 def _stone_gate_tiles(tx: int, ty: int) -> list[tuple[int, int]]:
     """Stone Gate 64's footprint for a click on (tx, ty): 4 along x, tx-1..tx+2."""
-    from descape import render
+    from descape import render_units
 
-    tiles = render.occupied_tiles_for(GATE, tx + 0.5, ty + 0.5, 60, 60)
+    tiles = render_units.occupied_tiles_for(GATE, tx + 0.5, ty + 0.5, 60, 60)
     assert tiles == [(tx + dx, ty) for dx in range(-1, 3)]
     return tiles
 
@@ -296,10 +296,10 @@ def test_touched_players_carries_a_gate_plans_rewritten_owner():
 
 
 def test_a_diagonal_gate_keeps_the_walls_on_its_bounding_box_corners():
-    from descape import render
+    from descape import render_units
 
-    x0, x1, y0, y1 = render.unit_tile_bounds(FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE), 60, 60)
-    footprint = render.occupied_tiles_for(_DIAGONAL_GATE, 40.0, 40.0, 60, 60)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE), 60, 60)
+    footprint = render_units.occupied_tiles_for(_DIAGONAL_GATE, 40.0, 40.0, 60, 60)
     box = [_wall_at(x, y) for y in range(y0, y1) for x in range(x0, x1)]
     plan = _gate_plan(footprint, box)
     removed = {(int(u.x), int(u.y)) for _p, u in plan.removals}
@@ -310,7 +310,7 @@ def test_a_diagonal_gate_keeps_the_walls_on_its_bounding_box_corners():
 
 def test_apply_gate_plan_removes_adds_and_leaves_the_gate_last():
     from descape.edit_history import EditHistory
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     loaded, model = _open()
     mm = loaded.map_manager
@@ -599,7 +599,7 @@ def test_apply_wall_plan_adds_and_rewrites_in_one_pass():
     """The write half end to end, through the real model: new pieces via
     add_many(), the junction via set_wall_variant()."""
     from descape.edit_history import EditHistory
-    from descape.render import unit_tile_bounds
+    from descape.render_units import unit_tile_bounds
 
     loaded, model = _open()
     mm = loaded.map_manager
@@ -673,14 +673,14 @@ class _Scenario:
 
 def test_a_committed_run_agrees_with_the_render_sides_own_derivation():
     """Every wall this tool writes must read back through
-    render.wall_variant_rotation_overrides() as the value it already stores.
+    render_units.wall_variant_rotation_overrides() as the value it already stores.
 
     A lone radian-encoded wall is planted far away on purpose: without it
-    the file classifies as integer-only, render.py derives only lone walls
+    the file classifies as integer-only, render_units.py derives only lone walls
     and run ends, and the assertion would pass for the run's interior no
     matter what the write side did.
     """
-    from descape import render
+    from descape import render_units
 
     run = [(x, 10) for x in range(5, 15)] + [(14, y) for y in range(11, 18)]
     plan = _plan(run)
@@ -691,7 +691,7 @@ def test_a_committed_run_agrees_with_the_render_sides_own_derivation():
     radian_probe = _wall_at(40, 40, rotation=2 * 3.141592653589793 / 5)
     scenario = _Scenario(60, [[], [*placed, radian_probe], [], [], [], [], [], [], []])
 
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     assert overrides, "the radian probe should have forced the override path to run"
     for (player_id, index), derived in overrides.items():
         unit = scenario.unit_manager.units[player_id][index]
@@ -703,7 +703,7 @@ def test_a_committed_run_agrees_with_the_render_sides_own_derivation():
 def test_a_gapped_run_agrees_with_the_render_sides_own_derivation():
     """GH #124's cross-path check: render only reads connectors, so a gap at
     a blocked tile must read as a gap on both sides."""
-    from descape import render
+    from descape import render_units
 
     run = [(x, 10) for x in range(5, 15)] + [(14, y) for y in range(11, 18)]
     blocked = {(8, 10), (11, 10), (14, 13)}
@@ -716,7 +716,7 @@ def test_a_gapped_run_agrees_with_the_render_sides_own_derivation():
     radian_probe = _wall_at(40, 40, rotation=2 * 3.141592653589793 / 5)
     scenario = _Scenario(60, [[], [*placed, radian_probe], [], [], [], [], [], [], []])
 
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     assert overrides
     for (player_id, index), derived in overrides.items():
         unit = scenario.unit_manager.units[player_id][index]
@@ -737,7 +737,7 @@ _DIAGONAL_GATE = 659
 
 
 def test_blocked_tiles_covers_every_footprint_except_passable_eye_candy_and_connectors():
-    from descape import render, unit_kind
+    from descape import render_units, unit_kind
 
     assert _PASSABLE_EYE_CANDY in unit_kind.passable_eye_candy_consts()
     assert _OBSTACLE in unit_kind.obstacle_consts()
@@ -754,12 +754,12 @@ def test_blocked_tiles_covers_every_footprint_except_passable_eye_candy_and_conn
     player = [house, _wall_at(30, 30), _wall_at(34, 30, const=GATE), diagonal_gate]
     scenario = _Scenario(60, [gaia, player, [], [], [], [], [], [], []])
 
-    house_tiles = set(render.unit_occupied_tiles(house, 60, 60))
+    house_tiles = set(render_units.unit_occupied_tiles(house, 60, 60))
     assert len(house_tiles) == 4
     blocked = wall_run.blocked_tiles(scenario, 60, 60)
     assert blocked == {(10, 10), (12, 10), (14, 10), (18, 10)} | house_tiles
     # The diagonal gate's bounding rect has empty corners; none of it blocks.
-    x0, x1, y0, y1 = render.unit_tile_bounds(diagonal_gate, 60, 60)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(diagonal_gate, 60, 60)
     assert not blocked & {(x, y) for x in range(x0, x1) for y in range(y0, y1)}
 
 
@@ -767,7 +767,7 @@ def test_a_diagonal_footprint_blocks_its_tiles_but_not_its_empty_corners(monkeyp
     """The test above only proves connectors are skipped, and every real
     sparse-footprint const is one. With 659 treated as a plain object, its
     six offsets block, (0,0) and (3,3) included, and the empty corners don't."""
-    from descape import render
+    from descape import render_units
 
     connectors = unit_sprites.wall_connector_consts()
     assert _DIAGONAL_GATE in connectors
@@ -775,9 +775,9 @@ def test_a_diagonal_footprint_blocks_its_tiles_but_not_its_empty_corners(monkeyp
     gate = FakeUnit(x=40.0, y=40.0, unit_const=_DIAGONAL_GATE)
     scenario = _Scenario(60, [[], [gate], [], [], [], [], [], [], []])
 
-    x0, _x1, y0, _y1 = render.unit_tile_bounds(gate, 60, 60)
+    x0, _x1, y0, _y1 = render_units.unit_tile_bounds(gate, 60, 60)
     offsets = {(1, 1), (1, 2), (2, 1), (2, 2), (0, 0), (3, 3)}
-    assert set(render.unit_occupied_tiles(gate, 60, 60)) == {(x0 + dx, y0 + dy) for dx, dy in offsets}
+    assert set(render_units.unit_occupied_tiles(gate, 60, 60)) == {(x0 + dx, y0 + dy) for dx, dy in offsets}
     blocked = wall_run.blocked_tiles(scenario, 60, 60)
     assert blocked == {(x0 + dx, y0 + dy) for dx, dy in offsets}
     assert not blocked & {(x0 + 3, y0), (x0, y0 + 3)}
@@ -835,14 +835,14 @@ def test_a_mountain_blocks_its_whole_footprint():
 )
 def test_static_objects_block_their_whole_footprint_unless_passable(unit_const, x, expected):
     """TASK-277 decision 7: only the footprint grows, not who blocks."""
-    from descape import render
+    from descape import render_units
 
     unit = FakeUnit(x=x, y=x, unit_const=unit_const, rotation=0.0)
     scenario = _Scenario(60, [[unit], [], [], [], [], [], [], [], []])
     blocked = wall_run.blocked_tiles(scenario, 60, 60)
     assert len(blocked) == expected
     if expected:
-        assert blocked == set(render.unit_occupied_tiles(unit, 60, 60))
+        assert blocked == set(render_units.unit_occupied_tiles(unit, 60, 60))
 
 
 # --- a moved gate (GH #194: Moving a gate updates walls) -----------------
@@ -859,10 +859,11 @@ def _tile(unit) -> tuple[int, int]:
 
 def _gate_tiles(const: int, tx: int, ty: int) -> list[tuple[int, int]]:
     """`const`'s sparse footprint with its bounding box's low corner on (tx, ty)."""
-    from descape import render
+    from descape import render_units
+    from descape.terrain_palette import tile_span
 
-    span = render.tile_span(const, render.NON_BUILDING_SPAN)
-    return render.occupied_tiles_for(const, *render.span_anchor(tx, ty, *span), 60, 60)
+    span = tile_span(const, render_units.NON_BUILDING_SPAN)
+    return render_units.occupied_tiles_for(const, *render_units.span_anchor(tx, ty, *span), 60, 60)
 
 
 def _gated_run(x0: int, x1: int, y: int, gate_x: int) -> list[FakeUnit]:

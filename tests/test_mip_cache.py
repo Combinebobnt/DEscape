@@ -1,5 +1,5 @@
 """Phase B-D-a of the mip-level plan -- pure bookkeeping tests for the
-mip-level plumbing added to descape.render_cache._ChunkCacheBase,
+mip-level plumbing added to _ChunkCacheBase (descape/render_cache_mip.py),
 IsoChunkCache and FlatChunkCache. Phase a's
 own level set is still {0: reference} (no other levels are enumerated
 yet -- that's Phase B-D-b), so this file deliberately owns no full-canvas
@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import pytest
 
-from descape.render import elevations_and_proj, tile_pixels_for_map
 from descape.render_cache import DEFAULT_CHUNK_PX, FlatChunkCache, IsoChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 

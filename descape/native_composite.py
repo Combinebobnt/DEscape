@@ -4,18 +4,18 @@ Python keeps everything with Python-rounding or cache semantics and hands the
 kernel flat arrays: the ordered candidates (tiles_in_screen_rect plus the
 bystander merge), each candidate's texture slot and grid stamp, the index
 tables, a per-level UnitPack of marks, sprites and farms, and the blend
-tables (_blend_tables()). The numpy path in render.py stays the
+tables (_blend_tables()). The numpy path in the render modules stays the
 byte-identity oracle (tests/test_native_composite.py; blended rects in
 tests/test_terrain_blend_render.py).
 
 Paint order lives in three places that must change together, with a
-KERNEL_ABI bump: render._paint_candidates_iso/_sloped (the reference), the
+KERNEL_ABI bump: render_iso._paint_candidates_iso/render_sloped._paint_candidates_sloped (the reference), the
 kernel's composite_iso/composite_sloped loops, and UnitPack's row order.
 
 What is read live on every call, never cached here, so nothing can go stale
 under an edit: elevations and corner_rise, the textures and blend masks
 (from asset_source's own lru, held only for the call), and every factor,
-LUT, shade and grid-stamp table (from render's lru caches, which tests
+LUT, shade and grid-stamp table (from the render modules' lru caches, which tests
 rebind and cache_clear()).
 Cached across calls: pure index geometry keyed by (tile_px, elev_step) or by a
 normalized Sloped shape, the blend sample list derived from it (the texels a
@@ -31,7 +31,7 @@ misses; a gather from the mirror costs microseconds.
 Blend keys are the one input that IS memoized across calls, though not here:
 they arrive as a terrain_blend.RectKeys whose KeyMap the owning chunk cache
 keeps beside that mirror and invalidates in the mirror's only writer
-(render_cache._refresh_terrain_ids). The op and mask tables built from them
+(render_cache_base._ChunkCacheBase._refresh_terrain_ids). The op and mask tables built from them
 are still per call.
 """
 
@@ -43,7 +43,8 @@ from operator import attrgetter
 
 import numpy as np
 
-from descape import asset_source, iso_geometry, render, terrain_blend
+from descape import asset_source, iso_geometry, render_iso, render_paint, render_sloped, render_sprites, render_units, terrain_blend
+from descape.terrain_palette import color_for_terrain_id
 
 # Stepped op-table layout, mirrored by DEF constants in _composite_native.pyx.
 OP_DIAMOND = 0
@@ -59,7 +60,7 @@ ROW_W = 5
 # What a with_units=False cache passes as composite_rect_*'s unit_pack: take
 # the whole-rect path, with nothing to draw after the terrain.
 NO_UNITS = object()
-_EDGE_SIDES = tuple(side for _bit, side in render._FARM_EDGE_BITS)
+_EDGE_SIDES = tuple(side for _bit, side in render_sprites._FARM_EDGE_BITS)
 _EMPTY_EXT = (1, 0, 0, 0)
 
 
@@ -129,7 +130,7 @@ def _csr(ops: list[tuple], src: bool) -> dict:
 
 def _fixed_ops(tile_px: int) -> list[tuple]:
     """The Stepped op table's N_FIXED (op, factor key) pairs. The key is the
-    render._seam_factors/_shadow_factors key for a darken op, None for a
+    render_iso._seam_factors/_shadow_factors key for a darken op, None for a
     scatter or solid one. Shared by SteppedTables and prime_walk()."""
     g = iso_geometry
     return [
@@ -192,7 +193,7 @@ class SteppedTables:
         self._factors: np.ndarray | None = None
 
     def factors(self) -> np.ndarray:
-        """The darken factors, fetched from render's lru caches on every call
+        """The darken factors, fetched from render_iso's lru caches on every call
         and re-concatenated only when one of them is a different array than
         last time (a test rebinding SEAM_SHADE then cache_clear()ing)."""
         src = []
@@ -200,9 +201,9 @@ class SteppedTables:
             if key is None:
                 continue
             if key[0] == "seam":
-                src.append(render._seam_factors(self.tile_px, key[1]))
+                src.append(render_iso._seam_factors(self.tile_px, key[1]))
             else:
-                src.append(render._shadow_factors(self.tile_px, key[1], key[2]))
+                src.append(render_iso._shadow_factors(self.tile_px, key[1], key[2]))
         cached = self._factor_src
         if cached is None or len(cached) != len(src) or any(a is not b for a, b in zip(cached, src, strict=True)):
             lens = [int(n) for n, key in zip(self.op_len, self.factor_keys, strict=True) if key is not None]
@@ -215,7 +216,7 @@ class SteppedTables:
 
     def kernel_tables(self) -> tuple:
         c = self.cols
-        luts = np.ascontiguousarray(np.stack([render._skirt_lut("left"), render._skirt_lut("right")]), dtype=np.uint8)
+        luts = np.ascontiguousarray(np.stack([render_iso._skirt_lut("left"), render_iso._skirt_lut("right")]), dtype=np.uint8)
         return (c["dy"], c["dx"], c["sy"], c["sx"], None, c["start"], c["ext"], self.fstart, self.factors(), luts)
 
 
@@ -402,7 +403,7 @@ def _prime_shapes(tile_px: int, elev_step: int, heights):
     for i in range(0, len(found), PRIME_SHADE_BATCH):
         yield
         for key in found[i:i + PRIME_SHADE_BATCH]:
-            render._slope_shade(tile_px, *key[:4], elev_step)
+            render_sloped._slope_shade(tile_px, *key[:4], elev_step)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +412,7 @@ def _prime_shapes(tile_px: int, elev_step: int, heights):
 
 class UnitPack:
     """One level's marks, sprite draws and farm tiles as flat arrays the
-    kernel walks per candidate, in render._paint_objects_*'s own order: a
+    kernel walks per candidate, in render_iso/render_sloped._paint_objects_*'s own order: a
     tile's marks (units_by_tile order, minus sprites.skip_ids), then its
     sprites (by_anchor order). Each row ends in its unit's base rise, the
     value the Python path records in its ink plane. Farm override ids feed
@@ -594,10 +595,10 @@ class UnitPack:
     def _mark_row(self, unit, color, key) -> tuple:
         packed = (int(color[0]) << 16) | (int(color[1]) << 8) | int(color[2])
         if self.sloped:
-            base, rise = render._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights, self._fold)
+            base, rise = render_sloped._unit_mark_sloped(unit, key[0], key[1], self.proj, self._heights, self._fold)
         else:
-            base = render._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
-            rise = render._unit_mark_rise_iso(unit, self.proj, self._heights)
+            base = render_units._unit_mark_base_iso(unit, key[0], key[1], self.proj, self._heights)
+            rise = render_units._unit_mark_rise_iso(unit, self.proj, self._heights)
         if base is None:
             return ROW_CONFORM, 0, 0, packed, rise
         return ROW_MARK, base[0], base[1], packed, rise
@@ -692,7 +693,7 @@ class UnitPack:
     @property
     def two_pass(self) -> bool:
         """Whether a composite over this pack runs terrain then objects (sprites
-        on), as render._paint_candidates_* decides it: from the sprite layer."""
+        on), as render_iso/render_sloped._paint_candidates_* decides it: from the sprite layer."""
         return self._sprites is not None
 
     def _unshare(self) -> None:
@@ -764,10 +765,10 @@ def _textures(
     for i, tid in enumerate(uniq.tolist()):
         tex = asset_source.terrain_texture_at(tid, size) if textures else None
         if tex is None:
-            flat[i] = render.color_for_terrain_id(tid)
+            flat[i] = color_for_terrain_id(tid)
             arrays.append(None)
             continue
-        render._crop_offset(0, 0, tex.shape[0], tile_px)  # the numpy path's own bound assert
+        render_paint._crop_offset(0, 0, tex.shape[0], tile_px)  # the numpy path's own bound assert
         if tex.ndim != 3 or tex.shape[0] != tex.shape[1] or tex.shape[2] != 3:
             return None
         # The kernel crops at (x * tile_px) % size, size the period, stride the padded width.
@@ -796,9 +797,9 @@ UNCOMPOSABLE = object()
 
 def _blend_tables(blend: terrain_blend.RectKeys, base_tids: np.ndarray, overridden: np.ndarray | None,
                   tile_px: int, tex_tables: tuple, uniq: np.ndarray):
-    """The kernel's blend input for render's per-candidate blend keys: (per
+    """The kernel's blend input for render_paint's per-candidate blend keys: (per
     candidate spec id or -1, spec start offsets, (kind, texture slot, mask
-    id) op triples, masks). A candidate composes only where render._top_block
+    id) op triples, masks). A candidate composes only where render_paint._top_block
     would: a key, no farm override, and the key's own tid equal to the tid
     its plain crop reads. The ops are built once per distinct key among
     those candidates, and the spec ids here number that subset (not the
@@ -911,7 +912,7 @@ def _grid_stamps(tile_px: int, grid, keys: np.ndarray, split=None) -> tuple[np.n
     """(per-candidate stamp id or -1, stamp tables). keys are per-candidate
     ints: an _edge_states key for Stepped, or a pair id that `split` maps to
     (edge key, normalized Sloped corners). Stamps come from
-    render._grid_stamp_iso's lru on every call."""
+    render_paint._grid_stamp_iso's lru on every call."""
     # A Stepped key is 4 base-3 digits; Sloped pair ids have no tight bound.
     uniq, inv = _dense_unique(keys, 81) if split is None else np.unique(keys, return_inverse=True)
     parts, sid_of = [], np.full(uniq.size, -1, dtype=np.int32)
@@ -920,7 +921,7 @@ def _grid_stamps(tile_px: int, grid, keys: np.ndarray, split=None) -> tuple[np.n
         edges = _edges_for_key(edge_key)
         if not edges:
             continue
-        dst_y, dst_x, target, alpha, extent = render._grid_stamp_iso(tile_px, edges, grid, corners)
+        dst_y, dst_x, target, alpha, extent = render_paint._grid_stamp_iso(tile_px, edges, grid, corners)
         if extent is None:
             continue
         sid_of[i] = len(parts)
@@ -978,7 +979,7 @@ def _terrain_inputs(scenario, idx, pack, terrain_ids, tile_px: int, textures: bo
 def composite_iso(native, scratch, scenario, x0, y0, candidates, elevations, proj, tile_px,
                   pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None,
                   blend: terrain_blend.RectKeys | None = None) -> bool:
-    """render.composite_rect_iso's loop, natively. False (nothing painted)
+    """render_iso.composite_rect_iso's loop, natively. False (nothing painted)
     means the caller must take the per-tile path."""
     args = prepare_iso(
         scenario, x0, y0, candidates, elevations, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
@@ -996,7 +997,7 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     copy of elevations the caller already owns (a pooled paint batch takes one
     for all its jobs), handed to the kernel as is instead. terrain_ids
     is the owning cache's per-tile mirror, None to read the tiles live.
-    blend: render's terrain_blend.RectKeys for the candidates (spec ids into
+    blend: render_paint's terrain_blend.RectKeys for the candidates (spec ids into
     the caller's KeyMap, read on this thread before any worker runs), or None;
     the kernel composes each blended top block itself (_blend_tables(), plus
     the geometry's blend_samples: only the texels a paint reads). The last
@@ -1012,7 +1013,7 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
     stamps = None
     cand_grid = np.full(cx.size, -1, dtype=np.int32)
     if grid.paints:
-        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2, grid.major_every)
+        draw_grid, draw_minors = render_paint._grid_lod_edges_filter(tile_px / 2, grid.major_every)
         if draw_grid:
             keys = _edge_states(cx, cy, w, h, draw_minors, elevations, grid.major_every)
             cand_grid, stamps = _grid_stamps(tile_px, grid, keys)
@@ -1035,7 +1036,7 @@ def prepare_iso(scenario, x0, y0, candidates, elevations, proj, tile_px, pack: U
 def composite_sloped(native, scratch, scenario, x0, y0, candidates, corner_rise, proj, tile_px,
                      pack: UnitPack | None, textures: bool, grid, terrain_ids: np.ndarray | None = None,
                      blend: terrain_blend.RectKeys | None = None, fold: np.ndarray | None = None) -> bool:
-    """render.composite_rect_sloped's loop, natively; same False contract."""
+    """render_sloped.composite_rect_sloped's loop, natively; same False contract."""
     args = prepare_sloped(
         scenario, x0, y0, candidates, corner_rise, proj, tile_px, pack, textures, grid, terrain_ids=terrain_ids,
         blend=blend, fold=fold,
@@ -1090,7 +1091,7 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
     shape_of = np.array(registry.shape_ids(shape_keys), dtype=np.int32)
     cand_shape = np.ascontiguousarray(shape_of[inv], dtype=np.int32)
 
-    shades = [render._slope_shade(tile_px, *key[:4], proj.elev_step) for key in shape_keys]
+    shades = [render_sloped._slope_shade(tile_px, *key[:4], proj.elev_step) for key in shape_keys]
     shade_start = np.zeros(len(shades), dtype=np.int64)
     np.cumsum([s.size for s in shades[:-1]], out=shade_start[1:])
     shade = np.ascontiguousarray(np.concatenate(shades), dtype=np.float32)
@@ -1099,7 +1100,7 @@ def prepare_sloped(scenario, x0, y0, candidates, corner_rise, proj, tile_px, pac
     stamps = None
     cand_grid = np.full(cx.size, -1, dtype=np.int32)
     if grid.paints:
-        draw_grid, draw_minors = render._grid_lod_edges_filter(tile_px / 2, grid.major_every)
+        draw_grid, draw_minors = render_paint._grid_lod_edges_filter(tile_px / 2, grid.major_every)
         if draw_grid:
             edge_keys = _edge_states(cx, cy, w, h, draw_minors, None, grid.major_every)
             pair = edge_keys * len(shape_keys) + inv

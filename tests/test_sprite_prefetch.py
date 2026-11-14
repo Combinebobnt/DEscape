@@ -27,7 +27,8 @@ from descape import (
     game_dataset,
     mod_graphics,
     perf_trace,
-    render,
+    render_iso,
+    render_sprites,
     sld_decoder,
     sprite_prefetch,
     unit_sprites,
@@ -175,11 +176,11 @@ def _scenario():
 
 
 def _walk(scenario, unit_filter=SHOWN, wall_alpha=1.0):
-    elevations, proj = render.elevations_and_proj(scenario)
-    return render.sprite_draws_by_anchor(scenario, proj, elevations, unit_filter, wall_alpha=wall_alpha)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
+    return render_sprites.sprite_draws_by_anchor(scenario, proj, elevations, unit_filter, wall_alpha=wall_alpha)
 
 
-def _normalized(layer: render.SpriteLayer):
+def _normalized(layer: render_sprites.SpriteLayer):
     return {
         key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise) for d, x, y, rise in draws]
         for key, draws in layer.by_anchor.items()

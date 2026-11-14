@@ -1,7 +1,7 @@
 """Phase 4b.3's viewer wiring: the parts of undo/redo that live in
 descape/viewer.py rather than in the model or the history.
 
-Same offscreen-ViewerWindow technique as tests/test_trigger_panel.py and
+Same offscreen-ViewerWindow technique as tests/trigger_panel_helpers.py and
 tests/test_keybinds.py.
 
 Three things here that no headless test of edit_history/trigger_model can
@@ -72,7 +72,7 @@ def test_the_title_marker_follows_a_tile_edit_and_its_undo() -> None:
     finally:
         # mark_saved() before close(): closeEvent -> _confirm_discard_changes
         # raises a modal QMessageBox on a dirty document, which blocks forever
-        # offscreen. Same teardown tests/test_trigger_panel.py uses.
+        # offscreen. Same teardown tests/test_trigger_panel_*.py use.
         window.edit_history.mark_saved()
         window.close()
 
@@ -94,7 +94,7 @@ def test_undo_and_redo_keep_the_edit_actions_in_step() -> None:
     finally:
         # mark_saved() before close(): closeEvent -> _confirm_discard_changes
         # raises a modal QMessageBox on a dirty document, which blocks forever
-        # offscreen. Same teardown tests/test_trigger_panel.py uses.
+        # offscreen. Same teardown tests/test_trigger_panel_*.py use.
         window.edit_history.mark_saved()
         window.close()
 
@@ -121,7 +121,7 @@ def test_undo_with_nothing_to_undo_still_reports_itself() -> None:
     finally:
         # mark_saved() before close(): closeEvent -> _confirm_discard_changes
         # raises a modal QMessageBox on a dirty document, which blocks forever
-        # offscreen. Same teardown tests/test_trigger_panel.py uses.
+        # offscreen. Same teardown tests/test_trigger_panel_*.py use.
         window.edit_history.mark_saved()
         window.close()
 
@@ -139,7 +139,7 @@ def test_undo_names_the_edit_it_undid() -> None:
     finally:
         # mark_saved() before close(): closeEvent -> _confirm_discard_changes
         # raises a modal QMessageBox on a dirty document, which blocks forever
-        # offscreen. Same teardown tests/test_trigger_panel.py uses.
+        # offscreen. Same teardown tests/test_trigger_panel_*.py use.
         window.edit_history.mark_saved()
         window.close()
 
@@ -168,7 +168,7 @@ def test_trigger_edits_starts_none_and_is_dropped_with_the_document() -> None:
     finally:
         # mark_saved() before close(): closeEvent -> _confirm_discard_changes
         # raises a modal QMessageBox on a dirty document, which blocks forever
-        # offscreen. Same teardown tests/test_trigger_panel.py uses.
+        # offscreen. Same teardown tests/test_trigger_panel_*.py use.
         window.edit_history.mark_saved()
         window.close()
 

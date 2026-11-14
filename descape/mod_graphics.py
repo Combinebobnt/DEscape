@@ -3,8 +3,9 @@ mods override the install's: per file stem, the highest-priority drawn mod
 that ships one, else the install (None here).
 
 Qt-free module state, read by unit_sprites (sprites), asset_source (terrain
-textures) and the viewer (the View > Layers "Mod Art" row, the Mod art list in
-Settings > Mods, the status line):
+textures, and a data mod's portraits through drawn_roots(), GH #363) and the
+viewer (the View > Layers "Mod Art" row, the Mod art list in Settings > Mods,
+the status line):
 
 - **Off by module default.** The viewer turns it on from the persisted layer,
   so tests and tools/ never pick up the developer's mods by accident.
@@ -23,7 +24,9 @@ Settings > Mods, the status line):
   mod's new objects and terrains (unit_sprites.drawn_frame_count()).
 - generation() moves on every change, for caches keyed on the active art
   (render's sprite memo); asset_source.clear_art_caches() is the one call
-  that drops the art-derived caches when it does.
+  that drops the art-derived caches when it does. refresh() re-reads the
+  folders only when the profile's mod state moved since the scan, and bumps
+  only when what draws changed, not for a mod without art (TASK-438).
 
 Strictly read-only, like content_roots: mod folders under mods/subscribed/ are
 re-synced by the game. tests/test_content_roots.py scans this module's source
@@ -48,6 +51,9 @@ TEXTURE_PARTS = ("terrain", "textures", "2x")
 PALETTE_PARTS = ("resources", "_common", "palettes")
 PALETTE_CONF = "palettes.conf"
 WHITE_PLAYER_PALETTE = "playercolor_white.pal"
+# What refresh() reports changed: the game's mod list, and what draws.
+MODS = "mods"
+ART = "art"
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class _Index:
     textures: dict[str, list[tuple[str, Path]]]
     counts: dict[str, tuple[int, int, int]]
     disabled: frozenset[str]  # status paths of the roots mod-status.json disables
+    portraits: frozenset[str] = frozenset()  # status paths of the roots with a widgetui/ (GH #363)
 
 
 _enabled = False
@@ -79,6 +86,7 @@ _excluded: frozenset[str] = frozenset()
 _included: frozenset[str] = frozenset()
 _generation = 0
 _index: _Index | None = None
+_scanned: tuple | None = None  # content_roots.mod_state_signature() taken before _index was built
 _palettes: _Palettes | None = None
 _lock = threading.RLock()
 
@@ -131,9 +139,10 @@ def set_included(status_paths) -> bool:
 
 def clear() -> None:
     """Forget the scanned mod folders and palettes (an install or profile change)."""
-    global _index, _palettes
+    global _index, _scanned, _palettes
     with _lock:
         _index = None
+        _scanned = None
         _palettes = None
     _bump()
 
@@ -183,7 +192,7 @@ def _listing(folder: Path | None) -> list[Path]:
 
 
 def _build_index() -> _Index:
-    from descape import content_roots
+    from descape import asset_source, content_roots
 
     roots = _candidate_roots()
     sprites: dict[str, list[tuple[str, Path, str]]] = {}
@@ -210,15 +219,62 @@ def _build_index() -> _Index:
             textures.setdefault(path.name.casefold(), []).append((root.status_path, path))
         counts[root.status_path] = (sld, smx, len(texture_files))
     disabled = frozenset(root.status_path for root in roots if not root.enabled)
-    return _Index(roots, sprites, textures, counts, disabled)
+    portraits = frozenset(
+        root.status_path for root in roots if content_roots.child_dir(root.path, asset_source.UI_DIR) is not None
+    )
+    return _Index(roots, sprites, textures, counts, disabled, portraits)
+
+
+def _signature() -> tuple | None:
+    from descape import content_roots
+
+    profile = content_roots.profile_path()
+    return None if profile is None else content_roots.mod_state_signature(profile)
 
 
 def _get_index() -> _Index:
-    global _index
+    global _index, _scanned
     with _lock:
         if _index is None:
+            # Before the build, so a write racing the scan shows as a moved signature next time.
+            _scanned = _signature()
             _index = _build_index()
         return _index
+
+
+def _art_part(index: _Index) -> tuple:
+    """What drawing reads from an index: each stem's and texture's mods in
+    order, and the art mods' counts and in-game state. A mod shipping only
+    portraits (a widgetui/, GH #363) counts as an art mod; mods without art are
+    left out, so toggling one changes nothing drawn."""
+    art = {path: counts for path, counts in index.counts.items() if any(counts) or path in index.portraits}
+    return index.sprites, index.textures, art, index.disabled.intersection(art)
+
+
+def refresh() -> frozenset[str]:
+    """Picks up a change in the game's mod list since the scan (TASK-438):
+    re-reads the folders when the profile's mod state moved and swaps the new
+    index in when it differs, so the game's identical rewrite at launch is a
+    no-op. Returns what changed: empty, {MODS} (the list, say an AI-only mod
+    toggled), or {MODS, ART} when what draws changed too, the one case that
+    bumps. Empty with nothing scanned yet. Blind to a mod's files replaced in place (clear() is)."""
+    global _index, _scanned
+    with _lock:
+        if _index is None:
+            return frozenset()
+        signature = _signature()
+        if signature == _scanned:
+            return frozenset()
+        fresh = _build_index()
+        _scanned = signature
+        if fresh == _index:
+            return frozenset()
+        art_moved = _art_part(fresh) != _art_part(_index)
+        _index = fresh
+    if not art_moved:
+        return frozenset({MODS})
+    _bump()
+    return frozenset({MODS, ART})
 
 
 def _drawn(status_path: str, index: _Index) -> bool:
@@ -242,6 +298,16 @@ def mods_with_art() -> list[ModArt]:
                 in_game=root.enabled, drawn=_drawn(root.status_path, index),
             ))
     return found
+
+
+def drawn_roots() -> list[Path]:
+    """Every drawn mod's folder in resolution order, [] while off: where a data
+    mod's portraits are looked up after its own folder (GH #363). Counts mods
+    shipping no sprite or texture too, which mods_with_art() leaves out."""
+    if not _enabled:
+        return []
+    index = _get_index()
+    return [root.path for root in index.roots if _drawn(root.status_path, index)]
 
 
 def resolve_sprite(file_name: str) -> tuple[Path, str] | None:

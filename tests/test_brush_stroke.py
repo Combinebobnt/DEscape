@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from descape.brush import BRUSH_SHAPE_CIRCLE, BRUSH_SHAPE_SQUARE
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -341,7 +342,7 @@ def _assert_matches_fresh_render(window, style: str, cache, gen: int, counts) ->
 
     import numpy as np
 
-    from descape import composite_backend, render
+    from descape import composite_backend, render_iso, render_sloped
 
     assert window._cache is cache, "the stroke rebuilt the cache"
     _level_0_chunks(cache)
@@ -351,7 +352,7 @@ def _assert_matches_fresh_render(window, style: str, cache, gen: int, counts) ->
         assert composite_backend.active_backend() == "native", composite_backend.unavailable_reason
     w, h = cache.canvas_dims(0)
     stitched = cache.render_rect(0, 0, w, h, mip=0)
-    fresh = render.render_terrain_iso_with_proj if style == "Stepped" else render.render_terrain_sloped_with_proj
+    fresh = render_iso.render_terrain_iso_with_proj if style == "Stepped" else render_sloped.render_terrain_sloped_with_proj
     with composite_backend.use_backend("numpy"):
         full = fresh(window.scenario, with_units=True, with_sprites=cache.sprites_enabled)[0]
     assert np.array_equal(stitched, full[:h, :w]), "the live canvas differs from a fresh render"
@@ -497,10 +498,8 @@ def test_live_stroke_repaint_set_equals_a_full_map_scan(case) -> None:
 
 def test_the_full_scan_guard_catches_an_unreported_beach_ring(monkeypatch) -> None:
     """Control: the ring's indices dropped from `touched` must fail the guard."""
-    import descape.viewer as viewer_module
-
-    real = viewer_module.apply_beach_ring
-    monkeypatch.setattr(viewer_module, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
+    real = viewer_global("apply_beach_ring")
+    set_viewer_global(monkeypatch, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
     window, events = _guard_case("beach_draw")
     try:
         with pytest.raises(AssertionError, match="missing"):
@@ -580,10 +579,8 @@ def test_the_release_record_drops_a_tile_changed_then_restored() -> None:
 def test_the_release_record_guard_catches_an_unreported_beach_ring(monkeypatch) -> None:
     """Control: a mutation that under-reports its writes must fail the guard,
     or the touched-only diff could silently drop tiles from undo."""
-    import descape.viewer as viewer_module
-
-    real = viewer_module.apply_beach_ring
-    monkeypatch.setattr(viewer_module, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
+    real = viewer_global("apply_beach_ring")
+    set_viewer_global(monkeypatch, "apply_beach_ring", lambda *a, **k: (real(*a, **k), [])[1])
     window, events = _guard_case("beach_draw")
     try:
         with pytest.raises(AssertionError, match="missing"):

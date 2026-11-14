@@ -12,7 +12,8 @@ import pytest
 from descape import unit_rotation, unit_variant
 from descape.object_catalog import display_name
 from descape.place_rotation import PlaceRotation, rotation_for
-from descape.render import occupied_tiles_for
+from descape.render_units import occupied_tiles_for
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -684,16 +685,14 @@ def test_a_stroke_closed_by_a_leave_or_a_tool_switch_ends_with_no_ghost(end) -> 
 
 @pytest.mark.parametrize("random_ticked", [True, False], ids=["random", "unticked"])
 def test_the_ghost_carries_the_pending_rotation(random_ticked, monkeypatch) -> None:
-    from descape import viewer
-
     window = _window(const=VILLAGER, owner=P1, shown=True)
     try:
         window.unit_brush_random_check.setChecked(random_ticked)
         pending = PlaceRotation(facing=1.0)
         window._place_rotation = pending
         seen = []
-        real = viewer.new_unit
-        monkeypatch.setattr(viewer, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
+        real = viewer_global("new_unit")
+        set_viewer_global(monkeypatch, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
         _hover(window, (40, 40))
         assert _ghost(window) is not None
         expected = rotation_for(pending, VILLAGER, P1)
@@ -739,11 +738,9 @@ def test_hovering_builds_no_unit_model_adds_no_unit_and_invalidates_no_cache() -
 
 def _turn_seen(window, monkeypatch) -> list:
     """The rotation every later ghost (and size-1 hover) is built with, through viewer.new_unit."""
-    from descape import viewer
-
     seen = []
-    real = viewer.new_unit
-    monkeypatch.setattr(viewer, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
+    real = viewer_global("new_unit")
+    set_viewer_global(monkeypatch, "new_unit", lambda *a, **k: (seen.append(k["rotation"]), real(*a, **k))[1])
     return seen
 
 

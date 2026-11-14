@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from descape import debug_log, perf_trace
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -264,8 +265,6 @@ def units_window():
 
 
 def test_opening_the_debug_log_writes_the_pending_op_line_first(units_window, monkeypatch):
-    from descape import viewer
-
     seen = []
 
     class _SnapshotDialog:
@@ -275,7 +274,7 @@ def test_opening_the_debug_log_writes_the_pending_op_line_first(units_window, mo
         def exec_(self) -> int:
             return 0
 
-    monkeypatch.setattr(viewer, "DebugLogDialog", _SnapshotDialog)
+    set_viewer_global(monkeypatch, "DebugLogDialog", _SnapshotDialog)
     # No processEvents() between the op and the open: the idle flush must not run.
     with perf_trace.op("paste"):
         pass
@@ -339,15 +338,13 @@ def test_the_large_fill_dialog_is_its_own_phase_not_untimed(monkeypatch):
 
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
 
     def slow_yes(*args, **kwargs):
         time.sleep(1.0)  # the user reading the dialog; 0.2 s lost to CI's ~280 ms untimed rest
         return QMessageBox.Yes
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(slow_yes))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(slow_yes))
     window = conftest.terrain_edit_window()
     try:
         window._on_tool_selected("fill")

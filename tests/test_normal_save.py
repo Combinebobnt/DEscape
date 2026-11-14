@@ -38,13 +38,13 @@ def test_save_writes_back_to_the_open_path_with_no_dialog(tmp_path, monkeypatch)
     target = tmp_path / "mymap.aoe2scenario"
     shutil.copyfile(BLANK_FIXTURE, target)
 
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     def _unexpected_dialog(*args, **kwargs):
         raise AssertionError("save() on a titled document must not open Save As's dialog")
 
     monkeypatch.setattr(
-        viewer_module.QFileDialog, "getSaveFileName", staticmethod(_unexpected_dialog)
+        QFileDialog, "getSaveFileName", staticmethod(_unexpected_dialog)
     )
 
     window = _window()
@@ -83,10 +83,10 @@ def test_save_as_on_an_already_open_file_retargets_it(tmp_path, monkeypatch) -> 
     shutil.copyfile(BLANK_FIXTURE, original)
     dest = tmp_path / "renamed.aoe2scenario"
 
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     monkeypatch.setattr(
-        viewer_module.QFileDialog,
+        QFileDialog,
         "getSaveFileName",
         staticmethod(lambda *args, **kwargs: (str(dest), "")),
     )
@@ -114,10 +114,10 @@ def test_save_as_on_an_already_open_file_retargets_it(tmp_path, monkeypatch) -> 
 def test_save_on_untitled_document_falls_through_to_save_as(tmp_path, monkeypatch) -> None:
     dest = tmp_path / "newmap.aoe2scenario"
 
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
 
     monkeypatch.setattr(
-        viewer_module.QFileDialog,
+        QFileDialog,
         "getSaveFileName",
         staticmethod(lambda *args, **kwargs: (str(dest), "")),
     )

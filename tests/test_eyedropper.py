@@ -124,7 +124,7 @@ def test_pick_out_of_enum_terrain_leaves_the_picker_unchanged() -> None:
 
 
 def test_pick_out_of_range_elevation_leaves_spin_unchanged() -> None:
-    from descape.viewer import ELEVATION_LEVEL_MAX
+    from descape.viewer_common import ELEVATION_LEVEL_MAX
 
     window = _edit_window()
     try:

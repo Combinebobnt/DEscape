@@ -11,7 +11,7 @@ dt comes from a QElapsedTimer, which an offscreen test cannot make
 deterministic; _pan_timer.isActive() is what the timer itself is checked on.
 
 The ownership tests at the bottom need a real scenario-loaded window in Units
-mode, so they borrow test_unit_edit_viewer.py's fixture and Flat-style setup
+mode, so they borrow unit_edit_viewer_helpers.py's fixture and Flat-style setup
 rather than the bare ViewerWindow the pan tests use.
 """
 
@@ -39,7 +39,7 @@ def _window():
 
 
 def _units_window():
-    """A loaded scenario in Units mode -- see test_unit_edit_viewer.py's
+    """A loaded scenario in Units mode -- see unit_edit_viewer_helpers.py's
     _window() for why Isometric is unchecked before the style switch."""
     conftest.ensure_qapp()
     from descape.viewer import ViewerWindow

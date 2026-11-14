@@ -21,8 +21,8 @@ from test_native_composite import (  # noqa: F401 -- native_kernel, synthetic_te
 )
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- a fixture
 
-from descape import composite_backend, render
-from descape.render_cache import UnitSplice
+from descape import composite_backend, render_units
+from descape.render_cache_splice import UnitSplice
 
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
@@ -44,12 +44,12 @@ def test_a_moved_farm_leaves_no_colour_behind_its_cleared_mask(
 
         index = scenario.unit_manager.units[2].index(farm)
         old_own = (int(farm.x), int(farm.y))
-        old_tiles = tuple(render.unit_occupied_tiles(farm, mm.map_width, mm.map_height))
+        old_tiles = tuple(render_units.unit_occupied_tiles(farm, mm.map_width, mm.map_height))
         farm.x, farm.y = FARM_X + 4.5, FARM_Y - 3.5
         scenario.unit_gen += 1
         splice = UnitSplice(
             2, index, farm, old_own, (int(farm.x), int(farm.y)), old_tiles,
-            tuple(render.unit_occupied_tiles(farm, mm.map_width, mm.map_height)),
+            tuple(render_units.unit_occupied_tiles(farm, mm.map_width, mm.map_height)),
         )
         assert cache.can_splice([splice])
         cache.invalidate_units([splice])

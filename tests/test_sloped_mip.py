@@ -36,11 +36,12 @@ from test_invalidate_units_splice import (
 )
 from test_sloped_sprites import FARM_CONST, Unit, sprite_install  # noqa: F401 -- a fixture
 
-from descape import iso_geometry, render, render_cache, settings
+from descape import iso_geometry, render_bbox, render_iso, render_paint, render_sloped, settings
 from descape.elevation_tools import set_tiles_elevation
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit.fakes import FakeMapManager, FakeScenario, SyntheticTile
+from testkit.render_family import set_render_cache_global, set_render_global
 
 from test_unit_sprites import CONST
 
@@ -72,7 +73,7 @@ def _scenario(units: bool = True, elevation_of=_bumpy) -> FakeScenario:
 
 
 def _cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px, **kwargs)
 
 
@@ -83,8 +84,8 @@ def _whole(cache, mip: int) -> np.ndarray:
 def _forced_render(scn, tile_px: int, sprites: bool):
     """(img, corner_rise, proj) of a full render at tile_px, the patch scoped to this call."""
     with pytest.MonkeyPatch.context() as m:
-        m.setattr(render, "tile_pixels_for_map", lambda _w, _h: tile_px)
-        img, _elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn, with_sprites=sprites)
+        set_render_global(m, "tile_pixels_for_map", lambda _w, _h: tile_px)
+        img, _elevations, corner_rise, proj = render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=sprites)
     return img, corner_rise, proj
 
 
@@ -131,7 +132,7 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
     alike (floor(floor(a)/n) == floor(a/n)), and only the spy tells
     recomputing from scaling; the native tier (96, TASK-599) at 3/2 need not.
     It runs once per rebinding of level 0's corner_rise."""
-    monkeypatch.setattr(render, "SLOPE_CORNER_RULE", rule)
+    set_render_global(monkeypatch, "SLOPE_CORNER_RULE", rule)
     scn = _scenario(units=False, elevation_of=lambda x, y: (x * 7 + y * 3) % 3 // 2)
     cache = _cache(scn)
     calls: list[int] = []
@@ -146,7 +147,7 @@ def test_each_level_recomputes_its_corner_rise_and_headroom_at_its_own_proj(monk
         lvl = cache._levels[mip]
         rise = cache._level_corner_rise(lvl)
         assert np.array_equal(rise, real(cache.elevations, lvl.proj, rule=rule)), f"level {mip}"
-        assert cache._level_extra_top(lvl) == render._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
+        assert cache._level_extra_top(lvl) == render_sloped._unit_rise_headroom_px(rise, cache.elevations, lvl.proj)
     assert cache._level_corner_rise(cache._levels[0]) is cache.corner_rise
     assert sorted(calls) == [16, 32, 96, 128, 192], "level 0 shares self.corner_rise; every other level computes its own"
     assert cache._levels[-1].headroom > 0, "a flat field has headroom 0 at every level -- vacuous"
@@ -171,7 +172,7 @@ def test_the_192_level_leaves_every_other_level_byte_identical(sprite_install, m
     def build():
         if style == "Sloped":
             return _cache(scn, sprites=True)
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return IsoChunkCache(scn, elevations, proj, proj.tile_px, sprites=True)
 
     def levels(cache):
@@ -179,7 +180,7 @@ def test_the_192_level_leaves_every_other_level_byte_identical(sprite_install, m
 
     settings.set_graphics_quality(settings.GRAPHICS_QUALITY_DEFAULT)
     with_192 = levels(build())
-    monkeypatch.setitem(render.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_DEFAULT, 128)
+    monkeypatch.setitem(render_paint.FINEST_TILE_PIXELS, settings.GRAPHICS_QUALITY_DEFAULT, 128)
     without = levels(build())
     assert 192 in with_192 and 192 not in without and {96, 128} <= set(without)
     assert set(with_192) - {192} == set(without)
@@ -198,7 +199,7 @@ def test_every_level_canvas_is_an_exact_mip_of_level_0(sprites) -> None:
     for mip in cache.mip_levels():
         proj = cache._levels[mip].proj
         w, h = cache.canvas_dims(mip)
-        assert (w, h) == (render._canvas_pixel_dims(proj) if sprites else (proj.canvas_w, proj.canvas_h))
+        assert (w, h) == (render_bbox._canvas_pixel_dims(proj) if sprites else (proj.canvas_w, proj.canvas_h))
         t = cache.mip_tile_px(mip)
         assert w * t0 == ref_w * t and h * t0 == ref_h * t, f"level {mip}: {(w, h)} vs {(ref_w, ref_h)}"
 
@@ -233,7 +234,7 @@ def test_the_ladder_is_steppeds_at_every_pct(monkeypatch, size, pct) -> None:
     32 px base, so it gets two finer levels, +1 and +2."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
     scn = _scenario(units=False) if size == MAP_W else _flat_scenario(size)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     stepped = IsoChunkCache(scn, elevations, proj, proj.tile_px).mip_levels()
     cache = _cache(scn)
     assert cache.mip_levels() == stepped
@@ -245,7 +246,7 @@ def test_the_ladder_is_steppeds_at_every_pct(monkeypatch, size, pct) -> None:
 def _footprint(tx: int, ty: int, proj, corner_rise) -> tuple[int, int, int, int]:
     """Tile (tx, ty)'s painted pixel bbox, through _render_tile_sloped's own placement."""
     corners = (corner_rise[ty, tx], corner_rise[ty, tx + 1], corner_rise[ty + 1, tx], corner_rise[ty + 1, tx + 1])
-    base_x, base_y, dst_y, dst_x, *_rest = render._sloped_tile_quad(tx, ty, proj.tile_px, proj, *map(int, corners))
+    base_x, base_y, dst_y, dst_x, *_rest = render_sloped._sloped_tile_quad(tx, ty, proj.tile_px, proj, *map(int, corners))
     rows, cols = base_y + dst_y, base_x + dst_x
     return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
 
@@ -453,7 +454,7 @@ def _draw(cache, scn, sites: _Sites = TEMPLATE) -> None:
     for i in dirty:
         mm.terrain[i].terrain_id = BLACK
     changed: set = set()
-    bbox = render.dirty_screen_bbox_sloped(
+    bbox = render_bbox.dirty_screen_bbox_sloped(
         scn, dirty, cache.elevations, cache.proj, with_units=True, with_sprites=True, elevation_changed=changed
     )
     assert not changed
@@ -477,7 +478,7 @@ def _unit_edit(cache, splice) -> None:
 
 def _over_cap(cache, scn, sites: _Sites) -> None:
     with pytest.MonkeyPatch.context() as m:
-        m.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
+        set_render_cache_global(m, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 2)
         gen = cache._source_gen
         _elevate(cache, scn, [sites.mill])
     assert cache._source_gen > gen, "the mill chain spliced under a cap of 2 -- vacuous"
@@ -621,8 +622,8 @@ def _deferred(case: str, monkeypatch, sites: _Sites):
         _place(scn, 1, CONST, sites.unit[0] + 0.5, sites.unit[1] + 0.5)
         return scn, [[sites.mill], [sites.unit]]
     assert case == "between_caps"
-    monkeypatch.setattr(render_cache, "_ELEV_SPLICE_MAX_UNITS", 2)
-    monkeypatch.setattr(render_cache, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 3)
+    set_render_cache_global(monkeypatch, "_ELEV_SPLICE_MAX_UNITS", 2)
+    set_render_cache_global(monkeypatch, "_SLOPED_ELEV_SPLICE_MAX_UNITS", 3)
     return scn, [[sites.mill]]
 
 

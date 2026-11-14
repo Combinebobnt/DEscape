@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from functools import cache, lru_cache
 from typing import NamedTuple
 
-from descape import gate_orientation, render, unit_kind, unit_rotation, unit_sprites
+from descape import gate_orientation, render_units, unit_kind, unit_rotation, unit_sprites
 from descape.edit_history import TileState, tile_state
 from descape.terrain_palette import tile_span
 
@@ -814,7 +814,7 @@ def reorient_gate_const(unit_const: int, name: Element) -> int:
     siblings = gate_orientation.orientation_siblings(unit_const)
     if siblings is None:
         raise ValueError(f"unit_const {unit_const} is not a gate: it has no orientation siblings")
-    if all(tile_span(c, render.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
+    if all(tile_span(c, render_units.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
         return unit_const
     return siblings[gate_orientation_map(name)[siblings.index(unit_const)]]
 
@@ -925,7 +925,7 @@ def _image_position(
             element = _D4_EQUIVALENT[element]
         else:
             return _angular_image_position(unit_const, x, y, n, element, new_const)
-    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     if span_x == 1 and span_y == 1:
         image_x, image_y = POSITION_TRANSFORMS[element](x, y, n)
         # A tile spans [t, t+1), so a coordinate sitting exactly ON a tile
@@ -940,11 +940,11 @@ def _image_position(
             image_y - 1.0 if int(image_y) != tile_y else image_y,
         )
     fn = TRANSFORMS[element]
-    low_x = render._span_start(x, span_x)
-    low_y = render._span_start(y, span_y)
+    low_x = render_units._span_start(x, span_x)
+    low_y = render_units._span_start(y, span_y)
     corners = [fn(low_x, low_y, n), fn(low_x + span_x - 1, low_y + span_y - 1, n)]
-    target_span = tile_span(unit_const if new_const is None else new_const, render.NON_BUILDING_SPAN)
-    return render.span_anchor(
+    target_span = tile_span(unit_const if new_const is None else new_const, render_units.NON_BUILDING_SPAN)
+    return render_units.span_anchor(
         min(c[0] for c in corners), min(c[1] for c in corners), *target_span
     )
 
@@ -967,14 +967,14 @@ def _rotate_point(x: float, y: float, n: int, element: AngularElement) -> tuple[
 def _angular_image_position(
     unit_const: int, x: float, y: float, n: int, element: AngularElement, new_const: int | None
 ) -> tuple[float, float]:
-    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     if span_x == 1 and span_y == 1:
         return _rotate_point(x, y, n, element)
-    centre_x = render._span_start(x, span_x) + span_x / 2
-    centre_y = render._span_start(y, span_y) + span_y / 2
+    centre_x = render_units._span_start(x, span_x) + span_x / 2
+    centre_y = render_units._span_start(y, span_y) + span_y / 2
     image_x, image_y = _rotate_point(centre_x, centre_y, n, element)
-    target_x, target_y = tile_span(unit_const if new_const is None else new_const, render.NON_BUILDING_SPAN)
-    return render.span_anchor(
+    target_x, target_y = tile_span(unit_const if new_const is None else new_const, render_units.NON_BUILDING_SPAN)
+    return render_units.span_anchor(
         math.floor(image_x - target_x / 2 + 0.5), math.floor(image_y - target_y / 2 + 0.5), target_x, target_y
     )
 
@@ -982,10 +982,10 @@ def _angular_image_position(
 def _image_on_map(unit_const: int, x: float, y: float, n: int) -> bool:
     """Whether a unit of `unit_const` at (x, y) has its whole footprint rect
     on the n x n map."""
-    span_x, span_y = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     if span_x == 1 and span_y == 1:
         return 0 <= x < n and 0 <= y < n
-    low_x, low_y = render._span_start(x, span_x), render._span_start(y, span_y)
+    low_x, low_y = render_units._span_start(x, span_x), render_units._span_start(y, span_y)
     return 0 <= low_x <= n - span_x and 0 <= low_y <= n - span_y
 
 
@@ -1158,7 +1158,7 @@ def plan_mirror_units(
     kept_tiles: set[tuple[int, int]] = set()
     for unit in kept:
         if unit.unit_const not in passable:
-            kept_tiles.update(render.unit_occupied_tiles(unit, width, height) or ())
+            kept_tiles.update(render_units.unit_occupied_tiles(unit, width, height) or ())
 
     garrisoned_blockers = []
     if referencing is not None:
@@ -1178,7 +1178,7 @@ def plan_mirror_units(
     source_owners: dict[tuple[int, int], list[object]] = {}
     for unit in sources:
         if unit.unit_const not in passable:
-            for tile in render.unit_occupied_tiles(unit, width, height) or ():
+            for tile in render_units.unit_occupied_tiles(unit, width, height) or ():
                 source_owners.setdefault(tile, []).append(unit)
 
     spills: dict[int, list[tuple[int, int]]] = {}
@@ -1186,7 +1186,7 @@ def plan_mirror_units(
     def spilled_tiles(unit) -> list[tuple[int, int]]:
         # A source unit's footprint tiles outside the source slice, sorted.
         if id(unit) not in spills:
-            footprint = render.unit_occupied_tiles(unit, width, height) or ()
+            footprint = render_units.unit_occupied_tiles(unit, width, height) or ()
             spills[id(unit)] = sorted(t for t in footprint if t[1] * width + t[0] not in source_indices)
         return spills[id(unit)]
 
@@ -1220,7 +1220,7 @@ def plan_mirror_units(
     gates: list[object] = []
     off_map: list[tuple[object, Element]] = []
     for unit in sources:
-        span_x, span_y = tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
+        span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
         is_gate = gate_orientation.is_gate(unit.unit_const)
         # Images are re-anchored on whole tiles, so an off-parity building's
         # image onto its own footprint matches its canonical anchor, not its raw one.
@@ -1253,7 +1253,7 @@ def plan_mirror_units(
             owner = _rotated_owner(unit.player, player_ids, (index - slice_index) % len(elements) * ownership_steps)
             if not collides and spot(new_const, owner, x, y) in passable_spots:
                 continue
-            tiles = render.occupied_tiles_for(new_const, x, y, width, height) if collides else None
+            tiles = render_units.occupied_tiles_for(new_const, x, y, width, height) if collides else None
             hits = sorted(tile for tile in tiles or () if tile in source_owners)
             if hits:
                 # An image overlapping a KEPT source unit means the source's
@@ -1297,5 +1297,5 @@ def _angular_image_lands(
         return False
     if int(y) * n + int(x) in unreachable:
         return False
-    tiles = render.occupied_tiles_for(unit_const, x, y, n, n)
+    tiles = render_units.occupied_tiles_for(unit_const, x, y, n, n)
     return not (tiles and kept_tiles.intersection(tiles))

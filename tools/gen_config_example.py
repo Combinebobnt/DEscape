@@ -420,9 +420,16 @@ grid_major_every: {grid_overlay.MAJOR_EVERY_DEFAULT}
 # Default: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}].
 window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 
-# Width in pixels of the left info/trigger panel and the map view,
-# [left, right]. Persisted automatically when you drag the split -- not
-# something you normally set by hand. Omitted entirely until first saved.
+# Where the editor panel, the status log and the toolbars are, docked or
+# floating: Qt's own saved layout, written when the window closes. Not
+# hand-editable; View > Panels > Reset Layout restores the default.
+# Omitted entirely until first saved.
+# window_state: <base64>
+
+# Width in pixels of the editor panel and the map view, [panel, map], as
+# versions before the panels could float saved it. Read only to size the
+# panel the first time the window opens with no window_state above; removed
+# once window_state is saved.
 # split_sizes: [340, 900]
 
 # How the Units panel's object list shows objects, set by the buttons above
@@ -435,11 +442,10 @@ units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 # One of {_UNITS_CATALOG_MODES}. Default: {settings.BROWSE_CATALOG_MODE_DEFAULT}.
 browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
 
-# Height in pixels of the system log, below the map view. Persisted
-# automatically when you drag the split -- not something you normally set by
-# hand. Omitted entirely until first saved; until then the log is four text
-# lines tall, so unlike split_sizes above there is no fixed default to quote
-# here -- it depends on your font. The value below is only an example.
+# Height in pixels of the status log, as versions before the panels could
+# float saved it. Read and removed the same way as split_sizes above; with
+# neither saved, the log starts four text lines tall. The value below is
+# only an example.
 # log_height: 120
 
 # Height in text lines of each multi-line text box you have dragged taller or

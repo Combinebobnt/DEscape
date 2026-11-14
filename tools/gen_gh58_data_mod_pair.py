@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT))
 
 from descape import asset_source, batch_api, data_mods, game_dataset, object_catalog, terrain_classes
 from descape.edit_history import EditHistory
-from descape.render import unit_occupied_tiles
+from descape.render_units import unit_occupied_tiles
 from descape.scenario_io import is_workshop_subscribed
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.unit_model import UnitEditModel

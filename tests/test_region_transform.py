@@ -16,7 +16,7 @@ import math
 
 import pytest
 
-from descape import gate_orientation, iso_geometry, render, unit_rotation
+from descape import gate_orientation, iso_geometry, render_units, unit_rotation
 from descape.mirror_tools import AXIS_SWAPPING, TRANSFORMS, compose, facing_image, invert
 from descape.region_clipboard import RegionBlock, RegionUnit
 from descape.region_transform import (
@@ -131,10 +131,10 @@ def test_tile_arrays_obey_the_group_law(first, second):
 _FOOTPRINT_UNITS = {
     "mid-tile archer": _unit(ARCHER, 2.3, 1.7),
     "tile-boundary archer": _unit(ARCHER, 6.0, 4.0),
-    "2x2 house": _unit(HOUSE, *render.span_anchor(1, 3, 2, 2)),
-    "4x4 castle": _unit(CASTLE, *render.span_anchor(4, 1, 4, 4)),
-    "NE gate": _unit(GATE_NE, *render.span_anchor(1, 0, 4, 1)),
-    "diagonal gate": _unit(GATE_DIAGONAL, *render.span_anchor(5, 2, 4, 4)),
+    "2x2 house": _unit(HOUSE, *render_units.span_anchor(1, 3, 2, 2)),
+    "4x4 castle": _unit(CASTLE, *render_units.span_anchor(4, 1, 4, 4)),
+    "NE gate": _unit(GATE_NE, *render_units.span_anchor(1, 0, 4, 1)),
+    "diagonal gate": _unit(GATE_DIAGONAL, *render_units.span_anchor(5, 2, 4, 4)),
 }
 
 
@@ -143,7 +143,7 @@ _FOOTPRINT_UNITS = {
 def test_a_units_footprint_image_is_the_transform_of_its_footprint(element, name):
     w, h = 9, 6
     unit = _FOOTPRINT_UNITS[name]
-    source_tiles = render.occupied_tiles_for(unit.unit_const, unit.dx, unit.dy, w, h)
+    source_tiles = render_units.occupied_tiles_for(unit.unit_const, unit.dx, unit.dy, w, h)
     assert source_tiles, "the source footprint must lie inside the block"
     (image,) = transform_block(_block(w, h, [unit]), element, False).block.units
     n = max(w, h)
@@ -152,7 +152,7 @@ def test_a_units_footprint_image_is_the_transform_of_its_footprint(element, name
         (ix - low_x, iy - low_y) for ix, iy in (TRANSFORMS[element](x, y, n) for x, y in source_tiles)
     }
     new_w, new_h = (h, w) if element in AXIS_SWAPPING else (w, h)
-    got = render.occupied_tiles_for(image.unit_const, image.dx, image.dy, new_w, new_h)
+    got = render_units.occupied_tiles_for(image.unit_const, image.dx, image.dy, new_w, new_h)
     assert set(got) == expected
 
 
@@ -161,7 +161,7 @@ def test_unit_fields_follow_the_mirror_rules(element):
     units = [
         _unit(ARCHER, 1.5, 1.5, rotation=1.25),
         _unit(OAK, 2.5, 1.5, rotation=37.0),
-        _unit(HOUSE, *render.span_anchor(3, 0, 2, 2), rotation=7.0),
+        _unit(HOUSE, *render_units.span_anchor(3, 0, 2, 2), rotation=7.0),
     ]
     archer, oak, house = transform_block(_block(units=units), element, False).block.units
     assert archer.rotation == facing_image(1.25, element, unit_rotation.angle_count_for(ARCHER))
@@ -191,7 +191,7 @@ def test_unit_order_and_garrison_slots_survive_and_an_occupant_stays_on_its_hold
     for element in ELEMENTS:
         units = [
             _unit(ARCHER, 7.5, 4.5),
-            _unit(CASTLE, *render.span_anchor(2, 1, 4, 4)),
+            _unit(CASTLE, *render_units.span_anchor(2, 1, 4, 4)),
             _unit(ARCHER, 4.0, 3.0, garrison_slot=1),  # stored on its holder's point
             _unit(OAK, 0.5, 0.5),
         ]
@@ -203,9 +203,9 @@ def test_unit_order_and_garrison_slots_survive_and_an_occupant_stays_on_its_hold
 
 def test_kept_orientation_counts_cliffs_always_and_unsquare_spans_under_a_swap():
     units = [
-        _unit(CLIFF, *render.span_anchor(0, 0, 3, 3)),
-        _unit(BRIDGE, *render.span_anchor(5, 0, 2, 3)),
-        _unit(GATE_NE, *render.span_anchor(0, 4, 4, 1)),
+        _unit(CLIFF, *render_units.span_anchor(0, 0, 3, 3)),
+        _unit(BRIDGE, *render_units.span_anchor(5, 0, 2, 3)),
+        _unit(GATE_NE, *render_units.span_anchor(0, 4, 4, 1)),
         _unit(ARCHER, 8.5, 5.5),
     ]
     block = _block(9, 6, units)
@@ -266,7 +266,7 @@ def test_a_flip_keeps_a_non_square_rect_and_mirrors_inside_it_where_a_turn_does_
         assert [(image.x, image.y) for image in plan.images] == want, element
         screen = plan_in_place(firsts, {FLIP_WEST_NORTH: "a", FLIP_WEST_SOUTH: "d"}[element], rect, False)
         assert screen.rect == turned.rect, "the old screen flip landed where a quarter turn does"
-        bridge = [FirstUnit("bridge", BRIDGE, *render.span_anchor(40, 30, 2, 3), 0.0)]
+        bridge = [FirstUnit("bridge", BRIDGE, *render_units.span_anchor(40, 30, 2, 3), 0.0)]
         assert plan_in_place(bridge, element, rect, False).kept_orientation == 0, element
 
 
@@ -313,9 +313,9 @@ def _gate_firsts() -> list[FirstUnit]:
     firsts = []
     for i, siblings in enumerate(sorted(gate_orientation.groups().values())):
         const = siblings[i % 4]
-        span = tile_span(const, render.NON_BUILDING_SPAN)
+        span = tile_span(const, render_units.NON_BUILDING_SPAN)
         tile = (40 + i % 8, 30 + (i // 8) * 4)
-        firsts.append(FirstUnit(("gate", i), const, *render.span_anchor(*tile, *span), 7.0))
+        firsts.append(FirstUnit(("gate", i), const, *render_units.span_anchor(*tile, *span), 7.0))
     return firsts
 
 
@@ -326,12 +326,12 @@ def _firsts() -> list[FirstUnit]:
     firsts = [
         FirstUnit("off-grid archer", ARCHER, _F32_41_3, 31.70000076293945, 1.25),
         FirstUnit("boundary archer", ARCHER, 46.0, 35.0, 0.39269909262657166),
-        FirstUnit("house", HOUSE, *render.span_anchor(42, 32, 2, 2), 7.0),
+        FirstUnit("house", HOUSE, *render_units.span_anchor(42, 32, 2, 2), 7.0),
         FirstUnit("off-parity house", HOUSE, 44.5, 37.5, 0.0),
         FirstUnit("off-parity barracks", BARRACKS, 48.0, 33.0, 7.0),
-        FirstUnit("barracks", BARRACKS, *render.span_anchor(47, 38, 3, 3), 0.0),
-        FirstUnit("occupant", VILLAGER, *render.span_anchor(47, 38, 3, 3), 2.0, holder=5),
-        FirstUnit("cliff", CLIFF, *render.span_anchor(40, 39, 3, 3), 11.0),
+        FirstUnit("barracks", BARRACKS, *render_units.span_anchor(47, 38, 3, 3), 0.0),
+        FirstUnit("occupant", VILLAGER, *render_units.span_anchor(47, 38, 3, 3), 2.0, holder=5),
+        FirstUnit("cliff", CLIFF, *render_units.span_anchor(40, 39, 3, 3), 11.0),
         FirstUnit("oak", OAK, 51.5, 41.5, 37.0),
     ]
     firsts += [FirstUnit(("wall", i), WALL, 40.5 + i, 41.5, float(i)) for i in range(5)]
@@ -452,7 +452,7 @@ def test_only_angle_consts_get_a_facing_write_and_cliffs_trees_and_inert_keep_th
 
 
 def test_an_occupant_lands_on_its_holders_image_wherever_it_was_stored():
-    holder = FirstUnit("castle", CASTLE, *render.span_anchor(40, 30, 4, 4), 0.0)
+    holder = FirstUnit("castle", CASTLE, *render_units.span_anchor(40, 30, 4, 4), 0.0)
     away = FirstUnit("away", ARCHER, 70.5, 10.5, 0.0, holder=0)
     on = FirstUnit("on", ARCHER, holder.x, holder.y, 0.0, holder=0)
     for element in ELEMENTS[1:]:
@@ -462,9 +462,9 @@ def test_an_occupant_lands_on_its_holders_image_wherever_it_was_stored():
 
 def test_kept_orientation_counts_as_the_pasted_turn_does():
     firsts = [
-        FirstUnit(0, CLIFF, *render.span_anchor(40, 30, 3, 3), 0.0),
-        FirstUnit(1, BRIDGE, *render.span_anchor(45, 30, 2, 3), 0.0),
-        FirstUnit(2, GATE_NE, *render.span_anchor(40, 34, 4, 1), 0.0),
+        FirstUnit(0, CLIFF, *render_units.span_anchor(40, 30, 3, 3), 0.0),
+        FirstUnit(1, BRIDGE, *render_units.span_anchor(45, 30, 2, 3), 0.0),
+        FirstUnit(2, GATE_NE, *render_units.span_anchor(40, 34, 4, 1), 0.0),
     ]
     assert plan_in_place(firsts, "r", _RECT, False).kept_orientation == 2
     assert plan_in_place(firsts, "mx", _RECT, False).kept_orientation == 1
@@ -474,8 +474,8 @@ def test_image_on_map_wants_the_whole_footprint():
     assert image_on_map(ARCHER, 0.0, 119.9, 120, 120)
     assert not image_on_map(ARCHER, -0.5, 3.5, 120, 120)
     assert not image_on_map(ARCHER, 3.5, 120.0, 120, 120)
-    assert image_on_map(CASTLE, *render.span_anchor(116, 0, 4, 4), 120, 120)
-    assert not image_on_map(CASTLE, *render.span_anchor(117, 0, 4, 4), 120, 120)
-    assert not image_on_map(GATE_NE, *render.span_anchor(-1, 5, 4, 1), 120, 120)
-    assert image_on_map(GATE_NE, *render.span_anchor(10, 0, 4, 1), 120, 120)
+    assert image_on_map(CASTLE, *render_units.span_anchor(116, 0, 4, 4), 120, 120)
+    assert not image_on_map(CASTLE, *render_units.span_anchor(117, 0, 4, 4), 120, 120)
+    assert not image_on_map(GATE_NE, *render_units.span_anchor(-1, 5, 4, 1), 120, 120)
+    assert image_on_map(GATE_NE, *render_units.span_anchor(10, 0, 4, 1), 120, 120)
     assert not image_on_map(GATE_NE, 12.0, -0.5, 120, 120)

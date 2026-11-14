@@ -33,9 +33,10 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, grid_overlay, render, render_cache
+from descape import asset_source, grid_overlay, render_cache, render_iso, render_paint, render_sloped
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
+from testkit.render_family import set_render_global
 
 PACK_ID = "grid"
 OUT_DIR = grp.OUT_DIR
@@ -122,13 +123,13 @@ def _scenario(scene: str, with_units: bool):
 def _cache(scn, style: str):
     """The app's own chunk cache for this style, sprites on, as the viewer builds it."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "flat":
         return render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
 
 
@@ -168,18 +169,17 @@ def _recorded_grid():
     """Swap the per-tile grid painters for recorders: each call's arguments
     minus the image, replayable onto any composite of the same rect."""
     calls = []
-    real = {"_paint_grid_iso": render._paint_grid_iso, "_paint_grid_flat": render._paint_grid_flat}
+    real = {"_paint_grid_iso": render_paint._paint_grid_iso, "_paint_grid_flat": render_paint._paint_grid_flat}
 
     def recorder(fn):
         return lambda _img, *args, **kwargs: calls.append((fn, args, kwargs))
 
-    for name, fn in real.items():
-        setattr(render, name, recorder(fn))
-    try:
-        yield calls
-    finally:
+    import pytest
+
+    with pytest.MonkeyPatch.context() as mp:
         for name, fn in real.items():
-            setattr(render, name, fn)
+            set_render_global(mp, name, recorder(fn))
+        yield calls
 
 
 def _replay(img: np.ndarray, calls) -> np.ndarray:

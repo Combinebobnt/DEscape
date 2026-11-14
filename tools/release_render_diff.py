@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import importlib
 import json
 import os
 import subprocess
@@ -111,6 +112,24 @@ ATTRIBUTE_TOP = 8
 ATTRIBUTE_NEAR = 2
 
 
+# The modules a render name may live in, BASE_REF's one render.py first. Drop the rest once BASE_REF has the split.
+RENDER_HOMES = ("render", "render_flat", "render_iso", "render_sloped", "render_paint", "render_sprites", "render_units")
+
+
+def _render_fn(name: str):
+    """`name` from whichever render layout the tree on sys.path has: the release tag's or this checkout's (TASK-629)."""
+    for module in RENDER_HOMES:
+        try:
+            found = importlib.import_module(f"descape.{module}")
+        except ModuleNotFoundError as error:
+            if error.name != f"descape.{module}":
+                raise
+            continue
+        if hasattr(found, name):
+            return getattr(found, name)
+    raise SystemExit(f"no render module defines {name}: update {Path(__file__).name}'s RENDER_HOMES")
+
+
 # ---------------------------------------------------------------------------
 # Patches: each runs in this checkout's worker, before it renders.
 
@@ -139,10 +158,14 @@ def _unturned_flat_walls() -> None:
 
 def _single_anchor_sprites() -> None:
     """Put the pre-TASK-221 depth order back: a multi-tile sprite paints whole at its front corner."""
-    from descape import render
+    import pytest
 
-    _require(render, "SPRITE_COLUMN_SLICING")
-    render.SPRITE_COLUMN_SLICING = False
+    from testkit.render_family import render_global_bound, set_render_global
+
+    if not render_global_bound("SPRITE_COLUMN_SLICING"):
+        raise SystemExit(f"SPRITE_COLUMN_SLICING is gone: update its patch in {Path(__file__).name} to match the refactor")
+    # Never undone: the switch lasts this worker process, which runs this checkout only.
+    set_render_global(pytest.MonkeyPatch(), "SPRITE_COLUMN_SLICING", False)
 
 
 def _no_garrison_flags() -> None:
@@ -175,7 +198,7 @@ def _one_tile_statics_and_hidden_fish() -> None:
     from descape import terrain_palette
 
     _require(terrain_palette, "STATIC_TILE_SPANS", "FISH_TILE_SPANS")
-    # In place, never rebound: render.py imports the tables by name.
+    # In place, never rebound: the render modules import the tables by name.
     terrain_palette.STATIC_TILE_SPANS.clear()
     for const in (451, 452, 454, 459, 460, 461):
         terrain_palette.FISH_TILE_SPANS.pop(const, None)
@@ -418,7 +441,7 @@ def _worker(spec: dict) -> None:
     if "attribute_out" in spec:
         _attribute(spec)
         return
-    from descape import iso_geometry, render
+    from descape import iso_geometry
 
     patches = {n.name: n.patch for n in NEUTRALIZATIONS if n.patch is not None}
     for name in spec["patches"]:
@@ -431,15 +454,15 @@ def _worker(spec: dict) -> None:
     style, sprites = spec["style"], spec["sprites"]
     meta: dict = {"removed_units": removed}
     if style == "flat":
-        img = render.overlay_units(render.render_terrain(scenario), scenario, with_sprites=sprites)
+        img = _render_fn("overlay_units")(_render_fn("render_terrain")(scenario), scenario, with_sprites=sprites)
     elif style == "stepped":
-        img, elevations, proj = render.render_terrain_iso_with_proj(scenario, with_units=True, with_sprites=sprites)
+        img, elevations, proj = _render_fn("render_terrain_iso_with_proj")(scenario, with_units=True, with_sprites=sprites)
         if spec.get("mask_out"):
             np.save(spec["mask_out"], _terrace_mask(iso_geometry, elevations, proj, img.shape[:2]))
         if sprites:
-            meta["sprite_units"] = len(render.sprite_draws_by_anchor(scenario, proj, elevations).skip_ids)
+            meta["sprite_units"] = len(_render_fn("sprite_draws_by_anchor")(scenario, proj, elevations).skip_ids)
     else:
-        img = render.render_terrain_sloped_with_proj(scenario, with_units=True, with_sprites=sprites)[0]
+        img = _render_fn("render_terrain_sloped_with_proj")(scenario, with_units=True, with_sprites=sprites)[0]
     np.save(spec["out"], img)
     Path(spec["meta_out"]).write_text(json.dumps(meta))
 
@@ -448,13 +471,13 @@ def _diff_px_by_tile(spec: dict, scenario, diff: np.ndarray) -> tuple[Counter, i
     """(diff px per (x, y) tile, px no tile claims). Flat is exact (px // tile_px). Stepped and Sloped
     sample one diff pixel per half-tile screen cell through iso_geometry.screen_to_tile, which reads
     flat tile tops: a skirt pixel resolves to no tile, and a Sloped tile is found by its Stepped diamond."""
-    from descape import iso_geometry, render
+    from descape import iso_geometry
 
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     px: Counter = Counter()
     if spec["style"] == "flat":
-        tile_px = render.tile_pixels_for_map(w, h)
+        tile_px = _render_fn("tile_pixels_for_map")(w, h)
         for top in range(0, diff.shape[0], STRIP_ROWS):
             ys, xs = np.nonzero(diff[top : top + STRIP_ROWS])
             ids, counts = np.unique(((ys + top) // tile_px) * w + xs // tile_px, return_counts=True)
@@ -462,9 +485,9 @@ def _diff_px_by_tile(spec: dict, scenario, diff: np.ndarray) -> tuple[Counter, i
                 px[(tile_id % w, tile_id // w)] += count
         return px, 0
     if spec["style"] == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = _render_fn("elevations_and_proj")(scenario)
     else:
-        elevations, _corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, _corner_rise, proj = _render_fn("sloped_elevations_and_proj")(scenario)
     cell_w, cell_h = proj.half_w, proj.half_h
     cols = -(-diff.shape[1] // cell_w)
     strip = cell_h * max(1, STRIP_ROWS // cell_h)
@@ -490,7 +513,7 @@ def _diff_px_by_tile(spec: dict, scenario, diff: np.ndarray) -> tuple[Counter, i
 def _attribute(spec: dict) -> None:
     """Names what sits under one comparison's unmasked diff: per tile, its terrain id and the consts of
     the units whose footprint covers it, else of those within ATTRIBUTE_NEAR tiles (a sprite overhangs)."""
-    from descape import object_catalog, render, terrain_palette
+    from descape import object_catalog, terrain_palette
 
     scenario, _removed = _load_without(spec)
     mm = scenario.map_manager
@@ -498,9 +521,10 @@ def _attribute(spec: dict) -> None:
     px_by_tile, unresolved = _diff_px_by_tile(spec, scenario, np.load(spec["diff"], mmap_mode="r"))
 
     on_tile: dict[tuple[int, int], set[int]] = {}
+    unit_tile_bounds = _render_fn("unit_tile_bounds")
     for units in scenario.unit_manager.units:
         for unit in units:
-            bounds = render.unit_tile_bounds(unit, w, h)
+            bounds = unit_tile_bounds(unit, w, h)
             if bounds is None:
                 continue
             x0, x1, y0, y1 = bounds

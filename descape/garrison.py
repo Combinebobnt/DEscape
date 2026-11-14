@@ -57,7 +57,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from descape import game_dataset
+from descape import game_dataset, games
 
 _TABLE_JSON_PATH = Path(__file__).resolve().parent / "garrison_table.json"
 
@@ -111,10 +111,13 @@ _CLASS_BIT = {
 RELIC_CLASS = 42
 
 # Per dataset: the hosts the relic rule (module docstring) admits relics into.
-_RELIC_HOSTS = {
-    game_dataset.AOE2: frozenset({104, 30, 31, 32, 1806}),  # Monastery x4, Fortified Church
-    game_dataset.ROR: frozenset(),
-}
+_RELIC_HOSTS = games.PerGame(
+    "garrison: the hosts a relic goes into",
+    {
+        "aoe2": frozenset({104, 30, 31, 32, 1806}),  # Monastery x4, Fortified Church
+        "ror": frozenset(),
+    },
+)
 
 
 @game_dataset.cache(maxsize=1)
@@ -160,7 +163,7 @@ def can_hold(host_const: int) -> bool:
 
 def holds_relics(host_const: int) -> bool:
     """Whether the relic rule (module docstring) lets relics inside `host_const`."""
-    return host_const in _RELIC_HOSTS[game_dataset.active()]
+    return host_const in _RELIC_HOSTS.active()
 
 
 def is_relic(unit_const: int) -> bool:

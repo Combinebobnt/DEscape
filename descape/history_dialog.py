@@ -52,7 +52,7 @@ class EditHistoryDialog(QDialog):
         self._on_jump = on_jump or (lambda *args: None)
 
         # A plain QTreeWidget for the same reason clipboard_dialog gives: the
-        # only wide column here is Stretch, so trigger_panel's
+        # only wide column here is Stretch, so value_picker's
         # horizontal-auto-scroll subclass has nothing to cancel.
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["", "Edit", "Changes"])

@@ -27,6 +27,8 @@ from test_wall_run_viewer import (  # noqa: F401 -- _hold_the_synthetic_button i
     _window,
 )
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -252,16 +254,14 @@ def test_an_exception_inside_the_unit_commit_leaves_no_edit_pending(monkeypatch,
 def test_a_shape_over_the_threshold_asks_its_own_large_edit_question(monkeypatch, answer, placed):
     from PyQt5.QtWidgets import QMessageBox
 
-    from descape import viewer
-
     asked: list[str] = []
 
     def question(_parent, title, text, *_args):
         asked.append(f"{title}: {text}")
         return QMessageBox.Yes if answer == "yes" else QMessageBox.Cancel
 
-    monkeypatch.setattr(viewer, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
-    monkeypatch.setattr(viewer.QMessageBox, "question", staticmethod(question))
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     window = _shape_window(VILLAGER, "rectangle")
     try:
         before = _unit_count(window)

@@ -21,7 +21,7 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF, QTransform
 from PyQt5.QtWidgets import QWidget
 
-from descape import render
+from descape import render_paint
 from descape.find_objects import is_garrisoned
 from descape.scenario_new import BLANK_TERRAIN_STRUCT
 from descape.terrain_palette import color_for_terrain_id
@@ -54,7 +54,7 @@ def terrain_rgb(scenario) -> np.ndarray:
     """One colour per tile, pixel (y, x) being tile (x, y). Reads MapManager.terrain
     live, the source build_patched() writes from, so pending terrain edits show."""
     mm = scenario.map_manager
-    ids = render.tile_field_mirror(scenario, "terrain_id").reshape(mm.map_height, mm.map_width)
+    ids = render_paint.tile_field_mirror(scenario, "terrain_id").reshape(mm.map_height, mm.map_width)
     unique, inverse = np.unique(ids, return_inverse=True)
     lut = np.array([color_for_terrain_id(int(t)) for t in unique], dtype=np.uint8)
     return np.ascontiguousarray(lut[inverse.reshape(ids.shape)])

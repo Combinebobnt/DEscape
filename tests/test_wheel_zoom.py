@@ -350,7 +350,7 @@ def test_ctrl_wheel_with_no_ghost_does_nothing(case) -> None:
     nothing to act on, so it no longer zooms (GH #245, user 2026-10-25)."""
     from PyQt5.QtCore import QEvent
 
-    from descape.viewer import _wall_consts
+    from descape.viewer_unit_place import _wall_consts
 
     window = _place_window()
     try:

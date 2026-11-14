@@ -30,14 +30,11 @@ from dataclasses import dataclass
 import pytest
 
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    dirty_screen_bbox_iso,
-    dirty_screen_bbox_sloped,
-    elevations_and_proj,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
 

@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from descape import gate_orientation, render
-from descape.terrain_palette import tile_span
+from descape import gate_orientation, render_units
+from descape.terrain_palette import BUILDING_TILE_OFFSETS, tile_span
 
 STONE_CLOSED = (64, 659, 88, 667)  # ne, e, se, n; docs/WRITE_RULES.md's own example
 PALISADE_CLOSED_NE = 789
@@ -41,9 +41,9 @@ def _run_angle(unit_const: int) -> float | None:
     None for the 1x1 corner groups, which are (1, 1) in all four orientations
     and so have no run to measure.
     """
-    offsets = render.BUILDING_TILE_OFFSETS.get(unit_const)
+    offsets = BUILDING_TILE_OFFSETS.get(unit_const)
     if offsets is None:
-        span = tile_span(unit_const, render.NON_BUILDING_SPAN)
+        span = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
         vector = {(4, 1): (1, 0), (1, 4): (0, 1)}.get(span)
     else:
         vector = (1, 1) if (0, 0) in offsets else (1, -1)
@@ -155,7 +155,7 @@ def test_cycling_a_non_gate_raises_rather_than_no_opping(unit_const):
 def test_every_placed_gate_is_grouped_and_sits_on_its_own_span_anchor(corpus_files):
     """The measurement set_unit_const()'s re-anchoring rests on, re-measured
     rather than trusted: every real gate placement's coordinate is
-    `tile + span/2` per axis, which is exactly render.span_anchor(). A
+    `tile + span/2` per axis, which is exactly render_units.span_anchor(). A
     counterexample would mean a const swap must not re-anchor the way it does.
     """
     from descape import scenario_io
@@ -173,9 +173,9 @@ def test_every_placed_gate_is_grouped_and_sits_on_its_own_span_anchor(corpus_fil
                 if gate_orientation.orientation_siblings(unit.unit_const) is None:
                     ungrouped.append((path.name, unit.unit_const))
                     continue
-                span = tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-                low = (render._span_start(unit.x, span[0]), render._span_start(unit.y, span[1]))
-                if (unit.x, unit.y) != render.span_anchor(*low, *span):
+                span = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+                low = (render_units._span_start(unit.x, span[0]), render_units._span_start(unit.y, span[1]))
+                if (unit.x, unit.y) != render_units.span_anchor(*low, *span):
                     off_anchor.append((path.name, unit.unit_const, unit.x, unit.y))
     assert placements > 0, "the corpus subset holds no gates, so this test measured nothing"
     assert not ungrouped

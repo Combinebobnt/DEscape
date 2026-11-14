@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 from test_sloped_mip import BLACK, DESERT_SAND, MAP_W, _cache, _scenario, _whole
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox
+from testkit.render_family import set_render_global
 from tools import bench_draw_stroke
 
 
@@ -42,7 +43,7 @@ def test_phased_patch_repaints_a_terrain_edit_like_patch_does() -> None:
     tile = scn.map_manager.terrain[7 * MAP_W + 9]
     tile.terrain_id = BLACK if tile.terrain_id == DESERT_SAND else DESERT_SAND
     changed: set = set()
-    bbox = render.dirty_screen_bbox_sloped(scn, [7 * MAP_W + 9], cache.elevations, cache.proj, elevation_changed=changed)
+    bbox = render_bbox.dirty_screen_bbox_sloped(scn, [7 * MAP_W + 9], cache.elevations, cache.proj, elevation_changed=changed)
     bench_draw_stroke._patch_phased(cache, "sloped", bbox, changed)
     assert cache._terrain_ids[7 * MAP_W + 9] == tile.terrain_id
     assert np.array_equal(_whole(cache, 0), _whole(_cache(scn), 0))
@@ -63,7 +64,7 @@ def test_check_fresh_passes_a_flat_stroke_and_catches_an_unpatched_one(monkeypat
     run = bench_draw_stroke._run_stroke
     line, _keyed, stale = run(Path("fake.aoe2scenario"), "flat", 9, False, blend=False, check_fresh=True)
     assert stale == 0 and "fresh=ok" in line
-    monkeypatch.setattr(render, "flat_dirty_rects", lambda *args, **kwargs: [])
+    set_render_global(monkeypatch, "flat_dirty_rects", lambda *args, **kwargs: [])
     line, _keyed, stale = run(Path("fake.aoe2scenario"), "flat", 9, False, blend=False, check_fresh=True)
     assert stale and f"fresh={stale}-chunks-differ" in line
 

@@ -7,10 +7,13 @@ with a new descriptor in GAMES; game_dataset resolves tables and install
 files from the active one, and the Settings and New Map lists, the
 regeneration tool and the per-game tests all read this registry.
 
-Qt-free, imports nothing from descape, and holds no state but the registry
-list, which only tests change (register() / unregister()). Everything
-derived from it is computed per call, so a game registered later shows
-everywhere.
+What a game's files cannot tell DEscape (its wall and cliff consts, its civ
+list) is a PerGame table in the module that uses it, one entry per game.
+
+Qt-free, imports nothing from descape at load time, and holds no state but
+the registry list, which only tests change (register() / unregister()), and
+the list of PerGame tables. Everything derived from it is computed per call,
+so a game registered later shows everywhere.
 """
 
 from __future__ import annotations
@@ -130,8 +133,9 @@ def for_variant(variant) -> Game:
 
 
 def for_scenario(loaded) -> Game:
-    """A loaded scenario's own game, whatever game data is active."""
-    return for_variant(loaded.game_variant)
+    """A loaded scenario's own game, whatever game data is active. A
+    duck-typed scenario without game_variant is the default game's."""
+    return for_variant(getattr(loaded, "game_variant", None))
 
 
 def chain(game: Game) -> tuple[Game, ...]:
@@ -143,6 +147,36 @@ def chain(game: Game) -> tuple[Game, ...]:
             raise ValueError(f"game {game.id!r} falls back in a cycle through {following.id!r}")
         found.append(following)
     return tuple(found)
+
+
+class PerGame(dict):
+    """A hand-measured value per game id (docs/GAME_DATA.md, "Per-game
+    tables"): no default and no inheritance, so a registered game missing
+    from one fails tests/test_games.py's completeness test, which lists
+    `what` for each. A dict, so a test patches one game's entry with
+    monkeypatch.setitem()."""
+
+    def __init__(self, what: str, values: dict[str, object]):
+        super().__init__(values)
+        self.what = what
+        TABLES.append(self)
+
+    def active(self):
+        """The active game's value, read at call time."""
+        global _game_dataset
+        if _game_dataset is None:
+            # Bound on first use, not at import: game_dataset imports this module. Per-unit render paths call this.
+            from descape import game_dataset as _game_dataset
+        return self[_game_dataset.game().id]
+
+    def for_game(self, game: Game):
+        """`game`'s value, for a file's own game (for_scenario()) rather than the active one."""
+        return self[game.id]
+
+
+# Every PerGame built so far, for the completeness test.
+TABLES: list[PerGame] = []
+_game_dataset = None
 
 
 def register(game: Game) -> None:

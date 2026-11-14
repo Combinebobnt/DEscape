@@ -55,12 +55,16 @@ from descape import (
     composite_backend,
     iso_geometry,
     native_composite,
-    render,
     render_cache,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
     unit_sprites,
 )
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
+from testkit.render_family import RENDER, patch
 
 PACK_ID = "tall_objects"
 OUT_DIR = grp.OUT_DIR
@@ -136,11 +140,11 @@ def _scenario(const: int | None, ground):
 def _cache(scn, style: str):
     """The app's own chunk cache for this style, sprites on, default layers."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
 
 
@@ -177,8 +181,8 @@ def _inject_interleaved():
     per tile, in the kernel and in the per-tile path alike."""
     return [
         (native_composite.UnitPack, "two_pass", property(lambda self: False)),
-        (render, "_paint_candidates_iso", _interleaved(render._paint_tile_and_units_iso)),
-        (render, "_paint_candidates_sloped", _interleaved(render._paint_tile_and_units_sloped)),
+        (RENDER, "_paint_candidates_iso", _interleaved(render_iso._paint_tile_and_units_iso)),
+        (RENDER, "_paint_candidates_sloped", _interleaved(render_sloped._paint_tile_and_units_sloped)),
     ]
 
 
@@ -188,7 +192,7 @@ _NEVER_BELOW = 1 << 20
 def _inject_no_cover():
     """The cover step never fires: every sprite's base is reported far above
     any ground, so no tile stands higher than it."""
-    real = render._resolve_unit_sprite
+    real = render_sprites._resolve_unit_sprite
 
     def lifted(*args, **kwargs):
         contribution = real(*args, **kwargs)
@@ -197,27 +201,27 @@ def _inject_no_cover():
                 contribution.by_anchor[key] = [(draw, px, py, _NEVER_BELOW) for draw, px, py, _rise in entries]
         return contribution
 
-    return render, "_resolve_unit_sprite", lifted
+    return RENDER, "_resolve_unit_sprite", lifted
 
 
 def _inject_inverted():
     """The cover rule swapped: ground at or below an object's base covers it,
     ground above it does not. Numpy path only (see the module docstring)."""
-    real_floor = render._ink_floor
+    real_floor = render_sprites._ink_floor
 
     def restore(img, terrain, ink, base_y, base_x, dst_y, dst_x, height, *, extent=None):
         ay, ax = base_y + dst_y, base_x + dst_x
         ok = (ay >= 0) & (ay < ink.shape[0]) & (ax >= 0) & (ax < ink.shape[1])
         ay, ax = ay[ok], ax[ok]
-        hit = (ink[ay, ax] != render.INK_NONE) & (ink[ay, ax] >= height)
+        hit = (ink[ay, ax] != render_paint.INK_NONE) & (ink[ay, ax] >= height)
         ay, ax = ay[hit], ax[hit]
         img[ay, ax] = terrain[ay, ax]
-        ink[ay, ax] = render.INK_NONE
+        ink[ay, ax] = render_paint.INK_NONE
 
     # A floor under every height, so each tile takes the cover step.
     return [
-        (render, "_restore_under", restore),
-        (render, "_ink_floor", lambda *args: min(real_floor(*args), -1)),
+        (RENDER, "_restore_under", restore),
+        (RENDER, "_ink_floor", lambda *args: min(real_floor(*args), -1)),
         (composite_backend, "native", None),
     ]
 
@@ -229,12 +233,12 @@ _BITE_TILE = (OX - 1, OY + 1)
 def _inject_one_tile():
     """LOCALIZED: one tile of level or lower ground in front of the object
     covers it, the smallest piece of the old staircase. Numpy path only."""
-    real_floor, real_iso, real_sloped = render._ink_floor, render._occlude_iso, render._occlude_sloped
+    real_floor, real_iso, real_sloped = render_sprites._ink_floor, render_iso._occlude_iso, render_sloped._occlude_sloped
     # The real floor still gates every other tile; the patched one below only makes the pass run.
-    real_floor_value = [render.INK_NONE]
+    real_floor_value = [render_paint.INK_NONE]
 
     def bite(img, terrain, ink, base_y, base_x, dst_y, dst_x):
-        render._restore_under(img, terrain, ink, base_y, base_x, dst_y, dst_x, render.INK_NONE)
+        render_paint._restore_under(img, terrain, ink, base_y, base_x, dst_y, dst_x, render_paint.INK_NONE)
 
     def occlude_iso(img, terrain, ink, tile, tile_px, proj, elevations, map_h, offset, floor):
         if (tile.x, tile.y) != _BITE_TILE:
@@ -249,7 +253,7 @@ def _inject_one_tile():
             real_sloped(img, terrain, ink, tile, tile_px, proj, corner_rise, offset, real_floor_value[0])
             return
         corners = [int(corner_rise[tile.y + dy, tile.x + dx]) for dy in (0, 1) for dx in (0, 1)]
-        base_x, base_y, dst_y, dst_x, _sy, _sx, _uv = render._sloped_tile_quad(tile.x, tile.y, tile_px, proj, *corners, offset)
+        base_x, base_y, dst_y, dst_x, _sy, _sx, _uv = render_sloped._sloped_tile_quad(tile.x, tile.y, tile_px, proj, *corners, offset)
         bite(img, terrain, ink, base_y, base_x, dst_y, dst_x)
 
     def floor(*args):
@@ -257,14 +261,14 @@ def _inject_one_tile():
         return min(real_floor_value[0], -1)
 
     return [
-        (render, "_occlude_iso", occlude_iso),
-        (render, "_occlude_sloped", occlude_sloped),
-        (render, "_ink_floor", floor),
+        (RENDER, "_occlude_iso", occlude_iso),
+        (RENDER, "_occlude_sloped", occlude_sloped),
+        (RENDER, "_ink_floor", floor),
         (composite_backend, "native", None),
     ]
 
 
-# name -> builder returning one or a list of (module, attribute, replacement)
+# name -> builder returning one or a list of (family or object, attribute, replacement)
 INJECTS = {
     "interleaved": _inject_interleaved,
     "one-tile": _inject_one_tile,
@@ -279,19 +283,19 @@ SPECIFICITY_FRAME = "bare"
 
 @contextmanager
 def _patched(inject: str | None):
+    import pytest
+
     patches = []
     if inject is not None:
         built = INJECTS[inject]()
         patches = built if isinstance(built, list) else [built]
-    saved = [(mod, name, getattr(mod, name)) for mod, name, _new in patches]
-    for mod, name, new in patches:
-        setattr(mod, name, new)
-    unit_sprites.clear_caches()
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for target, name, new in patches:
+                patch(mp, target, name, new)
+            unit_sprites.clear_caches()
+            yield
     finally:
-        for mod, name, old in saved:
-            setattr(mod, name, old)
         unit_sprites.clear_caches()
 
 

@@ -1,5 +1,5 @@
 """Bench-only: a unit edit's repaint bbox sized from the edited units' real
-sprite and mark extents rather than render._sprite_reach_px(), computed from
+sprite and mark extents rather than render_bbox._sprite_reach_px(), computed from
 outside the caches so tools/bench_stroke_end.py and tools/bench_unit_edit.py
 can price it before any descape/ change (the 2026-09-26 sprite-bbox plan's
 Step 0). Step 1 moves this logic onto the caches themselves.
@@ -10,8 +10,8 @@ after it, the order the plan's Design section fixes."""
 
 from __future__ import annotations
 
-from descape import render
-from descape.render_cache import _const_splice_eligible
+from descape import render_bbox, render_sprites
+from descape.render_cache_splice import _const_splice_eligible
 
 NONE, WALL, STALE, VISIBLE = "none", "wall", "stale", "visible"
 
@@ -118,7 +118,7 @@ def pre_extent(cache, changed, levels):
 
 def post_extent(cache, changed, levels):
     """What the edited units paint after the edit, resolved per level with the
-    same arguments render_cache._reanchor_units() passes, so it holds whether
+    same arguments render_cache_splice._reanchor_units() passes, so it holds whether
     or not the level's layer has been rebuilt yet."""
     scenario = cache.scenario
     mm = scenario.map_manager
@@ -132,7 +132,7 @@ def post_extent(cache, changed, levels):
             if s.new_own_tile is None:
                 continue
             if cache.sprites_enabled:
-                contribution = render._resolve_unit_sprite(
+                contribution = render_sprites._resolve_unit_sprite(
                     scenario, proj, cache.elevations, cache.unit_filter, corner_rise, {}, layers.farm_overlay,
                     s.player_id, s.index, s.unit, layers.tree_scale, layers.hero_glow,
                     layers.wall_alpha, fold=cache._level_fold(),
@@ -141,7 +141,7 @@ def post_extent(cache, changed, levels):
                     level_box = union(level_box, *contribution.bboxes.values())
             if cache.unit_filter.matches(s.player_id, s.unit):
                 level_box = union(
-                    level_box, render._building_bbox_for(s.unit, w, h, proj, cache.elevations, extra_top)
+                    level_box, render_bbox._building_bbox_for(s.unit, w, h, proj, cache.elevations, extra_top)
                 )
         if level_box is not None:
             out = union(out, level_to_reference(cache, mip, level_box))
@@ -157,12 +157,12 @@ def dirty_bbox(cache, changed, with_sprites: bool, flatten: bool = False):
     width = scenario.map_manager.map_width
     dirty = [y * width + x for x, y in touched]
     if cache.style == "stepped":
-        return render.dirty_screen_bbox_iso(
+        return render_bbox.dirty_screen_bbox_iso(
             scenario, dirty, cache.elevations, cache._levels[0].proj, with_units=True,
             with_sprites=with_sprites, elevation_changed=set(), flatten_elevations=flatten,
             extra_anchor_tiles=old_tiles, units_changed=True,
         )
-    return render.dirty_screen_bbox_sloped(
+    return render_bbox.dirty_screen_bbox_sloped(
         scenario, dirty, cache.elevations, cache.proj, with_units=True,
         with_sprites=with_sprites, elevation_changed=set(), extra_anchor_tiles=old_tiles,
         units_changed=True,

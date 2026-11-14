@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from descape import win_taskbar
+from testkit.viewer_family import set_viewer_global
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "freebsd14"])
@@ -59,19 +60,19 @@ def test_shell_load_exception_is_logged_not_raised(monkeypatch):
 @pytest.mark.parametrize("line", [None, "Windows taskbar AppUserModelID set: test", "Windows taskbar AppUserModelID failed: test"])
 def test_viewer_sets_identity_and_logs_result_before_qapplication(monkeypatch, line):
     pytest.importorskip("PyQt5")
-    from descape import viewer
+    from descape import asset_source, debug_log, qt_messages, qt_platform, settings, settings_file, viewer
 
     events = []
-    monkeypatch.setattr(viewer, "install_crash_hooks", lambda: None)
-    monkeypatch.setattr(viewer.asset_source, "migrate_legacy_config", lambda: None)
-    monkeypatch.setattr(viewer.settings_file, "apply_pending_import", lambda: None)
-    monkeypatch.setattr(viewer.settings, "get_xwayland_on_wayland", lambda: False)
-    monkeypatch.setattr(viewer.qt_platform, "inherited_line", lambda: None)
-    monkeypatch.setattr(viewer.qt_platform, "apply_default", lambda **kwargs: None)
-    monkeypatch.setattr(viewer.qt_platform, "apply_default_theme", lambda: None)
-    monkeypatch.setattr(viewer.qt_messages, "install", lambda: None)
+    set_viewer_global(monkeypatch, "install_crash_hooks", lambda: None)
+    monkeypatch.setattr(asset_source, "migrate_legacy_config", lambda: None)
+    monkeypatch.setattr(settings_file, "apply_pending_import", lambda: None)
+    monkeypatch.setattr(settings, "get_xwayland_on_wayland", lambda: False)
+    monkeypatch.setattr(qt_platform, "inherited_line", lambda: None)
+    monkeypatch.setattr(qt_platform, "apply_default", lambda **kwargs: None)
+    monkeypatch.setattr(qt_platform, "apply_default_theme", lambda: None)
+    monkeypatch.setattr(qt_messages, "install", lambda: None)
     log = Mock()
-    monkeypatch.setattr(viewer.debug_log, "log", log)
+    monkeypatch.setattr(debug_log, "log", log)
 
     def set_identity():
         events.append("identity")
@@ -87,7 +88,7 @@ def test_viewer_sets_identity_and_logs_result_before_qapplication(monkeypatch, l
         raise StopStartup
 
     monkeypatch.setattr(win_taskbar, "set_app_user_model_id", set_identity)
-    monkeypatch.setattr(viewer, "QApplication", create_app)
+    set_viewer_global(monkeypatch, "QApplication", create_app)
     with pytest.raises(StopStartup):
         viewer.main()
     assert events == ["identity", "QApplication"]

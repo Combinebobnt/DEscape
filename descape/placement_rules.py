@@ -1,7 +1,7 @@
 """The two restrictions "Free placement" lifts (GH #176/#177, GH #174): the
 terrain an object may stand on and the objects it may not overlap. Qt-free.
-viewer.py asks refusal() for a Place Unit click and move_refusal() for a
-drag-move: wall runs, nudges, Scatter, paste and the batch API stay
+viewer_unit_place.py asks refusal() for a Place Unit click and
+viewer_unit_move.py move_refusal() for a drag-move: wall runs, nudges, Scatter, paste and the batch API stay
 unrestricted. refused() and move_refused() give the same answers without
 the message, for callers that ask per candidate (the Unit Brush, GH #170;
 the Place Unit hover ghost and the drag previews, TASK-327; a group drop)
@@ -14,7 +14,7 @@ Both rules read the game's own .dat, committed in object_catalog.json.
 
 **Terrain.** An object's `restriction` names a .dat terrain-restriction row,
 and every tile of its footprint must be one that row passes. The footprint
-is render.occupied_tiles_for(), i.e. the tiles DEscape draws it on, so an
+is render_units.occupied_tiles_for(), i.e. the tiles DEscape draws it on, so an
 off-grid building is judged on its quantised tiles. An object with
 `side_terrain` (docks, shore fish, box turtles) also needs a shore in the
 ring of tiles around its footprint. "A shore" is the two literal ids (Beach
@@ -51,7 +51,7 @@ from __future__ import annotations
 import math
 import weakref
 
-from descape import game_dataset, gate_orientation, object_catalog, render, terrain_catalog
+from descape import game_dataset, gate_orientation, object_catalog, render_units, terrain_catalog
 from descape.terrain_palette import (
     BUILDING_TILE_OFFSETS,
     BUILDING_TILE_SPANS,
@@ -120,7 +120,7 @@ def laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
             terrain_id = FOUNDATION_TERRAIN.get(unit.unit_const)
             if terrain_id is None or unit.garrisoned_in_id != -1:
                 continue
-            tiles = render.occupied_tiles_for(unit.unit_const, unit.x, unit.y, mm.map_width, mm.map_height)
+            tiles = render_units.occupied_tiles_for(unit.unit_const, unit.x, unit.y, mm.map_width, mm.map_height)
             for tile in tiles or ():
                 laid.setdefault(tile, set()).add(terrain_id)
     return {tile: frozenset(ids) for tile, ids in laid.items()}
@@ -163,7 +163,7 @@ def moved_laid_terrain(scenario, moved) -> dict[tuple[int, int], frozenset[int]]
             landing = moved.get(id(unit))
             carried = carried or landing is not None
             x, y = (unit.x, unit.y) if landing is None else landing
-            for tile in render.occupied_tiles_for(unit.unit_const, x, y, mm.map_width, mm.map_height) or ():
+            for tile in render_units.occupied_tiles_for(unit.unit_const, x, y, mm.map_width, mm.map_height) or ():
                 laid.setdefault(tile, set()).add(terrain_id)
     if not carried:
         return None
@@ -233,7 +233,7 @@ def terrain_refusal(scenario, unit_const: int, x: float, y: float, laid=None) ->
     An off-map point is not this rule's to refuse. `laid` is laid_terrain()'s
     map; refusal() passes it for a mobile unit only, as Map Analysis does."""
     mm = scenario.map_manager
-    tiles = render.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
+    tiles = render_units.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
     if tiles is None:
         return None
     return _footprint_refusal(scenario, unit_const, tiles, laid) or _shore_refusal(scenario, unit_const, tiles)
@@ -242,7 +242,7 @@ def terrain_refusal(scenario, unit_const: int, x: float, y: float, laid=None) ->
 def _terrain_blocked(scenario, unit_const: int, x: float, y: float, laid=None) -> bool:
     """terrain_refusal() is not None, without building the message."""
     mm = scenario.map_manager
-    tiles = render.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
+    tiles = render_units.occupied_tiles_for(unit_const, x, y, mm.map_width, mm.map_height)
     if tiles is None:
         return False
     return _footprint_block(scenario, unit_const, tiles, laid) is not None or _shore_block(scenario, unit_const, tiles)
@@ -265,11 +265,11 @@ def _shape(unit_const: int):
         unit_const not in BUILDING_TILE_SPANS or entry.get("class") in _PASSABLE_BUILDING_CLASSES
     ):
         return None
-    span = tile_span(unit_const, render.NON_BUILDING_SPAN)
+    span = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
     offsets = BUILDING_TILE_OFFSETS.get(unit_const)
     if offsets is not None:
         return span, offsets, None
-    if span != render.NON_BUILDING_SPAN and unit_const not in DOODAD_TILE_SPANS and unit_const not in STATIC_TILE_SPANS:
+    if span != render_units.NON_BUILDING_SPAN and unit_const not in DOODAD_TILE_SPANS and unit_const not in STATIC_TILE_SPANS:
         # DEscape's span, not clearance: 2 * clearance equals it for 419 of 491 buildings, and gates differ.
         return span, None, (span[0] / 2, span[1] / 2)
     clearance = entry.get("clearance")
@@ -285,7 +285,7 @@ def _boxes_for(shape, x: float, y: float) -> tuple[Box, ...]:
     if offsets is None:
         return ((x - half[0], y - half[1], x + half[0], y + half[1]),)
     # One unit square per real tile, so a diagonal gate's empty corners neither block nor are blocked.
-    x0, y0 = render._span_start(x, span[0]), render._span_start(y, span[1])
+    x0, y0 = render_units._span_start(x, span[0]), render_units._span_start(y, span[1])
     return tuple((x0 + ox, y0 + oy, x0 + ox + 1, y0 + oy + 1) for ox, oy in sorted(offsets))
 
 

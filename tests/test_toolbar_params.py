@@ -17,9 +17,12 @@ before close() -- see tests/test_fill_tool.py's module docstring for why.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 from descape import settings, viewer_common
+from testkit.viewer_family import VIEWER_MODULES
 
 import conftest
 
@@ -35,7 +38,7 @@ pytestmark = [
 # modes == ("units",)) is excluded: this file's fixture is Terrain mode
 # throughout, where either action stays both hidden AND disabled, which
 # would fail a param- or brush-visibility assertion for a reason that has
-# nothing to do with what this file tests. See tests/test_unit_edit_viewer.py
+# nothing to do with what this file tests. See tests/test_unit_edit_viewer_*.py
 # for Units-mode tools' own coverage. Eyedropper is also excluded: it has
 # param_widget == "" like Elevate, but deliberately shows BOTH single-valued
 # params rather than neither -- see test_eyedropper.py's own visibility test,
@@ -221,15 +224,13 @@ def test_the_placement_boxes_show_for_place_unit_and_move() -> None:
 def test_no_identifier_keeps_the_old_free_place_name() -> None:
     """The old Free placement box is Off-grid now, and "Free placement" means
     something else. Unmerged code that still says free_place must fail loudly."""
-    from descape import viewer
-
     window = conftest.blank_window()
     try:
         assert not [name for name in dir(window) if "free_place" in name]
     finally:
         window.edit_history.mark_saved()
         window.close()
-    for module in (settings, viewer_common, viewer):
+    for module in (settings, *map(importlib.import_module, VIEWER_MODULES)):
         assert not [name for name in dir(module) if "free_place" in name.lower()], module.__name__
     assert not [name for name in dir(settings.ToolDef) if "free_place" in name]
     place_unit = next(t for t in settings.TOOLS if t.tool_id == "place_unit")

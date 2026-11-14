@@ -62,10 +62,9 @@ import random
 import struct
 from pathlib import Path
 
-from descape import game_dataset, iso_geometry, player_fields, terrain_units
+from descape import game_dataset, games, iso_geometry, player_fields, terrain_units
 from descape.scenario_io import (
-    BLANK_ROR_TEMPLATE_PATH,
-    BLANK_TEMPLATE_PATH,
+    TEMPLATE_DIR,
     TERRAIN_STRUCT_SIZE,
     LoadedScenario,
     load_map_and_units,
@@ -188,9 +187,13 @@ def clamp_cameras(body: bytearray, fields, shift: int, new_w: int, new_h: int) -
 
 
 def blank_template_path_for(game_data: str) -> Path:
-    """The donor for a game_dataset id: Return of Rome's own blank map for
-    ROR, the AoE2 one for everything else."""
-    return BLANK_ROR_TEMPLATE_PATH if game_data == game_dataset.ROR else BLANK_TEMPLATE_PATH
+    """The donor for a game id: that game's Game.blank_template, the default
+    game's for an id without one or not registered."""
+    try:
+        template = games.get(game_data).blank_template
+    except ValueError:
+        template = None
+    return TEMPLATE_DIR / (template or games.default().blank_template)
 
 
 def blank_terrain_struct(terrain_id: int = 0, elevation: int = 0) -> bytes:
@@ -316,7 +319,7 @@ def blank_scenario_bytes(
     if not (trees or doodads):
         return data
     width, height = validate_map_size(width, height)
-    with game_dataset.activated(game_dataset.from_variant(donor.game_variant)):
+    with game_dataset.activated(games.for_scenario(donor).id):
         specs = terrain_units.plan_fill(
             width, height, terrain_id, trees=trees, doodads=doodads, rng=random.Random() if rng is None else rng
         )

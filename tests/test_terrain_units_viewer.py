@@ -23,8 +23,10 @@ from test_terrain_blend_render import (  # noqa: F401
     synthetic_textures,
 )
 
-from descape import render_cache, settings
+from descape import render_cache_splice, settings
 from descape.edit_history import CompositeDiffRecord, TileDiffRecord
+from testkit.render_family import render_global, set_render_cache_global, set_render_global
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 from test_unit_sprites import CONST
@@ -90,12 +92,13 @@ def test_draw_with_trees_on_adds_a_unit_as_one_composite_undo_step() -> None:
 def test_auto_placed_trees_survive_a_save_and_reload_with_varied_rotation(tmp_path, monkeypatch) -> None:
     """GH #89 step 5's DEscape half. The variant RNG is unseeded, so 40 tiles
     make "more than one distinct rotation" near-certain without pinning values."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QFileDialog
+
     from descape.scenario_io import load_map_and_units
 
     dest = tmp_path / "trees.aoe2scenario"
     monkeypatch.setattr(
-        viewer_module.QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
+        QFileDialog, "getSaveFileName", staticmethod(lambda *args, **kwargs: (str(dest), ""))
     )
     window = _window("draw")
     try:
@@ -172,13 +175,13 @@ def test_repainting_the_same_forest_terrain_adds_no_new_undo_step() -> None:
 
 
 def test_paint_can_below_threshold_fills_units_with_no_confirm(monkeypatch) -> None:
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("QMessageBox.question must not be called under the threshold")
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
 
     window = _window("fill")
     try:
@@ -203,9 +206,7 @@ def test_paint_can_below_threshold_fills_units_with_no_confirm(monkeypatch) -> N
 def test_paint_can_above_threshold_confirms_and_cancel_leaves_map_untouched(monkeypatch) -> None:
     from PyQt5.QtWidgets import QMessageBox
 
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 10)
 
     window = _window("fill")
     try:
@@ -216,7 +217,7 @@ def test_paint_can_above_threshold_confirms_and_cancel_leaves_map_untouched(monk
             calls.append(args)
             return QMessageBox.Cancel
 
-        monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(cancel))
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(cancel))
         window.on_fill(0, 0, 0)
 
         assert len(calls) == 1
@@ -225,7 +226,7 @@ def test_paint_can_above_threshold_confirms_and_cancel_leaves_map_untouched(monk
         assert all(t.terrain_id != FOREST_OAK for t in mm.terrain)
 
         monkeypatch.setattr(
-            viewer_module.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
         )
         window.on_fill(0, 0, 0)
         assert len(window.edit_history.records) == 1
@@ -239,14 +240,14 @@ def test_paint_can_confirm_is_skipped_with_both_checkboxes_off(monkeypatch) -> N
     """A terrain-only fill has no per-tile unit cost, so the guard must not
     fire even on a huge region -- pinned by making QMessageBox.question
     raise if it's ever reached."""
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
 
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 1)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 1)
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("QMessageBox.question must not be called with both checkboxes off")
 
-    monkeypatch.setattr(viewer_module.QMessageBox, "question", staticmethod(fail_if_called))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fail_if_called))
 
     window = _window("fill")
     try:
@@ -331,7 +332,7 @@ def _styled_window(style: str):
     through Stepped's cache over all-zero elevations."""
     window = _window("draw")
     if style == "Flat":
-        # Top-down Flat, not the Flat+Isometric path (see test_unit_edit_viewer's _window).
+        # Top-down Flat, not the Flat+Isometric path (see unit_edit_viewer_helpers' _window).
         window.iso_action.setChecked(False)
     if style == "FlatIso":
         assert window.iso_action.isChecked()
@@ -356,7 +357,7 @@ def _canvas(window):
 
 
 def _fresh(window, style: str):
-    from descape import render
+    from descape import render_iso, render_paint, render_sloped
     from descape.render_cache import FlatChunkCache
 
     canvas_w, canvas_h = window._cache.canvas_dims(0)
@@ -364,14 +365,14 @@ def _fresh(window, style: str):
     if style == "Flat":
         mm = window.scenario.map_manager
         fresh = FlatChunkCache(
-            window.scenario, render.tile_pixels_for_map(mm.map_width, mm.map_height),
+            window.scenario, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height),
             sprites=sprites, unit_filter=window._cache.unit_filter,
         )
         return fresh.render_rect(0, 0, canvas_w, canvas_h, mip=0)
     if style == "Stepped":
-        full = render.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_iso.render_terrain_iso_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     else:
-        full = render.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
+        full = render_sloped.render_terrain_sloped_with_proj(window.scenario, with_units=True, with_sprites=sprites)[0]
     return full[:canvas_h, :canvas_w]
 
 
@@ -434,9 +435,7 @@ def _splice_any_batch(monkeypatch) -> None:
     wholesale rebuild (viewer._SPLICE_COST_RATIO), and a whole resident canvas
     against a small offscreen viewport would make Stepped/Sloped evict rather
     than patch (viewer._TIGHT_PATCH_AREA_RATIO), so pin both off."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "_SPLICE_COST_RATIO", 0)
+    set_viewer_global(monkeypatch, "_SPLICE_COST_RATIO", 0)
     _pin_area_ratio(monkeypatch, float("inf"))
 
 
@@ -444,10 +443,8 @@ def _pin_area_ratio(monkeypatch, value: float, rects: float = 0.0) -> None:
     """Sets the batch patch-or-evict area ratio, for every style, and
     Stepped's per-chunk rect ratio past it (TASK-031.61 C1). `rects` 0, the
     default, keeps an over-ratio batch evicting; inf always patches rects."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
-    monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", rects)
+    set_viewer_global(monkeypatch, "_TIGHT_PATCH_AREA_RATIO", {"stepped": value, "sloped": value})
+    set_viewer_global(monkeypatch, "_RECT_PATCH_AREA_RATIO", rects)
 
 
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
@@ -548,8 +545,8 @@ def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(
     if sprites:
         request.getfixturevalue("sprite_install")
     if path == "wholesale":
-        monkeypatch.setattr(render_cache, "_COMPONENT_SPLICE_MAX_UNITS", 0)
-        monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "_COMPONENT_SPLICE_MAX_UNITS", 0)
+        set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", 0)
     _splice_any_batch(monkeypatch)
     if repaint == "evict":
         _pin_area_ratio(monkeypatch, 0)
@@ -649,7 +646,7 @@ def test_a_single_unit_edit_always_patches(monkeypatch) -> None:
         _canvas(window)
         calls = _spy(window, monkeypatch)
         evictions = _spy_evictions(window, monkeypatch)
-        from descape.render_cache import UnitSplice
+        from descape.render_cache_splice import UnitSplice
 
         model = window._ensure_unit_edits()
         splices: list = []
@@ -888,9 +885,7 @@ def test_undo_and_redo_of_a_gaia_only_mirror_map_splice_through_the_gaia_diff(st
 
 
 def test_paint_can_with_trees_still_takes_the_wholesale_path(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
     window = _styled_window("Stepped")
     try:
         window._on_tool_selected("fill")
@@ -959,16 +954,16 @@ CLIFF_3X3 = 264
 
 
 def _place_cliff(window, const: int, player: int, tile=(10, 10)):
-    from descape import render, terrain_palette
+    from descape import render_units, terrain_palette
 
     span = terrain_palette.tile_span(const, (1, 1))
-    x, y = render.span_anchor(tile[0], tile[1], *span)
+    x, y = render_units.span_anchor(tile[0], tile[1], *span)
     model = window._ensure_unit_edits()
     assert model is not None
     with window._unit_edit(model, "Place cliff", [player]):
         cliff = model.add(player, const, x, y)
     mm = window.scenario.map_manager
-    footprint = set(render.unit_occupied_tiles(cliff, mm.map_width, mm.map_height))
+    footprint = set(render_units.unit_occupied_tiles(cliff, mm.map_width, mm.map_height))
     assert len(footprint) == span[0] * span[1]
     return footprint
 
@@ -1003,9 +998,7 @@ def test_drawing_forest_over_a_cliff_plants_no_tree_on_its_footprint(const: int,
 
 
 def test_paint_can_forest_plants_no_tree_on_a_cliff_footprint(monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
     window = _window("fill")
     try:
         window.paint_trees_check.setChecked(True)
@@ -1045,11 +1038,11 @@ def tree_sprites(sprite_install, monkeypatch):  # noqa: F811 -- the imported fix
 def _fresh_cache(window, layers=None):
     """A new cache of the window's style over its current scenario, with its
     settings (`layers` in place of the window's, when given)."""
-    from descape import render
+    from descape import render_iso, render_paint, render_sloped
     from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 
     mm = window.scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     kwargs = {
         "unit_filter": window._unit_filter, "sprites": window._sprites_enabled,
         "layers": window._layers if layers is None else layers,
@@ -1057,9 +1050,9 @@ def _fresh_cache(window, layers=None):
     if isinstance(window._cache, FlatChunkCache):
         return FlatChunkCache(window.scenario, tile_px, **kwargs)
     if isinstance(window._cache, IsoChunkCache):
-        elevations, proj = render.elevations_and_proj(window.scenario)
+        elevations, proj = render_iso.elevations_and_proj(window.scenario)
         return IsoChunkCache(window.scenario, elevations, proj, tile_px, **kwargs)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(window.scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(window.scenario)
     return SlopedChunkCache(window.scenario, elevations, corner_rise, proj, tile_px, **kwargs)
 
 
@@ -1094,7 +1087,7 @@ def _check_against_fresh(window, step: str, numpy: bool = False) -> None:
     `numpy` a numpy one, so native is not only checked against native
     (TASK-031.08/.09). The numpy reference replaces the native one, never
     both: a numpy fresh build costs several times a native one."""
-    from descape import composite_backend, render
+    from descape import composite_backend, render_units
     from descape.render_cache import FlatChunkCache
 
     cache = window._cache
@@ -1114,7 +1107,7 @@ def _check_against_fresh(window, step: str, numpy: bool = False) -> None:
             ):
                 assert np.array_equal(live_rows, fresh_rows), f"{step}: Flat unit rows' {name} are stale"
         else:
-            fresh_units = render._units_by_tile(window.scenario, cache.unit_filter)
+            fresh_units = render_units._units_by_tile(window.scenario, cache.unit_filter)
             assert _ids_by_tile(cache.units_by_tile) == _ids_by_tile(fresh_units), f"{step}: units_by_tile is stale"
         for mip, pixels in live.items():
             assert np.array_equal(pixels, fresh.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)), (
@@ -1127,8 +1120,8 @@ def _over_cap_window(style: str, monkeypatch, visible: int = 0):
     mip 0 shown (the whole canvas) and every oracle level resident. `visible`
     is VISIBLE_SPLICE_MAX_UNITS: 0 (the default) keeps the in-place and
     wholesale fallbacks, which stay the path past that bound."""
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
-    monkeypatch.setattr(render_cache, "VISIBLE_SPLICE_MAX_UNITS", visible)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    set_render_cache_global(monkeypatch, "VISIBLE_SPLICE_MAX_UNITS", visible)
     window = _styled_window(style)
     window.show_sprites_action.setChecked(True)
     assert window._cache.sprites_enabled
@@ -1157,8 +1150,8 @@ def test_an_over_cap_stroke_end_takes_the_scoped_path_and_matches_a_fresh_render
 ) -> None:
     """Past UNIT_SPLICE_MAX_UNITS the stroke end still hands its splices to
     the scoped repaint; the cache refuses with `cap` and updates units_by_tile
-    in place. No whole-canvas eviction and no render._units_by_tile() walk."""
-    from descape import render
+    in place. No whole-canvas eviction and no render_units._units_by_tile() walk."""
+    from descape import render_units
 
     _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
     window = _over_cap_window(style, monkeypatch)
@@ -1166,8 +1159,8 @@ def test_an_over_cap_stroke_end_takes_the_scoped_path_and_matches_a_fresh_render
         calls = _spy(window, monkeypatch)
         evictions = _spy_evictions(window, monkeypatch)
         walks = []
-        real_walk = render._units_by_tile
-        monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (walks.append(1), real_walk(*a, **k))[1])
+        real_walk = render_units._units_by_tile
+        set_render_global(monkeypatch, "_units_by_tile", lambda *a, **k: (walks.append(1), real_walk(*a, **k))[1])
         canvas = (0, 0, *window._cache.canvas_dims(0))
         for step, terrain, tiles in (("stroke A", FOREST_OAK, STROKE_TILES), ("stroke B", FOREST_PALM, SHIFTED_TILES)):
             _render_levels(window)
@@ -1180,7 +1173,7 @@ def test_an_over_cap_stroke_end_takes_the_scoped_path_and_matches_a_fresh_render
             assert bool(evictions) is (repaint == "evict"), f"{step}: {evictions}"
             del evictions[:]
         assert calls["in_place"] == 2 and calls["wholesale"] == 0
-        monkeypatch.setattr(render, "_units_by_tile", real_walk)
+        set_render_global(monkeypatch, "_units_by_tile", real_walk)
         _check_against_fresh(window, "end")
     finally:
         window.edit_history.mark_saved()
@@ -1242,9 +1235,8 @@ def test_within_cap_strokes_their_undo_and_redo_match_a_fresh_render_on_every_re
     - After each, units_by_tile (Flat 2D: its unit rows) and every oracle level's pixels equal a fresh
       cache's: a numpy one for stroke B, the undo and the redo (stroke A is setup, on the active backend)."""
     _pin_area_ratio(monkeypatch, 0 if repaint == "evict" else float("inf"))
-    import descape.viewer as viewer_module
 
-    monkeypatch.setattr(viewer_module, "_SPLICE_COST_RATIO", 0)
+    set_viewer_global(monkeypatch, "_SPLICE_COST_RATIO", 0)
     window = _styled_window(style)
     try:
         window.show_sprites_action.setChecked(True)
@@ -1265,7 +1257,7 @@ def test_within_cap_strokes_their_undo_and_redo_match_a_fresh_render_on_every_re
             _render_levels(window)
             act()
             changed = calls["changed"][-1]
-            assert changed and len(changed) <= render_cache.UNIT_SPLICE_MAX_UNITS, f"{step}: took {changed}"
+            assert changed and len(changed) <= render_cache_splice.UNIT_SPLICE_MAX_UNITS, f"{step}: took {changed}"
             assert calls["wholesale"] == 0, f"{step}: wholesale source rebuild"
             assert bool(evictions) is (repaint == "evict"), f"{step}: {evictions}"
             del evictions[:]
@@ -1277,7 +1269,7 @@ def test_within_cap_strokes_their_undo_and_redo_match_a_fresh_render_on_every_re
 
 def test_an_over_cap_flat_stroke_end_stays_wholesale(monkeypatch) -> None:
     """Flat keeps the cap: with its cost ratio off, only the cap sends it wholesale."""
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
     _splice_any_batch(monkeypatch)
     window = _styled_window("Flat")
     try:
@@ -1439,7 +1431,7 @@ def test_the_over_cap_history_check_names_the_one_step_whose_units_went_stale(
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
 def test_the_gaia_membership_diff_is_uncapped_except_on_flat(style, monkeypatch) -> None:
-    monkeypatch.setattr(render_cache, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
+    set_render_cache_global(monkeypatch, "UNIT_SPLICE_MAX_UNITS", OVER_CAP)
     _splice_any_batch(monkeypatch)
     window = _styled_window(style)
     try:
@@ -1600,7 +1592,7 @@ def test_a_unit_step_that_repaints_nothing_still_composites_the_deferred_terrain
     """The unit step's early returns (no splices, or splices touching no tile:
     here a no-op move of an off-map unit) composite the terrain bbox
     _apply_dirty() deferred, as its patch would have."""
-    from descape.render_cache import UnitSplice
+    from descape.render_cache_splice import UnitSplice
 
     window = _over_cap_window(style, monkeypatch)
     try:
@@ -1656,7 +1648,7 @@ def _spy_split_rereads(window, monkeypatch) -> dict:
 
 def _place_one(window, x: float = 40.5, y: float = 40.5) -> None:
     """A single-unit Place through _unit_edit(), with its splice."""
-    from descape.render_cache import UnitSplice
+    from descape.render_cache_splice import UnitSplice
 
     model = window._ensure_unit_edits()
     splices: list = []
@@ -1712,13 +1704,13 @@ def _blended_window(style: str, monkeypatch, repaint: str = "evict", visible: in
     the re-read, so a stale mirror would be composited as it stands. `rects`
     is Stepped's per-chunk patch in place of that eviction (TASK-031.61 C1);
     on Sloped it pins the same thing as `evict`."""
-    from descape import render
+    from descape import render_paint
 
     _pin_area_ratio(
         monkeypatch, float("inf") if repaint == "patch" else 0, rects=float("inf") if repaint == "rects" else 0
     )
     window = _over_cap_window(style, monkeypatch, visible)
-    assert render.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
+    assert render_paint.blend_effective(window._cache.layers), "blending is off, so the case would prove nothing"
     return window
 
 
@@ -1749,11 +1741,11 @@ def test_a_blended_over_cap_draw_its_undo_and_redo_match_a_fresh_render_on_every
     fallback). Sloped never does."""
     from dataclasses import replace
 
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch, repaint)
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         assert len(_oracle_levels(window)) > 1
         rect_patches = _spy_rect_patches(window, monkeypatch)
         _blended_history(window)
@@ -1777,11 +1769,11 @@ def test_the_blended_check_names_the_one_step_whose_terrain_mirrors_went_stale(
     """Control (GOTCHAS: a step-k break fails naming step k): on step `broken`
     only, nothing re-reads the terrain mirrors, which is the state the split
     now trusts its three callers never to hand it."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch, repaint)
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         cache = window._cache
         real = cache._refresh_terrain_ids
         current = {}
@@ -1804,11 +1796,11 @@ def test_the_blended_check_names_the_step_that_left_a_second_level_stale(
     only, the eviction of the non-visible levels is dropped, and the check
     must fail on that level, naming the step. Under `rects` too (C1), where
     only the visible level is patched in place."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window("Stepped", monkeypatch, repaint)
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         cache = window._cache
         second = _oracle_levels(window)[1]
         current = {}
@@ -1851,11 +1843,11 @@ def test_a_blended_draw_undo_redo_undo_reuses_stashed_keys_and_matches_a_fresh_r
     build. The undos and the redo take keys from the stash: the first undo
     some, and the second undo every one, since only the redo's states were
     stored since the first."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch, "patch")
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         _draw(window, FOREST_PALM, EARLIER_TILES)
         seen = _spy_key_stash(window, monkeypatch)
         steps = (
@@ -1948,11 +1940,11 @@ def test_a_terrain_overlay_erase_still_re_reads_and_repaints_the_layer_mid_strok
     """The case C0 leaves alone: Terrain Overlay writes `layer = -1` live, and
     the mirrors only catch up at a flush or the stroke end. Both Erase calls
     keep the split's re-read, and the flush repaints the cleared layer."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch)
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         _overlay_erase(window, _spy_split_rereads(window, monkeypatch))
     finally:
         window.edit_history.mark_saved()
@@ -1967,11 +1959,11 @@ def test_the_overlay_erase_check_fails_if_the_flush_neither_applies_nor_re_reads
     _apply_dirty() (the flush as it was), and the flush (the one defer_index
     caller here) passes terrain_current=True, so its evictions composite the
     stale layer mirror."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch)
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         real_after = window._after_unit_mutation
 
         def after(changed=None, **kwargs):
@@ -2184,12 +2176,12 @@ def test_an_over_ratio_batch_patches_one_rect_per_chunk_and_evicts_nothing_at_th
     of them inside the bbox Qt repaints and together smaller than it. The
     other resident levels are still evicted, and every level matches a fresh
     build. Sloped keeps evicting."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window(style, monkeypatch, "rects")
     try:
         cache = window._cache
-        assert render.blend_effective(cache.layers)
+        assert render_paint.blend_effective(cache.layers)
         rect_patches = _spy_rect_patches(window, monkeypatch)
         evictions = _spy_all_evictions(window, monkeypatch)
         regions = _spy_qt_regions(window, monkeypatch)
@@ -2282,11 +2274,11 @@ def test_a_one_tile_wide_stroke_edge_is_repainted_with_its_blended_neighbours(bl
     with no unit on it, in a block of tiles of its own: under blending its 8
     neighbours change with it, and only the one-tile dilation inside
     dirty_screen_bbox_iso() puts them in that block's rect."""
-    from descape import render
+    from descape import render_paint
 
     window = _blended_window("Stepped", monkeypatch, "rects")
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         rect_patches = _spy_rect_patches(window, monkeypatch)
         _blocked_stroke_history(window, monkeypatch, block=EDGE_TILES)
         # The undo and the redo (the stroke itself, with no chunk resident yet, takes the reach fallback).
@@ -2305,13 +2297,12 @@ def test_the_stroke_edge_check_fails_if_a_block_rect_loses_its_one_tile_ring(
     dirty_screen_bboxes_iso_grouped() gives them, as dirty_screen_bbox_iso()
     does (the same sweep, over the dirty tiles alone). The edge run's blended
     neighbours then stay stale."""
-    import descape.viewer as viewer_module
-    from descape import iso_geometry, render
+    from descape import iso_geometry, render_bbox, render_paint
 
     window = _blended_window("Stepped", monkeypatch, "rects")
     try:
-        assert render.blend_effective(window._cache.layers)
-        real_grouped = viewer_module.dirty_screen_bboxes_iso_grouped
+        assert render_paint.blend_effective(window._cache.layers)
+        real_grouped = viewer_global("dirty_screen_bboxes_iso_grouped")
         state = {"bare": 0}
         current = {}
 
@@ -2324,14 +2315,14 @@ def test_the_stroke_edge_check_fails_if_a_block_rect_loses_its_one_tile_ring(
             for group, box in zip(groups, boxes, strict=True):
                 idx = np.unique(np.asarray(list(group), dtype=np.int64))
                 xs, ys = idx % width, idx // width
-                lo, hi = render._observed_elevation_range(elevations, {}, xs, ys)
+                lo, hi = render_bbox._observed_elevation_range(elevations, {}, xs, ys)
                 x0, y0, x1, y1 = iso_geometry.tile_screen_bounds_over(xs, ys, lo, hi, proj)
                 bare.append((int(x0.min()), int(y0.min()), int(x1.max()), int(y1.max())))
                 assert _inside(box, bare[-1]) and bare[-1] != box, (box, bare[-1])
             state["bare"] += len(bare)
             return bare
 
-        monkeypatch.setattr(viewer_module, "dirty_screen_bboxes_iso_grouped", bare_grouped)
+        set_viewer_global(monkeypatch, "dirty_screen_bboxes_iso_grouped", bare_grouped)
         with pytest.raises(AssertionError, match=f"{broken}: mip 0 differs"):
             _blocked_stroke_history(
                 window, monkeypatch, before_step=lambda step: current.update(step=step), block=EDGE_TILES
@@ -2350,12 +2341,10 @@ def test_the_block_rects_are_what_one_bbox_call_per_block_sizes(style, history, 
     replaced (still the path when it declines) hand cache.chunk_rects() the
     same rects: over two long batches, an undo and a redo (`long`), and over
     a history move that carries terrain tiles past its units (`blocked`)."""
-    import descape.viewer as viewer_module
-
     window = _blended_window(style, monkeypatch, "rects")
     try:
         real_rects, real_chunk = window._unit_edit_chunk_rects, window._cache.chunk_rects
-        real_bbox = viewer_module.dirty_screen_bbox_iso
+        real_bbox = viewer_global("dirty_screen_bbox_iso")
         seen = {"sized": [], "per_block": 0, "compared": 0}
 
         def chunk_rects(rects, mip):
@@ -2370,8 +2359,8 @@ def test_the_block_rects_are_what_one_bbox_call_per_block_sizes(style, history, 
             del seen["sized"][:]
             seen["per_block"] = 0
             with monkeypatch.context() as patch:
-                patch.setattr(viewer_module, "dirty_screen_bboxes_iso_grouped", lambda *a, **k: None)
-                patch.setattr(viewer_module, "dirty_screen_bbox_iso", per_block)
+                set_viewer_global(patch, "dirty_screen_bboxes_iso_grouped", lambda *a, **k: None)
+                set_viewer_global(patch, "dirty_screen_bbox_iso", per_block)
                 slow = real_rects(blocks, terrain_tiles, visible_mip)
             assert seen["per_block"] >= 1, "the declined pass made no per-block call"
             calls = seen["per_block"]
@@ -2403,8 +2392,6 @@ def test_a_batch_patches_its_rects_up_to_the_rect_ratio_and_evicts_past_it(side,
     rects price at. Within it the batch patches them; past it, it evicts the
     union bbox and patches nothing. Every level matches a fresh build either
     way."""
-    import descape.viewer as viewer_module
-
     window = _blended_window("Stepped", monkeypatch, "rects")
     try:
         cache = window._cache
@@ -2421,7 +2408,7 @@ def test_a_batch_patches_its_rects_up_to_the_rect_ratio_and_evicts_past_it(side,
             assert 0 < area < visible, (area, visible)
             priced.append(area / visible)
             nudge = 0.5 if side == "within" else -0.5
-            monkeypatch.setattr(viewer_module, "_RECT_PATCH_AREA_RATIO", (area + nudge) / visible)
+            set_viewer_global(monkeypatch, "_RECT_PATCH_AREA_RATIO", (area + nudge) / visible)
             return rects
 
         monkeypatch.setattr(window, "_unit_edit_chunk_rects", chunk_rects)
@@ -2470,7 +2457,7 @@ def test_the_blocked_stroke_check_names_the_step_whose_terrain_tiles_were_droppe
 def test_a_terrain_bbox_that_comes_without_its_tiles_keeps_the_eviction(tree_sprites, monkeypatch) -> None:
     """A caller that defers a terrain bbox but hands over no tiles cannot be
     sized per block, so the batch evicts the union bbox as before."""
-    from descape.render_cache import UnitSplice
+    from descape.render_cache_splice import UnitSplice
 
     _pin_area_ratio(monkeypatch, 0, rects=float("inf"))
     window = _over_cap_window("Stepped", monkeypatch)
@@ -2508,13 +2495,13 @@ def test_an_over_ratio_erase_flush_re_reads_the_layer_under_its_rects(blended_tr
     whether or not the rects re-read."""
     import sys
 
-    from descape import render
+    from descape import render_paint
 
     # One oracle level: _render_levels() and _check_against_fresh() then leave no second level resident.
     monkeypatch.setattr(sys.modules[__name__], "_oracle_levels", lambda _window: (0,))
     window = _blended_window("Stepped", monkeypatch, "rects")
     try:
-        assert render.blend_effective(window._cache.layers)
+        assert render_paint.blend_effective(window._cache.layers)
         rect_patches = _spy_rect_patches(window, monkeypatch)
         evictions = _spy_all_evictions(window, monkeypatch)
         _overlay_erase(window)
@@ -2614,19 +2601,17 @@ def _spy_visible_splices(window, monkeypatch) -> list:
 
 def _count_builds_and_walks(monkeypatch) -> dict:
     """Calls into the two sliced walks every level build runs with sprites on
-    (`builds`), and into render._units_by_tile() (`walks`)."""
-    from descape import render
-
+    (`builds`), and into render_units._units_by_tile() (`walks`)."""
     counts = {"builds": 0, "walks": 0}
 
     def counted(name: str, key: str) -> None:
-        real = getattr(render, name)
+        real = render_global(name)
 
         def call(*args, **kwargs):
             counts[key] += 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(render, name, call)
+        set_render_global(monkeypatch, name, call)
 
     counted("_building_bboxes_iso_sliced", "builds")
     counted("sprite_draws_by_anchor_sliced", "builds")

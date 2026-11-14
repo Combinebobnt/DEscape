@@ -561,7 +561,7 @@ def test_the_badge_device_size_is_identical_across_styles() -> None:
 
 
 def test_the_appearance_combo_persists_and_re_anchors_the_live_item(monkeypatch) -> None:
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _window("Stepped")
     dialog = SettingsDialog(window)
@@ -648,7 +648,7 @@ def test_the_appearance_combo_drives_all_five_positions_in_every_style(style: st
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QPolygonF
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _window(style, iso=iso)
     dialog = SettingsDialog(window)
@@ -693,7 +693,7 @@ def test_the_badge_background_changes_through_its_swatch_and_its_default_button_
     from PyQt5.QtGui import QColor
     from PyQt5.QtWidgets import QColorDialog, QPushButton
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     default = settings.get_default_overlay_color("unit_stack_background")
     window = _window("Flat")

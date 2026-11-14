@@ -4,7 +4,7 @@ single Delete. tests/test_invalidate_units_splice.py pins the splice at the
 cache level; this checks that what the viewer hands it, and its own repaint
 (patch_rects), leave no level stale.
 
-A level index grows finer (render_cache._init_mip_levels), so a zoom out one
+A level index grows finer (render_cache_mip._init_mip_levels), so a zoom out one
 level from level 0 lands on level -1. Each check renders level -1, then 0,
 then 1 over the tiles the edits touch (the chunks a zoom out one level and
 back, then one in, would ask for) and compares each with a fresh
@@ -24,8 +24,9 @@ import numpy as np
 import pytest
 from test_unit_edit_sprite_bbox import art  # noqa: F401 -- pytest fixture, imported for its name
 
-from descape import render
+from descape import render_flat
 from descape.render_cache import FlatChunkCache
+from testkit.render_family import set_render_global
 
 import conftest
 
@@ -108,7 +109,7 @@ def _count_paths(window, monkeypatch) -> dict[str, int]:
     level nobody has shown yet is not a fallback, so icons are not counted."""
     cache = window._cache
     counts = {"splices": 0, "rows": 0}
-    real_rows, real_splice = render._flat_unit_base_rows, cache._splice_rows
+    real_rows, real_splice = render_flat._flat_unit_base_rows, cache._splice_rows
 
     def rows(*args, **kwargs):
         counts["rows"] += 1
@@ -118,7 +119,7 @@ def _count_paths(window, monkeypatch) -> dict[str, int]:
         counts["splices"] += 1
         return real_splice(changed)
 
-    monkeypatch.setattr(render, "_flat_unit_base_rows", rows)
+    set_render_global(monkeypatch, "_flat_unit_base_rows", rows)
     monkeypatch.setattr(cache, "_splice_rows", splice)
     return counts
 

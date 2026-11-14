@@ -354,7 +354,7 @@ def test_a_scrolled_tab_still_paints_the_tab_page(opened, title: str, label: str
 def test_a_theme_change_restyles_the_profile_status_line() -> None:
     """Light to parchment, as test_themes' install-label twin: their status colours differ."""
     from descape import settings
-    from descape.viewer import status_color
+    from descape.viewer_common import status_color
     from descape.viewer_dialogs import apply_theme
 
     with conftest.restoring_app_theme() as app:

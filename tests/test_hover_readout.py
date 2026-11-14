@@ -100,7 +100,8 @@ def test_hover_readout_omits_the_layer_on_an_unlayered_tile() -> None:
 
 
 def test_hover_readout_off_map_on_non_square_map_shows_idle_text() -> None:
-    from descape.viewer import HOVER_IDLE_TEXT, ViewerWindow
+    from descape.viewer import ViewerWindow
+    from descape.viewer_common import HOVER_IDLE_TEXT
 
     mm = _NonSquareMapManager(width=6, height=3)
     window = _stub_window(mm)
@@ -211,7 +212,7 @@ def test_the_readout_names_the_filled_terrain_after_a_fill() -> None:
 
 @pytest.mark.gui
 def test_the_readout_stays_idle_after_a_stroke_with_the_pointer_off_the_map() -> None:
-    from descape.viewer import HOVER_IDLE_TEXT
+    from descape.viewer_common import HOVER_IDLE_TEXT
 
     window = _edit_window("draw")
     try:

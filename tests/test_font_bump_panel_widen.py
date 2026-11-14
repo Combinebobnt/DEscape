@@ -13,7 +13,7 @@ import math
 
 import pytest
 from test_gh142_panel_widths import _NARROW_PX, _blank_window, _enter, check_terrain_fits_its_drag_floor
-from test_unit_edit_viewer import _no_install_env  # noqa: F401 -- autouse fixture
+from unit_edit_viewer_helpers import _no_install_env  # noqa: F401 -- autouse fixture
 
 from descape import settings
 
@@ -65,8 +65,8 @@ def test_raising_the_ui_font_to_max_widens_the_panel_pane_to_the_scaled_floor(mo
     from PyQt5.QtWidgets import QApplication
 
     from descape.map_options_panel import MapOptionsPanel
+    from descape.settings_dialog import SettingsDialog
     from descape.trigger_panel import TriggerPanel
-    from descape.viewer import SettingsDialog
 
     panel_cls = {"Map Options": MapOptionsPanel, "Triggers": TriggerPanel}[mode]
     window = _blank_window()
@@ -103,7 +103,7 @@ def test_raising_the_ui_font_to_max_raises_terrains_drag_floor_and_it_still_fits
     test_gh142_panel_widths.check_terrain_fits_its_drag_floor's conditions all hold."""
     from PyQt5.QtWidgets import QApplication
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _blank_window()
     dialog = SettingsDialog(window)
@@ -126,12 +126,12 @@ def test_raising_the_ui_font_to_max_raises_terrains_drag_floor_and_it_still_fits
 def test_raising_the_ui_font_to_max_raises_triggers_drag_floor_and_it_still_fits() -> None:
     """TASK-560. Pass conditions, after the Appearance spin box is set to UI_FONT_SIZE_MAX and
     applied while in Triggers mode, with no mode switch: Triggers' drag floor is wider than at the
-    pinned test font, and at it test_trigger_panel.check_triggers_fit_their_drag_floor's
+    pinned test font, and at it trigger_panel_helpers.check_triggers_fit_their_drag_floor's
     conditions all hold."""
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import _triggers_window, check_triggers_fit_their_drag_floor
+    from trigger_panel_helpers import _triggers_window, check_triggers_fit_their_drag_floor
 
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     window = _triggers_window()
     dialog = SettingsDialog(window)

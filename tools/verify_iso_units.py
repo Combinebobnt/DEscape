@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifies descape/render.py's Stepped-mode unit rendering -- Phase 5 of the
+"""Verifies descape/render_iso.py's Stepped-mode unit rendering -- Phase 5 of the
 real isometric Z-height plan. Phase 2's
 tools/verify_iso_render.py checks the terrain-only compositor in isolation;
 Phase 4's tools/verify_iso_incremental.py checks the incremental terrain
@@ -59,9 +59,10 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_iso, render_paint, render_units
 from descape.edit_history import EditHistory
 from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
+from testkit.render_family import set_render_global
 
 
 @dataclass
@@ -147,9 +148,9 @@ def check_position() -> tuple[bool, str]:
     scenario, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=3.5, y=3.5, unit_const=999999)]])
     scenario.map_manager.get_tile(3, 3).elevation = raised_elev
 
-    img, _elevations, proj = render.render_terrain_iso_with_proj(scenario)
+    img, _elevations, proj = render_iso.render_terrain_iso_with_proj(scenario)
     color = PLAYER_COLORS[1 % len(PLAYER_COLORS)]
-    dst_y, dst_x, _, _ = iso_geometry.diamond_indices(render.tile_pixels_for_map(w, h))
+    dst_y, dst_x, _, _ = iso_geometry.diamond_indices(render_paint.tile_pixels_for_map(w, h))
 
     bx, by = iso_geometry.tile_screen_origin(3, 3, raised_elev, proj)
     at_raised = img[by + dst_y, bx + dst_x]
@@ -206,23 +207,24 @@ def check_occlusion() -> tuple[bool, str]:
     raised_scn, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=ux + 0.5, y=uy + 0.5, unit_const=999999)]])
     raised_scn.map_manager.get_tile(cx, cy).elevation = 1
 
-    flat_img = render.render_terrain_iso(flat_scn)
-    raised_img = render.render_terrain_iso(raised_scn)
+    flat_img = render_iso.render_terrain_iso(flat_scn)
+    raised_img = render_iso.render_terrain_iso(raised_scn)
 
-    original_contact_shade = render.CONTACT_SHADE
-    render.CONTACT_SHADE = 1.0
-    render._shadow_factors.cache_clear()
+    import pytest
+
     try:
-        raised_img_no_shadow = render.render_terrain_iso(raised_scn)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "CONTACT_SHADE", 1.0)
+            render_iso._shadow_factors.cache_clear()
+            raised_img_no_shadow = render_iso.render_terrain_iso(raised_scn)
     finally:
-        render.CONTACT_SHADE = original_contact_shade
-        render._shadow_factors.cache_clear()
+        render_iso._shadow_factors.cache_clear()
 
     if flat_img.shape != raised_img.shape:
         return False, f"shape drifted: flat {flat_img.shape} vs raised {raised_img.shape}"
 
     color = PLAYER_COLORS[1 % len(PLAYER_COLORS)]
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     dst_y, dst_x, _, _ = iso_geometry.diamond_indices(tile_px)
     proj = iso_geometry.canvas_size_and_origin(w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION)
     bx, by = iso_geometry.tile_screen_origin(ux, uy, 0, proj)
@@ -273,7 +275,7 @@ def _apply_and_check_incremental(scenario, tile_px, edits, label) -> list[str]:
     problems: list[str] = []
     hist = EditHistory()
 
-    current_img, current_elevations, current_proj = render.render_terrain_iso_with_proj(scenario)
+    current_img, current_elevations, current_proj = render_iso.render_terrain_iso_with_proj(scenario)
     pre_edit_baseline = current_img.copy()
     post_edit_snapshots = []
 
@@ -284,11 +286,11 @@ def _apply_and_check_incremental(scenario, tile_px, edits, label) -> list[str]:
         if not dirty:
             problems.append(f"[{label}] edit at ({x},{y}) produced no dirty tiles")
             continue
-        bbox = render.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
+        bbox = render_iso.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
         if bbox is None:
             problems.append(f"[{label}] edit at ({x},{y}): refresh_region_iso declined unexpectedly")
             continue
-        full = render.render_terrain_iso(scenario)
+        full = render_iso.render_terrain_iso(scenario)
         if current_img.shape != full.shape:
             problems.append(f"[{label}] edit at ({x},{y}): shape drifted vs full re-render")
         elif not np.array_equal(current_img, full):
@@ -300,7 +302,7 @@ def _apply_and_check_incremental(scenario, tile_px, edits, label) -> list[str]:
         dirty = hist.undo(mm.terrain)
         if not dirty:
             continue
-        bbox = render.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
+        bbox = render_iso.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
         if bbox is None:
             problems.append(f"[{label}] undo: refresh_region_iso declined unexpectedly")
     if not np.array_equal(current_img, pre_edit_baseline):
@@ -311,7 +313,7 @@ def _apply_and_check_incremental(scenario, tile_px, edits, label) -> list[str]:
         dirty = hist.redo(mm.terrain)
         if not dirty:
             continue
-        bbox = render.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
+        bbox = render_iso.refresh_region_iso(current_img, scenario, dirty, current_elevations, current_proj, tile_px)
         if bbox is None:
             problems.append(f"[{label}] redo: refresh_region_iso declined unexpectedly")
     if post_edit_snapshots and not np.array_equal(current_img, post_edit_snapshots[-1]):
@@ -325,7 +327,7 @@ def check_incremental_lone_unit() -> tuple[bool, str]:
     """A lone (non-building) unit's own tile is edited directly."""
     w, h = 8, 8
     scenario, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=4.5, y=4.5, unit_const=999999)]])
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     problems = _apply_and_check_incremental(scenario, tile_px, [(4, 4, 3), (4, 4, 0)], "lone unit, own tile")
     if problems:
         return False, "; ".join(problems)
@@ -339,7 +341,7 @@ def check_incremental_building_center() -> tuple[bool, str]:
     w, h = 16, 16
     cx, cy = 8, 8
     scenario, _ = _flat_scenario(w, h, [[], [SyntheticUnit(x=cx + 0.5, y=cy + 0.5, unit_const=_BUILDING_UNIT_CONST)]])
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     problems = _apply_and_check_incremental(
         scenario, tile_px, [(cx, cy, 4), (cx, cy, 1)], "building, center tile"
     )
@@ -355,7 +357,7 @@ def check_incremental_building_corner() -> tuple[bool, str]:
     terrain does change, and the building's diamond sitting at that exact
     screen tile must survive the incremental repaint (not get silently
     wiped by the fresh terrain underneath it). This is the case
-    render.py's refresh_region_iso() needs its footprint-radius seed
+    render_iso.py's refresh_region_iso() needs its footprint-radius seed
     dilation (and the unit-carrier scan) for, not just the +-1 a terrain
     skirt alone would need -- a corner two tiles from the building's own
     tile is exactly the case a naive +-1 dilation would miss.
@@ -369,7 +371,7 @@ def check_incremental_building_corner() -> tuple[bool, str]:
     w, h = 16, 16
     cx, cy = 8, 8
     unit = SyntheticUnit(x=cx + 0.5, y=cy + 0.5, unit_const=_BUILDING_UNIT_CONST)
-    _x0, x1, _y0, y1 = render.unit_tile_bounds(unit, w, h)
+    _x0, x1, _y0, y1 = render_units.unit_tile_bounds(unit, w, h)
     corner_x, corner_y = x1 - 1, y1 - 1
     if not (corner_x - int(unit.x) > 1 and corner_y - int(unit.y) > 1):
         return False, (
@@ -377,7 +379,7 @@ def check_incremental_building_corner() -> tuple[bool, str]:
             f"({int(unit.x)}, {int(unit.y)}) -- this check no longer exercises the dilation it exists for"
         )
     scenario, _ = _flat_scenario(w, h, [[], [unit]])
-    tile_px = render.tile_pixels_for_map(w, h)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
     problems = _apply_and_check_incremental(
         scenario,
         tile_px,

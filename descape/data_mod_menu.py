@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QLabel, QMenu
 
-from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, mod_graphics, settings, unit_sprites
+from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, games, mod_graphics, settings, unit_sprites
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
@@ -131,8 +131,10 @@ class DataModMenu(QObject):
 
     def unusable_reason(self, mod: data_mods.DataMod) -> str | None:
         """Why `mod` cannot be picked right now, or None."""
-        if game_dataset.is_ror():
-            return "Data mods change Age of Empires II data; this document shows Return of Rome's"
+        shown = game_dataset.game()
+        if not shown.data_mods:
+            takes = " or ".join(game.display_name for game in games.GAMES if game.data_mods)
+            return f"Data mods change {takes} data; this document shows {shown.display_name}'s"
         if mod.status_path in self._failed:
             return self._failed[mod.status_path]
         install = asset_source.get_install_path()
@@ -176,7 +178,7 @@ class DataModMenu(QObject):
             remembered = settings.get_data_mod_for(path)
         self._pending = None
         self._apply_timer.stop()
-        mod = None if remembered is None or game_dataset.is_ror() else self._resolve(remembered)
+        mod = None if remembered is None or not game_dataset.game().data_mods else self._resolve(remembered)
         install = asset_source.get_install_path()
         tables = None if mod is None else self._cached(mod, install)
         # Before any job starts: a job that fails at once falls back to what is in effect.
@@ -205,8 +207,8 @@ class DataModMenu(QObject):
 
     def identity(self) -> dict | None:
         """The chosen mod as settings and the autosave index store it; None for the
-        install's data and always under Return of Rome, where a mod is inert."""
-        if self._wanted is None or game_dataset.is_ror():
+        install's data and always under a game without data mods (Return of Rome), where a mod is inert."""
+        if self._wanted is None or not game_dataset.game().data_mods:
             return None
         return data_mods.identity(self._wanted)
 

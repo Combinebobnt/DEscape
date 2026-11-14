@@ -9,7 +9,7 @@ import pytest
 from test_native_tier import _offset_viewport_off_grid, _wheel
 from test_wheel_zoom import _notch_scale, _on_lattice, _scale
 
-from descape.render_cache import MIP_SCALE_SLACK
+from descape.render_cache_common import MIP_SCALE_SLACK
 
 import conftest
 

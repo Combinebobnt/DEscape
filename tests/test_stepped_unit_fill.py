@@ -6,7 +6,7 @@ one moment in the depth walk -- so every footprint tile later in depth_order
 painted its own terrain diamond back over the slab. A House kept 75% of its
 footprint, a Colosseum 51.6%.
 
-numpy only, no Qt: render.render_terrain_iso_with_proj() returns
+numpy only, no Qt: render_iso.render_terrain_iso_with_proj() returns
 (img, elevations, proj) in one call, so the whole check is a crop-and-compare
 against tile_screen_origin(). The synthetic idiom (SyntheticTile /
 SyntheticUnit / FakeScenario / _flat_scenario, and _BUILDING_UNIT_CONST
@@ -17,14 +17,16 @@ tools/verify_iso_units.py.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_iso, render_paint, render_sloped, render_units
 from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from testkit.fakes import (
     FakeScenario,
     SyntheticTile,
     SyntheticUnit,
 )
+from testkit.render_family import set_render_global
 
 # The SPAN is fixed; only the const answering to it is looked up, so this
 # doesn't silently stop testing anything if the .dat's data changes shape.
@@ -70,12 +72,12 @@ def test_a_multi_tile_building_fills_every_footprint_tile_on_flat_ground() -> No
     -- not a tolerance chosen to make a partial fill pass.
     """
     scn = _building_scenario(10.5, 10.5)
-    img, elevations, proj = render.render_terrain_iso_with_proj(scn)
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    img, elevations, proj = render_iso.render_terrain_iso_with_proj(scn)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     color = _unit_color()
 
     unit = scn.unit_manager.units[_PLAYER][0]
-    x0, x1, y0, y1 = render.unit_tile_bounds(unit, MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
     assert (x1 - x0, y1 - y0) == (_BUILDING_SPAN, _BUILDING_SPAN)
     own_elev = int(elevations[int(unit.y), int(unit.x)])
 
@@ -133,12 +135,12 @@ def test_a_multi_tile_building_fills_its_footprint_on_sloped_ground_as_one_flat_
     ]
     scn = FakeScenario(MAP_W, MAP_H, tiles, units)
 
-    img, _elev, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    img, _elev, corner_rise, proj = render_sloped.render_terrain_sloped_with_proj(scn)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     color = _unit_color()
 
     unit = scn.unit_manager.units[_PLAYER][0]
-    x0, x1, y0, y1 = render.unit_tile_bounds(unit, MAP_W, MAP_H)
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
     ux, uy = int(unit.x), int(unit.y)
 
     # Non-vacuity: the footprint must actually straddle a height change.
@@ -189,18 +191,16 @@ def _render_without_shading(scn) -> np.ndarray:
     finally -- they are lru_caches, so a stale factor array would leak into
     every later test in the session.
     """
-    original_contact, original_seam = render.CONTACT_SHADE, render.SEAM_SHADE
-    render.CONTACT_SHADE = 1.0
-    render.SEAM_SHADE = 1.0
-    render._shadow_factors.cache_clear()
-    render._seam_factors.cache_clear()
     try:
-        return render.render_terrain_iso(scn)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "CONTACT_SHADE", 1.0)
+            set_render_global(mp, "SEAM_SHADE", 1.0)
+            render_iso._shadow_factors.cache_clear()
+            render_iso._seam_factors.cache_clear()
+            return render_iso.render_terrain_iso(scn)
     finally:
-        render.CONTACT_SHADE = original_contact
-        render.SEAM_SHADE = original_seam
-        render._shadow_factors.cache_clear()
-        render._seam_factors.cache_clear()
+        render_iso._shadow_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
 
 
 def test_a_raised_tile_occludes_only_the_further_half_of_a_buildings_footprint() -> None:
@@ -225,7 +225,7 @@ def test_a_raised_tile_occludes_only_the_further_half_of_a_buildings_footprint()
     raised_img = _render_without_shading(_building_scenario(10.5, 10.5, raised=(11, 10)))
     assert flat_img.shape == raised_img.shape
 
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     color = _unit_color()
     proj = iso_geometry.canvas_size_and_origin(
         MAP_W, MAP_H, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
@@ -250,7 +250,7 @@ def test_a_raised_tile_occludes_only_the_further_half_of_a_buildings_footprint()
 
     # Direction 2: everything closer than the raised tile paints after it,
     # and must be untouched down to the byte.
-    x0, x1, y0, y1 = render.unit_tile_bounds(
+    x0, x1, y0, y1 = render_units.unit_tile_bounds(
         _building_scenario(10.5, 10.5).unit_manager.units[_PLAYER][0], MAP_W, MAP_H
     )
     checked = 0

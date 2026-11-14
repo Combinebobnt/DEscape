@@ -55,6 +55,7 @@ MEMOIZED_GLOBALS = (
     "_ui_font_family",
     "_ui_font_size",
     "_window_size",
+    "_window_state",
     "_split_sizes",
     "_units_catalog_mode",
     "_browse_catalog_mode",

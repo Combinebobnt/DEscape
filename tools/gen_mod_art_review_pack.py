@@ -53,6 +53,7 @@ import numpy as np
 
 from testkit import review_pack as rp
 from testkit import settings_isolation
+from testkit.render_family import RENDER, patch
 
 PACK_ID = "objects"
 OUT_DIR = grp.OUT_DIR
@@ -136,10 +137,10 @@ def _inject_shifted():
     one tile left; Flat places icons by their rect, not a hotspot, so each icon moves a tile too."""
     import dataclasses
 
-    from descape import render, smx_decoder, unit_sprites
+    from descape import render_units, smx_decoder, unit_sprites
 
     real = smx_decoder.SMXFile.decode_frame
-    real_draw = render._draw_unit
+    real_draw = render_units._draw_unit
 
     def moved(self, *args, **kwargs):
         decoded = real(self, *args, **kwargs)
@@ -152,7 +153,7 @@ def _inject_shifted():
             icon = dataclasses.replace(icon, rgba=np.concatenate([icon.rgba, pad], axis=1))
         return real_draw(img, unit, color, tile_w, tile_h, tile_px, icon)
 
-    return [(smx_decoder.SMXFile, "decode_frame", moved), (render, "_draw_unit", draw_left)]
+    return [(smx_decoder.SMXFile, "decode_frame", moved), (RENDER, "_draw_unit", draw_left)]
 
 
 INJECTS = {
@@ -167,17 +168,17 @@ COARSE_INJECT = "mod-off"
 
 @contextmanager
 def _patched(patches):
+    import pytest
+
     from descape import asset_source
 
-    saved = [(owner, name, getattr(owner, name)) for owner, name, _new in patches]
-    for owner, name, new in patches:
-        setattr(owner, name, new)
-    asset_source.clear_art_caches()
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for owner, name, new in patches:
+                patch(mp, owner, name, new)
+            asset_source.clear_art_caches()
+            yield
     finally:
-        for owner, name, old in saved:
-            setattr(owner, name, old)
         asset_source.clear_art_caches()
 
 
@@ -206,13 +207,13 @@ def _setup() -> None:
 
 
 def _render(scenario, style: str) -> np.ndarray:
-    from descape import render
+    from descape import render_flat, render_iso, render_sloped
 
     if style == "flat":
-        return render.overlay_units(render.render_terrain(scenario), scenario, with_sprites=True)
+        return render_flat.overlay_units(render_flat.render_terrain(scenario), scenario, with_sprites=True)
     if style == "stepped":
-        return render.render_terrain_iso_with_proj(scenario, with_sprites=True)[0]
-    return render.render_terrain_sloped_with_proj(scenario, with_sprites=True)[0]
+        return render_iso.render_terrain_iso_with_proj(scenario, with_sprites=True)[0]
+    return render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=True)[0]
 
 
 def _full_images(inject: str | None, extra=()) -> dict[str, np.ndarray]:
@@ -268,9 +269,9 @@ def _boxes() -> dict[str, tuple[int, int, int, int]]:
         boxes = {fid: rp.feature_bbox(mask, PAD_PX, mask.shape) for fid, mask in masks.items()}
         empty = _scenario(False, False)
         x0, y0, x1, y1 = boxes["b"]
-        from descape import render
+        from descape import render_iso
 
-        half_h = render.render_terrain_iso_with_proj(empty, with_units=False)[2].half_h
+        half_h = render_iso.render_terrain_iso_with_proj(empty, with_units=False)[2].half_h
         boxes["f"] = (x0, y0 + 2 * GROUND_SHIFT_TILES * half_h, x1, y1 + 2 * GROUND_SHIFT_TILES * half_h)
         mod_graphics.set_enabled(False)
         asset_source.clear_art_caches()

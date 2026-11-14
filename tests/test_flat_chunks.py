@@ -1,4 +1,4 @@
-"""Verifies descape.render.composite_rect_flat() and FlatChunkCache --
+"""Verifies descape.render_flat.composite_rect_flat() and FlatChunkCache --
 v2.6 completion plan's Track B, Phase B-E. Mirrors
 tools/verify_iso_chunks.py's seven checks for the Flat counterpart of
 IsoChunkCache, plus one Flat-specific check (8) that directly exercises
@@ -54,8 +54,10 @@ import pytest
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
 
 from descape.edit_history import EditHistory
-from descape.render import _flat_unit_draws, composite_rect_flat, flat_dirty_rects, render_scenario, tile_pixels_for_map
+from descape.render import render_scenario
 from descape.render_cache import FlatChunkCache
+from descape.render_flat import _flat_unit_draws, composite_rect_flat
+from descape.render_paint import flat_dirty_rects, tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 
@@ -511,17 +513,17 @@ def _offcentre_scenario(const: int):
 
 
 def test_flat_unit_bboxes_equal_the_scalar_bbox_at_every_mip() -> None:
-    from descape import render
+    from descape import render_flat
 
     scenario = _offcentre_scenario(SPAN1_CONST)
-    tiles, offsets, colors, row_uid, _row_player = render._flat_unit_base_rows(scenario)
+    tiles, offsets, colors, row_uid, _row_player = render_flat._flat_unit_base_rows(scenario)
     units = {id(u): u for units in scenario.unit_manager.units for u in units}
     for mip, tile_px in _ladder(scenario).items():
         products = offsets * tile_px
         assert (np.abs(products - np.floor(products)) == 0.5).any(), f"mip {mip}: no rounding tie -- vacuous"
-        got = render.flat_unit_bboxes(tiles, offsets, tile_px)
+        got = render_flat.flat_unit_bboxes(tiles, offsets, tile_px)
         want = [
-            render._flat_unit_bbox(tuple(int(v) for v in t), units[uid], tile_px)
+            render_flat._flat_unit_bbox(tuple(int(v) for v in t), units[uid], tile_px)
             for t, uid in zip(tiles, row_uid.tolist(), strict=True)
         ]
         assert got.dtype == np.int32 and np.array_equal(got, np.array(want, dtype=np.int32)), f"mip {mip}"
@@ -611,17 +613,17 @@ def test_flat_mip0_icons_first_built_inside_a_unit_window(request) -> None:
 @pytest.mark.corpus
 def test_flat_unit_bboxes_equal_the_walk_on_the_corpus(corpus_files) -> None:
     """Derive equals walk at every level of every corpus map (--corpus-full: all of examples/)."""
-    from descape import render
+    from descape import render_flat
 
     rows = offcentre = 0
     for path in corpus_files:
         scenario = load_map_and_units(path)
-        tiles, offsets, colors, _uid, _player = render._flat_unit_base_rows(scenario)
+        tiles, offsets, colors, _uid, _player = render_flat._flat_unit_base_rows(scenario)
         rows += len(tiles)
         offcentre += int((offsets != 0).any(axis=1).sum())
         for mip, tile_px in _ladder(scenario).items():
             bboxes, walk_colors = _scalar_walk(scenario, tile_px)
-            derived = render.flat_unit_bboxes(tiles, offsets, tile_px)
+            derived = render_flat.flat_unit_bboxes(tiles, offsets, tile_px)
             assert np.array_equal(derived, bboxes) and np.array_equal(colors, walk_colors), f"{path.name} mip {mip}"
     assert rows and offcentre, f"{rows} rows, {offcentre} off-centre -- vacuous"
 
@@ -629,16 +631,16 @@ def test_flat_unit_bboxes_equal_the_walk_on_the_corpus(corpus_files) -> None:
 def _scalar_walk(scenario, tile_px: int) -> tuple[np.ndarray, np.ndarray]:
     """The pre-031.72 per-level walk, _flat_unit_bbox() per unit: the oracle
     the derive must equal (_flat_unit_draws() derives now)."""
-    from descape import render
+    from descape import render_flat, render_units
 
     mm = scenario.map_manager
     bboxes, colors = [], []
     for player_id, units in enumerate(scenario.unit_manager.units):
         for unit in units:
-            bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+            bounds = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
             if bounds is not None:
-                bboxes.append(render._flat_unit_bbox(bounds, unit, tile_px))
-                colors.append(render._unit_color(unit, scenario.player_colors[player_id]))
+                bboxes.append(render_flat._flat_unit_bbox(bounds, unit, tile_px))
+                colors.append(render_units._unit_color(unit, scenario.player_colors[player_id]))
     return np.array(bboxes, dtype=np.int32).reshape(-1, 4), np.array(colors, dtype=np.uint8).reshape(-1, 3)
 
 

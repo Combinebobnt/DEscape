@@ -111,7 +111,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import render
+from descape import render_iso, render_sloped
 from descape.batch_api import set_terrain
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import tile_screen_origin
@@ -480,7 +480,7 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
 
         if write_renders:
             reloaded = load_map_and_units(out_path)
-            img, _elevations, proj = render.render_terrain_iso_with_proj(reloaded, with_units=False)
+            img, _elevations, proj = render_iso.render_terrain_iso_with_proj(reloaded, with_units=False)
             # Sloped's own proj is geometrically identical to Stepped's for
             # the same map/tile_px (corner_headroom_px doesn't affect canvas
             # sizing -- see IsoProjection's own comment), so the same
@@ -489,7 +489,7 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
             # side-by-side against the in-game screenshots this script's own
             # generated reference doc hands off.
             sloped_img, _sloped_elevations, _sloped_corner_rise, _sloped_proj = (
-                render.render_terrain_sloped_with_proj(reloaded, with_units=False)
+                render_sloped.render_terrain_sloped_with_proj(reloaded, with_units=False)
             )
             renders_dir = out_dir / "renders"
             renders_dir.mkdir(parents=True, exist_ok=True)

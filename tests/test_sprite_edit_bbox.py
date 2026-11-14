@@ -35,11 +35,24 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, unit_sprites
+from descape import (
+    asset_source,
+    iso_geometry,
+    render_bbox,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_sprites,
+)
 from descape.elevation_tools import set_tile_elevation
-from descape.render import dirty_screen_bbox_iso, render_terrain_iso_with_proj
+from descape.render_bbox import dirty_screen_bbox_iso
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
+from descape.render_iso import render_terrain_iso_with_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from descape.terrain_palette import BUILDING_TILE_SPANS
+from testkit.render_family import set_render_global
 
 import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -182,7 +195,7 @@ def _edited_scenario(ux: float = float(EDIT_X), uy: float = float(EDIT_Y)):
     it keeps every test but the oracle off the ~0.5s composite.
     """
     scenario = _fixture_scenario(ux, uy)
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     dirty, _changed = _edit_and_dirty(scenario.map_manager, EDIT_X, EDIT_Y, EDIT_ELEVATION)
     return scenario, dirty, elevations, proj
 
@@ -195,7 +208,7 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     (TASK-221) at several keys: their union, which must tile one rect."""
     mm = scenario.map_manager
     elevations = np.full((mm.map_height, mm.map_width), elevation, dtype=np.int64)
-    layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
+    layer = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
     entries = [entry for v in layer.by_anchor.values() for entry in v]
     assert entries and len({(ax, ay) for _, ax, ay, _ in entries}) == 1, f"expected one sprite, got {entries}"
     rects = []
@@ -207,12 +220,9 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     union = rects[0][0], rects[0][1], rects[-1][2], rects[0][3]
     assert {(r[1], r[3]) for r in rects} == {(union[1], union[3])}, rects
     assert all(a[2] == b[0] for a, b in itertools.pairwise(rects)), f"slices overlap or leave a gap: {rects}"
-    saved = render.SPRITE_COLUMN_SLICING
-    render.SPRITE_COLUMN_SLICING = False
-    try:
-        whole = render.sprite_draws_by_anchor(scenario, proj, elevations)
-    finally:
-        render.SPRITE_COLUMN_SLICING = saved
+    with pytest.MonkeyPatch.context() as mp:
+        set_render_global(mp, "SPRITE_COLUMN_SLICING", False)
+        whole = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
     [(draw, ax, ay, _rise)] = [entry for v in whole.by_anchor.values() for entry in v]
     h, w = draw.rgba.shape[:2]
     assert union == (ax - draw.hotspot_x, ay - draw.hotspot_y, ax - draw.hotspot_x + w, ay - draw.hotspot_y + h)
@@ -224,7 +234,7 @@ def _clamped(rect, proj) -> tuple[int, int, int, int]:
     correction tests/test_sloped_edit.py's ring check makes, for the same
     reason: a sprite hanging off the canvas can only be required to be covered
     where the canvas actually exists."""
-    canvas_w, canvas_h = render._canvas_pixel_dims(proj)
+    canvas_w, canvas_h = render_bbox._canvas_pixel_dims(proj)
     x0, y0, x1, y1 = rect
     return max(0, x0), max(0, y0), min(canvas_w, x1), min(canvas_h, y1)
 
@@ -244,7 +254,7 @@ def _full_render_at_level(cache, monkeypatch, scenario) -> np.ndarray:
     test into a measurement of the real constants against a synthetic sprite.
     """
     with monkeypatch.context() as m:
-        m.setattr(render, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(COARSER_LEVEL))
+        set_render_global(m, "tile_pixels_for_map", lambda w, h: cache.mip_tile_px(COARSER_LEVEL))
         full, _elev, _proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
     return full
 
@@ -382,7 +392,7 @@ def test_the_bbox_covers_the_sprite_at_every_span_parity(sprite_install, monkeyp
     duck-typed unit carries floats straight through _span_start, which is
     exactly where the naive claim breaks.
     """
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, span)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, span)
     scenario, dirty, elevations, proj = _edited_scenario(*coord)
     bbox = dirty_screen_bbox_iso(
         scenario, dirty, elevations.copy(), proj, with_units=True, with_sprites=True
@@ -452,7 +462,7 @@ def test_a_unit_move_with_extra_anchor_tiles_covers_both_old_and_new_sprite_rect
     stale on screen."""
     scenario = _fixture_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     old_x, old_y = EDIT_X, EDIT_Y
     new_x, new_y = EDIT_X + 1, EDIT_Y
 
@@ -489,7 +499,7 @@ def test_without_extra_anchor_tiles_the_same_move_misses_the_old_sprite_rect(
     that by a wide margin while staying on this 120x120 map."""
     scenario = _fixture_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     old_x, old_y = EDIT_X, EDIT_Y
     new_x, new_y = EDIT_X + 40, EDIT_Y
 
@@ -522,21 +532,21 @@ def test_extra_anchor_tiles_covers_a_multi_tile_old_footprint_not_just_the_ancho
     _sprite_rect calls simulates the same defect -- a multi-tile OLD
     footprint that extra_anchor_tiles must carry in full, not just the
     single anchor tile a naive caller might pass instead."""
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (4, 1))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, (4, 1))
     scenario = _fixture_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     unit = scenario.unit_manager.units[1][0]
 
-    old_footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    old_footprint = set(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
     assert len(old_footprint) > 1, "fixture must actually span more than one tile to prove anything"
     old_rects = {e: _clamped(_sprite_rect(scenario, proj, e), proj) for e in (BASE_ELEVATION,)}
 
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, (1, 4))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, (1, 4))
     unit.x, unit.y = float(EDIT_X + 2), float(EDIT_Y)
     scenario.unit_gen += 1
 
-    new_footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    new_footprint = set(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
     assert not old_footprint & new_footprint, "old and new footprints must not overlap, or this proves nothing"
 
     dirty_xy = old_footprint | new_footprint
@@ -562,11 +572,11 @@ def test_a_pure_add_covers_the_new_sprite_rect_through_units_changed(sprite_inst
     the anchor memo don't depend on the add having happened in-process."""
     scenario = _fixture_scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     unit = scenario.unit_manager.units[1][0]
     new_rect = _clamped(_sprite_rect(scenario, proj, BASE_ELEVATION), proj)
 
-    footprint = set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    footprint = set(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
     dirty = [i for i, t in enumerate(mm.terrain) if (int(t.x), int(t.y)) in footprint]
 
     def bbox(units_changed):
@@ -607,7 +617,7 @@ def test_patch_after_edit_matches_a_fresh_full_render(sprite_install, monkeypatc
     """
     scenario, dirty, elevations, proj = _edited_scenario()
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
 
     cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
     canvas_w, canvas_h = cache.canvas_dims()
@@ -657,11 +667,11 @@ PAINT_TERRAIN_ID = 14
 
 def _terrain_only_cache(style: str, scenario):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True), proj
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True), proj
 
 
@@ -691,7 +701,7 @@ def test_a_terrain_only_paint_under_a_sprite_skips_the_band_and_matches_a_fresh_
 
     index = _terrain_index(mm, EDIT_X, EDIT_Y)
     mm.terrain[index].terrain_id = PAINT_TERRAIN_ID
-    bbox_fn = dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_fn = dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
 
     off = bbox_fn(scenario, [index], cache.elevations.copy(), proj, with_units=True, with_sprites=False)
     flagged = bbox_fn(
@@ -714,7 +724,7 @@ def test_a_terrain_only_paint_under_a_sprite_skips_the_band_and_matches_a_fresh_
     if style == "stepped":
         full, _elev, _proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
     else:
-        full, _elev, _corner, _proj = render.render_terrain_sloped_with_proj(scenario, with_sprites=True)
+        full, _elev, _corner, _proj = render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=True)
     got = cache.render_rect(0, 0, canvas_w, canvas_h)
     want = full[:canvas_h, :canvas_w]
     if not np.array_equal(got, want):
@@ -772,7 +782,7 @@ def test_patch_after_edit_matches_a_fresh_full_render_at_a_coarser_mip(sprite_in
     """
     scenario, dirty, elevations, proj = _edited_scenario()
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
 
     cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
     # An assert, not a skip: this fixture is the shipped 120x120 template at
@@ -906,7 +916,7 @@ def _offset_reach_frame():
 
 
 def test_reach_scans_measure_a_piece_where_the_renderer_paints_it():
-    """A piece paints at anchor + (dx, dy) (render.py's px = ax + piece.dx), so a piece
+    """A piece paints at anchor + (dx, dy) (render_sprites.py's px = ax + piece.dx), so a piece
     10 px right and 50 px up reaches 10 less left, 10 more right, 50 more up and 50 less
     down. Both scans used to add the offset, mirroring the piece through its anchor."""
     from types import SimpleNamespace

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.qt_window import panel_width, set_panel_width
+
 import conftest
 
 pytestmark = [
@@ -367,12 +369,11 @@ def test_at_the_view_floor_a_hidden_note_still_copies_and_map_size_reads_as_free
     try:
         window.load_scenario(UNITS_FIXTURE)
         window.mode_combo.setCurrentText("Players")
-        total = sum(window.content_splitter.sizes())
-        window.content_splitter.setSizes([150, total - 150])
+        set_panel_width(window, 150)
         QApplication.processEvents()
         window.mode_combo.setCurrentText("View")
         QApplication.processEvents()
-        assert window.content_splitter.sizes()[0] == window.INFO_PAGE_MIN_USEFUL_WIDTH
+        assert panel_width(window) == window.INFO_PAGE_MIN_USEFUL_WIDTH
         window._select_player(1)
         tree = window.info_tree
         assert tree.header().isSectionHidden(2)

@@ -67,9 +67,11 @@ _WALL_SOURCES = {
         "rotation_variant_eligible",
         "wall_family_consts",
         "rotation_variant_const_set",
-        "_ROTATION_VARIANT_CONSTS",
+        "_ROTATION_VARIANT_BY_GAME",
     )
 }
+# Each game's entry, since a test patches one with monkeypatch.setitem().
+_WALL_SETS = dict(unit_sprites._ROTATION_VARIANT_BY_GAME)
 _WALL_FIELDS = ("angle_count", "file_name")
 _WALL_ENTRIES = {
     const: {field: entry[field] for field in _WALL_FIELDS}
@@ -89,19 +91,23 @@ def _describe(obj) -> str:
 
 def _wall_state() -> str | None:
     """None while Place Unit sees the real wall set, else where it came from.
-    Reads viewer._wall_consts(), which is cached per dataset, and the live set
+    Reads viewer_unit_place._wall_consts(), which is cached per dataset, and the live set
     beside it: a cache filled under another test's patch outlives the patch."""
-    from descape import viewer
+    from descape import viewer_unit_place
 
     walls = {PALISADE, WALL, AQUEDUCT}
-    cached, live = viewer._wall_consts(), frozenset(unit_sprites.wall_family_consts())
+    cached, live = viewer_unit_place._wall_consts(), frozenset(unit_sprites.wall_family_consts())
     if walls <= cached and walls <= live and game_dataset.cache_key() == game_dataset.AOE2:
         return None
-    parts = [f"viewer._wall_consts() = {sorted(cached)}, unit_sprites.wall_family_consts() = {sorted(live)}"]
+    parts = [f"viewer_unit_place._wall_consts() = {sorted(cached)}, unit_sprites.wall_family_consts() = {sorted(live)}"]
     for name, original in _WALL_SOURCES.items():
         now = getattr(unit_sprites, name)
         if now is not original:
             parts.append(f"unit_sprites.{name} is patched: {_describe(now)}")
+    for game_id, original in _WALL_SETS.items():
+        now = unit_sprites._ROTATION_VARIANT_BY_GAME.get(game_id)
+        if now is not original:
+            parts.append(f"unit_sprites._ROTATION_VARIANT_BY_GAME[{game_id!r}] is patched: {sorted(now or ())}")
     parts.append(f"cache_key() = {game_dataset.cache_key()!r}")
     table = unit_sprites.graphic_map()
     parts.append(f"len(graphic_map()) = {len(table)}")
@@ -421,7 +427,7 @@ def test_a_stone_wall_drag_ending_against_an_aqueduct_run_joins_it():
 
 def test_a_gaia_run_places_with_derived_indices():
     """Replaces the old GAIA refusal, whose premise was stale:
-    render.stored_rotation() keeps a GAIA wall's variant index."""
+    render_units.stored_rotation() keeps a GAIA wall's variant index."""
     window = _window()
     try:
         assert window.units_panel.select_owner(GAIA_PLAYER_ID)
@@ -710,14 +716,14 @@ def test_a_committed_run_agrees_with_the_render_sides_derivation(owner):
     """The fixture's one wall is radian-encoded, so the file classifies as
     radian and render resolves every wall with a neighbour through the
     override path: no override may disagree with what was stored."""
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window = _window()
     try:
         assert window.units_panel.select_owner(owner)
         window.on_shape_commit([(x, 5) for x in range(8, 14)] + [(13, y) for y in range(6, 11)])
         window.on_shape_commit([(x, 30) for x in range(30, 36)])
-        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        overrides = render_units.wall_variant_rotation_overrides(window.scenario)
         assert overrides, "the radian wall should force the override path"
         units = window.scenario.unit_manager.units
         for (player_id, index), derived in overrides.items():
@@ -893,7 +899,7 @@ def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
     there would rewrite it to a literal integer, the file would read as
     integer-only, and render would derive only lone walls and run ends
     (TASK-469; the junction itself is test_wall_run.py's)."""
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window = _rect_window()
     try:
@@ -902,7 +908,7 @@ def test_a_committed_ring_agrees_with_the_render_sides_derivation(owner):
         ring = set(path)
         window.on_shape_commit(path)
         assert not unit_sprites.is_literal_variant_index(_gaia_wall(window).rotation, 5)
-        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        overrides = render_units.wall_variant_rotation_overrides(window.scenario)
         units = window.scenario.unit_manager.units
         ring_nodes = [u for u in units[owner] if u.unit_const == WALL and (int(u.x), int(u.y)) in ring]
         assert len(ring_nodes) == len(ring) == 24
@@ -1027,7 +1033,7 @@ def test_a_committed_circle_agrees_with_the_render_sides_derivation(owner):
     stays clear of that wall: a junction would rewrite it to a literal
     integer, the file would read as integer-only, and render would derive
     only lone walls and run ends (the junction itself is test_wall_run.py's)."""
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window = _circle_window()
     try:
@@ -1035,7 +1041,7 @@ def test_a_committed_circle_agrees_with_the_render_sides_derivation(owner):
         ring = _ellipse(*_CIRCLE_A, *_CIRCLE_B)
         window.on_shape_commit(ring)
         assert not unit_sprites.is_literal_variant_index(_gaia_wall(window).rotation, 5)
-        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        overrides = render_units.wall_variant_rotation_overrides(window.scenario)
         units = window.scenario.unit_manager.units
         on_ring = [
             key for key in overrides
@@ -1250,7 +1256,7 @@ def test_toggle_off_the_preview_keeps_every_tile():
 
 
 def test_a_gapped_run_agrees_with_the_render_sides_derivation():
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window = _window()
     try:
@@ -1260,7 +1266,7 @@ def test_a_gapped_run_agrees_with_the_render_sides_derivation():
         window.on_shape_commit([(x, 5) for x in range(8, 14)] + [(13, y) for y in range(6, 11)])
         walls = _walls_by_tile(window)
         assert (10, 5) not in walls and (13, 8) not in walls
-        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        overrides = render_units.wall_variant_rotation_overrides(window.scenario)
         assert overrides, "the radian wall should force the override path"
         units = window.scenario.unit_manager.units
         for (player_id, index), derived in overrides.items():
@@ -1340,8 +1346,7 @@ def _menu_action(window, const: int):
 def test_the_wall_button_only_shows_for_the_wall_tools():
     """GH #190. QAction.isVisible(), never the widget's, for the reason the
     Wall Rectangle test gives. Every other Units-mode tool hides it, Convert included."""
-    from descape.viewer import _WALL_TOOLS
-    from descape.viewer_common import tool_applicable
+    from descape.viewer_common import _WALL_TOOLS, tool_applicable
 
     window = _window(VILLAGER)
     try:
@@ -2011,7 +2016,7 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
     only lone walls and run ends, so there the stored indices are read directly."""
     from PyQt5.QtCore import Qt
 
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window, gate = _gate_window()
     try:
@@ -2027,7 +2032,7 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
             _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
             steps.append(_last_status(window))
             deltas.append(_is_field_delta(window))
-            overrides = render.wall_variant_rotation_overrides(window.scenario)
+            overrides = render_units.wall_variant_rotation_overrides(window.scenario)
             assert bool(overrides) == (encoding == "radian")
             units = window.scenario.unit_manager.units
             for (player_id, index), derived in overrides.items():
@@ -2116,11 +2121,11 @@ def _derived_around(window, tiles) -> int:
 
 
 def _file_is_radian(window) -> bool:
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     return unit_sprites.file_is_radian(
         [
-            render.stored_rotation(player_id, u)
+            render_units.stored_rotation(player_id, u)
             for player_id, units in enumerate(window.scenario.unit_manager.units)
             for u in units
             if unit_sprites.rotation_variant_eligible(u.unit_const)
@@ -2261,7 +2266,7 @@ def test_in_a_radian_file_the_drag_writes_literal_shapes_the_render_agrees_with(
     """The fixture as loaded: its radian GAIA wall keeps the file radian. One
     run neighbour stores radian noise (index 1); left a run end, it stores
     the literal 2.0, and no override disagrees with a stored index."""
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window, wall, west, east = _moved_wall_window(integer=False)
     try:
@@ -2273,7 +2278,7 @@ def test_in_a_radian_file_the_drag_writes_literal_shapes_the_render_agrees_with(
         assert _shapes(wall, west, east) == (2.0, 2.0, 2.0), _last_status(window)
         assert _file_is_radian(window)
         assert _is_field_delta(window)
-        overrides = render.wall_variant_rotation_overrides(window.scenario)
+        overrides = render_units.wall_variant_rotation_overrides(window.scenario)
         assert overrides, "the radian wall should force the override path"
         units = window.scenario.unit_manager.units
         for (player_id, index), derived in overrides.items():
@@ -2445,13 +2450,13 @@ def _crossed_gate_window(run_owner: int = PLAYER):
 
 def _footprint(window, unit, const=None) -> set:
     """`unit`'s sparse tiles, or as `const` re-anchored the way a cycle re-anchors it."""
-    from descape import render
+    from descape import render_units
     from descape.unit_model import reanchored
 
     mm = window.scenario.map_manager
     if const is None:
-        return set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
-    return set(render.occupied_tiles_for(const, *reanchored(unit, const), mm.map_width, mm.map_height))
+        return set(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    return set(render_units.occupied_tiles_for(const, *reanchored(unit, const), mm.map_width, mm.map_height))
 
 
 def test_rotate_turns_a_gate_onto_a_crossing_run_and_clears_the_walls_under_it():
@@ -2701,7 +2706,7 @@ def _delete(window, units) -> None:
 
 
 def test_deleting_a_mid_run_wall_turns_its_two_neighbours_into_run_ends():
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     window, row = _run_window()
     try:
@@ -2721,7 +2726,7 @@ def test_deleting_a_mid_run_wall_turns_its_two_neighbours_into_run_ends():
                 continue
             derived = unit_sprites.wall_variant_from_neighbours8(unit_sprites.neighbour_mask(x, _DEL_ROW, tiles, diagonals=True))
             assert row[x].rotation == float(2 if derived is None else derived), x
-        assert render.wall_variant_rotation_overrides(window.scenario) == {}, "the file stays integer-only"
+        assert render_units.wall_variant_rotation_overrides(window.scenario) == {}, "the file stays integer-only"
 
         window.undo()
         assert any(u is row[35] for u in window.scenario.unit_manager.units[PLAYER])
@@ -2792,17 +2797,17 @@ def test_a_delete_that_reshapes_no_wall_keeps_the_single_unit_splice_path(monkey
 def test_a_radian_files_neighbour_is_rewritten_and_the_file_stays_radian():
     """Decision 1: both file classes. The run sits clear of the radian GAIA
     wall at (7, 5), and one neighbour is seeded with radian index 1."""
-    from descape import render
+    from descape import render_units
 
     window, row = _run_window(integer=False)
     try:
         row[34].rotation = 1.256637
-        assert render.wall_variant_rotation_overrides(window.scenario)
+        assert render_units.wall_variant_rotation_overrides(window.scenario)
 
         _delete(window, [row[35]])
 
         assert row[34].rotation == 2.0 and row[36].rotation == 2.0
-        assert render.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
+        assert render_units.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
     finally:
         _close(window)
 
@@ -2958,7 +2963,7 @@ def test_a_paste_beside_a_radian_neighbour_writes_the_literal_and_the_file_stays
     """The fixture as loaded is radian (its GAIA wall). (60, 60) stores radian
     index 1 and a lone wall pasted east of it makes it a run end: it takes the
     literal 2."""
-    from descape import render
+    from descape import render_units
 
     window = _window()
     try:
@@ -2966,14 +2971,14 @@ def test_a_paste_beside_a_radian_neighbour_writes_the_literal_and_the_file_stays
         with window._unit_edit(model, "Add", [PLAYER]):
             neighbour = model.add(PLAYER, WALL, 60.5, 60.5, rotation=1.256637)
             source = model.add(PLAYER, WALL, 80.5, 80.5, rotation=2.0)
-        assert render.wall_variant_rotation_overrides(window.scenario)
+        assert render_units.wall_variant_rotation_overrides(window.scenario)
         _select_units(window, [source])
         assert window.copy_units()
 
         _paste_units_at(window, (61, 60))
 
         assert neighbour.rotation == 2.0
-        assert render.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
+        assert render_units.wall_variant_rotation_overrides(window.scenario), "the GAIA wall keeps the file radian"
     finally:
         _close(window)
 

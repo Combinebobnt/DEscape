@@ -52,8 +52,13 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
   `descape/help/` in the same PR, and a new menu item, mode or tool gets a
   line in its topic. `tests/test_help_guide.py` checks the guide's style,
   menu paths and links; the guide names commands, never their default keys.
+- A `tests/test_module_size.py` failure means a file outgrew its line
+  ceiling. Put the new code in a sibling module, or, if it belongs in that
+  file, raise its ceiling in that test's table with a dated reason on the
+  line (the failure message prints the line to paste). The review decides.
 - Never skip or loosen a failing test to get a green run. If a test looks
-  wrong, say so in the PR.
+  wrong, say so in the PR. A reasoned ceiling raise in
+  `tests/test_module_size.py`, as above, is not loosening a test.
 
 ## When the full suite matters
 

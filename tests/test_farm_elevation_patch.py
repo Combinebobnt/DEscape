@@ -21,7 +21,7 @@ from test_sloped_sprites import FARM_CONST, _flat_scenario_with_unit, sprite_ins
 
 from descape import iso_geometry as ig
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
+from descape.render_bbox import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
 
 BASE_ELEVATION = 2
 FARM_XY = (50.5, 50.5)  # a 3x3 farm on tiles 49..51, own tile (50, 50)

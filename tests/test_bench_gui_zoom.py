@@ -511,7 +511,7 @@ def test_no_input_budget_parses_and_reaches_the_child():
 
 
 def test_no_margin_fix_parses_and_reaches_the_child():
-    """TASK-031.85's A arm (render_cache.WARM_NATIVE_INPUTS off) is forwarded like the other A arms."""
+    """TASK-031.85's A arm (render_cache_leveled.WARM_NATIVE_INPUTS off) is forwarded like the other A arms."""
     args = bz.build_parser().parse_args(["--no-margin-fix"])
     assert args.no_margin_fix and not args.no_input_budget
     assert "--no-margin-fix" in bz.child_command(args, "Sloped", "off", ["notch"])
@@ -522,14 +522,12 @@ def test_no_margin_fix_parses_and_reaches_the_child():
 def test_module_arms_set_each_switch_only_for_its_flag(monkeypatch, flag):
     """--no-margin-fix clears the native prime and its re-queue (WARM_NATIVE_INPUTS) and the
     cold-first defer (DEFER_COLD_FIRST, TASK-031.82 D3); --no-input-budget pins the budget."""
-    from descape import level_warm, margin_warm, render_cache
+    from descape import level_warm, margin_warm
+    from testkit.render_family import render_cache_global
 
-    for module, name in ((render_cache, "WARM_NATIVE_INPUTS"), (margin_warm, "DEFER_COLD_FIRST"),
-                         (level_warm, "INPUT_BUDGET_MS")):
-        monkeypatch.setattr(module, name, getattr(module, name))
-    bz.apply_module_arms(bz.build_parser().parse_args([flag] if flag else []))
+    bz.apply_module_arms(bz.build_parser().parse_args([flag] if flag else []), monkeypatch)
     fix_on = flag != "--no-margin-fix"
-    assert render_cache.WARM_NATIVE_INPUTS is fix_on and margin_warm.DEFER_COLD_FIRST is fix_on
+    assert render_cache_global("WARM_NATIVE_INPUTS") is fix_on and margin_warm.DEFER_COLD_FIRST is fix_on
     assert (level_warm.INPUT_BUDGET_MS == level_warm.BUDGET_MS) is (flag == "--no-input-budget")
 
 
@@ -749,7 +747,7 @@ def margin_recorder(monkeypatch):
     from collections import deque
     from types import SimpleNamespace
 
-    from descape import perf_trace, render_cache
+    from descape import perf_trace, render_cache, render_cache_base
 
     clock = SimpleNamespace(t=0.0)
     monkeypatch.setattr(bz.time, "perf_counter", lambda: clock.t)
@@ -775,8 +773,8 @@ def margin_recorder(monkeypatch):
             cache.get_chunk(mip, cx, cy)
         return cache.job
 
-    monkeypatch.setattr(render_cache._ChunkCacheBase, "get_chunk", get_chunk)
-    monkeypatch.setattr(render_cache._ChunkCacheBase, "prepare_chunk_job", prepare_chunk_job)
+    monkeypatch.setattr(render_cache_base._ChunkCacheBase, "get_chunk", get_chunk)
+    monkeypatch.setattr(render_cache_base._ChunkCacheBase, "prepare_chunk_job", prepare_chunk_job)
     cache = render_cache.IsoChunkCache.__new__(render_cache.IsoChunkCache)
     cache.get_ms, cache.nested, cache.events, cache.job = 5.0, "", False, None
     cache._composited_mips, cache._native_primed, cache._source_gen = set(), {}, 0

@@ -566,7 +566,7 @@ def test_real_placements_mostly_satisfy_both_rules(corpus_files, request) -> Non
     only a jump means a rule broke."""
     from collections import Counter
 
-    from descape import render, scenario_io
+    from descape import render_units, scenario_io
 
     conftest.require_reference_corpus(request.config)
     scope = _SCOPES.index("full" if request.config.getoption("--corpus-full") else "subset")
@@ -582,7 +582,7 @@ def test_real_placements_mostly_satisfy_both_rules(corpus_files, request) -> Non
             for unit in units:
                 entry = objects.get(unit.unit_const)
                 kind = None if entry is None else _kind(entry)
-                tiles = render.occupied_tiles_for(unit.unit_const, unit.x, unit.y, mm.map_width, mm.map_height)
+                tiles = render_units.occupied_tiles_for(unit.unit_const, unit.x, unit.y, mm.map_width, mm.map_height)
                 if kind is None or tiles is None:
                     continue
                 placed[kind] += 1

@@ -1,4 +1,4 @@
-"""render.dirty_screen_bboxes_iso_grouped() against its oracle: one
+"""render_bbox.dirty_screen_bboxes_iso_grouped() against its oracle: one
 dirty_screen_bbox_iso() call per group, sized as a unit edit's tight block
 rect is (with_sprites off, units_changed set). The grouped pass may only ever
 answer what those calls answer, or decline.
@@ -11,7 +11,7 @@ import random
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox, render_iso
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 
@@ -42,7 +42,7 @@ def _groups(w: int, h: int) -> list[list[int]]:
 
 def _oracle(scenario, groups, elevations, proj, **kwargs):
     return [
-        render.dirty_screen_bbox_iso(
+        render_bbox.dirty_screen_bbox_iso(
             scenario, group, elevations, proj, with_units=True, with_sprites=False, units_changed=True, **kwargs
         )
         for group in groups
@@ -53,13 +53,13 @@ def _oracle(scenario, groups, elevations, proj, **kwargs):
 def test_the_grouped_pass_answers_what_one_call_per_group_does(flatten) -> None:
     scenario = _scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     if flatten:
         elevations[:] = 0
     groups = _groups(mm.map_width, mm.map_height)
     held = elevations.copy()
 
-    grouped = render.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=flatten)
+    grouped = render_bbox.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=flatten)
 
     assert np.array_equal(elevations, held)
     expected = _oracle(scenario, groups, elevations, proj, flatten_elevations=flatten)
@@ -75,35 +75,35 @@ def test_the_grouped_pass_answers_what_one_call_per_group_does(flatten) -> None:
 def test_the_grouped_pass_declines_a_tile_whose_elevation_moved_and_writes_nothing() -> None:
     scenario = _scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     groups = _groups(mm.map_width, mm.map_height)
     tile = mm.terrain[groups[5][0]]
     tile.elevation = int(tile.elevation) + 1
     held = elevations.copy()
 
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj) is None
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj) is None
     assert np.array_equal(elevations, held)
     # Flat + Isometric View: the mirror must hold 0 there, whatever the tile says.
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=True) is None
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=True) is None
     elevations[:] = 0
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=True)
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj, flatten_elevations=True)
 
 
 def test_the_grouped_pass_declines_an_elevation_outside_the_projection() -> None:
     scenario = _scenario()
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     groups = _groups(mm.map_width, mm.map_height)
     index = groups[5][0]
     mm.terrain[index].elevation = iso_geometry.MAX_ELEVATION + 1
     elevations[index // mm.map_width, index % mm.map_width] = iso_geometry.MAX_ELEVATION + 1
 
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj) is None
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, groups, elevations, proj) is None
     assert _oracle(scenario, [groups[5]], elevations, proj) == [None]
 
 
 def test_no_groups_and_all_empty_groups() -> None:
     scenario = _scenario()
-    elevations, proj = render.elevations_and_proj(scenario)
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, [], elevations, proj) == []
-    assert render.dirty_screen_bboxes_iso_grouped(scenario, [[], []], elevations, proj) == [None, None]
+    elevations, proj = render_iso.elevations_and_proj(scenario)
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, [], elevations, proj) == []
+    assert render_bbox.dirty_screen_bboxes_iso_grouped(scenario, [[], []], elevations, proj) == [None, None]

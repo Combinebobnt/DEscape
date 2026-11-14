@@ -12,7 +12,7 @@ back to TriggerEditModel.restore()/UnitEditModel.restore(); no
 AoE2ScenarioParser type is named here at runtime, only under TYPE_CHECKING.
 
 One history, not two. It is the sole source of truth for is_dirty,
-mark_saved(), can_undo/can_redo and viewer.py's _confirm_discard_changes, so a
+mark_saved(), can_undo/can_redo and viewer_file.py's _confirm_discard_changes, so a
 second instance for triggers, units, or Messages would leave the document
 closable without a save prompt. The contract that keeps this true: **any
 mutation that sets trigger, map-option, unit, or Messages model dirtiness
@@ -109,7 +109,7 @@ class DiffRecord:
 
     def touched_indices(self) -> list[int]:
         """Tile indices this record changed. Empty for domains that touch no
-        tiles -- viewer.py's _apply_dirty() no-ops on an empty list."""
+        tiles -- viewer_render.py's _apply_dirty() no-ops on an empty list."""
         return []
 
     def require_target(
@@ -198,7 +198,7 @@ class TriggerDiffRecord(DiffRecord):
 
     `touched` is trigger indices for the panel refresh, deliberately *not*
     returned from undo()/redo() -- those always return tile indices, so that
-    viewer.py's existing _apply_dirty() pipe and the five other callers that
+    viewer_render.py's existing _apply_dirty() pipe and the five other callers that
     read the return value as a plain tile-index list keep working unchanged.
     """
 

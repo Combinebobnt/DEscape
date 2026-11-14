@@ -25,8 +25,10 @@ sys.path.insert(0, str(ROOT))
 from descape import iso_geometry
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tile_elevation
-from descape.render import dirty_screen_bbox_iso, render_terrain_iso_with_proj, tile_pixels_for_map
+from descape.render_bbox import dirty_screen_bbox_iso
 from descape.render_cache import IsoChunkCache
+from descape.render_iso import render_terrain_iso_with_proj
+from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import load_map_and_units
 
 

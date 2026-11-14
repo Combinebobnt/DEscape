@@ -85,7 +85,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import asset_source, iso_geometry, render, settings, unit_sprites
+from descape import (
+    asset_source,
+    iso_geometry,
+    render_bbox,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    settings,
+    unit_sprites,
+)
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import load_map_and_units
 
@@ -114,8 +126,8 @@ def _cache_bytes() -> tuple[int, int]:
 def _projection(scenario):
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
-    tile_px = render.tile_pixels_for_map(w, h)
-    _, elevations = render._terrain_grid_and_elevations(scenario)
+    tile_px = render_paint.tile_pixels_for_map(w, h)
+    _, elevations = render_paint._terrain_grid_and_elevations(scenario)
     proj = iso_geometry.canvas_size_and_origin(
         w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION,
         elev_step_pct=settings.get_elev_step_pct(),
@@ -180,10 +192,10 @@ def bench_file(path: Path) -> str:
 
     unit_sprites.clear_caches()
     start = time.perf_counter()
-    layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
+    layer = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
     cold = time.perf_counter() - start
     warm = min(
-        _time(lambda: render.sprite_draws_by_anchor(scenario, proj, elevations)) for _ in range(3)
+        _time(lambda: render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)) for _ in range(3)
     )
     native_b, scaled_b = _cache_bytes()
     lines.append(
@@ -206,17 +218,17 @@ def bench_file(path: Path) -> str:
     lines.extend(_bench_flat_icons(scenario, tile_px))
 
     unit_sprites.clear_caches()
-    layer = render.sprite_draws_by_anchor(scenario, proj, elevations)
-    units_by_tile = render._units_by_tile(scenario)
+    layer = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
+    units_by_tile = render_units._units_by_tile(scenario)
     mm = scenario.map_manager
-    bboxes = render._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations)
-    merged = render.merge_sprite_bboxes(bboxes, layer)
-    canvas_w, canvas_h = render._canvas_pixel_dims(proj)
+    bboxes = render_bbox._building_bboxes_iso(scenario, mm.map_width, mm.map_height, proj, elevations)
+    merged = render_sprites.merge_sprite_bboxes(bboxes, layer)
+    canvas_w, canvas_h = render_bbox._canvas_pixel_dims(proj)
     rects = _sample_rects(canvas_w, canvas_h)
 
     def composite(bbs, sprites):
         for x0, y0 in rects:
-            render.composite_rect_iso(
+            render_iso.composite_rect_iso(
                 scenario, x0, y0, min(x0 + CHUNK_PX, canvas_w), min(y0 + CHUNK_PX, canvas_h),
                 elevations, proj, tile_px, units_by_tile, bbs, sprites=sprites,
             )
@@ -245,17 +257,17 @@ def _bench_stepped_sprites(scenario, proj, elevations) -> list[str]:
     """
     mm = scenario.map_manager
     projs = iso_geometry.mip_projections_for(
-        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels(),
-        native_tier_max=render.native_tier_max(),
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render_paint.finest_tile_pixels(),
+        native_tier_max=render_paint.native_tier_max(),
     )
     levels = sorted(projs)
     lines = ["    stepped sprites, adjacent-level thrashing (Item 24):"]
     for level_a, level_b in pairwise(levels):
         proj_a, proj_b = projs[level_a], projs[level_b]
         unit_sprites.clear_caches()
-        cold = _time(lambda: render.sprite_draws_by_anchor(scenario, proj_a, elevations))
-        _time(lambda: render.sprite_draws_by_anchor(scenario, proj_b, elevations))
-        rebuild = _time(lambda: render.sprite_draws_by_anchor(scenario, proj_a, elevations))
+        cold = _time(lambda: render_sprites.sprite_draws_by_anchor(scenario, proj_a, elevations))
+        _time(lambda: render_sprites.sprite_draws_by_anchor(scenario, proj_b, elevations))
+        rebuild = _time(lambda: render_sprites.sprite_draws_by_anchor(scenario, proj_a, elevations))
         ratio = rebuild / cold if cold else 0.0
         flag = "  <-- THRASHING" if rebuild >= 0.5 * cold else ""
         lines.append(
@@ -287,10 +299,10 @@ def _bench_flat_icons(scenario, tile_px: int) -> list[str]:
     unit_sprites.clear_caches()
     unit_sprites._icon_cache.clear()
     lines = ["    flat icons (P3-g7):"]
-    for level, px in sorted(iso_geometry.mip_tile_px_candidates(tile_px, render.finest_tile_pixels()).items()):
-        cold = _time(lambda: render._flat_icon_layer(scenario, px))
-        warm = min(_time(lambda: render._flat_icon_layer(scenario, px)) for _ in range(3))
-        icons, rows = render._flat_icon_layer(scenario, px)
+    for level, px in sorted(iso_geometry.mip_tile_px_candidates(tile_px, render_paint.finest_tile_pixels()).items()):
+        cold = _time(lambda: render_flat._flat_icon_layer(scenario, px))
+        warm = min(_time(lambda: render_flat._flat_icon_layer(scenario, px)) for _ in range(3))
+        icons, rows = render_flat._flat_icon_layer(scenario, px)
         flag = "  <-- WARM MATCHES COLD, so the icon cache is thrashing" if warm > 0.5 * cold else ""
         lines.append(
             f"      mip {level:>2} tile_px {px:>3}: cold {_ms(cold)} | warm {_ms(warm)} | "
@@ -382,7 +394,7 @@ def bench_mod_art(path: Path) -> str:
         mod_graphics.set_enabled(on)
         asset_source.clear_art_caches()
         with _WalkCounter() as counter:
-            elapsed = _time(lambda: render.sprite_draws_by_anchor(scenario, proj, elevations))
+            elapsed = _time(lambda: render_sprites.sprite_draws_by_anchor(scenario, proj, elevations))
         return elapsed, len(counter.paths), len(counter.smx_paths)
 
     runs = {False: [], True: []}
@@ -447,8 +459,8 @@ def bench_cold_levels(path: Path, level_a: int | None) -> str:
     caches stay as the previous build left them; only _level() is timed."""
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    elevations, proj = render.elevations_and_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
 
     def stepped_cache() -> IsoChunkCache:
         return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
@@ -471,7 +483,7 @@ def bench_cold_levels(path: Path, level_a: int | None) -> str:
             )
         lines.extend(_index_line())
 
-        sloped_elevations, corner_rise, sloped_proj = render.sloped_elevations_and_proj(scenario)
+        sloped_elevations, corner_rise, sloped_proj = render_sloped.sloped_elevations_and_proj(scenario)
         unit_sprites.clear_caches()
         cache = stepped_cache()
         stepped = _time(lambda: cache._level(order[0]))
@@ -514,8 +526,8 @@ def bench_ladder(path: Path) -> str:
     `rewarm`). One `ladder` line per build; only _level() is timed."""
     scenario = load_map_and_units(path)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    elevations, proj = render.elevations_and_proj(scenario)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
 
     def stepped_cache() -> IsoChunkCache:
         return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
@@ -551,7 +563,7 @@ def _largest_drawn_frame(scenario):
             entry = graphics.get(unit.unit_const)
             if entry is None:
                 continue
-            rotation = render.stored_rotation(player_id, unit)
+            rotation = render_units.stored_rotation(player_id, unit)
             seed = getattr(unit, "reference_id", None)
             pieces = entry.get("pieces")
             draws = (
@@ -583,8 +595,8 @@ def bench_single_sprite(path: Path) -> str:
     mm = scenario.map_manager
     _elevations, proj, _tile_px = _projection(scenario)
     projs = iso_geometry.mip_projections_for(
-        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render.finest_tile_pixels(),
-        native_tier_max=render.native_tier_max(),
+        mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(), max_tile_px=render_paint.finest_tile_pixels(),
+        native_tier_max=render_paint.native_tier_max(),
     )
     unit_sprites.clear_caches()
     best = _largest_drawn_frame(scenario)

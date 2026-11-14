@@ -91,7 +91,7 @@ def preview_pixmap(object_id: int, rotation: float = _PREVIEW_ROTATION) -> QPixm
     rather than raising.
 
     `rotation` defaults to the facing-neutral 0.0 every existing caller here
-    wants; the Cliff tool's own param-row preview (viewer.py) passes the
+    wants; the Cliff tool's own param-row preview (viewer_unit_place.py) passes the
     user's chosen frame instead, since rotation picks a cliff's SHAPE, not a
     facing -- see unit_sprites.rotation_is_variant()'s own docstring.
     """

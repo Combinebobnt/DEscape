@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -22,7 +24,8 @@ UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.ao
 @pytest.fixture
 def recorded(monkeypatch):
     """(events, window): prefetch and discard calls and IsoChunkCache constructions, in order."""
-    from descape import sprite_prefetch, viewer
+    from descape import sprite_prefetch
+    from descape.render_cache import IsoChunkCache
 
     events: list = []
     real_prefetch = sprite_prefetch.prefetch_level_sprites
@@ -36,12 +39,12 @@ def recorded(monkeypatch):
     real_discard = sprite_prefetch.discard
     monkeypatch.setattr(sprite_prefetch, "discard", lambda: (events.append(("discard",)), real_discard())[1])
 
-    class _RecordingCache(viewer.IsoChunkCache):
+    class _RecordingCache(IsoChunkCache):
         def __init__(self, *args, **kwargs) -> None:
             events.append(("cache",))
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(viewer, "IsoChunkCache", _RecordingCache)
+    set_viewer_global(monkeypatch, "IsoChunkCache", _RecordingCache)
     window = conftest.stepped_window(UNITS_FIXTURE, show=False)
     yield events, window
     conftest.close_window(window)

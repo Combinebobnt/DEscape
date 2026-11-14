@@ -1,6 +1,6 @@
 """Track B Stage 1 + 2 of the 2026-09-02 cliffs plan: the Cliff tool's
 Terrain-mode placement, driven through a real offscreen ViewerWindow -- same
-style as test_unit_edit_viewer.py's b1.4 (Place Unit) tests, but through the
+style as test_unit_edit_viewer_place_move.py's b1.4 (Place Unit) tests, but through the
 on_edit_stroke_start/tile/end trio, which is Cliff's own dispatch route: it
 is a Terrain-mode tool, not a Units-mode one, so MapView never calls
 on_unit_place for it.
@@ -758,10 +758,10 @@ def _trees_on(window, tiles) -> list:
 
 
 def _occupied(window, unit) -> set:
-    from descape import render
+    from descape import render_units
 
     mm = window.scenario.map_manager
-    return set(render.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
+    return set(render_units.unit_occupied_tiles(unit, mm.map_width, mm.map_height))
 
 
 def test_a_click_on_a_forest_removes_the_trees_under_the_cliff_in_one_undo_record():

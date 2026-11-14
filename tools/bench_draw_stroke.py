@@ -28,7 +28,7 @@ a cause instead of guessed at:
                     building_bboxes concept there).
   bystander_scan   composite_rect_iso()/composite_rect_sloped()'s own
                     candidates-vs-building_bboxes merge, timed by calling
-                    render._bystander_candidates(), the real shared helper,
+                    render_bbox._bystander_candidates(), the real shared helper,
                     with the real chunk-bucketed grid, so this figure tracks
                     whatever that helper actually costs rather than a copy
                     of it that can drift. Always 0 for Flat.
@@ -39,7 +39,7 @@ a cause instead of guessed at:
 --styles takes stepped, sloped, flat (top-down, FlatChunkCache) and flat-iso
 (Flat with Isometric View on: an IsoChunkCache on an all-zero elevation
 array, bbox'd with flatten_elevations=True, built the way the viewer's
-_render_current() builds it). Flat patches render.flat_dirty_rects()' rects
+_render_current() builds it). Flat patches render_paint.flat_dirty_rects()' rects
 in patch_rects()' two passes, as the viewer does: one rect per 16-tile block
 the step's dirty tiles touch (with blending on, the tiles and their 8
 neighbours), or one a tile in a sparse block. bbox-px is those rects' area.
@@ -94,19 +94,16 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from descape import composite_backend, iso_geometry, render
+from descape import composite_backend, iso_geometry, render_bbox, render_paint
 from descape.beach_edges import apply_beach_ring
 from descape.brush import BRUSH_SHAPE_CIRCLE, brush_tiles
 from descape.edit_history import EditHistory
 from descape.elevation_tools import set_tiles_elevation
-from descape.render import (
-    dirty_screen_bbox_iso,
-    dirty_screen_bbox_sloped,
-    elevations_and_proj,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_iso, dirty_screen_bbox_sloped
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+from descape.render_iso import elevations_and_proj
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import sloped_elevations_and_proj
 from descape.scenario_io import load_map_and_units
 from descape.view_layers import DEFAULT_LAYERS
 
@@ -129,7 +126,7 @@ def _ms(seconds: float) -> float:
 
 
 def _bystander_scan_ms(candidates, building_bboxes, grid, x0, y0, x1, y1, w) -> float:
-    """Times render._bystander_candidates() itself: the real helper both
+    """Times render_bbox._bystander_candidates() itself: the real helper both
     composites call, with the real chunk-bucketed grid, not a replicate.
 
     It used to inline a copy of the block, back when the two composites
@@ -140,7 +137,7 @@ def _bystander_scan_ms(candidates, building_bboxes, grid, x0, y0, x1, y1, w) -> 
     under-report by whatever the copy cost."""
     t0 = time.perf_counter()
     if building_bboxes:
-        render._bystander_candidates(candidates, building_bboxes, grid, x0, y0, x1, y1, w)
+        render_bbox._bystander_candidates(candidates, building_bboxes, grid, x0, y0, x1, y1, w)
     return _ms(time.perf_counter() - t0)
 
 
@@ -281,7 +278,7 @@ def _keyed_count(cache, coords) -> int:
     if not ring:
         return 0
     xs, ys = np.array(ring).T
-    keys = render._blend_keys(cache.scenario, xs, ys, cache._terrain_ids, cache._layer_ids)
+    keys = render_paint._blend_keys(cache.scenario, xs, ys, cache._terrain_ids, cache._layer_ids)
     return sum(k is not None for k in keys)
 
 
@@ -377,7 +374,7 @@ def _run_stroke(
         if style == "flat":
             t0 = time.perf_counter()
             coords = [(mm.terrain[i].x, mm.terrain[i].y) for i in new_dirty]
-            rects = render.flat_dirty_rects(coords, mm.map_width, mm.map_height, tile_px, cache.layers)
+            rects = render_paint.flat_dirty_rects(coords, mm.map_width, mm.map_height, tile_px, cache.layers)
             bbox_ms.append(_ms(time.perf_counter() - t0))
             bbox_areas.append(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in rects))
             phases = _new_phases()
@@ -497,7 +494,7 @@ def main() -> None:
     args = parser.parse_args()
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     blend = args.blend == "on"
-    if blend and not render.blend_effective():
+    if blend and not render_paint.blend_effective():
         raise SystemExit("--blend on: no blendomatic readable (no AoE2:DE install configured). Pass --blend off.")
 
     names = [n.strip() for n in args.files.split(",")] if args.files else FILES

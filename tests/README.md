@@ -132,6 +132,9 @@ assuming the full corpus needs re-running.
 alongside these, unmarked, since it's not a corpus/gui/slow concern. It stays
 a fast static check despite the breadth of the ruleset: a cold `--no-cache`
 run over all 348 linted files takes well under a second.
+`test_module_size.py` (default tier, unmarked) holds every `descape/*.py` and
+`tests/*.py` file to a line ceiling: a default, or its entry in the file's
+table; its docstring says when and how to raise one.
 
 The default tier is meant to give the same result on any machine.
 `testkit/qt_window.ensure_qapp()` pins the app font to the bundled
@@ -411,6 +414,37 @@ A corpus test that asserts counts or rates measured on `examples/` calls
 `--scenario-dir` points at someone else's scenarios.
 New `tools/verify_*.py` scripts are not the convention
 going forward.
+
+## Patching the viewer's module globals
+
+A test or tool never writes to a viewer module's globals directly: not
+`monkeypatch.setattr(viewer, "X", ...)`, not a `"descape.viewer.X"` target
+string, not `viewer.X = ...`. Call
+`testkit.viewer_family.set_viewer_global(monkeypatch, "X", value)`, which
+sets the name in every module of `VIEWER_MODULES` that binds it, so the patch
+still reaches its reader when code moves between those modules. A tool passes
+a `pytest.MonkeyPatch()` it undoes itself. Read a patched name's current value
+with `viewer_global("X")`, and import a name the viewer only imports
+(`QMessageBox`, `ScatterDialog`) from its own module rather than through
+`viewer`. Patching a class object (`monkeypatch.setattr(QMessageBox,
+"question", ...)`) is fine. `tests/test_viewer_family.py` fails on the raw
+forms.
+
+## Patching the render modules' globals
+
+The same rule holds for the `descape/render*.py` and `descape/render_cache*.py` modules,
+through `testkit.render_family`: `set_render_global(monkeypatch, "X",
+value)` and `render_global("X")`, `set_render_cache_global()` and
+`render_cache_global()`. A patch list or loop that mixes these modules with
+other objects names the family, `RENDER` or `RENDER_CACHE`, never the module
+object, and applies each entry with `patch(monkeypatch, target, name,
+value)` (`current(target, name)` reads one back). A render module held as a
+value (in a tuple, passed, returned) fails `tests/test_render_family.py`,
+which also fails a read through `render.` or `render_cache.` of a name the
+module only imports, in `descape/` and `native/` too: import that name from
+its own module. A switch that must last the process (a bench child's arm, a
+worker's patch) uses a `pytest.MonkeyPatch()` that is never undone. A tool
+that loads another checkout refuses one without `testkit/render_family.py`.
 
 ## Migration status
 

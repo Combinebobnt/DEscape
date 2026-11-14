@@ -12,9 +12,11 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from descape import game_dataset, scenario_io
+from descape import games, scenario_io
 
 ROR_DLCS = (11,)
+# ScenarioVariant.ROR, the header's unknown_value_2 for a Return of Rome file.
+ROR_VARIANT = min(games.ROR.variants)
 
 
 def ror_copy(directory: Path, source: Path = scenario_io.BLANK_TEMPLATE_PATH, name: str = "ror_blank.aoe2scenario") -> Path:
@@ -28,7 +30,7 @@ def ror_copy(directory: Path, source: Path = scenario_io.BLANK_TEMPLATE_PATH, na
     assert variant_end - variant_start == 4 and count_end - count_start == 4
     assert variant_end <= count_start and count_end == list_start
     out = bytearray(raw[:list_start])
-    struct.pack_into("<I", out, variant_start, game_dataset.ROR_VARIANT)
+    struct.pack_into("<I", out, variant_start, ROR_VARIANT)
     struct.pack_into("<I", out, count_start, len(ROR_DLCS))
     out += b"".join(struct.pack("<I", dlc) for dlc in ROR_DLCS)
     out += raw[list_end:]

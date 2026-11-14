@@ -27,7 +27,7 @@ pytestmark = [
 ]
 
 TRIGGER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
-# The fixture's one trigger with problems (test_trigger_panel.py's GH #166 section).
+# The fixture's one trigger with problems (test_trigger_panel_status.py's GH #166 section).
 _BROKEN_TRIGGER = 3
 
 
@@ -39,7 +39,7 @@ def _params():
 
 @pytest.fixture(autouse=True)
 def _no_install_env(monkeypatch):
-    """No test here wants the real install (see test_trigger_panel.py)."""
+    """No test here wants the real install (see trigger_panel_helpers.py)."""
     from descape import asset_source
 
     monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)

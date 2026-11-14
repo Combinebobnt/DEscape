@@ -34,12 +34,21 @@ from test_convert_splice_corpus import (
     _pack_state,
 )
 
-from descape import asset_source, composite_backend, iso_geometry, render, render_cache, terrain_units, unit_sprites
+from descape import (
+    asset_source,
+    composite_backend,
+    iso_geometry,
+    render_cache_splice,
+    render_units,
+    terrain_units,
+    unit_sprites,
+)
 from descape.edit_history import EditHistory
-from descape.render_cache import UnitSplice
+from descape.render_cache_splice import UnitSplice
 from descape.scenario_io import load_map_and_units
 from descape.unit_filter import UnitFilter
 from descape.unit_model import UnitEditModel
+from testkit.render_family import set_render_global
 
 FILES = (
     "F7_2_Dos Pilas (648).aoe2scenario",
@@ -104,7 +113,7 @@ def _wall_seed(rng, scenario, units_by_tile):
     connectors = unit_sprites.wall_connector_consts()
     tiles = {
         t for per in units for u in per if u.unit_const in connectors
-        for t in render.unit_occupied_tiles(u, mm.map_width, mm.map_height) or ()
+        for t in render_units.unit_occupied_tiles(u, mm.map_width, mm.map_height) or ()
     }
     seeds = sorted(
         (int(u.x), int(u.y)) for per in units[1:] for u in per
@@ -142,7 +151,7 @@ def _move_round(rng, scenario, model, units_by_tile, seed=_shared_seed) -> list[
 def _assert_pixels_match(cache, style: str, scenario, unit_filter, splices, tag: str) -> None:
     """mip 0 around the batch against a fresh cache: the tiles' corners at
     elevation 0, padded generously for sprite reach and elevation."""
-    tiles = render_cache._splice_tiles(splices)
+    tiles = render_cache_splice._splice_tiles(splices)
     corners = [
         iso_geometry.tile_screen_origin(x + dx, y + dy, 0, cache.proj)
         for x, y in tiles
@@ -176,13 +185,13 @@ def test_random_draw_and_move_batches_splice_exactly_like_a_fresh_cache(name, st
     model = UnitEditModel(scenario)
     history = EditHistory()
     wholesale = []
-    real_units_by_tile = render._units_by_tile
-    monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
+    real_units_by_tile = render_units._units_by_tile
+    set_render_global(monkeypatch, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
     stats = {"batch": 0, "component": 0, "wholesale": 0, "wall": 0, "reshaped": 0}
 
     for r in range(ROUNDS):
         kind = KINDS[r % len(KINDS)]
-        shapes_before = dict(render.wall_variant_rotation_overrides(scenario))
+        shapes_before = dict(render_units.wall_variant_rotation_overrides(scenario))
         model.begin_unit_edit(list(range(len(scenario.unit_manager.units))), fields_only=kind != "draw")
         if kind == "draw":
             splices = _draw_round(rng, scenario, model, cache.units_by_tile)
@@ -194,13 +203,13 @@ def test_random_draw_and_move_batches_splice_exactly_like_a_fresh_cache(name, st
             continue
         tag = f"round {r} {kind}: {len(splices)} splices"
 
-        plan, reason = render_cache._splice_plan_or_refusal(scenario, cache.units_by_tile, unit_filter, splices)
+        plan, reason = render_cache_splice._splice_plan_or_refusal(scenario, cache.units_by_tile, unit_filter, splices)
         if plan is None:
             assert reason == "cap" or reason.endswith("/component:cap"), f"{tag}: fell back for {reason}"
         elif any(unit_sprites.rotation_variant_eligible(s.unit.unit_const) for s in splices):
             stats["wall"] += 1
             moved = {(s.player_id, s.index) for s in splices}
-            shapes = render.wall_variant_rotation_overrides(scenario)
+            shapes = render_units.wall_variant_rotation_overrides(scenario)
             stats["reshaped"] += any(
                 shapes.get(k) != shapes_before.get(k) for k in {*shapes, *shapes_before} if k not in moved
             )
@@ -304,16 +313,16 @@ def test_a_draw_past_both_caps_and_its_undo_splice_the_visible_level_like_a_fres
     cache.render_rect(0, 0, 1024, 1024, mip=second)
     model = UnitEditModel(scenario)
     wholesale = []
-    real_units_by_tile = render._units_by_tile
-    monkeypatch.setattr(render, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
+    real_units_by_tile = render_units._units_by_tile
+    set_render_global(monkeypatch, "_units_by_tile", lambda *a, **k: (wholesale.append(1), real_units_by_tile(*a, **k))[1])
 
     splices, record, removed, added = _c2x_draw(random.Random(f"c2x-{style}"), scenario, model, EditHistory())
     for tag in ("draw", "undo"):
         batch = splices if tag == "draw" else _c2x_undo(scenario, model, record, removed, added)
-        assert len(batch) > render_cache.UNIT_SPLICE_MAX_UNITS, f"{tag}: {len(batch)} splices, inside the cap"
-        plan, why = render_cache._splice_plan_or_refusal(
+        assert len(batch) > render_cache_splice.UNIT_SPLICE_MAX_UNITS, f"{tag}: {len(batch)} splices, inside the cap"
+        plan, why = render_cache_splice._splice_plan_or_refusal(
             scenario, cache.units_by_tile, cache.unit_filter, batch,
-            cap=render_cache.VISIBLE_SPLICE_MAX_UNITS, component_cap=render_cache.VISIBLE_SPLICE_MAX_UNITS,
+            cap=render_cache_splice.VISIBLE_SPLICE_MAX_UNITS, component_cap=render_cache_splice.VISIBLE_SPLICE_MAX_UNITS,
         )
         assert plan is not None, f"{tag}: the wide plan refused it: {why}"
         wholesale.clear()

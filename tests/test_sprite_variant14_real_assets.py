@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render_iso, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH
 
 import conftest
@@ -97,8 +97,8 @@ def test_a_placed_stable_paints_its_sprite_not_a_coloured_mark():
             "canvas comparison below would compare two coloured-mark renders"
         )
 
-        with_sprites, _e, _p = render.render_terrain_iso_with_proj(window.scenario, with_sprites=True)
-        without, _e, _p = render.render_terrain_iso_with_proj(window.scenario, with_sprites=False)
+        with_sprites, _e, _p = render_iso.render_terrain_iso_with_proj(window.scenario, with_sprites=True)
+        without, _e, _p = render_iso.render_terrain_iso_with_proj(window.scenario, with_sprites=False)
         assert not np.array_equal(with_sprites, without), (
             "enabling sprites changed nothing on a map whose only unit is a Stable"
         )

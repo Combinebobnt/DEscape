@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from descape import iso_geometry as ig
-from descape import render
+from descape import render_iso, render_paint, render_sloped
 from descape.render_cache import SlopedChunkCache
 from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from testkit.fakes import (
@@ -80,8 +80,8 @@ def _render_at(scn, mip: int):
     render at 0, else SlopedChunkCache's stitched level with its own
     corner_rise and proj (TASK-031.60's coarser ladder, TASK-146's finer level)."""
     if mip == 0:
-        return render.render_terrain_sloped_with_proj(scn)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+        return render_sloped.render_terrain_sloped_with_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     cache = SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px)
     lvl = cache._levels[mip]
     img = cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip)
@@ -105,7 +105,7 @@ def test_a_centred_sloped_unit_lands_on_the_terrain_pixels_actually_painted(mip)
     """Track C6 superseded this test's original premise for a CENTRED 1x1
     unit: it does not sit at a sub-tile-dependent PIXEL RISE at all -- its
     marker paints through the exact same call as its own tile's terrain
-    (render._sloped_tile_quad), so there is no separate placement to drift
+    (render_sloped._sloped_tile_quad), so there is no separate placement to drift
     from the terrain's.
 
     **Centred, and only centred, since off-grid placement's Stage 1
@@ -159,8 +159,8 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy,
     where it can be made correctly -- against an ID plane that reproduces
     the depth walk -- in tests/test_off_grid_placement.py.
     """
-    base = render.tile_pixels_for_map(MAP_W, MAP_H)
-    tile_px = ig.mip_tile_px_candidates(base, render.finest_tile_pixels(), native_tier=True)[mip]
+    base = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = ig.mip_tile_px_candidates(base, render_paint.finest_tile_pixels(), native_tier=True)[mip]
     ux, uy = 9, 8
 
     i = _diamond_pixel_nearest(tile_px, want_fx, want_fy)
@@ -210,8 +210,8 @@ def test_a_flat_map_places_sloped_units_exactly_where_stepped_does() -> None:
     tiles = [SyntheticTile(x=x, y=y, elevation=3) for y in range(MAP_H) for x in range(MAP_W)]
     scn = FakeScenario(MAP_W, MAP_H, tiles, units)
 
-    sloped, _elev, corner_rise, proj = render.render_terrain_sloped_with_proj(scn)
-    stepped, _elev_i, _proj_i = render.render_terrain_iso_with_proj(scn)
+    sloped, _elev, corner_rise, proj = render_sloped.render_terrain_sloped_with_proj(scn)
+    stepped, _elev_i, _proj_i = render_iso.render_terrain_iso_with_proj(scn)
 
     assert ig.unit_rise_px(corner_rise, 9, 8, 0.37, 0.62) == 3 * proj.elev_step
     assert sloped.shape == stepped.shape
@@ -243,7 +243,7 @@ def test_the_bystander_headroom_covers_every_units_own_rise(mip) -> None:
     ]
     scn = FakeScenario(MAP_W, MAP_H, tiles, units)
 
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     cache = SlopedChunkCache(scn, elevations, corner_rise, proj, proj.tile_px)
     lvl = cache._levels[mip]
     corner_rise, proj, headroom = cache._level_corner_rise(lvl), lvl.proj, cache._level_extra_top(lvl)

@@ -79,10 +79,9 @@ def _open_window():
 def _set_left_width(window, width: int) -> None:
     from PyQt5.QtWidgets import QApplication
 
-    sizes = window.content_splitter.sizes()
-    total = sum(sizes) or (width + 800)
-    window.content_splitter.setSizes([width, total - width])
-    QApplication.processEvents()
+    from testkit.qt_window import set_panel_width
+
+    set_panel_width(window, width)
     QApplication.processEvents()
 
 

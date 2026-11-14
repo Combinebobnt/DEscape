@@ -6,7 +6,7 @@ EditHistory still happens once, on focus-out. Every check runs against a
 trigger's Display Instructions message box and a Messages-mode box.
 
 Needs a shown, activated offscreen window: Qt's focus tracking is a no-op on a
-never-activated one (tests/test_unit_edit_viewer.py makes the same point).
+never-activated one (tests/test_unit_edit_viewer_place_move.py makes the same point).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _box_window(which: str):
     """A shown, active window with one editable multi-line box in view."""
     from PyQt5.QtCore import QEvent
     from PyQt5.QtWidgets import QApplication
-    from test_trigger_panel import TRIGGER_FIXTURE, _plant_prose_effect, _row_widget
+    from trigger_panel_helpers import TRIGGER_FIXTURE, _plant_prose_effect, _row_widget
 
     from descape.scenario_io import BLANK_TEMPLATE_PATH
     from descape.text_edits import _MultiLineEdit
@@ -191,7 +191,7 @@ def test_a_mouse_click_on_the_edit_menu_title_commits_nothing(which: str) -> Non
 
 def _refetch_box(window, which: str):
     """The box again: an undo rebuilds the form."""
-    from test_trigger_panel import _row_widget
+    from trigger_panel_helpers import _row_widget
 
     if which == "trigger message":
         return _row_widget(window.trigger_panel, "message")

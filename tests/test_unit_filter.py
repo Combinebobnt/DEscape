@@ -1,5 +1,5 @@
 """Verifies descape.unit_filter.UnitFilter and its threading through
-render.py's unit paths -- phase 3's P3-a (first step).
+the render modules' unit paths -- phase 3's P3-a (first step).
 
 The load-bearing check here is not the filter semantics (those are a
 three-line predicate); it's the **byte-identity gate**. P3-a threads a
@@ -24,15 +24,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import render, render_cache
-from descape.render import (
-    _flat_unit_draws,
-    _unit_color,
-    _units_by_tile,
-    overlay_units,
-    tile_pixels_for_map,
-)
+from descape import render_cache, render_cache_splice, render_iso, render_sloped, render_units
 from descape.render_cache import FlatChunkCache
+from descape.render_flat import _flat_unit_draws, overlay_units
+from descape.render_paint import tile_pixels_for_map
+from descape.render_units import _unit_color, _units_by_tile
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 from descape.unit_filter import GAIA_PLAYER_ID, UnitFilter
 from testkit.fakes import (
@@ -150,7 +146,7 @@ def test_units_by_tile_default_filter_matches_independent_oracle() -> None:
     expected: dict[tuple[int, int], list] = {}
     for player_id, unit in _expected_visible(scn, UnitFilter()):
         color = _unit_color(unit, scn.player_colors[player_id])
-        bounds = render.unit_tile_bounds(unit, MAP_W, MAP_H)
+        bounds = render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
         if bounds is None:
             continue
         tx0, tx1, ty0, ty1 = bounds
@@ -182,7 +178,7 @@ def test_flat_unit_draws_default_filter_matches_independent_oracle() -> None:
     exp_bboxes = []
     exp_colors = []
     for player_id, unit in _expected_visible(scn, UnitFilter()):
-        bounds = render.unit_tile_bounds(unit, MAP_W, MAP_H)
+        bounds = render_units.unit_tile_bounds(unit, MAP_W, MAP_H)
         assert bounds is not None
         tx0, tx1, ty0, ty1 = bounds
         exp_bboxes.append((tx0 * tile_px, ty0 * tile_px, tx1 * tile_px, ty1 * tile_px))
@@ -283,14 +279,14 @@ def test_set_unit_filter_to_an_equal_filter_is_a_no_op() -> None:
 
 
 def _iso_cache(scn, unit_filter: UnitFilter) -> render_cache.IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return render_cache.IsoChunkCache(
         scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, unit_filter=unit_filter
     )
 
 
 def _sloped_cache(scn, unit_filter: UnitFilter) -> render_cache.SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return render_cache.SlopedChunkCache(
         scn,
         elevations,
@@ -559,7 +555,7 @@ def test_every_compositor_round_trips_the_obstacle_gate_byte_identically() -> No
 
 
 def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
-    """render_cache._splice_units_by_tile() used to return before clearing
+    """render_cache_splice._splice_units_by_tile() used to return before clearing
     splice.old_tiles when matches() was False, which was correct only because
     no splice-eligible edit could flip matches() mid-splice. GH #65's const
     gates widen that blast radius, so the clear now happens first; this pins
@@ -571,8 +567,8 @@ def test_a_visible_to_hidden_splice_leaves_no_stale_bucket() -> None:
     occupied = [t for t, entries in by_tile.items() if any(u is unit for u, _c in entries)]
     assert occupied, "the fixture wall occupies no tile -- this test would prove nothing"
 
-    splice = render_cache.UnitSplice(1, 0, unit, (6, 6), None, tuple(occupied), ())
-    render_cache._splice_units_by_tile(by_tile, scn, UnitFilter(show_walls=False), splice)
+    splice = render_cache_splice.UnitSplice(1, 0, unit, (6, 6), None, tuple(occupied), ())
+    render_cache_splice._splice_units_by_tile(by_tile, scn, UnitFilter(show_walls=False), splice)
     remaining = [t for t, entries in by_tile.items() if any(u is unit for u, _c in entries)]
     assert remaining == [], f"a hidden unit was left in {remaining}"
 

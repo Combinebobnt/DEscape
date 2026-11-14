@@ -4,8 +4,9 @@ The Units panel shows two in one slot at the top of the inspector: the
 selection card, for the unit(s) selected on the map, and with nothing
 selected the placing card, for the object the next Place click adds
 (TASK-337). Everything on a card derives from the const alone (the .dat's
-civ-0 values), except the portrait's player-colour region, which the panel
-fills with the owner's colour through set_team_color(). Read-only and
+civ-0 values), except the portrait: its player-colour region, which the panel
+fills with the owner's colour through set_team_color(), and the owner's civ's
+own portrait where it has one, through set_civ() (GH #372). Read-only and
 callback-free: the panel pushes a const, the card shows it.
 
 `stable` (the placing card; off for the selection card): the card never
@@ -19,9 +20,10 @@ TASK-337). The name is one elided line.
 
 Portraits never decode on the GUI thread (GH #68): a card asks
 catalog_thumbs.ThumbLoader, shared with the catalog list, and fills the slot
-when the loader answers. The memo is keyed by (const, px), so the two cards
-share their 64 px portraits but the list's 32 and 48 px thumbnails never
-serve them. A card is a priority client, served before the list's viewport.
+when the loader answers. The memo is keyed by (const, px, civ), civ folded
+to None where the const has no portrait of that civ's own, so the two cards
+share their 64 px portraits for owners that show the same one, but the
+list's 32 and 48 px thumbnails never serve them. A card is a priority client, served before the list's viewport.
 A decode costs about 54 ms (4x on tester hardware), and the placing card
 changes on every arrow-key step through the list. With no portrait the
 loader's sprite fallback faces the viewer, as the list's thumbnails do.
@@ -114,8 +116,10 @@ class UnitCard(QWidget):
         # True while the loader owes this card the shown const's portrait.
         self._awaiting = False
         # The portrait as the loader gave it, kept so a new owner colour can refill it.
-        self._raw_portrait: tuple[object, str | None] = (None, None)
+        self._raw_portrait: tuple[object, str | None, object] = (None, None, None)
         self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
+        # The owner's portrait civ (GH #372, civ_art.portrait_civ()); None shows GAIA's.
+        self._civ: int | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -229,9 +233,18 @@ class UnitCard(QWidget):
         if tuple(rgb) == self._team_rgb:
             return
         self._team_rgb = tuple(rgb)
-        icon, source = self._raw_portrait
+        icon, source, art = self._raw_portrait
         if icon is not None:
-            self._set_portrait(icon, source)
+            self._set_portrait(icon, source, art)
+
+    def set_civ(self, civ: int | None) -> None:
+        """The owner's portrait civ (GH #372); re-shows the portrait only when the shown const's own one changes."""
+        if civ == self._civ:
+            return
+        old, self._civ = self._civ, civ
+        const = self._shown_const
+        if const is not None and object_catalog.portrait_civ_key(const, old) != object_catalog.portrait_civ_key(const, civ):
+            self._show_portrait(const)
 
     def _set_const_row_visible(self, visible: bool) -> None:
         self.const_caption.setVisible(visible)
@@ -295,28 +308,34 @@ class UnitCard(QWidget):
         if const is None:
             self._set_portrait(None, None)
             return
-        hit, icon = self.loader.cached(const, PORTRAIT_PX)
+        hit, icon = self.loader.cached(const, PORTRAIT_PX, self._civ)
         if hit:
-            self._set_portrait(icon, self.loader.source(const, PORTRAIT_PX))
+            self._set_portrait(icon, *self._loaded_source(const))
             return
         self._awaiting = True
         self._set_portrait(None, None)
         # A no-install request answers at once, inside this call.
-        self.loader.request([const], PORTRAIT_PX, client=self, priority=True)
+        self.loader.request([const], PORTRAIT_PX, client=self, priority=True, civ=self._civ)
 
-    def _on_thumb_ready(self, const: int, px: int, icon) -> None:
+    def _on_thumb_ready(self, const: int, px: int, icon, civ: int | None = None) -> None:
         if not self._awaiting or px != PORTRAIT_PX or const != self._shown_const:
             return
+        if civ != object_catalog.portrait_civ_key(const, self._civ):
+            return  # another owner's portrait of the same const, for the shared loader's other client
         self._awaiting = False
-        self._set_portrait(icon, self.loader.source(const, PORTRAIT_PX))
+        self._set_portrait(icon, *self._loaded_source(const))
 
-    def _set_portrait(self, icon, source: str | None) -> None:
+    def _loaded_source(self, const: int) -> tuple[str | None, object]:
+        """The loader's (source, array) for const's memoized portrait in this card's civ."""
+        return self.loader.source(const, PORTRAIT_PX, self._civ), self.loader.art(const, PORTRAIT_PX, self._civ)
+
+    def _set_portrait(self, icon, source: str | None, art=None) -> None:
         self.portrait_source = source if icon is not None else None
-        self._raw_portrait = (icon, source)
+        self._raw_portrait = (icon, source, art)
         if icon is None:
             self.portrait.clear()
         else:
-            filled = catalog_thumbs.team_filled(icon, source, self._team_rgb, PORTRAIT_PX)
+            filled = catalog_thumbs.team_filled(icon, source, self._team_rgb, PORTRAIT_PX, art)
             self.portrait.setPixmap(filled.pixmap(PORTRAIT_PX, PORTRAIT_PX))
         if self._stable:
             self._sync_slot()

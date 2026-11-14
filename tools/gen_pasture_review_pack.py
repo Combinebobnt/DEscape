@@ -5,7 +5,7 @@ posts, edge fences, seeded variants, the pasture drape and depth order.
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), kept as
 its own script because that tool's frames and injects are shadow-band specific.
 Needs a real AoE2:DE install (sprites); renders off-engine via
-render.composite_rect_iso, Stepped, with units and sprites on.
+render_iso.composite_rect_iso, Stepped, with units and sprites on.
 
 Run:
     tools/gen_pasture_review_pack.py
@@ -32,7 +32,7 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, game_dataset, render_bbox, render_iso, render_sprites, render_units, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
 
@@ -115,13 +115,13 @@ def _render(frame_id: str) -> np.ndarray:
     proj = _projection(scn, tile_px)
     mm = scn.map_manager
     elevations = np.zeros((mm.map_height, mm.map_width), dtype=np.int64)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render.merge_sprite_bboxes(
-        render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_sprites.merge_sprite_bboxes(
+        render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations), sprites
     )
     x0, y0, x1, y1 = _box(proj, tiles, headroom)
-    return render.composite_rect_iso(
+    return render_iso.composite_rect_iso(
         scn, x0, y0, x1, y1, elevations, proj, tile_px, units_by_tile, bboxes,
         with_units=True, sprites=sprites,
     )
@@ -176,7 +176,8 @@ COARSE_INJECT = "no-fences"
 @contextmanager
 def _patched(inject: str | None):
     real_map = unit_sprites.graphic_map
-    saved_draped = render.DRAPED_SPRITE_CONSTS
+    game = game_dataset.active()
+    saved_draped = render_sprites._DRAPED_BY_GAME[game]
     unit_sprites._scaled_cache.clear()
     unit_sprites.clear_slice_cache()
     if inject is not None:
@@ -187,12 +188,12 @@ def _patched(inject: str | None):
                 table[const]["pieces"] = transform(table[const]["pieces"])
             unit_sprites.graphic_map = lambda: table
         if drape_off:
-            render.DRAPED_SPRITE_CONSTS = frozenset()
+            render_sprites._DRAPED_BY_GAME[game] = frozenset()
     try:
         yield
     finally:
         unit_sprites.graphic_map = real_map
-        render.DRAPED_SPRITE_CONSTS = saved_draped
+        render_sprites._DRAPED_BY_GAME[game] = saved_draped
         unit_sprites._scaled_cache.clear()
         unit_sprites.clear_slice_cache()
 

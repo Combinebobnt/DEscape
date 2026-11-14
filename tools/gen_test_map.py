@@ -120,7 +120,7 @@ from descape.elevation_tools import set_tile_elevation
 from descape.messages_model import MessagesEditModel
 from descape.options_model import OptionsEditModel
 from descape.place_rotation import PlaceRotation, rotation_for
-from descape.render import occupied_tiles_for, span_anchor, unit_tile_bounds
+from descape.render_units import occupied_tiles_for, span_anchor, unit_tile_bounds
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units, parse_triggers
 from descape.scenario_new import load_blank_scenario
 from descape.scenario_write import WriteBlockedError, write_scenario

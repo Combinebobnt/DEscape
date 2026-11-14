@@ -645,7 +645,7 @@ def _find_error_color() -> str:
 def test_status_text_reaches_the_floor_on_its_own_background(qt_app, preset_id: str) -> None:
     from PyQt5.QtGui import QPalette
 
-    from descape.viewer import status_color
+    from descape.viewer_common import status_color
 
     _use(qt_app, preset_id)
     floor = 7.0 if preset_id in themes.HIGH_CONTRAST_PRESETS else 4.5
@@ -666,7 +666,7 @@ def test_status_text_reaches_the_floor_on_its_own_background(qt_app, preset_id: 
 def test_status_text_follows_a_window_override_that_flips_polarity(qt_app) -> None:
     """Dark with a light window: the label on the window is judged against
     that window alone, not against the still-dark tab page as well."""
-    from descape.viewer import status_color
+    from descape.viewer_common import status_color
 
     _use(qt_app, "dark", {"window": "#f0f0f0"})
     color = status_color(False, on_tab_page=False)
@@ -847,7 +847,7 @@ def test_reset_all_to_preset_takes_a_custom_accent_off_the_push_buttons(qt_app, 
 def test_a_theme_change_restyles_a_set_status_label_and_skips_one_never_set(qt_app) -> None:
     """Light to parchment on purpose. Dark and Solarized dark derive the same
     status colours, so a change between those two passes with no restyle."""
-    from descape.viewer import status_color
+    from descape.viewer_common import status_color
 
     _use(qt_app, "light")
     dialog, window = conftest.dialog_and_window()
@@ -870,8 +870,9 @@ def test_a_theme_change_restyles_a_set_status_label_and_skips_one_never_set(qt_a
 
 @pytest.mark.gui
 def test_mirrors_blocked_summary_is_coloured_for_the_window_not_a_tab_page(qt_app, monkeypatch) -> None:
+    from descape.mirror_dialog import MirrorDialog
     from descape.mirror_tools import MirrorPlan
-    from descape.viewer import MirrorDialog, status_color
+    from descape.viewer_common import status_color
 
     # Dim, where the window and the tab page derive different error shades.
     _use(qt_app, "dim")

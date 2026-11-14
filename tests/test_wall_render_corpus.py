@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from descape import render, scenario_io, unit_sprites
+from descape import render_units, scenario_io, unit_sprites
 
 pytestmark = pytest.mark.corpus
 
@@ -31,7 +31,7 @@ def _walls(scenario):
     for units in scenario.unit_manager.units:
         for unit in units:
             if unit.unit_const in connectors:
-                occupied = render.unit_occupied_tiles(unit, w, h)
+                occupied = render_units.unit_occupied_tiles(unit, w, h)
                 if occupied is not None:
                     tiles.update(occupied)
     walls = []
@@ -39,9 +39,9 @@ def _walls(scenario):
         for i, unit in enumerate(units):
             if not unit_sprites.rotation_variant_eligible(unit.unit_const):
                 continue
-            bounds = render.unit_tile_bounds(unit, w, h)
+            bounds = render_units.unit_tile_bounds(unit, w, h)
             mask = None if bounds is None else unit_sprites.neighbour_mask(bounds[0], bounds[2], tiles, diagonals=True)
-            walls.append((player_id, i, render.stored_rotation(player_id, unit), mask))
+            walls.append((player_id, i, render_units.stored_rotation(player_id, unit), mask))
     radian = unit_sprites.file_is_radian([rotation for _p, _i, rotation, _m in walls], 5)
     return walls, radian
 
@@ -61,7 +61,7 @@ def test_integer_files_store_a_tower_wherever_a_wall_has_at_most_one_neighbour(c
         if radian:
             continue
         files += 1
-        assert render.wall_variant_rotation_overrides(scenario) == {}, path.name
+        assert render_units.wall_variant_rotation_overrides(scenario) == {}, path.name
         for player_id, i, rotation, mask in walls:
             if mask is not None and mask & (mask - 1) == 0:
                 lone += 1
@@ -104,7 +104,7 @@ def test_radian_files_draw_every_wall_by_the_8_bit_table(corpus_files):
         if not radian:
             continue
         files += 1
-        overrides = render.wall_variant_rotation_overrides(scenario)
+        overrides = render_units.wall_variant_rotation_overrides(scenario)
         for player_id, i, _rotation, mask in walls:
             if mask is None:
                 if (player_id, i) in overrides:

@@ -5,9 +5,9 @@ real files (2026-09-28 plan, Step 0). Run from a DEscape checkout root:
     .venv/bin/python3 tools/probe_elevation_components.py [FILE ...]
 
 For every unit sharing a footprint or own tile with another (no filter,
-on-map only), finds its render_cache._shared_tile_component() with no cap.
+on-map only), finds its render_cache_splice._shared_tile_component() with no cap.
 Prints a histogram of component sizes (one count per component) and the max,
-against render_cache._ELEV_SPLICE_MAX_UNITS. Informational, read-only.
+against render_cache_splice._ELEV_SPLICE_MAX_UNITS. Informational, read-only.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ DEFAULT_FILES = (
 
 
 def probe(path: str) -> None:
-    from descape import render, render_cache
+    from descape import render_cache_splice, render_units
     from descape.scenario_io import load_map_and_units
     from descape.unit_filter import UnitFilter
 
@@ -33,15 +33,15 @@ def probe(path: str) -> None:
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     unit_filter = UnitFilter()
-    units_by_tile = render._units_by_tile(scenario, unit_filter)
-    own_index = render.unit_own_tile_index(scenario)
+    units_by_tile = render_units._units_by_tile(scenario, unit_filter)
+    own_index = render_units.unit_own_tile_index(scenario)
     done: set[int] = set()
     sizes: list[int] = []
     biggest: list[tuple] = []
     total = 0
     for player_id, units in enumerate(scenario.unit_manager.units):
         for i, unit in enumerate(units):
-            occupied = render.unit_occupied_tiles(unit, w, h)
+            occupied = render_units.unit_occupied_tiles(unit, w, h)
             if occupied is None:
                 continue
             total += 1
@@ -50,7 +50,7 @@ def probe(path: str) -> None:
             if not shared or id(unit) in done:
                 continue
             seed = (player_id, i, unit, own, tuple(occupied))
-            members = render_cache._shared_tile_component(
+            members = render_cache_splice._shared_tile_component(
                 scenario, units_by_tile, unit_filter, own_index, [seed], 10**9
             )
             if members is None:
@@ -66,7 +66,7 @@ def probe(path: str) -> None:
     if biggest:
         m = biggest[0]
         consts = Counter(u.unit_const for _, _, u, _, _ in m)
-        print(f"  max {len(m)} (cap {render_cache._ELEV_SPLICE_MAX_UNITS}), around {m[0][3]}, consts {dict(consts.most_common(5))}")
+        print(f"  max {len(m)} (cap {render_cache_splice._ELEV_SPLICE_MAX_UNITS}), around {m[0][3]}, consts {dict(consts.most_common(5))}")
 
 
 def main() -> None:

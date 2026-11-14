@@ -2659,10 +2659,10 @@ def test_a_no_op_tag_rename_records_nothing(tmp_path: Path, old, new) -> None:
 
 
 def test_a_new_tag_holding_the_closer_is_refused_before_anything_opens(tmp_path: Path, monkeypatch) -> None:
-    from descape import viewer
+    from PyQt5.QtWidgets import QMessageBox
 
     warnings = []
-    monkeypatch.setattr(viewer.QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
     window = _tag_window(_tagged_base(tmp_path))
     try:
         window.rename_trigger_tag("D1", "a]b")

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from descape import asset_source, render, terrain_blend
+from descape import asset_source, render_paint, terrain_blend
 from descape.terrain_blend import NEIGHBOURS, BlendEntry, influences, tile_indices
 
 TEXTURE_SIZE = 512
@@ -398,11 +398,11 @@ def _grid(w: int = 8, h: int = 8, fill: int = LOW) -> tuple[np.ndarray, np.ndarr
 
 
 def _plain(tid: int, x: int, y: int, tile_px: int) -> np.ndarray:
-    return render._tile_block(SimpleNamespace(x=x, y=y, terrain_id=tid), tile_px)
+    return render_paint._tile_block(SimpleNamespace(x=x, y=y, terrain_id=tid), tile_px)
 
 
 def _offsets(x: int, y: int, tile_px: int) -> tuple[int, int]:
-    return render._crop_offset(x, y, TEXTURE_SIZE, tile_px)
+    return render_paint._crop_offset(x, y, TEXTURE_SIZE, tile_px)
 
 
 # --- influences ---

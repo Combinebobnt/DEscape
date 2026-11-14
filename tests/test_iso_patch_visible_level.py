@@ -23,7 +23,7 @@ from test_native_composite import (
 from test_pooled_render_rect import _scenario_for
 from test_sprite_edit_bbox import sprite_install  # noqa: F401
 
-from descape import composite_backend, iso_geometry, render
+from descape import composite_backend, iso_geometry, render_bbox, render_iso, render_paint, render_sloped
 
 import conftest
 
@@ -43,7 +43,7 @@ def backend(request):
 def _dirty_bbox(cache, style: str, scenario, tiles, changed: set) -> tuple[int, int, int, int]:
     """The viewer's funnel: syncs cache.elevations, fills `changed`."""
     w = scenario.map_manager.map_width
-    fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     bbox = fn(
         scenario, [y * w + x for x, y in tiles], cache.elevations, cache.proj,
         with_units=True, with_sprites=cache.sprites_enabled, elevation_changed=changed,
@@ -276,14 +276,14 @@ def _window_fresh(window):
 
     scenario = window.scenario
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     cache = window._cache
     kwargs = {"sprites": cache.sprites_enabled, "layers": cache.layers}
     if cache.style == "sloped":
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         fresh = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, **kwargs)
     else:
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         fresh = IsoChunkCache(scenario, elevations, proj, tile_px, **kwargs)
     fresh.set_grid(cache.grid)
     return fresh
@@ -371,7 +371,7 @@ def test_the_deferred_terrain_composite_patches_the_level_in_view_only(style) ->
         scenario = window.scenario
         _paint(scenario, tiles)
         changed: set = set()
-        fn = render.dirty_screen_bbox_iso if style == "Stepped" else render.dirty_screen_bbox_sloped
+        fn = render_bbox.dirty_screen_bbox_iso if style == "Stepped" else render_bbox.dirty_screen_bbox_sloped
         w = scenario.map_manager.map_width
         bbox = fn(
             scenario, [y * w + x for x, y in tiles], window._iso_elevations, window._iso_proj,

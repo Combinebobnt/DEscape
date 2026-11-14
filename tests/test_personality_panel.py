@@ -11,6 +11,7 @@ import pytest
 
 from descape import ai_scripts
 from descape.content_roots import KIND_INSTALL, KIND_MOD_SUBSCRIBED, ContentRoot
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -45,9 +46,9 @@ def fake_roots(tmp_path, monkeypatch):
     _touch(mod.common / "ai" / LONG_NAME)
     _touch(mod.common / "ai" / LONG_NAME.replace(".ai", ".per"), b"x")
     roots = [install, mod]
-    import descape.viewer as viewer_module
+    from descape import content_roots
 
-    monkeypatch.setattr(viewer_module.content_roots, "content_roots", lambda *a, **k: list(roots))
+    monkeypatch.setattr(content_roots, "content_roots", lambda *a, **k: list(roots))
     return roots
 
 
@@ -184,9 +185,7 @@ def test_a_custom_rows_tooltip_names_its_folder(fake_roots) -> None:
 
 
 def test_custom_rows_are_disabled_when_the_library_does_not_verify(fake_roots, monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "personality_custom_supported", lambda _loaded: False)
+    set_viewer_global(monkeypatch, "personality_custom_supported", lambda _loaded: False)
     window = _players_window()
     try:
         combo = _combo(window)
@@ -199,9 +198,7 @@ def test_custom_rows_are_disabled_when_the_library_does_not_verify(fake_roots, m
 
 
 def test_a_personality_gate_failure_leaves_every_other_row_editable(fake_roots, monkeypatch) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "personality_write_supported", lambda _loaded: False)
+    set_viewer_global(monkeypatch, "personality_write_supported", lambda _loaded: False)
     window = _players_window()
     try:
         panel = window.players_panel

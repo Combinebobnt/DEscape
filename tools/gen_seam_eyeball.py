@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Renders the terrace-edge seam line
 (descape/iso_geometry.py's seam_edge_indices/seam_apex_indices,
-descape/render.py's SEAM_SHADE) for a manual eyeball pass -- always writes
+descape/render_iso.py's SEAM_SHADE) for a manual eyeball pass -- always writes
 PNGs, never pass/fail. Modelled on tools/gen_elevation_reference.py's
 --check style and tools/gen_iso_reference_pngs.py's "always writes, never
 pass/fail" contract.
 
 Per pct (25/50/100/200) a triptych against a 4-terrace pyramid centred on
-_ANCHOR: seam on, seam off (render.SEAM_SHADE neutralised to 1.0, the same
+_ANCHOR: seam on, seam off (render_iso.SEAM_SHADE neutralised to 1.0, the same
 no-baseline A/B tests/test_seam_line.py and tests/test_seam_viewer.py both
 already use), and an amplified difference. The main sweep captures through
 a real offscreen ViewerWindow (QT_QPA_PLATFORM=offscreen) at the app's own
 default tile_px -- "the actual paint dispatch a user sees"
 (tests/test_seam_viewer.py's own phrase), not just this module's compositor
 in isolation. --no-viewer, or PyQt5 simply not being importable, falls back
-to the same off-engine descape.render.composite_rect_iso() primitive the
+to the same off-engine descape.render_iso.composite_rect_iso() primitive the
 coarse-mip sweep below always uses.
 
 A second sweep covers tile_px 8 and 16 explicitly across the same pct
@@ -46,9 +46,10 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from descape import iso_geometry as ig
-from descape import render, settings
+from descape import render_iso, render_paint, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import qt_capture, qt_window
+from testkit.render_family import set_render_global
 
 OUT_DIR = ROOT / "build" / "seam_eyeball"
 
@@ -122,7 +123,7 @@ def _render_at(scenario, tile_px: int, elev_step_pct: int):
     for tile in mm.terrain:
         elevations[tile.y, tile.x] = tile.elevation
     skirt_headroom = (ig.MAX_ELEVATION - ig.MIN_ELEVATION) * proj.elev_step
-    img = render.composite_rect_iso(
+    img = render_iso.composite_rect_iso(
         scenario,
         0,
         0,
@@ -139,15 +140,16 @@ def _render_at(scenario, tile_px: int, elev_step_pct: int):
 
 
 def _triptych_off_engine(scenario, tile_px: int, elev_step_pct: int, crop_radius: int = PYRAMID_RADIUS):
-    original = render.SEAM_SHADE
+    import pytest
+
     try:
         with_seam, proj = _render_at(scenario, tile_px, elev_step_pct)
-        render.SEAM_SHADE = 1.0
-        render._seam_factors.cache_clear()
-        without_seam, _ = _render_at(scenario, tile_px, elev_step_pct)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "SEAM_SHADE", 1.0)
+            render_iso._seam_factors.cache_clear()
+            without_seam, _ = _render_at(scenario, tile_px, elev_step_pct)
     finally:
-        render.SEAM_SHADE = original
-        render._seam_factors.cache_clear()
+        render_iso._seam_factors.cache_clear()
 
     x0, y0, x1, y1 = _crop_bbox_px(proj, _ANCHOR, crop_radius, PYRAMID_MAX_ELEV)
     x1, y1 = min(x1, with_seam.shape[1]), min(y1, with_seam.shape[0])
@@ -190,9 +192,10 @@ def _stepped_window(elev_step_pct: int, graphics_quality: int):
 
 
 def _triptych_via_viewer(elev_step_pct: int, crop_radius: int = PYRAMID_RADIUS):
+    import pytest
     from PyQt5.QtCore import QRectF
 
-    original = render.SEAM_SHADE
+    mp = pytest.MonkeyPatch()
     window = _stepped_window(elev_step_pct, settings.GRAPHICS_QUALITY_DEFAULT)
     try:
         proj = window.map_view._iso_proj
@@ -203,13 +206,13 @@ def _triptych_via_viewer(elev_step_pct: int, crop_radius: int = PYRAMID_RADIUS):
 
         on = _scene_rect_to_array(window.map_view.scene(), rect)
 
-        render.SEAM_SHADE = 1.0
-        render._seam_factors.cache_clear()
+        set_render_global(mp, "SEAM_SHADE", 1.0)
+        render_iso._seam_factors.cache_clear()
         window._render_current()
         off = _scene_rect_to_array(window.map_view.scene(), rect)
     finally:
-        render.SEAM_SHADE = original
-        render._seam_factors.cache_clear()
+        mp.undo()
+        render_iso._seam_factors.cache_clear()
         window.edit_history.mark_saved()
         window.close()
     return on, off, _amplify_diff(on, off)
@@ -219,7 +222,7 @@ def _grabs(out_dir: Path) -> list[Path]:
     """Full-window ViewerWindow.grab() and SettingsDialog.grab(), offscreen
     -- chrome included, not a crop, since these exist to show the feature
     in its real UI context rather than to isolate the seam itself."""
-    from descape.viewer import SettingsDialog
+    from descape.settings_dialog import SettingsDialog
 
     written = []
     window = _stepped_window(100, settings.GRAPHICS_QUALITY_DEFAULT)
@@ -264,7 +267,7 @@ def generate(out_dir: Path, with_viewer: bool) -> list[Path]:
         if with_viewer:
             on, off, diff = _triptych_via_viewer(pct)
         else:
-            on, off, diff = _triptych_off_engine(_pyramid_scenario(), render.SMALL_MAP_TILE_PIXELS, pct)
+            on, off, diff = _triptych_off_engine(_pyramid_scenario(), render_paint.SMALL_MAP_TILE_PIXELS, pct)
         written += _write_triptych(out_dir, f"pct{pct}", on, off, diff)
 
     scenario = _pyramid_scenario()

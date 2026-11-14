@@ -234,22 +234,42 @@ def test_get_log_height_is_none_until_first_saved() -> None:
     assert settings.get_log_height() is None
 
 
-def test_log_height_round_trips_through_the_file(tmp_path: Path, monkeypatch) -> None:
-    settings.set_log_height(200)
-    monkeypatch.setattr(settings, "_log_height", None)
+def test_get_log_height_reads_a_saved_value_for_the_layout_seed(tmp_path: Path) -> None:
+    _write_config(tmp_path, "log_height: 200\nsplit_sizes: [400, 900]\n")
     assert settings.get_log_height() == 200
-    assert "log_height: 200" in (tmp_path / "config.yaml").read_text()
+    assert settings.get_split_sizes() == (400, 900)
 
 
-def test_set_log_height_below_minimum_is_a_silent_no_op(tmp_path: Path) -> None:
-    settings.set_log_height(settings.MIN_LOG_PANE - 1)
+def test_saving_a_window_state_retires_the_layout_seed(tmp_path: Path) -> None:
+    """Else a later unreadable state would fall back to the pre-GH #64 sizes, not the default."""
+    _write_config(tmp_path, "log_height: 200\nsplit_sizes: [400, 900]\n")
+    settings.set_window_state(b"state")
+    assert settings.get_log_height() is None and settings.get_split_sizes() is None
+    text = (tmp_path / "config.yaml").read_text()
+    assert "log_height" not in text and "split_sizes" not in text
+
+
+@pytest.mark.parametrize(
+    "line", ["log_height: banana", f"log_height: {settings.MIN_LOG_PANE - 1}", "split_sizes: [1, 900]"]
+)
+def test_the_layout_seed_getters_reject_a_malformed_or_too_small_value(tmp_path: Path, line: str) -> None:
+    _write_config(tmp_path, line + "\n")
     assert settings.get_log_height() is None
-    assert not (tmp_path / "config.yaml").exists()
+    assert settings.get_split_sizes() is None
 
 
-def test_get_log_height_rejects_a_malformed_saved_value(tmp_path: Path) -> None:
-    _write_config(tmp_path, "log_height: banana\n")
-    assert settings.get_log_height() is None
+def test_window_state_round_trips_through_the_file(tmp_path: Path, monkeypatch) -> None:
+    """GH #64: arbitrary bytes, NULs and high bytes included, as saveState() hands them over."""
+    blob = bytes(range(256)) * 3
+    settings.set_window_state(blob)
+    monkeypatch.setattr(settings, "_window_state", None)
+    assert settings.get_window_state() == blob
+
+
+@pytest.mark.parametrize("value", ["'not base64!'", "'ünïcode'", "[1, 2]", "12", "''"])
+def test_get_window_state_rejects_a_malformed_saved_value(tmp_path: Path, value: str) -> None:
+    _write_config(tmp_path, f"window_state: {value}\n")
+    assert settings.get_window_state() is None
 
 
 # --- Settings > Appearance > Preload neighbouring zoom levels --------------
@@ -1361,10 +1381,10 @@ def test_the_trigger_status_settings_default_to_colour_with_ok_rows_coloured(tmp
 
 def test_the_trigger_status_colour_defaults_are_the_viewer_status_colours() -> None:
     pytest.importorskip("PyQt5")
-    from descape import viewer
+    from descape.viewer_common import STATUS_ERROR_COLOR, STATUS_OK_COLOR
 
-    assert settings.get_default_trigger_status_color("ok") == viewer.STATUS_OK_COLOR
-    assert settings.get_default_trigger_status_color("problem") == viewer.STATUS_ERROR_COLOR
+    assert settings.get_default_trigger_status_color("ok") == STATUS_OK_COLOR
+    assert settings.get_default_trigger_status_color("problem") == STATUS_ERROR_COLOR
 
 
 @pytest.mark.parametrize("raw", ["colour", "'COLOR'", "0", "true", "[icon]"])

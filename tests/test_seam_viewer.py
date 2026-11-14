@@ -1,9 +1,9 @@
 """The geometry <-> render <-> LIVE VIEWER link tests/test_seam_line.py's
 own docstring admits is missing: every test there checks index arrays or
-an off-engine render.py call. This is a real, shown ViewerWindow driven
+an off-engine render_iso.py call. This is a real, shown ViewerWindow driven
 headlessly (QT_QPA_PLATFORM=offscreen, via conftest.ensure_qapp())
 and captured through an actual QGraphicsScene.render() paint dispatch, not
-descape.render.render_terrain_iso() called standalone.
+descape.render_iso.render_terrain_iso() called standalone.
 
 Same technique tools/verify_iso_viewer_pick.py established, written
 natively as pytest per tests/README.md's stated convention ("New tools/
@@ -25,8 +25,9 @@ import numpy as np
 import pytest
 
 from descape import iso_geometry as ig
-from descape import render, settings
+from descape import render_iso, settings
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from testkit.render_family import set_render_global
 
 import conftest
 
@@ -69,7 +70,7 @@ def _bbox_for_tiles(proj, tile_px: int, tiles, max_elev: int, pad_tiles: int = 1
     """A capture rect covering `tiles`' diamonds at both elevation 0 and
     `max_elev`, independent of anything the app itself computes.
 
-    Deliberately NOT derived from descape.render.dirty_screen_bbox_iso --
+    Deliberately NOT derived from descape.render_bbox.dirty_screen_bbox_iso --
     that is exactly the function under test in
     test_a_real_mouse_drag_elevation_edit_keeps_the_seam_byte_identical
     below, and a capture rect sized by the same function it's supposed to
@@ -122,7 +123,7 @@ def test_stepped_scene_render_matches_a_full_render_at_pct_200():
         probe = QRectF(x0, y0, x1 - x0, y1 - y0)
 
         got = conftest.scene_rect_to_array(window.map_view.scene(), probe)
-        full = render.render_terrain_iso(window.scenario, with_units=False)
+        full = render_iso.render_terrain_iso(window.scenario, with_units=False)
         px0, py0 = int(probe.left()), int(probe.top())
         px1, py1 = min(px0 + got.shape[1], full.shape[1]), min(py0 + got.shape[0], full.shape[0])
         expected = full[py0:py1, px0:px1]
@@ -145,7 +146,7 @@ def test_stepped_scene_render_matches_a_full_render_at_pct_200():
 def test_a_real_mouse_drag_elevation_edit_keeps_the_seam_byte_identical():
     """The untested hop: real QMouseEvents so MapView._touch_tile ->
     ViewerWindow.on_edit_stroke_tile -> _apply_dirty ->
-    descape.render.dirty_screen_bbox_iso -> IsoChunkCache.patch ->
+    descape.render_bbox.dirty_screen_bbox_iso -> IsoChunkCache.patch ->
     MapCanvasItem.paint all run -- not a direct on_edit_stroke_tile() call,
     which every existing brush test uses and which never reaches
     dirty_screen_bbox_iso's own dilation math at all.
@@ -231,7 +232,7 @@ def test_a_real_mouse_drag_elevation_edit_keeps_the_seam_byte_identical():
         after = conftest.scene_rect_to_array(map_view.scene(), watch_rect)
         assert not np.array_equal(before, after), "the edit changed nothing in the watched region"
 
-        full = render.render_terrain_iso(window.scenario, with_units=False)
+        full = render_iso.render_terrain_iso(window.scenario, with_units=False)
         px0, py0 = int(watch_rect.left()), int(watch_rect.top())
         px1, py1 = min(px0 + after.shape[1], full.shape[1]), min(py0 + after.shape[0], full.shape[0])
         expected = full[py0:py1, px0:px1]
@@ -256,7 +257,7 @@ def test_flat_ground_draws_no_seam_through_the_viewer():
     at its real value, neutralise it to an exact no-op and force a fresh
     IsoChunkCache (a new one, not the memoized old one -- _render_current()
     rebuilds it), capture again. On perfectly flat terrain the `delta <= 0`
-    guard in render._render_tile_iso should make the seam a no-op
+    guard in render_iso._render_tile_iso should make the seam a no-op
     regardless of SEAM_SHADE's value, so the two captures must be
     byte-identical.
     """
@@ -281,15 +282,14 @@ def test_flat_ground_draws_no_seam_through_the_viewer():
 
         with_seam = conftest.scene_rect_to_array(window.map_view.scene(), watch_rect)
 
-        original = render.SEAM_SHADE
         try:
-            render.SEAM_SHADE = 1.0
-            render._seam_factors.cache_clear()
-            window._render_current()
-            without_seam = conftest.scene_rect_to_array(window.map_view.scene(), watch_rect)
+            with pytest.MonkeyPatch.context() as mp:
+                set_render_global(mp, "SEAM_SHADE", 1.0)
+                render_iso._seam_factors.cache_clear()
+                window._render_current()
+                without_seam = conftest.scene_rect_to_array(window.map_view.scene(), watch_rect)
         finally:
-            render.SEAM_SHADE = original
-            render._seam_factors.cache_clear()
+            render_iso._seam_factors.cache_clear()
 
         assert np.array_equal(with_seam, without_seam), "a flat map drew a seam through the live viewer"
     finally:

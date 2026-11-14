@@ -22,6 +22,43 @@ file. Verification detail and rationale belong in the commit itself (git
 history already keeps it); if an entry would otherwise restate a doc's
 content, link the doc instead of summarizing it.
 
+## [Unreleased]
+
+### Added
+
+- **Undockable panels** (GH #64): the side panel and the status log float
+  as their own windows (say on a second monitor) and re-dock on either side,
+  View > Panels shows or hides them and resets the layout, and the
+  arrangement is kept between launches.
+- **Rename in the trigger list's right-click menu** (GH #370): opens the
+  inline editor on any trigger row, a section header with triggers under it
+  included, where it edits only the title and keeps the dashes. A
+  double-click on an empty header edits its title too. (contributed by
+  @teslatankx, #377)
+- **Data mod portraits** (GH #363): with a data mod picked, unit and
+  building portraits in the Units catalog, the unit cards, the button grid
+  and the instruction preview come from the mod's own `widgetui` files and
+  the art mods Mod Art draws, then the install's. (contributed by
+  @teslatankx, #371)
+- **Portraits by the owner's civilization** (GH #372): unit and building
+  portraits show the owner's architecture (else civilization) version, with
+  the player colour shaded in as the game does, in the Units catalog, the
+  unit cards, the button grid and the instruction preview. (contributed by
+  @teslatankx, #376)
+
+### Fixed
+
+- **Trigger-created building ghosts** (GH #369): an even-sized building
+  (house, castle, gate) placed by Create Object or Place Foundation now
+  shows its ghost where the game spawns it, not one tile off.
+  (contributed by @teslatankx, #373)
+
+- **Mods toggled in the game** (GH #344): Mod Art and Players mode's
+  Personality list pick up a mod enabled, disabled or reordered in the
+  game's mod list without restarting DEscape, on the next scenario open, Mod
+  Art toggle or Settings open. Settings > Mods gains Rescan mods, for a mod
+  the game updated while DEscape was open.
+
 ## [0.11] - 2026-11-11
 
 ### Added

@@ -3,7 +3,7 @@ paint their real crop terrain across their footprint instead of a
 coloured mark, with a player-colour perimeter
 outline so a placed unit stays distinguishable from hand-painted farm
 terrain. Gated on the same Show sprites toggle / SpriteLayer as real unit
-sprites -- see render._terrain_overlay_for and SpriteLayer.farm_by_tile.
+sprites -- see render_sprites._terrain_overlay_for and SpriteLayer.farm_by_tile.
 
 In-game, a farm's crop is a TERRAIN TILE BLEND, not a unit sprite --
 Unit.building.foundation_terrain_id in the real .dat gives the exact
@@ -22,8 +22,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import asset_source, iso_geometry, render_bbox, render_iso, render_paint, render_sprites, render_units, unit_sprites
+from descape.terrain_palette import BUILDING_TILE_SPANS, FOUNDATION_TERRAIN, PLAYER_COLORS
 
 MAP_W = MAP_H = 12
 FAKE_FARM_CONST = 999001
@@ -60,7 +60,7 @@ FARM_FAMILY_TERRAIN = {
 
 def test_terrain_overlay_for_pins_the_farm_family():
     for const, terrain_id in FARM_FAMILY_TERRAIN.items():
-        assert render._terrain_overlay_for(const) == terrain_id, const
+        assert render_sprites._terrain_overlay_for(const) == terrain_id, const
 
 
 def test_terrain_overlay_for_none_for_dropsite_helpers():
@@ -69,15 +69,15 @@ def test_terrain_overlay_for_none_for_dropsite_helpers():
     FOUNDATION_TERRAIN entirely, unlike the family above, so they correctly
     keep the coloured mark rather than becoming an invisible terrain patch."""
     for const in (1193, 1194, 1195):
-        assert render._terrain_overlay_for(const) is None, const
+        assert render_sprites._terrain_overlay_for(const) is None, const
 
 
 def test_terrain_overlay_for_none_when_a_real_sprite_exists():
     """House (70) has both a foundation terrain (purely an in-game
     construction-outline hint) and a real .sld -- the sprite must win."""
-    assert 70 in render.FOUNDATION_TERRAIN, "fixture assumption broke: House lost its foundation terrain"
+    assert 70 in FOUNDATION_TERRAIN, "fixture assumption broke: House lost its foundation terrain"
     assert 70 in unit_sprites.graphic_map(), "fixture assumption broke: House lost its .sld entry"
-    assert render._terrain_overlay_for(70) is None
+    assert render_sprites._terrain_overlay_for(70) is None
 
 
 @pytest.mark.parametrize("terrain_id", sorted(set(FARM_FAMILY_TERRAIN.values())))
@@ -157,8 +157,8 @@ def fake_farm(monkeypatch):
     terrain via this fixture's own BUILDING_TILE_SPANS/FOUNDATION_TERRAIN
     entries."""
     assert FAKE_FARM_CONST not in unit_sprites.graphic_map(), "picked const collides with a real one"
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
-    monkeypatch.setitem(render.FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
+    monkeypatch.setitem(FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
 
 
 TEXTURE_COLORS = {BACKGROUND_TERRAIN: (10, 20, 30), FAKE_FARM_TERRAIN: (200, 150, 40)}
@@ -170,7 +170,7 @@ def _synthetic_textures(monkeypatch) -> int:
     always (0, 0) -- the same fixture shape tests/test_sloped_render.py
     uses to keep the oracle exact rather than dependent on install-specific
     art. Returns tile_px."""
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     textures = {
         tid: np.full((tile_px, tile_px, 3), color, dtype=np.uint8)
         for tid, color in TEXTURE_COLORS.items()
@@ -186,8 +186,8 @@ def test_farm_layer_covers_the_whole_footprint_with_a_closed_perimeter(fake_farm
     neighbour outside the footprint to draw a boundary against)."""
     unit = Unit(5.0, 5.0, FAKE_FARM_CONST)
     scn = _scenario([[], [unit]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
 
     assert set(sprites.farm_by_tile) == {(x, y) for x in (4, 5, 6) for y in (4, 5, 6)}
     assert id(unit) in sprites.skip_ids
@@ -213,9 +213,9 @@ def test_perimeter_stroke_paints_the_outer_edge_and_not_the_internal_one(monkeyp
     tile_px = _synthetic_textures(monkeypatch)
     unit = Unit(5.0, 5.0, FAKE_FARM_CONST)
     scn = _scenario([[], [unit]])
-    img, _elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
+    img, _elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
 
-    outline_color = np.array(render.PLAYER_COLORS[1 % len(render.PLAYER_COLORS)], dtype=np.uint8)
+    outline_color = np.array(PLAYER_COLORS[1 % len(PLAYER_COLORS)], dtype=np.uint8)
     dst_y, dst_x = iso_geometry.tile_edge_indices(tile_px, "left")
     assert dst_y.size, "fixture produced an empty edge -- proves nothing"
 
@@ -244,7 +244,7 @@ def test_farm_interior_tile_matches_hand_painted_terrain(monkeypatch, fake_farm)
     tile_px = _synthetic_textures(monkeypatch)
 
     farm_scn = _scenario([[], [Unit(5.0, 5.0, FAKE_FARM_CONST)]])
-    farm_img, _elevations, proj = render.render_terrain_iso_with_proj(
+    farm_img, _elevations, proj = render_iso.render_terrain_iso_with_proj(
         farm_scn, with_units=True, with_sprites=True
     )
 
@@ -252,7 +252,7 @@ def test_farm_interior_tile_matches_hand_painted_terrain(monkeypatch, fake_farm)
     for tile in painted_scn.map_manager.terrain:
         if 4 <= tile.x < 7 and 4 <= tile.y < 7:
             tile.terrain_id = FAKE_FARM_TERRAIN
-    painted_img, _painted_elevations, painted_proj = render.render_terrain_iso_with_proj(
+    painted_img, _painted_elevations, painted_proj = render_iso.render_terrain_iso_with_proj(
         painted_scn, with_units=True
     )
 
@@ -269,11 +269,11 @@ def test_without_a_foundation_terrain_the_interior_tile_diverges(monkeypatch):
     it is measuring nothing, the same trap the rotation fix fell into by
     shipping green while palisades were invisible."""
     tile_px = _synthetic_textures(monkeypatch)
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
-    assert FAKE_FARM_CONST not in render.FOUNDATION_TERRAIN
+    monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
+    assert FAKE_FARM_CONST not in FOUNDATION_TERRAIN
 
     farm_scn = _scenario([[], [Unit(5.0, 5.0, FAKE_FARM_CONST)]])
-    farm_img, _elevations, proj = render.render_terrain_iso_with_proj(
+    farm_img, _elevations, proj = render_iso.render_terrain_iso_with_proj(
         farm_scn, with_units=True, with_sprites=True
     )
 
@@ -281,7 +281,7 @@ def test_without_a_foundation_terrain_the_interior_tile_diverges(monkeypatch):
     for tile in painted_scn.map_manager.terrain:
         if 4 <= tile.x < 7 and 4 <= tile.y < 7:
             tile.terrain_id = FAKE_FARM_TERRAIN
-    painted_img, _painted_elevations, painted_proj = render.render_terrain_iso_with_proj(
+    painted_img, _painted_elevations, painted_proj = render_iso.render_terrain_iso_with_proj(
         painted_scn, with_units=True
     )
 
@@ -308,7 +308,7 @@ def test_elevated_farm_tile_skirt_carries_crop_not_background(monkeypatch, fake_
     for tile in farm_scn.map_manager.terrain:
         if (tile.x, tile.y) == (4, 4):
             tile.elevation = RAISED_ELEV
-    farm_img, _elevations, proj = render.render_terrain_iso_with_proj(
+    farm_img, _elevations, proj = render_iso.render_terrain_iso_with_proj(
         farm_scn, with_units=True, with_sprites=True
     )
 
@@ -318,7 +318,7 @@ def test_elevated_farm_tile_skirt_carries_crop_not_background(monkeypatch, fake_
             tile.terrain_id = FAKE_FARM_TERRAIN
         if (tile.x, tile.y) == (4, 4):
             tile.elevation = RAISED_ELEV
-    painted_img, _painted_elevations, painted_proj = render.render_terrain_iso_with_proj(
+    painted_img, _painted_elevations, painted_proj = render_iso.render_terrain_iso_with_proj(
         painted_scn, with_units=True
     )
 
@@ -349,17 +349,17 @@ def _stitched(scn, elevations, proj, sprites) -> np.ndarray:
     together -- the same shape tests/test_sprite_chunks.py's own
     ``_chunked`` uses for the sprite case."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
-    merged = render.merge_sprite_bboxes(bboxes, sprites)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
+    merged = render_sprites.merge_sprite_bboxes(bboxes, sprites)
     out = np.zeros((proj.canvas_h + (iso_geometry.MAX_ELEVATION - iso_geometry.MIN_ELEVATION) * proj.elev_step,
                      proj.canvas_w, 3), dtype=np.uint8)
     h, w = out.shape[:2]
     for y0 in range(0, h, CHUNK):
         for x0 in range(0, w, CHUNK):
             x1, y1 = min(x0 + CHUNK, w), min(y0 + CHUNK, h)
-            out[y0:y1, x0:x1] = render.composite_rect_iso(
+            out[y0:y1, x0:x1] = render_iso.composite_rect_iso(
                 scn, x0, y0, x1, y1, elevations, proj, tile_px, units_by_tile, merged, sprites=sprites,
             )
     return out
@@ -371,8 +371,8 @@ def test_stitched_chunks_match_the_full_farm_render(monkeypatch, fake_farm):
     tests/test_sprite_chunks.py's own stitched-chunk check."""
     _synthetic_textures(monkeypatch)
     scn = _scenario([[], [Unit(5.0, 5.0, FAKE_FARM_CONST), Unit(9.0, 2.0, FAKE_FARM_CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert sprites.farm_by_tile, "the fixture resolved no farm tiles, so this proves nothing"
 
     got = _stitched(scn, elevations, proj, sprites)
@@ -389,8 +389,8 @@ def test_stitched_chunks_match_on_elevated_farm_terrain(monkeypatch, fake_farm):
     for tile in scn.map_manager.terrain:
         if (tile.x, tile.y) in {(4, 4), (5, 5), (9, 2)}:
             tile.elevation = RAISED_ELEV
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=True, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert sprites.farm_by_tile, "the fixture resolved no farm tiles, so this proves nothing"
 
     got = _stitched(scn, elevations, proj, sprites)

@@ -373,7 +373,8 @@ def test_a_failed_save_leaves_is_dirty_true(tmp_path, monkeypatch) -> None:
     edit_history.mark_saved() runs -- this pins that the document is left
     dirty, not just that the on-disk bytes are untouched."""
     conftest.ensure_qapp()
-    import descape.viewer as viewer_module
+    from PyQt5.QtWidgets import QMessageBox
+
     from descape.viewer import ViewerWindow
 
     target = _copy_fixture(tmp_path)
@@ -384,7 +385,7 @@ def test_a_failed_save_leaves_is_dirty_true(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(backup_module, "make_backups", _raise)
     # QMessageBox.critical() is a modal exec_() call, same offscreen-hang
     # hazard as .question()/.warning() elsewhere in this suite.
-    monkeypatch.setattr(viewer_module.QMessageBox, "critical", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: None))
 
     window = ViewerWindow()
     try:

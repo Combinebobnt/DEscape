@@ -33,8 +33,9 @@ import numpy as np
 import pytest
 
 from descape.elevation_tools import set_tile_elevation
-from descape.render import render_terrain_sloped, sloped_elevations_and_proj, tile_pixels_for_map
 from descape.render_cache import SlopedChunkCache
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import render_terrain_sloped, sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 RNG_SEED = 20260813

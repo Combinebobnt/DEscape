@@ -24,7 +24,9 @@ from test_terrain_units_viewer import (
     tree_sprites,  # noqa: F401 -- fixture, requested by name
 )
 
-from descape import render
+from descape import render_sprites
+from testkit.render_family import set_render_global
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 from test_unit_sprites import CONST
@@ -41,9 +43,7 @@ REFRESHED = "refreshed the full map in place instead of patching"
 
 
 def _pin_threshold(monkeypatch, value: int = THRESHOLD) -> None:
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "STEPPED_FULL_RERENDER_THRESHOLD", value)
+    set_viewer_global(monkeypatch, "STEPPED_FULL_RERENDER_THRESHOLD", value)
 
 
 def _units_window(style: str, monkeypatch):
@@ -111,9 +111,9 @@ def test_an_over_threshold_elevation_undo_and_redo_refresh_the_cache_in_place(
         units = sum(len(u) for u in window.scenario.unit_manager.units)
         assert units >= 22
         resolves, walks = [], []
-        real_resolve, real_walk = render._resolve_unit_sprite, render.sprite_draws_by_anchor_sliced
-        monkeypatch.setattr(render, "_resolve_unit_sprite", lambda *a, **k: (resolves.append(1), real_resolve(*a, **k))[1])
-        monkeypatch.setattr(render, "sprite_draws_by_anchor_sliced", lambda *a, **k: (walks.append(1), real_walk(*a, **k))[1])
+        real_resolve, real_walk = render_sprites._resolve_unit_sprite, render_sprites.sprite_draws_by_anchor_sliced
+        set_render_global(monkeypatch, "_resolve_unit_sprite", lambda *a, **k: (resolves.append(1), real_resolve(*a, **k))[1])
+        set_render_global(monkeypatch, "sprite_draws_by_anchor_sliced", lambda *a, **k: (walks.append(1), real_walk(*a, **k))[1])
         for step, act in (("undo", window.undo), ("redo", window.redo)):
             _render_levels(window)
             points = _pick_points(window)
@@ -153,9 +153,9 @@ def test_the_refresh_check_names_the_step_whose_elevations_went_stale(
         def refresh(dirty_indices, flatten=False):
             if current.get("step") != broken:
                 return real(dirty_indices, flatten)
-            from descape import render_cache
+            from descape import render_cache_splice
 
-            moved = render_cache._write_dirty_elevations(cache.scenario, cache.elevations, cache.proj, dirty_indices)
+            moved = render_cache_splice._write_dirty_elevations(cache.scenario, cache.elevations, cache.proj, dirty_indices)
             cache.invalidate_region((0, 0, *cache.canvas_dims(0)))
             return moved
 
@@ -177,9 +177,7 @@ def test_a_large_fill_and_its_undo_and_redo_refresh_in_place(style, trees, tree_
     """A Paint Can past the threshold, terrain only or Trees on (the A2b
     tile + unit case, whose unit step stays wholesale), then its undo and redo.
     Each step's live pixels also equal a fresh numpy build's."""
-    import descape.viewer as viewer_module
-
-    monkeypatch.setattr(viewer_module, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
+    set_viewer_global(monkeypatch, "TERRAIN_UNIT_CONFIRM_THRESHOLD", 100_000)
     window = _over_cap_window(style, monkeypatch)
     try:
         window.paint_trees_check.setChecked(False)

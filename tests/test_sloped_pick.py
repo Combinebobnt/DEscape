@@ -1,5 +1,5 @@
 """Verifies Sloped mode's hit-testing backend -- Track C4's
-render._render_tile_sloped_ids/composite_ids_rect_sloped and
+render_sloped._render_tile_sloped_ids/composite_ids_rect_sloped and
 SlopedChunkCache.pick_tile/_pick_plane.
 
 The bar this suite has to hold, and it is not "the pick looks sensible": the
@@ -49,21 +49,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_sloped
 from descape.elevation_tools import set_tile_elevation
-from descape.render import (
-    PICK_ID_NONE,
-    composite_ids_rect_sloped,
-    dirty_screen_bbox_sloped,
-    sloped_elevations_and_proj,
-    tile_pixels_for_map,
-)
+from descape.render_bbox import dirty_screen_bbox_sloped
 from descape.render_cache import (
     MAX_PICK_PLANES,
     PICK_PLANE_PATCH_MAX_FRACTION,
     SlopedChunkCache,
 )
+from descape.render_paint import tile_pixels_for_map
+from descape.render_sloped import PICK_ID_NONE, composite_ids_rect_sloped, sloped_elevations_and_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
+from testkit.render_family import set_render_global
 
 RNG_SEED = 20260820
 SAMPLE_PIXELS = 4000
@@ -97,7 +94,7 @@ def _sloped_state(scenario):
 
 def _pick_oracle(scenario, corner_rise, proj, tile_px):
     """(ids, counts) over the whole reference canvas, recomputed from
-    iso_geometry alone -- NOT through render.py's compositor, which is the
+    iso_geometry alone -- NOT through render_sloped.py's compositor, which is the
     code under test.
 
     This restates the painting contract the compositor is supposed to
@@ -164,7 +161,7 @@ def test_chunk_local_pick_agrees_with_the_whole_canvas_plane():
 def test_pick_plane_agrees_with_an_independent_geometry_oracle():
     """Check 2 -- the load-bearing one. Audits the compositor against
     iso_geometry directly, so a wrong base_y/base_x term (notably dropping
-    -d_min) fails here even though every path through render.py would still
+    -d_min) fails here even though every path through render_sloped.py would still
     agree with itself."""
     scenario = _bumpy_scenario()
     _elev, corner_rise, proj, tile_px = _sloped_state(scenario)
@@ -470,9 +467,9 @@ def test_an_empty_elevation_changed_leaves_a_warm_plane_untouched(monkeypatch):
     # Counted, not just compared: a rewrite against an unchanged corner_rise
     # produces the same bytes, so equality alone would pass the wasted work.
     calls = []
-    real = render.composite_ids_rect_sloped
-    monkeypatch.setattr(
-        render, "composite_ids_rect_sloped", lambda *a, **k: (calls.append(a[1:5]), real(*a, **k))[1]
+    real = render_sloped.composite_ids_rect_sloped
+    set_render_global(
+        monkeypatch, "composite_ids_rect_sloped", lambda *a, **k: (calls.append(a[1:5]), real(*a, **k))[1]
     )
     cache.patch((sx - 64, sy - 64, sx + 64, sy + 64), elevation_changed=set())
     assert not calls, f"an empty elevation_changed recomposited {len(calls)} sub-rect(s) it cannot have invalidated"

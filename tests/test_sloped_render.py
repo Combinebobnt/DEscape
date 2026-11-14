@@ -1,4 +1,4 @@
-"""Verifies descape.render's Phase 6 (Sloped) compositor additions --
+"""Verifies descape.render_sloped's Phase 6 (Sloped) compositor additions --
 _render_tile_sloped, render_terrain_sloped(_with_proj), composite_rect_sloped,
 and render_scenario()/save_png()'s style= widening -- Track C2.
 
@@ -6,7 +6,7 @@ Checks:
   1. Flat-map byte identity: on a uniform-elevation map, render_terrain_sloped
      is EXACTLY render_terrain_iso's own output, units included -- the
      strongest and cheapest oracle this compositor has (see
-     iso_geometry.sloped_quad_indices' and render._slope_shade's own
+     iso_geometry.sloped_quad_indices' and render_sloped._slope_shade's own
      docstrings for why each was built to make this exact, not merely close).
   2. Coverage: no unpainted (all-zero) pixel inside the ground outline on a
      genuinely sloped map -- the Sloped counterpart to
@@ -31,14 +31,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from descape import asset_source, render_paint, render_sloped
 from descape import iso_geometry as ig
-from descape import render as render_mod
-from descape.render import (
-    render_scenario,
-    render_terrain_iso,
-    render_terrain_sloped,
-    render_terrain_sloped_with_proj,
-)
+from descape.render import render_scenario
+from descape.render_iso import render_terrain_iso
+from descape.render_sloped import render_terrain_sloped, render_terrain_sloped_with_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
 
@@ -119,23 +116,23 @@ def test_slope_shade_is_gathered_through_uv_idx():
     corner_rise = np.zeros((h + 1, w + 1), dtype=np.int64)
     corner_rise[1, 1] = corners[0]  # tile (1, 1)'s NW corner; its other three stay 0
 
-    shade = render_mod._slope_shade(tile_px, *corners, proj.elev_step)
+    shade = render_sloped._slope_shade(tile_px, *corners, proj.elev_step)
     gathered = shade[uv_idx]
     sliced = shade[: dst_y.size]
     assert not np.array_equal(gathered, sliced), "fixture no longer distinguishes the two candidates"
 
     rng = np.random.default_rng(3)
     texture = rng.integers(0, 256, size=(tile_px, tile_px, 3), dtype=np.uint8)
-    real = render_mod.asset_source.get_terrain_texture_array
-    render_mod.asset_source.get_terrain_texture_array = lambda _tid: texture
+    real = asset_source.get_terrain_texture_array
+    asset_source.get_terrain_texture_array = lambda _tid: texture
     try:
         img = np.zeros((proj.canvas_h, proj.canvas_w, 3), dtype=np.uint8)
         tile = SimpleNamespace(x=1, y=1, terrain_id=0, elevation=0)
-        render_mod._render_tile_sloped(img, tile, tile_px, proj, corner_rise)
+        render_sloped._render_tile_sloped(img, tile, tile_px, proj, corner_rise)
     finally:
-        render_mod.asset_source.get_terrain_texture_array = real
+        asset_source.get_terrain_texture_array = real
 
-    ox, oy = render_mod._crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
+    ox, oy = render_paint._crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
     top = texture[oy : oy + tile_px, ox : ox + tile_px][src_y, src_x]
     expected = np.clip(top.astype(np.float32) * gathered[:, None], 0, 255).astype(np.uint8)
     wrong = np.clip(top.astype(np.float32) * sliced[:, None], 0, 255).astype(np.uint8)
@@ -204,7 +201,7 @@ def test_render_scenario_rejects_bad_style():
 def _shade_for(nw, ne, sw, se, tile_px=64, elev_step=16):
     """One tile's shade factors, corners given in ELEVATION LEVELS."""
     s = elev_step
-    return render_mod._slope_shade(tile_px, nw * s, ne * s, sw * s, se * s, s)
+    return render_sloped._slope_shade(tile_px, nw * s, ne * s, sw * s, se * s, s)
 
 
 def test_slope_light_shades_the_flank_the_captures_show_shaded():
@@ -265,8 +262,8 @@ def test_slope_shade_clamps_are_guard_rails_and_do_not_fire():
         s = _shade_for(*cfg)
         lo, hi = min(lo, float(s.min())), max(hi, float(s.max()))
 
-    assert lo > render_mod.SLOPE_SHADE_MIN, f"MIN bites: reachable low is {lo}"
-    assert hi < render_mod.SLOPE_SHADE_MAX, f"MAX bites: reachable high is {hi}"
+    assert lo > render_sloped.SLOPE_SHADE_MIN, f"MIN bites: reachable low is {lo}"
+    assert hi < render_sloped.SLOPE_SHADE_MAX, f"MAX bites: reachable high is {hi}"
     # The measured range at the shipped constants, so a drift is visible here
     # rather than only in the clamp assertions above.
     assert lo == pytest.approx(0.5305, abs=0.01)
@@ -286,6 +283,6 @@ def test_slope_shade_is_invariant_to_elev_step(elev_step_pct):
     """
     half_h = 16
     step = max(1, round(half_h * elev_step_pct / 100))
-    got = render_mod._slope_shade(64, 0, 0, step, step, step)
-    ref = render_mod._slope_shade(64, 0, 0, 16, 16, 16)
+    got = render_sloped._slope_shade(64, 0, 0, step, step, step)
+    ref = render_sloped._slope_shade(64, 0, 0, 16, 16, 16)
     assert np.allclose(got, ref)

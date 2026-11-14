@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from descape import library_compat, player_fields, render, trigger_geometry
+from descape import library_compat, player_fields, render_units, trigger_geometry
 from descape.scenario_io import (
     BLANK_TEMPLATE_PATH,
     TERRAIN_STRUCT_SIZE,
@@ -243,8 +243,8 @@ def test_a_footprint_the_cut_leaves_partly_off_the_map_is_deleted(tmp_path, x, a
     after = _all_units(_save_and_reload(result, tmp_path))
     assert (castle.reference_id in after) is not deleted
     for unit in after.values():
-        span_x, span_y = tile_span(unit.unit_const, render.NON_BUILDING_SPAN)
-        x0, y0 = render._span_start(unit.x, span_x), render._span_start(unit.y, span_y)
+        span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
+        x0, y0 = render_units._span_start(unit.x, span_x), render_units._span_start(unit.y, span_y)
         assert 0 <= x0 <= 118 - span_x and 0 <= y0 <= 118 - span_y, unit.reference_id
 
 

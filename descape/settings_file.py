@@ -148,6 +148,7 @@ LOCAL_KEYS: dict[str, str] = {
     "confirmed_scripts": "your consent to run this machine's script files",
     "confirmed_addons": "your consent to run this machine's addon files",
     "window_size": "window layout for this screen",
+    "window_state": "window layout for this screen",
     "split_sizes": "window layout for this screen",
     "log_height": "window layout for this screen",
     "xwayland_on_wayland": "a Linux session workaround",

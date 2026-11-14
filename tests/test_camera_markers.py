@@ -202,7 +202,8 @@ def test_one_marker_per_player_with_a_view_set() -> None:
         assert _marker_tiles(window) == {}
         window.set_player_view(1)
         window.players_panel.select_player(2)
-        window.map_view.centerOn(window.map_view.sceneRect().topLeft())
+        # A named tile, not the scene corner: where a clamped centerOn(corner) lands hangs on the viewport size.
+        window.map_view.center_on_tile(20, 30)
         window.set_player_view(2)
         tiles = _marker_tiles(window)
         assert set(tiles) == {1, 2}

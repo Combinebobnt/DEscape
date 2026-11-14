@@ -30,7 +30,7 @@ particle_doodads (TASK-454's Smoke and Flames) needs only the install: a synthet
 flat scene, written to an `objects/` directory so its paths stay neutral.
 native_tier (TASK-599's 96 px level) needs both, and writes to `zoom_levels/`.
 
-Off-engine throughout (descape.render.composite_rect_iso, no PyQt5), unlike
+Off-engine throughout (descape.render_iso.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
 the function IsoChunkCache.render_rect() calls per mip chunk, every frame
 here is a crop rather than a window grab, and staying Qt-free keeps the tool
@@ -59,15 +59,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, native_composite, render, terrain_blend, unit_kind
+from descape import (
+    asset_source,
+    native_composite,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    terrain_blend,
+    unit_kind,
+)
 from descape import iso_geometry as ig
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from descape.view_layers import LayerState
 from testkit import review_pack as rp
+from testkit.render_family import RENDER, patch, render_global, set_render_global
 
 OUT_DIR = ROOT / "build" / "review_pack"
 
-TILE_PX = render.SMALL_MAP_TILE_PIXELS
+TILE_PX = render_paint.SMALL_MAP_TILE_PIXELS
 
 # Same reasoning as gen_seam_eyeball._ANCHOR: MapView.set_source() draws a
 # map-extent outline near the map's own corner that render_terrain_iso()
@@ -84,8 +96,8 @@ _CORNER_A = _ANCHOR
 
 
 def _clear_caches() -> None:
-    render._shadow_factors.cache_clear()
-    render._seam_factors.cache_clear()
+    render_iso._shadow_factors.cache_clear()
+    render_iso._seam_factors.cache_clear()
 
 
 # ---------------------------------------------------------------- fixtures
@@ -169,7 +181,7 @@ def _render_rect(scenario, proj, box) -> np.ndarray:
     for tile in mm.terrain:
         elevations[tile.y, tile.x] = tile.elevation
     x0, y0, x1, y1 = box
-    return render.composite_rect_iso(
+    return render_iso.composite_rect_iso(
         scenario,
         x0,
         y0,
@@ -189,7 +201,7 @@ def _render_rect(scenario, proj, box) -> np.ndarray:
 
 class _GeometryPatch:
     """Swaps one descape.iso_geometry entry point for the run, and clears both
-    factor caches on the way in and out. render.py reaches these functions
+    factor caches on the way in and out. the render modules reach these functions
     through the module attribute, and _shadow_factors() reaches them the same
     way, so indices and factors stay the same length under a patch."""
 
@@ -266,17 +278,18 @@ def _render_pair(scenario, pct: int, box_tiles, max_elev: int, pad_px: int):
     isolates the contact band by itself. Neutralising both would fold the
     continuous seam line into the same mask and hide exactly the breaks
     band_connectivity asks about."""
+    import pytest
+
     proj = _projection(scenario, pct)
     box = _tiles_bbox_px(proj, box_tiles, max_elev, pad_px=pad_px)
     _clear_caches()
     shipped = _render_rect(scenario, proj, box)
-    saved = render.CONTACT_SHADE
     try:
-        render.CONTACT_SHADE = 1.0
-        _clear_caches()
-        control = _render_rect(scenario, proj, box)
+        with pytest.MonkeyPatch.context() as mp:
+            set_render_global(mp, "CONTACT_SHADE", 1.0)
+            _clear_caches()
+            control = _render_rect(scenario, proj, box)
     finally:
-        render.CONTACT_SHADE = saved
         _clear_caches()
     return shipped, control
 
@@ -651,7 +664,7 @@ def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
         scenario, elevations = _ground_scene(_frame_repaint(frame_id))
     if style == "flat":
         x0, y0 = (2 * cx + 1) * tile_px // 2 - cw // 2, (2 * cy + 1) * tile_px // 2 - ch // 2
-        return render.composite_rect_flat(scenario, x0, y0, x0 + cw, y0 + ch, tile_px, with_units=False)
+        return render_flat.composite_rect_flat(scenario, x0, y0, x0 + cw, y0 + ch, tile_px, with_units=False)
     mm = scenario.map_manager
     proj = ig.canvas_size_and_origin(
         mm.map_width, mm.map_height, tile_px, ig.MIN_ELEVATION, ig.MAX_ELEVATION,
@@ -660,12 +673,12 @@ def _ground_render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
     sx, sy = ig.tile_screen_origin(cx, cy, int(elevations[cy, cx]), proj)
     x0, y0 = sx + proj.half_w - cw // 2, sy + proj.half_h - ch // 2
     if style == "sloped":
-        rise = ig.corner_rise_px(elevations, proj, rule=render.SLOPE_CORNER_RULE)
-        return render.composite_rect_sloped(
+        rise = ig.corner_rise_px(elevations, proj, rule=render_sloped.SLOPE_CORNER_RULE)
+        return render_sloped.composite_rect_sloped(
             scenario, x0, y0, x0 + cw, y0 + ch, rise, proj, tile_px, {}, {}, with_units=False,
             fold=ig.tile_folds(elevations),
         )
-    return render.composite_rect_iso(
+    return render_iso.composite_rect_iso(
         scenario, x0, y0, x0 + cw, y0 + ch, elevations, proj, tile_px, {}, {}, with_units=False
     )
 
@@ -682,7 +695,7 @@ def _legacy_inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int)
     return src_y, src_x
 
 
-_REAL_CROP_OFFSET = render._crop_offset
+_REAL_CROP_OFFSET = render_paint._crop_offset
 _REAL_TEXTURE = asset_source.get_terrain_texture_array
 
 
@@ -773,7 +786,7 @@ def _patch_one_cell_shift(_style, tile_px, frame_id):
     not seen, so the grass and forest frames get no shifted cell."""
     if frame_id not in _FIELD_FRAMES:
         return []
-    return [(render, "_crop_offset", _shifted_crop(_half_period(tile_px)))]
+    return [(RENDER, "_crop_offset", _shifted_crop(_half_period(tile_px)))]
 
 
 def _patch_unfiltered(style, tile_px, _frame_id):
@@ -811,18 +824,18 @@ def _clear_texture_caches() -> None:
 
 
 def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    import pytest
+
     images = {}
     for frame_id, (style, tile_px, *_rest) in _GROUND_FRAMES.items():
         patches = GROUND_INJECTS[inject].patches(style, tile_px, frame_id) if inject else []
-        saved = [(obj, name, getattr(obj, name)) for obj, name, _new in patches]
-        for obj, name, new in patches:
-            setattr(obj, name, new)
-        _clear_texture_caches()
         try:
-            images[frame_id] = _ground_render(frame_id)
+            with pytest.MonkeyPatch.context() as mp:
+                for target, name, new in patches:
+                    patch(mp, target, name, new)
+                _clear_texture_caches()
+                images[frame_id] = _ground_render(frame_id)
         finally:
-            for obj, name, old in saved:
-                setattr(obj, name, old)
             _clear_texture_caches()
     return images
 
@@ -1138,7 +1151,7 @@ def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:
 #
 # GH #254 (TASK-440): Graphics Quality Default and above shrinks sprites with a premultiplied box
 # filter instead of the nearest gather. Real install sprites only, on a flat grey ground; units
-# and the building are composited piece by piece through render._clipped_paint_rgba, as the map does.
+# and the building are composited piece by piece through render_paint._clipped_paint_rgba, as the map does.
 
 
 # (const, rotation): an archer, a spearman and a farmer with a hoe, and a market, each at a facing
@@ -1237,7 +1250,7 @@ def _shrink_lineup(frame_id: str) -> tuple[np.ndarray, list[tuple[np.ndarray, in
         ax, ay = x - left, _SHRINK_PAD + above  # the hotspot
         flat = np.zeros((bottom - top, right - left, 4), dtype=np.uint8)
         for piece, (bx, by, _w, _h) in zip(pieces, boxes, strict=True):
-            render._clipped_paint_rgba(frame, ay + by, ax + bx, piece.draw.rgba)
+            render_paint._clipped_paint_rgba(frame, ay + by, ax + bx, piece.draw.rgba)
             unit_sprites._source_over(flat, by - top, bx - left, piece.draw.rgba)
         figures.append((flat, ax + left, ay + top))
         x += right - left + _SHRINK_PAD
@@ -1535,7 +1548,7 @@ def _sloped_cache(map_key: str, units: bool, chunk_px: int = SLOPED_CHUNK_PX):
     if key not in _SLOPED_SCENE:
         _SLOPED_SCENE[key] = load_map_and_units(str(SLOPED_MAPS[map_key]))
     scenario = _SLOPED_SCENE[key]
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     return SlopedChunkCache(
         scenario, elevations, corner_rise, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units
     )
@@ -1598,16 +1611,15 @@ class _SlopedInject:
         self.shift_chunks: set[tuple[int, int, int, int]] = set()  # (scenario id, tile_px, x0, y0)
 
     def __enter__(self):
+        import pytest
+
         from descape.render_cache import SlopedChunkCache
 
-        self.saved = [
-            (SlopedChunkCache, "_level_rise"),
-            (render, "composite_rect_sloped"),
-            (render, "_resolve_unit_sprite"),
-            (render, "_paint_terrain_sloped"),
-        ]
-        self.saved = [(obj, name, getattr(obj, name)) for obj, name in self.saved]
-        real_rise, real_composite, real_resolve, real_terrain = (old for _o, _n, old in self.saved)
+        self.mp = pytest.MonkeyPatch()
+        real_rise = SlopedChunkCache._level_rise
+        real_composite = render_global("composite_rect_sloped")
+        real_resolve = render_global("_resolve_unit_sprite")
+        real_terrain = render_global("_paint_terrain_sloped")
         # (scenario id, tile_px) -> level 0's corner_rise, for the coarsest level only.
         coarsest: dict[tuple, np.ndarray] = {}
 
@@ -1625,10 +1637,10 @@ class _SlopedInject:
                 if lvl.tile_px * 4 == cache.tile_px:
                     key = (id(cache.scenario), lvl.tile_px)
                     if key not in true_rise:
-                        true_rise[key] = ig.corner_rise_px(cache.elevations, lvl.proj, rule=render.SLOPE_CORNER_RULE)
+                        true_rise[key] = ig.corner_rise_px(cache.elevations, lvl.proj, rule=render_sloped.SLOPE_CORNER_RULE)
                     # The coarsest level's unit layers read level 0's corner_rise as is, never recomputed.
                     wrong = cache.corner_rise
-                    lvl.headroom = render._unit_rise_headroom_px(wrong, cache.elevations, lvl.proj)
+                    lvl.headroom = render_sloped._unit_rise_headroom_px(wrong, cache.elevations, lvl.proj)
                     lvl.corner_rise = wrong
                 return lvl
 
@@ -1637,8 +1649,8 @@ class _SlopedInject:
                 corner_rise = true_rise.get((id(scenario), proj.tile_px), corner_rise)
                 return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
 
-            SlopedChunkCache._level_rise = level_rise
-            render.composite_rect_sloped = composite
+            self.mp.setattr(SlopedChunkCache, "_level_rise", level_rise)
+            set_render_global(self.mp, "composite_rect_sloped", composite)
         elif self.name == "chunk-row-shift":
 
             def composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs):
@@ -1647,7 +1659,7 @@ class _SlopedInject:
                     corner_rise = np.roll(corner_rise, 1, axis=0)
                 return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
 
-            render.composite_rect_sloped = composite
+            set_render_global(self.mp, "composite_rect_sloped", composite)
         elif self.name == "drape-rise":
             drape_rise: list[np.ndarray] = []  # the wrong rise while a coarsest-level composite runs
 
@@ -1674,9 +1686,9 @@ class _SlopedInject:
                     drape_rise.clear()
                 return out[: y1 - y0]
 
-            SlopedChunkCache._level_rise = note_coarsest
-            render.composite_rect_sloped = composite
-            render._paint_terrain_sloped = terrain
+            self.mp.setattr(SlopedChunkCache, "_level_rise", note_coarsest)
+            set_render_global(self.mp, "composite_rect_sloped", composite)
+            set_render_global(self.mp, "_paint_terrain_sloped", terrain)
         elif self.name == "building-step":
             stepped: dict[int, np.ndarray] = {}  # id(true rise) -> stepped rise; the level keeps the key alive
 
@@ -1694,13 +1706,12 @@ class _SlopedInject:
                     corner_rise = stepped[id(corner_rise)]
                 return real_resolve(scenario, proj, elevations, unit_filter, corner_rise, *args, **kwargs)
 
-            SlopedChunkCache._level_rise = note_coarsest
-            render._resolve_unit_sprite = resolve
+            self.mp.setattr(SlopedChunkCache, "_level_rise", note_coarsest)
+            set_render_global(self.mp, "_resolve_unit_sprite", resolve)
         return self
 
     def __exit__(self, *exc):
-        for obj, name, old in self.saved:
-            setattr(obj, name, old)
+        self.mp.undo()
 
 
 SLOPED_INJECTS = {"level0-rise": None, "chunk-row-shift": "one-chunk", "drape-rise": None, "building-step": "one-step"}
@@ -1889,7 +1900,7 @@ def _sloped_masks(frame_id: str, frames=_SLOPED_FRAMES, crop_l0=_SLOPED_CROP_L0)
                     ink[top + sy0 : top + sy1, left + sx0 : left + sx1] |= alpha[sy0:sy1, sx0:sx1]
         if lvl.sprites.farm_by_tile:
             map_w = cache.scenario.map_manager.map_width
-            ids = render.composite_ids_rect_sloped(
+            ids = render_sloped.composite_ids_rect_sloped(
                 cache.scenario, *box, cache._level_corner_rise(lvl), lvl.proj, lvl.tile_px
             )
             field = np.isin(ids, [ty * map_w + tx for tx, ty in lvl.sprites.farm_by_tile])
@@ -2048,18 +2059,21 @@ class _FineInject:
         self.block_chunks: set[tuple[int, int, int, int]] = set()  # (scenario id, tile_px, x0, y0)
 
     def __enter__(self):
+        import pytest
+
         from descape.render_cache import SlopedChunkCache
 
-        self.saved = [(SlopedChunkCache, "_level_rise"), (render, "composite_rect_sloped"), (render, "_paint_terrain_sloped")]
-        self.saved = [(obj, name, getattr(obj, name)) for obj, name in self.saved]
-        real_rise, real_composite, real_terrain = (old for _o, _n, old in self.saved)
+        self.mp = pytest.MonkeyPatch()
+        real_rise = SlopedChunkCache._level_rise
+        real_composite = render_global("composite_rect_sloped")
+        real_terrain = render_global("_paint_terrain_sloped")
         # (scenario id, +1 tile_px) -> (+1's true corner_rise, the same lifted wherever the ground is raised).
         fine: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
 
         def lifted(cache, lvl) -> tuple[np.ndarray, np.ndarray]:
             key = (id(cache.scenario), lvl.tile_px)
             if key not in fine:
-                true = ig.corner_rise_px(cache.elevations, lvl.proj, rule=render.SLOPE_CORNER_RULE)
+                true = ig.corner_rise_px(cache.elevations, lvl.proj, rule=render_sloped.SLOPE_CORNER_RULE)
                 fine[key] = true, np.where(true > 0, true + lvl.proj.elev_step * _FINE_LIFT_STEPS, true)
             return fine[key]
 
@@ -2070,7 +2084,7 @@ class _FineInject:
                 if lvl.tile_px == 2 * cache.tile_px:
                     # +1's unit layers read a rise lifted on raised ground; its terrain keeps the true one.
                     wrong = lifted(cache, lvl)[1]
-                    lvl.headroom = render._unit_rise_headroom_px(wrong, cache.elevations, lvl.proj)
+                    lvl.headroom = render_sloped._unit_rise_headroom_px(wrong, cache.elevations, lvl.proj)
                     lvl.corner_rise = wrong
                 return lvl
 
@@ -2079,8 +2093,8 @@ class _FineInject:
                     corner_rise = fine[key][0]
                 return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
 
-            SlopedChunkCache._level_rise = level_rise
-            render.composite_rect_sloped = composite
+            self.mp.setattr(SlopedChunkCache, "_level_rise", level_rise)
+            set_render_global(self.mp, "composite_rect_sloped", composite)
         elif self.name == "block-shift":
 
             def composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs):
@@ -2089,7 +2103,7 @@ class _FineInject:
                     corner_rise = corner_rise + proj.elev_step * _FINE_LIFT_STEPS
                 return real_composite(scenario, x0, y0, x1, y1, corner_rise, proj, *args, **kwargs)
 
-            render.composite_rect_sloped = composite
+            set_render_global(self.mp, "composite_rect_sloped", composite)
         elif self.name == "fine-drape":
             drape_rise: list[np.ndarray] = []  # the lifted rise while a +1 composite runs
 
@@ -2123,14 +2137,13 @@ class _FineInject:
                     drape_rise.clear()
                 return out[: y1 - y0]
 
-            SlopedChunkCache._level_rise = note_fine
-            render.composite_rect_sloped = composite
-            render._paint_terrain_sloped = terrain
+            self.mp.setattr(SlopedChunkCache, "_level_rise", note_fine)
+            set_render_global(self.mp, "composite_rect_sloped", composite)
+            set_render_global(self.mp, "_paint_terrain_sloped", terrain)
         return self
 
     def __exit__(self, *exc):
-        for obj, name, old in self.saved:
-            setattr(obj, name, old)
+        self.mp.undo()
 
 
 FINE_INJECTS = {"fine-rise": None, "block-shift": "one-block", "fine-drape": None}
@@ -2450,7 +2463,7 @@ _NATIVE_SCENARIOS: dict[tuple, object] = {}
 
 @contextmanager
 def _native_sprite_state():
-    """Default's sprite switches (viewer._sync_hi_res): x1 art, box-filtered shrink."""
+    """Default's sprite switches (viewer_common._sync_hi_res): x1 art, box-filtered shrink."""
     from descape import unit_sprites
 
     was = unit_sprites.hi_res(), unit_sprites.smooth_shrink()
@@ -2477,11 +2490,11 @@ def _native_cache(scene: str, chunk_px: int):
         _NATIVE_SCENARIOS[(map_key, repaint)] = scenario
     scenario = _NATIVE_SCENARIOS[(map_key, repaint)]
     if style == "sloped":
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
         return SlopedChunkCache(
             scenario, elevations, corner_rise, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units
         )
-    elevations, proj = render.elevations_and_proj(scenario)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
     return IsoChunkCache(scenario, elevations, proj, proj.tile_px, chunk_px=chunk_px, with_units=units, sprites=units)
 
 
@@ -2890,10 +2903,10 @@ def _border_render(frame_id: str, blend: bool, style: str | None = None) -> np.n
     x0, y0 = _border_origin(frame_id, style)
     with _layers_cleared(scenario, frame_id in _BORDER_NO_LAYERS):
         if style == "flat":
-            return render.composite_rect_flat(
+            return render_flat.composite_rect_flat(
                 scenario, x0, y0, x0 + cw, y0 + ch, BORDER_TILE_PX, with_units=False, layers=layers
             )
-        return render.composite_rect_iso(
+        return render_iso.composite_rect_iso(
             scenario, x0, y0, x0 + cw, y0 + ch, elevations, _border_proj(scenario), BORDER_TILE_PX, {}, {},
             with_units=False, layers=layers,
         )
@@ -2923,12 +2936,12 @@ def _one_tile_pick(map_key: str) -> tuple[int, int]:
     ys, xs = np.mgrid[cy - 2 : cy + 3, cx - 2 : cx + 3]
     xs, ys = xs.ravel(), ys.ravel()
     best = None
-    for x, y, key in zip(xs.tolist(), ys.tolist(), render._blend_keys(scenario, xs, ys), strict=True):
+    for x, y, key in zip(xs.tolist(), ys.tolist(), render_paint._blend_keys(scenario, xs, ys), strict=True):
         if key is None or key[1] >= 0 or not key[2]:
             continue
         tile = mm.terrain[y * mm.map_width + x]
-        blended = render._top_block(tile, BORDER_TILE_PX, blend=key)
-        changed = int(np.count_nonzero(rp.changed_pixels(blended, render._top_block(tile, BORDER_TILE_PX))))
+        blended = render_paint._top_block(tile, BORDER_TILE_PX, blend=key)
+        changed = int(np.count_nonzero(rp.changed_pixels(blended, render_paint._top_block(tile, BORDER_TILE_PX))))
         if best is None or changed > best[0]:
             best = (changed, x, y)
     return best[1], best[2]
@@ -2959,13 +2972,14 @@ class _BorderInject:
     def __init__(self, name: str | None, plain_tiles: dict | None = None) -> None:
         self.name = name
         self.plain_tiles = plain_tiles or {}  # id(scenario) -> (x, y)
-        self.saved: list[tuple] = []
 
-    def _patch(self, obj, attr: str, new) -> None:
-        self.saved.append((obj, attr, getattr(obj, attr)))
-        setattr(obj, attr, new)
+    def _patch(self, target, attr: str, new) -> None:
+        patch(self.mp, target, attr, new)
 
     def __enter__(self):
+        import pytest
+
+        self.mp = pytest.MonkeyPatch()
         asset_source.get_blend_mask.cache_clear()  # before polarity-flip swaps in an uncached stand-in
         if self.name == "polarity-flip":
             self._patch(asset_source, "get_blend_mask", _flipped_blend_mask(asset_source.get_blend_mask))
@@ -2974,7 +2988,7 @@ class _BorderInject:
             table = {tid: e._replace(priority=1000 - e.priority) for tid, e in terrain_blend.BLEND_TABLE.items()}
             self._patch(terrain_blend, "BLEND_TABLE", table)
         elif self.name == "one-tile-plain":
-            real = render._blend_keys
+            real = render_paint._blend_keys
             plain = self.plain_tiles
 
             def keys(scenario, xs, ys, terrain_ids=None, layer_ids=None):
@@ -2984,7 +2998,7 @@ class _BorderInject:
                         out[i] = None
                 return out
 
-            self._patch(render, "_blend_keys", keys)
+            self._patch(RENDER, "_blend_keys", keys)
         elif self.name == "edge-residue":
             # TASK-283's defect: blendomatic's own 4-24 of 128 kept along every bleeding edge.
             self._patch(terrain_blend, "fade_bleeding_edges", lambda alpha, _tile: alpha)
@@ -2995,8 +3009,7 @@ class _BorderInject:
         return self
 
     def __exit__(self, *exc):
-        for obj, attr, old in reversed(self.saved):
-            setattr(obj, attr, old)
+        self.mp.undo()
         asset_source.get_blend_mask.cache_clear()
         terrain_blend.clear_caches()
 
@@ -3188,7 +3201,7 @@ def _border_prerequisites() -> str | None:
             return f"needs {path.relative_to(ROOT)} (the gitignored examples/ corpus)"
     if asset_source.get_install_path() is None:
         return "needs a configured AoE2:DE install for the terrain textures"
-    if not render.blend_effective():
+    if not render_paint.blend_effective():
         return "needs the install's blendomatic_x1.dat, or blending never engages"
     return None
 
@@ -3216,7 +3229,7 @@ def _border_interior_failures() -> tuple[list[str], str]:
         blocks = _border_tile_blocks(frame_id, "flat")
         xs, ys = (np.array(v) for v in zip(*blocks, strict=True))
         plain = keyed = changed = 0
-        for (x, y), key in zip(blocks, render._blend_keys(scenario, xs, ys), strict=True):
+        for (x, y), key in zip(blocks, render_paint._blend_keys(scenario, xs, ys), strict=True):
             same = np.array_equal(on[blocks[(x, y)]], off[blocks[(x, y)]])
             if key is None:
                 plain += 1
@@ -3243,9 +3256,9 @@ def _border_seam_residues(frame_id: str, blend: bool = True) -> list[tuple[float
     blocks = _border_tile_blocks(frame_id, "flat")
     xs, ys = (np.array(v) for v in zip(*blocks, strict=True))
     with _layers_cleared(scenario, frame_id in _BORDER_NO_LAYERS):
-        tids = render.tile_field_mirror(scenario, "terrain_id").reshape(-1)
-        layer_ids = render.tile_field_mirror(scenario, "layer").reshape(-1)
-        keys = dict(zip(blocks, render._blend_keys(scenario, xs, ys), strict=True))
+        tids = render_paint.tile_field_mirror(scenario, "terrain_id").reshape(-1)
+        layer_ids = render_paint.tile_field_mirror(scenario, "layer").reshape(-1)
+        keys = dict(zip(blocks, render_paint._blend_keys(scenario, xs, ys), strict=True))
     width = scenario.map_manager.map_width
     tp = BORDER_TILE_PX
     edge_px = {(1, 0): np.s_[:, -1], (-1, 0): np.s_[:, 0], (0, 1): np.s_[-1, :], (0, -1): np.s_[0, :]}
@@ -3261,7 +3274,7 @@ def _border_seam_residues(frame_id: str, blend: bool = True) -> list[tuple[float
             if n not in blocks or int(tids[n[1] * width + n[0]]) != n_tid or n_layer not in (-1, n_tid):
                 continue
             texture = asset_source.terrain_texture_at(n_tid, asset_source.terrain_texture_size(tp))
-            ox, oy = render._crop_offset(x, y, texture.shape[0], tp)
+            ox, oy = render_paint._crop_offset(x, y, texture.shape[0], tp)
             own = img[blocks[(x, y)]][line].sum(axis=-1)
             pure = texture[oy : oy + tp, ox : ox + tp].astype(np.int64)[line].sum(axis=-1)
             out.append((float(np.abs(own - pure).mean()), (x, y), n))
@@ -3301,9 +3314,9 @@ def _same_terrain_seam_steps(frame_id: str) -> list[tuple[float, int, tuple[int,
     blocks = _border_tile_blocks(frame_id, "flat")
     xs, ys = (np.array(v) for v in zip(*blocks, strict=True))
     with _layers_cleared(scenario, frame_id in _BORDER_NO_LAYERS):
-        tids = render.tile_field_mirror(scenario, "terrain_id").reshape(-1)
-        layer_ids = render.tile_field_mirror(scenario, "layer").reshape(-1)
-        keys = dict(zip(blocks, render._blend_keys(scenario, xs, ys), strict=True))
+        tids = render_paint.tile_field_mirror(scenario, "terrain_id").reshape(-1)
+        layer_ids = render_paint.tile_field_mirror(scenario, "layer").reshape(-1)
+        keys = dict(zip(blocks, render_paint._blend_keys(scenario, xs, ys), strict=True))
     width = scenario.map_manager.map_width
     size = asset_source.terrain_texture_size(BORDER_TILE_PX)
 
@@ -3322,7 +3335,7 @@ def _same_terrain_seam_steps(frame_id: str) -> list[tuple[float, int, tuple[int,
             if key is None and keys[n] is None:
                 continue
             line, n_line = (np.s_[:, -1], np.s_[:, 0]) if dx else (np.s_[-1, :], np.s_[0, :])
-            offset = render._crop_offset(*n, size, BORDER_TILE_PX)
+            offset = render_paint._crop_offset(*n, size, BORDER_TILE_PX)
             own = _edge_line_composed(tid, keys[n], n_line, offset, n_line)
             theirs = _edge_line_composed(tid, key, line, offset, n_line)
             allowance = 3 * max(len(k[2]) if k else 0 for k in (key, keys[n]))
@@ -3568,7 +3581,7 @@ def _garrison_cache(loaded):
     from descape.render_cache import IsoChunkCache
     from descape.unit_filter import UnitFilter
 
-    elevations, proj = render.elevations_and_proj(loaded)
+    elevations, proj = render_iso.elevations_and_proj(loaded)
     return IsoChunkCache(loaded, elevations, proj, GARRISON_TILE_PX, unit_filter=UnitFilter(show_garrisoned=False), sprites=True)
 
 
@@ -3578,7 +3591,7 @@ def _garrison_ink_box(cache, units) -> tuple[int, int, int, int]:
     boxes = []
     for unit in units:
         player = next(p for p, us in enumerate(loaded.unit_manager.units) if any(u is unit for u in us))
-        for draw, px, py in render.unit_sprite_draws_at(loaded, cache.proj, cache.elevations, None, player, unit):
+        for draw, px, py in render_sprites.unit_sprite_draws_at(loaded, cache.proj, cache.elevations, None, player, unit):
             h, w = draw.rgba.shape[:2]
             boxes.append((px - draw.hotspot_x, py - draw.hotspot_y, px - draw.hotspot_x + w, py - draw.hotspot_y + h))
     return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
@@ -3623,9 +3636,9 @@ def _garrison_foot_fractions(frame_id: str, wrap=None) -> list[float]:
     (host, _occupant), _empty = _garrison_pair(frame_id)
     player = next(p for p, us in enumerate(loaded.unit_manager.units) if any(u is host for u in us))
     half_w = GARRISON_TILE_PX // 2
-    art = render.player_art_for(loaded, player)
+    art = render_units.player_art_for(loaded, player)
     team = loaded.team_indices[player]
-    body = unit_sprites.sprite_pieces_for(host.unit_const, render.stored_rotation(player, host), team, half_w, art=art)
+    body = unit_sprites.sprite_pieces_for(host.unit_const, render_units.stored_rotation(player, host), team, half_w, art=art)
     tops, bottoms = [], []
     for p in body:
         ys = np.nonzero((p.draw.rgba[..., 3] > 0).any(axis=1))[0]
@@ -3919,7 +3932,7 @@ def _particle_scene() -> dict[str, object]:
         for const, x, y in spot:
             if const is not None:
                 model.add(0, const, x + 0.5, y + 0.5)
-    elevations, proj = render.elevations_and_proj(loaded)
+    elevations, proj = render_iso.elevations_and_proj(loaded)
     anchors = {}
     for frame_id, spot in spots.items():
         origins = [ig.tile_screen_origin(x, y, 0, proj) for _const, x, y in spot]

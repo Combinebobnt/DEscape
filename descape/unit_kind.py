@@ -69,7 +69,7 @@ Owner-independent, like show_trees: eye candy is usually GAIA but a real player
 can own it, and an eye-candy object is eye candy either way.
 
 Not to be confused with the Terrain brush's "Eye candy" checkbox
-(viewer.py's paint_eye_candy_check, default in Settings > Tools), which is a
+(viewer_toolbar.py's paint_eye_candy_check, default in Settings > Tools), which is a
 different question over a different set -- which doodads a terrain stroke
 PLACES, versus which consts a filter HIDES.
 
@@ -278,7 +278,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from descape import game_dataset, gate_orientation
+from descape import game_dataset, games, gate_orientation
 from descape.terrain_palette import BUILDING_TILE_SPANS, TREE_UNIT_IDS
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "object_catalog.json"
@@ -462,9 +462,7 @@ def gaia_only_consts() -> frozenset[int]:
     classes minus the hidden piles, plus trees and _GAIA_ONLY_EXTRA_CONSTS.
     See the module docstring."""
     resources = {const for const, entry in _objects().items() if entry.get("class") in _GAIA_ONLY_CLASSES}
-    if game_dataset.is_ror():
-        return frozenset(resources | TREE_UNIT_IDS | _ror_gaia_only())
-    return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_EXTRA_CONSTS | _aoe2_gaia_only())
+    return frozenset(resources | TREE_UNIT_IDS | _GAIA_ONLY_BY_GAME.active()())
 
 
 def _is_other(entry: dict) -> bool:
@@ -504,10 +502,11 @@ def _ror_gaia_only() -> set[int]:
     rule, which also covers the hidden ones that are the same object as in
     AoE2 (same code and class), since the catalog offers those (GH #67: a
     relic or a wild animal stays GAIA's). See the module docstring."""
-    aoe2 = json.loads(game_dataset.table_path(_CATALOG_PATH, game_dataset.AOE2).read_text())["objects"]
+    fallback = game_dataset.game().fallback
+    base = {} if fallback is None else json.loads(game_dataset.table_path(_CATALOG_PATH, fallback).read_text())["objects"]
     found = set(_ROR_GAIA_ONLY_EXTRA_CONSTS)
     for const, entry in _objects().items():
-        old = aoe2.get(str(const))
+        old = base.get(str(const))
         shared = old is not None and (old.get("code"), old.get("class")) == (entry.get("code"), entry.get("class"))
         if (entry.get("hidden") and not shared) or const in _ROR_PLAYER_UNIT_EXCEPTIONS:
             continue
@@ -517,6 +516,13 @@ def _ror_gaia_only() -> set[int]:
         elif _gaia_only_unit(const, entry, _ROR_PLAYER_UNIT_EXCEPTIONS):
             found.add(const)
     return found
+
+
+# Each game's editor-measured rule, called by gaia_only_consts() over the active game's catalog.
+_GAIA_ONLY_BY_GAME = games.PerGame(
+    "unit_kind: the objects a game's editor lists for GAIA only",
+    {"aoe2": lambda: _GAIA_ONLY_EXTRA_CONSTS | _aoe2_gaia_only(), "ror": _ror_gaia_only},
+)
 
 
 def placement_owner(unit_const: int, owner: int) -> int:

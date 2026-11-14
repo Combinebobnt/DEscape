@@ -30,8 +30,21 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, render_cache, unit_pick, unit_sprites
-from descape.terrain_palette import PLAYER_COLORS
+from descape import (
+    asset_source,
+    iso_geometry,
+    render_bbox,
+    render_cache,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    unit_pick,
+    unit_sprites,
+)
+from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
+from testkit.render_family import set_render_global
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
@@ -123,16 +136,16 @@ def _chunked(scn, full, elevations, proj, sprites):
     """Every CHUNK-sized rect composited in isolation, stitched back together
     -- the same shape tests/test_flat_chunks.py's own stitching check uses."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    units_by_tile = render._units_by_tile(scn)
-    bboxes = render._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
-    merged = render.merge_sprite_bboxes(bboxes, sprites)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    units_by_tile = render_units._units_by_tile(scn)
+    bboxes = render_bbox._building_bboxes_iso(scn, mm.map_width, mm.map_height, proj, elevations)
+    merged = render_sprites.merge_sprite_bboxes(bboxes, sprites)
     out = np.zeros_like(full)
     h, w = full.shape[:2]
     for y0 in range(0, h, CHUNK):
         for x0 in range(0, w, CHUNK):
             x1, y1 = min(x0 + CHUNK, w), min(y0 + CHUNK, h)
-            out[y0:y1, x0:x1] = render.composite_rect_iso(
+            out[y0:y1, x0:x1] = render_iso.composite_rect_iso(
                 scn, x0, y0, x1, y1, elevations, proj, tile_px,
                 units_by_tile, merged, sprites=sprites,
             )
@@ -141,8 +154,8 @@ def _chunked(scn, full, elevations, proj, sprites):
 
 def test_stitched_chunks_match_the_full_sprite_render(sprite_install):
     scn = _scenario([[], [Unit(4.0, 4.0, CONST), Unit(8.0, 7.0, CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert sprites.skip_ids, "the fixture resolved no sprites, so this proves nothing"
 
     got = _chunked(scn, full, elevations, proj, sprites)
@@ -157,13 +170,13 @@ def test_without_the_widening_a_sprite_clips_at_a_chunk_edge(sprite_install):
     widening would be untested while looking covered.
     """
     scn = _scenario([[], [Unit(4.0, 4.0, CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
 
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    units_by_tile = render._units_by_tile(scn)
-    unwidened = render._building_bboxes_iso(
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    units_by_tile = render_units._units_by_tile(scn)
+    unwidened = render_bbox._building_bboxes_iso(
         scn, mm.map_width, mm.map_height, proj, elevations
     )
     out = np.zeros_like(full)
@@ -171,7 +184,7 @@ def test_without_the_widening_a_sprite_clips_at_a_chunk_edge(sprite_install):
     for y0 in range(0, h, CHUNK):
         for x0 in range(0, w, CHUNK):
             x1, y1 = min(x0 + CHUNK, w), min(y0 + CHUNK, h)
-            out[y0:y1, x0:x1] = render.composite_rect_iso(
+            out[y0:y1, x0:x1] = render_iso.composite_rect_iso(
                 scn, x0, y0, x1, y1, elevations, proj, tile_px,
                 units_by_tile, unwidened, sprites=sprites,
             )
@@ -185,15 +198,15 @@ def test_a_sprite_paints_each_column_once_at_its_front_tile(sprite_install, monk
     its own screen columns' diagonal lines, or at sprite_anchor_tile(), the
     tile LAST in depth_order, which overhanging columns keep."""
     span = (3, 3)
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, span)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, span)
     scn = _scenario([[], [Unit(5.5, 5.5, CONST)]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", False)
-    whole = render.sprite_draws_by_anchor(scn, proj, elevations)
-    monkeypatch.setattr(render, "SPRITE_COLUMN_SLICING", True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    set_render_global(monkeypatch, "SPRITE_COLUMN_SLICING", False)
+    whole = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    set_render_global(monkeypatch, "SPRITE_COLUMN_SLICING", True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
 
-    tiles = render.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
+    tiles = render_units.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     key = unit_sprites.sprite_anchor_tile(tiles)
     [(parent, px, py, _)] = whole.by_anchor[key]
     x0 = px - parent.hotspot_x
@@ -223,8 +236,8 @@ def test_a_sprite_bearing_units_mark_is_not_drawn_underneath(sprite_install):
     as a fringe around the unit rather than being hidden by it."""
     scn = _scenario([[], [Unit(4.0, 4.0, CONST)]])
     unit = scn.unit_manager.units[1][0]
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert id(unit) in sprites.skip_ids
 
 
@@ -274,8 +287,8 @@ def test_a_composite_units_stitched_chunks_match_the_full_render(composite_sprit
     The slotted counterpart is
     test_a_slotted_composites_pieces_land_on_their_own_anchor_tiles."""
     scn = _scenario([[], [Unit(4.0, 4.0, CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert sprites.skip_ids, "the fixture resolved no sprites, so this proves nothing"
 
     assert len(sprites.by_anchor) == 1, "a piece with no slot paints at the unit's own anchor"
@@ -324,8 +337,8 @@ def test_a_walls_per_variant_composite_bbox_stitches_at_every_variant(wall_compo
     shows there first. One wall per variant, each its own bbox size."""
     units = [Unit(2.0 + 2 * v, 2.0 + 2 * v, CONST, rotation=float(v)) for v in range(5)]
     scn = _scenario([[], units])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert len(sprites.skip_ids) == 5, "every variant must draw, the flag's misses included"
 
     widths = [x1 - x0 for (x0, _y0, x1, _y1) in sprites.bboxes.values()]
@@ -346,21 +359,21 @@ def test_an_unresolvable_unit_keeps_its_coloured_mark(sprite_install):
     its quarter of this corner-centred mark."""
     unit = Unit(4.0, 4.0, CONST + 1)
     scn = _scenario([[], [unit]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert not sprites.skip_ids and not sprites.by_anchor
 
-    with_sprites, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    without, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=False)
-    bare, _, _ = render.render_terrain_iso_with_proj(scn, with_units=False)
+    with_sprites, _, _ = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    without, _, _ = render_iso.render_terrain_iso_with_proj(scn, with_sprites=False)
+    bare, _, _ = render_iso.render_terrain_iso_with_proj(scn, with_units=False)
 
     def diamond(base_y: int, base_x: int) -> np.ndarray:
-        dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render.tile_pixels_for_map(MAP_W, MAP_H))
+        dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render_paint.tile_pixels_for_map(MAP_W, MAP_H))
         mask = np.zeros(bare.shape[:2], dtype=bool)
         mask[base_y + dst_y, base_x + dst_x] = True
         return mask
 
-    whole = diamond(*render._unit_mark_base_iso(unit, 4, 4, proj, elevations))
+    whole = diamond(*render_units._unit_mark_base_iso(unit, 4, 4, proj, elevations))
     # (3, 4) is the one tile under the mark that comes after (4, 4) in depth order.
     front_x, front_y = iso_geometry.tile_screen_origin(3, 4, 0, proj)
     front = diamond(front_y, front_x)
@@ -379,16 +392,16 @@ def _picked(scn, style, mask, elevations, corner_rise, proj, sprites_on) -> np.n
     """The pixels of `mask` where pick returns the scene's one unit, with the
     terrain tile resolved the way MapView resolves it per style."""
     index = unit_pick.build_index(scn)
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     ids = None
     if style == "sloped":
-        ids = render.composite_ids_rect_sloped(scn, 0, 0, proj.canvas_w, proj.canvas_h, corner_rise, proj, tile_px)
+        ids = render_sloped.composite_ids_rect_sloped(scn, 0, 0, proj.canvas_w, proj.canvas_h, corner_rise, proj, tile_px)
     out = np.zeros_like(mask)
     for sy, sx in np.argwhere(mask).tolist():
         tile = unit_pick.UNRESOLVED_TILE
         if ids is not None:
             tile_id = int(ids[sy, sx])
-            tile = None if tile_id == render.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
+            tile = None if tile_id == render_sloped.PICK_ID_NONE else (tile_id % MAP_W, tile_id // MAP_W)
         found = unit_pick.pick_unit(
             index, style, sx, sy, tile_px, MAP_W, MAP_H, elevations, proj,
             corner_rise=corner_rise, terrain_tile=tile, sprites_on=sprites_on,
@@ -403,9 +416,9 @@ def test_an_unresolvable_units_whole_mark_picks_with_sprites_on(sprite_install):
     answer, the diamond minus the quarter the tile in front repaints."""
     unit = _PickableUnit(4.0, 4.0, CONST + 1)
     scn = _scenario([[], [unit]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render.tile_pixels_for_map(MAP_W, MAP_H))
-    base_y, base_x = render._unit_mark_base_iso(unit, 4, 4, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(render_paint.tile_pixels_for_map(MAP_W, MAP_H))
+    base_y, base_x = render_units._unit_mark_base_iso(unit, 4, 4, proj, elevations)
     whole = np.zeros((proj.canvas_h, proj.canvas_w), dtype=bool)
     whole[base_y + dst_y, base_x + dst_x] = True
     front_x, front_y = iso_geometry.tile_screen_origin(3, 4, 0, proj)
@@ -430,18 +443,18 @@ def test_a_fallback_mark_picks_exactly_where_it_paints(sprite_install, style, fr
     scn = _Scenario(tiles, [[], [unit]])
     corner_rise = None
     if style == "stepped":
-        bare, elevations, proj = render.render_terrain_iso_with_proj(scn, with_units=False)
+        bare, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_units=False)
     else:
-        bare, elevations, corner_rise, proj = render.render_terrain_sloped_with_proj(scn, with_units=False)
+        bare, elevations, corner_rise, proj = render_sloped.render_terrain_sloped_with_proj(scn, with_units=False)
     cx, cy = iso_geometry.map_point_to_screen(4.0, 4.0, 0, proj)
     window = np.zeros((proj.canvas_h, proj.canvas_w), dtype=bool)
     window[cy - 2 * proj.half_h : cy + 2 * proj.half_h, cx - 2 * proj.half_w : cx + 2 * proj.half_w] = True
 
     for sprites_on in (False, True):
         if style == "stepped":
-            img, _, _ = render.render_terrain_iso_with_proj(scn, with_sprites=sprites_on)
+            img, _, _ = render_iso.render_terrain_iso_with_proj(scn, with_sprites=sprites_on)
         else:
-            img, _, _, _ = render.render_terrain_sloped_with_proj(scn, with_sprites=sprites_on)
+            img, _, _, _ = render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=sprites_on)
         painted = np.any(img[: proj.canvas_h] != bare[: proj.canvas_h], axis=-1)
         assert painted.any() and not (painted & ~window).any(), "the window must hold the whole painted mark"
         picked = _picked(scn, style, window, elevations, corner_rise, proj, sprites_on)
@@ -470,12 +483,12 @@ def test_an_odd_span_sprite_anchors_on_its_tiles_ground_centre(sprite_install, m
     single unambiguous point. `test_the_bbox_covers_the_sprite_at_every_span_
     parity` is where the even cases are pinned.
     """
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, CONST, span)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, CONST, span)
     tx = ty = MAP_W // 2
     scn = _scenario([[], [Unit(tx + 0.5, ty + 0.5, CONST)]], elevation=3)
-    _full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    _full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
 
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert layer.by_anchor, "no sprite resolved -- this test would assert nothing"
     _draw, ax, ay, rise = next(iter(layer.by_anchor.values()))[0]
     assert rise == 3 * proj.elev_step
@@ -502,9 +515,9 @@ def test_sprites_off_is_byte_identical_to_the_pre_sprite_render(sprite_install):
     unparameterised cache."""
     scn = _scenario([[], [Unit(4.0, 4.0, CONST)]])
     assert render_cache.SPRITES_ENABLED is False
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=False)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=False)
     cache = render_cache.IsoChunkCache(
-        scn, elevations, proj, render.tile_pixels_for_map(MAP_W, MAP_H), chunk_px=CHUNK
+        scn, elevations, proj, render_paint.tile_pixels_for_map(MAP_W, MAP_H), chunk_px=CHUNK
     )
     assert cache.sprites_enabled is False
     assert cache._level(0).sprites is None
@@ -522,9 +535,9 @@ def test_the_chunk_cache_renders_sprites_when_enabled(sprite_install):
     once at import, so patching it would no longer reach this cache at all.
     """
     scn = _scenario([[], [Unit(4.0, 4.0, CONST), Unit(8.0, 7.0, CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
     cache = render_cache.IsoChunkCache(
-        scn, elevations, proj, render.tile_pixels_for_map(MAP_W, MAP_H), chunk_px=CHUNK, sprites=True
+        scn, elevations, proj, render_paint.tile_pixels_for_map(MAP_W, MAP_H), chunk_px=CHUNK, sprites=True
     )
     assert cache._level(0).sprites is not None
 
@@ -574,7 +587,7 @@ def slotted_composite_install(tmp_path, monkeypatch):
                     "mirroring_mode": 0, "frame_count": 1},
         },
     )
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, SLOT_CONST, SLOT_SPAN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, SLOT_CONST, SLOT_SPAN)
     asset_source.set_install_path_override(tmp_path)
     unit_sprites.clear_caches()
     yield
@@ -590,8 +603,8 @@ def test_a_slotted_composites_pieces_land_on_their_slots_and_column_fronts(slott
     anchor -- the pin at test_a_composite_units_stitched_chunks_match_the_full_render
     still covers that for a piece with no slot."""
     scn = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST)]])
-    _, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    _, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     back, front = (p.draw for p in unit_sprites.sprite_pieces_for(SLOT_CONST, 0.0, 1, proj.half_w))
 
     keys: dict[str, set] = {"back": set(), "front": set()}
@@ -623,15 +636,15 @@ def test_a_unit_paints_between_a_slotted_composites_pieces(slotted_composite_ins
     both = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST), Unit(4.5, 4.5, CONST)]])
     alone = _scenario([[], [Unit(4.5, 4.5, CONST)]])
 
-    half_w = render.render_terrain_iso_with_proj(building, with_sprites=True)[2].half_w
+    half_w = render_iso.render_terrain_iso_with_proj(building, with_sprites=True)[2].half_w
     back, front = (_piece_colour(p.draw) for p in unit_sprites.sprite_pieces_for(
         SLOT_CONST, 0.0, 1, half_w))
     unit_colour = _piece_colour(unit_sprites.sprite_for(CONST, 0.0, 1, half_w))
     assert len({back, front, unit_colour}) == 3, "the three sprites must be distinguishable"
 
-    before = render.render_terrain_iso_with_proj(building, with_sprites=True)[0]
-    after = render.render_terrain_iso_with_proj(both, with_sprites=True)[0]
-    solo = render.render_terrain_iso_with_proj(alone, with_sprites=True)[0]
+    before = render_iso.render_terrain_iso_with_proj(building, with_sprites=True)[0]
+    after = render_iso.render_terrain_iso_with_proj(both, with_sprites=True)[0]
+    solo = render_iso.render_terrain_iso_with_proj(alone, with_sprites=True)[0]
 
     assert _visible(after, unit_colour) > 0, "the unit drew nothing, so this proves nothing"
     # Over the back piece, under the front one -- both halves, or a degenerate
@@ -643,8 +656,8 @@ def test_a_unit_paints_between_a_slotted_composites_pieces(slotted_composite_ins
 
 def test_a_slotted_composite_stitches_across_chunk_boundaries(slotted_composite_install):
     scn = _scenario([[], [Unit(5.0, 5.0, SLOT_CONST), Unit(4.5, 4.5, CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert np.array_equal(_chunked(scn, full, elevations, proj, sprites), full)
 
 
@@ -652,8 +665,8 @@ def test_an_edge_clipped_composite_keeps_every_slot_inside_the_map(slotted_compo
     """A building hanging off the map edge derives its slots from the UNCLAMPED
     footprint start, so each one still has to be clamped back onto a real tile."""
     scn = _scenario([[], [Unit(0.0, 0.0, SLOT_CONST)]])
-    full, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
-    sprites = render.sprite_draws_by_anchor(scn, proj, elevations)
+    full, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
+    sprites = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
 
     assert sprites.by_anchor, "the clipped building resolved no pieces"
     for tx, ty in sprites.by_anchor:

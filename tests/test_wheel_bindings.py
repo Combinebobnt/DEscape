@@ -973,7 +973,7 @@ def test_a_notch_mid_drag_goes_through_on_unit_rotate(monkeypatch) -> None:
 def test_plain_wheel_still_zooms_mid_drag_and_a_turn_after_it_rereads_the_cursor() -> None:
     from PyQt5.QtCore import QEvent, Qt
 
-    from descape import render
+    from descape import render_units
 
     window, unit = _live_drag()
     try:
@@ -989,7 +989,7 @@ def test_plain_wheel_still_zooms_mid_drag_and_a_turn_after_it_rereads_the_cursor
         # The release reads the same viewport pixel through the new transform.
         view.mouseReleaseEvent(conftest.mouse_event(QEvent.MouseButtonRelease, pixel, Qt.LeftButton, Qt.NoButton))
         mm = window.scenario.map_manager
-        x0, _x1, y0, _y1 = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+        x0, _x1, y0, _y1 = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
         tp = view._tile_pixels
         assert (ghost.x(), ghost.y()) == (x0 * tp, y0 * tp)
     finally:

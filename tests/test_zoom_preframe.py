@@ -463,10 +463,10 @@ def _assert_structured(pixels: np.ndarray) -> None:
 
 def _cursor_at(monkeypatch, view, anchor) -> None:
     """Points the cursor the warmer anchors on (QCursor.pos()) at viewport point `anchor`."""
-    from descape import map_view
+    from descape import map_view_viewport
 
     target = view.viewport().mapToGlobal(anchor)
-    monkeypatch.setattr(map_view, "QCursor", type("Cursor", (), {"pos": staticmethod(lambda: target)}))
+    monkeypatch.setattr(map_view_viewport, "QCursor", type("Cursor", (), {"pos": staticmethod(lambda: target)}))
 
 
 def _render_frames(view, direction: int) -> list:
@@ -958,7 +958,7 @@ def test_the_check_mode_catches_an_edit_that_skips_its_stamp(monkeypatch):
     a level paint() reads unreduced: TASK-031.70's reduced entries are keyed
     on the same stamps, so there the check's fresh render would be stale too."""
     from descape import zoom_preframe
-    from descape.render_cache import _ChunkCacheBase
+    from descape.render_cache_base import _ChunkCacheBase
 
     assert zoom_preframe.CHECK, "the suite runs with DESCAPE_PREFRAME_CHECK=1 (conftest.py)"
     window = _preframe_window()
@@ -1111,7 +1111,7 @@ def test_a_refused_notch_renders_once_the_margin_warm_drains(monkeypatch):
 @pytest.mark.gui
 def test_a_frame_never_composites_a_chunk(monkeypatch):
     """With the view's chunks evicted, no frame renders and nothing is inserted."""
-    from descape.render_cache import _ChunkCacheBase
+    from descape.render_cache_base import _ChunkCacheBase
 
     window = _preframe_window()
     try:

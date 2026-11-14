@@ -13,7 +13,7 @@ resolves ties through `order`/depth_order rather than raw list position)."""
 
 from __future__ import annotations
 
-from descape import render
+from descape import render_units
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_filter import UnitFilter
 from descape.unit_pick import build_index, patch_index_for_add, patch_index_for_move, unit_key
@@ -54,7 +54,7 @@ def test_patch_index_for_move_matches_a_fresh_build():
     index = build_index(scenario)
 
     mm = scenario.map_manager
-    old_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    old_bounds = render_units.unit_tile_bounds(mover, mm.map_width, mm.map_height)
     mover.x, mover.y = 12.0, 12.0
     patch_index_for_move(scenario, index, 1, mover, old_bounds)
 
@@ -71,10 +71,10 @@ def test_patch_index_for_move_takes_back_an_entry_it_left_off_map():
     index = build_index(scenario)
     mm = scenario.map_manager
 
-    old_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    old_bounds = render_units.unit_tile_bounds(mover, mm.map_width, mm.map_height)
     mover.x = float(MAP_W) + 0.5
     patch_index_for_move(scenario, index, 1, mover, old_bounds)
-    off_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    off_bounds = render_units.unit_tile_bounds(mover, mm.map_width, mm.map_height)
     assert off_bounds is None
     by_tile_off = _by_tile_as_sets(index)
 
@@ -102,7 +102,7 @@ def test_patch_index_for_move_leaves_an_unrelated_neighbour_untouched():
     assert neighbour_order in index.by_tile[neighbour_tile]
 
     mm = scenario.map_manager
-    old_bounds = render.unit_tile_bounds(mover, mm.map_width, mm.map_height)
+    old_bounds = render_units.unit_tile_bounds(mover, mm.map_width, mm.map_height)
     mover.x, mover.y = 15.0, 15.0
     patch_index_for_move(scenario, index, 1, mover, old_bounds)
 
@@ -146,7 +146,7 @@ def test_patch_index_for_move_is_a_noop_for_an_unindexed_unit():
     assert index.entries == []
 
     mm = scenario.map_manager
-    old_bounds = render.unit_tile_bounds(unit, mm.map_width, mm.map_height)
+    old_bounds = render_units.unit_tile_bounds(unit, mm.map_width, mm.map_height)
     unit.x, unit.y = 12.0, 12.0
     patch_index_for_move(scenario, index, 1, unit, old_bounds)
 

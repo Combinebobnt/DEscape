@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
 
-from descape import asset_source, render, unit_sprites
+from descape import asset_source, render_sprites, render_units, unit_sprites
 
 import conftest
 from test_unit_sprites import CONST as SPRITE_CONST
@@ -108,7 +108,7 @@ def _place_at(window, scene: QPointF, modifiers=Qt.NoModifier):
 def _expected_mark(window, entry):
     view = window.map_view
     polygons = [[(float(x), float(y)) for x, y in pts] for pts in view._unit_polygons_for(entry)]
-    color = render.unit_mark_color(entry.unit, window.scenario.player_colors[entry.player_id])
+    color = render_units.unit_mark_color(entry.unit, window.scenario.player_colors[entry.player_id])
     return polygons, color
 
 
@@ -208,13 +208,13 @@ def sprite_install(tmp_path, monkeypatch):
     """test_view_layers_viewer.py's fixture of the same name: one small
     synthetic sprite, so Show sprites resolves real art in-session.
 
-    Plus one trap of its own: every hover asks viewer._wall_consts(), which is
+    Plus one trap of its own: every hover asks viewer_unit_place._wall_consts(), which is
     functools.cache'd. First reached under the patched graphic_map it caches
     an empty set, and later wall tests in the same worker fail. Warmed first."""
-    from descape import viewer
+    from descape import viewer_unit_place
 
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    viewer_unit_place._wall_consts.cache_clear()
+    assert viewer_unit_place._wall_consts(), "the real wall set must be cached before the patch"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(4))
@@ -246,7 +246,7 @@ def test_an_elevated_ghost_draws_the_placed_units_own_sprite(sprite_install, sty
 
         entry = _place_at(window, scene)
         cache = view._sloped_cache()
-        draws = render.unit_sprite_draws_at(
+        draws = render_sprites.unit_sprite_draws_at(
             window.scenario,
             view._iso_proj,
             view._iso_elevations,
@@ -355,7 +355,7 @@ def test_no_object_picked_shows_no_ghost() -> None:
 
 
 def _a_wall_const() -> int:
-    from descape.viewer import _wall_consts
+    from descape.viewer_unit_place import _wall_consts
 
     return min(_wall_consts())
 
@@ -590,7 +590,7 @@ def _ghost_draws(view) -> list:
 def _placed_draws(window, entry) -> list:
     view = window.map_view
     cache = view._sloped_cache()
-    draws = render.unit_sprite_draws_at(
+    draws = render_sprites.unit_sprite_draws_at(
         window.scenario,
         view._iso_proj,
         view._iso_elevations,
@@ -873,10 +873,10 @@ _BERRY_BUSH = 59  # FORAG, GAIA-only whatever the owner combo says
 def bush_install(tmp_path, monkeypatch):
     """The Forage Bush on a full team-colour mask, so the ghost's pixels are
     its owner's colour. Warms _wall_consts first, for sprite_install's reason."""
-    from descape import viewer
+    from descape import viewer_unit_place
 
-    viewer._wall_consts.cache_clear()
-    assert viewer._wall_consts(), "the real wall set must be cached before the patch"
+    viewer_unit_place._wall_consts.cache_clear()
+    assert viewer_unit_place._wall_consts(), "the real wall set must be cached before the patch"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
     graphics.mkdir(parents=True)
     (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(1, canvas=16))

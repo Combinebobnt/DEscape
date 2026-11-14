@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from descape import library_compat, object_catalog, trigger_geometry
-from descape.render import NON_BUILDING_SPAN
+from descape.render_units import NON_BUILDING_SPAN
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units, parse_triggers
 from descape.scenario_resize import Anchor, resize_scenario
 from descape.scenario_write import WriteBlockedError, write_scenario

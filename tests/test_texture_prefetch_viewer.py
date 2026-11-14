@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from testkit.viewer_family import set_viewer_global
+
 import conftest
 
 pytestmark = [
@@ -26,17 +28,18 @@ _LAYER_ONLY = 21  # a terrain no tile has as its base
 @pytest.fixture
 def recorded(monkeypatch):
     """(events, window): prefetch calls and IsoChunkCache constructions, in order."""
-    from descape import asset_source, viewer
+    from descape import asset_source
+    from descape.render_cache import IsoChunkCache
 
     events: list = []
     monkeypatch.setattr(asset_source, "prefetch_terrain_textures", lambda ids: events.append(("prefetch", set(ids))))
 
-    class _RecordingCache(viewer.IsoChunkCache):
+    class _RecordingCache(IsoChunkCache):
         def __init__(self, *args, **kwargs) -> None:
             events.append(("cache",))
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(viewer, "IsoChunkCache", _RecordingCache)
+    set_viewer_global(monkeypatch, "IsoChunkCache", _RecordingCache)
     window = conftest.stepped_window(UNITS_FIXTURE, show=False)
     yield events, window
     conftest.close_window(window)
@@ -74,7 +77,7 @@ def test_top_down_flat_prefetches_the_farm_overlays_terrain_too(recorded):
 
 
 def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(recorded, monkeypatch):
-    from descape import asset_source, render
+    from descape import asset_source, render_paint
 
     _events, window = recorded
     terrain = window.scenario.map_manager.terrain
@@ -82,7 +85,7 @@ def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(
     terrain[9].layer = _LAYER_ONLY
     terrain[11].layer = _LAYER_ONLY
     # No install here, so no blendomatic: a layer does not draw and is not fetched.
-    assert not render.blend_effective(window._layers)
+    assert not render_paint.blend_effective(window._layers)
     assert sorted(window._texture_prefetch_ids()) == [0]
 
     # Read only by blend_effective() below: nothing renders while it is set.
@@ -91,7 +94,7 @@ def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(
     fake.cache_clear = lambda: None
     monkeypatch.setattr(asset_source, "get_blendomatic", fake)
     blendomatic["value"] = object()
-    assert render.blend_effective(window._layers)
+    assert render_paint.blend_effective(window._layers)
     assert sorted(window._texture_prefetch_ids()) == [0, _OTHER_TERRAIN, _LAYER_ONLY]  # no -1, no duplicate
 
     blendomatic["value"] = None

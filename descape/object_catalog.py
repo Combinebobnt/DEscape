@@ -40,7 +40,7 @@ from AoE2ScenarioParser.datasets.other import OtherInfo
 from AoE2ScenarioParser.datasets.techs import TechInfo
 from AoE2ScenarioParser.datasets.units import UnitInfo
 
-from descape import asset_source, game_dataset
+from descape import asset_source, game_dataset, games
 
 # The in-game editor's own four object-placing menus
 # (docs/INGAME_EDITOR_REFERENCE.md:87) -- a grouping recoverable only from
@@ -99,43 +99,56 @@ def _dat_table() -> dict:
 
 
 @functools.cache
-def _aoe2_dat_table() -> dict:
-    """The AoE2 table whatever dataset is active (GH #67's shared rows), or an empty one like _dat_table()."""
-    path = game_dataset.table_path(_CATALOG_JSON_PATH, game_dataset.AOE2)
+def _read_table(path: Path) -> dict:
     if not path.is_file():
         return {"objects": {}, "techs": {}, "terrains": {}}
     return json.loads(path.read_text())
 
 
+def _committed_table(game_id: str) -> dict:
+    """`game_id`'s own committed table whatever game or data mod is active, or an empty one like _dat_table()."""
+    return _read_table(game_dataset.table_path(_CATALOG_JSON_PATH, game_id))
+
+
+def _default_dat_table() -> dict:
+    """The default game's committed table (AoE2's), whatever game or data mod
+    is active: what a data mod's rows and a pick kept across a switch compare with."""
+    return _committed_table(games.DEFAULT_ID)
+
+
 def _ror_shared_hidden() -> dict[int, str]:
     """id -> category for every object the RoR editor hides that is the same
-    object as one AoE2's objects() lists (its editor's, plus the library
-    members it hides): same .dat code and class in both
+    object as one its fallback game's objects() lists (AoE2's editor's, plus
+    the library members it hides): same .dat code and class in both
     tables (543 on 2026-10-17, the Castle among them). Listed as hidden, so
     "Show editor-hidden objects" offers them; an emptied RoR slot (WALL5 2678)
     or a reused one (93, Spearman there, Hoplite here) differs in code."""
-    aoe2 = _aoe2_dat_table()["objects"]
+    fallback = game_dataset.game().fallback
+    if fallback is None:
+        return {}
+    base = _committed_table(fallback)["objects"]
     candidates: dict[int, str] = {}
     for dataset, category in _OBJECT_DATASETS:
         for member in dataset:
             candidates.setdefault(member.ID, category)
-    for key, row in aoe2.items():
+    for key, row in base.items():
         if not row.get("hidden"):
             candidates.setdefault(int(key), derived_category(row))
-    for id_, category in _EDITOR_LISTED_DAT_ONLY.items():
+    for id_, category in _EDITOR_LISTED_BY_GAME.for_game(games.get(fallback)).items():
         candidates.setdefault(id_, category)
     shared: dict[int, str] = {}
     for id_, category in candidates.items():
-        old, new = aoe2.get(str(id_)), _dat_entry("objects", id_)
+        old, new = base.get(str(id_)), _dat_entry("objects", id_)
         if old and new and new.get("hidden") and (old.get("code"), old.get("class")) == (new.get("code"), new.get("class")):
             shared[id_] = category
     return shared
 
 
 def same_object_in_aoe2(id_: int) -> bool:
-    """Whether id_ is the same object in both games' tables: same .dat code and
-    class (GH #67). A pick keeps only such a const across a dataset switch."""
-    old, new = _aoe2_dat_table()["objects"].get(str(id_)), _dat_table()["objects"].get(str(id_))
+    """Whether id_ is the same object in the default game's committed table
+    and the one in effect: same .dat code and class (GH #67). A pick keeps only
+    such a const across a game or data-mod switch."""
+    old, new = _default_dat_table()["objects"].get(str(id_)), _dat_table()["objects"].get(str(id_))
     return bool(old and new) and (old.get("code"), old.get("class")) == (new.get("code"), new.get("class"))
 
 
@@ -164,7 +177,7 @@ def dat_terrains() -> dict[int, dict]:
 
 def is_aoe2_terrain(terrain_id: int) -> bool:
     """Whether the committed AoE2 table has terrain_id, whatever dataset or data mod is in effect."""
-    return str(terrain_id) in _aoe2_dat_table().get("terrains", {})
+    return str(terrain_id) in _default_dat_table().get("terrains", {})
 
 
 @game_dataset.cache(maxsize=1)
@@ -177,7 +190,7 @@ def data_mod_terrain_ids() -> frozenset[int]:
         return frozenset()
     from descape import asset_source
 
-    aoe2 = _aoe2_dat_table().get("terrains", {})
+    aoe2 = _default_dat_table().get("terrains", {})
     renamed = asset_source.data_mod_changed_string_ids()
     def changed(key: str, row: dict) -> bool:
         old = aoe2.get(key)
@@ -211,6 +224,23 @@ _ROR_EDITOR_UNLISTED = frozenset({89, 689})
 # editor-hidden: CUMAN DISABLED (measured 2026-10-21, GH #32).
 _EDITOR_UNLISTED = frozenset({1261})
 
+_EDITOR_LISTED_BY_GAME = games.PerGame(
+    "object_catalog: dat-hidden ids the game's editor lists, by category",
+    {"aoe2": _EDITOR_LISTED_DAT_ONLY, "ror": _ROR_EDITOR_LISTED_DAT_ONLY},
+)
+_EDITOR_HIDDEN_BY_GAME = games.PerGame(
+    "object_catalog: unhidden ids the game's editor lists for no one, offered as editor-hidden",
+    {"aoe2": _EDITOR_UNLISTED, "ror": frozenset()},
+)
+_EDITOR_LEFT_OUT_BY_GAME = games.PerGame(
+    "object_catalog: unhidden ids the game's editor leaves out, left out of objects()",
+    {"aoe2": frozenset(), "ror": _ROR_EDITOR_UNLISTED},
+)
+_SHARED_HIDDEN_BY_GAME = games.PerGame(
+    "object_catalog: editor-hidden objects shared with the fallback game, offered as hidden",
+    {"aoe2": dict, "ror": _ror_shared_hidden},
+)
+
 
 def derived_category(dat_entry: dict) -> str:
     """The picker category for an object no library dataset covers, from its
@@ -227,12 +257,24 @@ def derived_category(dat_entry: dict) -> str:
     return "Others"
 
 
-def icon_for(object_id: int) -> int | None:
-    """The .dat's icon index for an object (GH #140's unit portrait), or None
-    for -1 or an id the committed catalog lacks."""
+def icon_for(object_id: int, civ: int | None = None) -> int | None:
+    """The .dat's icon index for an object (GH #140's unit portrait), civ's own
+    copy's when its row has one (GH #372's `civ_icons`), or None for -1 or an
+    id the committed catalog lacks."""
     entry = _dat_entry("objects", object_id)
-    icon = None if entry is None else entry.get("icon")
+    if entry is None:
+        return None
+    icon = entry.get("icon")
+    if civ is not None:
+        icon = entry.get("civ_icons", {}).get(str(civ), icon)
     return icon if isinstance(icon, int) and icon >= 0 else None
+
+
+def portrait_civ_key(object_id: int, civ: int | None) -> int | None:
+    """civ when object_id's row has its own icon for it, else None: two civs
+    showing the same portrait share one cache entry (GH #372)."""
+    entry = _dat_entry("objects", object_id)
+    return civ if civ is not None and entry is not None and str(civ) in entry.get("civ_icons", {}) else None
 
 
 def is_building(object_id: int) -> bool:
@@ -247,20 +289,21 @@ def is_building(object_id: int) -> bool:
 _BUILDING_PORTRAIT_CONSTS = frozenset({1089})
 
 
-def portrait_for(object_id: int) -> tuple[int | None, bool]:
-    """(icon_for(), is_building() or a _BUILDING_PORTRAIT_CONSTS member):
-    asset_source.get_unit_icon()'s arguments."""
-    return icon_for(object_id), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
+def portrait_for(object_id: int, civ: int | None = None) -> tuple[int | None, bool]:
+    """(icon_for(object_id, civ), is_building() or a _BUILDING_PORTRAIT_CONSTS
+    member): asset_source.get_unit_icon()'s arguments."""
+    return icon_for(object_id, civ), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
 
 
 def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str) -> bool:
-    # TASK-507: with no RoR strings file the install's strings are AoE2's, so they fit only a row AoE2 shares.
-    if not game_dataset.is_ror() or asset_source.has_ror_strings(lang):
+    # TASK-507: with no strings file of its own a game reads its fallback's, which fit only a row the fallback shares.
+    fallback = game_dataset.game().fallback
+    if fallback is None or game_dataset.has_own_strings(lang):
         return True
-    aoe2_row = _aoe2_dat_table()[section].get(str(id_))
-    if aoe2_row is None:
+    base_row = _committed_table(fallback)[section].get(str(id_))
+    if base_row is None:
         return False
-    return (aoe2_row.get("code"), aoe2_row.get("string_id")) == (dat_entry.get("code"), dat_entry.get("string_id"))
+    return (base_row.get("code"), base_row.get("string_id")) == (dat_entry.get("code"), dat_entry.get("string_id"))
 
 
 def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None, *, section: str) -> str:
@@ -270,9 +313,9 @@ def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str 
     what keeps the default (install-free) test tier on the exact format
     resolve_reference()/the catalog always had before slice 4.
 
-    Under Return of Rome with no RoR strings file for lang, a row takes an
-    install string only if AoE2's `section` row has the same id, code and
-    string id.
+    Under a game with a fallback (Return of Rome) and no strings file of its
+    own for lang, a row takes an install string only if the fallback's
+    `section` row has the same id, code and string id.
 
     lang defaults to asset_source.get_language(), which parses config.yaml on
     every call; a bulk builder resolves it once and passes it in."""
@@ -295,7 +338,7 @@ def clear_caches() -> None:
     _combined_object_names.cache_clear()
     objects.cache_clear()
     techs.cache_clear()
-    _aoe2_dat_table.cache_clear()
+    _read_table.cache_clear()
 
 
 @game_dataset.cache(maxsize=1)
@@ -310,8 +353,8 @@ def _combined_object_names() -> dict[int, str]:
     """
     names: dict[int, str] = {}
     lang = asset_source.get_language()
-    if game_dataset.is_ror():
-        # The library's enums are AoE2's: under Return of Rome objects()' rows stand in (GH #67).
+    if not game_dataset.game().library_enums:
+        # The library's enums are AoE2's: under another game (Return of Rome) objects()' rows stand in (GH #67).
         return {entry.id: entry.name for entry in objects()}
     for dataset, _category in _OBJECT_DATASETS:
         for member in dataset:
@@ -405,9 +448,11 @@ def objects() -> tuple[CatalogEntry, ...]:
     from the editor (the Sept 2026 patch's Jarl, Longhouse, Spruce, ...),
     named install string -> .dat code and categorized by derived_category().
     Editor-hidden dat-only ids stay out (user decision 2026-09-27), except
-    _EDITOR_LISTED_DAT_ONLY (_ROR_EDITOR_LISTED_DAT_ONLY under Return of
-    Rome), listed as not hidden under the official editor's category (GH #208).
-    Under Return of Rome, also _ror_shared_hidden(), as hidden. A dat-only id
+    the game's _EDITOR_LISTED_BY_GAME entry, listed as not hidden under the
+    official editor's category (GH #208). The game's _EDITOR_HIDDEN_BY_GAME ids
+    are listed as hidden and its _EDITOR_LEFT_OUT_BY_GAME ids not at all; its
+    _SHARED_HIDDEN_BY_GAME rows (Return of Rome's) join as hidden. Without
+    library enums (Return of Rome) only the .dat rows are listed. A dat-only id
     the active data mod adds (GH #58) keeps its derived_category(), the tab the
     game's editor lists it under, and its row name ends in DATA_MOD_TAG while
     Settings > Mods shows that label (GH #265)."""
@@ -418,46 +463,47 @@ def objects() -> tuple[CatalogEntry, ...]:
     lang = asset_source.get_language()
     mod_only = data_mods.mod_only_ids() if settings.get_data_mod_label_shown() else frozenset()
     # Under Return of Rome the AoE2 enums and the AoE2 Gunpowder Keg id do not apply (GH #67).
-    ror = game_dataset.is_ror()
-    editor_listed = _ROR_EDITOR_LISTED_DAT_ONLY if ror else _EDITOR_LISTED_DAT_ONLY
-    for dataset, category in () if ror else _OBJECT_DATASETS:
+    game = game_dataset.game()
+    editor_listed = _EDITOR_LISTED_BY_GAME.for_game(game)
+    editor_hidden = _EDITOR_HIDDEN_BY_GAME.for_game(game)
+    left_out = _EDITOR_LEFT_OUT_BY_GAME.for_game(game)
+    for dataset, category in _OBJECT_DATASETS if game.library_enums else ():
         for member in dataset:
             if member.ID in seen:
                 continue
             seen.add(member.ID)
             dat_entry = _dat_entry("objects", member.ID)
-            if dat_entry is not None and member.ID in _EDITOR_UNLISTED:
+            if dat_entry is not None and member.ID in editor_hidden:
                 dat_entry = {**dat_entry, "hidden": True}
             name = resolve_name(member.ID, member.name.replace("_", " "), dat_entry, lang, section="objects")
             entries.append(_entry(member.ID, name, category, dat_entry))
     for key, raw_entry in _dat_table()["objects"].items():
         id_ = int(key)
         category = editor_listed.get(id_)
-        if id_ in seen or (raw_entry.get("hidden") and category is None) or (ror and id_ in _ROR_EDITOR_UNLISTED):
+        if id_ in seen or (raw_entry.get("hidden") and category is None) or id_ in left_out:
             continue
         dat_entry = raw_entry if category is None else {**raw_entry, "hidden": False}
-        if not ror and id_ in _EDITOR_UNLISTED:
+        if id_ in editor_hidden:
             dat_entry = {**dat_entry, "hidden": True}
         name = resolve_name(id_, "", dat_entry, lang, section="objects")
         if id_ in mod_only:
             name = f"{name} {DATA_MOD_TAG}"
         entries.append(_entry(id_, name, category or derived_category(dat_entry), dat_entry))
         seen.add(id_)
-    if ror:
-        for id_, category in _ror_shared_hidden().items():
-            if id_ not in seen and id_ not in _ROR_EDITOR_UNLISTED:
-                dat_entry = _dat_entry("objects", id_)
-                entries.append(_entry(id_, resolve_name(id_, "", dat_entry, lang, section="objects"), category, dat_entry))
+    for id_, category in _SHARED_HIDDEN_BY_GAME.for_game(game)().items():
+        if id_ not in seen and id_ not in left_out:
+            dat_entry = _dat_entry("objects", id_)
+            entries.append(_entry(id_, resolve_name(id_, "", dat_entry, lang, section="objects"), category, dat_entry))
     return tuple(sorted(entries, key=lambda e: e.name))
 
 
 @game_dataset.cache(maxsize=1)
 def techs() -> tuple[CatalogEntry, ...]:
-    """Every tech in TechInfo, alphabetical by name. Under Return of Rome,
-    every named tech of its own .dat instead (GH #67)."""
+    """Every tech in TechInfo, alphabetical by name. Under a game without
+    library enums (Return of Rome), every named tech of its own .dat instead (GH #67)."""
     entries = []
     lang = asset_source.get_language()
-    if game_dataset.is_ror():
+    if not game_dataset.game().library_enums:
         for key, dat_entry in _dat_table().get("techs", {}).items():
             name = resolve_name(int(key), "", dat_entry, lang, section="techs")
             entries.append(_entry(int(key), name, "Techs", internal=_internal_tech(dat_entry)))

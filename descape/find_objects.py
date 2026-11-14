@@ -17,7 +17,7 @@ from typing import Any
 
 from descape import game_dataset, object_catalog, unit_kind
 from descape.find_text import FindPatternError, compile_pattern, refuse_forbidden_path
-from descape.render import unit_tile_bounds
+from descape.render_units import unit_tile_bounds
 from descape.terrain_palette import TREE_UNIT_IDS
 from descape.unit_references import all_units
 

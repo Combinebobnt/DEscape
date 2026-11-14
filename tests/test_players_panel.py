@@ -1,6 +1,6 @@
 """Coverage for Players mode and PlayersPanel.
 
-Same offscreen-ViewerWindow technique as tests/test_trigger_panel.py and
+Same offscreen-ViewerWindow technique as tests/trigger_panel_helpers.py and
 tests/test_map_options_panel.py. Editable as of step 3c, for whichever
 fields both write-path gates (options_write_supported()/
 players_write_supported()) allow -- see PlayersPanel's own module
@@ -17,6 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
+from testkit.qt_window import set_panel_width
 
 import conftest
 
@@ -79,7 +81,7 @@ def _players_window(path=BLANK_FIXTURE):
 
 
 def test_players_mode_swaps_the_left_panel_and_gates_edit_tools() -> None:
-    from descape.viewer import _LEFT_PAGE_PLAYERS
+    from descape.viewer_common import _LEFT_PAGE_PLAYERS
 
     window = _window()
     try:
@@ -484,8 +486,7 @@ def test_a_rebuilt_form_scrolls_instead_of_squeezing_its_groups() -> None:
     try:
         panel = window.players_panel
         width = panel.MIN_USEFUL_WIDTH
-        total = sum(window.content_splitter.sizes())
-        window.content_splitter.setSizes([width, total - width])
+        set_panel_width(window, width)
         for _ in range(3):
             QApplication.processEvents()
         assert panel.select_player(2)

@@ -18,7 +18,7 @@ Rules, each with its reason:
 - A reference_id placed twice: the first unit wins and the id goes in
   `duplicates`, so describe() can say so.
 - None and -1 both mean unset.
-- patch_reference_index() updates a built index per render_cache.UnitSplice
+- patch_reference_index() updates a built index per render_cache_splice.UnitSplice
   in place and refuses (returns False) any splice whose outcome depends on
   list order: a duplicated id, an add onto a present id, a remove of an
   absent one, or an owner that does not match. The caller then rebuilds.
@@ -32,7 +32,7 @@ from types import MappingProxyType
 from typing import Any
 
 from . import trigger_fields
-from .render import unit_tile_bounds
+from .render_units import unit_tile_bounds
 
 UNIT_REFERENCE_PRESENTATIONS = frozenset({"Unit", "Unit[]"})
 LIST_PRESENTATION = "Unit[]"
@@ -44,7 +44,7 @@ class UnitRef:
     player_id: int
     unit_const: int
     own_tile: tuple[int, int]  # (int(x), int(y))
-    bounds: tuple[int, int, int, int] | None  # render.unit_tile_bounds(); None = off-map
+    bounds: tuple[int, int, int, int] | None  # render_units.unit_tile_bounds(); None = off-map
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ def _unit_ref(ref_id: int, player_id: int, unit, width: int, height: int) -> Uni
 def patch_reference_index(index: ReferenceIndex, loaded, changed: Iterable[Any]) -> bool:
     """Brings `index` in step with one unit edit, mutating it in place.
 
-    `changed` is the edit's render_cache.UnitSplice list, applied in order
+    `changed` is the edit's render_cache_splice.UnitSplice list, applied in order
     (a membership undo lists its removals before its arrivals, and a shared
     id relies on that). old_own_tile None is an add, new_own_tile None a
     removal, anything else a move, field edit, const swap or reassign; the

@@ -20,7 +20,7 @@ import struct
 import pytest
 from test_wall_connectivity import WALL_CONST, real_gate_wall_install  # noqa: F401 (a pytest fixture, imported for its name)
 
-from descape import render
+from descape import render_units
 from descape.mirror_tools import (
     AXIS_SWAPPING,
     MODE_BY_ID,
@@ -126,9 +126,9 @@ def _source_tiles(mode_id: int, slice_index: int = 0, margin: int = 0) -> list[t
 def _at(const: int, mode_id: int, nth: int = 0, **kwargs) -> FakeUnit:
     """A unit centred on the nth usable source tile of `mode_id`'s slice, with
     room for its own footprint."""
-    span_x, span_y = tile_span(const, render.NON_BUILDING_SPAN)
+    span_x, span_y = tile_span(const, render_units.NON_BUILDING_SPAN)
     x, y = _source_tiles(mode_id, margin=max(span_x, span_y))[nth]
-    return FakeUnit(const, *render.span_anchor(x, y, span_x, span_y), **kwargs)
+    return FakeUnit(const, *render_units.span_anchor(x, y, span_x, span_y), **kwargs)
 
 
 def test_compose_and_invert_agree_with_the_transforms():
@@ -146,10 +146,10 @@ def test_an_image_occupies_the_reflection_of_its_sources_tiles(const, mode_id):
     to carry its swapped shape, which is what unsquare_spans reports."""
     source = _at(const, mode_id)
     plan = _plan([source], mode_id=mode_id)
-    src_tiles = set(render.unit_occupied_tiles(source, N, N))
+    src_tiles = set(render_units.unit_occupied_tiles(source, N, N))
     assert plan.images, "nothing mirrored, so this proves nothing"
     for image in plan.images:
-        tiles = set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+        tiles = set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
         assert tiles == {TRANSFORMS[image.element](tx, ty, N) for tx, ty in src_tiles}
 
 
@@ -183,15 +183,15 @@ def test_a_gate_image_carries_the_reoriented_sibling_and_its_own_anchor():
     from descape.mirror_tools import reorient_gate_const
 
     x, y = _source_tiles(2, margin=4)[0]
-    gate = FakeUnit(GATE_NE, *render.span_anchor(x, y, 4, 1))
+    gate = FakeUnit(GATE_NE, *render_units.span_anchor(x, y, 4, 1))
     plan = _plan([gate], mode_id=2)
     assert plan.gates == [gate]
     assert plan.unsquare_spans == []  # a gate's four orientations ARE four consts
     (image,) = plan.images
     assert image.element == "d"
     assert image.unit_const == reorient_gate_const(GATE_NE, "d") != GATE_NE
-    src_tiles = set(render.unit_occupied_tiles(gate, N, N))
-    tiles = set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+    src_tiles = set(render_units.unit_occupied_tiles(gate, N, N))
+    tiles = set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
     assert tiles == {TRANSFORMS["d"](tx, ty, N) for tx, ty in src_tiles}
 
 
@@ -202,7 +202,7 @@ def test_a_gate_fixed_in_place_still_reorients_when_its_shape_changes():
     from descape.mirror_tools import reorient_gate_const
 
     x, y = _source_tiles(3, margin=4)[0]
-    gate = FakeUnit(GATE_NE, *render.span_anchor(x, y, 4, 1))
+    gate = FakeUnit(GATE_NE, *render_units.span_anchor(x, y, 4, 1))
     plan = _plan([gate], mode_id=3)
     assert [image.unit_const for image in plan.images] == [reorient_gate_const(GATE_NE, "mx")]
 
@@ -267,9 +267,9 @@ def test_passable_eye_candy_is_neither_landed_on_nor_lands_on_a_building(const):
     castle = _mode_5_spiller()
     small = FakeUnit(const, 21.3, 41.6, player=0)
     plan = _plan([castle, small], mode_id=5)
-    image_tiles = render.occupied_tiles_for(CASTLE, *_image_position(CASTLE, castle.x, castle.y, N, "r2"), N, N)
+    image_tiles = render_units.occupied_tiles_for(CASTLE, *_image_position(CASTLE, castle.x, castle.y, N, "r2"), N, N)
     assert (21, 41) in image_tiles
-    assert TRANSFORMS["r2"](21, 41, N) in render.unit_occupied_tiles(castle, N, N)
+    assert TRANSFORMS["r2"](21, 41, N) in render_units.unit_occupied_tiles(castle, N, N)
     if const == GRASS:
         assert not plan.blocked and plan.straddling == []
         assert sorted(image.source is castle for image in plan.images) == [False, True]
@@ -285,7 +285,7 @@ def test_a_tree_landing_on_a_spilling_building_blames_the_building():
     oak = FakeUnit(OAK, 21.3, 41.6, player=0)
     plan = _plan([castle, oak], mode_id=5)
     source = plan_mirror(FakeMapManager(), 5, 0, False, False).source_indices
-    spilled = [(x, y) for x, y in render.unit_occupied_tiles(castle, N, N) if y * N + x not in source]
+    spilled = [(x, y) for x, y in render_units.unit_occupied_tiles(castle, N, N) if y * N + x not in source]
     assert spilled == [(42, 22)] == [TRANSFORMS["r2"](21, 41, N)]
     assert plan.blocked and plan.straddling == [oak, castle]
     assert plan.overlap_blockers == [(castle, (42, 22))]
@@ -298,7 +298,7 @@ def test_a_unit_straddling_a_diagonal_axis_names_itself():
     ((blocker, tile),) = plan.overlap_blockers
     source = plan_mirror(FakeMapManager(), 1, 0, False, False).source_indices
     assert blocker is castle
-    assert tile in render.unit_occupied_tiles(castle, N, N) and tile[1] * N + tile[0] not in source
+    assert tile in render_units.unit_occupied_tiles(castle, N, N) and tile[1] * N + tile[0] not in source
     oak = FakeUnit(OAK, 20.3, N - 20 - 1 + 0.6)  # on the axis row, inside the source: nothing spills
     assert _plan([oak], mode_id=1).overlap_blockers == [(oak, (20, 43))]
 
@@ -317,9 +317,9 @@ def test_a_blocker_keeps_its_orientation_under_an_axis_swap_and_is_reported():
     (image,) = plan.images
     assert swaps_axes(image.element)
     assert image.unit_const == BLOCKER_1X3
-    reflected = [TRANSFORMS[image.element](tx, ty, N) for tx, ty in render.unit_occupied_tiles(source, N, N)]
+    reflected = [TRANSFORMS[image.element](tx, ty, N) for tx, ty in render_units.unit_occupied_tiles(source, N, N)]
     low = (min(t[0] for t in reflected), min(t[1] for t in reflected))
-    tiles = render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)
+    tiles = render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)
     assert set(tiles) == {(low[0], low[1] + k) for k in range(3)}
 
 
@@ -328,9 +328,9 @@ def test_a_blocker_under_a_non_swapping_element_occupies_its_reflection():
     plan = _plan([source], mode_id=3)
     assert plan.unsquare_spans == []
     (image,) = plan.images
-    src = render.unit_occupied_tiles(source, N, N)
+    src = render_units.unit_occupied_tiles(source, N, N)
     assert len(src) == 3
-    tiles = set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+    tiles = set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
     assert tiles == {TRANSFORMS[image.element](tx, ty, N) for tx, ty in src}
 
 
@@ -366,7 +366,7 @@ def _axis_castle() -> FakeUnit:
 def _mode_8_straddler() -> FakeUnit:
     """A castle reaching one column across mode 8's `mx` axis and clear of
     `my`'s: its mx image overlaps it, its my and r2 images do not."""
-    return FakeUnit(CASTLE, *render.span_anchor(N // 2 - 1, 40, 4, 4))
+    return FakeUnit(CASTLE, *render_units.span_anchor(N // 2 - 1, 40, 4, 4))
 
 
 def test_skip_applies_the_plan_without_the_straddlers_copies():
@@ -387,9 +387,9 @@ def test_skip_keeps_a_straddlers_non_overlapping_copies():
     assert plan.straddling == [castle]
     assert [image.element for image in plan.overlapping] == ["mx"]
     assert sorted(image.element for image in plan.images) == ["my", "r2"]
-    src_tiles = set(render.unit_occupied_tiles(castle, N, N))
+    src_tiles = set(render_units.unit_occupied_tiles(castle, N, N))
     for image in plan.images:
-        assert not src_tiles & set(render.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+        assert not src_tiles & set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
 
 
 def test_refuse_is_the_default_and_unchanged():
@@ -651,7 +651,7 @@ def test_a_mirrored_gates_walls_derive_the_connected_shape():
 
     y = 10
     walls = [FakeUnit(WALL_CONST, x + 0.5, y + 0.5, rotation=_RADIAN_3) for x in (14, 15, 20, 21)]
-    gate = FakeUnit(GATE_NE, *render.span_anchor(16, y, 4, 1))  # tiles 16..19 along x
+    gate = FakeUnit(GATE_NE, *render_units.span_anchor(16, y, 4, 1))  # tiles 16..19 along x
     mm = FakeMapManager()
     tiles = plan_mirror(mm, 2, 0, False, False)  # `d`: a run along x becomes a run along y
     plan = plan_mirror_units(mm, 2, 0, _by_player([*walls, gate]), tiles.source_indices)
@@ -659,11 +659,11 @@ def test_a_mirrored_gates_walls_derive_the_connected_shape():
     images = [FakeUnit(i.unit_const, i.x, i.y, player=i.player, rotation=i.rotation) for i in plan.images]
     (image_gate,) = [u for u in images if u.unit_const != WALL_CONST]
     assert image_gate.unit_const == reorient_gate_const(GATE_NE, "d")
-    assert set(render.unit_occupied_tiles(image_gate, N, N)) == {(y, 16), (y, 17), (y, 18), (y, 19)}
+    assert set(render_units.unit_occupied_tiles(image_gate, N, N)) == {(y, 16), (y, 17), (y, 18), (y, 19)}
 
     units = _by_player([*walls, gate, *images])
     scenario = SimpleNamespace(map_manager=mm, unit_manager=SimpleNamespace(units=units))
-    overrides = render.wall_variant_rotation_overrides(scenario)
+    overrides = render_units.wall_variant_rotation_overrides(scenario)
     shape = {(int(u.x), int(u.y)): overrides.get((1, i)) for i, u in enumerate(units[1]) if u.unit_const == WALL_CONST}
     # Next to the gate: a through-run, index 0 along x and 1 along y. Run ends: 2.
     assert shape == {
@@ -959,7 +959,7 @@ def test_a_rotation_reorients_a_gate_the_way_cycle_const_does():
     for siblings in gate_orientation.groups().values():
         for const in siblings:
             for sixths, steps in ((1, 1), (2, -1), (4, 1), (5, -1)):
-                if all(tile_span(c, render.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
+                if all(tile_span(c, render_units.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
                     assert reorient_gate_const(const, R[sixths]) == const
                     continue
                 assert reorient_gate_const(const, R[sixths]) == gate_orientation.cycle_const(const, steps)
@@ -977,7 +977,7 @@ def test_every_gate_orientation_has_an_angular_sibling_within_15_degrees():
     assert len(elements) == 9
     checked = 0
     for siblings in gate_orientation.groups().values():
-        if all(tile_span(c, render.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
+        if all(tile_span(c, render_units.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
             continue
         for index, const in enumerate(siblings):
             for element in elements:

@@ -1,5 +1,5 @@
 """View > Layers: the registry, its availability matrix, and the threading
-of LayerState through render.py and the three chunk caches.
+of LayerState through the render modules and the three chunk caches.
 
 The load-bearing check here is the byte-identity gate, the same bar
 tests/test_unit_filter.py sets for the unit filter: a DEFAULT LayerState must
@@ -24,10 +24,22 @@ from dataclasses import FrozenInstanceError, dataclass, replace
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render, render_cache, settings, unit_sprites
-from descape.render import tile_pixels_for_map
+from descape import (
+    asset_source,
+    iso_geometry,
+    render_cache_splice,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    render_units,
+    settings,
+    unit_sprites,
+)
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
-from descape.terrain_palette import TREE_UNIT_IDS
+from descape.render_paint import tile_pixels_for_map
+from descape.terrain_palette import BUILDING_TILE_SPANS, FOUNDATION_TERRAIN, TREE_UNIT_IDS
 from descape.view_layers import DEFAULT_LAYERS, LAYERS, SMALL_TREE_SCALE, LayerState, availability, render_key
 from testkit.fakes import FakeScenario, SyntheticTile
 
@@ -41,7 +53,7 @@ FAKE_FARM_TERRAIN = 7
 TEXTURE_COLORS = {BACKGROUND_TERRAIN: (10, 20, 30), FAKE_FARM_TERRAIN: (200, 150, 40)}
 
 # A real member of the set Filters' Show Trees owns, since that membership is
-# exactly what render._resolve_unit_sprite() tests -- a synthetic const would
+# exactly what render_sprites._resolve_unit_sprite() tests -- a synthetic const would
 # make the whole small-trees half of this file vacuous.
 TREE_CONST = min(TREE_UNIT_IDS)
 NON_TREE_CONST = 999002
@@ -86,8 +98,8 @@ def fake_farm(monkeypatch):
     foundation terrain, so the farm-overlay path runs with no install --
     tests/test_farm_terrain.py's own fixture, kept local to this file the
     way that file keeps its scenario helpers local."""
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
-    monkeypatch.setitem(render.FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
+    monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
+    monkeypatch.setitem(FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)
 
 
 @pytest.fixture
@@ -95,7 +107,7 @@ def fake_trees(tmp_path, monkeypatch):
     """One synthetic sprite, registered for a real TREE_UNIT_IDS const AND a
     non-tree one. Both resolve through the same file, so the only thing that
     can make them render differently is the const test in
-    render._resolve_unit_sprite() -- which is what makes the non-tree unit a
+    render_sprites._resolve_unit_sprite() -- which is what makes the non-tree unit a
     real scoping control rather than a second tree."""
     assert NON_TREE_CONST not in TREE_UNIT_IDS, "the scoping control is a tree"
     graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
@@ -137,12 +149,12 @@ def _install_textures(monkeypatch) -> None:
 
 
 def _iso_cache(scn, **kwargs) -> IsoChunkCache:
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs)
 
 
 def _sloped_cache(scn, **kwargs) -> SlopedChunkCache:
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(
         scn, elevations, corner_rise, proj, tile_pixels_for_map(MAP_W, MAP_H), chunk_px=128, **kwargs
     )
@@ -257,24 +269,24 @@ def test_default_layers_is_byte_identical_to_omitting_the_argument(monkeypatch) 
     _install_textures(monkeypatch)
     scn = _scenario()
     tile_px = tile_pixels_for_map(MAP_W, MAP_H)
-    elevations, proj = render.elevations_and_proj(scn)
-    _, corner_rise, sproj = render.sloped_elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    _, corner_rise, sproj = render_sloped.sloped_elevations_and_proj(scn)
     fold = iso_geometry.tile_folds(elevations)
 
-    omitted = render.composite_rect_iso(scn, 0, 0, 128, 128, elevations, proj, tile_px, {}, {})
-    passed = render.composite_rect_iso(
+    omitted = render_iso.composite_rect_iso(scn, 0, 0, 128, 128, elevations, proj, tile_px, {}, {})
+    passed = render_iso.composite_rect_iso(
         scn, 0, 0, 128, 128, elevations, proj, tile_px, {}, {}, layers=LayerState()
     )
     assert np.array_equal(omitted, passed)
 
-    omitted = render.composite_rect_sloped(scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, fold=fold)
-    passed = render.composite_rect_sloped(
+    omitted = render_sloped.composite_rect_sloped(scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, fold=fold)
+    passed = render_sloped.composite_rect_sloped(
         scn, 0, 0, 128, 128, corner_rise, sproj, tile_px, {}, {}, layers=LayerState(), fold=fold
     )
     assert np.array_equal(omitted, passed)
 
-    omitted = render.composite_rect_flat(scn, 0, 0, 128, 128, tile_px)
-    passed = render.composite_rect_flat(scn, 0, 0, 128, 128, tile_px, layers=LayerState())
+    omitted = render_flat.composite_rect_flat(scn, 0, 0, 128, 128, tile_px)
+    passed = render_flat.composite_rect_flat(scn, 0, 0, 128, 128, tile_px, layers=LayerState())
     assert np.array_equal(omitted, passed)
 
 
@@ -411,7 +423,7 @@ def test_farm_overlay_survives_a_unit_splice(fake_farm, monkeypatch) -> None:
     _whole_canvas(cache)
 
     unit = scn.unit_manager.units[1][0]
-    splice = render_cache.UnitSplice(
+    splice = render_cache_splice.UnitSplice(
         player_id=1, index=0, unit=unit,
         old_own_tile=(5, 5), new_own_tile=(5, 5),
         old_tiles=frozenset({(x, y) for x in (4, 5, 6) for y in (4, 5, 6)}),
@@ -434,7 +446,7 @@ def test_flat_farm_overlay_off_drops_the_drape_and_restores_the_rect(fake_farm, 
     cache.set_layers(LayerState(farm_overlay=False))
     off = _whole_canvas(cache)
     assert cache._farm_tiles is None
-    rect = render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    rect = render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=True)
     assert np.array_equal(off, rect)
 
 
@@ -453,21 +465,21 @@ def test_flat_farm_overlay_off_survives_a_unit_splice(fake_farm, monkeypatch, op
 
     if op == "move":
         unit = scn.unit_manager.units[1][0]
-        tiles = tuple(render.unit_occupied_tiles(unit, MAP_W, MAP_H))
+        tiles = tuple(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H))
         own = (int(unit.x), int(unit.y))
-        splice = render_cache.UnitSplice(1, 0, unit, own, own, tiles, tiles)
+        splice = render_cache_splice.UnitSplice(1, 0, unit, own, own, tiles, tiles)
     else:
         unit = PlacedUnit(x=10.0, y=10.0, unit_const=FAKE_FARM_CONST, reference_id=9)
         scn.unit_manager.units[2].append(unit)
-        tiles = tuple(render.unit_occupied_tiles(unit, MAP_W, MAP_H))
-        splice = render_cache.UnitSplice(2, 0, unit, None, (int(unit.x), int(unit.y)), (), tiles)
+        tiles = tuple(render_units.unit_occupied_tiles(unit, MAP_W, MAP_H))
+        splice = render_cache_splice.UnitSplice(2, 0, unit, None, (int(unit.x), int(unit.y)), (), tiles)
     assert cache.can_splice([splice]), "fixture is not testing the splice path"
     cache.invalidate_units([splice])
-    cache.patch_rects(render.flat_tile_rects(splice.changed_tiles, tile_pixels_for_map(MAP_W, MAP_H)))
+    cache.patch_rects(render_paint.flat_tile_rects(splice.changed_tiles, tile_pixels_for_map(MAP_W, MAP_H)))
 
     assert cache._farm_tiles is None
-    assert not any(draw is render.FLAT_DRAPED for draw in cache._level_icon_layers[0].values())
-    rect = render.overlay_units(render.render_terrain(scn), scn, with_sprites=True)
+    assert not any(draw is render_flat.FLAT_DRAPED for draw in cache._level_icon_layers[0].values())
+    rect = render_flat.overlay_units(render_flat.render_terrain(scn), scn, with_sprites=True)
     assert np.array_equal(_whole_canvas(cache), rect)
 
 
@@ -482,8 +494,8 @@ def test_flat_farm_overlay_off_survives_a_unit_splice(fake_farm, monkeypatch, op
 def _sprite_shapes(scn, *, tree_scale: float) -> dict[tuple[int, int], tuple[int, int]]:
     """Each anchor tile's first resolved sprite's (h, w), straight off the
     real SpriteLayer the caches composite."""
-    elevations, proj = render.elevations_and_proj(scn)
-    layer = render.sprite_draws_by_anchor(scn, proj, elevations, tree_scale=tree_scale)
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, tree_scale=tree_scale)
     return {tile: draws[0][0].rgba.shape[:2] for tile, draws in layer.by_anchor.items()}
 
 
@@ -506,9 +518,9 @@ def test_tree_scale_of_one_is_byte_identical_to_omitting_the_argument(fake_trees
     """The gate, at the render level this time: threading a parameter through
     the resolver must not perturb a default render."""
     scn = _scenario(with_trees=True)
-    elevations, proj = render.elevations_and_proj(scn)
-    omitted = render.sprite_draws_by_anchor(scn, proj, elevations)
-    passed = render.sprite_draws_by_anchor(scn, proj, elevations, tree_scale=1.0)
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    omitted = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
+    passed = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, tree_scale=1.0)
     assert omitted.bboxes == passed.bboxes
     for tile, draws in omitted.by_anchor.items():
         for (draw, px, py, _rise), (pdraw, ppx, ppy, _prise) in zip(draws, passed.by_anchor[tile], strict=True):
@@ -550,7 +562,7 @@ def test_small_trees_survives_a_unit_splice(fake_trees) -> None:
 
     tree = scn.unit_manager.units[0][0]
     tree.x, tree.y = 6.5, 6.5
-    splice = render_cache.UnitSplice(
+    splice = render_cache_splice.UnitSplice(
         player_id=0, index=0, unit=tree,
         old_own_tile=(4, 4), new_own_tile=(6, 6),
         old_tiles=frozenset({(4, 4)}), new_tiles=frozenset({(6, 6)}),
@@ -608,11 +620,11 @@ def test_the_drag_ghost_path_takes_the_layer(fake_trees) -> None:
     go through a chunk cache -- so a default left there is the one bug that
     shows as a tree dragging full size and snapping small on drop."""
     scn = _scenario(with_trees=True)
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     tree = scn.unit_manager.units[0][0]
 
-    full = render.unit_sprite_draws_at(scn, proj, elevations, None, 0, tree)
-    small = render.unit_sprite_draws_at(
+    full = render_sprites.unit_sprite_draws_at(scn, proj, elevations, None, 0, tree)
+    small = render_sprites.unit_sprite_draws_at(
         scn, proj, elevations, None, 0, tree, tree_scale=SMALL_TREE_SCALE
     )
     assert full and small
@@ -648,7 +660,7 @@ def _wall_scenario() -> FakeScenario:
 def fake_walls(tmp_path, monkeypatch):
     """fake_trees' shape: one synthetic sprite behind a real wall, a real
     gate and a non-wall const, so only the wall-set test in
-    render._resolve_unit_sprite() can tell them apart."""
+    render_sprites._resolve_unit_sprite() can tell them apart."""
     from descape import unit_kind
 
     assert {WALL_CONST, GATE_CONST} <= unit_kind.wall_consts()
@@ -669,9 +681,9 @@ def fake_walls(tmp_path, monkeypatch):
     unit_sprites.clear_caches()
 
 
-def _wall_layer(scn, **kwargs) -> render.SpriteLayer:
-    elevations, proj = render.elevations_and_proj(scn)
-    return render.sprite_draws_by_anchor(scn, proj, elevations, **kwargs)
+def _wall_layer(scn, **kwargs) -> render_sprites.SpriteLayer:
+    elevations, proj = render_iso.elevations_and_proj(scn)
+    return render_sprites.sprite_draws_by_anchor(scn, proj, elevations, **kwargs)
 
 
 def _draws_equal(a, b) -> bool:
@@ -731,7 +743,7 @@ def test_translucent_walls_survives_a_unit_splice(fake_walls) -> None:
 
     wall = scn.unit_manager.units[1][0]
     wall.x, wall.y = 6.5, 6.5
-    splice = render_cache.UnitSplice(
+    splice = render_cache_splice.UnitSplice(
         player_id=1, index=0, unit=wall,
         old_own_tile=WALL_TILE, new_own_tile=(6, 6),
         old_tiles=frozenset({WALL_TILE}), new_tiles=frozenset({(6, 6)}),
@@ -773,11 +785,11 @@ def test_flat_ignores_translucent_walls(fake_walls) -> None:
 @pytest.mark.parametrize("unit_index", [0, 1], ids=["wall", "gate"])
 def test_the_drag_ghost_path_takes_wall_alpha(fake_walls, unit_index) -> None:
     scn = _wall_scenario()
-    elevations, proj = render.elevations_and_proj(scn)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     unit = scn.unit_manager.units[1][unit_index]
 
-    full = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit)
-    styled = render.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit, wall_alpha=0.5)
+    full = render_sprites.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit)
+    styled = render_sprites.unit_sprite_draws_at(scn, proj, elevations, None, 1, unit, wall_alpha=0.5)
     assert full and len(styled) == 1
     assert int(styled[0][0].rgba[..., 3].max()) == 128
 

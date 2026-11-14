@@ -12,8 +12,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from descape import render, settings, unit_pick
+from descape import render_sprites, render_units, settings, unit_pick
 from descape.scenario_io import BLANK_TEMPLATE_PATH
+from descape.terrain_palette import BUILDING_TILE_SPANS, tile_span
 
 import conftest
 
@@ -42,7 +43,7 @@ class _Unit:
 def _index(*units) -> unit_pick.UnitIndex:
     index = unit_pick.UnitIndex()
     for order, unit in enumerate(units):
-        bounds = render.unit_tile_bounds(unit, 120, 120)
+        bounds = render_units.unit_tile_bounds(unit, 120, 120)
         assert bounds is not None, unit
         unit.reference_id = 100 + order
         unit_pick._append_entry(index, 1, unit, bounds)
@@ -59,9 +60,9 @@ def _consts(entries) -> list[int]:
 def test_each_scope_selects_its_own_subset() -> None:
     """A 4x4 building, a 1x1 building and a non-building, which is what
     separates the three scopes from each other."""
-    assert render.tile_span(_TOWN_CENTRE, render.NON_BUILDING_SPAN) > (1, 1)
-    assert _STONE_WALL in render.BUILDING_TILE_SPANS
-    assert _TREE not in render.BUILDING_TILE_SPANS
+    assert tile_span(_TOWN_CENTRE, render_units.NON_BUILDING_SPAN) > (1, 1)
+    assert _STONE_WALL in BUILDING_TILE_SPANS
+    assert _TREE not in BUILDING_TILE_SPANS
     index = _index(
         _Unit(10.0, 10.0, _TOWN_CENTRE), _Unit(20.5, 20.5, _STONE_WALL), _Unit(30.5, 30.5, _TREE)
     )
@@ -108,7 +109,7 @@ def test_all_buildings_and_units_only_overlap_on_exactly_the_mobile_siege() -> N
     from descape import unit_kind
 
     excluded = unit_kind.building_consts() | unit_kind.wall_consts()
-    assert tuple(sorted(c for c in render.BUILDING_TILE_SPANS if c not in excluded)) == _SIEGE_IN_BOTH_SCOPES
+    assert tuple(sorted(c for c in BUILDING_TILE_SPANS if c not in excluded)) == _SIEGE_IN_BOTH_SCOPES
 
 
 def test_units_only_sits_between_all_buildings_and_all_units() -> None:
@@ -122,7 +123,7 @@ def test_multitile_reads_the_shared_span_table_not_a_rule_of_its_own(monkeypatch
     change the answer, which a hard-coded building list would not."""
     index = _index(_Unit(30.5, 30.5, _VILLAGER))
     assert unit_pick.footprint_entries(index, unit_pick.FOOTPRINT_SCOPE_MULTITILE) == []
-    monkeypatch.setitem(render.BUILDING_TILE_SPANS, _VILLAGER, (2, 2))
+    monkeypatch.setitem(BUILDING_TILE_SPANS, _VILLAGER, (2, 2))
     assert _consts(unit_pick.footprint_entries(index, unit_pick.FOOTPRINT_SCOPE_MULTITILE)) == [_VILLAGER]
 
 
@@ -882,7 +883,7 @@ def test_a_show_sprites_toggle_resyncs_draped_farm_outlines_in_sloped() -> None:
         window.footprint_action.setChecked(True)
         view = window.map_view
         view.set_footprint_scope(unit_pick.FOOTPRINT_SCOPE_ALL)
-        assert render._terrain_overlay_for(_FARM) is not None, "not a farm to the render path"
+        assert render_sprites._terrain_overlay_for(_FARM) is not None, "not a farm to the render path"
 
         def drawn():
             path = _overlay_item(view).path()
@@ -1470,7 +1471,7 @@ def _fresh_groups(view) -> dict:
     """Each owner group's subpaths built from scratch, as the unchunked overlay did."""
     from PyQt5.QtGui import QPainterPath
 
-    from descape.map_view import _add_closed_polygons
+    from descape.map_view_units import _add_closed_polygons
 
     groups = {None: QPainterPath()}
     for entry in unit_pick.footprint_entries(view._unit_index, view._footprint_scope):

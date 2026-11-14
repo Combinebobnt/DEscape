@@ -12,7 +12,7 @@ Reeds tree (1350), and (b) a lone Longship. Logs every _batch_splice_eligible()
 answer with the rejecting tile and occupant, which invalidate_units() branch
 ran, and a cProfile of the timed nudges. `--mode right` walks the unit off
 the shared tiles, so the same unit flips to the splice path part-way.
-`--analyse` runs render_cache._reanchor_units() on copies of the visible
+`--analyse` runs render_cache_splice._reanchor_units() on copies of the visible
 level for (a)'s nudge and diffs the result against the full rebuild's: what
 the splice would get wrong if the shared-tile guard were dropped.
 Informational only; absolute times drift under load, shares don't.
@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path.cwd()))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from testkit import qt_window, settings_isolation
+from testkit.render_family import render_cache_global, set_render_cache_global
 
 SCENARIO = Path("examples/F7_2_Dos Pilas (648).aoe2scenario")
 LOG: list[dict] = []
@@ -42,17 +43,19 @@ COUNTS: dict[str, int] = {}
 
 
 def _install_probes() -> None:
-    from descape import render_cache
+    import pytest
+
+    from descape import render_cache, render_cache_splice
 
     # The clause-level form _splice_plan() reaches through the module global.
-    orig_refusal = render_cache._batch_splice_refusal
+    orig_refusal = render_cache_global("_batch_splice_refusal")
 
     def batch_probe(units_by_tile, changed, *rest):
         reason = orig_refusal(units_by_tile, changed, *rest)
         result = reason is None
         entry = {"result": result, "reason": reason, "n": len(changed), "const_ok": [], "blockers": []}
         for s in changed:
-            entry["const_ok"].append((s.unit.unit_const, render_cache._const_splice_eligible(s.unit)))
+            entry["const_ok"].append((s.unit.unit_const, render_cache_splice._const_splice_eligible(s.unit)))
             for tile in sorted(s.changed_tiles):
                 others = [u for u, _ in units_by_tile.get(tile, ()) if u is not s.unit]
                 if others:
@@ -62,7 +65,8 @@ def _install_probes() -> None:
         LOG.append(entry)
         return reason
 
-    render_cache._batch_splice_refusal = batch_probe
+    # Never undone: the probe lasts the process.
+    set_render_cache_global(pytest.MonkeyPatch(), "_batch_splice_refusal", batch_probe)
 
     def count(cls, name):
         original = getattr(cls, name)
@@ -83,10 +87,10 @@ def _install_probes() -> None:
 def _solo_entry(loaded, entries):
     """A player unit with no shared tile now or one tile to either side, not a
     wall/variant const, with a graphic (same picker as probe_w4_ref_index)."""
-    from descape import render, unit_sprites
+    from descape import render_units, unit_sprites
 
     mm = loaded.map_manager
-    by_tile = render._units_by_tile(loaded)
+    by_tile = render_units._units_by_tile(loaded)
     walls = unit_sprites.wall_connector_consts()
     for e in entries:
         const = e.unit.unit_const
@@ -96,7 +100,7 @@ def _solo_entry(loaded, entries):
             continue
         tiles = set()
         for dx in (-1, 0, 1, 2):
-            got = render.occupied_tiles_for(const, e.unit.x + dx, e.unit.y, mm.map_width, mm.map_height)
+            got = render_units.occupied_tiles_for(const, e.unit.x + dx, e.unit.y, mm.map_width, mm.map_height)
             if got is None:
                 break
             tiles.update(got)
@@ -144,7 +148,7 @@ def _analyse_splice_on_copies(window, entry) -> None:
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
 
-    from descape import render, render_cache
+    from descape import render_bbox, render_cache_splice, render_sprites
 
     cache = window._cache
     unit, pid = entry.unit, entry.player_id
@@ -159,17 +163,17 @@ def _analyse_splice_on_copies(window, entry) -> None:
         QTest.keyClick(window.map_view, key)
         QApplication.processEvents()
         new_own, new_tiles = window._unit_footprint(unit)
-        splice = render_cache.UnitSplice(pid, index, unit, old_own, new_own, tuple(old_tiles), tuple(new_tiles))
+        splice = render_cache_splice.UnitSplice(pid, index, unit, old_own, new_own, tuple(old_tiles), tuple(new_tiles))
         touched = set(old_tiles) | set(new_tiles) | {old_own, new_own}
         print(f"  -- splice-on-copies, {'Right' if key == Qt.Key_Right else 'Left'}: {old_own}->{new_own} level mip {mip}")
-        print(f"     _splice_eligible on pre-edit units_by_tile: {render_cache._splice_eligible(ubt_copy, splice)}")
+        print(f"     _splice_eligible on pre-edit units_by_tile: {render_cache_splice._splice_eligible(ubt_copy, splice)}")
         for t in sorted(touched):
             print(f"     pre  units_by_tile{t}: {[(u.unit_const, u.x, u.y) for u, _ in ubt_copy.get(t, ())]}")
         # Individual contributions at the live level
         for u2, _c in {id(u): (u, c) for t in touched for u, c in ubt_copy.get(t, ())}.values():
             p2 = next(p for p, lst in enumerate(window.scenario.unit_manager.units) if any(x is u2 for x in lst))
             i2 = window._unit_list_index(p2, u2)
-            contrib = render._resolve_unit_sprite(
+            contrib = render_sprites._resolve_unit_sprite(
                 window.scenario,
                 proj,
                 cache.elevations,
@@ -185,7 +189,7 @@ def _analyse_splice_on_copies(window, entry) -> None:
                 cache.layers.wall_alpha,
                 fold=cache._level_fold(),
             )
-            bbx = render._building_bbox_for(u2, mm.map_width, mm.map_height, proj, cache.elevations, extra)
+            bbx = render_bbox._building_bbox_for(u2, mm.map_width, mm.map_height, proj, cache.elevations, extra)
             print(
                 f"     contribution const {u2.unit_const} p{p2} @({u2.x},{u2.y}): sprite="
                 f"{None if contrib is None else {k: _norm_draws(v) for k, v in contrib.by_anchor.items()}} "
@@ -193,8 +197,8 @@ def _analyse_splice_on_copies(window, entry) -> None:
             )
         # The splice on copies.
         ubt_spliced = {t: list(v) for t, v in ubt_copy.items()}
-        render_cache._splice_units_by_tile(ubt_spliced, window.scenario, cache.unit_filter, splice)
-        spliced_sprites = render_cache._reanchor_units(
+        render_cache_splice._splice_units_by_tile(ubt_spliced, window.scenario, cache.unit_filter, splice)
+        spliced_sprites = render_cache_splice._reanchor_units(
             bb_copy,
             pre_sprites,
             window.scenario,

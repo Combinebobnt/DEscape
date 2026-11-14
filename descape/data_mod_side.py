@@ -4,8 +4,10 @@ civilizations.json names the mod's civs: the list index is the civ id, and a
 1.56+ scenario stores `data_name`. eras.json names the five ages of each era a
 civ can name. Both are read at runtime, never derived: DataModTables.side_key
 hashes them, so an edit reaches every game_dataset.cache loader on the next
-pick or open with no .dat re-parse. Missing, unreadable or wrong-shaped files
-count as absent, and the caller keeps its AoE2 behaviour. Read-only and Qt-free.
+pick or open with no .dat re-parse. side_key also hashes the mod's own portrait
+tables, PORTRAIT_FILES in its widgetui/ (GH #363), which asset_source reads.
+Missing, unreadable or wrong-shaped files count as absent, and the caller keeps
+its AoE2 behaviour. Read-only and Qt-free.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from descape import asset_source, content_roots, debug_log, game_dataset
 CIVILIZATIONS_FILE = "civilizations.json"
 ERAS_FILE = "eras.json"
 SIDE_FILES = (CIVILIZATIONS_FILE, ERAS_FILE)
+# GH #363: the portrait tables asset_source reads from a data mod's widgetui/.
+PORTRAIT_FILES = (asset_source.ICON_TABLE_NAME, asset_source.MATERIALS_NAME, asset_source.ROR_MATERIALS_NAME)
 AGE_COUNT = 5
 # StartingAge's value of the first of an era's ages.
 FIRST_AGE_VALUE = 2
@@ -40,6 +44,11 @@ def side_dir(root: Path) -> Path | None:
     return content_roots.child_dir(root, "resources", "_common", "dat")
 
 
+def ui_dir(root: Path) -> Path | None:
+    """The folder a data mod at `root` keeps its portrait tables in, or None."""
+    return content_roots.child_dir(root, asset_source.UI_DIR)
+
+
 def side_file(folder: Path, name: str) -> Path | None:
     """folder/`name`, matched case-insensitively with an exact match first, or None."""
     exact = folder / name
@@ -52,22 +61,24 @@ def side_file(folder: Path, name: str) -> Path | None:
     return next((p for p in entries if p.name.casefold() == name and p.is_file()), None)
 
 
-def fingerprint(folder: Path | None) -> str:
-    """A hash over each readable side file's name and bytes; "" when there is none. Never raises."""
-    if folder is None:
-        return ""
+def fingerprint(folder: Path | None, ui_folder: Path | None = None) -> str:
+    """A hash over each readable side file's name and bytes, then each portrait
+    table's in `ui_folder` (GH #363); "" when there is none. Never raises."""
     digest = hashlib.sha256()
     found = False
-    for name in SIDE_FILES:
-        path = side_file(folder, name)
-        if path is None:
+    for base, names, prefix in ((folder, SIDE_FILES, ""), (ui_folder, PORTRAIT_FILES, asset_source.UI_DIR + "/")):
+        if base is None:
             continue
-        try:
-            data = path.read_bytes()
-        except OSError:
-            continue
-        found = True
-        digest.update(name.encode("utf-8") + b"\0" + data + b"\0")
+        for name in names:
+            path = side_file(base, name)
+            if path is None:
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            found = True
+            digest.update((prefix + name).encode("utf-8") + b"\0" + data + b"\0")
     return digest.hexdigest() if found else ""
 
 

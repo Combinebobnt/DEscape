@@ -16,7 +16,8 @@ import pytest
 from descape import game_dataset, player_fields, scenario_io, settings, unit_sprites
 from descape.options_model import players_write_supported
 from descape.region_clipboard import RegionBlock
-from testkit.ror_fixture import ROR_DLCS, ror_copy
+from testkit.ror_fixture import ROR_DLCS, ROR_VARIANT, ror_copy
+from testkit.viewer_family import set_viewer_global
 
 import conftest
 
@@ -47,7 +48,7 @@ def _logged(window, monkeypatch) -> list[str]:
 
 def test_the_fixture_reads_as_return_of_rome(ror_path):
     loaded = scenario_io.load_map_and_units(ror_path)
-    assert loaded.game_variant == game_dataset.ROR_VARIANT
+    assert loaded.game_variant == ROR_VARIANT
     assert scenario_io.load_map_and_units(scenario_io.BLANK_TEMPLATE_PATH).game_variant == 1
 
 
@@ -61,7 +62,7 @@ def test_a_ror_file_opens_in_ror_game_data_and_editable(window, ror_path):
     window.mode_combo.setCurrentText("Terrain")
     assert window.draw_action.isEnabled()
     window.load_scenario(ror_path)
-    assert game_dataset.is_ror()
+    assert game_dataset.active() == game_dataset.ROR
     assert settings.get_game_data() == settings.GAME_DATA_DEFAULT, "Auto, not an override"
     assert window.game_data_lock_reason() is None
     assert window.game_data_banner.isHidden()
@@ -130,7 +131,7 @@ def test_a_ror_file_saves_its_edits_and_keeps_its_header(window, ror_path, tmp_p
 
     reloaded = scenario_io.load_map_and_units(out)
     header = reloaded._scenario.sections["FileHeader"].retriever_map
-    assert reloaded.game_variant == game_dataset.ROR_VARIANT
+    assert reloaded.game_variant == ROR_VARIANT
     assert header["unknown_numbers"].data == list(ROR_DLCS)
     units = [u for u in reloaded.unit_manager.get_all_units() if u.unit_const == 93]
     assert [u.rotation for u in units] == [1.0]
@@ -174,7 +175,7 @@ def test_the_setting_switches_the_data_locks_and_applies_to_the_next_open(window
     catalog = window.units_panel.catalog_view
     assert catalog._by_id[93].name != "Hoplite"
     window.set_game_data(game_dataset.ROR)
-    assert game_dataset.is_ror()
+    assert game_dataset.active() == game_dataset.ROR
     assert settings.get_game_data() == game_dataset.ROR
     assert catalog._by_id[93].name == "Hoplite", "the Units catalog was rebuilt from the RoR table"
     reason = window.game_data_lock_reason()
@@ -185,7 +186,7 @@ def test_the_setting_switches_the_data_locks_and_applies_to_the_next_open(window
 
     window.set_game_data(game_dataset.ROR)
     window.load_scenario(scenario_io.BLANK_TEMPLATE_PATH)
-    assert game_dataset.is_ror(), "the setting outlives one document"
+    assert game_dataset.active() == game_dataset.ROR, "the setting outlives one document"
     assert window.game_data_lock_reason() is not None
     window.set_game_data(settings.GAME_DATA_DEFAULT)
     assert catalog._by_id[93].name != "Hoplite"
@@ -199,7 +200,7 @@ def test_the_advanced_tab_combo_saves_and_applies_the_setting():
         assert combo.currentData() == settings.GAME_DATA_DEFAULT
         assert [combo.itemData(i) for i in range(combo.count())] == [cid for cid, _label in settings.game_data_choices()]
         combo.setCurrentIndex(combo.findData(game_dataset.ROR))
-        assert game_dataset.is_ror() and window.game_data_lock_reason() is not None
+        assert game_dataset.active() == game_dataset.ROR and window.game_data_lock_reason() is not None
         settings._game_data = None
         assert settings.get_game_data() == game_dataset.ROR, "persisted to config.yaml"
         combo.setCurrentIndex(combo.findData(settings.GAME_DATA_DEFAULT))
@@ -225,7 +226,7 @@ def test_a_switch_keeps_a_pick_the_new_catalog_has_and_drops_one_it_lacks(window
 
 def test_the_setting_switches_with_no_document_open(window):
     window.set_game_data(game_dataset.ROR)
-    assert game_dataset.is_ror()
+    assert game_dataset.active() == game_dataset.ROR
     assert _wall_menu(window) == [72, 117, 155, 231]
     window.set_game_data(settings.GAME_DATA_DEFAULT)
     assert 2678 in _wall_menu(window)
@@ -238,7 +239,7 @@ def test_view_has_no_game_data_menu(window):
 
 @pytest.mark.parametrize("shown", ["aoe2_on_ror", "ror_on_aoe2"])
 def test_save_save_as_and_autosave_refuse_a_mismatched_document(window, ror_path, monkeypatch, shown):
-    from descape import viewer
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
     if shown == "aoe2_on_ror":
         window.set_game_data(game_dataset.AOE2)
@@ -251,10 +252,10 @@ def test_save_save_as_and_autosave_refuse_a_mismatched_document(window, ror_path
     assert window._ensure_unit_edits() is None
     assert window._editable_player_fields() == frozenset()
     writes = []
-    monkeypatch.setattr(viewer, "write_scenario", lambda *args, **kwargs: writes.append(args))
-    monkeypatch.setattr(viewer.QMessageBox, "information", lambda *args, **kwargs: None)
+    set_viewer_global(monkeypatch, "write_scenario", lambda *args, **kwargs: writes.append(args))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
     asked = []
-    monkeypatch.setattr(viewer.QFileDialog, "getSaveFileName", lambda *args, **kwargs: asked.append(args) or ("", ""))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: asked.append(args) or ("", ""))
     lines = _logged(window, monkeypatch)
     window.save()
     window.save_as()

@@ -36,7 +36,7 @@ from pathlib import Path
 import platformdirs
 import yaml
 
-from descape import debug_log, game_dataset, perf_trace
+from descape import debug_log, game_dataset, games, perf_trace
 
 APP_NAME = "DEscape"
 
@@ -70,14 +70,15 @@ TEXTURE_REFERENCE_TILE_PIXELS = 64
 
 
 def terrain_texture_size(tile_px: int) -> int:
-    """The texture size a level of `tile_px` crops its tiles from. Under
-    Return of Rome (GH #67) a zoomed-out level reads textures shrunk by its
+    """The texture size a level of `tile_px` crops its tiles from. Under a
+    game with Game.texture_scales_with_level (Return of Rome, GH #67) a
+    zoomed-out level reads textures shrunk by its
     ratio to TEXTURE_REFERENCE_TILE_PIXELS, so a tile keeps the texture share
     it has at the reference and a pattern shrinks with the map: RoR's farm
     rows are twice as wide as AoE2's, and at one size for every level they
     grew to a few coarse rows per farm. AoE2 keeps LOADED_TEXTURE_SIZE at
     every level (user decision 2026-10-17). Always a multiple of tile_px."""
-    if not game_dataset.is_ror() or tile_px >= TEXTURE_REFERENCE_TILE_PIXELS:
+    if not game_dataset.game().texture_scales_with_level or tile_px >= TEXTURE_REFERENCE_TILE_PIXELS:
         return LOADED_TEXTURE_SIZE
     return LOADED_TEXTURE_SIZE * tile_px // TEXTURE_REFERENCE_TILE_PIXELS
 
@@ -173,11 +174,9 @@ BLENDOMATIC_TILE_SIZE = 2353
 # 109 of ~19k parseable lines carry one, e.g. Sent to \"%s\":).
 _STRING_LINE = re.compile(r'^(\d+)\s+"((?:[^"\\]|\\.)*)"')
 STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-strings-utf8.txt"
-# GH #67: Return of Rome's own strings, a separate file under the RoR root, layered over the base file.
+# GH #67: Return of Rome's own strings file under its root; _string_table() finds it through games.ROR.strings_files.
 ROR_STRINGS_SUBPATH_TEMPLATE = "resources/{lang}/strings/key-value/key-value-pompeii-strings-utf8.txt"
 DEFAULT_LANGUAGE = "en"
-# GH #58: a data mod's own strings, in this order over the install's (one mod ships both).
-MOD_STRINGS_FILES = ("key-value-strings-utf8.txt", "key-value-modded-strings-utf8.txt")
 
 # GH #140: a unit's in-game portrait, by object_catalog.icon_for() index. Uncompressed RGBA or DXT5, 256 px.
 UNIT_ICON_DIR = "widgetui/textures/ingame/units"
@@ -198,6 +197,9 @@ STAT_ICON_DIR = "widgetui/textures/ingame/staticons"
 PARTICLE_SUBPATH = "resources/_common/particles"
 
 _override_path: Path | None = None
+
+# The content layers the file-, path- and install-keyed caches do not read: a switch naming only these keeps them (TASK-478).
+FILE_KEYED_SURVIVES = frozenset({game_dataset.TABLES})
 
 
 def _terrain_texture_map() -> dict[int, str]:
@@ -265,19 +267,27 @@ def set_install_path_override(path: Path | None) -> None:
     clear_install_caches()
 
 
-def clear_art_caches() -> None:
-    """Drops every cache holding sprite or terrain-texture art, for a change
-    in which files draw it (mod art toggled or opted out, TASK-378), and
-    bumps install_generation() so ThumbLoader-keyed thumbnails reload."""
+def clear_art_caches(changed: frozenset[str] | None = None) -> None:
+    """Drops every cache holding sprite, terrain-texture or portrait art, for a
+    change in which files draw it (mod art toggled or opted out, TASK-378; a
+    data mod's portraits, GH #363), and
+    bumps install_generation() so ThumbLoader-keyed thumbnails reload.
+    `changed` names the content layers that moved (game_dataset.TABLES,
+    ROOTS; None is everything). TABLES alone (a data-mod switch, TASK-478)
+    drops only what a terrain id or const keys, keeps the file-keyed art and
+    leaves install_generation()."""
+    keeps_files = game_dataset.only_changed(changed, FILE_KEYED_SURVIVES)
     get_terrain_texture_path.cache_clear()
     get_terrain_average_color.cache_clear()
-    # Path-keyed rather than id-keyed, so a changed install that resolves to
-    # a same-named file under a different root would otherwise keep serving
-    # the old swatch or texture.
-    _terrain_thumbnail_for_path.cache_clear()
-    _terrain_texture_for_path.cache_clear()
-    _shrunk_texture.cache_clear()
-    _forget_prefetches()
+    # Only file-, path- or install-keyed caches belong in this block (TASK-478).
+    if not keeps_files:
+        # Path-keyed rather than id-keyed, so a changed install that resolves to
+        # a same-named file under a different root would otherwise keep serving
+        # the old swatch or texture.
+        _terrain_thumbnail_for_path.cache_clear()
+        _terrain_texture_for_path.cache_clear()
+        _shrunk_texture.cache_clear()
+        _forget_prefetches()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
     # as sprites -- deliberately, since re-deriving one costs a whole file walk
@@ -285,44 +295,55 @@ def clear_art_caches() -> None:
     # every unit drawn as a coloured dot until the app was restarted.
     from descape import terrain_blend, unit_sprites
 
-    unit_sprites.clear_caches()
+    unit_sprites.clear_caches(changed)
     # Blended blocks are built from the textures above.
     terrain_blend.clear_caches()
+    # GH #363: with a data mod, it and Mod Art's mods supply portraits, so these drop under TABLES too.
+    _layered_icon_files.cache_clear()
+    get_unit_icon.cache_clear()
 
 
-def clear_install_caches() -> None:
+def clear_install_caches(changed: frozenset[str] | None = None) -> None:
     """Drops every cache downstream of the install path, leaving the override
-    as it is. The test suite calls this before each test (see tests/conftest.py)."""
-    get_install_path.cache_clear()
-    from descape import mod_graphics
+    as it is. The test suite calls this before each test (see tests/conftest.py).
+    `changed` is the layers a game_dataset switch moved; None (an install or
+    profile change) is everything. A data-mod switch names TABLES alone
+    (TASK-478): the art and other file- or install-keyed caches stay,
+    everything keyed through the tables drops."""
+    keeps_files = game_dataset.only_changed(changed, FILE_KEYED_SURVIVES)
+    # Only file-, path- or install-keyed caches belong in these blocks (TASK-478).
+    if not keeps_files:
+        get_install_path.cache_clear()
+        from descape import mod_graphics
 
-    # Its palettes come from the install, and its mod folders from the profile derived from it.
-    mod_graphics.clear()
-    clear_art_caches()
-    get_blendomatic.cache_clear()
-    get_blend_mask.cache_clear()
-    get_terrain_mask_array.cache_clear()
-    _sized_terrain_mask.cache_clear()
-    _masks_asked.clear()
-    clear_wrap_padded()
+        # Its palettes come from the install, and its mod folders from the profile derived from it.
+        mod_graphics.clear()
+    clear_art_caches(changed)
+    if not keeps_files:
+        get_blendomatic.cache_clear()
+        get_blend_mask.cache_clear()
+        get_terrain_mask_array.cache_clear()
+        _sized_terrain_mask.cache_clear()
+        _masks_asked.clear()
+        clear_wrap_padded()
+        _icon_table_files.cache_clear()
+        get_unit_icon.cache_clear()
+        get_tech_icon.cache_clear()
+        get_stat_icon.cache_clear()
+        # GH #140's instruction text colours, read from the install's UIColors.json.
+        from descape import message_markup
+
+        message_markup.clear_caches()
     _string_table.cache_clear()
     _data_mod_string_ids.cache_clear()
     _data_mod_changed_string_ids.cache_clear()
-    _has_ror_strings.cache_clear()
-    _ror_icon_files.cache_clear()
-    get_unit_icon.cache_clear()
-    get_tech_icon.cache_clear()
-    get_stat_icon.cache_clear()
+    game_dataset.clear_caches()
     # object_catalog.py's name resolution reads resource_string() above --
     # same reasoning, a different module. Imported here for the same
     # cycle-avoidance reason (object_catalog.py imports this module).
     from descape import object_catalog
 
     object_catalog.clear_caches()
-    # GH #140's instruction text colours, read from the install's UIColors.json.
-    from descape import message_markup
-
-    message_markup.clear_caches()
 
 
 def get_language() -> str:
@@ -348,36 +369,17 @@ def _unescape_string_value(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
 
-def _ror_strings_path(install: Path, lang: str) -> Path:
-    return game_dataset.ror_root(install) / ROR_STRINGS_SUBPATH_TEMPLATE.format(lang=lang)
-
-
-@lru_cache(maxsize=4)
-def _has_ror_strings(lang: str) -> bool:
-    install = get_install_path()
-    return install is not None and _ror_strings_path(install, lang).is_file()
-
-
-def has_ror_strings(lang: str | None = None) -> bool:
-    """Whether the configured install has Return of Rome's own strings file
-    for lang (default get_language()), whatever dataset is active."""
-    return _has_ror_strings(lang or get_language())
-
-
 @game_dataset.cache(maxsize=4)
 def _string_table(lang: str) -> dict[int, str]:
-    """The install's strings for lang; under Return of Rome its own strings
-    file read over them, a RoR string winning on a shared key (GH #67), and
-    under a data mod the mod's strings files likewise, key by key (GH #58)."""
+    """The strings for lang, merged key by key along the content stack
+    (game_dataset.ContentStack.strings_paths()): the install's, under Return
+    of Rome its own file over them (GH #67), and under a data mod the mod's
+    files over those (GH #58). Empty without an install."""
     install = get_install_path()
     if install is None:
         return {}
-    paths = [install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang)]
-    if game_dataset.is_ror():
-        paths.append(_ror_strings_path(install, lang))
-    paths.extend(_data_mod_strings_paths(lang))
     table: dict[int, str] = {}
-    for path in paths:
+    for path in game_dataset.stack().strings_paths(install, lang):
         for match in _string_lines(path):
             table[int(match.group(1))] = _unescape_string_value(match.group(2))
     return table
@@ -385,13 +387,7 @@ def _string_table(lang: str) -> dict[int, str]:
 
 def _data_mod_strings_paths(lang: str) -> list[Path]:
     """The active data mod's strings files for lang (GH #58), existing or not; [] with no mod."""
-    mod = game_dataset.data_mod()
-    if mod is None:
-        return []
-    from descape import content_roots
-
-    folder = content_roots.child_dir(mod.root, "resources", lang, "strings", "key-value")
-    return [] if folder is None else [folder / name for name in MOD_STRINGS_FILES]
+    return game_dataset.stack().mod_strings_paths(lang)
 
 
 def _string_lines(path: Path) -> list[re.Match]:
@@ -448,21 +444,44 @@ def _find_file(folder: Path, match) -> Path | None:
 def unit_icon_path(icon: int | None, building: bool = False) -> Path | None:
     """The portrait file for a catalog icon index, or None. A building looks
     in BUILDING_ICON_DIR by its "NNN_" prefix first, then falls back to the
-    unit set. Extension case varies, so names are matched loosely."""
+    unit set. Extension case varies, so names are matched loosely. With a data
+    mod in effect, its portrait_layers() come before the install (GH #363)."""
     return unit_icon_path_in(get_install_path(), icon, building)
 
 
-def unit_icon_path_in(install: Path | None, icon: int | None, building: bool = False) -> Path | None:
+def portrait_layers() -> tuple[Path, ...]:
+    """The folders a portrait is looked up in before the install (GH #363): the
+    data mod's own, then the ones Mod Art draws, in its order; () with no data
+    mod in effect (Return of Rome included). GUI thread only."""
+    mod = game_dataset.data_mod()
+    if mod is None:
+        return ()
+    from descape import mod_graphics
+
+    return (mod.root, *(root for root in mod_graphics.drawn_roots() if root != mod.root))
+
+
+def unit_icon_path_in(
+    install: Path | None, icon: int | None, building: bool = False, layers: tuple[Path, ...] | None = None
+) -> Path | None:
     """unit_icon_path() under an install the caller passes, never read here:
-    the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68)."""
+    the Units catalog's thumbnail worker resolves it on the GUI thread (GH #68).
+    layers are portrait_layers()'s folders, read here when None (GH #363)."""
     if install is None or icon is None or icon < 0:
         return None
-    if game_dataset.is_ror():
-        path = _ror_icon_files(install).get(("Buildings" if building else "Units", icon))
+    section = "Buildings" if building else "Units"
+    stack = game_dataset.stack()
+    if stack.game.icon_materials is not None:
+        path = _icon_table_files(install, stack.game).get((section, icon))
         if path is not None:
             return path
-    # GH #67: under Return of Rome without its icon table, its own icon set first, then the install's.
-    roots = [game_dataset.ror_root(install), install] if game_dataset.is_ror() else [install]
+    layers = portrait_layers() if layers is None else tuple(layers)
+    path = _layered_icon_files(layers, install).get((section, icon)) if layers else None
+    if path is not None:
+        return path
+    # GH #67: without its icon table, the game's own icon set first, then each fallback's.
+    # GH #363: a data mod's and its art mods' loose portraits beat those by name.
+    roots = [*layers, *stack.roots(install)]
     if building:
         prefix = f"{icon:03d}_"
         for root in roots:
@@ -488,32 +507,36 @@ def _read_json(path: Path) -> dict:
 
 
 def _atlas_files(materials: dict) -> dict[str, str]:
-    """RefName -> FileName (relative to widgetui/) for every atlas texture a materials file defines."""
+    """RefName -> FileName (relative to widgetui/) for every atlas texture a materials file defines.
+    Wrong-shaped entries are skipped: a data mod's file is untrusted (GH #363)."""
     files = {}
-    for atlas in materials.get("AtlasTextures", ()):
-        for texture in atlas.get("AtlasDef", {}).get("Textures", ()):
-            if "RefName" in texture and "FileName" in texture:
+    atlases = materials.get("AtlasTextures")
+    for atlas in atlases if isinstance(atlases, list) else ():
+        definition = atlas.get("AtlasDef") if isinstance(atlas, dict) else None
+        textures = definition.get("Textures") if isinstance(definition, dict) else None
+        for texture in textures if isinstance(textures, list) else ():
+            if isinstance(texture, dict) and isinstance(texture.get("RefName"), str) and isinstance(texture.get("FileName"), str):
                 files[texture["RefName"]] = texture["FileName"]
     return files
 
 
 @lru_cache(maxsize=2)
-def _ror_icon_files(install: Path) -> dict[tuple[str, int], Path]:
-    """("Units" or "Buildings", RoR icon index) -> its portrait file, through RoR's icons.json (GH #67).
-    A RefName RoR's morematerials.json defines is a RoR file, else one the install's materials.json
-    defines is AoE2's. Only existing files; {} without the RoR icon table."""
-    ror_ui = game_dataset.ror_root(install) / UI_DIR
-    table = _read_json(ror_ui / ICON_TABLE_NAME)
+def _icon_table_files(install: Path, game: games.Game) -> dict[tuple[str, int], Path]:
+    """("Units" or "Buildings", icon index) -> its portrait file, through `game`'s own icons.json (GH #67).
+    A RefName the game's Game.icon_materials file defines is one of its own files, else the first
+    fallback whose materials.json defines it has the file. Only existing files; {} without the icon table."""
+    own_ui = game.root(install) / UI_DIR
+    table = _read_json(own_ui / ICON_TABLE_NAME)
     if not table:
         return {}
-    sources = [
-        (ror_ui, _atlas_files(_read_json(ror_ui / ROR_MATERIALS_NAME))),
-        (install / UI_DIR, _atlas_files(_read_json(install / UI_DIR / MATERIALS_NAME))),
-    ]
+    sources = [(own_ui, _atlas_files(_read_json(own_ui / game.icon_materials)))]
+    for of in games.chain(game)[1:]:
+        ui = of.root(install) / UI_DIR
+        sources.append((ui, _atlas_files(_read_json(ui / MATERIALS_NAME))))
     files = {}
     for section in ("Units", "Buildings"):
         for key, ref in (table.get(section) or {}).items():
-            if not key.isdigit():
+            if not (key.isascii() and key.isdigit()):
                 continue
             for root, refs in sources:
                 if ref in refs:
@@ -526,18 +549,92 @@ def _ror_icon_files(install: Path) -> dict[tuple[str, int], Path]:
     return files
 
 
-def read_unit_icon_in(install: Path | None, icon: int | None, building: bool = False, px: int | None = None):
-    """get_unit_icon() under a passed install, uncached and thread-safe,
-    downscaled to fit px x px when px is given; or None."""
-    arr = _read_rgba(unit_icon_path_in(install, icon, building))
+@lru_cache(maxsize=2)
+def _layered_icon_files(layers: tuple[Path, ...], install: Path) -> dict[tuple[str, int], Path]:
+    """("Units" or "Buildings", icon index) -> its portrait file through a data mod's icon table (GH #363).
+    As in the game's file overlay, icons.json, morematerials.json and materials.json each come whole
+    from the first of `layers` with a readable one (materials from the install last); a RefName resolves
+    through morematerials, then materials, and its file comes from the first folder that has it, the
+    install last. widgetui/ and file names match case-insensitively, as the side_key fingerprint does,
+    and wrong-shaped entries are skipped. Only existing files; {} when no layer has an icon table."""
+    from descape import content_roots
+
+    layer_uis = [ui for ui in (content_roots.child_dir(root, UI_DIR) for root in layers) if ui is not None]
+    install_ui = content_roots.child_dir(install, UI_DIR)
+    uis = [*layer_uis, *([install_ui] if install_ui is not None else [])]
+    listings: dict[Path, dict[str, Path]] = {}
+
+    def first(folders, name: str) -> dict:
+        """The first folder's readable `name`, whole; {} when none has one."""
+        for folder in folders:
+            path = _ui_file(folder, name, listings)
+            data = _read_json(path) if path is not None else {}
+            if data:
+                return data
+        return {}
+
+    table = first(layer_uis, ICON_TABLE_NAME)
+    if not table:
+        return {}
+    # morematerials second, so its RefNames win.
+    refs = {**_atlas_files(first(uis, MATERIALS_NAME)), **_atlas_files(first(uis, ROR_MATERIALS_NAME))}
+    files = {}
+    for section in ("Units", "Buildings"):
+        entries = table.get(section)
+        for key, ref in entries.items() if isinstance(entries, dict) else ():
+            if not (key.isascii() and key.isdigit() and isinstance(ref, str) and ref in refs):
+                continue
+            path = next((p for p in (_ui_file(ui, refs[ref], listings) for ui in uis) if p is not None), None)
+            if path is not None:
+                files[(section, int(key))] = path
+    return files
+
+
+def _ui_file(ui: Path, rel: str, listings: dict[Path, dict[str, Path]]) -> Path | None:
+    """ui/<rel>, each part matched case-insensitively (listings memoizes each folder's names,
+    first by sorted name), or None. A rel that is absolute or climbs out with ".." is None."""
+    parts = Path(rel).parts
+    if not parts or Path(rel).is_absolute() or ".." in parts:
+        return None
+    found: Path | None = ui
+    for part in parts:
+        names = listings.get(found)
+        if names is None:
+            names = listings[found] = {}
+            try:
+                for entry in sorted(found.iterdir()):
+                    names.setdefault(entry.name.lower(), entry)
+            except OSError:
+                pass
+        found = names.get(part.lower())
+        if found is None:
+            return None
+    return found if found.is_file() else None
+
+
+def read_unit_icon_in(
+    install: Path | None,
+    icon: int | None,
+    building: bool = False,
+    px: int | None = None,
+    layers: tuple[Path, ...] | None = None,
+):
+    """get_unit_icon() under a passed install and portrait layers, uncached and
+    thread-safe when layers is given, downscaled to fit px x px when px is given; or None.
+    Colour and alpha are downscaled apart: an RGBA resize premultiplies, which
+    would lose the shading DE keeps under a portrait's transparent player-colour
+    region (catalog_thumbs.tinted(), GH #372)."""
+    arr = _read_rgba(unit_icon_path_in(install, icon, building, layers))
     if arr is None or px is None:
         return arr
     import numpy as np
     from PIL import Image
 
-    image = Image.fromarray(np.asarray(arr))
-    image.thumbnail((px, px), Image.LANCZOS)
-    return np.array(image)
+    rgb = Image.fromarray(np.ascontiguousarray(arr[..., :3]), "RGB")
+    alpha = Image.fromarray(np.ascontiguousarray(arr[..., 3]), "L")
+    rgb.thumbnail((px, px), Image.LANCZOS)
+    alpha.thumbnail((px, px), Image.LANCZOS)
+    return np.dstack((np.array(rgb), np.array(alpha)))
 
 
 # A byte mask of an uncompressed DDS pixel format -> the byte it selects.
@@ -605,9 +702,9 @@ def _read_rgba(path: Path | None):
 
 @lru_cache(maxsize=64)
 def get_unit_icon(icon: int | None, building: bool = False):
-    """The install's portrait for this catalog icon index (unit_icon_path())
-    as a read-only (h, w, 4) uint8 RGBA array, or None (no install, no file,
-    a decode failure)."""
+    """The portrait for this catalog icon index (unit_icon_path(), a data mod's
+    first, GH #363) as a read-only (h, w, 4) uint8 RGBA array, or None (no
+    install, no file, a decode failure)."""
     return _read_rgba(unit_icon_path(icon, building))
 
 
@@ -1084,13 +1181,14 @@ _pending: dict[Path, tuple[int, Future]] = {}
 # Paths _terrain_texture_for_path has cached: lru_cache has no membership test.
 _loaded: set[Path] = set()
 _prefetch_lock = threading.Lock()
-# Bumped by clear_install_caches(), so a load from before it is never served.
+# Bumped by clear_install_caches() (not a data-mod switch's), so a load from before it is never served.
 _generation = 0
 
 
 def install_generation() -> int:
-    """How many times clear_art_caches() has run (clear_install_caches() included): a key
-    that changes with the install or the mod art drawn (GH #148's portraits, TASK-378)."""
+    """How many times clear_art_caches() has dropped the file-keyed art (clear_install_caches() included):
+    a key that changes with the install or the mod art drawn (GH #148's portraits, TASK-378).
+    A data-mod switch (changed is TABLES alone, TASK-478) does not move it: pair it with game_dataset.generation()."""
     return _generation
 
 

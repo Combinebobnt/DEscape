@@ -28,9 +28,21 @@ from pathlib import Path
 import pytest
 from test_native_composite import native_kernel  # noqa: F401 -- a fixture
 
-from descape import asset_source, composite_backend, level_warm, render, unit_sprites
+from descape import (
+    asset_source,
+    composite_backend,
+    level_warm,
+    render_bbox,
+    render_flat,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    unit_sprites,
+)
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import PLAYER_COLORS
+from testkit.render_family import render_global, set_render_cache_global, set_render_global
 
 from test_unit_sprites import CONST, FILE_NAME, build_sld
 
@@ -129,7 +141,7 @@ def _elevations_and_proj(scn):
     """render_terrain_iso_with_proj's own two outputs -- the same pair the
     live IsoChunkCache feeds sprite_draws_by_anchor, rather than a
     hand-built projection that could drift from it."""
-    _img, elevations, proj = render.render_terrain_iso_with_proj(scn, with_sprites=True)
+    _img, elevations, proj = render_iso.render_terrain_iso_with_proj(scn, with_sprites=True)
     return elevations, proj
 
 
@@ -173,8 +185,8 @@ def _step_all(gen):
 
 def test_sliced_sprite_walk_equals_the_whole_one(sprite_install, mixed_scenario) -> None:
     elevations, proj = _elevations_and_proj(mixed_scenario)
-    whole = render.sprite_draws_by_anchor(mixed_scenario, proj, elevations)
-    sliced, _ = _step_all(render.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations))
+    whole = render_sprites.sprite_draws_by_anchor(mixed_scenario, proj, elevations)
+    sliced, _ = _step_all(render_sprites.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations))
 
     assert whole.by_anchor, "vacuous: the fixture resolved no sprites at all"
     assert whole.farm_by_tile, "vacuous: the fixture resolved no farm overrides"
@@ -186,13 +198,13 @@ def test_the_sprite_walk_yields_once_per_unit(sprite_install, mixed_scenario) ->
     `continue`s would still produce the right layer while letting a run of
     skipped units blow straight past the tick budget."""
     elevations, proj = _elevations_and_proj(mixed_scenario)
-    _, yields = _step_all(render.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations))
+    _, yields = _step_all(render_sprites.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations))
     assert yields == sum(len(units) for units in mixed_scenario.unit_manager.units)
 
 
 def test_sliced_flat_icon_walk_equals_the_whole_one(sprite_install, mixed_scenario) -> None:
-    whole = render._flat_icon_layer(mixed_scenario, 32)
-    sliced, yields = _step_all(render._flat_icon_layer_sliced(mixed_scenario, 32))
+    whole = render_flat._flat_icon_layer(mixed_scenario, 32)
+    sliced, yields = _step_all(render_flat._flat_icon_layer_sliced(mixed_scenario, 32))
 
     assert whole[0], "vacuous: the fixture resolved no icons at all"
     assert _icons_key(sliced) == _icons_key(whole)
@@ -208,7 +220,7 @@ def test_a_partial_sprite_walk_yields_no_layer(sprite_install, mixed_scenario) -
     a caller to observe (and install) a half-built layer. Each yield is the
     unit about to be resolved (Perf Trace's `max step`), in walk order."""
     elevations, proj = _elevations_and_proj(mixed_scenario)
-    gen = render.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations)
+    gen = render_sprites.sprite_draws_by_anchor_sliced(mixed_scenario, proj, elevations)
     units = [u for player_units in mixed_scenario.unit_manager.units for u in player_units]
     assert next(gen) is units[0]
     assert next(gen) is units[1]
@@ -226,16 +238,16 @@ def test_sliced_walks_equal_the_whole_ones_on_real_files(scenario_path) -> None:
         )
     scenario = load_map_and_units(scenario_path)
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
-    _img, elevations, proj = render.render_terrain_iso_with_proj(scenario, with_sprites=True)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    _img, elevations, proj = render_iso.render_terrain_iso_with_proj(scenario, with_sprites=True)
 
-    whole = render.sprite_draws_by_anchor(scenario, proj, elevations)
-    sliced, yields = _step_all(render.sprite_draws_by_anchor_sliced(scenario, proj, elevations))
+    whole = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
+    sliced, yields = _step_all(render_sprites.sprite_draws_by_anchor_sliced(scenario, proj, elevations))
     assert yields == sum(len(units) for units in scenario.unit_manager.units)
     assert _layer_key(sliced) == _layer_key(whole)
 
-    whole_icons = render._flat_icon_layer(scenario, tile_px)
-    sliced_icons, _ = _step_all(render._flat_icon_layer_sliced(scenario, tile_px))
+    whole_icons = render_flat._flat_icon_layer(scenario, tile_px)
+    sliced_icons, _ = _step_all(render_flat._flat_icon_layer_sliced(scenario, tile_px))
     assert _icons_key(sliced_icons) == _icons_key(whole_icons)
 
 
@@ -245,15 +257,15 @@ def test_sliced_walks_equal_the_whole_ones_on_real_files(scenario_path) -> None:
 def _iso_cache(scn):
     from descape.render_cache import IsoChunkCache
 
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
-    elevations, proj = render.elevations_and_proj(scn)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
+    elevations, proj = render_iso.elevations_and_proj(scn)
     return IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
 
 
 def _flat_cache(scn):
     from descape.render_cache import FlatChunkCache
 
-    return FlatChunkCache(scn, render.tile_pixels_for_map(MAP_W, MAP_H), sprites=True)
+    return FlatChunkCache(scn, render_paint.tile_pixels_for_map(MAP_W, MAP_H), sprites=True)
 
 
 def _warm(cache, mips):
@@ -286,7 +298,7 @@ def test_a_warm_installs_a_flat_icon_layer(sprite_install, mixed_scenario) -> No
     warmed = cache._level_icon_layers[1]
     assert warmed, "installed an empty icon layer -- vacuous"
     # The warm walk must take the cache's Farm Overlay value, as _level_icons() does (GH #150).
-    assert cache.layers.farm_overlay and any(draw is render.FLAT_DRAPED for draw in warmed.values())
+    assert cache.layers.farm_overlay and any(draw is render_flat.FLAT_DRAPED for draw in warmed.values())
     fresh = _flat_cache(mixed_scenario)._level_icons(1)
     assert {row: _draw_key(d) for row, d in warmed.items()} == {row: _draw_key(d) for row, d in fresh.items()}
 
@@ -294,11 +306,11 @@ def test_a_warm_installs_a_flat_icon_layer(sprite_install, mixed_scenario) -> No
 def _leveled_cache(style: str, scn, sprites: bool):
     from descape.render_cache import IsoChunkCache, SlopedChunkCache
 
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return IsoChunkCache(scn, elevations, proj, tile_px, sprites=sprites)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=sprites)
 
 
@@ -338,7 +350,7 @@ def test_top_down_flat_queues_nothing_with_sprites_off(mixed_scenario) -> None:
     being scheduled to do nothing."""
     from descape.render_cache import FlatChunkCache
 
-    flat = FlatChunkCache(mixed_scenario, render.tile_pixels_for_map(MAP_W, MAP_H), sprites=False)
+    flat = FlatChunkCache(mixed_scenario, render_paint.tile_pixels_for_map(MAP_W, MAP_H), sprites=False)
 
     assert flat.level_warm_job(1) is None
     assert not _warm(flat, [1]).is_active
@@ -348,11 +360,11 @@ def _sloped_cache(scn, headroom: bool = True):
     from descape import iso_geometry
     from descape.render_cache import SlopedChunkCache
 
-    tile_px = render.tile_pixels_for_map(MAP_W, MAP_H)
+    tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     if headroom:
-        elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     else:
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         corner_rise = iso_geometry.corner_rise_px(elevations, proj)
     return SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
 
@@ -845,9 +857,8 @@ def test_on_job_done_fires_after_each_neighbours_pack_derive(native_kernel, spri
 def test_on_job_done_does_not_fire_for_a_cancelled_pack_derive(
     native_kernel, sprite_install, mixed_scenario, monkeypatch,  # noqa: F811
 ) -> None:
-    from descape import render_cache
 
-    monkeypatch.setattr(render_cache, "PACK_WARM_TILES", 1)
+    set_render_cache_global(monkeypatch, "PACK_WARM_TILES", 1)
     monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
     with composite_backend.use_backend("native"):
         cache = _iso_cache(mixed_scenario)
@@ -948,10 +959,10 @@ def _assembly_key(built):
 
 def _assembled(cache, mip: int, monkeypatch, slice_units: int):
     """(bboxes, grid) and the yield count of cache._assemble_level() at
-    render.ASSEMBLY_SLICE = slice_units, over the level's own sprite layer."""
+    render_paint.ASSEMBLY_SLICE = slice_units, over the level's own sprite layer."""
     lvl = cache._levels[mip]
-    sprites, _memo = render._drain(cache._sprite_walk(lvl))
-    monkeypatch.setattr(render, "ASSEMBLY_SLICE", slice_units)
+    sprites, _memo = render_paint._drain(cache._sprite_walk(lvl))
+    set_render_global(monkeypatch, "ASSEMBLY_SLICE", slice_units)
     built, yields = _step_all(cache._assemble_level(lvl, sprites))
     return built, yields, sprites
 
@@ -961,12 +972,12 @@ def test_the_sliced_assembly_equals_the_whole_one(sprite_install, mixed_scenario
     the pre-split composition of the three public functions."""
     cache = _iso_cache(mixed_scenario)
     sliced, yields, sprites = _assembled(cache, 1, monkeypatch, 1)
-    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 10**9)
+    set_render_global(monkeypatch, "ASSEMBLY_SLICE", 10**9)
     mm, lvl = mixed_scenario.map_manager, cache._levels[1]
-    whole_bboxes = render.merge_sprite_bboxes(
-        render._building_bboxes_iso(mixed_scenario, mm.map_width, mm.map_height, lvl.proj, cache.elevations), sprites
+    whole_bboxes = render_sprites.merge_sprite_bboxes(
+        render_bbox._building_bboxes_iso(mixed_scenario, mm.map_width, mm.map_height, lvl.proj, cache.elevations), sprites
     )
-    whole = (whole_bboxes, render.build_bystander_grid(whole_bboxes, cache.chunk_px))
+    whole = (whole_bboxes, render_bbox.build_bystander_grid(whole_bboxes, cache.chunk_px))
 
     assert sprites.bboxes and whole_bboxes, "vacuous: nothing to assemble"
     assert _assembly_key(sliced) == _assembly_key(whole)
@@ -986,8 +997,8 @@ def test_the_sliced_assembly_equals_the_whole_one_on_real_files(scenario_path, m
 
     scenario = load_map_and_units(scenario_path)
     mm = scenario.map_manager
-    elevations, proj = render.elevations_and_proj(scenario)
-    cache = IsoChunkCache(scenario, elevations, proj, render.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
+    elevations, proj = render_iso.elevations_and_proj(scenario)
+    cache = IsoChunkCache(scenario, elevations, proj, render_paint.tile_pixels_for_map(mm.map_width, mm.map_height), sprites=True)
     mip = cache.mip_levels()[0]
     sliced, yields, _sprites = _assembled(cache, mip, monkeypatch, 7)
     whole, _, _ = _assembled(cache, mip, monkeypatch, 10**9)
@@ -999,19 +1010,19 @@ def test_a_warm_assembles_a_level_a_slice_per_step(sprite_install, mixed_scenari
     """Granularity in the driver, not just in the generator: at one step per
     tick no tick does more than one unit's bbox or one key's grid cells."""
     monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
-    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 1)
+    set_render_global(monkeypatch, "ASSEMBLY_SLICE", 1)
     per_tick = {"_building_bbox_for": 0, "_bbox_cells": 0}
     peaks = dict(per_tick)
     totals = dict(per_tick)
     for name in per_tick:
-        real = getattr(render, name)
+        real = render_global(name)
 
         def counted(*args, _real=real, _name=name, **kwargs):
             per_tick[_name] += 1
             totals[_name] += 1
             return _real(*args, **kwargs)
 
-        monkeypatch.setattr(render, name, counted)
+        set_render_global(monkeypatch, name, counted)
     cache = _iso_cache(mixed_scenario)
     warmer = _warm(cache, [1])
     while True:
@@ -1030,10 +1041,10 @@ def test_a_warm_assembles_a_level_a_slice_per_step(sprite_install, mixed_scenari
 def _mid_assembly(cache, monkeypatch):
     """A one-step-per-tick warm of level 1, stopped once its assembly has begun."""
     monkeypatch.setattr(level_warm, "BUDGET_MS", 0)
-    monkeypatch.setattr(render, "ASSEMBLY_SLICE", 1)
+    set_render_global(monkeypatch, "ASSEMBLY_SLICE", 1)
     seen = []
-    real = render._building_bbox_for
-    monkeypatch.setattr(render, "_building_bbox_for", lambda *a, **k: seen.append(1) or real(*a, **k))
+    real = render_bbox._building_bbox_for
+    set_render_global(monkeypatch, "_building_bbox_for", lambda *a, **k: seen.append(1) or real(*a, **k))
     warmer = _warm(cache, [1])
     while not seen:
         assert warmer.tick(), "the warm finished before its assembly began -- vacuous"
@@ -1083,7 +1094,7 @@ class _FakeJobsCache:
         self.log: list[tuple[int, int, int]] = []
 
     def level_warm_job(self, mip: int):
-        from descape.render_cache import LevelWarmJob
+        from descape.render_cache_common import LevelWarmJob
 
         def gen():
             for step in range(self.steps):
@@ -1191,7 +1202,7 @@ def test_a_traced_tick_names_its_longest_step_by_the_unit_it_resolved(monkeypatc
     from types import SimpleNamespace
 
     from descape import perf_trace
-    from descape.render_cache import LevelWarmJob
+    from descape.render_cache_common import LevelWarmJob
 
     clock = _StepClock()
     monkeypatch.setattr(level_warm, "_now", clock)

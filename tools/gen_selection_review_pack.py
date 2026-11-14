@@ -112,17 +112,25 @@ INJECTS = {
 COARSE_INJECT = "no-owner"
 
 
+# Saved in place of a name the owner only inherits, so restore deletes it.
+_INHERITED = object()
+
+
 @contextmanager
 def _patched(inject: str | None):
     patches = [] if inject is None else [INJECTS[inject]()]
-    saved = [(obj, name, obj.__dict__[name]) for obj, name, _new in patches]
+    saved = [(obj, name, obj.__dict__.get(name, _INHERITED)) for obj, name, _new in patches]
     for obj, name, new in patches:
         setattr(obj, name, new)
     try:
         yield
     finally:
-        for obj, name, old in saved:
-            setattr(obj, name, old)
+        for obj, name, old in reversed(saved):
+            # An inherited name (a MapView mixin's method) is deleted, never set back onto the subclass.
+            if old is _INHERITED:
+                delattr(obj, name)
+            else:
+                setattr(obj, name, old)
 
 
 # ----------------------------------------------------------------- capture

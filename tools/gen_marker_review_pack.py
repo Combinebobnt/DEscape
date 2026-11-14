@@ -34,9 +34,20 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, editor_markers, render, render_cache, unit_kind, unit_sprites
+from descape import (
+    asset_source,
+    editor_markers,
+    render_cache,
+    render_iso,
+    render_paint,
+    render_sloped,
+    render_sprites,
+    unit_kind,
+    unit_sprites,
+)
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
+from testkit.render_family import RENDER, patch
 
 PACK_ID = "markers"
 OUT_DIR = grp.OUT_DIR
@@ -103,13 +114,13 @@ def _scenario(scene: str, style: str):
 def _cache(scn, style: str):
     """The app's own chunk cache for this style, sprites on, as the viewer builds it."""
     mm = scn.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "flat":
         return render_cache.FlatChunkCache(scn, tile_px, sprites=True)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scn)
+        elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scn)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
     return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
 
 
@@ -177,12 +188,12 @@ def _inject_no_tint():
 
 def _inject_no_skip():
     """The coloured mark painted under each marker, as if it had not resolved to a sprite."""
-    real = render.sprite_draws_by_anchor
+    real = render_sprites.sprite_draws_by_anchor
 
     def unskipped(*args, **kwargs):
         return dataclasses.replace(real(*args, **kwargs), skip_ids=frozenset())
 
-    return render, "sprite_draws_by_anchor", unskipped
+    return RENDER, "sprite_draws_by_anchor", unskipped
 
 
 def _inject_tiny_symbol():
@@ -211,15 +222,15 @@ def _patched(inject: str | None):
     if inject is not None:
         built = INJECTS[inject]()
         patches = built if isinstance(built, list) else [built]
-    saved = [(mod, name, getattr(mod, name)) for mod, name, _new in patches]
-    for mod, name, new in patches:
-        setattr(mod, name, new)
-    unit_sprites.clear_caches()
+    import pytest
+
     try:
-        yield
+        with pytest.MonkeyPatch.context() as mp:
+            for target, name, new in patches:
+                patch(mp, target, name, new)
+            unit_sprites.clear_caches()
+            yield
     finally:
-        for mod, name, old in saved:
-            setattr(mod, name, old)
         unit_sprites.clear_caches()
 
 

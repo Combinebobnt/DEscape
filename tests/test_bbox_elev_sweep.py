@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from test_sprite_edit_bbox import CONST, Unit, sprite_install  # noqa: F401 -- fixture
 
-from descape import iso_geometry, render
+from descape import iso_geometry, render_bbox, render_iso, render_paint, render_sloped
 from descape.elevation_tools import set_tile_elevation
 from descape.render_cache import IsoChunkCache, SlopedChunkCache
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
@@ -102,17 +102,17 @@ EDITS = [
 
 def _make_cache(style, scenario, sprites):
     mm = scenario.map_manager
-    tile_px = render.tile_pixels_for_map(mm.map_width, mm.map_height)
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
     if style == "stepped":
-        elevations, proj = render.elevations_and_proj(scenario)
+        elevations, proj = render_iso.elevations_and_proj(scenario)
         return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=sprites), elevations, proj
-    elevations, corner_rise, proj = render.sloped_elevations_and_proj(scenario)
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
     return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=sprites), elevations, proj
 
 
 def _window(proj, canvas_dims, radius):
     ex, ey = EDIT
-    pad_l, pad_u, pad_r, pad_d = render._sprite_reach_px(proj)
+    pad_l, pad_u, pad_r, pad_d = render_bbox._sprite_reach_px(proj)
     x0 = y0 = x1 = y1 = None
     for x in range(ex - radius, ex + radius + 1):
         for y in range(ey - radius, ey + radius + 1):
@@ -152,7 +152,7 @@ def test_changed_pixels_stay_inside_the_bbox(request, style, sprites, edit_id, b
     dirty = _dirty(mm, before_state)
     assert dirty, "fixture edit changed nothing"
 
-    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     elevation_changed: set = set()
     bbox = bbox_fn(
         scenario, dirty, elevations, proj, with_units=True, with_sprites=sprites,
@@ -228,7 +228,7 @@ def _one_level_case(monkeypatch, style, pct, edit, mip):
     edit(mm)
     dirty = _dirty(mm, before_state)
     assert dirty, "fixture edit changed nothing"
-    bbox_fn = render.dirty_screen_bbox_iso if style == "stepped" else render.dirty_screen_bbox_sloped
+    bbox_fn = render_bbox.dirty_screen_bbox_iso if style == "stepped" else render_bbox.dirty_screen_bbox_sloped
     elevation_changed: set = set()
     bbox = bbox_fn(scenario, dirty, elevations, proj, with_units=True, elevation_changed=elevation_changed)
     assert bbox is not None

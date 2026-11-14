@@ -9,6 +9,7 @@ import pytest
 
 from descape.edit_history import CompositeDiffRecord
 from descape.unit_model import UnitEditModel
+from testkit.viewer_family import set_viewer_global, viewer_global
 
 import conftest
 
@@ -480,11 +481,9 @@ def test_a_paste_whose_skirt_leaves_the_block_records_the_full_map_diff(anchor) 
 def test_the_paste_record_guard_catches_an_uncaptured_skirt(monkeypatch) -> None:
     """Control: a set_tiles_elevation that writes the skirt without reporting
     it through before_write must fail the guard."""
-    import descape.viewer as viewer_module
-
-    real = viewer_module.set_tiles_elevation
+    real = viewer_global("set_tiles_elevation")
     window, _rect, _between = _skirt_window((30, 30))
-    monkeypatch.setattr(viewer_module, "set_tiles_elevation", lambda mm, targets, before_write=None: real(mm, targets))
+    set_viewer_global(monkeypatch, "set_tiles_elevation", lambda mm, targets, before_write=None: real(mm, targets))
     try:
         with pytest.raises(AssertionError, match="missing"):
             _paste_record_guard(window)
@@ -498,10 +497,9 @@ def test_a_paste_raising_mid_skirt_still_records_every_tile_it_wrote(monkeypatch
     stroke closes through _close_stroke_on_error, whose unscoped-looking
     commit diffs the scoped captures: terrain, targets and the written part
     of the skirt."""
-    import descape.viewer as viewer_module
     from descape.edit_history import TileDiffRecord, tile_state
 
-    real = viewer_module.set_tiles_elevation
+    real = viewer_global("set_tiles_elevation")
     captured: list[int] = []
 
     def raising(mm, targets, before_write=None):
@@ -514,7 +512,7 @@ def test_a_paste_raising_mid_skirt_still_records_every_tile_it_wrote(monkeypatch
         return real(mm, targets, before_write=capture)
 
     window, rect, _between = _skirt_window((30, 30))
-    monkeypatch.setattr(viewer_module, "set_tiles_elevation", raising)
+    set_viewer_global(monkeypatch, "set_tiles_elevation", raising)
     try:
         mm = window.scenario.map_manager
         start = [tile_state(t) for t in mm.terrain]
