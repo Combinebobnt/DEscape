@@ -34,7 +34,7 @@ def _settled(*, anchor: str = "top-left", at=None, reach: bool = True, placehold
     waits for refine."""
     from PyQt5.QtCore import QPoint, QPointF
 
-    window = _window(placeholders=placeholders, size=1360, height=1030)
+    window = _window(placeholders=placeholders, size=1360, height=1122)
     window.set_reach_warm_allowed(reach)
     view = window.map_view
     view.set_zoom_anchor_mode(True)
@@ -398,7 +398,7 @@ def test_no_reach_without_a_worker_path() -> None:
     GUI thread, so they queue no reach, opted in or not."""
     from PyQt5.QtWidgets import QApplication
 
-    window = _window(size=1360, height=1030)
+    window = _window(size=1360, height=1122)
     try:
         window.set_reach_warm_allowed(True)
         window.iso_action.setChecked(False)
