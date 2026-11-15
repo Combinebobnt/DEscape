@@ -92,14 +92,19 @@ def _inflate(raw: bytes, start: int, cap: int) -> tuple[bytes, int] | None:
 def find_body(raw: bytes, *, limit: int = BODY_SEARCH_LIMIT, min_bytes: int = MIN_BODY_BYTES, cap: int = BODY_CAP) -> Body | str:
     """The one offset in [BODY_SEARCH_START, limit) where a raw-deflate
     stream starts, ends, and inflates to at least `min_bytes` (at most
-    `cap`). Returns the Body, or a reason string when no start or more than
-    one start qualifies."""
+    `cap`). A start whose stream ends where a later one's does, with that
+    later stream's output as its tail, is the later stream with junk in
+    front and doesn't count. Returns the Body, or a reason string when no
+    start or more than one start qualifies."""
     found: list[Body] = []
     for start in range(BODY_SEARCH_START, min(limit, len(raw))):
         result = _inflate(raw, start, cap)
         if result is None or len(result[0]) < min_bytes:
             continue
         found.append(Body(start, result[0], result[1]))
+    # A start a few bytes early can decode junk, then fall into step with the
+    # real stream at a block boundary: same end, output = junk + the real data.
+    found = [a for a in found if not any(b.start > a.start and b.trailing == a.trailing and a.data.endswith(b.data) for b in found)]
     # A stream that runs to the end of the file wins over one with trailing
     # bytes: a short accidental stream can start inside the body (one corpus
     # file has one at 4266, 59341 bytes before the end).

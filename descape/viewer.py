@@ -570,6 +570,8 @@ class ViewerWindow(
         self._placeholders_allowed = LIVE_PLACEHOLDERS
         # The canvas item that last reported a new pending level; both timers no-op for any other.
         self._placeholder_item = None
+        # (mip, margin_warm._now()) when that level became pending: its deferral's clock (TASK-031.82 D7).
+        self._pending_since: tuple[int, float] | None = None
         # Re-anchors the warm out of paint, on the next event-loop turn.
         self._placeholder_pending_timer = QTimer(self)
         self._placeholder_pending_timer.setSingleShot(True)

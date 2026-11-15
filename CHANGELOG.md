@@ -46,6 +46,11 @@ content, link the doc instead of summarizing it.
   unit cards, the button grid and the instruction preview. (contributed by
   @teslatankx, #376)
 
+### Changed
+
+- **`tools/release_render_diff.py` compares against the latest release**
+  (now v0.11).
+
 ### Fixed
 
 - **Trigger-created building ghosts** (GH #369): an even-sized building

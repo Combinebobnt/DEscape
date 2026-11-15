@@ -243,7 +243,12 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
         for px in (floor, 600, floor):
             _set_left(window, px)
             seen.append(tree.header().isSectionHidden(2))
-            assert not tree.horizontalScrollBar().isVisible(), px
+            vp = tree.viewport()
+            # The geometry in the message: this failed only on Windows at 120 DPI, unreproduced on Linux.
+            assert not tree.horizontalScrollBar().isVisible(), (
+                px, vp.width(), vp.height(), [tree.columnWidth(i) for i in range(3)],
+                tree.sizeHintForColumn(0), tree.sizeHintForColumn(1), tree.verticalScrollBar().isVisible(),
+            )
         assert seen == [True, False, True]
     finally:
         conftest.close_window(window)

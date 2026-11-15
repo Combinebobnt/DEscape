@@ -21,6 +21,14 @@ pytestmark = [
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
 
+
+@pytest.fixture(autouse=True)
+def _no_install_from_the_environment(monkeypatch):
+    """The no-install cases stay so with AOE2DE_INSTALL_PATH set, which outranks the config conftest hides."""
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 _ARCHER = 4  # icon 17: the fake install's red unit portrait
 _CASTLE = 82  # icon 7, a building: the fake install's green one
 _MILITIA = 74  # icon 8, no file in the fake install

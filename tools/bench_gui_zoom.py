@@ -92,7 +92,11 @@ prime a crossing cancelled (TASK-031.82 D6). Margin warms defer a cold level's f
 while input is live (TASK-031.82 D3, margin_warm.DEFER_COLD_FIRST). --no-margin-fix keeps
 all three off (render_cache_leveled.WARM_NATIVE_INPUTS and DEFER_COLD_FIRST), the A arm of
 TASK-031.82's margin-chunk bench. Each margin chunk records level_warmed and primed at its
-start, and GATES' margin_warm block lists the deferrals.
+start, and GATES' margin_warm block lists the deferrals. The viewer's pending level defers
+for at most margin_warm.PENDING_DEFER_MAX_MS from when it became pending (TASK-031.82 D7,
+GATES pending_cap_ms); --no-pending-cap drops that deadline, the control for the cap's check.
+GATES' placeholder_passes list each placeholder wait as a visit ({mip, start, end, end_kind}:
+sharp, superseded or still open at the pass end) beside worst_wait_ms.
 
 --profile-paint N wraps MapCanvasItem.paint in cProfile and prints the N
 slowest paints' top 25 by cumtime (cProfile inflates every figure; read it for
@@ -137,6 +141,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -807,6 +812,30 @@ def sharp_waits(frames: list[Frame]) -> tuple[list[tuple[int, Frame, Frame]], in
         elif f.mip in opened and f.full_real:
             done.append((f.mip, opened.pop(f.mip), f))
     return done, superseded, len(opened)
+
+
+def placeholder_visits(frames: list[Frame], pass_end: float) -> list[dict]:
+    """sharp_waits()' waits, every one timed (TASK-031.82 D7): {mip, start, end, end_kind}, where
+    `start` is the first placeholder frame's start and `end` the sharp frame's end ("sharp"),
+    the superseding frame's start ("superseded") or `pass_end` ("open")."""
+    opened: dict[int, Frame] = {}
+    visits = []
+
+    def close(level: int, end: float, kind: str) -> None:
+        visits.append({"mip": level, "start": opened.pop(level).start, "end": end, "end_kind": kind})
+
+    for f in frames:
+        if f.mip is None:
+            continue
+        for level in [lv for lv in opened if lv != f.mip]:
+            close(level, f.start, "superseded")
+        if f.placeholder:
+            opened.setdefault(f.mip, f)
+        elif f.mip in opened and f.full_real:
+            close(f.mip, f.end, "sharp")
+    for level in list(opened):
+        close(level, pass_end, "open")
+    return sorted(visits, key=lambda v: v["start"])
 
 
 def _window_frames(click: Click, frames: list[Frame]) -> list[Frame]:
@@ -1662,6 +1691,10 @@ def apply_module_arms(args, monkeypatch=None) -> None:
     if args.no_margin_fix:
         set_render_cache_global(mp, "WARM_NATIVE_INPUTS", False)
         mp.setattr(margin_warm, "DEFER_COLD_FIRST", False)
+    # The pending level's deferral cap (TASK-031.82 D7), moot once the defer is off; --no-pending-cap
+    # is V5's control, the viewer then passing no deadline (a6755d9's unbounded deferral).
+    if args.no_margin_fix or args.no_pending_cap:
+        mp.setattr(margin_warm, "PENDING_DEFER_MAX_MS", None)
 
 
 def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
@@ -1719,7 +1752,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f" mode {window.mode}, passes {','.join(passes)}, placeholders {'off' if args.no_placeholders else 'on'},"
             f" preframes {'off' if args.no_preframes else 'on'}, reach {'off' if args.no_reach else 'on'},"
             f" input budget {'off' if args.no_input_budget else 'on'},"
-            f" native prime {'off' if args.no_margin_fix else 'on'}, margin defer {'off' if args.no_margin_fix else 'on'}"
+            f" native prime {'off' if args.no_margin_fix else 'on'}, margin defer {'off' if args.no_margin_fix else 'on'},"
+            f" pending cap {margin_warm.PENDING_DEFER_MAX_MS}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1787,7 +1821,15 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             p = placeholder_stats(name, cl, in_pass, acts, lines, seen)
             p.pending_at_end = pending
             output += placeholder_lines(p)
+            visits = placeholder_visits(in_pass, end)
+            worst_wait = max(((v["end"] - v["start"]) * 1000 for v in visits), default=None)
+            kinds = Counter(v["end_kind"] for v in visits)
+            output.append(
+                f"  placeholder visits: {len(visits)} ({kinds['sharp']} sharp, {kinds['superseded']} superseded,"
+                f" {kinds['open']} open), worst wait {_f(worst_wait)} ms dev (reported only)"
+            )
             ph_json[name] = {
+                "visits": visits, "worst_wait_ms": worst_wait,
                 "frames": p.frames, "worst_canvas_ms": p.worst_canvas_ms, "worst_sharp_ms": p.worst_sharp_ms,
                 "waits": len(p.waits), "superseded": p.superseded, "open": p.open, "force_settles": p.force_settles,
                 "stalls": p.stalls, "pending_at_end": pending, "crossing_cold": p.crossing_cold,
@@ -1820,7 +1862,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
             "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
             "native_prime": render_cache_leveled.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
-            "level_warm_passes": warm_json,
+            "pending_cap_ms": margin_warm.PENDING_DEFER_MAX_MS, "level_warm_passes": warm_json,
             "runtime": runtime,
         }, rec, bench, bounds)
     finally:
@@ -1881,6 +1923,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="level warms skip native input priming and its re-queue (TASK-031.85, TASK-031.82 D6)"
                         " and margin warms never defer a cold level's first chunk during input (TASK-031.82 D3):"
                         " the A arm of TASK-031.82's bench; the app's default is on")
+    parser.add_argument("--no-pending-cap", action="store_true",
+                        help="the pending level's cold-first defer has no deadline (TASK-031.82 D7's control,"
+                        " V5 must fail on it; the app caps it at margin_warm.PENDING_DEFER_MAX_MS)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     return parser
 
@@ -1893,7 +1938,8 @@ def child_command(args, style: str, sprites: str, passes: list[str]) -> list[str
     cmd += ["--window", f"{args.window[0]}x{args.window[1]}"]
     if args.root:
         cmd += ["--root", str(args.root)]
-    for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget", "no_margin_fix"):
+    for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget", "no_margin_fix",
+                 "no_pending_cap"):
         if getattr(args, flag):
             cmd.append(f"--{flag.replace('_', '-')}")
     return cmd

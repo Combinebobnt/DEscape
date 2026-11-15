@@ -164,6 +164,7 @@ def test_a_data_mods_new_terrains_are_placed_by_the_game_editors_rule(gb_like_mo
     assert not by_id[0].mod and by_id[0].category == "Grass", "an untouched AoE2 row keeps the stock rule"
 
 
+@pytest.mark.usefixtures("fake_install")
 def test_a_changed_id_shows_the_mods_name_and_hidden_flag(gb_like_mod):
     game_dataset.set_data_mod(gb_like_mod)
     assert MOON_GRASS in object_catalog.data_mod_terrain_ids()

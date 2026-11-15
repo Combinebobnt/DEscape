@@ -148,6 +148,13 @@ font, DPI and one reference string's advance. Two guard tests back this up:
 `XDG_CONFIG_HOME` and `AOE2DE_INSTALL_PATH` hidden and an empty
 `--scenario-dir`, and fails on any collection error, and
 `test_font_dpi_sweep.py` runs the `font_sensitive` checks across DPIs.
+
+`AOE2DE_INSTALL_PATH` outranks the config `conftest.py` hides, so a test
+whose premise is "no install" deletes it itself (the autouse
+`_no_install_from_the_environment` fixture several files carry), and a test
+that needs an install takes `fake_install` (or its own
+`set_install_path_override()`), which outranks the variable.
+
 Pass `--scenario-dir` in its `=` form when the path is outside the repo and
 no test path follows: otherwise the bare directory becomes pytest's rootdir
 and the option goes unrecognised.

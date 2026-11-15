@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from descape import asset_source
 from testkit.viewer_family import set_viewer_global
 
 import conftest
@@ -17,6 +18,14 @@ pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _no_install_from_the_environment(monkeypatch):
+    """The no-install cases stay so with AOE2DE_INSTALL_PATH set, which outranks the config conftest hides."""
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
 
 UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
 _FARM = 50  # draws as terrain 7 under the farm overlay
