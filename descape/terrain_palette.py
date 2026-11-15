@@ -106,6 +106,11 @@ def color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
     real = asset_source.get_terrain_average_color(terrain_id)
     if real is not None:
         return real
+    return palette_color_for_terrain_id(terrain_id)
+
+
+def palette_color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
+    """color_for_terrain_id()'s keyword-palette fallback, which never touches a texture."""
     return _TERRAIN_COLOR_CACHE.get(terrain_id, _DEFAULT_COLOR)
 
 

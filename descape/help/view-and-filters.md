@@ -51,9 +51,11 @@ A greyed layer has nothing to do in the current view, and its tooltip says why.
 
 ### Panels
 
-The side panel and the status log can leave their places. Drag either by its title bar to float it as its own window, say on a second monitor so the map gets the whole main window. Drag a floating one back onto an edge of the main window to dock it there: the left or right edge for the side panel, any edge for the log. The side panel's title names the current mode.
+The side panel, the status log and the minimap can leave their places. Drag any of them by its title bar to float it as its own window, say on a second monitor so the map gets the whole main window. Drag a floating one back onto an edge of the main window to dock it there: the left or right edge for the side panel, any edge for the log and the minimap. The side panel's title names the current mode.
 
-**View > Panels** shows or hides the Editor Panel and the Status Log; the close button on a title bar hides it too. Switching mode brings a hidden side panel back. **View > Panels > Reset Layout** docks the side panel on the left and the log under the map again, and brings back a toolbar hidden from the right-click menu. DEscape remembers where both are between launches; a panel left on a monitor that is gone comes back on a live one.
+**View > Panels** shows or hides the Editor Panel, the Status Log and the Minimap; the close button on a title bar hides it too. Switching mode brings a hidden side panel back. **View > Panels > Reset Layout** docks the side panel on the left, the log under the map and the minimap right of the log again, and brings back a toolbar hidden from the right-click menu. DEscape remembers where all three are between launches; a panel left on a monitor that is gone comes back on a live one.
+
+**View > Panels > Minimap** shows the whole map, one dot per tile, in the main view's orientation: a diamond in the isometric views, a square in Flat top-down. Terrain takes each texture's average colour once that texture has loaded, and units are drawn over their footprint, trees dark green, resources in their own colour and everything else in its owner's colour; units the Filters hide are left out. A white outline marks what the map shows, and in Stepped and Sloped it sits on the ground at elevation 0, as the game's does. Click or drag on the minimap to move the view there. It refreshes shortly after each edit, undo or Filters change, and a brush stroke shows when you let go. The bottom row is at least 180 pixels tall while the minimap is docked there.
 
 ## Filters
 

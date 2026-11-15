@@ -748,13 +748,14 @@ class _ViewerMenusMixin:
         for layer_id, action in self.layer_actions.items():
             action.toggled.connect(lambda on, lid=layer_id: self._on_layer_toggled(lid, on))
 
-        # GH #64: the docks _build_docks() made. The log's own toggle action keeps its fixed title.
+        # GH #64: the docks _build_docks() made. The log's and minimap's own toggle actions keep their fixed titles.
         view_menu.addSeparator()
         panels_menu = KeepOpenMenu("Pan&els", view_menu)
         view_menu.addMenu(panels_menu)
-        panels_menu.menuAction().setToolTip("Show or hide the editor panel and the status log")
+        panels_menu.menuAction().setToolTip("Show or hide the editor panel, the status log and the minimap")
         panels_menu.addAction(self.panel_dock_action)
         panels_menu.addAction(self.log_dock.toggleViewAction())
+        panels_menu.addAction(self.minimap_dock.toggleViewAction())
         panels_menu.addSeparator()
         panels_menu.addAction(self.reset_layout_action)
 
@@ -1014,6 +1015,7 @@ class _ViewerMenusMixin:
             "view_instruction_overlay": self.instruction_overlay_action,
             "view_panel_dock": self.panel_dock_action,
             "view_log_dock": self.log_dock.toggleViewAction(),
+            "view_minimap_dock": self.minimap_dock.toggleViewAction(),
             "view_reset_layout": self.reset_layout_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
             "view_pan_up": self.view_pan_up_action,

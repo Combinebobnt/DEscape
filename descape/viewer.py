@@ -13,8 +13,8 @@ class plus 19 mixins, one module per area:
 - viewer_menus.py: the menu bar, keybind actions, About and Help, and the
   Settings, Debug Log and Mirror dialog openers.
 - viewer_toolbar.py: tool overflow, the toolbar, the status bar, the
-  editor panel and status log docks and their saved layout, and panel
-  sizing.
+  editor panel, status log and minimap docks and their saved layout, and
+  panel sizing.
 - viewer_unit_inspector.py: unit field edits, selection reconcile and the
   garrison block.
 - viewer_unit_move.py: the unit index, click and marquee select, drag, group
@@ -25,7 +25,8 @@ class plus 19 mixins, one module per area:
 - viewer_unit_edit.py: _unit_edit, _after_unit_mutation and the chunk-cache
   patch path.
 - viewer_history.py: undo, redo and the refresh after a history move.
-- viewer_view.py: unit filters, sprites and layers, overlay toggles.
+- viewer_view.py: unit filters, sprites and layers, overlay toggles, and
+  the minimap's refresh and pan.
 - viewer_trigger_overlay.py: area edit, the tile and unit pickers and
   trigger overlay drawing.
 - viewer_options.py: Map Options, Players, AI, Point of View, Disabled
@@ -162,6 +163,7 @@ from descape.map_options_panel import MapOptionsPanel
 from descape.map_view import MapView
 from descape.messages_model import MessagesEditModel
 from descape.messages_panel import MessagesPanel
+from descape.minimap_panel import MinimapPanel
 from descape.new_map_dialog import NewMapDialog
 from descape.options_model import (
     OptionsEditModel,
@@ -189,6 +191,7 @@ from descape.viewer_common import (
     _LEFT_PAGE_FOR_MODE,
     _LEFT_PAGE_INFO,
     HOVER_IDLE_TEXT,
+    MINIMAP_DEBOUNCE_MS,
     FontScaledWidth,
     StatRow,
     _RotationDrag,
@@ -678,9 +681,20 @@ class ViewerWindow(
         # below, since reset()/mark_saved() fire that hook and the refresh
         # reads this attribute.
         self._history_dialog: EditHistoryDialog | None = None
+        # GH #54: one minimap rebuild 200 ms after the last change; also before on_change.
+        self._minimap_timer = QTimer(self)
+        self._minimap_timer.setSingleShot(True)
+        self._minimap_timer.setInterval(MINIMAP_DEBOUNCE_MS)
+        self._minimap_timer.timeout.connect(self._rebuild_minimap)
+        # The history content_key the minimap last saw, and the decoded texture count at its last build.
+        self._minimap_key = None
+        self._minimap_textures = 0
+        # Whether the last build drew a palette colour for an undecoded texture, and whether the timer is a retry.
+        self._minimap_fallback = False
+        self._minimap_retrying = False
         # Every EditHistory mutation repaints the History window, rather than
         # the ~30 push sites each growing a refresh call of their own.
-        self.edit_history.on_change = self._refresh_history_dialog
+        self.edit_history.on_change = self._on_history_changed
         # Armed by a paste that actually wrote something; while it is set, the
         # committed region can be dragged to re-place that same snapshot
         # somewhere else. Always assigned through _set_paste_move(), never
@@ -1032,6 +1046,7 @@ class ViewerWindow(
         self.status_log.setReadOnly(True)
         self.status_log.setMaximumBlockCount(200)
         self._update_log_min_height()
+        self.minimap_panel = MinimapPanel()
 
         self.map_view.setMinimumWidth(settings.MIN_SPLIT_PANE)
         # QGraphicsView's own 70 px minimumSizeHint shows only background on a
@@ -1060,6 +1075,10 @@ class ViewerWindow(
         # touches only self._cache/settings/self.map_view, none of which
         # need _build_status_bar() to have run first.
         self.map_view.on_viewport_changed = self._on_viewport_changed
+        # GH #54: the minimap's box follows the view, and a click on it moves the view.
+        self.map_view.on_view_moved = self._push_minimap_view
+        self.minimap_panel.on_pan = self._on_minimap_pan
+        self.minimap_panel.on_released = self._on_minimap_released
         # After _build_toolbar(): the hook re-gates the Clear rulers button it builds.
         self.map_view.on_pinned_rulers_changed = self._on_pinned_rulers_changed
         self.map_view.on_pinned_rulers_edited = self._on_pinned_rulers_edited
@@ -1325,6 +1344,7 @@ class ViewerWindow(
         # dispatched from inside a load's own processEvents() would then null
         # it out from under load_scenario's remaining writes to it.
         self._paint_report_timer.stop()
+        self._minimap_timer.stop()
         self.data_mod_menu.shutdown()
         settings.set_window_size(self.width(), self.height())
         self._close_docks()

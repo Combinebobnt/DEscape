@@ -29,8 +29,9 @@ from test_unit_sprites import CONST
 
 # Wide enough that a level's view spans 3+ chunks (TASK-031.25 T3b, T3i), and short, so
 # two levels' views fit the blank fixture's small chunk byte budget (its level-0 canvas area x 3).
+# Heights here are window heights: GH #54's 180 px minimap row took 92 px from the map, added back.
 WIDE = 2200
-WIDE_HEIGHT = 1100
+WIDE_HEIGHT = 1192
 NARROW = 1600
 
 
@@ -408,7 +409,7 @@ def test_a_placeholder_frame_registers_with_the_refined_one(monkeypatch) -> None
     seen as (2, 0)."""
     # The viewport the splitter layout gave (1370 px tall). At 1345-1349 the placeholder misregisters
     # by (2, -1), before GH #64's docks too: a separate bug, not this test's subject.
-    window = _window(height=NARROW + 23)
+    window = _window(height=NARROW + 115)
     try:
         view = window.map_view
         item = view._canvas_item
@@ -951,7 +952,7 @@ def test_a_wheel_notch_across_a_level_lands_sharp_wherever_the_view_sits(on_curs
     sharp: no placeholder and no chunk composited in the paint."""
     from PyQt5.QtCore import QPoint
 
-    window = _window(size=1360, height=1030)
+    window = _window(size=1360, height=1122)
     try:
         view = window.map_view
         item = view._canvas_item
@@ -999,7 +1000,7 @@ def _zoom_out_roll(start_scale: float, notches: int, edge: bool, reach: bool) ->
     of the residual ~0.51 this roll needs."""
     from PyQt5.QtCore import QPoint, QPointF
 
-    window = _window(size=1360, height=1030)
+    window = _window(size=1360, height=1122)
     try:
         window.set_reach_warm_allowed(reach)
         view = window.map_view

@@ -896,6 +896,8 @@ class _ViewerFileMixin:
         # came (or came late) must not have its line attributed to this file.
         self._paint_report_timer.stop()
         self._pending_paint_report = None
+        # The previous document's pending rebuild; the render at the end of the load arms the next.
+        self._minimap_timer.stop()
         try:
             self._log_status(f"Loading scenario: {path}")
             self.statusBar().showMessage(
@@ -962,6 +964,8 @@ class _ViewerFileMixin:
             self._drop_erase_stroke()
             self._drop_unit_brush_stroke()
             self.edit_history.reset()
+            # The old map's image would take the new map's viewport box until the rebuild.
+            self.minimap_panel.set_image(None)
             # A new document is a new autosave key and a fresh "never
             # autosaved" state; the untitled key rides _doc_id, so reusing
             # the old one would rotate a different document's slots.
@@ -1156,6 +1160,8 @@ class _ViewerFileMixin:
         self.disarm_unit_picker()
         self._unit_ref_index = None
         self.map_view.clear_image()
+        self._minimap_timer.stop()
+        self.minimap_panel.set_image(None)
         self._refresh_colour_mood_preview()
         # No edit tool has anything to act on with no map open; forcing Pan
         # (rather than just disabling the edit tools) keeps MapView's own

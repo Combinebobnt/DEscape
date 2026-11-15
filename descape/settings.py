@@ -2583,6 +2583,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #64's View > Panels. Ship unbound, same reasoning as view_distance_ticks above.
     ("view_panel_dock", "Editor Panel", ""),
     ("view_log_dock", "Status Log", ""),
+    ("view_minimap_dock", "Minimap", ""),
     ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows

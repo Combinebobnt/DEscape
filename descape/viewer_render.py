@@ -1335,6 +1335,8 @@ class _ViewerRenderMixin:
             self._refresh_camera_markers()
             # A quality change or style switch can add or remove the native level.
             self._update_zoom_native_action()
+            # Through the timer, so the build lands after the first paint and outside this timing.
+            self._schedule_minimap()
             return time.perf_counter() - t0, tile_px
         finally:
             QApplication.restoreOverrideCursor()

@@ -486,6 +486,12 @@ OFF_GRID_FALLBACK_MESSAGE = (
 )
 
 
+# GH #54: the minimap rebuilds once this long after the last change, and
+# again at the retry interval while textures it drew in palette colours load.
+MINIMAP_DEBOUNCE_MS = 200
+MINIMAP_RETRY_MS = 1000
+
+
 # Which editor-panel page each mode shows. One dock whose pages swap inside it
 # (GH #64), not a dock per panel -- the mode already says which one is
 # relevant, so per-panel docks would duplicate the show/hide a stack gets free.
