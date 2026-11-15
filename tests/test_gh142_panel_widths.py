@@ -244,12 +244,33 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
             _set_left(window, px)
             seen.append(tree.header().isSectionHidden(2))
             vp = tree.viewport()
-            # The geometry in the message: this failed only on Windows at 120 DPI, unreproduced on Linux.
+            # The geometry in the message: this failed on Windows at 120 DPI; the next test pins why.
             assert not tree.horizontalScrollBar().isVisible(), (
                 px, vp.width(), vp.height(), [tree.columnWidth(i) for i in range(3)],
                 tree.sizeHintForColumn(0), tree.sizeHintForColumn(1), tree.verticalScrollBar().isVisible(),
             )
         assert seen == [True, False, True]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_back_at_the_floor_the_horizontal_bar_hides_without_a_timer() -> None:
+    """The narrow, wide, narrow drag above with posted events only: fit_columns() syncs the
+    scroll bar ranges itself, so the bar shown while the vertical one appeared does not wait
+    for QTreeView's 0 ms column-resize timer, which one processEvents() on Windows did not run."""
+    from PyQt5.QtCore import QCoreApplication, Qt
+
+    window = _blank_window()
+    try:
+        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE)
+        _show_view_player(window, 1)
+        tree = window.info_tree
+        for px in (floor, 600, floor):
+            window.resizeDocks([window.panel_dock], [px], Qt.Horizontal)
+            for _ in range(6):
+                QCoreApplication.sendPostedEvents()
+            assert not tree.horizontalScrollBar().isVisible(), (px, tree.viewport().width(), [tree.columnWidth(i) for i in range(3)])
     finally:
         conftest.close_window(window)
 

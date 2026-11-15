@@ -299,6 +299,8 @@ class _InfoTree(QTreeWidget):
             stat = max(3 * self.indentation() + self._STAT_MIN_CHARS * chars, room)
             self.setColumnWidth(0, stat)
             self.setColumnWidth(1, max(value, viewport - stat))
+        # The scroll bar ranges now, not on QTreeView's 0 ms column-resize timer, so a stale bar hides with posted events.
+        self.updateGeometries()
 
     def viewportEvent(self, event) -> bool:
         handled = super().viewportEvent(event)
