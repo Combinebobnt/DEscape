@@ -425,6 +425,8 @@ class TriggerPanel(
         # GH #130: PlayerId combos' labels and swatches, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
+        # GH #374: the instruction preview's portrait colour index per player, pushed with the colours.
+        self._team_indices = None
         # GH #140: the form's Display Instructions preview, or None.
         self._instruction_preview: InstructionPreview | None = None
         # GH #167: the facet-direction preview and the field it sits under, or None and "".

@@ -764,16 +764,46 @@ def test_a_unit_portrait_follows_the_players_civ(monkeypatch, player, red) -> No
         _close(window)
 
 
-@pytest.mark.parametrize("player", [1, -1], ids=["player", "every_player"])
-def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> None:
-    """GH #372: DE leaves the region transparent for the game to fill; "every player" gets GAIA's colour."""
+def test_a_unit_portrait_follows_the_players_stored_colour(monkeypatch) -> None:
+    """GH #374: the player's colour index as edited, not its id."""
     import numpy as np
 
-    from descape import asset_source
+    from descape import asset_source, catalog_thumbs
+    from descape.terrain_palette import PORTRAIT_COLORS
 
     def portrait(*_args):
         arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
-        arr[2:6, 2:6] = (255, 255, 255, 0)  # DE's transparent region, full-bright shading
+        arr[2:6, 2:6] = (128, 128, 128, 0)
+        return arr
+
+    portrait.cache_clear = lambda: None
+    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _SPEARMAN, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": 1},
+    )
+    try:
+        window.scenario.team_indices = (0, 3, *window.scenario.team_indices[2:])  # P1 stored as GREEN
+        window.trigger_panel.refresh_portraits()
+        image = _grid(window)._icon(_SPEARMAN, "unit").toImage()
+        expected = catalog_thumbs.tinted(np.array([[[128, 128, 128, 0]]], np.uint8), PORTRAIT_COLORS[3])[0, 0, :3].tolist()
+        assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("player", [1, -1], ids=["player", "every_player"])
+def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> None:
+    """GH #372: DE leaves the region transparent for the game to fill; "every player" gets GAIA's colour.
+    GH #374: the game editor panel's colour by the player's colour index, at a mid shade so GAIA's is not flat white."""
+    import numpy as np
+
+    from descape import asset_source
+    from descape.terrain_palette import PORTRAIT_COLORS
+
+    def portrait(*_args):
+        arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
+        arr[2:6, 2:6] = (128, 128, 128, 0)  # DE's transparent region, mid shading
         return arr
 
     portrait.cache_clear = lambda: None
@@ -786,9 +816,10 @@ def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> 
         image = _grid(window)._icon(_SPEARMAN, "unit").toImage()
         from descape import catalog_thumbs
 
-        rgb = tuple(window.scenario.player_colors[max(player, 0)][:3])
-        expected = catalog_thumbs.tinted(np.array([[[255, 255, 255, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
+        rgb = PORTRAIT_COLORS[window.scenario.team_indices[player]] if player >= 0 else PORTRAIT_COLORS[0]
+        expected = catalog_thumbs.tinted(np.array([[[128, 128, 128, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
         assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+        assert expected != [255, 255, 255]
         assert image.pixelColor(0, 0).getRgb()[:3] == (0, 0, 0), "the opaque art stays"
     finally:
         _close(window)

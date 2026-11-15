@@ -53,7 +53,7 @@ from PyQt5.QtWidgets import (
 
 from descape import asset_source, catalog_thumbs, item_activation, object_catalog, place_random, settings
 from descape.swatch_grid import FRAME_PX
-from descape.terrain_palette import PLAYER_COLORS
+from descape.terrain_palette import PORTRAIT_COLORS
 
 HIDDEN_LABEL = "Show editor-hidden objects"
 # (object_catalog category, button label), in the in-game editor's order, two to a row.
@@ -208,7 +208,7 @@ class CatalogBrowserView(QWidget):
         # pin()'s value: listed whatever the hidden box says.
         self._pinned: int | None = None
         # Behind a portrait's player-colour region: the Owner combo's, pushed by set_team_color().
-        self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
+        self._team_rgb: tuple[int, int, int] = PORTRAIT_COLORS[0]
         # The Owner combo's portrait civ (GH #372), pushed by set_civ(); None shows GAIA's.
         self._civ: int | None = None
         # GH #32: consts set_excluded() hides, and the row values that hides.

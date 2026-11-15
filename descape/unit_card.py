@@ -36,7 +36,7 @@ from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from descape import asset_source, catalog_thumbs, object_catalog, unit_fields
-from descape.terrain_palette import PLAYER_COLORS
+from descape.terrain_palette import PORTRAIT_COLORS
 from descape.unit_stats_table import unit_stats
 from descape.viewer_common import pixmap_from_rgba
 
@@ -117,7 +117,7 @@ class UnitCard(QWidget):
         self._awaiting = False
         # The portrait as the loader gave it, kept so a new owner colour can refill it.
         self._raw_portrait: tuple[object, str | None, object] = (None, None, None)
-        self._team_rgb: tuple[int, int, int] = PLAYER_COLORS[0]
+        self._team_rgb: tuple[int, int, int] = PORTRAIT_COLORS[0]
         # The owner's portrait civ (GH #372, civ_art.portrait_civ()); None shows GAIA's.
         self._civ: int | None = None
 

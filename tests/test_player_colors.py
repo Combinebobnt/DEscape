@@ -26,7 +26,14 @@ from descape.player_fields import parse_player_field_id, player_field_id
 from descape.render_cache import FlatChunkCache
 from descape.render_paint import tile_pixels_for_map
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, refresh_player_colors
-from descape.terrain_palette import PLAYER_COLOR_BY_ID, PLAYER_COLORS, resolve_player_colors
+from descape.terrain_palette import (
+    INSTRUCTION_COLORS,
+    PLAYER_COLOR_BY_ID,
+    PLAYER_COLORS,
+    PORTRAIT_COLORS,
+    portrait_rgb,
+    resolve_player_colors,
+)
 from descape.unit_model import UnitEditModel
 from descape.unit_sprites import TEAM_COLORS
 
@@ -99,6 +106,46 @@ def test_team_index_is_gaia_first_offset_not_the_bare_color_id():
     assert team_indices[1] == 1
     assert TEAM_COLORS[team_indices[1]] == (0, 0, 255)  # real BLUE
     assert TEAM_COLORS[team_indices[1]] != TEAM_COLORS[0]  # not GAIA's white
+
+
+# --- portrait colours (GH #374) ------------------------------------------
+
+
+def test_the_portrait_tables_hold_step_0s_measurements():
+    """Measured on the 1.59 editor panel and instruction box, in team-index order."""
+    assert PORTRAIT_COLORS == (
+        (232, 238, 255), (0, 0, 255), (255, 0, 0), (0, 255, 0), (215, 215, 30),
+        (126, 242, 225), (150, 15, 250), (99, 103, 112), (255, 170, 21),
+    )
+    assert INSTRUCTION_COLORS == (
+        (232, 238, 255), (110, 166, 235), (253, 99, 99), (0, 255, 0), (255, 255, 0),
+        (0, 253, 223), (240, 107, 231), (172, 172, 172), (255, 178, 21),
+    )
+    assert PORTRAIT_COLORS[1:3] == TEAM_COLORS[1:3], "blue and red are spritecolors.json's"
+
+
+def test_portrait_rgb_follows_a_stored_colour_override():
+    ids = list(IDENTITY_IDS)
+    ids[1] = 0  # P2 stored as BLUE
+    _dots, team_indices = resolve_player_colors(ids)
+    assert portrait_rgb(team_indices, 2) == PORTRAIT_COLORS[1]
+    assert portrait_rgb(team_indices, 2, INSTRUCTION_COLORS) == INSTRUCTION_COLORS[1]
+
+
+def test_portrait_rgb_without_team_indices_is_the_identity_colour():
+    """As resolve_player_colors() would give with default colours: P7 grey and P8 orange, unlike PLAYER_COLORS."""
+    assert [portrait_rgb(None, player) for player in range(9)] == list(PORTRAIT_COLORS)
+    assert portrait_rgb(None, 8, INSTRUCTION_COLORS) == INSTRUCTION_COLORS[8]
+
+
+def test_portrait_rgb_gives_gaias_outside_the_table():
+    _dots, team_indices = resolve_player_colors(IDENTITY_IDS)
+    for player in (-1, 9):
+        assert portrait_rgb(team_indices, player) == PORTRAIT_COLORS[0]
+        assert portrait_rgb(None, player, INSTRUCTION_COLORS) == INSTRUCTION_COLORS[0]
+    assert portrait_rgb((0, 12), 1) == PORTRAIT_COLORS[0], "a team index outside the table"
+    assert portrait_rgb((0, -1), 1) == PORTRAIT_COLORS[0], "a negative team index"
+    assert portrait_rgb((0, 1), 5) == PORTRAIT_COLORS[0], "a player past a short team_indices"
 
 
 # --- load-path integration ----------------------------------------------

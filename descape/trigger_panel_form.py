@@ -117,13 +117,15 @@ class _TriggerPanelFormMixin:
         if self._instruction_preview is not None:
             self._instruction_preview.refresh()
 
-    def refresh_player_labels(self, labels, colors) -> None:
+    def refresh_player_labels(self, labels, colors, team_indices=None) -> None:
         """GH #130: store the labels for the next form build and relabel the
-        PlayerId combos already on screen, keeping their "(differs)" and "unknown" rows."""
+        PlayerId combos already on screen, keeping their "(differs)" and "unknown" rows.
+        `team_indices` picks the instruction preview's portrait colour (GH #374)."""
         self._player_labels = labels
         self._player_colors = colors
+        self._team_indices = team_indices
         if self._instruction_preview is not None:
-            self._instruction_preview.set_player_colors(colors)
+            self._instruction_preview.set_player_colors(colors, team_indices)
         for spec, _kind, _index, widget in self._rows:
             if spec.presentation == PLAYER_ID_PRESENTATION and isinstance(widget, QComboBox):
                 _relabel_player_rows(widget, labels, colors)
@@ -380,6 +382,7 @@ class _TriggerPanelFormMixin:
         preview.bind(
             fields, entry, self._read, names, self._player_colors, self._fit_property_height, self._emit_instruction_view,
             portrait_civ_for=lambda player: civ_art.player_portrait_civ(self._loaded, player),
+            team_indices=self._team_indices,
         )
         self._instruction_preview = preview
 

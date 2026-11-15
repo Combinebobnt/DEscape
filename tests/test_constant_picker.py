@@ -180,6 +180,14 @@ def test_dialog_opens_on_the_default_category() -> None:
     assert all(button.isEnabled() for button in dialog.view.category_buttons.values())
 
 
+def test_the_dialogs_portraits_take_gaias_editor_panel_colour() -> None:
+    """GH #374: the Browse dialog never sets an owner, so its card and rows keep GAIA's portrait colour."""
+    from descape.terrain_palette import PORTRAIT_COLORS
+
+    dialog = _dialog()
+    assert dialog.view._team_rgb == dialog.card._team_rgb == PORTRAIT_COLORS[0]
+
+
 def test_select_crosses_categories_and_lands_on_the_row() -> None:
     dialog = _dialog(default_category="Units")
     dialog.select(_TOWN_CENTER)

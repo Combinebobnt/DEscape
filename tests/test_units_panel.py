@@ -1075,15 +1075,15 @@ def test_clicking_the_pending_random_row_again_keeps_its_roll() -> None:
     assert panel.placing_card.isVisibleTo(panel)
 
 
-def _holed_install(tmp_path):
+def _holed_install(tmp_path, shade: int = 255):
     """The fake install, with the Archer's portrait opaque black but for a
-    transparent centre: DE leaves the player-colour region that way, white
-    (full-bright) shading kept in its colour channels (GH #372)."""
+    transparent centre: DE leaves the player-colour region that way, its
+    shading (`shade`, full bright by default) kept in its colour channels (GH #372)."""
     from PIL import Image
 
     root = _fake_install(tmp_path)
     image = Image.new("RGBA", (32, 32), (0, 0, 0, 255))
-    image.paste((255, 255, 255, 0), (8, 8, 24, 24))
+    image.paste((shade, shade, shade, 0), (8, 8, 24, 24))
     image.save(root / "widgetui" / "textures" / "ingame" / "units" / "017_50730.DDS", format="DDS")
     return root
 
@@ -1094,37 +1094,52 @@ def _centre(pixmap) -> tuple[int, int, int]:
     return colour.red(), colour.green(), colour.blue()
 
 
-def _region(rgb):
-    """The holed portrait's centre in `rgb`: full-bright shading tinted as the
-    game does (GH #372), worked by hand from the fit, not through tinted();
+# A mid shade: full bright clips GAIA's portrait colour to flat white.
+_MID_SHADE = 128
+
+
+def _region(rgb, shade: int = 255):
+    """The holed portrait's centre in `rgb`: its shading tinted as the game
+    does (GH #374), worked by hand from the fit, not through tinted();
     within 1 for float32 rounding."""
-    return pytest.approx(tuple(min(255.0, c * 1.16 + 56.1) for c in rgb), abs=1)
+    factor = 1.113 * shade / 255 + 0.177
+    return pytest.approx(tuple(min(255.0, c * factor) for c in rgb), abs=1)
 
 
 def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path) -> None:
-    from descape import asset_source
-    from descape.terrain_palette import PLAYER_COLORS
+    """GH #374: the game editor panel's colour, by the owner's colour index; the swatch keeps the dot colour."""
+    from descape import asset_source, player_labels
+    from descape.terrain_palette import PLAYER_COLORS, PORTRAIT_COLORS, resolve_player_colors
 
-    asset_source.set_install_path_override(_holed_install(tmp_path))
+    def region(rgb):
+        return _region(rgb, _MID_SHADE)
+
+    asset_source.set_install_path_override(_holed_install(tmp_path, _MID_SHADE))
     try:
         panel = _panel()
         panel.select_object(_ARCHER_CONST)
         _settle(panel)
         assert panel.placing_card.portrait_source == "icon"
-        assert _centre(panel.placing_card.portrait.pixmap()) == _region(PLAYER_COLORS[1])  # the Owner combo's default
+        assert _centre(panel.placing_card.portrait.pixmap()) == region(PORTRAIT_COLORS[1])  # the Owner combo's default
         panel.select_owner(2)
-        assert _centre(panel.placing_card.portrait.pixmap()) == _region(PLAYER_COLORS[2])
+        assert _centre(panel.placing_card.portrait.pixmap()) == region(PORTRAIT_COLORS[2])
         colors = list(PLAYER_COLORS)
         colors[2] = (10, 20, 30)
-        from descape import player_labels
-
         panel.refresh_player_labels(player_labels.DEFAULT_LABELS, colors)
-        assert _centre(panel.placing_card.portrait.pixmap()) == _region((10, 20, 30)), "the scenario's own colour"
+        assert _centre(panel.placing_card.portrait.pixmap()) == region(PORTRAIT_COLORS[2]), "a dot colour alone"
+        ids = list(range(8))
+        ids[1] = 0  # P2 stored as BLUE
+        dots, team_indices = resolve_player_colors(ids)
+        panel.refresh_player_labels(player_labels.DEFAULT_LABELS, dots, team_indices)
+        assert _centre(panel.placing_card.portrait.pixmap()) == region(PORTRAIT_COLORS[1]), "the scenario's own colour"
+        row = panel.owner_combo.findData(2)
+        assert _centre(panel.owner_combo.itemIcon(row).pixmap(16)) == PLAYER_COLORS[1], "the swatch keeps the dot"
         panel.show_unit(_entry(player_id=3, unit_const=_ARCHER_CONST))
         _settle(panel)
-        assert _centre(panel.unit_portrait.pixmap()) == _region(colors[3])
+        assert _centre(panel.unit_portrait.pixmap()) == region(PORTRAIT_COLORS[3])
         panel.show_group([_entry(player_id=3), _entry(player_id=4, reference_id=102)])
-        assert _centre(panel.unit_portrait.pixmap()) == _region(colors[GAIA_PLAYER_ID]), "mixed owners: neutral"
+        assert _centre(panel.unit_portrait.pixmap()) == region(PORTRAIT_COLORS[0]), "mixed owners: neutral"
+        assert region(PORTRAIT_COLORS[0]) != (255, 255, 255), "GAIA's tint, not flat white"
     finally:
         asset_source.set_install_path_override(None)
 
@@ -1133,7 +1148,7 @@ def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_p
     from PyQt5.QtWidgets import QApplication
 
     from descape import asset_source, settings
-    from descape.terrain_palette import PLAYER_COLORS
+    from descape.terrain_palette import PORTRAIT_COLORS
 
     monkeypatch.setattr(settings, "get_units_catalog_mode", lambda: "icons")
     asset_source.set_install_path_override(_holed_install(tmp_path))
@@ -1150,9 +1165,9 @@ def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_p
         def row_centre():
             return _centre(view._items[_ARCHER_CONST].icon().pixmap(px, px))
 
-        assert row_centre() == _region(PLAYER_COLORS[1])
+        assert row_centre() == _region(PORTRAIT_COLORS[1])
         panel.select_owner(5)
-        assert row_centre() == _region(PLAYER_COLORS[5])
+        assert row_centre() == _region(PORTRAIT_COLORS[5])
     finally:
         panel.close()
         asset_source.set_install_path_override(None)

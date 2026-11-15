@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 
 from descape import asset_source, catalog_thumbs, constant_picker, message_markup, object_catalog
 from descape.instruction_overlay import ICON_PX, SLOT_OFFSETS, InstructionView
+from descape.terrain_palette import INSTRUCTION_COLORS, portrait_rgb
 from descape.value_picker import ValueLineEdit
 from descape.viewer_common import pixmap_from_rgba
 
@@ -70,6 +71,8 @@ class InstructionPreview(QWidget):
         self._flags: dict[str, object] = {}
         self._variable_names: tuple[str, ...] = ()
         self._player_colors = None
+        # GH #374: the portrait's colour index per player, None for each player's own.
+        self._team_indices = None
         # GH #372: player id -> the civ whose portraits it shows, or None for GAIA's.
         self._portrait_civ_for = None
         self._on_resize = None
@@ -85,19 +88,21 @@ class InstructionPreview(QWidget):
 
     def bind(
         self, fields: dict, entry, read, variable_names=(), player_colors=None, on_resize=None, on_view=None,
-        portrait_civ_for=None,
+        portrait_civ_for=None, team_indices=None,
     ) -> None:
         """Follow `fields` (field name -> its row widget) for `entry`. `read`
         is the panel's own getattr; `on_resize` runs when the preview's height
         for its width changes, so the form can re-fit; `on_view` takes each
         rebuilt InstructionView; `portrait_civ_for` names the source player's
-        portrait civ (GH #372), GAIA's portrait without it."""
+        portrait civ (GH #372), GAIA's portrait without it; `team_indices`
+        picks the portrait's colour (GH #374)."""
         self._fields = dict(fields)
         self._entry = entry
         self._read = read
         self._flags = {name: read(entry, name) for name in _ENTRY_FLAGS}
         self._variable_names = tuple(variable_names)
         self._player_colors = player_colors
+        self._team_indices = team_indices
         self._portrait_civ_for = portrait_civ_for
         self._on_resize = on_resize
         self._on_view = on_view
@@ -124,8 +129,9 @@ class InstructionPreview(QWidget):
         self._on_resize = None
         self._on_view = None
 
-    def set_player_colors(self, colors) -> None:
+    def set_player_colors(self, colors, team_indices=None) -> None:
         self._player_colors = colors
+        self._team_indices = team_indices
         self.refresh()
 
     def _field_changed(self, *_args) -> None:
@@ -194,7 +200,7 @@ class InstructionPreview(QWidget):
         icon = self._icon(self._int(self._value("object_list_unit_id")))
         tint = self._tint(runs)
         if icon is not None and self.icon_source == "icon" and tint is not None:
-            icon = self._tinted_icon(tint)
+            icon = self._tinted_icon(self._portrait_tint(runs, tint))
         self.view = InstructionView(message_markup.to_html(runs, colors["WHITE"]), slot, icon, tint)
 
         self.footer_label.setText(f"{self._shows_for()}  |  {self._sound()}")
@@ -245,6 +251,14 @@ class InstructionPreview(QWidget):
         if colors is None or not 0 <= player < len(colors):
             return None
         return tuple(int(channel) for channel in colors[player][:3])
+
+    def _portrait_tint(self, runs, tint: tuple[int, int, int]) -> tuple[int, int, int]:
+        """The portrait's player-colour region: the tag colour when _tint()
+        took it, else the source player's instruction box colour by its colour
+        index (GH #374). `tint` is _tint()'s, which the frame keeps."""
+        if self._flags.get("use_tag_color_for_icon") == 1 and message_markup.leading_color(runs) is not None:
+            return tint
+        return portrait_rgb(self._team_indices, self._int(self._value("source_player")), INSTRUCTION_COLORS)
 
     def _shows_for(self) -> str:
         seconds = self._int(self._value("display_time"))

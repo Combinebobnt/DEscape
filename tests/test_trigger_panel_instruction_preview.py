@@ -473,28 +473,75 @@ def test_the_preview_portrait_follows_the_source_players_civ(monkeypatch, source
         window.close()
 
 
-def test_the_preview_portrait_fills_its_player_colour_region(monkeypatch) -> None:
-    """GH #372: the source player's colour, the same one the icon frame takes."""
+def _shaded_portrait(*_args):
     import numpy as np
 
+    arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
+    arr[2:6, 2:6] = (128, 128, 128, 0)  # DE's transparent region, mid shading
+    return arr
+
+
+_shaded_portrait.cache_clear = lambda: None
+
+
+def _portrait_centre(view) -> list[int]:
+    image = view.icon.toImage()
+    return list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3])
+
+
+def _tinted_mid(rgb) -> list[int]:
+    import numpy as np
+
+    from descape import catalog_thumbs
+
+    return catalog_thumbs.tinted(np.array([[[128, 128, 128, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
+
+
+def test_the_preview_portrait_fills_its_player_colour_region(monkeypatch) -> None:
+    """GH #374: the game instruction box's colour, by the source player's colour
+    index; the icon frame keeps the player's dot colour."""
+    from PyQt5.QtWidgets import QApplication
+
     from descape import asset_source
+    from descape.terrain_palette import INSTRUCTION_COLORS, resolve_player_colors
 
-    def portrait(*_args):
-        arr = np.full((8, 8, 4), (0, 0, 0, 255), dtype=np.uint8)
-        arr[2:6, 2:6] = (255, 255, 255, 0)  # DE's transparent region, full-bright shading
-        return arr
-
-    portrait.cache_clear = lambda: None
-    monkeypatch.setattr(asset_source, "get_unit_icon", portrait)
+    monkeypatch.setattr(asset_source, "get_unit_icon", _shaded_portrait)
     window = _instruction_window(object_list_unit_id=4, source_player=2)
     try:
-        view = _preview(window.trigger_panel).view
-        image = view.icon.toImage()
-        from descape import catalog_thumbs
+        panel = window.trigger_panel
+        view = _preview(panel).view
+        frame = tuple(window.scenario.player_colors[2][:3])
+        assert view.tint == frame
+        assert _portrait_centre(view) == _tinted_mid(INSTRUCTION_COLORS[window.scenario.team_indices[2]])
 
-        assert view.tint == tuple(window.scenario.player_colors[2][:3])
-        expected = catalog_thumbs.tinted(np.array([[[255, 255, 255, 0]]], np.uint8), view.tint)[0, 0, :3].tolist()
-        assert list(image.pixelColor(image.width() // 2, image.height() // 2).getRgb()[:3]) == expected
+        ids = list(range(8))
+        ids[1] = 0  # P2 stored as BLUE
+        _dots, team_indices = resolve_player_colors(ids)
+        panel.refresh_player_labels(panel._player_labels, window.scenario.player_colors, team_indices)
+        QApplication.processEvents()
+        view = _preview(panel).view
+        assert _portrait_centre(view) == _tinted_mid(INSTRUCTION_COLORS[1]), "the override's colour"
+        assert view.tint == frame, "the frame keeps the dot colour"
+
+        panel.refresh_entries(select=("effect", 0))
+        QApplication.processEvents()
+        assert _portrait_centre(_preview(panel).view) == _tinted_mid(INSTRUCTION_COLORS[1]), "a rebuilt form keeps it"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_leading_tag_colour_tints_the_preview_portrait(monkeypatch) -> None:
+    from descape import asset_source
+    from descape.message_markup import TEXT_COLORS
+    from descape.terrain_palette import INSTRUCTION_COLORS
+
+    monkeypatch.setattr(asset_source, "get_unit_icon", _shaded_portrait)
+    window = _instruction_window(object_list_unit_id=4, message="<ORANGE>tagged", use_tag_color_for_icon=1)
+    try:
+        view = _preview(window.trigger_panel).view
+        assert view.tint == TEXT_COLORS["ORANGE"]
+        assert _portrait_centre(view) == _tinted_mid(TEXT_COLORS["ORANGE"]) != _tinted_mid(INSTRUCTION_COLORS[1])
     finally:
         window.edit_history.mark_saved()
         window.close()

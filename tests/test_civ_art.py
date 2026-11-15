@@ -704,6 +704,39 @@ def test_the_units_panel_portraits_follow_a_players_edit_a_data_switch_and_close
         conftest.close_window(window)
 
 
+@pytest.mark.gui
+def test_the_units_panel_portraits_follow_a_colour_edit_its_undo_and_close():
+    """GH #374: the portrait colour follows the owner's colour index, pushed with the labels."""
+    from descape.terrain_palette import PORTRAIT_COLORS
+
+    import conftest
+
+    if not conftest.PYQT5_AVAILABLE:
+        pytest.skip("PyQt5 not importable")
+    window = conftest.blank_window()
+    try:
+        panel = window.units_panel
+        panel.select_owner(1)
+        assert panel.placing_card._team_rgb == panel.catalog_view._team_rgb == PORTRAIT_COLORS[1]
+        spec = {s.field_id: s for s in player_fields.specs_for(window.scenario)}["color"]
+        window.set_player_field(spec, 1, 5)  # PURPLE
+        assert window.scenario.team_indices[1] == 6
+        assert panel.placing_card._team_rgb == panel.catalog_view._team_rgb == PORTRAIT_COLORS[6]
+        assert window.trigger_panel._team_indices == window.scenario.team_indices
+        window.undo()
+        assert panel.placing_card._team_rgb == PORTRAIT_COLORS[1], "the edit undone"
+        dots = window.scenario.player_colors
+        window.scenario.team_indices = (0, 3, *window.scenario.team_indices[2:])
+        window._refresh_player_labels()
+        assert window.scenario.player_colors == dots
+        assert panel.placing_card._team_rgb == PORTRAIT_COLORS[3], "a colour index change alone re-tints"
+        window.close_scenario()
+        assert panel.placing_card._team_rgb == PORTRAIT_COLORS[1], "no document: the identity colour"
+        assert window.trigger_panel._team_indices is None
+    finally:
+        conftest.close_window(window)
+
+
 def test_the_place_ghost_draws_the_placing_players_art(art_install):
     loaded, _ = _blank_with_options()
     loaded.player_art = (civ_art.GAIA_ART, (CHINESE, 2, None), *(civ_art.GAIA_ART,) * 7)

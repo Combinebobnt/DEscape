@@ -59,7 +59,7 @@ from descape import (
     unit_variant,
 )
 from descape.catalog_browser import CatalogBrowserView
-from descape.terrain_palette import PLAYER_COLORS
+from descape.terrain_palette import portrait_rgb
 from descape.unit_card import _MIXED_TEXT, UnitCard
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.unit_model import capture_flag_of
@@ -336,6 +336,8 @@ class UnitsPanel(QWidget):
         # GH #130: what the owner combos show, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
+        # GH #374: the portraits' colour index per player, None for each player's own.
+        self._team_indices = None
         # GH #357: the inspector's one slot shows what was touched last, the selection or a
         # catalog pick (_apply_slot). The selection's own count, for the count line.
         self._has_selection = False
@@ -547,11 +549,13 @@ class UnitsPanel(QWidget):
         self.unchanged_note.setText(f"{count} unchanged {noun} hidden (Settings > Mods)")
         self.unchanged_note.setVisible(count > 0)
 
-    def refresh_player_labels(self, labels, colors) -> None:
+    def refresh_player_labels(self, labels, colors, team_indices=None) -> None:
         """GH #130: relabel the Place owner combo and the inspector's Owner
-        field in place, keeping each one's selection and "(mixed)" row."""
+        field in place, keeping each one's selection and "(mixed)" row.
+        `team_indices` picks each owner's portrait colour (GH #374)."""
         self._player_labels = labels
         self._player_colors = colors
+        self._team_indices = team_indices
         _relabel_player_rows(self.owner_combo, labels, colors)
         _relabel_player_rows(self.garrison_owner_combo, labels, colors)
         owner = self.unit_field_editors.get("player")
@@ -560,9 +564,8 @@ class UnitsPanel(QWidget):
         self._sync_team_colors()
 
     def _team_rgb(self, player_id: int | None) -> tuple[int, int, int]:
-        """The owner swatch's colour; GAIA's for None (a mixed-owner group)."""
-        colors = self._player_colors if self._player_colors is not None else PLAYER_COLORS
-        return colors[GAIA_PLAYER_ID if player_id is None else player_id]
+        """The owner's portrait colour, the game editor panel's (GH #374); GAIA's for None (a mixed-owner group)."""
+        return portrait_rgb(self._team_indices, GAIA_PLAYER_ID if player_id is None else player_id)
 
     def _sync_team_colors(self) -> None:
         """Portrait fills: the Owner combo's for the pick and the list, the inspector Owner's for the selection.

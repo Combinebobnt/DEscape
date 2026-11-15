@@ -16,7 +16,7 @@ from AoE2ScenarioParser.datasets.effects import EffectId
 from descape import civ_art, civ_availability, command_buttons
 from descape.civ_availability import NO_OVERRIDES, Item, Overrides
 from descape.command_buttons import TECH, UNIT
-from descape.terrain_palette import PLAYER_COLORS
+from descape.terrain_palette import PORTRAIT_COLORS, portrait_rgb
 
 CHANGE_TRAIN = "change_train_location"
 ADD_TRAIN = "add_train_location"
@@ -125,8 +125,8 @@ class PlayerContext:
     civ_value: object = None
     # The civ whose unit portraits the player shows (GH #372, civ_art.portrait_civ()), None for GAIA's.
     portrait_civ: int | None = None
-    # Behind a portrait's player-colour region: the player's colour, GAIA's without one player.
-    team_rgb: tuple[int, int, int] = tuple(PLAYER_COLORS[0])
+    # Behind a portrait's player-colour region: the player's portrait colour, GAIA's without one player.
+    team_rgb: tuple[int, int, int] = PORTRAIT_COLORS[0]
 
     def missing(self, id_: int, kind: str) -> str:
         return civ_availability.missing(self.civ, self.overrides, id_, kind, self.start_age)
@@ -168,9 +168,9 @@ def player_context(manager, loaded, player: int, exclude: tuple[int, int] | None
 
 
 def team_rgb(loaded, player: int) -> tuple[int, int, int]:
-    """`player`'s colour as edited (the scenario's player_colors), GAIA's for any other value."""
-    colors = getattr(loaded, "player_colors", None) or PLAYER_COLORS
-    return tuple(colors[player if 0 <= player < len(colors) else 0][:3])
+    """`player`'s portrait colour by its colour index as edited (the scenario's
+    team_indices; GH #374, the game editor panel's), GAIA's for any other value."""
+    return portrait_rgb(getattr(loaded, "team_indices", None), player)
 
 
 def missing_text(
