@@ -20,7 +20,7 @@ class plus 19 mixins, one module per area:
 - viewer_unit_move.py: the unit index, click and marquee select, drag, group
   move, ghosts and nudge.
 - viewer_unit_place.py: placement, gate plans, the place preview, scatter,
-  wall menus, the Cliff tool and the wall run.
+  wall menus, the Cliff tool, the wall run and the Favorite Objects window.
 - viewer_unit_ops.py: rotate, variant, delete, reassign and replace.
 - viewer_unit_edit.py: _unit_edit, _after_unit_mutation and the chunk-cache
   patch path.
@@ -156,6 +156,7 @@ from descape.diplomacy_panel import DiplomacyPanel
 from descape.edit_history import (
     EditHistory,
 )
+from descape.favorites_dialog import UnitFavoritesDialog
 from descape.find_dialog import FindDialog
 from descape.history_dialog import EditHistoryDialog
 from descape.map_options_panel import MapOptionsPanel
@@ -674,6 +675,9 @@ class ViewerWindow(
         # The (_doc_id, exec mode) pairs an ID move's status line was said for.
         self._id_move_warned: set[tuple[str, str]] = set()
         self._clipboard_dialog: ClipboardHistoryDialog | None = None
+        # GH #195's Favorite Objects window. Before UnitsPanel(...) below, whose __init__
+        # already fires on_placing_art, and that hook reads this attribute.
+        self._favorites_dialog: UnitFavoritesDialog | None = None
         # GH #30's History window. Assigned before on_change is hooked up
         # below, since reset()/mark_saved() fire that hook and the refresh
         # reads this attribute.
@@ -930,6 +934,8 @@ class ViewerWindow(
             codec_field_supported=lambda name: self.scenario is None or unit_field_supported(self.scenario, name),
             # GH #372: pulled too, so an unsaved Players edit shows at once.
             portrait_civ_for=lambda player_id: civ_art.player_portrait_civ(self.scenario, player_id),
+            on_favorites_changed=self._refresh_unit_favorites,
+            on_placing_art=self._on_favorites_placing_art,
         )
         self.terrain_panel = TerrainPanel(
             display_mode=settings.get_terrain_picker_mode(), swatch_px=settings.get_terrain_grid_swatch_px()
@@ -1312,6 +1318,10 @@ class ViewerWindow(
             self._clipboard_dialog.deleteLater()
             self._clipboard_dialog = None
         # Same lifetime reasoning as the clipboard dialog above.
+        if self._favorites_dialog is not None:
+            self._favorites_dialog.close()
+            self._favorites_dialog.deleteLater()
+            self._favorites_dialog = None
         if self._history_dialog is not None:
             self._history_dialog.close()
             self._history_dialog.deleteLater()

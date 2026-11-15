@@ -30,6 +30,7 @@ from descape import (
     asset_source,
     content_roots,
     edge_ticks,
+    games,
     grid_overlay,
     iso_geometry,
     scenario_io,
@@ -56,6 +57,9 @@ _FOOTPRINT_SCOPES = " or ".join(unit_pick.FOOTPRINT_SCOPES)
 _STACK_BADGE_POSITIONS = ", ".join(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _TERRAIN_PICKER_MODE_IDS = " or ".join(mid for mid, _label in settings.TERRAIN_PICKER_MODES)
 _GAME_DATA_IDS = " or ".join(cid for cid, _label in settings.game_data_choices())
+_FIRST_GAME_ID = games.ids()[0]
+_FAVORITE_STAR_STYLES = " or ".join(sid for sid, _label in settings.FAVORITE_STAR_STYLES)
+_UNITS_CATALOG_RIGHT_CLICKS = " or ".join(cid for cid, _label in settings.UNITS_CATALOG_RIGHT_CLICKS)
 _TERRAIN_GRID_SWATCH_SIZES = ", ".join(str(px) for px in settings.TERRAIN_GRID_SWATCH_SIZES)
 _TRIGGER_STATUS_MARKERS = ", ".join(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 _TERRAIN_STYLES = ", ".join(terrain_style.TERRAIN_STYLES)
@@ -297,6 +301,12 @@ stack_badges: true
 # Default: {settings.STACK_BADGE_POSITION_DEFAULT}.
 stack_badge_position: {settings.STACK_BADGE_POSITION_DEFAULT}
 
+# How the Units catalog and the Favorite Objects window draw a favorite's star,
+# Settings > Appearance: {_FAVORITE_STAR_STYLES}. gold is outlined so it reads on
+# light themes; mono is white on dark themes, black on light. Anything else falls back to
+# the default on read. Default: {settings.FAVORITE_STAR_STYLE_DEFAULT}.
+favorite_star_style: {settings.FAVORITE_STAR_STYLE_DEFAULT}
+
 # How Terrain mode's picker shows terrains, switched by the List/Grid buttons
 # beside its filter box: {_TERRAIN_PICKER_MODE_IDS}. Anything else falls back to the
 # default on read. Default: {settings.TERRAIN_PICKER_MODE_DEFAULT}.
@@ -315,6 +325,13 @@ game_data: {settings.GAME_DATA_DEFAULT}
 # gives them to a player. Anything else falls back to the default on read.
 # Default: {settings.GAIA_ONLY_CATALOG_MODE_DEFAULT}.
 gaia_only_catalog_mode: {settings.GAIA_ONLY_CATALOG_MODE_DEFAULT}
+
+# What a right-click on a Units catalog row does, Settings > Advanced:
+# {_UNITS_CATALOG_RIGHT_CLICKS}. toggle adds or removes the star at once; menu
+# opens Add to Favorites or Remove from Favorites. The Favorite Objects
+# window keeps its menu either way. Anything else falls back to the default
+# on read. Default: {settings.UNITS_CATALOG_RIGHT_CLICK_DEFAULT}.
+units_catalog_right_click: {settings.UNITS_CATALOG_RIGHT_CLICK_DEFAULT}
 
 # The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
 # Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.
@@ -432,15 +449,27 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # once window_state is saved.
 # split_sizes: [340, 900]
 
-# How the Units panel's object list shows objects, set by the buttons above
-# it: icons (icon and name rows), names (text rows) or grid (icons only).
+# How the Units panel's object list shows objects, set by the view dropdown
+# above it: icons (icon and name rows), names (text rows) or grid (icons only).
 # One of {_UNITS_CATALOG_MODES}. Default: {settings.UNITS_CATALOG_MODE_DEFAULT}.
 units_catalog_mode: {settings.UNITS_CATALOG_MODE_DEFAULT}
 
 # The same three views for Browse, the object dialog behind a field's "...",
-# set by the same buttons in that dialog. Kept apart from the Units panel's.
+# set by the same dropdown in that dialog. Kept apart from the Units panel's.
 # One of {_UNITS_CATALOG_MODES}. Default: {settings.BROWSE_CATALOG_MODE_DEFAULT}.
 browse_catalog_mode: {settings.BROWSE_CATALOG_MODE_DEFAULT}
+
+# The same three views for the Favorite Objects window (Edit > Favorite
+# Objects...), set by the dropdown in that window.
+# One of {_UNITS_CATALOG_MODES}. Default: {settings.UNITS_FAVORITES_MODE_DEFAULT}.
+units_favorites_mode: {settings.UNITS_FAVORITES_MODE_DEFAULT}
+
+# The Units panel's favorites, in your order: object ids per game, since the
+# same id is another object in another game. Added and removed by
+# right-clicking an object in the catalog. Omitted until you add one; the ids
+# below are only an example.
+# units_favorites:
+#   {_FIRST_GAME_ID}: [83, 4, -1]
 
 # Height in pixels of the status log, as versions before the panels could
 # float saved it. Read and removed the same way as split_sizes above; with

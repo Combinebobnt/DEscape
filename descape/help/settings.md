@@ -30,6 +30,7 @@ Theme, chrome colours, UI font and toolbar buttons are covered in [View and Filt
 - Wall opacity: how solid walls and gates look while **View > Layers > Translucent Walls** is on.
 - Tool overlay colors: the colours the tools and overlays draw on the map, grouped by what draws them, such as the terrain brush, the unit selection, the ruler, the Select tool's region and the trigger overlay. Each colour has a Default button, and some groups have an opacity slider. The Units group's Refused placement row is the red a refused Place Unit or Move ghost is tinted toward; the cross-hatch on a refused mark is black or white, whichever reads on that colour. Its Garrison placement row is the yellow a Place Unit preview is tinted toward when the click would put the object inside a host; that mark is filled with no cross-hatch.
 - Ruler label size, Distance ticks label size and Stacked-unit badge position set the text drawn on the map.
+- Favorite star: how the Units catalog and the Favorite Objects window mark a favorite. Gold has a dark outline so it reads on light themes; Black and white is white on dark themes and black on light ones (in Grid, a white star on the dark disc). Theme files carry it.
 - Terrain grid swatch size: how big each swatch is when Terrain mode's terrain picker shows a grid.
 - Grid line blend and Grid thickness: how **View > Grid** looks. Left of the middle, blend darkens the terrain under the lines towards black; right of it, it lightens it towards white; in the middle the lines are invisible.
 
@@ -77,3 +78,4 @@ Below it is a row for every command, grouped like the menus. Click a row's box a
 
 - Game data: which game's units, names and art draw a scenario. Auto uses the game the file was made for; leave it there unless a file names the wrong game. Age of Empires II or Return of Rome shows every file in that game's data, and a file made for the other game opens read-only. It applies to the open scenario at once.
 - GAIA-only objects: wild animals, resources and trees can only belong to GAIA, as in the game's editor. Choose whether the Units catalog hides them while the owner is a player, or keeps them listed. Placing one gives it to GAIA either way.
+- Right-click an object in the Units catalog: adds or removes its star at once, or opens a menu to add or remove it as a favorite. The Favorite Objects window's right-click always opens its menu.

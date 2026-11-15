@@ -686,7 +686,7 @@ def test_a_category_switch_leaves_the_pending_object_alone() -> None:
     changed.clear()
     panel.catalog_view.category_buttons["Buildings"].click()
     panel.catalog_view.class_combo.setCurrentIndex(1)
-    panel.catalog_view.display_buttons["names"].click()
+    conftest.choose_display_mode(panel.catalog_view, "names")
     assert panel.selected_object_const() == _ARCHER_CONST
     assert panel.placing_card.const_label.text() == str(_ARCHER_CONST)
     assert changed == []
@@ -955,7 +955,7 @@ def test_a_key_that_moves_the_row_shows_the_new_pick_over_the_selection(mode, ke
 
     panel = _laid_out_panel()
     try:
-        panel.catalog_view.display_buttons[mode].click()
+        conftest.choose_display_mode(panel.catalog_view, mode)
         assert panel.catalog_view.mode() == mode
         panel.select_object(_ARCHER_CONST)
         panel.show_unit(_entry(unit_const=82))

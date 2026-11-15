@@ -217,6 +217,12 @@ stack_badges: true
 # Default: bottom_right.
 stack_badge_position: bottom_right
 
+# How the Units catalog and the Favorite Objects window draw a favorite's star,
+# Settings > Appearance: gold or mono. gold is outlined so it reads on
+# light themes; mono is white on dark themes, black on light. Anything else falls back to
+# the default on read. Default: gold.
+favorite_star_style: gold
+
 # How Terrain mode's picker shows terrains, switched by the List/Grid buttons
 # beside its filter box: list or grid. Anything else falls back to the
 # default on read. Default: list.
@@ -235,6 +241,13 @@ game_data: auto
 # gives them to a player. Anything else falls back to the default on read.
 # Default: hide.
 gaia_only_catalog_mode: hide
+
+# What a right-click on a Units catalog row does, Settings > Advanced:
+# toggle or menu. toggle adds or removes the star at once; menu
+# opens Add to Favorites or Remove from Favorites. The Favorite Objects
+# window keeps its menu either way. Anything else falls back to the default
+# on read. Default: toggle.
+units_catalog_right_click: toggle
 
 # The terrain grid's swatch size in px, Settings > Appearance: 32, 48, 64.
 # Anything else falls back to the default on read. Default: 48.
@@ -352,15 +365,27 @@ window_size: [1280, 720]
 # once window_state is saved.
 # split_sizes: [340, 900]
 
-# How the Units panel's object list shows objects, set by the buttons above
-# it: icons (icon and name rows), names (text rows) or grid (icons only).
+# How the Units panel's object list shows objects, set by the view dropdown
+# above it: icons (icon and name rows), names (text rows) or grid (icons only).
 # One of icons, names, grid. Default: icons.
 units_catalog_mode: icons
 
 # The same three views for Browse, the object dialog behind a field's "...",
-# set by the same buttons in that dialog. Kept apart from the Units panel's.
+# set by the same dropdown in that dialog. Kept apart from the Units panel's.
 # One of icons, names, grid. Default: icons.
 browse_catalog_mode: icons
+
+# The same three views for the Favorite Objects window (Edit > Favorite
+# Objects...), set by the dropdown in that window.
+# One of icons, names, grid. Default: icons.
+units_favorites_mode: icons
+
+# The Units panel's favorites, in your order: object ids per game, since the
+# same id is another object in another game. Added and removed by
+# right-clicking an object in the catalog. Omitted until you add one; the ids
+# below are only an example.
+# units_favorites:
+#   aoe2: [83, 4, -1]
 
 # Height in pixels of the status log, as versions before the panels could
 # float saved it. Read and removed the same way as split_sizes above; with
@@ -549,6 +574,7 @@ keybinds:
   unit_variant_random: '-'
   unit_select_stack: Ctrl+K
   unit_wall_pick: ''
+  unit_favorites: ''
   trigger_move_up: Alt+Up
   trigger_move_down: Alt+Down
   trigger_move_up_far: Alt+Shift+Up

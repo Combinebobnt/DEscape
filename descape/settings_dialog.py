@@ -516,8 +516,8 @@ class SettingsDialog(QDialog):
         theme_grid.addWidget(self.theme_combo, 0, 1)
         file_tooltip = (
             "A theme file carries this tab's look settings: theme and chrome colours, UI font, "
-            "tool overlay colours, ruler and distance-tick label sizes, badge position, grid "
-            "blend and thickness, and trigger status with its colours. Not graphics quality, "
+            "tool overlay colours, ruler and distance-tick label sizes, badge position, favorite "
+            "star, grid blend and thickness, and trigger status with its colours. Not graphics quality, "
             "preloading, elevation height, pan speed or toolbar buttons."
         )
         self.theme_export_button = QPushButton("Export theme…")
@@ -771,6 +771,19 @@ class SettingsDialog(QDialog):
         stack_badge_row.addWidget(self.stack_badge_position_combo, stretch=0)
         stack_badge_row.addStretch(1)
         layout.addLayout(stack_badge_row)
+
+        # GH #195: the favorites star in the Units catalog and the Favorite Objects window.
+        favorite_star_row = QHBoxLayout()
+        favorite_star_row.addWidget(QLabel("Favorite star:"))
+        self.favorite_star_combo = QComboBox()
+        for style_id, style_label in settings.FAVORITE_STAR_STYLES:
+            self.favorite_star_combo.addItem(style_label, style_id)
+        self.favorite_star_combo.setToolTip("How the Units catalog and the Favorite Objects window mark a favorite")
+        self.favorite_star_combo.setCurrentIndex(self.favorite_star_combo.findData(settings.get_favorite_star_style()))
+        self.favorite_star_combo.currentIndexChanged.connect(self._on_favorite_star_changed)
+        favorite_star_row.addWidget(self.favorite_star_combo, stretch=0)
+        favorite_star_row.addStretch(1)
+        layout.addLayout(favorite_star_row)
 
         # GH #161: the Terrain-mode grid's swatch size. Not in a theme file, so not in _refresh_appearance_widgets.
         terrain_grid_row = QHBoxLayout()
@@ -1276,6 +1289,7 @@ class SettingsDialog(QDialog):
         view.apply_ruler_label_font()
         view.apply_distance_tick_font()
         view.set_stack_badge_position(settings.get_stack_badge_position())
+        self._window.refresh_favorite_stars()
         blend, thickness = settings.get_grid_blend(), settings.get_grid_thickness()
         self._window._apply_grid_change(lambda: view.set_grid_appearance(blend, thickness))
         self._window.trigger_panel.apply_status_style()
@@ -1286,6 +1300,7 @@ class SettingsDialog(QDialog):
             self.ruler_label_font_spin,
             self.distance_tick_font_spin,
             self.stack_badge_position_combo,
+            self.favorite_star_combo,
             self.grid_blend_slider,
             self.grid_thickness_slider,
             self.trigger_status_marker_combo,
@@ -1301,6 +1316,7 @@ class SettingsDialog(QDialog):
             self.stack_badge_position_combo.setCurrentIndex(
                 self.stack_badge_position_combo.findData(settings.get_stack_badge_position())
             )
+            self.favorite_star_combo.setCurrentIndex(self.favorite_star_combo.findData(settings.get_favorite_star_style()))
             self.grid_blend_slider.setValue(settings.get_grid_blend())
             self.grid_thickness_slider.setValue(grid_overlay.thickness_index(settings.get_grid_thickness()))
             self.trigger_status_marker_combo.setCurrentIndex(
@@ -1446,6 +1462,11 @@ class SettingsDialog(QDialog):
         settings.set_distance_tick_font_px(value)
         self._window.map_view.apply_distance_tick_font()
         self._window._log_status(f"Distance ticks label size: {value}px")
+
+    def _on_favorite_star_changed(self, index: int) -> None:
+        settings.set_favorite_star_style(self.favorite_star_combo.itemData(index))
+        self._window.refresh_favorite_stars()
+        self._window._log_status(f"Favorite star: {self.favorite_star_combo.itemText(index)}")
 
     def _on_stack_badge_position_changed(self, index: int) -> None:
         position_id = self.stack_badge_position_combo.itemData(index)
@@ -1678,12 +1699,37 @@ class SettingsDialog(QDialog):
             self.gaia_only_keep_radio.setChecked(True)
         # One radio's toggled covers both directions inside an exclusive group.
         self.gaia_only_hide_radio.toggled.connect(self._on_gaia_only_mode_toggled)
+
+        # GH #195: a right-click in the Units catalog; the Favorite Objects window keeps its menu either way.
+        right_click_divider = QFrame()
+        right_click_divider.setFrameShape(QFrame.HLine)
+        right_click_divider.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(right_click_divider)
+        layout.addWidget(QLabel("Right-click an object in the Units catalog:"))
+        labels = dict(settings.UNITS_CATALOG_RIGHT_CLICKS)
+        self.right_click_toggle_radio = QRadioButton(labels["toggle"])
+        self.right_click_menu_radio = QRadioButton(labels["menu"])
+        right_click_group = QButtonGroup(tab)
+        for radio in (self.right_click_toggle_radio, self.right_click_menu_radio):
+            radio.setToolTip("Add to Favorites or Remove from Favorites. The Favorite Objects window always opens its menu.")
+            right_click_group.addButton(radio)
+            layout.addWidget(radio)
+        if settings.get_units_catalog_right_click() == "toggle":
+            self.right_click_toggle_radio.setChecked(True)
+        else:
+            self.right_click_menu_radio.setChecked(True)
+        self.right_click_toggle_radio.toggled.connect(self._on_catalog_right_click_toggled)
         layout.addStretch(1)
         return tab
 
     def _on_game_data_changed(self, index: int) -> None:
         self._window.set_game_data(self.game_data_combo.itemData(index))
         self._window._log_status(f"Game data: {self.game_data_combo.itemText(index)}")
+
+    def _on_catalog_right_click_toggled(self, toggle: bool) -> None:
+        settings.set_units_catalog_right_click("toggle" if toggle else "menu")
+        shown = "adds or removes the star" if toggle else "opens a menu"
+        self._window._log_status(f"Units catalog right-click: {shown}")
 
     def _on_gaia_only_mode_toggled(self, hide: bool) -> None:
         settings.set_gaia_only_catalog_mode("hide" if hide else "keep")

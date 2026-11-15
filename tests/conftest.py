@@ -371,6 +371,19 @@ def dialog_and_window():
     return SettingsDialog(window), window
 
 
+def choose_display_mode(view, mode: str) -> None:
+    """A user's pick in a catalog's display dropdown (GH #195): `activated`, as choosing an item emits."""
+    combo = view.display_combo
+    index = combo.findData(mode)
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def display_mode_enabled(view, mode: str) -> bool:
+    combo = view.display_combo
+    return combo.model().item(combo.findData(mode)).isEnabled()
+
+
 def close_window(window) -> None:
     """Close without the dirty-document modal. Same requirement
     stepped_window() documents: closeEvent() -> _confirm_discard_changes()

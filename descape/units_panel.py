@@ -275,6 +275,8 @@ class UnitsPanel(QWidget):
         rng=None,
         on_unit_field_step=None,
         on_rotation_drag=None,
+        on_favorites_changed=None,
+        on_placing_art=None,
     ):
         super().__init__()
         # GH #164: rolls a random pick's real const; injectable so a test can seed it.
@@ -301,6 +303,10 @@ class UnitsPanel(QWidget):
         # True while the dial's spoke reaches the spinbox, so a typed value stands alone mid-drag.
         self.dial_committing = False
         self._on_place_requested = on_place_requested or (lambda *args: None)
+        # GH #195: the favorites or the rows they name changed, so the Favorite Objects window refills.
+        self._on_favorites_changed = on_favorites_changed or (lambda: None)
+        # GH #195: the Owner combo's portrait fill and civ, (rgb, civ), for the Favorite Objects window.
+        self._on_placing_art = on_placing_art or (lambda *args: None)
         # GH #128: the picked object or the owner changed, so Place Unit's ghost re-resolves.
         self._on_pending_changed = on_pending_changed or (lambda *args: None)
         self._on_garrison_add = on_garrison_add or (lambda *args: None)
@@ -379,7 +385,16 @@ class UnitsPanel(QWidget):
         # arrow-key unit nudge (map_view_input.py's keyPressEvent) only fires while
         # MapView has focus, and _on_catalog_activated is the common flow's
         # way back to it.
-        self.catalog_view = CatalogBrowserView(loader=self.thumb_loader)
+        # GH #195: favorites per game, read at call time so a dataset switch needs no rebinding.
+        self.catalog_view = CatalogBrowserView(
+            loader=self.thumb_loader,
+            favorites=(
+                lambda: settings.get_unit_favorites(game_dataset.active()),
+                lambda ids: settings.set_unit_favorites(game_dataset.active(), ids),
+            ),
+        )
+        self.catalog_view.favorites_changed.connect(self._on_favorites_changed)
+        self.catalog_view.favorites_view_left.connect(lambda: self.catalog_view.highlight(self._pending_object_const))
         self.catalog_view.current_changed.connect(self._on_catalog_current_changed)
         self.catalog_view.picked.connect(self._on_catalog_picked)
         self.catalog_view.activated.connect(self._on_catalog_activated)
@@ -489,7 +504,8 @@ class UnitsPanel(QWidget):
         object, which then shows in the inspector over any selection (GH #357);
         False, changing nothing, for a const the catalog doesn't list."""
         view = self.catalog_view
-        entry = object_catalog.entry(object_catalog.objects(), const)
+        # The view's entry, not object_catalog's: it lists the random rows too (GH #195's window picks them).
+        entry = view.entry(const)
         if entry is None:
             return False
         # GH #32: a GAIA-only object is listed only for GAIA in hide mode, so the eyedropper switches Owner.
@@ -498,16 +514,24 @@ class UnitsPanel(QWidget):
         if self._hides_unchanged() and const in data_mods.unchanged_ids():
             self._keep_shown = const
             self.refresh_owner_filter()
-        # Before select(), as TerrainPanel.set_terrain does: a row the box hides never reads as picked.
-        if entry.hidden and view.show_hidden_checkbox is not None:
-            view.show_hidden_checkbox.setChecked(True)
-        view.select(const)
-        if view.current_value() != const and view.filter_edit.text():
-            view.filter_edit.clear()
-        # A row that became current while hidden emits nothing when the filter unhides it.
-        if view.current_value() == const and self._pending_object_const != const:
-            self._set_pending_object(const)
-        took = self.selected_object_const() == const
+        in_view = view.in_favorites_view()
+        if in_view and const not in view.favorites():
+            # GH #195: a gate turn or the Eyedropper changes the pick, and the favorites view stays, with no row current.
+            view.clear_current()
+            if self._pending_object_const != const:
+                self._set_pending_object(const)
+        else:
+            # Before select(), as TerrainPanel.set_terrain does: a row the box hides never reads as picked.
+            if entry.hidden and not in_view and view.show_hidden_checkbox is not None:
+                view.show_hidden_checkbox.setChecked(True)
+            view.select(const)
+            if view.current_value() != const and view.filter_edit.text():
+                view.filter_edit.clear()
+            # A row that became current while hidden emits nothing when the filter unhides it.
+            if view.current_value() == const and self._pending_object_const != const:
+                self._set_pending_object(const)
+        # A random pick's selected const is its roll.
+        took = (self._pending_object_const if place_random.is_random(const) else self.selected_object_const()) == const
         if took:
             self.show_pick()
         return took
@@ -581,6 +605,7 @@ class UnitsPanel(QWidget):
         self.placing_card.set_civ(placing)
         self.catalog_view.set_civ(placing)
         self.selection_card.set_civ(self._portrait_civ(self.unit_field_editors["player"].currentData()))
+        self._on_placing_art(self._team_rgb(self.owner_combo.currentData()), placing)
 
     def _portrait_civ(self, player_id) -> int | None:
         return self._portrait_civ_for(player_id) if isinstance(player_id, int) else None
@@ -864,6 +889,7 @@ class UnitsPanel(QWidget):
         self._keep_pending_after_reload()
         # The new dataset has its own GAIA-only set (GH #32).
         self.refresh_owner_filter()
+        self._on_favorites_changed()
 
     def rename_catalog(self) -> None:
         """After Settings > Mods' "(data mod)" label changes (GH #265): the same
@@ -872,6 +898,7 @@ class UnitsPanel(QWidget):
         pending = self._pending_object_const
         if pending is not None and not place_random.is_random(pending):
             self._set_pending_object(pending)
+        self._on_favorites_changed()
 
     def _keep_pending_after_reload(self) -> None:
         pending = self._pending_object_const
@@ -903,6 +930,7 @@ class UnitsPanel(QWidget):
         self.catalog_view.refresh_thumbnails()
         self.placing_card.refresh_thumbnails()
         self.selection_card.refresh_thumbnails()
+        self._on_favorites_changed()
 
     def _apply_slot(self) -> None:
         """The one slot under the count line (GH #357): the selection block, or

@@ -146,15 +146,15 @@ def test_a_category_switch_never_reports_a_pick() -> None:
 def test_without_an_install_the_icon_modes_are_off_until_refresh(tmp_path) -> None:
     view = _view()
     assert view.mode() == "names"
-    assert not view.display_buttons["icons"].isEnabled()
-    assert not view.display_buttons["grid"].isEnabled()
-    assert view.display_buttons["names"].isChecked()
+    assert not conftest.display_mode_enabled(view, "icons")
+    assert not conftest.display_mode_enabled(view, "grid")
+    assert view.display_combo.currentData() == "names"
     asset_source.set_install_path_override(conftest._fake_install(tmp_path))
     try:
         view.refresh_thumbnails()
-        assert view.display_buttons["icons"].isEnabled() and view.display_buttons["grid"].isEnabled()
+        assert conftest.display_mode_enabled(view, "icons") and conftest.display_mode_enabled(view, "grid")
         assert view.mode() == settings.UNITS_CATALOG_MODE_DEFAULT == "icons"
-        assert view.display_buttons["icons"].isChecked()
+        assert view.display_combo.currentData() == "icons"
     finally:
         asset_source.set_install_path_override(None)
 
@@ -163,7 +163,7 @@ def test_the_modes_switch_the_view_and_persist(fake_install, monkeypatch) -> Non
     from PyQt5.QtWidgets import QListView
 
     view = _view()
-    view.display_buttons["grid"].click()
+    conftest.choose_display_mode(view, "grid")
     assert view.list.viewMode() == QListView.IconMode
     assert view.list.item(0).text() == ""
     assert view.list.item(0).toolTip()
@@ -171,10 +171,10 @@ def test_the_modes_switch_the_view_and_persist(fake_install, monkeypatch) -> Non
     monkeypatch.setattr(settings, "_units_catalog_mode", None)
     assert settings.get_units_catalog_mode() == "grid"
     assert _view().mode() == "grid", "a fresh view starts in the saved mode"
-    view.display_buttons["names"].click()
+    conftest.choose_display_mode(view, "names")
     assert view.list.viewMode() == QListView.ListMode
     assert view.list.iconSize().isEmpty()
-    view.display_buttons["icons"].click()
+    conftest.choose_display_mode(view, "icons")
     assert view.list.viewMode() == QListView.ListMode
     assert view.list.iconSize().width() == 32
     monkeypatch.setattr(settings, "_units_catalog_mode", None)
@@ -216,7 +216,7 @@ def test_the_list_modes_scroll_to_the_widest_name_and_never_clip_it(mode, fake_i
     from descape.units_panel import UnitsPanel
 
     view = _view()
-    view.display_buttons[mode].click()
+    conftest.choose_display_mode(view, mode)
     view.resize(UnitsPanel.MIN_USEFUL_WIDTH, 400)
     view.show()
     try:
@@ -249,7 +249,7 @@ def test_the_list_takes_focus_only_on_a_click() -> None:
     assert view.list.focusPolicy() == Qt.ClickFocus
     assert view.class_combo.focusPolicy() == Qt.ClickFocus
     assert all(button.focusPolicy() == Qt.NoFocus for button in view.category_buttons.values())
-    assert all(button.focusPolicy() == Qt.NoFocus for button in view.display_buttons.values())
+    assert view.display_combo.focusPolicy() == Qt.NoFocus
 
 
 @pytest.mark.parametrize("mode", ["icons", "names", "grid"])
@@ -257,7 +257,7 @@ def test_enter_activates_in_every_mode(mode, fake_install) -> None:
     from PyQt5.QtTest import QTest
 
     view = _view()
-    view.display_buttons[mode].click()
+    conftest.choose_display_mode(view, mode)
     activated = []
     view.activated.connect(activated.append)
     view.select(_ARCHER)
@@ -267,7 +267,7 @@ def test_enter_activates_in_every_mode(mode, fake_install) -> None:
 
 def test_a_grid_row_with_no_thumbnail_gets_a_glyph(fake_install) -> None:
     view = _view(real_pool=True)
-    view.display_buttons["grid"].click()
+    conftest.choose_display_mode(view, "grid")
     no_icon = next(v for v in _shown(view) if object_catalog.icon_for(v) is None and v > 0)
     view._loader.request([no_icon], 48, client="test")
     conftest.settle_thumbs(view._loader)
@@ -309,7 +309,7 @@ def test_an_owner_switch_mid_decode_never_puts_the_old_civs_portrait_on_a_row(ar
         executor.run(len(executor.submitted) - 1)
         QApplication.processEvents()
 
-    view.display_buttons["icons"].click()
+    conftest.choose_display_mode(view, "icons")
     view.filter_edit.setText("archer 4")
     view.set_civ(archer_civ_portrait)
     view.resize(380, 300)
@@ -348,7 +348,7 @@ def test_an_owner_with_no_portrait_never_keeps_the_previous_owners(fake_install,
     monkeypatch.setattr(object_catalog, "_dat_entry", entry)
     monkeypatch.setattr(catalog_browser.catalog_thumbs, "sprite_thumb", lambda *_args: None)
     view = _view(real_pool=True)
-    view.display_buttons["icons"].click()
+    conftest.choose_display_mode(view, "icons")
     view.filter_edit.setText("archer 4")
     view.resize(380, 300)
     view.show()
@@ -509,7 +509,7 @@ def test_select_still_ticks_the_box_for_a_hidden_row_nobody_pinned() -> None:
 def test_a_mode_store_writes_its_own_key_and_leaves_the_units_key_alone(fake_install, monkeypatch) -> None:
     store = (settings.get_browse_catalog_mode, settings.set_browse_catalog_mode)
     view = _given_view(_rows_in("Units"), mode_store=store)
-    view.display_buttons["grid"].click()
+    conftest.choose_display_mode(view, "grid")
     monkeypatch.setattr(settings, "_browse_catalog_mode", None)
     monkeypatch.setattr(settings, "_units_catalog_mode", None)
     assert settings.get_browse_catalog_mode() == "grid"
@@ -548,7 +548,7 @@ def test_the_grid_frames_the_selected_cell_and_no_other(sidebar, fake_install) -
     view.resize(420, 420)
     view.show()
     try:
-        view.display_buttons["grid"].click()
+        conftest.choose_display_mode(view, "grid")
         view.select(_ARCHER)
         QApplication.processEvents()
         image = view.list.viewport().grab().toImage()
@@ -564,3 +564,655 @@ def test_the_grid_frames_the_selected_cell_and_no_other(sidebar, fake_install) -
     finally:
         view.close()
 
+
+
+# -- GH #195: favorites ------------------------------------------------------------
+
+_UNKNOWN = 32000  # no dataset lists it
+_GOLD = catalog_browser._STAR_GOLD.getRgb()
+
+
+class _Store:
+    """An in-memory favorites store: the (getter, setter) pair the sidebar binds to settings."""
+
+    def __init__(self, ids=()):
+        self.ids = list(ids)
+        self.writes: list[list[int]] = []
+
+    def pair(self):
+        return (lambda: list(self.ids), self._set)
+
+    def _set(self, ids) -> None:
+        self.ids = list(ids)
+        self.writes.append(list(ids))
+
+
+def _fav_view(store: _Store | None = None, executor=None) -> CatalogBrowserView:
+    from descape.catalog_thumbs import ThumbLoader
+
+    conftest.ensure_qapp()
+    store = store if store is not None else _Store()
+    return CatalogBrowserView(loader=ThumbLoader(executor=executor or ManualExecutor()), favorites=store.pair())
+
+
+def _other_const() -> int:
+    return next(e.id for e in object_catalog.objects() if e.category == "Others" and not e.hidden)
+
+
+def _recorder(signal) -> list:
+    got: list = []
+    signal.connect(lambda *args: got.append(args))
+    return got
+
+
+def test_without_a_store_there_is_no_button_menu_or_star() -> None:
+    for view in (_view(), _given_view(_rows_in("Units"))):
+        assert view.favorites_button is None
+        assert view.list.contextMenuPolicy() != Qt.CustomContextMenu
+        assert view.favorites() == []
+        assert not any(view.list.item(i).data(catalog_browser.FAVORITE_ROLE) for i in range(view.list.count()))
+        view.set_favorites([_ARCHER])
+        assert view.favorites() == []
+
+
+def test_the_class_row_holds_the_class_combo_favorites_and_the_view_dropdown() -> None:
+    view = _fav_view()
+    assert view.favorites_button.text() == "Favorites"
+    assert view.favorites_button.isCheckable() and not view.favorites_button.isChecked()
+    assert view.favorites_button.focusPolicy() == Qt.NoFocus
+    assert view.favorites_button.toolTip() == catalog_browser.FAVORITES_TIP
+    row = view.class_combo.parentWidget().layout()
+    assert [row.indexOf(w) for w in (view.class_combo, view.favorites_button, view.display_combo)] == sorted(
+        row.indexOf(w) for w in (view.class_combo, view.favorites_button, view.display_combo)
+    )
+
+
+def test_the_menu_follows_the_store_and_its_action_toggles_it() -> None:
+    store = _Store()
+    view = _fav_view(store)
+    changed = _recorder(view.favorites_changed)
+    menu = view._favorite_menu(_ARCHER)
+    assert [a.text() for a in menu.actions()] == ["Add to Favorites"]
+    menu.actions()[0].trigger()
+    assert store.ids == [_ARCHER] and len(changed) == 1
+    menu = view._favorite_menu(_ARCHER)
+    assert [a.text() for a in menu.actions()] == ["Remove from Favorites"]
+    menu.actions()[0].trigger()
+    assert store.ids == [] and len(changed) == 2
+
+
+def test_an_unknown_id_offers_only_remove() -> None:
+    view = _fav_view(_Store([_UNKNOWN]))
+    assert [a.text() for a in view._favorite_menu(_UNKNOWN).actions()] == ["Remove from Favorites"]
+    view.remove_favorite(_UNKNOWN)
+    assert view._favorite_menu(_UNKNOWN).actions() == []
+
+
+def test_set_and_remove_write_through_the_store_and_emit() -> None:
+    store = _Store([_ARCHER])
+    view = _fav_view(store)
+    changed = _recorder(view.favorites_changed)
+    view.set_favorites([_CASTLE, _ARCHER])
+    assert store.writes == [[_CASTLE, _ARCHER]] and len(changed) == 1
+    view.remove_favorite(_CASTLE)
+    assert store.ids == [_ARCHER] and len(changed) == 2
+    view.remove_favorite(_CASTLE)
+    assert len(store.writes) == 2, "removing a non-favorite writes nothing"
+    store.ids = [83]
+    assert view.favorites() == [83], "favorites() reads the store, not a copy of its own"
+
+
+def test_a_right_press_changes_no_current_row() -> None:
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QMouseEvent
+
+    view = _fav_view()
+    view.resize(380, 400)
+    view.show()
+    try:
+        view.select(_ARCHER)
+        other = next(view.list.item(i) for i in range(view.list.count()) if view.list.item(i).data(Qt.UserRole) != _ARCHER)
+        view.list.scrollToItem(other)
+        center = view.list.visualItemRect(other).center()
+        changes = _recorder(view.current_changed)
+        picks = _recorder(view.picked)
+
+        def press(button) -> None:
+            view.list.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, center, button, button, Qt.NoModifier))
+
+        press(Qt.RightButton)
+        assert view.current_value() == _ARCHER and changes == [] and picks == []
+        press(Qt.LeftButton)
+        assert view.list.currentItem() is other, "a left press still moves the row, or this proves nothing"
+    finally:
+        view.close()
+
+
+def test_a_favorite_carries_the_star_flag_and_a_tooltip_in_both_views() -> None:
+    view = _fav_view(_Store([_ARCHER]))
+    archer = view._items[_ARCHER]
+    entry = view.entry(_ARCHER)
+    assert archer.data(catalog_browser.FAVORITE_ROLE)
+    assert archer.toolTip().endswith("(favorite)") and archer.text() == entry.name
+    others = [item for value, item in view._items.items() if value != _ARCHER]
+    assert not any(item.data(catalog_browser.FAVORITE_ROLE) for item in others)
+    assert not any("(favorite)" in item.toolTip() for item in others)
+    view.add_favorite(83)
+    assert view._items[83].data(catalog_browser.FAVORITE_ROLE), "refreshed in place"
+    view.set_favorites_view(True)
+    assert all(view._items[v].data(catalog_browser.FAVORITE_ROLE) for v in (_ARCHER, 83))
+    assert view._items[_ARCHER].toolTip().endswith("(favorite)")
+
+
+def test_the_filter_finds_a_starred_row_by_name() -> None:
+    view = _fav_view(_Store([_ARCHER, _CASTLE]))
+    view.filter_edit.setText("archer")
+    assert _ARCHER in _shown(view)
+    view.set_favorites_view(True)
+    assert _ARCHER in _shown(view) and _CASTLE not in _shown(view)
+
+
+def _favorite_row_spot(view, value: int, grid: bool):
+    """The pixel the delegate's star covers for `value`'s row: its centre."""
+    from PyQt5.QtCore import QRect
+
+    rect = view.list.visualItemRect(view._items[value])
+    radius = catalog_browser._STAR_RADIUS
+    if grid:
+        disc = 2 * radius + 4
+        corner = QRect(rect.right() - disc - 1, rect.top() + 2, disc, disc)
+        return corner.center().x(), corner.center().y()
+    return round(rect.right() - catalog_browser._STAR_ROOM / 2), rect.center().y()
+
+
+@pytest.mark.parametrize("mode", ["icons", "names", "grid"])
+def test_the_delegate_paints_the_star_on_a_favorite_only(mode, fake_install) -> None:
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    grid = mode == "grid"
+    view = _fav_view(_Store([_ARCHER, _CASTLE]))
+    view.resize(420, 420)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, mode)
+        view.set_favorites_view(True)
+        view.add_favorite(_other_const())
+        view.select(_CASTLE)
+        QApplication.processEvents()
+        image = view.list.viewport().grab().toImage()
+        area = view.list.viewport().rect()
+        for value in (_ARCHER, _CASTLE):
+            assert area.contains(view.list.visualItemRect(view._items[value]))
+        assert image.pixelColor(*_favorite_row_spot(view, _ARCHER, grid)).getRgb() == _GOLD
+        selected = image.pixelColor(*_favorite_row_spot(view, _CASTLE, grid)).getRgb()
+        if grid:
+            assert selected == _GOLD, "Grid's corner star stays gold on its dark disc"
+        else:
+            assert selected == view.list.palette().color(QPalette.HighlightedText).getRgb()
+        view.set_favorites_view(False)
+        view.category_buttons["Units"].click()
+        QApplication.processEvents()
+        plain = next(
+            v for v, item in view._items.items()
+            if v != _ARCHER and not item.isHidden() and area.contains(view.list.visualItemRect(item))
+        )
+        image = view.list.viewport().grab().toImage()
+        assert image.pixelColor(*_favorite_row_spot(view, plain, grid)).getRgb() != _GOLD
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("mode, extra", [("icons", catalog_browser._STAR_ROOM), ("names", catalog_browser._STAR_ROOM), ("grid", 0)])
+def test_the_size_hint_keeps_room_for_the_star_in_the_list_modes(mode, extra, fake_install) -> None:
+    from PyQt5.QtWidgets import QStyleOptionViewItem
+
+    view = _fav_view()
+    conftest.choose_display_mode(view, mode)
+    delegate = view.list.itemDelegate()
+
+    def width() -> int:
+        index = view.list.indexFromItem(view._items[_ARCHER])
+        option = QStyleOptionViewItem()
+        option.initFrom(view.list)
+        return delegate.sizeHint(option, index).width()
+
+    before = width()
+    view.add_favorite(_ARCHER)
+    assert width() == before + extra
+
+
+def test_the_favorites_view_lists_the_stored_order_across_categories() -> None:
+    order = [_CASTLE, _ARCHER, _other_const(), RANDOM_VILLAGER]
+    view = _fav_view(_Store(order))
+    view.favorites_button.click()
+    assert view.in_favorites_view()
+    assert _shown(view) == order
+    assert not any(button.isChecked() for button in view.category_buttons.values())
+
+
+def test_the_category_counts_do_not_change_when_the_view_toggles() -> None:
+    view = _fav_view(_Store([_BUILDER, _ARCHER, _CASTLE]))
+    before = _counts(view)
+    view.set_favorites_view(True)
+    assert _BUILDER in _shown(view), "the editor-hidden favorite is listed, or this proves nothing"
+    assert _counts(view) == before
+    view.set_favorites_view(False)
+    assert _counts(view) == before
+
+
+def test_a_category_click_leaves_the_view_and_says_so() -> None:
+    view = _fav_view(_Store([_ARCHER]))
+    view.category_buttons["Buildings"].click()
+    view.favorites_button.click()
+    left = _recorder(view.favorites_view_left)
+    view.category_buttons["Heroes"].click()
+    assert not view.in_favorites_view() and not view.favorites_button.isChecked()
+    assert view.category_buttons["Heroes"].isChecked()
+    assert len(left) == 1
+    view.category_buttons["Units"].click()
+    assert len(left) == 1, "a category click outside the view leaves nothing"
+
+
+def test_the_button_returns_to_the_last_category_and_says_so() -> None:
+    view = _fav_view(_Store([_ARCHER]))
+    view.category_buttons["Buildings"].click()
+    left = _recorder(view.favorites_view_left)
+    view.favorites_button.click()
+    assert left == []
+    view.favorites_button.click()
+    assert view.category_buttons["Buildings"].isChecked() and _CASTLE in _shown(view)
+    assert len(left) == 1
+
+
+def test_highlight_lands_only_on_a_listed_shown_row_without_a_signal() -> None:
+    view = _fav_view()
+    changes = _recorder(view.current_changed)
+    view.highlight(_CASTLE)
+    assert view.list.currentItem() is None and view.category_buttons["Units"].isChecked(), "no category switch"
+    view.highlight(None)
+    view.filter_edit.setText("castle")
+    view.highlight(_ARCHER)
+    assert view.list.currentItem() is None, "a filtered-out row stays unhighlighted"
+    view.filter_edit.clear()
+    view.highlight(_BUILDER)
+    assert view.list.currentItem() is None and not view.show_hidden_checkbox.isChecked(), "no box ticked"
+    view.highlight(_ARCHER)
+    assert view.current_value() == _ARCHER
+    assert changes == []
+
+
+def test_select_keeps_a_favorite_in_the_view_and_takes_another_value_to_its_category() -> None:
+    view = _fav_view(_Store([_ARCHER, _BUILDER]))
+    view.set_favorites_view(True)
+    view.select(_BUILDER)
+    assert view.in_favorites_view() and view.current_value() == _BUILDER
+    assert not view.show_hidden_checkbox.isChecked()
+    view.select(_CASTLE)
+    assert not view.in_favorites_view() and view.category_buttons["Buildings"].isChecked()
+    assert view.current_value() == _CASTLE
+
+
+def test_the_class_combo_counts_the_favorites_and_resets_with_the_view() -> None:
+    view = _fav_view(_Store([_ARCHER, 83, _CASTLE, _UNKNOWN]))
+    view.class_combo.setCurrentIndex(view.class_combo.findData(_CIVILIAN))
+    view.set_favorites_view(True)
+    assert view.class_combo.currentIndex() == 0, "a new list starts on All classes"
+    assert view.class_combo.itemText(0) == f"{catalog_browser._ALL_CLASSES} (3)", "the unknown id has no class"
+    view.class_combo.setCurrentIndex(view.class_combo.findData(_CIVILIAN))
+    assert _shown(view) == [83]
+    view.set_favorites_view(False)
+    assert view.class_combo.currentIndex() == 0
+
+
+def test_an_excluded_favorite_is_not_listed() -> None:
+    view = _fav_view(_Store([_ARCHER, _CASTLE]))
+    view.set_excluded(frozenset({_CASTLE}))
+    view.set_favorites_view(True)
+    assert _shown(view) == [_ARCHER]
+
+
+def test_an_unknown_id_is_greyed_selectable_matched_by_id_and_never_picked(fake_install) -> None:
+    from PyQt5.QtGui import QPalette
+
+    view = _fav_view(_Store([_ARCHER, _UNKNOWN]))
+    assert view.entry(_UNKNOWN) is None
+    view.set_favorites_view(True)
+    item = view._items[_UNKNOWN]
+    assert item.text() == f"Unknown object ({_UNKNOWN})"
+    assert item.foreground().color() == view.list.palette().color(QPalette.Disabled, QPalette.Text)
+    assert item.flags() & Qt.ItemIsSelectable and item.flags() & Qt.ItemIsEnabled
+    picks, activations = _recorder(view.picked), _recorder(view.activated)
+    view.list.setCurrentItem(item)
+    view.list.itemClicked.emit(item)
+    view.list.itemActivated.emit(item)
+    assert picks == [] and activations == []
+    assert view.current_value() is None
+    view.filter_edit.setText(str(_UNKNOWN))
+    assert _shown(view) == [_UNKNOWN]
+    view.filter_edit.setText("archer")
+    assert _UNKNOWN not in _shown(view)
+    view.filter_edit.clear()
+    view.class_combo.setCurrentIndex(1)
+    assert _UNKNOWN not in _shown(view), "a class never matches it"
+
+
+@pytest.mark.parametrize("mode", ["icons", "grid"])
+def test_an_unknown_id_never_reaches_the_loader(mode, fake_install, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    view = _fav_view(_Store([_UNKNOWN, _ARCHER]))
+    asked: list[int] = []
+    real = view._loader.request
+    monkeypatch.setattr(view._loader, "request", lambda consts, *a, **k: (asked.extend(consts), real(consts, *a, **k)))
+    view.resize(380, 400)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, mode)
+        view.set_favorites_view(True)
+        QApplication.processEvents()
+        assert _ARCHER in asked and _UNKNOWN not in asked
+        view._on_thumb_ready(_UNKNOWN, catalog_browser.icon_px(mode), None, None)
+        assert not view._items[_UNKNOWN].icon().isNull(), "it keeps its stand-in"
+    finally:
+        view.close()
+
+
+def test_favorites_rows_ask_for_the_owners_civ(fake_install, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    view = _fav_view(_Store([_CASTLE, _ARCHER]))
+    civs: list = []
+    real = view._loader.request
+    monkeypatch.setattr(view._loader, "request", lambda consts, *a, **k: (civs.append((list(consts), k.get("civ"))), real(consts, *a, **k)))
+    view.resize(380, 400)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, "icons")
+        view.set_favorites_view(True)
+        QApplication.processEvents()
+        civs.clear()
+        view.set_civ(5)
+        assert civs and all(civ == 5 for _consts, civ in civs)
+        assert _CASTLE in civs[-1][0]
+    finally:
+        view.close()
+
+
+class _SelfDrop:
+    """A drop from the list onto itself, offering the actions a real drag of its rows offers
+    (the model's): QDropEvent.source() is the list, which a test cannot get from a real drag offscreen."""
+
+    @staticmethod
+    def make(widget, pos):
+        from PyQt5.QtCore import QMimeData, QPointF
+        from PyQt5.QtGui import QDropEvent
+
+        class Event(QDropEvent):
+            def source(self):
+                return widget
+
+        mime = QMimeData()
+        event = Event(QPointF(pos), widget.model().supportedDragActions(), mime, Qt.LeftButton, Qt.NoModifier)
+        event.mime = mime  # kept alive with the event
+        return event
+
+
+@pytest.mark.parametrize("mode", ["names", "grid"])
+def test_a_drop_reorders_saves_keeps_every_row_and_picks_nothing(mode, fake_install) -> None:
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QApplication
+
+    store = _Store([_ARCHER, _CASTLE, 83])
+    view = _fav_view(store)
+    view.resize(420, 420)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, mode)
+        view.set_favorites_view(True)
+        view.list.setCurrentItem(view._items[_ARCHER])
+        picks, changed = _recorder(view.picked), _recorder(view.favorites_changed)
+        last = view.list.visualItemRect(view._items[83])
+        past_middle = QPoint(last.right() - 2, last.center().y()) if mode == "grid" else QPoint(last.center().x(), last.bottom() - 2)
+        event = _SelfDrop.make(view.list, past_middle)
+        view.list.dropEvent(event)
+        assert event.isAccepted() and event.dropAction() == Qt.CopyAction, "Copy, so Qt's startDrag removes no row"
+        assert store.ids == [_ARCHER, _CASTLE, 83], "saved on the next turn of the event loop"
+        QApplication.processEvents()
+        assert store.ids == [_CASTLE, 83, _ARCHER]
+        assert _shown(view) == [_CASTLE, 83, _ARCHER]
+        assert picks == [] and len(changed) == 1
+        own = view.list.visualItemRect(view._items[_ARCHER]).center()
+        view.list.setCurrentItem(view._items[_ARCHER])
+        assert view.list.drop_order(own) is None, "a drop on its own row moves nothing"
+    finally:
+        view.close()
+
+
+def test_drag_is_on_only_in_the_favorites_view_with_every_row_shown() -> None:
+    from PyQt5.QtWidgets import QAbstractItemView
+
+    view = _fav_view(_Store([_ARCHER, _CASTLE, 83]))
+
+    def drag_on() -> bool:
+        on = view.list.dragEnabled()
+        assert on == (view.list.dragDropMode() == QAbstractItemView.InternalMove)
+        return on
+
+    assert not drag_on(), "never in a category"
+    view.set_favorites_view(True)
+    assert drag_on()
+    view.filter_edit.setText("archer")
+    assert not drag_on()
+    view.filter_edit.clear()
+    assert drag_on()
+    view.class_combo.setCurrentIndex(view.class_combo.findData(_CIVILIAN))
+    assert not drag_on()
+    view.class_combo.setCurrentIndex(0)
+    view.set_excluded(frozenset({_CASTLE}))
+    assert not drag_on()
+
+
+def test_reload_entries_keeps_the_favorites_view() -> None:
+    view = _fav_view(_Store([_CASTLE, _ARCHER]))
+    view.set_favorites_view(True)
+    view.reload_entries()
+    assert view.in_favorites_view() and view.favorites_button.isChecked()
+    assert _shown(view) == [_CASTLE, _ARCHER]
+
+
+def test_no_install_never_saves_over_the_chosen_mode(monkeypatch) -> None:
+    settings.set_units_catalog_mode("grid")
+    monkeypatch.setattr(settings, "_units_catalog_mode", None)
+    view = _fav_view()
+    assert view.mode() == "names" and view.display_combo.currentData() == "names"
+    view.refresh_thumbnails()
+    monkeypatch.setattr(settings, "_units_catalog_mode", None)
+    assert settings.get_units_catalog_mode() == "grid"
+
+
+def test_the_viewport_takes_drops_after_every_refill_of_the_view() -> None:
+    """Static movement turns the viewport's drops off directly, and the view's own setter skips
+    an unchanged value: without the viewport's, a second drag would be refused."""
+    view = _fav_view(_Store([_ARCHER, _CASTLE, 83]))
+    view.set_favorites_view(True)
+    assert view.list.viewport().acceptDrops()
+    view.set_favorites([_CASTLE, _ARCHER, 83])
+    assert view.list.viewport().acceptDrops(), "after a reorder's rebuild"
+    view.remove_favorite(83)
+    assert view.list.viewport().acceptDrops(), "after a removal's rebuild"
+    view.set_favorites_view(False)
+    assert not view.list.viewport().acceptDrops()
+
+
+def test_a_drop_leaves_the_list_out_of_its_dragging_state(fake_install) -> None:
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QAbstractItemView
+
+    view = _fav_view(_Store([_ARCHER, _CASTLE, 83]))
+    view.set_favorites_view(True)
+    view.list.setCurrentItem(view._items[_ARCHER])
+    view.list.setState(QAbstractItemView.DraggingState)
+    view.list.dropEvent(_SelfDrop.make(view.list, QPoint(2, 2)))
+    assert view.list.state() == QAbstractItemView.NoState
+
+
+def test_a_grid_drop_between_cells_lands_there_and_below_the_last_row_at_the_end(fake_install) -> None:
+    from PyQt5.QtCore import QPoint
+
+    order = [_ARCHER, _CASTLE, 83, 293]
+    view = _fav_view(_Store(order))
+    view.resize(420, 420)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, "grid")
+        view.set_favorites_view(True)
+        first, second = (view.list.visualItemRect(view._items[v]) for v in order[:2])
+        assert first.top() == second.top() and second.left() - first.right() > 1, "cells on one line with a gap"
+        view.list.setCurrentItem(view._items[293])
+        for x in range(first.right() + 1, second.left()):
+            gap = QPoint(x, first.center().y())
+            assert view.list.itemAt(gap) is None, "in the gap, or this proves nothing"
+            assert view.list.drop_order(gap) == [_ARCHER, 293, _CASTLE, 83], x
+        view.list.setCurrentItem(view._items[_ARCHER])
+        last = view.list.visualItemRect(view._items[293])
+        assert view.list.drop_order(QPoint(last.center().x(), last.bottom() + 4)) == [_CASTLE, 83, 293, _ARCHER]
+    finally:
+        view.close()
+
+
+# -- the star's style and the right-click setting (GH #195's amendment) ------------
+
+
+def _star_pixels(view, value: int, grid: bool) -> list[tuple[int, int, int, int]]:
+    """Every pixel in a box around `value`'s star."""
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    image = view.list.viewport().grab().toImage()
+    x, y = _favorite_row_spot(view, value, grid)
+    reach = catalog_browser._STAR_RADIUS + 2
+    return [image.pixelColor(px, py).getRgb() for px in range(x - reach, x + reach + 1) for py in range(y - reach, y + reach + 1)]
+
+
+def _near(rgba, rgb, tolerance: int = 30) -> bool:
+    return all(abs(a - b) <= tolerance for a, b in zip(rgba[:3], rgb, strict=True))
+
+
+@pytest.mark.parametrize("mode", ["icons", "names"])
+def test_the_gold_star_has_a_dark_outline_and_mono_is_black_or_white(mode, fake_install) -> None:
+    view = _fav_view(_Store([_ARCHER, _CASTLE]))
+    view.resize(420, 420)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, mode)
+        view.set_favorites_view(True)
+        outline = catalog_browser._STAR_OUTLINE.getRgb()[:3]
+        gold = _star_pixels(view, _ARCHER, grid=False)
+        assert gold[len(gold) // 2] == _GOLD, "gold at the centre"
+        assert any(_near(px, outline) for px in gold), "the dark outline at the edge"
+        settings.set_favorite_star_style("mono")
+        mono = _star_pixels(view, _ARCHER, grid=False)
+        assert mono[len(mono) // 2] == catalog_browser.mono_star_colour(view.list.palette()).getRgb()
+        assert _GOLD not in mono and not any(_near(px, outline, 10) for px in mono)
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize(
+    "preset, expected",
+    [("light", (0, 0, 0)), ("editor_parchment_red", (0, 0, 0)), ("editor_dark_wood_red", (255, 255, 255)), ("dark", (255, 255, 255))],
+)
+def test_mono_is_pure_black_or_white_whatever_the_themes_text_colour(preset, expected) -> None:
+    """Dark Wood's text colour is a dim cream (#ddc8b1): mono never takes it."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.viewer_dialogs import build_theme_palette
+
+    conftest.ensure_qapp()
+    palette = build_theme_palette(QApplication.instance().style().standardPalette(), preset, {})
+    assert catalog_browser.mono_star_colour(palette).getRgb()[:3] == expected
+
+
+def test_the_grid_star_turns_white_on_its_disc_in_mono(fake_install) -> None:
+    view = _fav_view(_Store([_ARCHER, _CASTLE]))
+    view.resize(420, 420)
+    view.show()
+    try:
+        conftest.choose_display_mode(view, "grid")
+        view.set_favorites_view(True)
+        pixels = _star_pixels(view, _ARCHER, grid=True)
+        assert pixels[len(pixels) // 2] == _GOLD
+        settings.set_favorite_star_style("mono")
+        pixels = _star_pixels(view, _ARCHER, grid=True)
+        assert pixels[len(pixels) // 2] == (255, 255, 255, 255)
+    finally:
+        view.close()
+
+
+def _no_menu(monkeypatch) -> None:
+    from PyQt5.QtWidgets import QMenu
+
+    def refuse(*_args):
+        raise AssertionError("a toggle right-click opens no menu")
+
+    monkeypatch.setattr(QMenu, "exec_", refuse)
+
+
+def _right_click(view, value: int) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    view._show_favorite_menu(view.list.visualItemRect(view._items[value]).center())
+
+
+def test_a_toggle_right_click_adds_and_removes_with_no_menu(monkeypatch) -> None:
+    assert settings.get_units_catalog_right_click() == "toggle", "the default"
+    _no_menu(monkeypatch)
+    store = _Store()
+    view = _fav_view(store)
+    view.resize(380, 400)
+    view.show()
+    try:
+        current = view.current_value()
+        changed = _recorder(view.favorites_changed)
+        _right_click(view, _ARCHER)
+        assert store.ids == [_ARCHER] and len(changed) == 1
+        assert view._items[_ARCHER].data(catalog_browser.FAVORITE_ROLE)
+        _right_click(view, _ARCHER)
+        assert store.ids == [] and len(changed) == 2
+        assert view.current_value() == current, "the pick never moves"
+    finally:
+        view.close()
+
+
+def test_a_toggle_right_click_removes_an_unknown_favorite(monkeypatch) -> None:
+    settings.set_units_catalog_right_click("toggle")
+    _no_menu(monkeypatch)
+    store = _Store([_ARCHER, _UNKNOWN])
+    view = _fav_view(store)
+    view.resize(380, 400)
+    view.show()
+    try:
+        view.set_favorites_view(True)
+        _right_click(view, _UNKNOWN)
+        assert store.ids == [_ARCHER]
+    finally:
+        view.close()
+
+
+def test_the_menu_setting_still_opens_the_menu(monkeypatch) -> None:
+    from PyQt5.QtWidgets import QMenu
+
+    settings.set_units_catalog_right_click("menu")
+    opened = []
+    monkeypatch.setattr(QMenu, "exec_", lambda menu, *_args: opened.append([a.text() for a in menu.actions()]))
+    store = _Store()
+    view = _fav_view(store)
+    view.resize(380, 400)
+    view.show()
+    try:
+        _right_click(view, _ARCHER)
+        assert opened == [["Add to Favorites"]] and store.ids == []
+    finally:
+        view.close()

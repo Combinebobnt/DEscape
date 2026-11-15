@@ -167,6 +167,12 @@ class _ViewerMenusMixin:
         self.history_action.setToolTip("Every edit you can undo, in order; double-click one to jump back or forward to it")
         self.history_action.triggered.connect(self._show_history_dialog)
         edit_menu.addAction(self.history_action)
+        # GH #195's Favorite Objects window: Units mode only (_update_tool_enabled()), unbound.
+        self.favorites_action = QAction("Favor&ite Objects…", self)
+        self.favorites_action.setToolTip("Your favorite objects from the Units catalog; click one to place it")
+        self.favorites_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.favorites_action.triggered.connect(self._show_unit_favorites)
+        edit_menu.addAction(self.favorites_action)
         # Phase 2.8's whole-map region pair, through on_region_selected(); under
         # Units Select they act on the unit selection instead (TASK-325).
         self.select_all_action = QAction("Select &All", self)
@@ -1060,6 +1066,7 @@ class _ViewerMenusMixin:
             "unit_variant_random": self.variant_random_action,
             "unit_select_stack": self.select_stack_action,
             "unit_wall_pick": self.wall_pick_action,
+            "unit_favorites": self.favorites_action,
             **self.trigger_move_actions,
             "trigger_variables": self.trigger_panel.variables_action,
             **self.trigger_panel.variable_actions,

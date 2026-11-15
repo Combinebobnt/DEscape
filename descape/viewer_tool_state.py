@@ -222,6 +222,9 @@ class _ViewerToolStateMixin:
         self.unit_shape_action.setEnabled(unit_editable)
         # GH #125's wall keybind: Place Unit's own gate. Its button is gated with the params below.
         self.wall_pick_action.setEnabled(unit_editable)
+        # GH #195: the Edit item in Units mode; an open window's list follows Place Unit's gate.
+        self.favorites_action.setEnabled(self.mode == "units")
+        self._sync_favorites_gate()
         self.convert_action.setEnabled(unit_editable)
         self.unit_brush_action.setEnabled(unit_editable)
         # GH #184: has_map only, in both its modes; ToolDef.modes hides it elsewhere.
