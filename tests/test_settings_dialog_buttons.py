@@ -94,15 +94,15 @@ def test_buttons_sit_in_kde_order_even_after_a_theme_change(dialog_window) -> No
 
 
 def test_the_prompt_reads_apply_discard_back_with_back_the_default(dialog_window) -> None:
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QDialogButtonBox
 
     dialog, _window = dialog_window
     box, apply_button, discard_button = dialog._unapplied_box()
-    box.show()
-    QApplication.processEvents()
     back_button = box.defaultButton()
     assert back_button.text() == "Back" and box.escapeButton() is back_button
-    assert _x(apply_button, box) < _x(discard_button, box) < _x(back_button, box)
+    # The button row's layout order, never shown: show() on this QMessageBox hung offscreen on Windows CI.
+    row = box.findChild(QDialogButtonBox).layout()
+    assert row.indexOf(apply_button) < row.indexOf(discard_button) < row.indexOf(back_button)
     box.done(0)
 
 
