@@ -598,6 +598,88 @@ def test_the_pending_levels_load_entry_defers_a_cold_chunk_during_input(monkeypa
         conftest.close_window(window)
 
 
+class _WallClock:
+    def __init__(self) -> None:
+        self.t = 100.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+@pytest.mark.gui
+@pytest.mark.usefixtures("native_backend")
+def test_the_pending_levels_load_entry_is_capped_from_when_it_became_pending(monkeypatch) -> None:
+    """TASK-031.82 D7: the pending level's load entry gets since + cap, kept
+    across a same-level re-anchor; a non-pending entry and the ring get None;
+    a record naming another level is replaced by a fresh stamp."""
+    clock = _WallClock()
+    monkeypatch.setattr(margin_warm, "_now", clock)
+    cap = margin_warm.PENDING_DEFER_MAX_MS / 1000.0
+    window = _settled(reach=False)
+    try:
+        monkeypatch.setattr(window, "_pending_level", lambda: 0)
+        monkeypatch.setattr(window, "_maybe_refine", lambda: None)
+        window._on_canvas_placeholder(0)
+        window._placeholder_pending_timer.stop()
+        assert window._pending_since == (0, 100.0)
+
+        for now in (100.1, 100.2):
+            clock.t = now
+            window._load_warmer.cancel()
+            window._load_warm_queue = [(0, [(0, 0), (1, 0)])]
+            window._pump_load_warm()
+            assert window._load_warmer.mip == 0, "vacuous: the pending entry did not start"
+            assert window._load_warmer._defer_until == pytest.approx(100.0 + cap), f"re-anchor at {now} moved it"
+        window._load_warmer.cancel()
+
+        assert window._pending_defer_until(1) is None, "a non-pending entry was capped"
+        window._on_viewport_changed()
+        assert window._margin_warmer._defer_until is None, "the ring was capped"
+
+        window._pending_since = (1, 50.0)
+        assert window._pending_defer_until(0) == pytest.approx(100.2 + cap)
+        assert window._pending_since == (0, 100.2)
+
+        monkeypatch.setattr(margin_warm, "PENDING_DEFER_MAX_MS", None)
+        assert window._pending_defer_until(0) is None, "--no-pending-cap still capped"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_level_pending_again_after_leaving_gets_a_fresh_deadline(monkeypatch) -> None:
+    """Through MapCanvasItem._level_to_draw: pending at 3, settled at 4, then
+    pending at 3 again must re-stamp, or the old deadline is already past."""
+    from PyQt5.QtCore import QRectF
+
+    clock = _WallClock()
+    monkeypatch.setattr(margin_warm, "_now", clock)
+    window = _settled(reach=False)
+    try:
+        item = window.map_view._canvas_item
+        ready: set[int] = set()
+        monkeypatch.setattr(item, "_placeholders", True)
+        monkeypatch.setattr(item, "_settled_mip", 0)
+        monkeypatch.setattr(item, "view_ready", lambda mip, rect, scale: mip in ready)
+        monkeypatch.setattr(item, "_placeholder_source", lambda mip, rect, scale: 0)
+        monkeypatch.setattr(item._cache, "is_level_resident", lambda mip: True)
+        assert item.on_placeholder is not None, "vacuous: no placeholder callback wired"
+        rect = QRectF()
+
+        item._level_to_draw(3, rect, True, 1.0)
+        assert item.pending_mip() == 3 and window._pending_since == (3, 100.0)
+        ready.add(4)
+        item._level_to_draw(4, rect, True, 1.0)
+        assert item.pending_mip() is None, "vacuous: level 4 did not settle"
+        ready.clear()
+        clock.t = 101.0
+        item._level_to_draw(3, rect, True, 1.0)
+        window._placeholder_pending_timer.stop()
+        assert window._pending_defer_until(3) > clock.t, "a re-entered level kept its stale deadline"
+    finally:
+        conftest.close_window(window)
+
+
 @pytest.mark.gui
 @pytest.mark.usefixtures("native_backend")
 def test_a_coarser_patch_at_the_coarsest_level_is_counted_once(monkeypatch) -> None:

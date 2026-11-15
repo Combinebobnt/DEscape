@@ -512,6 +512,7 @@ class _ViewerRenderMixin:
         """MapCanvasItem's on_placeholder, called inside paint() once per new
         pending level: everything else waits for the next event-loop turn."""
         self._placeholder_item = self.map_view._canvas_item
+        self._pending_since = (mip, margin_warm._now())
         self._placeholder_pending_timer.start()
 
     def _on_placeholder_pending(self) -> None:
@@ -869,8 +870,23 @@ class _ViewerRenderMixin:
             self._start_reach()
             return
         mip, chunks = self._load_warm_queue.pop(0)
-        # The pending level's entry defers too while input is live (TASK-031.82 D3): its placeholder sharpens after.
-        self._load_warmer.start(self._cache, mip, chunks, on_drained=self._pump_load_warm)
+        # The pending level's entry defers too while input is live (TASK-031.82 D3), up to its cap (D7).
+        self._load_warmer.start(
+            self._cache, mip, chunks, on_drained=self._pump_load_warm, defer_until=self._pending_defer_until(mip),
+        )
+
+    def _pending_defer_until(self, mip: int) -> float | None:
+        """The deferral deadline for `mip`'s load entry: PENDING_DEFER_MAX_MS
+        after the level became pending, or None when it is not the pending
+        level (or the cap is off). A pending level with no matching record is
+        stamped now, so its cap starts here rather than never."""
+        cap_ms = margin_warm.PENDING_DEFER_MAX_MS
+        if cap_ms is None or mip != self._pending_level():
+            return None
+        record = self._pending_since
+        if record is None or record[0] != mip:
+            record = self._pending_since = (mip, margin_warm._now())
+        return record[1] + cap_ms / 1000.0
 
     # --- the zoom-out reach (TASK-031.11) ----------------------------------
 

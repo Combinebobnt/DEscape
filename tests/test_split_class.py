@@ -252,7 +252,8 @@ def _fake_git(revs: dict[str, dict[str, str]], root):
     """git as split_class calls it, over revisions held as {path: text} and the files under `root`."""
 
     def working() -> dict[str, str]:
-        return {str(p.relative_to(root)): p.read_text() for p in root.rglob("*.py")}
+        # Forward slashes on every OS, as real git prints them.
+        return {p.relative_to(root).as_posix(): p.read_text() for p in root.rglob("*.py")}
 
     def git(*args: str) -> str:
         if args[0] == "show":

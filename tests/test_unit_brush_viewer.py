@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from descape import unit_rotation, unit_variant
+from descape import asset_source, unit_rotation, unit_variant
 from descape.object_catalog import display_name
 from descape.place_rotation import PlaceRotation, rotation_for
 from descape.render_units import occupied_tiles_for
@@ -21,6 +21,14 @@ pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _no_install_from_the_environment(monkeypatch):
+    """The no-install cases stay so with AOE2DE_INSTALL_PATH set, which outranks the config conftest hides."""
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
 
 OAK = 349  # GAIA-only, cyclable
 DEER = 65  # GAIA-only, ANGLE

@@ -565,7 +565,6 @@ def _wall_overrides_and_verdict_uncached(scenario) -> tuple[dict[tuple[int, int]
             continue
         tx, ty = bounds[0], bounds[2]
         mask8 = unit_sprites.neighbour_mask(tx, ty, connector_tiles, diagonals=True)
-        # Through the module attribute: tools/release_render_diff.py patches it.
         drawn = unit_sprites.wall_drawn_shape(mask8, unit_sprites.variant_index(rotation, 5), file_is_radian)
         if drawn is not None:
             overrides[(player_id, i)] = float(drawn)

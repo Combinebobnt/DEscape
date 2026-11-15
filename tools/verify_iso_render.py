@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,14 +53,7 @@ import numpy as np
 from descape import iso_geometry, render_iso, render_paint, settings
 from descape.scenario_io import load_map_and_units
 from descape.terrain_palette import PLAYER_COLORS
-
-
-@dataclass
-class SyntheticTile:
-    x: int
-    y: int
-    elevation: int
-    terrain_id: int = 0
+from testkit.fakes import SyntheticTile
 
 
 class _FakeMapManager:
@@ -210,7 +202,9 @@ def check_full_coverage() -> tuple[bool, str]:
     # painted pixel can never land on (0,0,0) -- making "is this pixel
     # exactly black" a sound stand-in for "is this pixel unpainted" below.
     # Would need revisiting if a config ever used a terrain_id whose
-    # fallback color is itself near-black.
+    # fallback color is itself near-black. With an install visible terrain 0
+    # paints its real texture instead, which holds too: its per-channel
+    # minimum is (72, 93, 32), no pure-black pixel (measured 2026-11-14).
     #
     # Still sound with the v2.6 contact shadow in the mix, for two
     # independent reasons (see render_iso._clipped_darken's own docstring):

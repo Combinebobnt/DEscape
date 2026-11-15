@@ -80,7 +80,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-BASE_REF = "v0.10"
+BASE_REF = "v0.11"
 STYLES = ("flat", "stepped", "sloped")
 DEFAULT_PCTS = (50, 200)
 # The same four files as tests/conftest.py's CORPUS_SUBSET_NAMES.
@@ -140,93 +140,6 @@ def _require(module, *names: str) -> None:
             raise SystemExit(f"{module.__name__}.{name} is gone: update its patch in {Path(__file__).name} to match the refactor")
 
 
-def _unconformed_blend_edges() -> None:
-    """Put the pre-TASK-284 blend masks back: each blendomatic tile keeps its own non-bleeding edges."""
-    from descape import terrain_blend
-
-    _require(terrain_blend, "conform_edges")
-    terrain_blend.conform_edges = lambda alpha, tile_index: alpha
-
-
-def _unturned_flat_walls() -> None:
-    """Put the pre-GH #151 Flat art back: a wall draws its stored shape and a gate its own const's art."""
-    from descape import unit_sprites
-
-    _require(unit_sprites, "flat_art")
-    unit_sprites.flat_art = lambda unit_const, rotation: (unit_const, rotation)
-
-
-def _single_anchor_sprites() -> None:
-    """Put the pre-TASK-221 depth order back: a multi-tile sprite paints whole at its front corner."""
-    import pytest
-
-    from testkit.render_family import render_global_bound, set_render_global
-
-    if not render_global_bound("SPRITE_COLUMN_SLICING"):
-        raise SystemExit(f"SPRITE_COLUMN_SLICING is gone: update its patch in {Path(__file__).name} to match the refactor")
-    # Never undone: the switch lasts this worker process, which runs this checkout only.
-    set_render_global(pytest.MonkeyPatch(), "SPRITE_COLUMN_SLICING", False)
-
-
-def _no_garrison_flags() -> None:
-    """Put the pre-GH #203 hosts back: a unit holding a garrison draws no garrison flag."""
-    from descape import unit_sprites
-
-    _require(unit_sprites, "garrison_flag_pieces_for")
-    unit_sprites.garrison_flag_pieces_for = lambda *args, **kwargs: []
-
-
-def _fixed_sloped_fold() -> None:
-    """Put the pre-TASK-008 Sloped surface back: every tile folds along NE-SW."""
-    from descape import iso_geometry
-
-    _require(iso_geometry, "tile_folds")
-    iso_geometry.tile_folds = lambda elevations: np.zeros(elevations.shape, dtype=bool)
-
-
-def _stored_wall_shapes() -> None:
-    """Put the pre-TASK-524 walls back: radian files take the 4-bit table, integer files their stored index."""
-    from descape import unit_sprites
-
-    _require(unit_sprites, "wall_drawn_shape", "wall_variant_from_neighbours", "ORTHOGONAL_MASK")
-    table, orthogonal = unit_sprites.wall_variant_from_neighbours, unit_sprites.ORTHOGONAL_MASK
-    unit_sprites.wall_drawn_shape = lambda mask8, stored, radian: table(mask8 & orthogonal) if radian else None
-
-
-def _one_tile_statics_and_hidden_fish() -> None:
-    """Put the pre-TASK-277 spans back: no static_spans, and the eight original fish only."""
-    from descape import terrain_palette
-
-    _require(terrain_palette, "STATIC_TILE_SPANS", "FISH_TILE_SPANS")
-    # In place, never rebound: the render modules import the tables by name.
-    terrain_palette.STATIC_TILE_SPANS.clear()
-    for const in (451, 452, 454, 459, 460, 461):
-        terrain_palette.FISH_TILE_SPANS.pop(const, None)
-
-
-def _no_smoke_and_flame_particles() -> None:
-    """Put the pre-GH #256 Smoke and Flames back: no graphic-map entry, so they draw a coloured mark."""
-    from descape import unit_sprites
-
-    _require(unit_sprites, "graphic_map", "_particle_stems")
-    # Built once: the worker never switches dataset, and graphic_map() runs several times per unit.
-    table = {c: e for c, e in unit_sprites.graphic_map().items() if c not in (1308, 1333, 1334, 1335, 1336)}
-    unit_sprites.graphic_map = lambda: table
-    unit_sprites._particle_stems.cache_clear()
-
-
-def _age_techs_only() -> None:
-    """Put the pre-TASK-205 building table back: age techs 101-103 at ages 3..5, no civ rows, no per-age annexes."""
-    from gen_start_upgrade_review_pack import age_techs_only
-
-    from descape import unit_sprites
-
-    _require(unit_sprites, "building_art", "BuildingArt")
-    table = age_techs_only(unit_sprites.building_art())
-    # The lambda has no cache_clear(): safe because the worker never calls unit_sprites.clear_caches().
-    unit_sprites.building_art = lambda: table
-
-
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -260,67 +173,7 @@ class Neutralization:
         return "mask"
 
 
-NEUTRALIZATIONS: tuple[Neutralization, ...] = (
-    Neutralization(
-        "blend-seams",
-        "TASK-284: terrain blending has no square steps in coastlines and water inlets",
-        since="v0.10", control_file=ELCID, must_fail=ALL_CONFIGS,
-        patch=_unconformed_blend_edges,
-    ),
-    Neutralization(
-        "flat-walls",
-        "GH #151 (TASK-227): walls and gates lie along the square grid in top-down Flat",
-        since="v0.10", control_file=OLD_ALLIES, must_fail=frozenset({("flat", True)}),
-        patch=_unturned_flat_walls,
-    ),
-    Neutralization(
-        "face-columns",
-        "TASK-221 (GH #20): units beside a building's front faces draw in front of it, not behind",
-        since="v0.10", control_file=DOS_PILAS,
-        must_fail=frozenset({("stepped", True), ("sloped", True)}),
-        patch=_single_anchor_sprites,
-    ),
-    Neutralization(
-        "garrison-flags",
-        "GH #203: a building, ram, siege tower or transport ship holding units draws its garrison flag",
-        since="v0.10", control_file=OLD_ALLIES,
-        must_fail=frozenset({("stepped", True), ("sloped", True)}),
-        patch=_no_garrison_flags,
-    ),
-    Neutralization(
-        "sloped-fold",
-        "TASK-008 (GH #62): Sloped tiles crease along the diagonal the game folds them on",
-        since="v0.10", control_file=ELCID,
-        must_fail=frozenset({("sloped", False), ("sloped", True)}),
-        patch=_fixed_sloped_fold,
-    ),
-    Neutralization(
-        "lone-walls",
-        "TASK-524: a wall with at most one neighbour draws as a tower, and radian files draw diagonal walls by their neighbours"
-        " (TASK-581: a single wall meeting a diagonal run's interior too)",
-        since="v0.10", control_file=ELCID, must_fail=SPRITES_ON,
-        patch=_stored_wall_shapes,
-    ),
-    Neutralization(
-        "non-building-spans",
-        "TASK-277 (GH #333): shipwrecks, rubble, flares and the hidden fish draw their real footprint, not 1x1",
-        # Measured 2026-11-03: LeLoi's 230 FLARE4 markers draw only with sprites on.
-        since="v0.10", control_file=LELOI, must_fail=SPRITES_ON,
-        patch=_one_tile_statics_and_hidden_fish,
-    ),
-    Neutralization(
-        "particle-fire",
-        "GH #256 (TASK-454): Smoke and Flames 1-4 draw their fire and smoke, not a coloured mark",
-        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
-        patch=_no_smoke_and_flame_particles,
-    ),
-    Neutralization(
-        "start-upgrades",
-        "TASK-205 (GH #328): buildings draw the upgrades their civilization and starting age have, Post-Imperial included",
-        since="v0.10", control_file=OLD_ALLIES, must_fail=SPRITES_ON,
-        patch=_age_techs_only,
-    ),
-)
+NEUTRALIZATIONS: tuple[Neutralization, ...] = ()
 
 # A mask entry's measured Stepped canvas fraction against BASE_REF, by file and elev_step_pct (empty while none exists).
 # A run over measured + MASK_MARGIN fails: a mask grown to cover the canvas would pass every Stepped cell and its control.
@@ -452,7 +305,7 @@ def _worker(spec: dict) -> None:
     if spec.get("repaint_tile"):
         _repaint_one_flat_tile(scenario)
     style, sprites = spec["style"], spec["sprites"]
-    meta: dict = {"removed_units": removed}
+    meta: dict = {"removed_units": removed, "units": sum(len(units) for units in scenario.unit_manager.units)}
     if style == "flat":
         img = _render_fn("overlay_units")(_render_fn("render_terrain")(scenario), scenario, with_sprites=sprites)
     elif style == "stepped":
@@ -711,7 +564,8 @@ def _pair_result(job: Job, out: Path, diff_px: int, unmasked: int, frac: float) 
         result.problems.append(f"removed {meta_a['removed_units']} vs {meta_b['removed_units']} units")
     if "sprite_units" in meta_b:
         result.sprite_units = (meta_a["sprite_units"], meta_b["sprite_units"])
-        if 0 in result.sprite_units:
+        # A file with no units left (blank_map) has nothing to resolve, so zero says nothing about the install.
+        if 0 in result.sprite_units and meta_b["units"]:
             result.problems.append("a side resolved no sprite art: is the install visible?")
         elif result.sprite_units[0] != result.sprite_units[1]:
             result.problems.append("the two sides resolve a different number of units to sprite art")

@@ -5,8 +5,9 @@ terrain/get_tile, unit_manager.units) for the render, pick and filter code
 paths, without loading a real file.
 
 Scope note: these cover the four default-tier `tests/` modules only.
-`tools/verify_iso_render.py` keeps its own variants on purpose -- its
-FakeUnitManager takes no arguments at all ("no units, on purpose", per its
+`tools/verify_iso_render.py` shares SyntheticTile, so a field a real tile
+grows reaches it too, but keeps its own map and unit managers on purpose:
+its FakeUnitManager takes no arguments at all ("no units, on purpose", per its
 own docstring) and it is a `verify_*.py` scheduled for deletion, whose
 `check_*` functions `tests/test_legacy_adapter.py` reaches by name.
 """

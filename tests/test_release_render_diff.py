@@ -122,6 +122,15 @@ def test_the_registry_refuses_an_entry_measured_against_another_release(monkeypa
         tool.check_registry()
 
 
+@pytest.mark.parametrize(("units", "flagged"), [(0, False), (3, True)])
+def test_no_sprite_art_is_an_install_problem_only_when_the_file_has_units(units, flagged, tmp_path):
+    job = tool.Job(Path("blank_map.aoe2scenario"), "stepped", True, 50)
+    for side in "ab":
+        (tmp_path / f"{job.key}_{side}.json").write_text(f'{{"removed_units": 0, "units": {units}, "sprite_units": 0}}')
+    result = tool._pair_result(job, tmp_path, 0, 0, 0.0)
+    assert any("install" in problem for problem in result.problems) == flagged, result.line()
+
+
 def test_the_registry_refuses_a_control_that_must_fail_nowhere(monkeypatch):
     monkeypatch.setattr(tool, "NEUTRALIZATIONS", (dataclasses.replace(PROBE, must_fail=frozenset()),))
     with pytest.raises(ValueError, match="proves nothing"):

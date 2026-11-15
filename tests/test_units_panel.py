@@ -21,6 +21,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QLabel, QSpinBox
 
+from descape import asset_source
 from descape.unit_filter import GAIA_PLAYER_ID
 from descape.unit_pick import UnitEntry
 from descape.units_panel import _ROTATION_TOOLTIP, UnitsPanel
@@ -32,6 +33,16 @@ pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _no_install_from_the_environment(request, monkeypatch):
+    """The no-install cases stay so with AOE2DE_INSTALL_PATH set, which outranks the config conftest hides.
+    The corpus tests keep it: they are the ones that need the real install."""
+    if request.node.get_closest_marker("corpus") is None:
+        monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+        asset_source.clear_install_caches()
+
 
 _TREE_CONST = 349  # a real GAIA doodad -- rotation is a variant index, not an angle
 _ARCHER_CONST = 4  # a real creatable unit -- rotation is a genuine angle
@@ -242,11 +253,7 @@ def test_a_tree_packs_to_one_pair_after_a_full_unit() -> None:
     assert _stat_cell(panel, "range") == (2, 0)
 
 
-def test_with_no_install_the_stat_captions_are_text(monkeypatch) -> None:
-    from descape import asset_source
-
-    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
-    asset_source.clear_install_caches()
+def test_with_no_install_the_stat_captions_are_text() -> None:
     panel = _panel()
     panel.show_unit(_entry(unit_const=_ARCHER_CONST))
     for field_id, caption_text in _STAT_CAPTIONS.items():
@@ -398,11 +405,10 @@ def test_the_header_makes_the_inspector_shorter_than_before() -> None:
 
 @pytest.mark.font_sensitive
 @pytest.mark.parametrize("with_install", [False, True])
-def test_the_header_fits_the_floor(with_install, tmp_path, monkeypatch) -> None:
+def test_the_header_fits_the_floor(with_install, tmp_path) -> None:
     """Portrait plus two pair columns, icon or text captions, beside a scroll bar at MIN_USEFUL_WIDTH."""
     from descape import asset_source
 
-    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
     asset_source.set_install_path_override(_fake_install(tmp_path) if with_install else None)
     try:
         panel = _panel()
@@ -1095,11 +1101,10 @@ def _region(rgb):
     return pytest.approx(tuple(min(255.0, c * 1.16 + 56.1) for c in rgb), abs=1)
 
 
-def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path, monkeypatch) -> None:
+def test_portraits_fill_the_player_colour_region_with_the_owners_colour(tmp_path) -> None:
     from descape import asset_source
     from descape.terrain_palette import PLAYER_COLORS
 
-    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
     asset_source.set_install_path_override(_holed_install(tmp_path))
     try:
         panel = _panel()
@@ -1130,7 +1135,6 @@ def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_p
     from descape import asset_source, settings
     from descape.terrain_palette import PLAYER_COLORS
 
-    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
     monkeypatch.setattr(settings, "get_units_catalog_mode", lambda: "icons")
     asset_source.set_install_path_override(_holed_install(tmp_path))
     panel = _panel()
@@ -1156,11 +1160,10 @@ def test_catalog_rows_fill_the_player_colour_region_with_the_owners_colour(tmp_p
 
 @pytest.mark.font_sensitive
 @pytest.mark.parametrize("with_install", [False, True])
-def test_the_placing_card_fits_the_floor(with_install, tmp_path, monkeypatch) -> None:
+def test_the_placing_card_fits_the_floor(with_install, tmp_path) -> None:
     """With the longest name picked: the name elides, so it cannot widen the card."""
     from descape import asset_source
 
-    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
     asset_source.set_install_path_override(_fake_install(tmp_path) if with_install else None)
     try:
         panel = _panel()

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import math
-import os
+import random
 import struct
 import zlib
 
@@ -53,30 +53,59 @@ def _header() -> bytes:
     return b"1.59" + bytes(64)
 
 
+def _noise(size: int, seed: int) -> bytes:
+    return random.Random(seed).randbytes(size)
+
+
+def _two_streams(seed: int) -> tuple[bytes, bytes, int]:
+    """Header, a short stream, then the body stream: (raw, body payload, body start)."""
+    short = _deflate(_noise(1 << 17, seed))
+    payload = _noise(1 << 17, seed + 1)
+    return _header() + short + _deflate(payload), payload, len(_header()) + len(short)
+
+
 def test_find_body_allows_trailing_bytes_after_the_stream() -> None:
-    payload = os.urandom(1 << 17)
+    payload = _noise(1 << 17, 1)
     body = fs.find_body(_header() + _deflate(payload) + b"junk" * 10)
     assert isinstance(body, fs.Body)
     assert (body.data, body.trailing) == (payload, 40)
 
 
 def test_find_body_refuses_two_qualifying_starts() -> None:
-    first = _deflate(os.urandom(1 << 17))
-    raw = _header() + first + _deflate(os.urandom(1 << 17)) + b"junk"
+    first = _deflate(_noise(1 << 17, 2))
+    raw = _header() + first + _deflate(_noise(1 << 17, 3)) + b"junk"
     assert isinstance(fs.find_body(raw, limit=len(_header()) + len(first) + 1), str)
 
 
 def test_find_body_prefers_the_stream_that_runs_to_the_end() -> None:
-    short = _deflate(os.urandom(1 << 17))
-    payload = os.urandom(1 << 17)
-    raw = _header() + short + _deflate(payload)
-    body = fs.find_body(raw, limit=len(_header()) + len(short) + 1)
+    raw, payload, start = _two_streams(10)
+    body = fs.find_body(raw, limit=start + 1)
     assert isinstance(body, fs.Body)
-    assert (body.start, body.data, body.trailing) == (len(_header()) + len(short), payload, 0)
+    assert (body.start, body.data, body.trailing) == (start, payload, 0)
+
+
+def _rejoining_streams() -> tuple[bytes, bytes, int]:
+    """The first seed where a start a few bytes before the body decodes junk,
+    then rejoins the body stream and ends with it (about 3% of seeds). Searched
+    rather than pinned, since it hangs on the zlib build's exact output."""
+    for seed in range(400):
+        raw, payload, start = _two_streams(seed)
+        for early in range(start - 8, start):
+            got = fs._inflate(raw, early, fs.BODY_CAP)
+            if got is not None and got[1] == 0 and len(got[0]) > len(payload) and got[0].endswith(payload):
+                return raw, payload, start
+    pytest.fail("no seed in 0..399 gives a start that rejoins the body stream")
+
+
+def test_find_body_ignores_a_start_that_falls_into_step_with_the_body() -> None:
+    raw, payload, start = _rejoining_streams()
+    body = fs.find_body(raw, limit=start + 1)
+    assert isinstance(body, fs.Body)
+    assert (body.start, body.data, body.trailing) == (start, payload, 0)
 
 
 def test_find_body_refuses_a_stream_too_small_to_be_a_body() -> None:
-    assert "no raw-deflate stream" in fs.find_body(_header() + _deflate(os.urandom(1000)))
+    assert "no raw-deflate stream" in fs.find_body(_header() + _deflate(_noise(1000, 4)))
 
 
 def _grid_body(width: int, tiles: bytes, anchor: int = fs.UNITS_FIRST_VALUE) -> bytes:

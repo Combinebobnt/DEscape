@@ -518,17 +518,45 @@ def test_no_margin_fix_parses_and_reaches_the_child():
     assert "--no-margin-fix" not in bz.child_command(bz.build_parser().parse_args([]), "Stepped", "on", ["notch"])
 
 
-@pytest.mark.parametrize("flag", [None, "--no-margin-fix", "--no-input-budget"])
+def test_no_pending_cap_parses_and_reaches_the_child():
+    args = bz.build_parser().parse_args(["--no-pending-cap"])
+    assert args.no_pending_cap and not args.no_margin_fix
+    assert "--no-pending-cap" in bz.child_command(args, "Flat", "off", ["roll"])
+    assert "--no-pending-cap" not in bz.child_command(bz.build_parser().parse_args([]), "Flat", "off", ["roll"])
+
+
+@pytest.mark.parametrize("flag", [None, "--no-margin-fix", "--no-input-budget", "--no-pending-cap"])
 def test_module_arms_set_each_switch_only_for_its_flag(monkeypatch, flag):
-    """--no-margin-fix clears the native prime and its re-queue (WARM_NATIVE_INPUTS) and the
-    cold-first defer (DEFER_COLD_FIRST, TASK-031.82 D3); --no-input-budget pins the budget."""
+    """--no-margin-fix clears the native prime and its re-queue (WARM_NATIVE_INPUTS), the
+    cold-first defer (DEFER_COLD_FIRST, TASK-031.82 D3) and so its cap; --no-pending-cap clears
+    only the cap (D7); --no-input-budget pins the budget."""
     from descape import level_warm, margin_warm
     from testkit.render_family import render_cache_global
 
+    cap = margin_warm.PENDING_DEFER_MAX_MS
+    assert cap is not None, "vacuous: the cap is already off"
     bz.apply_module_arms(bz.build_parser().parse_args([flag] if flag else []), monkeypatch)
     fix_on = flag != "--no-margin-fix"
     assert render_cache_global("WARM_NATIVE_INPUTS") is fix_on and margin_warm.DEFER_COLD_FIRST is fix_on
+    assert (None if flag in ("--no-margin-fix", "--no-pending-cap") else cap) == margin_warm.PENDING_DEFER_MAX_MS
     assert (level_warm.INPUT_BUDGET_MS == level_warm.BUDGET_MS) is (flag == "--no-input-budget")
+
+
+@pytest.mark.gui
+def test_no_pending_cap_reaches_the_viewers_pending_entry(monkeypatch):
+    """The flag's module switch is what the viewer reads: no deadline for the pending level."""
+    from descape import margin_warm, viewer
+
+    bz.apply_module_arms(bz.build_parser().parse_args(["--no-pending-cap"]), monkeypatch)
+    conftest.ensure_qapp()
+    window = viewer.ViewerWindow()
+    try:
+        monkeypatch.setattr(window, "_pending_level", lambda: 2)
+        assert window._pending_defer_until(2) is None
+        monkeypatch.setattr(margin_warm, "PENDING_DEFER_MAX_MS", 350)
+        assert window._pending_defer_until(2) is not None, "vacuous: the viewer never caps"
+    finally:
+        conftest.close_window(window)
 
 
 def test_a_frame_dominated_by_gc_gen2_is_031_81():
@@ -628,6 +656,27 @@ def test_time_to_sharp_runs_to_the_first_real_full_view_frame():
     done, superseded, still_open = bz.sharp_waits(frames)
     assert [(lv, start.start, end.end) for lv, start, end in done] == [(0, 0.0, pytest.approx(0.41))]
     assert (superseded, still_open) == (1, 1)
+
+
+def test_placeholder_visits_time_every_wait_by_how_it_ended():
+    """TASK-031.82 D7: a sharp visit ends at the sharp frame's end, a superseded one at the
+    superseding frame's start, an open one at the pass end."""
+    frames = [
+        _ph_frame(0.0, 0, -1), _ph_frame(0.4, 0, 0),
+        _ph_frame(1.0, 1, 0),
+        _ph_frame(1.1, 2, 1),
+        bz.Frame(1.2, 1.21, {}, None),
+    ]
+    visits = bz.placeholder_visits(frames, pass_end=3.0)
+    assert visits == [
+        {"mip": 0, "start": 0.0, "end": pytest.approx(0.41), "end_kind": "sharp"},
+        {"mip": 1, "start": 1.0, "end": 1.1, "end_kind": "superseded"},
+        {"mip": 2, "start": 1.1, "end": 3.0, "end_kind": "open"},
+    ]
+    done, superseded, still_open = bz.sharp_waits(frames)
+    assert (len(done), superseded, still_open) == tuple(
+        sum(v["end_kind"] == k for v in visits) for k in ("sharp", "superseded", "open")
+    ), "the visits disagree with sharp_waits()' counts"
 
 
 def test_placeholder_lines_read_p1_p2_p4_p5():

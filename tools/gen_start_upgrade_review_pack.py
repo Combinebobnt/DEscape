@@ -175,8 +175,7 @@ def _fixture():
 # ----------------------------------------------------------------- injects
 
 # The rows the non-age techs add to age_upgrades: Upgrade Rams, Settlement, and an Imperial start's towers,
-# walls and gates (measured 2026-11-03 against the pre-TASK-205 table). Also tools/release_render_diff.py's
-# start-upgrades patch, which imports age_techs_only().
+# walls and gates (measured 2026-11-03 against the pre-TASK-205 table).
 START_UPGRADE_ROWS = frozenset({
     49, 64, 78, 79, 81, 88, 91, 95, 117, 487, 490, 659, 661, 663, 665, 667, 669, 671, 673, 2556, 2558,
 })
