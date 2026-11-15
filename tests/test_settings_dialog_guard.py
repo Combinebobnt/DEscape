@@ -57,11 +57,16 @@ def _drive(page) -> None:
     )
 
     sequences = _key_sequences()
+    moved = set()
     for widget in page.findChildren(QAbstractButton):
         if isinstance(widget, QCheckBox) and widget.isEnabled():
             widget.setChecked(not widget.isChecked())
         elif isinstance(widget, QRadioButton) and not widget.isChecked():
-            widget.setChecked(True)
+            # One move per group, so a pair flips each drive instead of always landing on its last radio (Windows has no X11 box).
+            group = widget.group() or widget.parentWidget()
+            if group not in moved:
+                moved.add(group)
+                widget.setChecked(True)
         elif isinstance(widget, QToolButton) and widget.menu() is not None and widget.menu().actions():
             action = widget.menu().actions()[0]
             action.setChecked(not action.isChecked())
