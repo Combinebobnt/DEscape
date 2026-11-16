@@ -3,11 +3,11 @@
 The menu lists "None (the install's data)" and every discovered data mod.
 Picking one puts its derived tables in effect through game_dataset's overlay:
 at once on a cache hit, else after a derive subprocess (a QProcess running
-data_mods.derive_command(), since a parse holds the GIL for 5-18 s), with a
-persistent "Parsing <mod>…" label until it finishes. A finished parse swaps
-only once the window is idle: refresh_map() silently no-ops while the
-window is busy, and a swap mid-stroke would redraw half a stroke with other
-tables, so the swap re-arms a short timer until neither holds.
+data_mods.derive_command(), since a parse holds the GIL for 5-18 s), with the
+status bar's progress bar following its steps until it finishes (GH #359).
+A finished parse swaps only once the window is idle: refresh_map() silently
+no-ops while the window is busy, and a swap mid-stroke would redraw half a
+stroke with other tables, so the swap re-arms a short timer until neither holds.
 
 Per-scenario memory (settings.get_data_mod_for()): a saved document's choice
 is written on a pick and by Save As, and read when the document opens
@@ -28,12 +28,12 @@ take effect (up to WARNING_LINES of them), and from then on in its menu item's t
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PyQt5.QtCore import QObject, QProcess, QTimer
-from PyQt5.QtWidgets import QAction, QActionGroup, QLabel, QMenu
+from PyQt5.QtWidgets import QAction, QActionGroup, QMenu
 
-from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, games, mod_graphics, settings, unit_sprites
+from descape import asset_source, dat_cache, dat_derive, data_mods, debug_log, game_dataset, games, mod_graphics, settings, unit_sprites
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
@@ -52,6 +52,8 @@ class _Job:
     process: QProcess
     from_pick: bool
     started: float
+    # Stdout read so far past its last newline.
+    partial: bytes = field(default=b"")
 
 
 class DataModMenu(QObject):
@@ -78,8 +80,6 @@ class DataModMenu(QObject):
         self._apply_timer.setSingleShot(True)
         self._apply_timer.setInterval(APPLY_RETRY_MS)
         self._apply_timer.timeout.connect(self._apply_pending)
-        self.parsing_label = QLabel()
-        self.parsing_label.setVisible(False)
         self.menu: QMenu | None = None
         self._group: QActionGroup | None = None
 
@@ -256,20 +256,19 @@ class DataModMenu(QObject):
         argv, cwd = data_mods.derive_command(mod, install, key)
         process = QProcess(self)
         process.setWorkingDirectory(str(cwd))
-        # The generators' progress lines; only stderr's last line (the failure) is read.
-        process.setStandardOutputFile(QProcess.nullDevice())
         job = _Job(mod, key, process, from_pick, time.perf_counter())
+        # Stdout carries dat_derive's progress lines; of stderr only the last line (the failure) is read.
+        process.readyReadStandardOutput.connect(lambda job=job: self._on_output(job))
         process.finished.connect(lambda code, status, job=job: self._on_finished(job, code, status))
         process.errorOccurred.connect(lambda error, job=job: self._on_error(job, error))
         self._job = job
-        self.parsing_label.setText(f"Parsing {mod.title}…")
-        self.parsing_label.setVisible(True)
+        self._window.load_progress.start("data_mod", f"Parsing {mod.title}: starting", 0)
         self._window._log_status(f"Parsing data mod {mod.title} ({mod.dat}); this takes 5-25 s")
         process.start(argv[0], argv[1:])
 
     def _stop_job(self) -> None:
         job, self._job = self._job, None
-        self.parsing_label.setVisible(False)
+        self._window.load_progress.finish("data_mod")
         if job is not None and job.process.state() != QProcess.NotRunning:
             job.process.kill()
 
@@ -286,16 +285,28 @@ class DataModMenu(QObject):
         # FailedToStart emits no finished(); every other error is followed by one.
         if error == QProcess.FailedToStart and job is self._job:
             self._job = None
-            self.parsing_label.setVisible(False)
+            self._window.load_progress.finish("data_mod")
             self._fail(job.mod, f"the parser could not start ({job.process.errorString()})", job.from_pick)
             job.process.deleteLater()
+
+    def _on_output(self, job: _Job) -> None:
+        lines = (job.partial + bytes(job.process.readAllStandardOutput())).split(b"\n")
+        job.partial = lines.pop()
+        if job is not self._job:
+            return  # stopped or replaced
+        for line in lines:
+            # The generators print their own lines here too; they parse to None.
+            parsed = dat_derive.parse_progress_line(line.decode("utf-8", "replace"))
+            if parsed is not None:
+                percent, caption = parsed
+                self._window.load_progress.step("data_mod", percent, f"Parsing {job.mod.title}: {caption}")
 
     def _on_finished(self, job: _Job, code: int, status) -> None:
         job.process.deleteLater()
         if job is not self._job:
             return  # stopped or replaced
         self._job = None
-        self.parsing_label.setVisible(False)
+        self._window.load_progress.finish("data_mod")
         stderr = bytes(job.process.readAllStandardError()).decode("utf-8", "replace")
         tables = data_mods.tables_for(job.mod, job.key) if status == QProcess.NormalExit and code == 0 else None
         if tables is None:

@@ -30,6 +30,7 @@ from descape import (
     ui_icons,
     unit_shape,
 )
+from descape.load_progress import LoadProgress
 from descape.terrain_palette import name_for_terrain_id
 from descape.terrain_style import STYLE_LABELS, label_for
 from descape.toolbar_overflow import partition
@@ -1131,8 +1132,9 @@ class _ViewerToolbarMixin:
         self.game_data_banner = QLabel()
         self.game_data_banner.setVisible(False)
         self.statusBar().addPermanentWidget(self.game_data_banner)
-        # GH #58: "Parsing <mod>…" while a data mod's .dat is read.
-        self.statusBar().addPermanentWidget(self.data_mod_menu.parsing_label)
+        # GH #359: a scenario load's or a data mod parse's caption and bar, while one runs.
+        self.load_progress = LoadProgress()
+        self.statusBar().addPermanentWidget(self.load_progress)
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
         self._update_mode_status()

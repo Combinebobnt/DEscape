@@ -356,12 +356,57 @@ def test_an_uncached_pick_parses_in_a_subprocess_then_swaps(window, mods, tmp_pa
     mods.cached(mods.alpha)
     _menu(window)["Alpha"].trigger()
     assert mods.derives == ["Alpha"]
-    label = window.data_mod_menu.parsing_label
-    assert not label.isHidden() and "Alpha" in label.text()
+    progress = window.load_progress
+    assert not progress.isHidden() and progress.caption.text() == "Parsing Alpha: starting"
     assert game_dataset.data_mod() is None, "the install's data until the parse is done"
     _pump_until(lambda: game_dataset.data_mod() is not None)
     assert game_dataset.data_mod() == mods.tables[mods.alpha] and _hp() == MOD_HP
-    assert label.isHidden() and "[Alpha]" in window.windowTitle()
+    assert progress.isHidden() and "[Alpha]" in window.windowTitle()
+
+
+def test_the_parse_progress_lines_drive_the_bar(window, mods, tmp_path, monkeypatch):
+    """GH #359: the child's progress lines move the bar, its other prints do not, and the swap hides it."""
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    marker, go = tmp_path / "derived", tmp_path / "go"
+    first = dat_derive.progress_line(0, "reading the mod's .dat (1 of 12)")
+    second = dat_derive.progress_line(50, "building the unit art (9 of 12)")
+    mods.child = (
+        "import os, sys, time\n"
+        "print('wrote unit_stats.json')\n"
+        f"print({first!r})\n"
+        "sys.stdout.write('half a li')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(0.1)\n"
+        f"print('ne\\n' + {second!r}, flush=True)\n"
+        f"while not os.path.exists({str(go)!r}):\n"
+        "    time.sleep(0.01)\n"
+        f"open({str(marker)!r}, 'w').close()\n"
+    )
+    real_lookup = data_mods.tables_for
+    monkeypatch.setattr(data_mods, "tables_for", lambda mod, key: real_lookup(mod, key) if marker.exists() else None)
+    mods.cached(mods.alpha)
+    _menu(window)["Alpha"].trigger()
+    progress = window.load_progress
+    _pump_until(lambda: progress.bar.value() == 50)
+    assert progress.caption.text() == "Parsing Alpha: building the unit art (9 of 12)"
+    go.touch()
+    _pump_until(lambda: game_dataset.data_mod() is not None)
+    assert progress.isHidden() and progress.job("data_mod") is None
+
+
+def test_a_stopped_parse_leaves_the_bar_alone(window, mods, tmp_path):
+    """Output a replaced job's child had already written moves no bar: the new parse's stays."""
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    mods.child = "import time; time.sleep(30)"
+    _menu(window)["Alpha"].trigger()
+    controller = window.data_mod_menu
+    old = controller._job
+    _menu(window)["Beta"].trigger()
+    assert controller._job is not old
+    # A line it had written but the window had not read yet.
+    old.partial = dat_derive.progress_line(50, "building the unit art (9 of 12)").encode() + b"\n"
+    controller._on_output(old)
+    assert window.load_progress.job("data_mod") == ("Parsing Beta: starting", 0)
 
 
 def test_an_unreadable_mod_keeps_the_data_and_is_disabled(window, mods, tmp_path, monkeypatch):
@@ -370,7 +415,8 @@ def test_an_unreadable_mod_keeps_the_data_and_is_disabled(window, mods, tmp_path
     mods.child = f"import sys; print('noise', file=sys.stderr); print({message!r}, file=sys.stderr); sys.exit(1)"
     lines = _logged(window, monkeypatch)
     _menu(window)["Alpha"].trigger()
-    _pump_until(window.data_mod_menu.parsing_label.isHidden)
+    _pump_until(lambda: window.data_mod_menu._job is None)
+    assert window.load_progress.isHidden(), "a failed parse hides the bar"
     assert game_dataset.data_mod() is None
     assert f"Data mod Alpha cannot be used: {message}" in lines
     alpha = _menu(window)["Alpha"]
@@ -441,7 +487,7 @@ def test_opening_another_document_mid_parse_drops_the_parse(window, mods, tmp_pa
     mods.cached(mods.alpha)
     _menu(window)["Alpha"].trigger()
     window.load_scenario(b)
-    assert window.data_mod_menu._job is None and window.data_mod_menu.parsing_label.isHidden()
+    assert window.data_mod_menu._job is None and window.load_progress.job("data_mod") is None
     deadline = time.monotonic() + 1.5  # three times the child's run
     _pump_until(lambda: time.monotonic() > deadline)
     assert game_dataset.data_mod() is None and not marker.exists(), "the killed parse never finished or swapped"
@@ -452,7 +498,8 @@ def test_a_parser_that_cannot_start_fails_readably(window, mods, monkeypatch):
     monkeypatch.setattr(data_mods, "derive_command", lambda mod, install, key: (["/nonexistent/descape-derive"], Path.cwd()))
     lines = _logged(window, monkeypatch)
     _menu(window)["Alpha"].trigger()
-    _pump_until(window.data_mod_menu.parsing_label.isHidden)
+    _pump_until(lambda: window.data_mod_menu._job is None)
+    assert window.load_progress.isHidden()
     assert game_dataset.data_mod() is None
     assert any(line.startswith("Data mod Alpha cannot be used: the parser could not start") for line in lines)
     assert not _menu(window)["Alpha"].isEnabled()

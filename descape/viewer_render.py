@@ -1143,6 +1143,7 @@ class _ViewerRenderMixin:
         time, i.e. work actually done, not wall clock from load start to
         here, which would fold in however long Qt sat idle and make the
         number a reading of how busy the machine was rather than of the file."""
+        self.load_progress.finish("load")
         report = self._pending_paint_report
         self._pending_paint_report = None
         self.map_view.set_paint_timed_callback(None)

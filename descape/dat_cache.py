@@ -51,6 +51,8 @@ from descape.scenario_io import is_in_game_profile, is_workshop_subscribed
 CACHE_ROOT = Path(platformdirs.user_cache_dir("DEscape", appauthor=False)) / "dat_tables"
 META_NAME = "meta.json"
 INSTALL_IDS_DIR = "install_ids"
+# GH #359: each build step's share of the progress bar, by how long it takes.
+PROGRESS_WEIGHTS = {"mod_dat": 45, "generators": 45, "game_ids": 10}
 DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
 # Install files the generators read besides the .dat, by size and mtime (folders by mtime).
 _FINGERPRINT_PATHS = (
@@ -200,24 +202,54 @@ def _place(staging: Path, out_dir: Path) -> Entry:
     return entry
 
 
-def build_entry(mod_dat: Path, install: Path, out_dir: Path) -> Entry:
+def build_progress(progress):
+    """GH #359: build_entry()'s steps as `progress(percent, caption)` calls:
+    returns `step(name, i=0)` for "mod_dat", "generator" (the i-th, from 0),
+    "game_ids" and "done", each called as its step starts."""
+    count = len(dat_derive.GENERATORS) + 2
+    share = PROGRESS_WEIGHTS["generators"] / len(dat_derive.GENERATORS)
+
+    def step(name: str, i: int = 0) -> None:
+        if progress is None:
+            return
+        if name == "mod_dat":
+            progress(0, f"reading the mod's .dat (1 of {count})")
+        elif name == "generator":
+            script = dat_derive.GENERATORS[i][0]
+            percent = PROGRESS_WEIGHTS["mod_dat"] + share * i
+            progress(round(percent), f"{dat_derive.GENERATOR_CAPTIONS[script]} ({i + 2} of {count})")
+        elif name == "game_ids":
+            percent = 100 - PROGRESS_WEIGHTS["game_ids"]
+            progress(percent, f"reading the game's .dat ({count} of {count})")
+        else:
+            progress(100, "saving the tables")
+
+    return step
+
+
+def build_entry(mod_dat: Path, install: Path, out_dir: Path, *, progress=None) -> Entry:
     """Derives `mod_dat`'s tables and places them at `out_dir` (CACHE_ROOT/<key>
     as the viewer calls it), returning the entry. Raises on any failure, which
-    never leaves a complete-looking entry at `out_dir`."""
+    never leaves a complete-looking entry at `out_dir`. `progress(percent,
+    caption)` hears each step as it starts (build_progress())."""
     out_dir = Path(out_dir)
     refusal = write_refusal(out_dir)
     if refusal is not None:
         raise ValueError(f"refusing to write the table cache: {refusal}")
     inputs = entry_inputs(mod_dat, install)
     parsed: dict = {}
+    step = build_progress(progress)
+    step("mod_dat")
     # First, so a .dat genieutils cannot read fails before any folder exists.
     mod_ids = dat_derive.parse_unit_ids(Path(mod_dat), parsed)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = _unique_sibling(out_dir, "partial")
-    warnings = dat_derive.derive(Path(mod_dat), Path(install), staging, parsed=parsed)
+    warnings = dat_derive.derive(Path(mod_dat), Path(install), staging, parsed=parsed, progress=lambda i, _script: step("generator", i))
     # The mod's parse (~1 GB resident) goes before the install's is made.
     parsed.clear()
+    step("game_ids")
     install_ids = _install_ids(Path(install), out_dir.parent, parsed)
+    step("done")
     _write_json(
         staging / META_NAME,
         {**inputs, "mod_only_ids": sorted(mod_ids - install_ids), "warnings": list(warnings)},

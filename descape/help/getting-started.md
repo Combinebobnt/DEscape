@@ -12,6 +12,8 @@ DEscape opens, edits and saves Age of Empires II: Definitive Edition scenario fi
 - **File > New Map…** starts a blank scenario. Pick its size (one of the game's sizes, or a square Custom size), the game it is for (Age of Empires II or Return of Rome), the terrain every tile starts with and its elevation. Elevation is the value stored in the file: the game's Scenario Editor shows it one higher. Plant's Trees box plants the terrain's trees the way the Terrain tool does (a tree on every tile of a full forest), and Eye candy adds the doodads a terrain carries, such as grass tufts; each is greyed out for a terrain with none. A map that would get over 100,000 of them, such as a Ludicrous forest, asks first and can be created without them. The new map opens with no unsaved changes, trees included. The dialog remembers your last choice.
 - **File > Close Map** closes the scenario.
 
+While a scenario opens, a bar on the right of the status bar shows how far along it is.
+
 Opening another file, closing or quitting asks first when there are unsaved changes. While there are, the window title starts with `*`.
 
 ## Save
@@ -34,7 +36,7 @@ Snapshots go in an `autosave` folder beside DEscape's `config.yaml`, or a folder
 
 A Return of Rome scenario opens with Return of Rome's own units, names, art, civilizations and terrain, and the window title says `[Return of Rome]`. Without the Return of Rome DLC installed, a name the two games share shows Age of Empires II's, and the rest show the name in Return of Rome's game data. **Settings > Advanced** can show a file with the other game's data instead. A file shown that way is read-only, and the status bar says why. Set Game data back to Auto to edit it.
 
-**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on. Unit and building portraits come from the mod's own files first, then from that art mod, then from the game.
+**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A data mod read for the first time is parsed once, which takes 5 to 25 seconds, with its progress shown in the same place on the status bar; the map stays usable meanwhile. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on. Unit and building portraits come from the mod's own files first, then from that art mod, then from the game.
 
 ## Move around the map
 

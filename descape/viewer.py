@@ -1329,6 +1329,7 @@ class ViewerWindow(
         # dispatched from inside a load's own processEvents() would then null
         # it out from under load_scenario's remaining writes to it.
         self._paint_report_timer.stop()
+        self.load_progress.finish("load")
         self.data_mod_menu.shutdown()
         settings.set_window_size(self.width(), self.height())
         self._close_docks()
