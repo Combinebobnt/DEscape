@@ -25,6 +25,24 @@ Then per style, medians of `--runs`:
 - **paint**: `MapView.render()` of the 900x700 window into a QImage, union held.
 
 Refresh rows also show refresh minus derive, and its x4 cost in brackets.
+
+The paint section (TASK-508; `--sections paint`) repeats per style, Flat in
+both Isometric View states, at `--zooms` factors of the fit view. Columns,
+medians in ms, `rings` meaning the ring items alone (fill, outline and unit
+outline, the other overlay items hidden):
+
+- **full** and **64x64**: a full viewport repaint() and a centred 64x64 one,
+  overlay on, off, and rings;
+- **pan**: rings, a full repaint after each scroll of 0.4 of the viewport's
+  longer side between two positions, so a ring memo misses every time (`-`
+  without the scroll range, `!hit` if a paint reused the memo anyway);
+- **level**: rings, the first full repaint at each zoom in ascending order
+  after a refresh painted once at the smallest zoom, so each zoom builds
+  whatever level it needs first;
+- **lod px**: pixels of a whole-overlay grab that differ from the same grab
+  with each ring item swapped for a plain QGraphicsPathItem of its path;
+- **cold** rows at x1 and x16: the first full repaint after
+  `_refresh_trigger_overlay()`, rings and the whole overlay.
 Every timing line names the load average; the header names the Qt platform.
 Read medians, and compare two checkouts on one machine at one time.
 
@@ -66,6 +84,173 @@ def _median_ms(fn, runs: int) -> float:
     return statistics.median(times)
 
 
+RING_ROLES = ("fill_", "outline_", "units_")
+
+
+def _paint_section(window, selection, styles, zooms, runs) -> None:
+    """The TASK-508 paint rows (module docstring). Runs on any checkout: ring
+    items are found by their data(0) role, not their class."""
+    import numpy as np
+    from PyQt5.QtCore import QRect
+    from PyQt5.QtGui import QImage
+    from PyQt5.QtWidgets import QApplication, QGraphicsPathItem
+
+    view = window.map_view
+    viewport = view.viewport()
+    small = QRect(viewport.width() // 2 - 32, viewport.height() // 2 - 32, 64, 64)
+    variants = []
+    for style in styles:
+        if style == "Flat":
+            variants += [("Flat iso", "Flat", True), ("Flat top", "Flat", False)]
+        else:
+            variants.append((style, style, None))
+
+    def ring_items():
+        return [i for i in view.trigger_overlay_items() if str(i.data(0)).startswith(RING_ROLES)]
+
+    def rings_only():
+        for item in view.trigger_overlay_items():
+            item.setVisible(str(item.data(0)).startswith(RING_ROLES))
+
+    def refresh():
+        window._trigger_overlay_ref = (tuple(selection), frozenset())
+        window._refresh_trigger_overlay()
+
+    def grab():
+        image = viewport.grab().toImage().convertToFormat(QImage.Format_ARGB32)
+        bits = image.constBits()
+        bits.setsize(image.byteCount())
+        rows = np.frombuffer(bits, np.uint8).reshape(image.height(), image.bytesPerLine())
+        return rows[:, : image.width() * 4].reshape(image.height(), image.width(), 4).copy()
+
+    def lod_pixels() -> int:
+        """Ring items against plain items of the same exact path, whole overlay on."""
+        repaint()
+        ours = grab()
+        plain = []
+        for item in ring_items():
+            twin = QGraphicsPathItem(item.path())
+            twin.setPen(item.pen())
+            twin.setBrush(item.brush())
+            twin.setZValue(item.zValue())
+            twin.setOpacity(item.opacity())
+            view.scene().addItem(twin)
+            item.setVisible(False)
+            plain.append((item, twin))
+        repaint()
+        exact = grab()
+        for item, twin in plain:
+            view.scene().removeItem(twin)
+            item.setVisible(True)
+        return int(np.any(ours != exact, axis=2).sum())
+
+    def repaint(rect=None):
+        viewport.update()
+        if rect is None:
+            viewport.repaint()
+        else:
+            viewport.repaint(rect)
+
+    def timed(fn):
+        fn()  # warm
+        return _median_ms(fn, runs)
+
+    for label, style, isometric in variants:
+        window.terrain_style_combo.setCurrentText(style)
+        QApplication.processEvents()
+        if isometric is not None:
+            window.iso_action.setChecked(isometric)
+            QApplication.processEvents()
+        view.set_isometric(view._isometric)
+        QApplication.processEvents()
+        fit = view.transform()
+        centre = view._viewport_center_scene()
+
+        def set_zoom(factor, settle=True, fit=fit, centre=centre):
+            view.setTransform(fit)
+            view.scale(factor, factor)
+            view._center_on_exact(centre)
+            if settle:
+                QApplication.processEvents()
+
+        refresh()
+        QApplication.processEvents()
+        print(f"{label:8s} paint section: fit m11 {fit.m11():.4f}, {len(ring_items())} ring items | loadavg {_loadavg()}")
+        for factor in zooms:
+            set_zoom(factor)
+            view.set_trigger_overlay_enabled(True)
+            on = (timed(repaint), timed(lambda: repaint(small)))
+            view.set_trigger_overlay_enabled(False)
+            off = (timed(repaint), timed(lambda: repaint(small)))
+            view.set_trigger_overlay_enabled(True)
+            rings_only()
+            ring = (timed(repaint), timed(lambda: repaint(small)))
+            h = view.horizontalScrollBar()
+            # The memo cell can reach 0.354 of the longer side, so a shorter scroll may keep its key.
+            step = int(max(viewport.width(), viewport.height()) * 0.4)
+            if h.maximum() - h.minimum() > step:
+                home = h.value()
+                away = home + step if home + step <= h.maximum() else home - step
+                spots = [away, home]
+                sets = {id(s): s for s in (getattr(i, "ring_set", lambda: None)() for i in ring_items()) if s is not None}
+                pans = [0]
+
+                def pan(h=h, spots=spots, pans=pans):
+                    h.setValue(spots[0])
+                    spots.reverse()
+                    pans[0] += 1
+                    repaint()
+
+                missed = sum(s.memo_misses for s in sets.values())
+                panned = f"{timed(pan):6.1f}"
+                missed = sum(s.memo_misses for s in sets.values()) - missed
+                if sets and missed < len(sets) * pans[0]:
+                    panned += "!hit"  # some pan paint reused the memo, so the row is not all misses
+                h.setValue(home)
+            else:
+                panned = f"{'-':>6s}"
+            view.set_trigger_overlay_enabled(True)
+            pixels = lod_pixels()
+            print(
+                f"{label:8s} x{factor:<4g} full on/off/rings {on[0]:6.1f} {off[0]:5.1f} {ring[0]:6.1f}"
+                f" | 64x64 {on[1]:6.1f} {off[1]:5.1f} {ring[1]:6.1f} | pan rings {panned}"
+                f" | lod px {pixels:6d} | loadavg {_loadavg()}"
+            )
+        # Level row: per run, a fresh refresh painted at the smallest zoom, then each zoom's first paint.
+        firsts: dict[float, list[float]] = {f: [] for f in zooms[1:]}
+        for _ in range(runs):
+            set_zoom(zooms[0])
+            refresh()
+            rings_only()
+            repaint()
+            for factor in zooms[1:]:
+                set_zoom(factor, settle=False)
+                t0 = time.perf_counter()
+                repaint()
+                firsts[factor].append((time.perf_counter() - t0) * 1000)
+                QApplication.processEvents()
+        cells = " ".join(f"x{f:g} {statistics.median(t):6.1f}" for f, t in firsts.items())
+        print(f"{label:8s} level rings  {cells} | loadavg {_loadavg()}")
+        for factor in (1, 16):
+            set_zoom(factor)
+            for name, hide in (("rings", True), ("overlay", False)):
+                times = []
+                for _ in range(runs):
+                    refresh()
+                    if hide:
+                        rings_only()
+                    t0 = time.perf_counter()
+                    repaint()
+                    times.append((time.perf_counter() - t0) * 1000)
+                    QApplication.processEvents()
+                print(f"{label:8s} cold x{factor:<3g} {name:8s} {statistics.median(times):6.1f} ms | loadavg {_loadavg()}")
+        window._trigger_overlay_ref = None
+        window._refresh_trigger_overlay()
+        QApplication.processEvents()
+    if "Flat" in styles:
+        window.iso_action.setChecked(True)
+
+
 def main() -> None:
     root_default = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -75,12 +260,18 @@ def main() -> None:
     parser.add_argument("--root", type=Path, help="DEscape checkout to import descape from")
     parser.add_argument("--runs", type=int, default=7, help="Timed calls per median (default 7)")
     parser.add_argument("--styles", default=",".join(STYLES), help="Comma-separated subset of Flat,Stepped,Sloped")
+    parser.add_argument("--sections", default="build,paint", help="Comma-separated subset of build,paint")
+    parser.add_argument("--zooms", default="0.5,1,4,16,64", help="Paint section zooms, factors of the fit view")
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be at least 1")
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     if not styles or any(s not in STYLES for s in styles):
         parser.error("--styles takes Flat, Stepped and/or Sloped")
+    sections = {s.strip() for s in args.sections.split(",") if s.strip()}
+    if not sections or sections - {"build", "paint"}:
+        parser.error("--sections takes build and/or paint")
+    zooms = sorted(float(z) for z in args.zooms.split(",") if z.strip())
 
     root = (args.root or root_default).resolve()
     sys.path.insert(0, str(root))
@@ -173,7 +364,7 @@ def main() -> None:
             view.render(painter)
             painter.end()
 
-        for style in styles:
+        for style in styles if "build" in sections else ():
             window.terrain_style_combo.setCurrentText(style)
             QApplication.processEvents()
             ring = _median_ms(lambda: view._rect_ring_path(whole), args.runs)
@@ -245,6 +436,8 @@ def main() -> None:
             window._trigger_overlay_ref = None
             window._refresh_trigger_overlay()
             QApplication.processEvents()
+        if "paint" in sections:
+            _paint_section(window, selection, styles, zooms, args.runs)
     finally:
         window.edit_history.mark_saved()
         window.close()

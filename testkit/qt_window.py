@@ -163,6 +163,52 @@ def panel_width(window) -> int:
     return window.panel_dock.width()
 
 
+_SETTLE_PASSES = 20
+
+
+def settled_horizontal_scroll(area) -> str | None:
+    """Pump `area` until its horizontal bar settles. None when it settles hidden with
+    nothing to scroll; otherwise a plain-str report (a str so pytest never truncates it).
+
+    Settled: on two consecutive `QTest.qWait(10)` passes the bar's visibility matches
+    `maximum() > minimum()` and the range is unchanged. A column resize reaches it in two
+    deferred hops, each a turn or more late:
+    - QTreeView.columnResized() resets the range only from a 0 ms timer's updateGeometries()
+      (the View table's _InfoTree.fit_columns() calls it itself);
+    - rangeChanged reaches QAbstractScrollArea's show/hide slot through a queued connection.
+    """
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QTreeView
+
+    bar = area.horizontalScrollBar()
+    previous = None
+    settled_at = None
+    for attempt in range(1, _SETTLE_PASSES + 1):
+        QTest.qWait(10)
+        state = (bar.isVisible(), bar.minimum(), bar.maximum())
+        if state[0] == (state[2] > state[1]):
+            if state == previous:
+                settled_at = attempt
+                break
+            previous = state
+        else:
+            previous = None
+    if settled_at is not None and not bar.isVisible() and bar.maximum() == 0:
+        return None
+    viewport = area.viewport()
+    parts = [
+        f"settled after {settled_at} passes" if settled_at is not None else f"not settled after {_SETTLE_PASSES}",
+        f"viewport {viewport.width()}x{viewport.height()}",
+        f"bar min {bar.minimum()} max {bar.maximum()} visible {bar.isVisible()}",
+        f"vertical bar visible {area.verticalScrollBar().isVisible()}",
+    ]
+    if isinstance(area, QTreeView):
+        header = area.header()
+        widths = [header.sectionSize(c) for c in range(header.count()) if not header.isSectionHidden(c)]
+        parts.append(f"header length {header.length()}, visible columns {widths}")
+    return "; ".join(parts)
+
+
 def stepped_window(
     path,
     *,

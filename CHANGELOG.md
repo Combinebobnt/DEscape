@@ -50,6 +50,9 @@ content, link the doc instead of summarizing it.
 
 - **`tools/release_render_diff.py` compares against the latest release**
   (now v0.11).
+- **Smoother trigger overlays**: with many triggers selected, or one with a
+  whole-map area, zooming, panning and hovering over the map stay smooth in
+  every Elevation View, Sloped included.
 
 ### Fixed
 

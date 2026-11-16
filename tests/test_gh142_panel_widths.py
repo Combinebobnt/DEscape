@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from unit_edit_viewer_helpers import _no_install_env  # noqa: F401 -- autouse fixture
 
-from testkit.qt_window import panel_width, set_panel_width
+from testkit.qt_window import panel_width, set_panel_width, settled_horizontal_scroll
 
 import conftest
 
@@ -200,7 +200,7 @@ def test_the_view_table_fits_the_floor_with_note_hidden_and_full_labels_in_toolt
         assert _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE) == window.INFO_PAGE_MIN_USEFUL_WIDTH
         _show_view_player(window, player_id)
         tree = window.info_tree
-        assert not tree.horizontalScrollBar().isVisible()
+        assert (report := settled_horizontal_scroll(tree)) is None, report
         assert tree.header().isSectionHidden(2)
         rows = _stat_rows(tree)
         assert rows
@@ -224,7 +224,7 @@ def test_a_wide_view_pane_shows_note_and_every_stat_label_in_full() -> None:
         assert not tree.header().isSectionHidden(2)
         assert tree.columnWidth(0) == tree.sizeHintForColumn(0)
         assert tree.columnWidth(1) >= tree.sizeHintForColumn(1)
-        assert not tree.horizontalScrollBar().isVisible()
+        assert (report := settled_horizontal_scroll(tree)) is None, report
     finally:
         conftest.close_window(window)
 
@@ -243,13 +243,36 @@ def test_dragging_the_view_pane_narrow_wide_narrow_hides_shows_and_hides_note() 
         for px in (floor, 600, floor):
             _set_left(window, px)
             seen.append(tree.header().isSectionHidden(2))
-            vp = tree.viewport()
-            # The geometry in the message: this failed only on Windows at 120 DPI, unreproduced on Linux.
-            assert not tree.horizontalScrollBar().isVisible(), (
-                px, vp.width(), vp.height(), [tree.columnWidth(i) for i in range(3)],
-                tree.sizeHintForColumn(0), tree.sizeHintForColumn(1), tree.verticalScrollBar().isVisible(),
+            # Qt's queued show/hide still lags a turn after the drag, so assert the settled state; the next test pins the range half.
+            report = settled_horizontal_scroll(tree)
+            assert report is None, (
+                f"pane {px} px, hints {tree.sizeHintForColumn(0)}/{tree.sizeHintForColumn(1)}: {report}"
             )
         assert seen == [True, False, True]
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.font_sensitive
+def test_back_at_the_floor_the_horizontal_bar_hides_without_a_timer() -> None:
+    """The narrow, wide, narrow drag above with posted events only: fit_columns() syncs the
+    scroll bar ranges itself, so the bar shown while the vertical one appeared does not wait
+    for QTreeView's 0 ms column-resize timer, which one processEvents() on Windows did not run.
+    It catches a regression only where that timer is not a posted event: Linux at 120 DPI."""
+    from PyQt5.QtCore import QCoreApplication, Qt
+
+    window = _blank_window()
+    try:
+        floor = _enter(window, "View", from_px=_NARROW_PX, from_mode=_PLAIN_FLOOR_MODE)
+        _show_view_player(window, 1)
+        tree = window.info_tree
+        for px in (floor, 600, floor):
+            window.resizeDocks([window.panel_dock], [px], Qt.Horizontal)
+            for _ in range(6):
+                QCoreApplication.sendPostedEvents()
+            assert panel_width(window) == px, "the pane resize did not take"
+            assert tree.horizontalScrollBar().maximum() == 0, (px, tree.viewport().width(), [tree.columnWidth(i) for i in range(3)])
+            assert not tree.horizontalScrollBar().isVisible(),(px, tree.viewport().width(), [tree.columnWidth(i) for i in range(3)])
     finally:
         conftest.close_window(window)
 
@@ -276,7 +299,8 @@ def test_a_bigger_view_table_font_still_fits_the_floor() -> None:
         # The column sum, not only the bar: Linux paints the bar a turn after the overflow (TASK-409).
         shown = sum(tree.columnWidth(c) for c in range(3) if not tree.header().isSectionHidden(c))
         assert shown <= tree.viewport().width(), f"columns {shown} px in a {tree.viewport().width()} px viewport"
-        assert not tree.horizontalScrollBar().isVisible(), f"Stat room {room} px, its minimum {least} px"
+        report = settled_horizontal_scroll(tree)
+        assert report is None, f"Stat room {room} px, its minimum {least} px: {report}"
     finally:
         conftest.close_window(window)
 
@@ -308,7 +332,7 @@ def test_a_long_player_label_elides_inside_the_view_floor() -> None:
         viewport = tree.viewport()
         left = combo.mapTo(viewport, QPoint(0, 0)).x()
         assert left >= 0 and left + combo.width() <= viewport.width(), (left, combo.width(), viewport.width())
-        assert not tree.horizontalScrollBar().isVisible()
+        assert (report := settled_horizontal_scroll(tree)) is None, report
         shown = combo.displayed_text()
         assert shown.endswith("…") and len(shown) < len(long), shown
         assert combo.view().model().index(combo.currentIndex(), 0).data() == long

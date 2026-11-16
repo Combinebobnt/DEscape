@@ -117,6 +117,7 @@ def test_stall_parser_keeps_thread_suffix_and_old_logs_stay_unclassified():
 
 
 def test_recorder_exports_each_slow_preframe_once_not_view_maxima_or_click_duplicates(monkeypatch):
+    import gc
     import json
 
     from descape import debug_log, perf_trace
@@ -134,7 +135,12 @@ def test_recorder_exports_each_slow_preframe_once_not_view_maxima_or_click_dupli
         perf_trace.preframe_tick(50, "fetch", stats, fetch)
         perf_trace.preframe_tick(49.999, "strip", stats)
         perf_trace.flush_idle()  # the max tick line must not become another raw event
-        perf_trace.stall(250, Delta(300, 3, 250, 0))
+        threshold = gc.get_threshold()
+        gc.set_threshold(1)  # a collection inside stall() appends a gc Activity after it (TASK-641)
+        try:
+            perf_trace.stall(250, Delta(300, 3, 250, 0))
+        finally:
+            gc.set_threshold(*threshold)
         got = json.loads(json.dumps(rec.diagnostics()))
         assert len(got["slow_preframe_ticks"]) == 1 and len(got["stalls"]) == 1
         tick = got["slow_preframe_ticks"][0]
@@ -143,7 +149,8 @@ def test_recorder_exports_each_slow_preframe_once_not_view_maxima_or_click_dupli
         stall = got["stalls"][0]
         assert stall["thread"]["kind"] == "runq" and "; thread runq:" in stall["detail"]
         assert stall["raw"].startswith("perf stall 250ms (")
-        click = _click(t=rec.activities[-1].start, end=rec.activities[-1].end + 1)
+        stalled = [act for act in rec.activities if act.kind == "stall"][-1]
+        click = _click(t=stalled.start, end=stalled.end + 1)
         row = bz.format_row(click, bz.click_stats(click, [], rec.activities))
         assert "thread runq: cpu 3.0ms runq 250.0ms maj 0" in row
         assert bz.gates([click], [], rec.activities)[1].met is False, "Step 1 must not exempt env stalls"

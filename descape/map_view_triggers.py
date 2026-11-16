@@ -29,6 +29,8 @@ from descape import (
     unit_pick,
 )
 from descape.instruction_overlay import InstructionOverlay
+from descape.qt_points import points_from_polygon, polygon_from_points, ring_path_from_points
+from descape.ring_path_item import RingGeometry, RingPathItem, RingSet
 
 # The two non-Flat terrain styles, which share a projected pick plane and a
 # diamond ground outline. Aliased to this module's existing private name so
@@ -47,6 +49,7 @@ class _RingEntry(NamedTuple):
     indices: tuple[np.ndarray, ...] = ()
     values: np.ndarray | None = None
     rise: np.ndarray | None = None
+    geometry: RingGeometry | None = None
 
 
 @lru_cache(maxsize=1024)
@@ -60,43 +63,16 @@ def _sloped_edge_points(tile_px: int, side: str, nw: int, ne: int, sw: int, se: 
     return points
 
 
-def _polygon_from_points(points: np.ndarray) -> QPolygonF:
-    """A QPolygonF holding a float64 (N, 2) array's rows, written in one copy
-    through the polygon's own buffer (the sip voidptr route zoom_preframe.py
-    uses for QImage bits). Relies on qreal being double, as on every desktop
-    PyQt5 build."""
-    points = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 2)
-    polygon = QPolygonF(len(points))
-    if len(points):
-        buffer = polygon.data()
-        buffer.setsize(points.nbytes)
-        np.frombuffer(buffer, dtype=np.float64).reshape(-1, 2)[:] = points
-    return polygon
-
-
-def _points_from_polygon(polygon: QPolygonF) -> np.ndarray:
-    """The reverse of _polygon_from_points: a float64 (N, 2) copy of the points."""
-    count = polygon.size()
-    if not count:
-        return np.zeros((0, 2), dtype=np.float64)
-    buffer = polygon.data()
-    buffer.setsize(count * 2 * np.dtype(np.float64).itemsize)
-    return np.frombuffer(buffer, dtype=np.float64).reshape(count, 2).copy()
-
-
-def _ring_path_from_points(points: np.ndarray) -> QPainterPath:
-    """One closed subpath through `points`, consecutive duplicates dropped as
-    the old per-point loop's currentPosition() check did. No points, empty path."""
-    path = QPainterPath()
-    if not len(points):
-        return path
-    # One complex per row: an exact (x, y) compare in a single ufunc call.
-    rows = np.ascontiguousarray(points, dtype=np.float64).view(np.complex128).ravel()
-    keep = np.ones(len(rows), dtype=bool)
-    keep[1:] = rows[1:] != rows[:-1]
-    path.addPolygon(_polygon_from_points(points[keep]))
-    path.closeSubpath()
-    return path
+@lru_cache(maxsize=1024)
+def _sloped_edge_chord_deviation(tile_px: int, side: str, nw: int, ne: int, sw: int, se: int) -> float:
+    """The largest distance from one Sloped tile edge's points to its chord
+    SEGMENT (first point to last), on _sloped_edge_points' key (TASK-508)."""
+    points = _sloped_edge_points(tile_px, side, nw, ne, sw, se)
+    d = points[-1] - points[0]
+    rel = points - points[0]
+    length_sq = float(d @ d)
+    u = np.clip((rel @ d) / length_sq, 0.0, 1.0) if length_sq else np.zeros(len(points))
+    return float(np.hypot(rel[:, 0] - u * d[0], rel[:, 1] - u * d[1]).max())
 
 
 class _MapViewTriggersMixin:
@@ -513,20 +489,24 @@ class _MapViewTriggersMixin:
         (tests/test_trigger_overlay_viewer.py pins the two together). Empty
         before a projection snapshot (and, for Sloped, a cache) exists."""
         points = self._rect_ring_points(rect)
-        return QPainterPath() if points is None else _ring_path_from_points(points)
+        return QPainterPath() if points is None else ring_path_from_points(points)
 
     def _memo_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath | None:
         entry = self._trigger_ring_memo.get(rect)
         return None if entry is None else entry.path
 
-    def _trigger_ring_path(self, rect: tuple[int, int, int, int]) -> QPainterPath:
+    def _trigger_ring_entry(self, rect: tuple[int, int, int, int]) -> _RingEntry | None:
+        """The memoized ring for `rect`, its path and its RingGeometry, or None with no geometry."""
         entry = self._trigger_ring_memo.get(rect)
         if entry is not None:
-            return entry.path
-        path = self._rect_ring_path(rect)
+            return entry
+        geometry = self._rect_ring_geometry(rect)
+        if geometry is None:
+            return None
+        path = ring_path_from_points(geometry.points)
         if path.isEmpty():
-            return path
-        entry = _RingEntry(path)
+            return None
+        entry = _RingEntry(path, geometry=geometry)
         if self._terrain_style in _ELEVATED_STYLES:
             chains = self._region_edge_chains(*rect)
             xs = np.concatenate([c[0] for c in chains])
@@ -536,9 +516,9 @@ class _MapViewTriggersMixin:
             indices = (nw, nw + 1, nw + rise.shape[1], nw + rise.shape[1] + 1) if self._terrain_style == "sloped" else (nw,)
             # An elevation edit changes a ring only through these border values.
             values = np.take(rise, np.concatenate(indices))
-            entry = _RingEntry(path, indices, values, rise if self._terrain_style == "sloped" else None)
+            entry = _RingEntry(path, indices, values, rise if self._terrain_style == "sloped" else None, geometry)
         self._trigger_ring_memo[rect] = entry
-        return path
+        return entry
 
     def _ring_fingerprint_matches(self, entries: dict[tuple[int, int, int, int], _RingEntry]) -> set[tuple[int, int, int, int]]:
         """Valid rects, with one batched height read for all entries needing a check."""
@@ -592,10 +572,35 @@ class _MapViewTriggersMixin:
             ]
         )
 
+    def _rect_ring_geometry(self, rect: tuple[int, int, int, int]) -> RingGeometry | None:
+        """_rect_ring_points() plus the chord level's points and bound for
+        RingSet (TASK-508). Sloped's chord keeps each tile edge's first and
+        last point; Flat and Stepped edges are already straight."""
+        if self._terrain_style != "sloped":
+            points = self._rect_ring_points(rect)
+            return None if points is None else RingGeometry(points, points, 0.0)
+        parts = self._sloped_ring_parts(rect)
+        if parts is None:
+            return None
+        local, lengths, offsets, keys = parts
+        ends = np.cumsum(lengths)
+        chord = np.stack([local[ends - lengths], local[ends - 1]], axis=1) + offsets[:, None, :]
+        deviation = max(_sloped_edge_chord_deviation(self._tile_pixels, *key) for key in set(keys))
+        return RingGeometry(local + np.repeat(offsets, lengths, axis=0), chord.reshape(-1, 2), deviation)
+
     def _sloped_ring_points(self, rect: tuple[int, int, int, int]) -> np.ndarray | None:
         """Sloped's ring points: per border tile, the cached tile-local edge for
         its normalized corners (_sloped_edge_points), offset exactly as
         _sloped_tile_base() places the tile."""
+        parts = self._sloped_ring_parts(rect)
+        if parts is None:
+            return None
+        local, lengths, offsets, _keys = parts
+        return local + np.repeat(offsets, lengths, axis=0)
+
+    def _sloped_ring_parts(self, rect: tuple[int, int, int, int]):
+        """(tile-local points concatenated, points per border tile, per-tile
+        offsets, per-tile _sloped_edge_points keys), or None without a cache."""
         cache = self._sloped_cache()
         proj = self._iso_proj
         if cache is None or proj is None:
@@ -610,10 +615,11 @@ class _MapViewTriggersMixin:
         d_min = corners.min(axis=0)
         nw, ne, sw, se = (corners - d_min).tolist()
         # The per-tile part: one cache lookup per border tile, in _region_edge_walk()'s order.
-        arrays = [_sloped_edge_points(tile_px, *key) for key in zip(sides, nw, ne, sw, se, strict=True)]
+        keys = list(zip(sides, nw, ne, sw, se, strict=True))
+        arrays = [_sloped_edge_points(tile_px, *key) for key in keys]
         ox, oy = iso_geometry.tile_screen_origin(xs, ys, 0, proj)
         offsets = np.stack([ox, oy - d_min], axis=1).astype(np.float64)
-        return np.concatenate(arrays) + np.repeat(offsets, [len(a) for a in arrays], axis=0)
+        return np.concatenate(arrays), np.array([len(a) for a in arrays]), offsets, keys
 
     def _trigger_area_rect(self, coords) -> tuple[int, int, int, int] | None:
         """An inclusive trigger area as a half-open rect clamped to the map, or
@@ -645,7 +651,7 @@ class _MapViewTriggersMixin:
         centre = polygon.boundingRect().center()
         c = np.array([centre.x(), centre.y()], dtype=np.float64)
         # Same operation order as the per-point centre + (p - centre) * s, so bit-identical.
-        return _polygon_from_points(c + (_points_from_polygon(polygon) - c) * self.TRIGGER_LOCATION_SCALE)
+        return polygon_from_points(c + (points_from_polygon(polygon) - c) * self.TRIGGER_LOCATION_SCALE)
 
     def _location_mark_path(self, tile: tuple[int, int]) -> QPainterPath:
         path = QPainterPath()
@@ -663,7 +669,8 @@ class _MapViewTriggersMixin:
         """Rebuilds every trigger item from the snapshot against the CURRENT
         projection: on a push, after set_source(), on an elevation edit and on
         a colour change. Items never touch the chunk cache.
-        Rings use a per-rect memo, cleared by set_source() and checked against border heights on every rebuild."""
+        Rings use a per-rect memo, cleared by set_source() and checked against border heights on every rebuild.
+        Rings are RingPathItems, not plain path items: its module docstring says why."""
         scene = self.scene()
         if scene is None:
             return
@@ -682,8 +689,8 @@ class _MapViewTriggersMixin:
             valid = self._ring_fingerprint_matches(entries)
             # Only what this selection draws stays cached; deselecting keeps it warm.
             self._trigger_ring_memo = {rect: entries[rect] for rect in valid}
-        rings = {True: QPainterPath(), False: QPainterPath()}
-        units = {True: QPainterPath(), False: QPainterPath()}
+        rings: dict[bool, list[_RingEntry]] = {True: [], False: []}
+        units: dict[bool, list[_RingEntry]] = {True: [], False: []}
         marks = {True: QPainterPath(), False: QPainterPath()}
         runs: list[tuple[QPointF, str]] = []
         # Keyed on the trigger too: two triggers' ("effect", 1) must never pair into one run (GH #168).
@@ -704,8 +711,9 @@ class _MapViewTriggersMixin:
                     # Once per bucket: a repeat adds no fill, only a darker antialiased outline.
                     if rect is not None and (is_area, strong, rect) not in seen:
                         seen.add((is_area, strong, rect))
-                        target = rings if is_area else units
-                        target[strong].addPath(self._trigger_ring_path(rect))
+                        entry = self._trigger_ring_entry(rect)
+                        if entry is not None:
+                            (rings if is_area else units)[strong].append(entry)
                 elif self._on_map(shape.coords):
                     polygon = self._location_mark(shape.coords)
                     if polygon is not None:
@@ -725,19 +733,20 @@ class _MapViewTriggersMixin:
                 runs.append((b, ruler.format_measurement(run)))
         for strong in (False, True):
             suffix = "strong" if strong else "dim"
-            ring = rings[strong]
-            if not ring.isEmpty():
-                ring.setFillRule(Qt.WindingFill)
-                fill = scene.addPath(ring, QPen(Qt.NoPen), QBrush(self._trigger_fill_colors[strong]))
-                outline = scene.addPath(ring, self._trigger_outline_pens[strong])
+            if rings[strong]:
+                ring_set = self._trigger_ring_set(rings[strong])
+                fill = RingPathItem(ring_set, QPen(Qt.NoPen), QBrush(self._trigger_fill_colors[strong]))
+                outline = RingPathItem(ring_set, self._trigger_outline_pens[strong], QBrush(Qt.NoBrush))
                 for role, item in ((f"fill_{suffix}", fill), (f"outline_{suffix}", outline)):
+                    scene.addItem(item)
                     item.setZValue(self.TRIGGER_AREA_Z)
                     # Areas only (GH #129): marks, runs, unit refs and labels stay full strength.
                     item.setOpacity(self._overlay_opacity("trigger_area"))
                     item.setData(0, role)
                     self._trigger_items.append(item)
-            if not units[strong].isEmpty():
-                item = scene.addPath(units[strong], self._trigger_unit_pens[strong])
+            if units[strong]:
+                item = RingPathItem(self._trigger_ring_set(units[strong]), self._trigger_unit_pens[strong], QBrush(Qt.NoBrush))
+                scene.addItem(item)
                 item.setZValue(self.TRIGGER_AREA_Z)
                 item.setData(0, f"units_{suffix}")
                 self._trigger_items.append(item)
@@ -752,6 +761,9 @@ class _MapViewTriggersMixin:
             self._trigger_items.append(label)
         for item in self._trigger_items:
             item.setVisible(self._trigger_overlay_enabled)
+
+    def _trigger_ring_set(self, entries: list[_RingEntry]) -> RingSet:
+        return RingSet([e.geometry for e in entries], self.TRIGGER_PEN_WIDTH + 2, [e.path for e in entries])
 
     def _add_run_label(self, anchor: QPointF, text: str) -> QGraphicsSimpleTextItem:
         label = self.scene().addSimpleText(text)

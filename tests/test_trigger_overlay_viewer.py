@@ -1477,3 +1477,97 @@ def test_a_patrol_with_selected_units_and_no_location_rings_them_with_no_run() -
         assert _labels(view) == []
     finally:
         conftest.close_window(window)
+
+
+# -- TASK-508: ring items cull and simplify, and stay exact above the LOD threshold ----
+
+
+def test_ring_items_carry_the_exact_union_and_paint_like_plain_items() -> None:
+    """Each ring item's path() is the union of _rect_ring_path() over its
+    bucket, element for element, strong and dim. Zoomed in past every coarser
+    level, a grab equals one with each ring item swapped for a plain item of
+    the same path, pen, brush, Z and opacity."""
+    from PyQt5.QtGui import QPainterPath, QTransform
+    from PyQt5.QtWidgets import QApplication, QGraphicsPathItem
+
+    from descape.ring_path_item import RingPathItem
+    from descape.trigger_geometry import AREA_FIELDS, TriggerShape
+    from descape.viewer_canvas import _max_axis_scale
+
+    window = conftest.terrain_edit_window()
+    try:
+        for tile in window.scenario.map_manager.terrain:
+            tile.elevation = (tile.x // 2 + tile.y // 3) % 3
+        window.terrain_style_combo.setCurrentText("Sloped")
+        window.refresh_map()
+        window.resize(900, 700)
+        window.show()
+        QApplication.processEvents()
+        view = window.map_view
+        assert view._terrain_style == "sloped"
+        view.set_trigger_overlay_enabled(True)
+        w, h = view._map_width, view._map_height
+        shapes = [
+            TriggerShape(0, "effect", 1, "area", AREA_FIELDS, (0, 0, w - 1, h - 1)),
+            TriggerShape(0, "effect", 2, "area", AREA_FIELDS, (3, 4, 12, 15)),
+            TriggerShape(0, "condition", 1, "unit", AREA_FIELDS, (5, 5, 5, 5)),
+            TriggerShape(0, "condition", 2, "unit", AREA_FIELDS, (8, 2, 9, 3)),
+        ]
+        view.show_trigger_overlay(shapes, {("effect", 2), ("condition", 1)})
+        QApplication.processEvents()
+        items = _items_by_role(view)
+        buckets = {
+            "fill_dim": [(0, 0, w, h)],
+            "outline_dim": [(0, 0, w, h)],
+            "fill_strong": [(3, 4, 13, 16)],
+            "outline_strong": [(3, 4, 13, 16)],
+            "units_strong": [(5, 5, 6, 6)],
+            "units_dim": [(8, 2, 10, 4)],
+        }
+        assert set(buckets) <= set(items)
+        for role, rects in buckets.items():
+            assert isinstance(items[role], RingPathItem), role
+            union = QPainterPath()
+            for rect in rects:
+                union.addPath(view._rect_ring_path(rect))
+            assert _elements(items[role].path()) == _elements(union), role
+
+        # The production chord and deviation keep every coarser level inside its bound, both ways.
+        from test_ring_path_item import _densified, _distance_to_polyline
+
+        for role in ("outline_strong", "units_strong", "units_dim"):
+            ring_set = items[role].ring_set()
+            assert ring_set.deviation > 0, f"{role}: bumpy Sloped rings must have a chord to bound"
+            for index, error in ring_set.errors[1:]:
+                for exact, level in zip(ring_set.level_rings(0), ring_set.level_rings(index), strict=True):
+                    assert _distance_to_polyline(exact, level).max() <= error + 1e-9, f"{role} level {index}"
+                    assert _distance_to_polyline(_densified(level), exact).max() <= error + 1e-9, f"{role} level {index}"
+
+        def grab():
+            image = view.viewport().grab().toImage()
+            bits = image.constBits()
+            bits.setsize(image.byteCount())
+            return bytes(bits)
+
+        view.setTransform(QTransform().scale(3.0, 3.0))
+        view.centerOn(view._rect_ring_path((3, 4, 13, 16)).boundingRect().center())
+        QApplication.processEvents()
+        scale = _max_axis_scale(view.viewportTransform())
+        rings = [i for i in view.trigger_overlay_items() if isinstance(i, RingPathItem)]
+        assert all(i.ring_set().level_index_for(scale) == 0 for i in rings), "the zoom must leave only the exact level"
+        ours = grab()
+        twins = []
+        for item in rings:
+            twin = QGraphicsPathItem(item.path())
+            twin.setPen(item.pen())
+            twin.setBrush(item.brush())
+            twin.setZValue(item.zValue())
+            twin.setOpacity(item.opacity())
+            view.scene().addItem(twin)
+            item.setVisible(False)
+            twins.append(twin)
+        assert grab() == ours
+        for twin in twins:
+            view.scene().removeItem(twin)
+    finally:
+        conftest.close_window(window)

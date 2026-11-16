@@ -527,3 +527,19 @@ def test_the_first_paint_after_a_load_names_its_terrain_texture_loads(tmp_path):
         debug_log.clear()
         conftest.close_window(window)
         asset_source.set_install_path_override(None)
+
+
+def test_a_trigger_ring_paint_records_a_rings_repaint_phase(traced_window):
+    """TASK-508: the overlay's ring items time their paint, inside `repaint`."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_geometry import AREA_FIELDS, TriggerShape
+
+    view = traced_window.map_view
+    view.set_trigger_overlay_enabled(True)
+    view.show_trigger_overlay([TriggerShape(0, "effect", 1, "area", AREA_FIELDS, (1, 1, 6, 6))], None)
+    QApplication.processEvents()
+    perf_trace._clear_repaints()
+    view.viewport().repaint()
+    calls, _ms = perf_trace._repaint_phases["rings"]
+    assert calls >= 2, "the fill and the outline each time their paint"
