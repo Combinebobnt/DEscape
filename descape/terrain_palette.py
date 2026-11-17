@@ -106,6 +106,11 @@ def color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
     real = asset_source.get_terrain_average_color(terrain_id)
     if real is not None:
         return real
+    return palette_color_for_terrain_id(terrain_id)
+
+
+def palette_color_for_terrain_id(terrain_id: int) -> tuple[int, int, int]:
+    """color_for_terrain_id()'s keyword-palette fallback, which never touches a texture."""
     return _TERRAIN_COLOR_CACHE.get(terrain_id, _DEFAULT_COLOR)
 
 
@@ -319,3 +324,55 @@ def resolve_player_colors(
             dots.append(PLAYER_COLORS[player_id])
             team_indices.append(player_id)
     return tuple(dots), tuple(team_indices)
+
+
+# Portrait player colours, indexed like resolve_player_colors()' team_indices
+# (TEAM_COLORS order: GAIA, blue, red, green, yellow, cyan, purple, grey,
+# orange). Literals, since unit_sprites imports this module. Map dots keep
+# PLAYER_COLORS. catalog_thumbs.tinted() shades either table (GH #374).
+# Measured on the 1.59 editor selection panel (monk, plus three Castles).
+PORTRAIT_COLORS: tuple[tuple[int, int, int], ...] = (
+    (232, 238, 255),   # GAIA
+    (0, 0, 255),       # blue
+    (255, 0, 0),       # red
+    (0, 255, 0),       # green
+    (215, 215, 30),    # yellow
+    (126, 242, 225),   # cyan
+    (150, 15, 250),    # purple
+    (99, 103, 112),    # grey
+    (255, 170, 21),    # orange
+)
+
+# Measured on the 1.59 Display Instructions box; GAIA and green are the
+# editor's, measured within 2 of them.
+INSTRUCTION_COLORS: tuple[tuple[int, int, int], ...] = (
+    (232, 238, 255),   # GAIA
+    (110, 166, 235),   # blue
+    (253, 99, 99),     # red
+    (0, 255, 0),       # green
+    (255, 255, 0),     # yellow
+    (0, 253, 223),     # cyan
+    (240, 107, 231),   # purple
+    (172, 172, 172),   # grey
+    (255, 178, 21),    # orange
+)
+
+
+def portrait_rgb(
+    team_indices: tuple[int, ...] | list[int] | None,
+    player_id: int,
+    table: tuple[tuple[int, int, int], ...] = PORTRAIT_COLORS,
+) -> tuple[int, int, int]:
+    """Player `player_id`'s portrait colour from `table`, by its team index.
+    With no team_indices (no document) a player gets its identity entry, as
+    resolve_player_colors() would give it. A player outside 0..8 (-1 is
+    train_locations' "every player") or a team index outside the table gets
+    GAIA's."""
+    if not 0 <= player_id < len(table):
+        return table[0]
+    if team_indices is None:
+        return table[player_id]
+    if player_id >= len(team_indices):
+        return table[0]
+    index = team_indices[player_id]
+    return table[index] if 0 <= index < len(table) else table[0]

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import yaml
 
 from descape import (
     asset_source,
+    debug_log,
     edge_ticks,
     games,
     grid_overlay,
@@ -54,6 +56,24 @@ def _save_config(config: dict) -> None:
     # bind-by-value import, so there are two module attributes to patch)
     # still takes effect.
     asset_source.write_config_file(CONFIG_PATH, config)
+    for listener in _SAVE_LISTENERS.copy():  # a listener may remove itself
+        try:
+            listener(config)
+        except Exception as e:  # noqa: BLE001 -- a stale listener must never break a save
+            debug_log.error(f"Settings save listener failed: {e!r}")
+
+
+# GH #191: called with the dict just written, after every save (Settings' Apply button). CAPS, so not a memo.
+_SAVE_LISTENERS: list[Callable[[dict], None]] = []
+
+
+def add_save_listener(listener: Callable[[dict], None]) -> None:
+    _SAVE_LISTENERS.append(listener)
+
+
+def remove_save_listener(listener: Callable[[dict], None]) -> None:
+    with contextlib.suppress(ValueError):
+        _SAVE_LISTENERS.remove(listener)
 
 
 # Settings > Appearance's graphics-quality slider -- render.
@@ -1697,6 +1717,7 @@ def apply_appearance_values(values: dict) -> None:
     global _theme, _theme_colors, _ui_font_family, _ui_font_size, _overlay_colors
     global _ruler_label_font_px, _distance_tick_font_px, _stack_badge_position, _grid_blend, _grid_thickness
     global _trigger_status_colors, _trigger_status_marker, _trigger_status_color_ok_rows, _trigger_status_color_sections
+    global _favorite_star_style
     merged_overlay = dict(_load_overlay_colors()) if "overlay_colors" in values else None
     merged_status = dict(_load_trigger_status_colors()) if "trigger_status_colors" in values else None
     config = _load_config()
@@ -1732,6 +1753,9 @@ def apply_appearance_values(values: dict) -> None:
     if "grid_thickness" in values:
         _grid_thickness = values["grid_thickness"]
         config["grid_thickness"] = _grid_thickness
+    if "favorite_star_style" in values:
+        _favorite_star_style = values["favorite_star_style"]
+        config["favorite_star_style"] = _favorite_star_style
     if merged_status is not None:
         merged_status.update(values["trigger_status_colors"])
         _trigger_status_colors = merged_status
@@ -1885,6 +1909,144 @@ def set_browse_catalog_mode(mode: str) -> None:
     _browse_catalog_mode = mode
     config = _load_config()
     config["browse_catalog_mode"] = mode
+    _save_config(config)
+
+
+# GH #195: the Units catalog's favorites, a list of object ids per game id (the same id is another
+# object in another game). Callers pass the game id; this module names none.
+_UNIT_FAVORITE_ID_MIN = -99  # place_random's pseudo ids are small negatives
+_UNIT_FAVORITE_ID_MAX = 32767  # an object id is 16-bit; Qt's int signals wrap a larger one into another
+_unit_favorites: dict[str, list[int]] | None = None
+
+
+def _is_favorite_id(value) -> bool:
+    return _is_int(value) and _UNIT_FAVORITE_ID_MIN <= value <= _UNIT_FAVORITE_ID_MAX
+
+
+def _favorite_ids(raw) -> list[int]:
+    """`raw`'s valid ids in order, duplicates dropped; a malformed entry drops only itself."""
+    if not isinstance(raw, list):
+        return []
+    ids: list[int] = []
+    for value in raw:
+        if _is_favorite_id(value) and value not in ids:
+            ids.append(value)
+    return ids
+
+
+def _load_unit_favorites() -> dict[str, list[int]]:
+    global _unit_favorites
+    if _unit_favorites is None:
+        persisted = _load_config().get("units_favorites", {})
+        _unit_favorites = {}
+        if isinstance(persisted, dict):
+            for game_id, raw in persisted.items():
+                ids = _favorite_ids(raw)
+                if isinstance(game_id, str) and ids:
+                    _unit_favorites[game_id] = ids
+    return _unit_favorites
+
+
+def get_unit_favorites(game_id: str) -> list[int]:
+    """`game_id`'s favorite object ids in the user's order (a copy); [] when none."""
+    return list(_load_unit_favorites().get(game_id, []))
+
+
+def set_unit_favorites(game_id: str, ids) -> None:
+    """Stores `game_id`'s favorites in order; invalid ids and repeats are dropped. An empty
+    list drops the game's entry, and the key once no game has one."""
+    stored = _load_unit_favorites()
+    cleaned = _favorite_ids(list(ids))
+    if cleaned:
+        stored[game_id] = cleaned
+    elif stored.pop(game_id, None) is None:
+        return
+    config = _load_config()
+    if stored:
+        config["units_favorites"] = {key: list(value) for key, value in stored.items()}
+    else:
+        config.pop("units_favorites", None)
+    _save_config(config)
+
+
+# GH #195: the Favorite Objects window's own Icons / Names / Grid view.
+UNITS_FAVORITES_MODE_DEFAULT = "icons"
+_units_favorites_mode: str | None = None
+
+
+def get_units_favorites_mode() -> str:
+    global _units_favorites_mode
+    if _units_favorites_mode is None:
+        value = _load_config().get("units_favorites_mode", UNITS_FAVORITES_MODE_DEFAULT)
+        _units_favorites_mode = value if value in UNITS_CATALOG_MODES else UNITS_FAVORITES_MODE_DEFAULT
+    return _units_favorites_mode
+
+
+def set_units_favorites_mode(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in UNITS_CATALOG_MODES."""
+    global _units_favorites_mode
+    if mode not in UNITS_CATALOG_MODES:
+        raise ValueError(f"unknown favorites view mode {mode!r}")
+    _units_favorites_mode = mode
+    config = _load_config()
+    config["units_favorites_mode"] = mode
+    _save_config(config)
+
+
+# GH #195: the favorites star's look, Settings > Appearance (a theme file carries it).
+FAVORITE_STAR_STYLES: list[tuple[str, str]] = [("gold", "Gold"), ("mono", "Black and white")]
+FAVORITE_STAR_STYLE_DEFAULT = "gold"
+_FAVORITE_STAR_STYLE_IDS = tuple(sid for sid, _label in FAVORITE_STAR_STYLES)
+_favorite_star_style: str | None = None
+
+
+def get_favorite_star_style() -> str:
+    """One of FAVORITE_STAR_STYLES' ids; an off-list value falls back to the default."""
+    global _favorite_star_style
+    if _favorite_star_style is None:
+        raw = _load_config().get("favorite_star_style")
+        _favorite_star_style = raw if raw in _FAVORITE_STAR_STYLE_IDS else FAVORITE_STAR_STYLE_DEFAULT
+    return _favorite_star_style
+
+
+def set_favorite_star_style(style: str) -> None:
+    """Raises ValueError, writing nothing, on a style not in FAVORITE_STAR_STYLES."""
+    global _favorite_star_style
+    if style not in _FAVORITE_STAR_STYLE_IDS:
+        raise ValueError(f"favorite_star_style must be one of {list(_FAVORITE_STAR_STYLE_IDS)}, got {style!r}")
+    _favorite_star_style = style
+    config = _load_config()
+    config["favorite_star_style"] = style
+    _save_config(config)
+
+
+# GH #195: what a right-click on a Units catalog row does, Settings > Advanced.
+UNITS_CATALOG_RIGHT_CLICKS: list[tuple[str, str]] = [
+    ("menu", "Opens a menu to add or remove it"),
+    ("toggle", "Adds or removes the star at once"),
+]
+UNITS_CATALOG_RIGHT_CLICK_DEFAULT = "menu"
+_UNITS_CATALOG_RIGHT_CLICK_IDS = tuple(cid for cid, _label in UNITS_CATALOG_RIGHT_CLICKS)
+_units_catalog_right_click: str | None = None
+
+
+def get_units_catalog_right_click() -> str:
+    """One of UNITS_CATALOG_RIGHT_CLICKS' ids; an off-list value falls back to the default."""
+    global _units_catalog_right_click
+    if _units_catalog_right_click is None:
+        raw = _load_config().get("units_catalog_right_click")
+        _units_catalog_right_click = raw if raw in _UNITS_CATALOG_RIGHT_CLICK_IDS else UNITS_CATALOG_RIGHT_CLICK_DEFAULT
+    return _units_catalog_right_click
+
+
+def set_units_catalog_right_click(mode: str) -> None:
+    """Raises ValueError, writing nothing, on a mode not in UNITS_CATALOG_RIGHT_CLICKS."""
+    global _units_catalog_right_click
+    if mode not in _UNITS_CATALOG_RIGHT_CLICK_IDS:
+        raise ValueError(f"units_catalog_right_click must be one of {list(_UNITS_CATALOG_RIGHT_CLICK_IDS)}, got {mode!r}")
+    _units_catalog_right_click = mode
+    config = _load_config()
+    config["units_catalog_right_click"] = mode
     _save_config(config)
 
 
@@ -2583,6 +2745,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # GH #64's View > Panels. Ship unbound, same reasoning as view_distance_ticks above.
     ("view_panel_dock", "Editor Panel", ""),
     ("view_log_dock", "Status Log", ""),
+    ("view_minimap_dock", "Minimap", ""),
     ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows
@@ -2701,6 +2864,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("unit_select_stack", "Select Whole Stack", "Ctrl+K"),
     # GH #125's wall button. Unbound: a duplicate key sequence silently disables both actions.
     ("unit_wall_pick", "Pick Last-Used Wall", ""),
+    # GH #195: the Favorite Objects window. Unbound, like the other window openers.
+    ("unit_favorites", "Open Favorite Objects", ""),
     # GH #211: move the selected triggers, or the selected conditions and effects when their
     # list has the focus. Live in those two lists only (Alt+Down opens a focused dropdown).
     # The tagged label stays within the Keybinds tab's three-line cap (test_settings_dialog_width.py).
@@ -2788,6 +2953,7 @@ _SCOPED_KEYBINDS: dict[str, frozenset[str]] = {
     "unit_variant_random": frozenset({"units"}),
     "unit_select_stack": frozenset({"units"}),
     "unit_wall_pick": frozenset({"units"}),
+    "unit_favorites": frozenset({"units"}),
     "trigger_move_up": frozenset({"triggers"}),
     "trigger_move_down": frozenset({"triggers"}),
     "trigger_move_up_far": frozenset({"triggers"}),

@@ -582,6 +582,8 @@ class MapView(
         # that doesn't care about margin warming needs no changes at all.
         # Public (not `_on_viewport_changed`) to mirror how it's reassigned.
         self.on_viewport_changed = on_viewport_changed
+        # GH #54: every viewport change, unfiltered, for the minimap's box. Assigned by the window.
+        self.on_view_moved = lambda: None
         # Trigger Pick from map: a picked unit's (player, ref) key, and a
         # cancel (Escape or right-click). Assigned by the window, like the above.
         self.on_unit_pick = lambda key: None

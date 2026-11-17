@@ -195,9 +195,10 @@ class CatalogBrowseDialog(QDialog):
         layout.addWidget(buttons)
 
         # Here, not in the view: the sidebar's policies keep the map's arrow keys.
-        for button in (*self.view.category_buttons.values(), *self.view.display_buttons.values()):
+        for button in self.view.category_buttons.values():
             button.setFocusPolicy(Qt.TabFocus)
         self.view.class_combo.setFocusPolicy(Qt.StrongFocus)
+        self.view.display_combo.setFocusPolicy(Qt.StrongFocus)
         self.view.list.setFocusPolicy(Qt.StrongFocus)
         # The tab order now starts on a button.
         self.filter_edit.setFocus()

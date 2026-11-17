@@ -24,6 +24,7 @@ def _non_default_look() -> None:
     settings.set_ruler_label_font_px(24)
     settings.set_distance_tick_font_px(10)
     settings.set_stack_badge_position("top_left")
+    settings.set_favorite_star_style("mono")
     settings.set_grid_blend(30)
     settings.set_grid_thickness(3)
     settings.set_trigger_status_marker("both")
@@ -100,6 +101,7 @@ def test_the_document_is_look_only() -> None:
         "ruler_label_font_px",
         "distance_tick_font_px",
         "stack_badge_position",
+        "favorite_star_style",
         "grid_blend",
         "grid_thickness",
         "trigger_status_marker",
@@ -175,6 +177,7 @@ def test_importing_a_theme_pops_legacy_dark_mode(tmp_path) -> None:
         ({"grid_thickness": "2"}, "grid_thickness: expected a whole number", "grid_thickness"),
         ({"grid_blend": True}, "grid_blend: expected a whole number", "grid_blend"),
         ({"stack_badge_position": "middle"}, "stack_badge_position: 'middle' is not one of", "stack_badge_position"),
+        ({"favorite_star_style": "silver"}, "favorite_star_style: 'silver' is not one of", "favorite_star_style"),
         ({"ui_font": {"size": 99}}, "ui_font.size: 99 is outside", "ui_font_size"),
         ({"ui_font": {"size": "big"}}, "ui_font.size: expected a whole number", "ui_font_size"),
         ({"ui_font": {"family": 12}}, "ui_font.family: expected text", "ui_font_family"),
@@ -418,6 +421,12 @@ def test_summary_lists_trigger_status_changes(tmp_path) -> None:
     ]
 
 
+def test_summary_lists_a_favorite_star_change(tmp_path) -> None:
+    plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", _doc(favorite_star_style="mono")))
+    assert plan.values == {"favorite_star_style": "mono"}
+    assert theme_file.describe_changes(plan.values) == ["Favorite star: Gold -> Black and white"]
+
+
 def test_summary_of_a_no_op_file_says_so(tmp_path) -> None:
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", theme_file.build_document()))
     assert theme_file.format_import_summary(plan).startswith("Nothing in this file differs")
@@ -469,6 +478,7 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
         ruler_label_font_px=20,
         distance_tick_font_px=16,
         stack_badge_position="above",
+        favorite_star_style="mono",
         grid_blend=40,
         grid_thickness=4,
         trigger_status_marker="icon",
@@ -483,6 +493,8 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
     saves = []
     real_save = settings._save_config
     monkeypatch.setattr(settings, "_save_config", lambda config: (saves.append(1), real_save(config)))
+    star_redraws = []
+    monkeypatch.setattr(qt_dialog._window, "refresh_favorite_stars", lambda: star_redraws.append(True))
     qt_dialog.theme_import_button.click()
 
     assert len(shown) == 1 and "Theme: Wood (red) -> High contrast light" in shown[0]
@@ -496,6 +508,8 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
     assert qt_dialog.ruler_label_font_spin.value() == 20
     assert qt_dialog.distance_tick_font_spin.value() == 16
     assert qt_dialog.stack_badge_position_combo.currentData() == "above"
+    assert qt_dialog.favorite_star_combo.currentData() == "mono"
+    assert star_redraws, "the favorites stars redrawn in the new style"
     assert qt_dialog.grid_blend_slider.value() == 40
     assert qt_dialog.grid_thickness_slider.value() == grid_overlay.thickness_index(4)
     assert qt_dialog.trigger_status_marker_combo.currentData() == "icon"

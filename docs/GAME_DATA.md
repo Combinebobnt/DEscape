@@ -106,8 +106,9 @@ view-only game's own work covers those. Both games today are writable.
 
 ## Ids are persisted
 
-A game id is saved in `config.yaml` (`game_data`, and New Map's last
-choice) and names a section of `tools/game_data_stamp.json`. Never rename
+A game id is saved in `config.yaml` (`game_data`, New Map's last choice,
+and the keys of `units_favorites`, the Units catalog's favorites per game)
+and names a section of `tools/game_data_stamp.json`. Never rename
 one. Registry order is the order of the Settings and New Map lists.
 
 ## Derived lists are computed per call

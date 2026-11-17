@@ -414,22 +414,48 @@ def test_set_enabled_disables_both_the_line_edit_and_the_browse_button() -> None
     assert not widget.browse_button.isEnabled()
 
 
-# -- ValueLineEdit: the group filter (GH #41's object list type) ---------------
+# -- ValueLineEdit: the group (GH #41's object list type, GH #375's order) -----
 
 
 def _suggestions(widget) -> list[str]:
     return widget.line_edit.completer().model().stringList()
 
 
-def test_set_group_narrows_the_suggestions_and_empty_restores_them() -> None:
+def test_set_group_lists_its_items_first_and_keeps_every_item() -> None:
+    """GH #375: the group orders the suggestions, it no longer narrows them."""
     widget = _line_edit(_grouped_items())
     every = _suggestions(widget)
-    assert sorted(every) == sorted(item.label for item in _grouped_items())
+    assert every == [item.label for item in _grouped_items()]
 
     widget.set_group("Units")
-    assert sorted(_suggestions(widget)) == ["Archer", "Brown Bear"]
+    assert _suggestions(widget) == ["Archer", "Brown Bear", "Town Center", "Flag", "Blue Tree"]
     widget.set_group("")
     assert _suggestions(widget) == every
+
+
+def test_a_label_two_groups_share_is_suggested_once_and_picks_the_rows_groups_item() -> None:
+    items = [
+        PickerItem(label="Treasure Chest", value=1, group="Others"),
+        PickerItem(label="Treasure Chest", value=2, group="Units"),
+        PickerItem(label="Archer", value=3, group="Others"),
+    ]
+    widget = _line_edit(items)
+    widget.set_group("Units")
+    assert _suggestions(widget) == ["Treasure Chest", "Archer"]
+    received = []
+    widget.committed.connect(received.append)
+    widget.line_edit.completer().activated[str].emit("Treasure Chest")
+    assert received == [2]
+
+
+def test_a_typed_prefix_matches_every_group_the_groups_rows_first() -> None:
+    widget = _line_edit(_grouped_items())
+    widget.set_group("Units")
+    completer = widget.line_edit.completer()
+    completer.setCompletionPrefix("r")
+    model = completer.completionModel()
+    shown = [model.index(row, 0).data() for row in range(model.rowCount())]
+    assert shown == ["Archer", "Brown Bear", "Town Center", "Blue Tree"]
 
 
 def test_browse_lists_only_the_groups_items(monkeypatch) -> None:

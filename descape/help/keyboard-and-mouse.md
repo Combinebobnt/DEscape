@@ -61,6 +61,8 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 ## Other panels and windows
 
 - Units catalog: double-click an object, or press Enter, to switch to Place Unit with it.
+- Units catalog: right-click an object to add or remove a favorite. With Favorites on, drag a row to reorder them.
+- Favorite Objects: click a favorite to pick it, right-click it or press Delete while the list has focus to remove it, and drag a row to reorder.
 - Garrison list: double-click a row to select that unit (with **Filters > Show Garrisoned Units** on).
 - Facing dial: click to set the facing, drag to turn the unit as you go, scroll to step it.
 - X, Y and Z with several units selected: the arrows, the arrow keys or the wheel move every selected unit by one step.

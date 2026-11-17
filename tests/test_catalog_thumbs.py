@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 
-from descape import asset_source, catalog_thumbs, object_catalog, unit_sprites
+from descape import asset_source, catalog_thumbs, object_catalog, terrain_palette, unit_sprites
 
 import conftest
 from test_unit_sprites import build_sld
@@ -450,15 +450,43 @@ def test_tinted_puts_the_player_colour_into_the_regions_shading() -> None:
     arr[1, 0] = (10, 20, 30, 255)  # art
     arr[1, 1] = (200, 200, 200, 128)  # an edge: half art, half tint
     out = catalog_thumbs.tinted(arr, (200, 0, 100))
-    assert out[0, 0].tolist() == [255, 56, 172, 255]
-    assert out[0, 1].tolist() == [112, 20, 66, 255]
+    assert out[0, 0].tolist() == [255, 0, 129, 255]
+    assert out[0, 1].tolist() == [91, 0, 46, 255]
     assert out[1, 0].tolist() == [10, 20, 30, 255]
-    assert out[1, 1].tolist() == [219, 123, 171, 255]
+    assert out[1, 1].tolist() == [205, 100, 153, 255]
     assert out[0, 0, 0] > out[0, 0, 1] and out[0, 1, 0] > out[0, 1, 1], "the player colour shows in both"
 
 
+def _shaded(shade: float, rgb) -> list[int]:
+    """tinted()'s colour for one region pixel of grey `shade` (0..1)."""
+    value = round(shade * 255)
+    return catalog_thumbs.tinted(np.array([[[value, value, value, 0]]], np.uint8), rgb)[0, 0, :3].tolist()
+
+
+@pytest.mark.parametrize(
+    "table, index, shade, expected",
+    [
+        ("PORTRAIT_COLORS", 2, 0.2, (102, 0, 0)),  # red, a fold
+        ("PORTRAIT_COLORS", 1, 0.5, (0, 0, 188)),  # blue
+        ("PORTRAIT_COLORS", 0, 0.5, (171, 175, 188)),  # GAIA, mid shade (full bright clips to white)
+        ("INSTRUCTION_COLORS", 1, 0.5, (81, 122, 173)),  # blue
+        ("INSTRUCTION_COLORS", 7, 0.3, (87, 87, 87)),  # grey
+    ],
+)
+def test_tinted_pins_the_step_0_curve_on_both_tables(table, index, shade, expected) -> None:
+    """GH #374 Step 0's fit, colour * (1.113*shade + 0.177), worked by hand per table entry (not game pixels)."""
+    rgb = getattr(terrain_palette, table)[index]
+    assert _shaded(shade, rgb) == pytest.approx(expected, abs=1)
+
+
+def test_tinted_adds_no_grey_to_a_pure_colour() -> None:
+    """GH #374: the game's red robe has no green or blue at any shade."""
+    for shade in (0.05, 0.3, 1.0):
+        assert _shaded(shade, (255, 0, 0))[1:] == [0, 0]
+
+
 def test_tinted_gives_a_region_without_shading_the_flat_colour() -> None:
-    """Some mod portraits leave the region black under alpha 0: the tint would be about 23% of the colour."""
+    """Some mod portraits leave the region black under alpha 0: the tint would be about 18% of the colour."""
     arr = np.zeros((2, 2, 4), np.uint8)
     arr[1, 0] = (10, 20, 30, 255)
     arr[1, 1] = (200, 200, 200, 128)

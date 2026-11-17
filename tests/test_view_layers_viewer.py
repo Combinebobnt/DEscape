@@ -578,7 +578,7 @@ def test_the_opacity_setting_reaches_the_cache_only_while_translucent_walls_is_o
             lambda self, layers: (calls.append(layers), real(self, layers))[1],
         )
         dialog.wall_opacity_slider.setValue(30)
-        dialog._apply_wall_opacity()
+        dialog._persist_wall_opacity()
         assert settings.get_wall_opacity_pct() == 30
         assert window._layers.wall_opacity_pct == 30
         assert calls == []
@@ -586,7 +586,7 @@ def test_the_opacity_setting_reaches_the_cache_only_while_translucent_walls_is_o
         window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
         assert window._cache.layers.wall_alpha == 0.3
         dialog.wall_opacity_slider.setValue(70)
-        dialog._apply_wall_opacity()
+        dialog._persist_wall_opacity()
         assert len(calls) == 2
         assert window._cache.layers.wall_alpha == 0.7
     finally:
@@ -612,7 +612,7 @@ def test_the_opacity_slider_keeps_focus_through_an_applied_step(sprite_install) 
         QApplication.processEvents()
         assert dialog.wall_opacity_slider.hasFocus()
         dialog.wall_opacity_slider.setValue(40)
-        dialog._apply_wall_opacity()
+        dialog._persist_wall_opacity()
         QApplication.processEvents()
         assert window._cache.layers.wall_alpha == 0.4
         assert dialog.wall_opacity_slider.hasFocus()

@@ -168,6 +168,30 @@ class _MapViewViewportMixin:
         if poly is not None:
             self.centerOn(poly.boundingRect().center())
 
+    def tile_to_scene(self) -> QTransform | None:
+        """Map point (mx, my) to scene, on the elevation-0 ground plane in
+        Stepped and Sloped (iso_geometry.map_point_to_screen() at rise 0), or
+        None with no map. The minimap's viewport box (GH #54)."""
+        if self._map_rect is None:
+            return None
+        proj = self._iso_proj
+        if self._terrain_style in _ELEVATED_STYLES:
+            if proj is None:
+                return None
+            return QTransform(proj.half_w, -proj.half_h, proj.half_w, proj.half_h, proj.origin_x, proj.origin_y + proj.half_h)
+        return QTransform.fromScale(self._tile_pixels, self._tile_pixels)
+
+    def tile_to_view(self) -> QTransform | None:
+        """tile_to_scene() on to viewport pixels, or None with no map."""
+        to_scene = self.tile_to_scene()
+        return None if to_scene is None else to_scene * self.viewportTransform()
+
+    def center_on_map_point(self, mx: float, my: float) -> None:
+        """Scroll so map point (mx, my) is centred: the minimap's click (GH #54)."""
+        to_scene = self.tile_to_scene()
+        if to_scene is not None:
+            self._center_on_exact(to_scene.map(QPointF(mx, my)))
+
     def view_device_scale(self) -> float:
         """The max-axis device scale a paint of the canvas item reads now
         (viewport_chunk_target()'s reading), or 0.0 with no item."""
@@ -368,9 +392,11 @@ class _MapViewViewportMixin:
         the same set of paths that changes what is visible. That includes
         the resize on show(), which is what starts the ants for a region set
         while the window had no real viewport yet. And for the pre-rendered
-        zoom frames' settle wait (retarget_preframes())."""
+        zoom frames' settle wait (retarget_preframes()), and the minimap's
+        viewport box (on_view_moved, GH #54)."""
         self._sync_region_ant_timer()
         self.retarget_preframes()
+        self.on_view_moved()
         if not self._viewport_poll_timer.isActive():
             self._viewport_poll_timer.start()
 

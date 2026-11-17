@@ -124,11 +124,11 @@ def tinted(arr: np.ndarray, rgb: tuple[int, int, int]) -> np.ndarray:
     """A portrait with its player-colour region in `rgb`, opaque. DE leaves the
     region transparent (479 of the install's 716 portraits) but keeps its
     shading in the colour channels, and the game tints that shading with the
-    player colour. The tint is fitted to the game's own portraits (GH #372: a
-    red East Asian monk, then checked on a blue generic monk, within about 10
-    of 255 where a plain multiply was 40 to 70 too dark). A region with no
-    shading at all (every fully transparent pixel black, as in some mods'
-    portraits) gets the flat `rgb`, as team_filled() without an array does."""
+    player colour. One curve fits both of the game's views, its editor panel
+    and its instruction box, each with its own colour table
+    (terrain_palette.PORTRAIT_COLORS and INSTRUCTION_COLORS; GH #374). A region
+    with no shading at all (every fully transparent pixel black, as in some
+    mods' portraits) gets the flat `rgb`, as team_filled() without an array does."""
     pixels = arr.astype(np.float32) / 255
     weight = pixels[..., 3:4]
     shade = (pixels[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
@@ -137,7 +137,8 @@ def tinted(arr: np.ndarray, rgb: tuple[int, int, int]) -> np.ndarray:
     if clear.any() and not arr[..., :3][clear].any():
         region = np.broadcast_to(colour, pixels[..., :3].shape)
     else:
-        region = colour * (0.93 * shade + 0.23) + 0.19 * shade + 0.03
+        # Fitted to the game's 1.59 portraits in all 9 colours, within 2.1 to 6.4/255 mean (GH #374 Step 0).
+        region = colour * (1.113 * shade + 0.177)
     out = np.empty((*arr.shape[:2], 4), np.uint8)
     out[..., :3] = np.clip((pixels[..., :3] * weight + region * (1 - weight)) * 255 + 0.5, 0, 255)
     out[..., 3] = 255

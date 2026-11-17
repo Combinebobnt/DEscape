@@ -190,5 +190,5 @@ def test_a_live_ui_font_bump_widens_the_dialog_not_the_page(font_baseline) -> No
         assert dialog.width() > width_before
         _assert_no_sideways_scroll(scroll)
     finally:
-        dialog.close()
+        dialog.accept()  # shown and changed, so a close would ask about the unapplied font (GH #191)
         conftest.close_window(window)

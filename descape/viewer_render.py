@@ -1143,6 +1143,7 @@ class _ViewerRenderMixin:
         time, i.e. work actually done, not wall clock from load start to
         here, which would fold in however long Qt sat idle and make the
         number a reading of how busy the machine was rather than of the file."""
+        self.load_progress.finish("load")
         report = self._pending_paint_report
         self._pending_paint_report = None
         self.map_view.set_paint_timed_callback(None)
@@ -1351,6 +1352,8 @@ class _ViewerRenderMixin:
             self._refresh_camera_markers()
             # A quality change or style switch can add or remove the native level.
             self._update_zoom_native_action()
+            # Through the timer, so the build lands after the first paint and outside this timing.
+            self._schedule_minimap()
             return time.perf_counter() - t0, tile_px
         finally:
             QApplication.restoreOverrideCursor()

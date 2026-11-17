@@ -167,6 +167,7 @@ def test_replace_objects_unit_rows_are_captioned_after_their_player() -> None:
 # -- GH #41: the object list type row, and the object filters above the Set rows --
 
 _MILITIA, _TOWN_CENTER = 74, 109
+_CAMEL_RIDER = 329
 
 
 _UNKNOWN_CONST = 99999
@@ -208,14 +209,21 @@ def _list_type_above(panel, field: str):
     return form.itemAt(row, QFormLayout.FieldRole).widget()
 
 
-def _suggestions(picker) -> set[str]:
-    return set(picker.line_edit.completer().model().stringList())
+def _suggestions(picker) -> list[str]:
+    return picker.line_edit.completer().model().stringList()
 
 
-def _catalog_names(category: str) -> set[str]:
+def _catalog_names(category: str = "") -> set[str]:
     from descape import object_catalog
 
-    return {entry.name for entry in object_catalog.objects() if entry.category == category}
+    return {entry.name for entry in object_catalog.objects() if not category or entry.category == category}
+
+
+def _leads_with(picker, kind: str) -> bool:
+    """GH #375: the kind's names come first, then every other object's."""
+    shown = _suggestions(picker)
+    lead = _catalog_names(kind)
+    return set(shown[: len(lead)]) == lead and set(shown) == _catalog_names()
 
 
 def test_kill_object_reads_the_object_filters_above_its_set_rows() -> None:
@@ -391,16 +399,16 @@ def test_the_type_row_shows_the_values_kind_else_units() -> None:
         window.close()
 
 
-def test_choosing_a_type_narrows_the_field_and_writes_nothing() -> None:
+def test_choosing_a_type_puts_its_kind_first_and_writes_nothing() -> None:
     window, indices = _object_list_window("kill_object", {"object_list_unit_id": _MILITIA})
     try:
         panel = window.trigger_panel
         picker = _row_widget(panel, "object_list_unit_id")
-        assert _suggestions(picker) == _catalog_names("Units")
+        assert _leads_with(picker, "Units")
         records = len(window.edit_history.records)
 
         _list_type_above(panel, "object_list_unit_id").setCurrentText("Buildings")
-        assert _suggestions(picker) == _catalog_names("Buildings")
+        assert _leads_with(picker, "Buildings")
         assert len(window.edit_history.records) == records and not window.edit_history.is_dirty
         assert _effects0(window)[indices[0]].object_list_unit_id == _MILITIA
         assert picker.value() == _MILITIA, "the field still shows its value"
@@ -422,7 +430,7 @@ def test_a_chosen_type_survives_a_repopulate_and_resets_with_the_selection() -> 
         rebuilt = _list_type_above(panel, "object_list_unit_id")
         assert rebuilt is not first, "fixture assumption: the group write repopulates the form"
         assert rebuilt.currentText() == "Buildings"
-        assert _suggestions(_row_widget(panel, "object_list_unit_id")) == _catalog_names("Buildings")
+        assert _leads_with(_row_widget(panel, "object_list_unit_id"), "Buildings")
 
         _select_entries(panel, ("effect", indices[1]))
         assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
@@ -447,7 +455,31 @@ def test_committing_a_name_of_another_kind_turns_the_row() -> None:
 
         assert _effects0(window)[indices[0]].object_list_unit_id == _CASTLE
         assert combo.currentText() == "Buildings"
-        assert _suggestions(picker) == _catalog_names("Buildings")
+        assert _leads_with(picker, "Buildings")
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_suggestion_of_another_kind_commits_and_turns_the_row() -> None:
+    """GH #375's case: with Others chosen, "camel rider" still offers CAMEL RIDER."""
+    from descape import object_catalog
+
+    name = object_catalog.name_for(object_catalog.objects(), _CAMEL_RIDER)
+    window, indices = _object_list_window("kill_object", {})
+    try:
+        panel = window.trigger_panel
+        combo = _list_type_above(panel, "object_list_unit_id")
+        combo.setCurrentText("Others")
+        completer = _row_widget(panel, "object_list_unit_id").line_edit.completer()
+        completer.setCompletionPrefix("camel rider")
+        model = completer.completionModel()
+        shown = [model.index(row, 0).data() for row in range(model.rowCount())]
+        assert name in shown
+
+        completer.activated[str].emit(name)
+        assert _effects0(window)[indices[0]].object_list_unit_id == _CAMEL_RIDER
+        assert combo.currentText() == "Units"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -478,7 +510,7 @@ def test_a_browse_pick_of_another_kind_turns_the_row(monkeypatch, accept: bool) 
         kind = "Buildings" if accept else "Heroes"
         assert (_effects0(window)[indices[0]].object_list_unit_id == _CASTLE) == accept
         assert combo.currentText() == kind
-        assert _suggestions(picker) == _catalog_names(kind)
+        assert _leads_with(picker, kind)
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -494,8 +526,8 @@ def test_replace_object_has_a_type_row_above_each_unit_field() -> None:
         assert (source.currentText(), target.currentText()) == ("Units", "Buildings")
 
         source.setCurrentText("Heroes")
-        assert _suggestions(_row_widget(panel, "object_list_unit_id")) == _catalog_names("Heroes")
-        assert _suggestions(_row_widget(panel, "object_list_unit_id_2")) == _catalog_names("Buildings"), "each row filters its own field"
+        assert _leads_with(_row_widget(panel, "object_list_unit_id"), "Heroes")
+        assert _leads_with(_row_widget(panel, "object_list_unit_id_2"), "Buildings"), "each row orders its own field"
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -508,7 +540,7 @@ def test_build_objects_building_list_starts_on_buildings() -> None:
         panel = window.trigger_panel
         assert _list_type_above(panel, "object_list_unit_id").currentText() == "Units"
         assert _list_type_above(panel, "building_list").currentText() == "Buildings"
-        assert _suggestions(_row_widget(panel, "building_list")) == _catalog_names("Buildings")
+        assert _leads_with(_row_widget(panel, "building_list"), "Buildings")
     finally:
         window.edit_history.mark_saved()
         window.close()

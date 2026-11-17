@@ -2,7 +2,7 @@
 
 Split out of viewer.py; viewer_menus.py opens it. It names ViewerWindow in annotations
 only, so it imports that under TYPE_CHECKING: a runtime import back would be
-a cycle."""
+a cycle. Apply, Cancel and Reset (GH #191) live in settings_dialog_apply.py's mixin."""
 
 from __future__ import annotations
 
@@ -63,15 +63,16 @@ from descape import (
     grid_overlay,
     iso_geometry,
     mod_graphics,
-    object_catalog,
     settings,
     settings_file,
+    settings_snapshot,
     terrain_catalog,
     theme_file,
     themes,
     unit_sprites,
     view_layers,
 )
+from descape.settings_dialog_apply import _SettingsDialogApplyMixin
 from descape.tool_defaults_page import ToolDefaultsPage
 from descape.viewer_common import (
     LabelFitButton,
@@ -180,14 +181,22 @@ _SECTION_GAP = 6
 _COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
     step, not a recurring one), Mods (the profile folder and Mod art
     list), Appearance (theme, render quality), Tools (what each Tool
     Options control starts at), Saving, Keybinds and Advanced. Split into
     tabs so more settings in any category have an obvious place to land
-    without reshaping this dialog."""
+    without reshaping this dialog.
+
+    GH #191: a change still saves and shows at once. Apply keeps it, OK
+    keeps it and closes, and Cancel puts back what config.yaml and the
+    toolbar's Tool Options row held at open or at the last Apply; Reset
+    puts the current tab on its defaults the same live way. The install
+    path, the profile folder and Rescan mods apply at once and stay.
+    Apply's state compares the parsed config, so a setting that writes a
+    whole dict can leave it enabled after a change and back."""
 
     def __init__(self, parent: ViewerWindow):
         super().__init__(parent)
@@ -195,36 +204,49 @@ class SettingsDialog(QDialog):
         # Width grows to the tabs' minimum; 640 tall still fits a 768 px screen (TASK-210).
         self.resize(520, 640)
         self._window = parent
+        # What Cancel puts back (GH #191).
+        self._snapshot = settings_snapshot.snapshot_settings(settings_snapshot.ALL_DIALOG_KEYS)
+        self._toolbar_snapshot = parent.tool_option_values()
+        self._make_apply_timers()
 
-        tabs = QTabWidget()
-        # Scrolls (GH #126); see-through for the install status label.
-        tabs.addTab(self._scrolled_tab(self._build_general_tab(), see_through=True), "General")
-        # GH #244: the profile folder and Mod art list; see-through for their status label.
-        tabs.addTab(self._scrolled_tab(self._build_mods_tab(), see_through=True), "Mods")
-        # TASK-210: Appearance alone outgrows a 768 px screen, so it scrolls.
-        tabs.addTab(self._scrolled_tab(self._build_appearance_tab()), "Appearance")
-        # TASK-272: what each Tool Options control starts at.
+        self._tabs = QTabWidget()
         self.tool_defaults_page = ToolDefaultsPage(parent)
-        tabs.addTab(self._scrolled_tab(self.tool_defaults_page), "Tools")
-        tabs.addTab(self._build_saving_tab(), "Saving")
-        tabs.addTab(self._build_keybinds_tab(), "Keybinds")
-        tabs.addTab(self._build_advanced_tab(), "Advanced")
+        for title, build, wrap in self._tab_pages():
+            self._tabs.addTab(self._wrapped_page(build(), wrap), title)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.close)
-        buttons.button(QDialogButtonBox.Close).clicked.connect(self.close)
+        # Always in KDE order: Reset on the left, then OK, Apply, Cancel.
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Apply | QDialogButtonBox.Cancel | QDialogButtonBox.Reset
+        )
 
         layout = QVBoxLayout(self)
-        layout.addWidget(tabs)
-        layout.addWidget(buttons)
+        layout.addWidget(self._tabs)
+        layout.addWidget(self._buttons)
+        self._connect_buttons()
         # TASK-500: wider than 520 when the tab titles need it, so none scrolls out of view at any UI
         # font; never past the screen. The minimum stays the pages' own.
         margins = layout.contentsMargins()
-        width = max(self.width(), tabs.tabBar().sizeHint().width() + margins.left() + margins.right())
+        width = max(self.width(), self._tabs.tabBar().sizeHint().width() + margins.left() + margins.right())
         screen = self.screen() or QApplication.primaryScreen()
         if screen is not None:
             width = min(width, max(self.minimumSizeHint().width(), screen.availableGeometry().width()))
         self.resize(width, self.height())
+
+    def _tab_pages(self) -> tuple[tuple[str, Callable[[], QWidget], str], ...]:
+        """(title, builder, wrap) per tab, wrap as _wrapped_page() takes it. Reset rebuilds a page the same way."""
+        return (
+            # Scrolls (GH #126); see-through for the install status label.
+            ("General", self._build_general_tab, "see_through"),
+            # GH #244: the profile folder and Mod art list; see-through for their status label.
+            ("Mods", self._build_mods_tab, "see_through"),
+            # TASK-210: Appearance alone outgrows a 768 px screen, so it scrolls.
+            ("Appearance", self._build_appearance_tab, "scroll"),
+            # TASK-272: what each Tool Options control starts at. Built once; Reset refreshes it.
+            ("Tools", lambda: self.tool_defaults_page, "scroll"),
+            ("Saving", self._build_saving_tab, ""),
+            ("Keybinds", self._build_keybinds_tab, ""),
+            ("Advanced", self._build_advanced_tab, ""),
+        )
 
     @staticmethod
     def _scrolled_tab(page: QWidget, *, see_through: bool = False) -> QScrollArea:
@@ -369,7 +391,7 @@ class SettingsDialog(QDialog):
 
     def _export_settings(self) -> None:
         # A slider still on its apply timer must be in config.yaml before the file is built from it.
-        self._flush_pending_applies()
+        self._flush_pending()
         start = str(Path.home() / f"descape{settings_file.FILE_SUFFIX}")
         path, _ = QFileDialog.getSaveFileName(
             self, "Export settings", start, f"DEscape settings (*{settings_file.FILE_SUFFIX})"
@@ -422,7 +444,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Import refused", f"{path}\n\n{e}")
             return
         # The summary is against config.yaml, so a slider still on its apply timer is saved first.
-        self._flush_pending_applies()
+        self._flush_pending()
         try:
             summary = settings_file.format_import_summary(plan)
         except (settings_file.ConfigUnreadable, OSError) as e:
@@ -480,7 +502,8 @@ class SettingsDialog(QDialog):
 
     def _quit_for_import(self) -> None:
         # This dialog first: a close issued under the still-open modal dialog would not end the event loop.
-        self.close()
+        # Accepted, so its changes are kept and no unapplied-changes prompt opens under the window's close.
+        self.done(QDialog.Accepted)
         # The window's normal close, so the unsaved-changes prompt still runs.
         QTimer.singleShot(0, self._window.close)
 
@@ -516,8 +539,8 @@ class SettingsDialog(QDialog):
         theme_grid.addWidget(self.theme_combo, 0, 1)
         file_tooltip = (
             "A theme file carries this tab's look settings: theme and chrome colours, UI font, "
-            "tool overlay colours, ruler and distance-tick label sizes, badge position, grid "
-            "blend and thickness, and trigger status with its colours. Not graphics quality, "
+            "tool overlay colours, ruler and distance-tick label sizes, badge position, favorite "
+            "star, grid blend and thickness, and trigger status with its colours. Not graphics quality, "
             "preloading, elevation height, pan speed or toolbar buttons."
         )
         self.theme_export_button = QPushButton("Export theme…")
@@ -561,9 +584,6 @@ class SettingsDialog(QDialog):
         # persist a family the user never chose and pin "" (follow the
         # platform) to whatever the platform default happened to be.
         self._set_ui_font_widgets(settings.get_ui_font_family(), settings.get_ui_font_size(), app_font)
-        self._ui_font_apply_timer = QTimer(self)
-        self._ui_font_apply_timer.setSingleShot(True)
-        self._ui_font_apply_timer.timeout.connect(self._apply_ui_font)
         self.ui_font_combo.currentFontChanged.connect(self._on_ui_font_family_changed)
         self.ui_font_size_spin.valueChanged.connect(self._on_ui_font_size_changed)
         ui_font_reset.clicked.connect(self._on_ui_font_reset)
@@ -627,9 +647,6 @@ class SettingsDialog(QDialog):
         self.graphics_quality_slider.setValue(settings.get_graphics_quality())
         self.graphics_quality_label = QLabel()
         self._update_graphics_quality_label(settings.get_graphics_quality())
-        self._graphics_quality_apply_timer = QTimer(self)
-        self._graphics_quality_apply_timer.setSingleShot(True)
-        self._graphics_quality_apply_timer.timeout.connect(self._apply_graphics_quality)
         self.graphics_quality_slider.valueChanged.connect(self._on_graphics_quality_slider_changed)
         quality_row.addWidget(self.graphics_quality_slider, stretch=1)
         quality_row.addWidget(self.graphics_quality_label)
@@ -663,11 +680,8 @@ class SettingsDialog(QDialog):
         self.elev_step_slider.setValue(settings.elev_step_index(settings.get_elev_step_pct()))
         self.elev_step_value_label = QLabel()
         self._update_elev_step_label(settings.get_elev_step_pct())
-        self._elev_step_apply_timer = QTimer(self)
-        self._elev_step_apply_timer.setSingleShot(True)
-        self._elev_step_apply_timer.timeout.connect(self._apply_elev_step_pct)
         self.elev_step_slider.valueChanged.connect(self._on_elev_step_slider_changed)
-        self.elev_step_slider.sliderReleased.connect(self._apply_elev_step_pct)
+        self.elev_step_slider.sliderReleased.connect(self._persist_elev_step_pct)
         height_row.addWidget(self.elev_step_slider, stretch=1)
         height_row.addWidget(self.elev_step_value_label)
         layout.addLayout(height_row)
@@ -693,11 +707,8 @@ class SettingsDialog(QDialog):
         # settings setter does a full _load_config/_save_config YAML round
         # trip, so a live valueChanged would be hundreds of disk writes
         # across one drag of this 200-2000 range.
-        self._pan_speed_apply_timer = QTimer(self)
-        self._pan_speed_apply_timer.setSingleShot(True)
-        self._pan_speed_apply_timer.timeout.connect(self._apply_pan_speed)
         self.pan_speed_slider.valueChanged.connect(self._on_pan_speed_slider_changed)
-        self.pan_speed_slider.sliderReleased.connect(self._apply_pan_speed)
+        self.pan_speed_slider.sliderReleased.connect(self._persist_pan_speed)
         pan_row.addWidget(self.pan_speed_slider, stretch=1)
         pan_row.addWidget(self.pan_speed_value_label)
         layout.addLayout(pan_row)
@@ -719,11 +730,8 @@ class SettingsDialog(QDialog):
         self.wall_opacity_value_label = QLabel()
         self._update_wall_opacity_label(settings.get_wall_opacity_pct())
         # Debounced like the sliders above: with the layer on, each apply rebuilds every wall sprite.
-        self._wall_opacity_apply_timer = QTimer(self)
-        self._wall_opacity_apply_timer.setSingleShot(True)
-        self._wall_opacity_apply_timer.timeout.connect(self._apply_wall_opacity)
         self.wall_opacity_slider.valueChanged.connect(self._on_wall_opacity_slider_changed)
-        self.wall_opacity_slider.sliderReleased.connect(self._apply_wall_opacity)
+        self.wall_opacity_slider.sliderReleased.connect(self._persist_wall_opacity)
         wall_row.addWidget(self.wall_opacity_slider, stretch=1)
         wall_row.addWidget(self.wall_opacity_value_label)
         layout.addLayout(wall_row)
@@ -772,6 +780,19 @@ class SettingsDialog(QDialog):
         stack_badge_row.addStretch(1)
         layout.addLayout(stack_badge_row)
 
+        # GH #195: the favorites star in the Units catalog and the Favorite Objects window.
+        favorite_star_row = QHBoxLayout()
+        favorite_star_row.addWidget(QLabel("Favorite star:"))
+        self.favorite_star_combo = QComboBox()
+        for style_id, style_label in settings.FAVORITE_STAR_STYLES:
+            self.favorite_star_combo.addItem(style_label, style_id)
+        self.favorite_star_combo.setToolTip("How the Units catalog and the Favorite Objects window mark a favorite")
+        self.favorite_star_combo.setCurrentIndex(self.favorite_star_combo.findData(settings.get_favorite_star_style()))
+        self.favorite_star_combo.currentIndexChanged.connect(self._on_favorite_star_changed)
+        favorite_star_row.addWidget(self.favorite_star_combo, stretch=0)
+        favorite_star_row.addStretch(1)
+        layout.addLayout(favorite_star_row)
+
         # GH #161: the Terrain-mode grid's swatch size. Not in a theme file, so not in _refresh_appearance_widgets.
         terrain_grid_row = QHBoxLayout()
         terrain_grid_row.addWidget(QLabel("Terrain grid swatch size:"))
@@ -793,9 +814,6 @@ class SettingsDialog(QDialog):
         # sliderReleased or the timer (keyboard and wheel) re-bakes. Blend is
         # a plain value-space slider, so it moves smoothly across its range;
         # only thickness has stops left to snap to.
-        self._grid_apply_timer = QTimer(self)
-        self._grid_apply_timer.setSingleShot(True)
-        self._grid_apply_timer.timeout.connect(self._end_grid_preview)
         grid_blend_row = QHBoxLayout()
         grid_blend_row.addWidget(QLabel("Grid line blend:"))
         self.grid_blend_slider = self._blend_slider(settings.get_grid_blend())
@@ -890,32 +908,31 @@ class SettingsDialog(QDialog):
             self._window._apply_grid_change(self._window.map_view.end_grid_preview)
 
     def done(self, result: int) -> None:
-        self._flush_pending_applies()
-        super().done(result)
+        # Accepted keeps every change; Rejected (Cancel, Discard) puts them back (GH #191).
+        try:
+            self._finish(result)
+        finally:
+            super().done(result)
+
+    def keyPressEvent(self, event) -> None:
+        # Return in a field does nothing, as before OK existed: an install path typed then
+        # Return would otherwise close the dialog unsaved. A focused button still takes it.
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not isinstance(self.focusWidget(), QPushButton):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
-        # close() on a never-shown dialog skips done(); its timers must not outlive it either.
-        self._flush_pending_applies()
+        # Shown, QDialog.closeEvent() goes through reject(). close() on a never-shown dialog
+        # skips both, and its timers must not outlive it, so it keeps every change.
+        if not self.isVisible():
+            self._flush_pending()
+            settings.remove_save_listener(self._on_settings_saved)
         super().closeEvent(event)
 
-    def _flush_pending_applies(self) -> None:
-        # A keyboard change's timer dies with the dialog, which would leave
-        # the grid stuck in its unbaked preview.
-        self._end_grid_preview()
-        # Same for a pending opacity: its override would stay live but never persist.
-        if self._overlay_opacity_timer.isActive():
-            self._persist_overlay_opacity()
-        # Applied now, not on a timer that can fire after the window (or a test's settings isolation) is gone.
-        for timer, apply in (
-            (self._ui_font_apply_timer, self._apply_ui_font),
-            (self._graphics_quality_apply_timer, self._apply_graphics_quality),
-            (self._elev_step_apply_timer, self._apply_elev_step_pct),
-            (self._pan_speed_apply_timer, self._apply_pan_speed),
-            (self._wall_opacity_apply_timer, self._apply_wall_opacity),
-        ):
-            if timer.isActive():
-                timer.stop()
-                apply()
+    def reject(self) -> None:
+        # Esc and the title-bar X: asks first when changes are unapplied. The Cancel button never asks.
+        self._close_or_ask()
 
     # OVERLAY_COLORS id prefix (before the first "_") -> section header text,
     # mirroring settings.KEYBIND_SECTION_TITLES.
@@ -1019,10 +1036,6 @@ class SettingsDialog(QDialog):
         self._overlay_opacity_sliders: dict[str, QSlider] = {}
         self._overlay_opacity_labels: dict[str, QLabel] = {}
         self._overlay_opacity_defaults: dict[str, QPushButton] = {}
-        # One shared debounce, for pan_speed_slider's reason: every setter is a full YAML round trip.
-        self._overlay_opacity_timer = QTimer(self)
-        self._overlay_opacity_timer.setSingleShot(True)
-        self._overlay_opacity_timer.timeout.connect(self._persist_overlay_opacity)
         row = 0
         current_section = None
         for color_id, label, _default in settings.OVERLAY_COLORS:
@@ -1264,21 +1277,19 @@ class SettingsDialog(QDialog):
         """Persist in one save, refresh every Appearance widget with its signals
         blocked (so nothing re-persists), then run each live applier."""
         settings.apply_appearance_values(values)
-        app = QApplication.instance()
-        view = self._window.map_view
         self._end_grid_preview()
         self._refresh_appearance_widgets()
         self._apply_chrome_theme()
-        apply_ui_font(app, settings.get_ui_font_family(), settings.get_ui_font_size())
-        self._set_ui_font_widgets(settings.get_ui_font_family(), settings.get_ui_font_size(), app.font())
-        self._window._update_log_min_height()
-        view.apply_overlay_colors()
-        view.apply_ruler_label_font()
-        view.apply_distance_tick_font()
-        view.set_stack_badge_position(settings.get_stack_badge_position())
-        blend, thickness = settings.get_grid_blend(), settings.get_grid_thickness()
-        self._window._apply_grid_change(lambda: view.set_grid_appearance(blend, thickness))
-        self._window.trigger_panel.apply_status_style()
+        self._apply_ui_font()
+        self._set_ui_font_widgets(
+            settings.get_ui_font_family(), settings.get_ui_font_size(), QApplication.instance().font()
+        )
+        self._apply_overlay_colors()
+        self._apply_map_label_fonts()
+        self._apply_stack_badge_position()
+        self._apply_favorite_star()
+        self._apply_grid_appearance()
+        self._apply_trigger_status()
 
     def _refresh_appearance_widgets(self) -> None:
         widgets = (
@@ -1286,6 +1297,7 @@ class SettingsDialog(QDialog):
             self.ruler_label_font_spin,
             self.distance_tick_font_spin,
             self.stack_badge_position_combo,
+            self.favorite_star_combo,
             self.grid_blend_slider,
             self.grid_thickness_slider,
             self.trigger_status_marker_combo,
@@ -1301,6 +1313,7 @@ class SettingsDialog(QDialog):
             self.stack_badge_position_combo.setCurrentIndex(
                 self.stack_badge_position_combo.findData(settings.get_stack_badge_position())
             )
+            self.favorite_star_combo.setCurrentIndex(self.favorite_star_combo.findData(settings.get_favorite_star_style()))
             self.grid_blend_slider.setValue(settings.get_grid_blend())
             self.grid_thickness_slider.setValue(grid_overlay.thickness_index(settings.get_grid_thickness()))
             self.trigger_status_marker_combo.setCurrentIndex(
@@ -1328,12 +1341,12 @@ class SettingsDialog(QDialog):
         chosen = QColorDialog.getColor(current, self)
         if not chosen.isValid():
             return
-        self._apply_overlay_color(color_id, chosen.name())
+        self._persist_overlay_color(color_id, chosen.name())
 
     def _reset_overlay_color(self, color_id: str) -> None:
-        self._apply_overlay_color(color_id, settings.get_default_overlay_color(color_id))
+        self._persist_overlay_color(color_id, settings.get_default_overlay_color(color_id))
 
-    def _apply_overlay_color(self, color_id: str, hex_str: str) -> None:
+    def _persist_overlay_color(self, color_id: str, hex_str: str) -> None:
         settings.set_overlay_color(color_id, hex_str)
         self._set_swatch_color(self._overlay_swatches[color_id], hex_str)
         self._window.map_view.apply_overlay_colors()
@@ -1399,7 +1412,7 @@ class SettingsDialog(QDialog):
                 label,
                 settings.get_trigger_status_color(status_id),
                 lambda sid=status_id: self._pick_trigger_status_color(sid),
-                lambda sid=status_id: self._apply_trigger_status_color(
+                lambda sid=status_id: self._persist_trigger_status_color(
                     sid, settings.get_default_trigger_status_color(sid)
                 ),
             )
@@ -1428,9 +1441,9 @@ class SettingsDialog(QDialog):
     def _pick_trigger_status_color(self, status_id: str) -> None:
         chosen = QColorDialog.getColor(QColor(settings.get_trigger_status_color(status_id)), self)
         if chosen.isValid():
-            self._apply_trigger_status_color(status_id, chosen.name())
+            self._persist_trigger_status_color(status_id, chosen.name())
 
-    def _apply_trigger_status_color(self, status_id: str, hex_str: str) -> None:
+    def _persist_trigger_status_color(self, status_id: str, hex_str: str) -> None:
         settings.set_trigger_status_color(status_id, hex_str)
         self._set_swatch_color(self._trigger_status_swatches[status_id], hex_str)
         self._window.trigger_panel.apply_status_style()
@@ -1446,6 +1459,11 @@ class SettingsDialog(QDialog):
         settings.set_distance_tick_font_px(value)
         self._window.map_view.apply_distance_tick_font()
         self._window._log_status(f"Distance ticks label size: {value}px")
+
+    def _on_favorite_star_changed(self, index: int) -> None:
+        settings.set_favorite_star_style(self.favorite_star_combo.itemData(index))
+        self._apply_favorite_star()
+        self._window._log_status(f"Favorite star: {self.favorite_star_combo.itemText(index)}")
 
     def _on_stack_badge_position_changed(self, index: int) -> None:
         position_id = self.stack_badge_position_combo.itemData(index)
@@ -1499,7 +1517,7 @@ class SettingsDialog(QDialog):
         self._window._log_status("UI font: platform default")
 
     def _apply_ui_font(self) -> None:
-        """Debounced, the same 200ms shape as _apply_graphics_quality and for
+        """Debounced, the same 200ms shape as _persist_graphics_quality and for
         the same reason: a spinbox held on its arrow fires once per step, and
         every app.setFont() is a full-app relayout."""
         family = settings.get_ui_font_family()
@@ -1526,9 +1544,7 @@ class SettingsDialog(QDialog):
         Placeholder paints follow it (TASK-031.25 D7): off also settles a
         pending level, since nothing would warm it any more."""
         settings.set_preload_zoom_levels(enabled)
-        if not enabled:
-            self._window._cancel_warms()
-        self._window.sync_canvas_placeholders()
+        self._apply_preload()
         self._window._log_status(f"Preload zoom levels: {'on' if enabled else 'off'}")
 
     def _update_x2_art_label(self) -> None:
@@ -1559,7 +1575,7 @@ class SettingsDialog(QDialog):
         # matching comment below, same reasoning.
         self._graphics_quality_apply_timer.start(200)
 
-    def _apply_graphics_quality(self) -> None:
+    def _persist_graphics_quality(self) -> None:
         value = self.graphics_quality_slider.value()
         settings.set_graphics_quality(value)
         self._window._log_status(f"Graphics quality: {settings.GRAPHICS_QUALITY_LABELS[value]}{_sync_hi_res()}")
@@ -1584,7 +1600,7 @@ class SettingsDialog(QDialog):
             return
         self._elev_step_apply_timer.start(200)
 
-    def _apply_elev_step_pct(self) -> None:
+    def _persist_elev_step_pct(self) -> None:
         value = settings.elev_step_pct_for_index(self.elev_step_slider.value())
         settings.set_elev_step_pct(value)
         self._window._log_status(f"Isometric elevation height: {value}%")
@@ -1600,7 +1616,7 @@ class SettingsDialog(QDialog):
             return
         self._pan_speed_apply_timer.start(200)
 
-    def _apply_pan_speed(self) -> None:
+    def _persist_pan_speed(self) -> None:
         # No refresh_map(): MapView._pan_step reads get_pan_speed() on every
         # tick, so the new value is live on the next hold with no wiring.
         settings.set_pan_speed(self.pan_speed_slider.value())
@@ -1615,7 +1631,7 @@ class SettingsDialog(QDialog):
             return
         self._wall_opacity_apply_timer.start(200)
 
-    def _apply_wall_opacity(self) -> None:
+    def _persist_wall_opacity(self) -> None:
         value = self.wall_opacity_slider.value()
         settings.set_wall_opacity_pct(value)
         # _apply_layers() disables the window, and this dialog with it, which drops the slider's focus.
@@ -1649,8 +1665,8 @@ class SettingsDialog(QDialog):
         row.addStretch(1)
         layout.addLayout(row)
         note = QLabel(
-            "Leave this on Auto unless a file names the wrong game. Applies to the open "
-            "scenario now and to every scenario opened later."
+            "Leave this on Auto unless a file names the wrong game. Shows on the open "
+            "scenario at once and, once applied, on every scenario opened later."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1678,12 +1694,37 @@ class SettingsDialog(QDialog):
             self.gaia_only_keep_radio.setChecked(True)
         # One radio's toggled covers both directions inside an exclusive group.
         self.gaia_only_hide_radio.toggled.connect(self._on_gaia_only_mode_toggled)
+
+        # GH #195: a right-click in the Units catalog; the Favorite Objects window keeps its menu either way.
+        right_click_divider = QFrame()
+        right_click_divider.setFrameShape(QFrame.HLine)
+        right_click_divider.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(right_click_divider)
+        layout.addWidget(QLabel("Right-click an object in the Units catalog:"))
+        labels = dict(settings.UNITS_CATALOG_RIGHT_CLICKS)
+        self.right_click_toggle_radio = QRadioButton(labels["toggle"])
+        self.right_click_menu_radio = QRadioButton(labels["menu"])
+        right_click_group = QButtonGroup(tab)
+        for radio in (self.right_click_menu_radio, self.right_click_toggle_radio):
+            radio.setToolTip("Add to Favorites or Remove from Favorites. The Favorite Objects window always opens its menu.")
+            right_click_group.addButton(radio)
+            layout.addWidget(radio)
+        if settings.get_units_catalog_right_click() == "toggle":
+            self.right_click_toggle_radio.setChecked(True)
+        else:
+            self.right_click_menu_radio.setChecked(True)
+        self.right_click_toggle_radio.toggled.connect(self._on_catalog_right_click_toggled)
         layout.addStretch(1)
         return tab
 
     def _on_game_data_changed(self, index: int) -> None:
         self._window.set_game_data(self.game_data_combo.itemData(index))
         self._window._log_status(f"Game data: {self.game_data_combo.itemText(index)}")
+
+    def _on_catalog_right_click_toggled(self, toggle: bool) -> None:
+        settings.set_units_catalog_right_click("toggle" if toggle else "menu")
+        shown = "adds or removes the star" if toggle else "opens a menu"
+        self._window._log_status(f"Units catalog right-click: {shown}")
 
     def _on_gaia_only_mode_toggled(self, hide: bool) -> None:
         settings.set_gaia_only_catalog_mode("hide" if hide else "keep")
@@ -1694,18 +1735,17 @@ class SettingsDialog(QDialog):
     def _build_saving_tab(self) -> QWidget:
         """Autosave's four controls plus the .bak/.orig switch.
 
-        Every widget is assigned to self, not left a bare local like the
-        General tab's dark_checkbox: a bare local is unreachable from any
-        GUI test, and these have to be drivable from one. Each value is set
-        BEFORE its signal is connected, or merely constructing this dialog
+        Every widget is assigned to self, not left a bare local: a bare
+        local is unreachable from any GUI test, and these have to be
+        drivable from one. Each value is set BEFORE its signal is connected,
+        or merely constructing this dialog (or Reset rebuilding this page)
         would write config.yaml -- the same trap the View menu's tick
         actions already document.
 
-        No OK/Apply/Cancel to design around: this dialog is Close-only, so
-        each handler persists and applies in one step, like
-        _on_dark_mode_toggled. Combos rather than spin boxes for the two
-        membership-gated values, which makes their off-list ValueError
-        unreachable from the UI.
+        Each handler persists and applies in one step, as on every tab;
+        Cancel and Reset put config.yaml back and re-apply (GH #191). Combos
+        rather than spin boxes for the two membership-gated values, which
+        makes their off-list ValueError unreachable from the UI.
         """
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -2369,17 +2409,13 @@ class SettingsDialog(QDialog):
 
     def _on_data_mod_terrain_group_toggled(self, grouped: bool) -> None:
         settings.set_data_mod_terrain_group(grouped)
-        self._window.terrain_panel.reload_catalog()
-        if self._window.mode == "terrain":
-            self._window._apply_left_pane_floor()
+        self._apply_terrain_group()
         where = "in one group" if grouped else "in their categories"
         self._window._log_status(f"A data mod's own terrains: listed {where} in the Terrain panel")
 
     def _on_data_mod_label_toggled(self, shown: bool) -> None:
         settings.set_data_mod_label_shown(shown)
-        object_catalog.objects.cache_clear()
-        self._window.units_panel.rename_catalog()
-        self._window._update_unit_inspector_from_selection()
+        self._apply_data_mod_label()
         self._window._log_status(f'"(data mod)" label: {"on" if shown else "off"}')
 
     def _fit_profile_list_height(self) -> None:

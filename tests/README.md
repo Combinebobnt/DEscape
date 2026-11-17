@@ -344,6 +344,21 @@ regenerate it on stock zlib.
   compares the two, listing each change the game makes on save. When a
   generator change moves one of those, update the expected drift there or
   refresh the resave with a new in-game save.
+- `tests/fixtures/test_map_resave_source.aoe2scenario`: the exact test map
+  the game re-saved into `test_map_game_resave`, frozen there and never
+  regenerated, so the pair stays a real old-file-and-re-save reference for
+  `tools/structure_infer.py`. `test_map`-marked wherever used. Refreshing
+  the resave replaces this file with the map that was re-saved.
+- The structure inference tests: `test_structure_walk.py`,
+  `test_format_scan.py`, `test_structure_infer.py`,
+  `test_infer_structure_cli.py` and `test_structure_backtest.py` run in the
+  quick suite on the 1.59 fixture (the frozen-pair items are `test_map`).
+  Their `corpus` items walk every corpus file and backtest every library
+  version bump with a corpus file of the new version (about 2 min on 4
+  workers), byte-identical files counted once. With the maintainer's
+  private corpus present they pin the coverage table in
+  `test_structure_backtest.py`; with `examples/` alone they check only
+  that no backtest comes out WRONG, and skip the pin.
 - `tests/fixtures/test_map_script.xs`: an empty-`main()` stub for the
   `script_name` the map names. DEscape never embeds script content, so to
   open the map in AoE2:DE without an "XS: Error 0354: failed to open file"

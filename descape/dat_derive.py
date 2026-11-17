@@ -19,6 +19,10 @@ genieutils-py is imported only inside derive(). The viewer never calls derive()
 itself: a parse holds the GIL for seconds, so it runs in a subprocess,
 `python -m descape.dat_derive <dat> <install> <out>` from source and the frozen
 exe's `--derive-dat` (packaging/entry_frozen.py), both through main().
+
+main() reports progress on stdout (GH #359), one progress_line() per step,
+which the viewer reads back with parse_progress_line(); the generators' own
+prints share the stream and parse to None.
 """
 
 from __future__ import annotations
@@ -97,13 +101,15 @@ def derive(
     tools: Path | None = None,
     parsed: dict | None = None,
     lenient: bool = True,
+    progress=None,
 ) -> list[str]:
     """Runs every generator against `dat` (AoE2 dataset, install files from
     `install`), writing TABLE_NAMES into `out_dir`, and returns the lenient
     guards' warnings, each prefixed with its generator's script name. Raises
     DeriveError, or whatever genieutils raises on a .dat it cannot read.
     `parsed` is the memo of DatFile.parse results by path, shared with the
-    caller. `lenient=False` fails on the first guard, as regen_game_data.py does."""
+    caller. `lenient=False` fails on the first guard, as regen_game_data.py does.
+    `progress(i, script)` is called as each generator starts, i counting from 0."""
     from genieutils.datfile import DatFile
 
     tools = tools_dir() if tools is None else tools
@@ -125,7 +131,9 @@ def derive(
     warnings: list[str] = []
     try:
         helper = _tools_helper(tools)
-        for script, names in GENERATORS:
+        for i, (script, names) in enumerate(GENERATORS):
+            if progress is not None:
+                progress(i, script)
             sys.argv = [script, str(install), "--out-dir", str(out_dir), "--dat", str(dat)]
             if lenient:
                 sys.argv.append("--lenient")
@@ -207,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     from descape import dat_cache
 
     try:
-        dat_cache.build_entry(Path(args[0]), Path(args[1]), Path(args[2]))
+        dat_cache.build_entry(Path(args[0]), Path(args[1]), Path(args[2]), progress=dat_cache.print_progress)
     except Exception as exc:  # noqa: BLE001 -- a subprocess boundary: report and exit non-zero
         print(failure_message(exc, Path(args[0])), file=sys.stderr)
         return 1

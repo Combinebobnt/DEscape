@@ -406,7 +406,7 @@ def test_a_settings_change_restyles_the_rows_live() -> None:
         dialog.trigger_status_ok_rows_check.setChecked(True)
         assert _icon_image(ok, icon_col) == _expected_icon(Status.OK, _OK_HEX)
 
-        dialog._apply_trigger_status_color("problem", "#123456")
+        dialog._persist_trigger_status_color("problem", "#123456")
         assert settings.get_trigger_status_color("problem") == "#123456"
         assert _brush_hex(broken, col) == "#123456"
         assert _icon_image(broken, icon_col) == _expected_icon(Status.PROBLEM, "#123456")

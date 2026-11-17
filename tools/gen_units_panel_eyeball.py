@@ -239,10 +239,13 @@ def _capture_at_width(window, width: int, out_dir: Path) -> list[Path]:
         _grab(window, path)
         written.append(path)
     catalog.category_buttons["Units"].click()
-    for mode, button in catalog.display_buttons.items():
-        if not button.isEnabled():
+    combo = catalog.display_combo
+    for index in range(combo.count()):
+        if not combo.model().item(index).isEnabled():
             continue
-        button.click()
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+        mode = combo.itemData(index)
         path = out_dir / f"w{width}_7_mode_{mode}.png"
         _grab(window, path)
         written.append(path)

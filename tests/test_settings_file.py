@@ -941,22 +941,23 @@ def test_a_refused_import_warns_and_stages_nothing(tmp_path, monkeypatch, qt_dia
 
 @pytest.mark.gui
 def test_quit_now_closes_the_dialog_and_then_the_window(tmp_path, monkeypatch, qt_dialog) -> None:
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication, QDialog
 
     path = _write_yaml(tmp_path / "s.yaml", _doc({"pan_speed": 900}))
     _answer_import(monkeypatch, path, apply=True, quit_now=True)
     window = qt_dialog._window
-    real_dialog_close, real_window_close = qt_dialog.close, window.close
-    order: list[str] = []
-    qt_dialog.close = lambda: order.append("dialog")
+    real_dialog_done, real_window_close = qt_dialog.done, window.close
+    order: list[object] = []
+    # Accepted, so no unapplied-changes prompt can open under the window's close (GH #191).
+    qt_dialog.done = lambda result: order.append(("dialog", result))
     window.close = lambda: order.append("window")
     try:
         qt_dialog.settings_import_button.click()
-        assert order == ["dialog"]  # the window's close waits for the event loop
+        assert order == [("dialog", QDialog.Accepted)]  # the window's close waits for the event loop
         QApplication.processEvents()
-        assert order == ["dialog", "window"]
+        assert order == [("dialog", QDialog.Accepted), "window"]
     finally:
-        qt_dialog.close, window.close = real_dialog_close, real_window_close
+        qt_dialog.done, window.close = real_dialog_done, real_window_close
     assert settings_file.pending_path().is_file()
 
 

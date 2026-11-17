@@ -320,7 +320,7 @@ class _ViewerRegionMixin:
         self._refresh_history_dialog()
 
     def _refresh_history_dialog(self) -> None:
-        """EditHistory.on_change's target -- fires on every history mutation,
+        """Called from _on_history_changed() on every history mutation,
         including during load and close, so it no-ops until the window exists
         and again once the user has closed it (close() only hides a QDialog,
         and rebuilding a few hundred hidden rows per stroke is pure waste)."""

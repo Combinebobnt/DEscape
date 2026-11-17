@@ -180,6 +180,14 @@ def test_dialog_opens_on_the_default_category() -> None:
     assert all(button.isEnabled() for button in dialog.view.category_buttons.values())
 
 
+def test_the_dialogs_portraits_take_gaias_editor_panel_colour() -> None:
+    """GH #374: the Browse dialog never sets an owner, so its card and rows keep GAIA's portrait colour."""
+    from descape.terrain_palette import PORTRAIT_COLORS
+
+    dialog = _dialog()
+    assert dialog.view._team_rgb == dialog.card._team_rgb == PORTRAIT_COLORS[0]
+
+
 def test_select_crosses_categories_and_lands_on_the_row() -> None:
     dialog = _dialog(default_category="Units")
     dialog.select(_TOWN_CENTER)
@@ -342,7 +350,7 @@ def test_the_keyboard_reaches_every_control_and_the_filter_starts_with_focus(fak
         for _ in range(16):
             press(Qt.Key_Tab)
             reached.add(QApplication.focusWidget())
-        assert {view.category_buttons["Units"], view.class_combo, view.display_buttons["icons"], view.list} <= reached
+        assert {view.category_buttons["Units"], view.class_combo, view.display_combo, view.list} <= reached
 
         view.category_buttons["Units"].setFocus()
         press(Qt.Key_Right)
@@ -353,11 +361,16 @@ def test_the_keyboard_reaches_every_control_and_the_filter_starts_with_focus(fak
         press(Qt.Key_Left)
         assert view.category_buttons["Heroes"].isChecked()
 
-        view.display_buttons["icons"].setFocus()
-        press(Qt.Key_Right)
+        # GH #195: one dropdown, walked with Up and Down.
+        view.display_combo.setFocus()
+        press(Qt.Key_Down)
         assert view.mode() == "names"
-        press(Qt.Key_Right)
+        press(Qt.Key_Down)
         assert view.mode() == "grid"
+        from descape import settings
+
+        assert settings.get_browse_catalog_mode() == "grid"
+        assert view.favorites_button is None, "Browse has no favorites"
     finally:
         dialog.close()
 
@@ -412,7 +425,7 @@ def test_the_dialog_keeps_its_own_saved_mode(fake_install, monkeypatch) -> None:
     units_mode = settings.get_units_catalog_mode()
     dialog = _dialog()
     assert dialog.view.mode() == settings.BROWSE_CATALOG_MODE_DEFAULT
-    dialog.view.display_buttons["grid"].click()
+    conftest.choose_display_mode(dialog.view, "grid")
     monkeypatch.setattr(settings, "_browse_catalog_mode", None)
     monkeypatch.setattr(settings, "_units_catalog_mode", None)
     assert settings.get_browse_catalog_mode() == "grid"

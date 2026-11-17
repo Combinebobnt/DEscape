@@ -34,6 +34,7 @@ from descape import (
 )
 from descape.autosave_dialog import RecoverAutosaveDialog
 from descape.data_mod_menu import FROM_PATH
+from descape.load_progress import SCENARIO_STAGES, scenario_caption
 from descape.new_map_dialog import NewMapChoice, NewMapDialog
 from descape.resize_dialog import ResizeDialog
 from descape.resize_preview import preview_source
@@ -149,6 +150,11 @@ class _ViewerFileMixin:
         and redraws the open document in it. Display only: the file's own flag is never
         changed, and a mismatch locks the document."""
         settings.set_game_data(choice)
+        self.apply_game_data()
+
+    def apply_game_data(self) -> None:
+        """Redraws the open document in the saved Game data choice, writing nothing
+        (Settings' Cancel and Reset, GH #191)."""
         if game_dataset.set_active(self._shown_game_dataset()):
             self._refresh_game_assets()
         self._after_game_data_change()
@@ -873,12 +879,11 @@ class _ViewerFileMixin:
         # triggers on it before it is shown), adopted instead of parsed again.
         # data_mod: a recovered autosave's data mod (GH #58), else FROM_PATH.
         # Loading + rendering a large map is a multi-second blocking call
-        # (see _render_current()'s own docstring) -- the log line and status
-        # bar message below are queued but not actually painted until
-        # control returns to the event loop, so without this
-        # setOverrideCursor()+processEvents() pair the window would just sit
-        # frozen with no visible indication anything is happening until the
-        # whole load completes. self._busy (see its own comment in
+        # (see _render_current()'s own docstring) -- the log line below is
+        # queued but not actually painted until control returns to the
+        # event loop, so without this setOverrideCursor()+processEvents()
+        # pair the window would just sit frozen with no visible indication
+        # anything is happening until the whole load completes. self._busy (see its own comment in
         # __init__) plus setEnabled(False) together guard against the same
         # reentrancy risk _render_current() documents for its own
         # processEvents() call -- e.g. a second Open dispatched from inside
@@ -896,11 +901,22 @@ class _ViewerFileMixin:
         # came (or came late) must not have its line attributed to this file.
         self._paint_report_timer.stop()
         self._pending_paint_report = None
+        # The previous document's pending rebuild; the render at the end of the load arms the next.
+        self._minimap_timer.stop()
+        # GH #359: the status bar's caption names the file, through each stage below.
+        kind = "new" if generate_elapsed is not None else "resize" if loaded is not None else "open"
+
+        def stage(name: str) -> None:
+            caption, percent = scenario_caption(path.name, kind, name), SCENARIO_STAGES[name][1]
+            if name == "read":
+                self.load_progress.start("load", caption, percent)
+            else:
+                self.load_progress.step("load", percent, caption)
+
         try:
             self._log_status(f"Loading scenario: {path}")
-            self.statusBar().showMessage(
-                "Creating new map..." if untitled else f"Loading {path.name}..."
-            )
+            self.statusBar().clearMessage()
+            stage("read")
             self.setEnabled(False)
             QApplication.setOverrideCursor(Qt.WaitCursor)
             QApplication.processEvents()
@@ -919,14 +935,14 @@ class _ViewerFileMixin:
             except UnsupportedStructureVersion as e:
                 # Named cause instead of the library's raw exception text: a
                 # v1.32/v1.35 file is unopenable by design, not a broken file.
-                self.statusBar().clearMessage()
+                self.load_progress.finish("load")
                 self._log_status(
                     f"Failed to load {path}: unsupported scenario version {e.scenario_version}", level=debug_log.ERROR
                 )
                 QMessageBox.critical(self, "Failed to load", str(e))
                 return
             except Exception as e:  # noqa: BLE001 -- GUI boundary, reports below
-                self.statusBar().clearMessage()
+                self.load_progress.finish("load")
                 self._log_status(f"Failed to load {path}: {type(e).__name__}: {e}", level=debug_log.ERROR)
                 QMessageBox.critical(self, "Failed to load", f"{type(e).__name__}: {e}")
                 return
@@ -934,6 +950,7 @@ class _ViewerFileMixin:
                 QApplication.restoreOverrideCursor()
                 self.setEnabled(True)
 
+            stage("prepare")
             # Only reached on a successful load, so a failed File > New can never
             # mislabel whatever was previously open (self.scenario still holds it,
             # untouched, if the try block above returned early).
@@ -962,6 +979,8 @@ class _ViewerFileMixin:
             self._drop_erase_stroke()
             self._drop_unit_brush_stroke()
             self.edit_history.reset()
+            # The old map's image would take the new map's viewport box until the rebuild.
+            self.minimap_panel.set_image(None)
             # A new document is a new autosave key and a fresh "never
             # autosaved" state; the untitled key rides _doc_id, so reusing
             # the old one would rotate a different document's slots.
@@ -1012,9 +1031,6 @@ class _ViewerFileMixin:
             # File > Open doesn't reset it back to Flat. _render_current()
             # pushes its own wait cursor/setEnabled(False) for this step,
             # nested safely inside this method's own (see both docstrings).
-            # The "Loading..." status bar message deliberately stays up
-            # through this render step too, not just the parse above --
-            # cleared only once everything is actually done, right below.
             elapsed, tile_px = self._render_current()
             self._pending_paint_report["prepare"] = elapsed
             # Here rather than inside _render_current(): this is the one
@@ -1025,6 +1041,7 @@ class _ViewerFileMixin:
             self._start_level_warm()
             self._freeze_loaded_document()
             self._schedule_unit_model_prebuild()
+            stage("panels")
             mm = self.scenario.map_manager
             # Before _update_info(), whose stats combo rebuild reads these labels.
             self._refresh_player_labels()
@@ -1065,6 +1082,8 @@ class _ViewerFileMixin:
             self._update_edit_actions()
             self._update_title()
             self.statusBar().clearMessage()
+            # Up until _emit_paint_report(): the first composite paint comes after this returns.
+            stage("draw")
             self._show_game_data_status()
             total_elapsed = (generate_elapsed or 0.0) + parse_elapsed + elapsed
             generate_part = "" if generate_elapsed is None else f"generate {generate_elapsed:.2f}s, "
@@ -1086,6 +1105,8 @@ class _ViewerFileMixin:
             self._pending_paint_report["ready"] = True
             if self._pending_paint_report["paints"]:
                 self._paint_report_timer.start()
+            if not self.isVisible():
+                self.load_progress.finish("load")  # no paint will come
             if not self.scenario.terrain_write_supported:
                 self._log_status(
                     f"Warning: {display_name}'s terrain block failed load-time verification -- "
@@ -1107,6 +1128,10 @@ class _ViewerFileMixin:
                     "non-square maps are not supported and will likely fail to render.",
                     level=debug_log.WARNING,
                 )
+        except BaseException:
+            # Raised past the handlers above (a render that failed): nothing new will be drawn.
+            self.load_progress.finish("load")
+            raise
         finally:
             self._busy = False
 
@@ -1117,6 +1142,8 @@ class _ViewerFileMixin:
             return
         name = self.scenario.path.name
         self.scenario = None
+        # A load still waiting for its first paint gets none: the canvas is cleared below.
+        self.load_progress.finish("load")
         self._close_analysis_dialog()
         self._close_find_dialog()
         self._untitled = False
@@ -1156,6 +1183,8 @@ class _ViewerFileMixin:
         self.disarm_unit_picker()
         self._unit_ref_index = None
         self.map_view.clear_image()
+        self._minimap_timer.stop()
+        self.minimap_panel.set_image(None)
         self._refresh_colour_mood_preview()
         # No edit tool has anything to act on with no map open; forcing Pan
         # (rather than just disabling the edit tools) keeps MapView's own
