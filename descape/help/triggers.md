@@ -37,6 +37,16 @@ Right-click a trigger for Cut, Copy, Paste below it, **Rename**, the four moves,
 
 The lower pane lists a **Trigger** row, which holds the trigger's own fields (name, descriptions, enabled, looping and the objective settings), then its Conditions and Effects in display order. Drag the bar between this list and the buttons under it to give either more height.
 
+Each condition and effect's Detail reads as a short sentence, such as `P2 to P1, visible` for Set Player Visibility or `"Wave 2"` for Activate Trigger. Underlined parts are links:
+
+- Coordinates centre the map on the area or location.
+- A placed object, or several selected objects, centres the map on them.
+- An object type such as `P7 Castle` centres on the next matching object on the map at each click; the status log counts them.
+- An object Create Object or Place Foundation is about to make goes to where it will appear, and Replace Object's replacement goes to what it replaces.
+- A trigger name selects that trigger.
+
+A field the sentence leaves out is added after a `+` when it is set. Hover a Detail for every raw field. **Settings > Appearance > Condition and effect details** switches to Full sentences or the raw fields, and changes how players, flags, ids and long text read.
+
 - **New** opens a list of every condition and effect type. Filter it, then double-click a type or press **Add**. With Conditions or Effects highlighted first, the other group starts collapsed.
 - **Type…** changes the selected condition or effect to another type. Fields the new type lacks are dropped, and the status log under the map names them.
 - **Duplicate**, **Delete**, ▲ and ▼ act on the selected ones, with the same Shift and Ctrl clicks as the trigger list.

@@ -122,6 +122,8 @@ class _TriggerPanelFormMixin:
         PlayerId combos already on screen, keeping their "(differs)" and "unknown" rows."""
         self._player_labels = labels
         self._player_colors = colors
+        self._summary_delegate.player_colors = colors
+        self.refresh_trigger_details()
         if self._instruction_preview is not None:
             self._instruction_preview.set_player_colors(colors)
         for spec, _kind, _index, widget in self._rows:
@@ -796,6 +798,8 @@ class _TriggerPanelFormMixin:
                 if self._grouped and item.parent() is None:
                     self._retitle_section(trigger_index, (self._read(trigger, "name") or "").strip())
 
+            # A rename shows in this trigger's own Activate/Deactivate rows (GH #388).
+            self._summary_setup = (self._summary_options(), self._summary_context(manager))
             # Every selected row plus the current one: a group edit (GH #60)
             # changes N rows' detail text at once.
             items = list(self.entry_tree.selectedItems())
@@ -812,9 +816,7 @@ class _TriggerPanelFormMixin:
                     continue
                 entries = list(self._read(trigger, f"{kind}s") or [])
                 if 0 <= entry_index < len(entries):
-                    name, detail = self._describe(kind, entries[entry_index])
-                    entry_item.setText(0, name)
-                    entry_item.setText(1, detail)
+                    self._apply_detail(entry_item, kind, entries[entry_index])
 
             # GH #166: the whole trigger, since one field can flip its rollup, root and group rows.
             self._recompute_trigger(manager, trigger_index)

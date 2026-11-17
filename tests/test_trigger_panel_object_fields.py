@@ -692,11 +692,11 @@ def test_allow_in_fog_shows_one_ticked_and_unset_unticked_with_the_games_tooltip
         assert "passes the condition even if the object is in the Fog of War" in ticked.toolTip()
         assert label.toolTip() == ticked.toolTip()
         entry = panel._manager().triggers[0].conditions[1]
-        assert "allow_in_fog=1" in panel._describe("condition", entry)[1]
+        assert "allow_in_fog=1" in panel._summarize("condition", entry)[1].raw
 
         unset = _fog_box(panel, _FOG_UNSET)
         assert isinstance(unset, QCheckBox) and not unset.isChecked() and not unset.isTristate()
-        assert "allow_in_fog" not in panel._describe("condition", panel._manager().triggers[1].conditions[0])[1]
+        assert "allow_in_fog" not in panel._summarize("condition", panel._manager().triggers[1].conditions[0])[1].raw
         assert window.trigger_edits is None, "building the form must record nothing"
     finally:
         window.edit_history.mark_saved()

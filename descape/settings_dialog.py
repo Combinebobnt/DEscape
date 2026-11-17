@@ -73,6 +73,7 @@ from descape import (
     view_layers,
 )
 from descape.tool_defaults_page import ToolDefaultsPage
+from descape.trigger_details_page import TriggerDetailsPage
 from descape.viewer_common import (
     LabelFitButton,
     NoWheelComboBox,
@@ -732,6 +733,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._build_overlay_colors_group())
         self._add_section_divider(layout)
         layout.addWidget(self._build_trigger_status_group())
+        self._add_section_divider(layout)
+        # GH #388: how the Triggers panel's Detail column reads, under the status it sits beside.
+        self.trigger_details_page = TriggerDetailsPage(self._window)
+        layout.addWidget(self.trigger_details_page)
         self._add_section_divider(layout)
 
         font_row = QHBoxLayout()

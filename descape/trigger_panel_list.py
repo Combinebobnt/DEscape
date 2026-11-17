@@ -3,13 +3,15 @@ and entry trees, the exec-order readout and the multi-select page."""
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QModelIndex, Qt
 from PyQt5.QtWidgets import (
     QTreeWidgetItem,
 )
 
 from descape import (
-    trigger_fields,
+    object_catalog,
+    settings,
+    trigger_summary,
 )
 from descape.scenario_io import (
     LoadedScenario,
@@ -21,6 +23,7 @@ from descape.trigger_model import (
     exec_order_value,
     resolve_exec_mode,
 )
+from descape.trigger_summary_delegate import SUMMARY_ROLE
 
 
 class _TriggerPanelListMixin:
@@ -290,6 +293,7 @@ class _TriggerPanelListMixin:
             if manager is None or index is None or index >= len(manager.triggers):
                 return
             trigger = manager.triggers[index]
+            self._summary_setup = (self._summary_options(), self._summary_context(manager))
 
             root = QTreeWidgetItem(["Trigger", self._trigger_label(trigger)])
             root.setData(0, Qt.UserRole, ("trigger", -1))
@@ -307,8 +311,9 @@ class _TriggerPanelListMixin:
                 self.entry_tree.addTopLevelItem(group)
                 # GH #213: rows in the game's display order; UserRole stays the list index.
                 for entry_index in entry_display_order(trigger, kind) if entries else ():
-                    child = QTreeWidgetItem(list(self._describe(kind, entries[entry_index])))
+                    child = QTreeWidgetItem(["", ""])
                     child.setData(0, Qt.UserRole, (kind, entry_index))
+                    self._apply_detail(child, kind, entries[entry_index])
                     group.addChild(child)
                     self._entry_items[(kind, entry_index)] = child
                 group.setExpanded(True)
@@ -336,21 +341,92 @@ class _TriggerPanelListMixin:
             return None
         return entries.get(self._read(entry, type_attribute))
 
-    def _describe(self, kind: str, entry) -> tuple[str, str]:
-        """(name, detail) for one condition or effect row."""
-        _, _, type_attribute = self._vocab_for(kind)
+    # -- the Detail column (GH #388) -----------------------------------------
+
+    @staticmethod
+    def _summary_options() -> trigger_summary.Options:
+        return trigger_summary.Options.from_mapping(settings.get_trigger_details())
+
+    def _summary_context(self, manager) -> trigger_summary.Context:
+        """Names and units as the document holds them now; built once per populate."""
+        if manager is None:
+            return trigger_summary.Context(labels=self._player_labels, unit=self.unit_reference)
+        names = {self._read(t, "trigger_id"): self._read(t, "name") or "" for t in manager.triggers}
+        return trigger_summary.Context(
+            labels=self._player_labels,
+            trigger_name=names.get,
+            variable_name=lambda variable_id: object_catalog.variable_name_for(manager, variable_id),
+            unit=self.unit_reference,
+        )
+
+    def _summarize(self, kind: str, entry) -> tuple[str, trigger_summary.Summary | None]:
+        """(name, summary) for one condition or effect row; None for a type the vocabulary lacks."""
+        _, presentation, type_attribute = self._vocab_for(kind)
         definition = self._definition_for(kind, entry)
         if definition is None:
-            return (f"{kind} type {self._read(entry, type_attribute)}", "")
+            return (f"{kind} type {self._read(entry, type_attribute)}", None)
+        options, context = self._summary_setup
+        summary = trigger_summary.summarize(kind, entry, definition, presentation, context, options, self._read)
+        return (definition.name.replace("_", " "), summary)
 
-        details = []
-        for attribute in sorted(definition.attributes, key=trigger_fields.form_rank):
-            if attribute == type_attribute or attribute in trigger_fields.HIDDEN_FIELDS:
-                continue
-            value = self._read(entry, attribute)
-            # -1 is the library's "unset" sentinel across almost every numeric
-            # trigger field, so showing it would bury the fields that are set.
-            if value is None or value == -1 or value == "" or value == []:
-                continue
-            details.append(f"{attribute}={value}")
-        return (definition.name.replace("_", " "), ", ".join(details))
+    def _describe(self, kind: str, entry) -> tuple[str, str]:
+        """(name, detail text) for one condition or effect row."""
+        name, summary = self._summarize(kind, entry)
+        return (name, "" if summary is None else summary.text)
+
+    def _apply_detail(self, item, kind: str, entry) -> None:
+        """One entry row's Item and Detail: the sentence painted by the delegate, the raw fields in its tooltip."""
+        name, summary = self._summarize(kind, entry)
+        item.setText(0, name)
+        item.setText(1, "" if summary is None else summary.text)
+        readable = summary is not None and self._summary_setup[0].mode == trigger_summary.READABLE
+        item.setData(1, SUMMARY_ROLE, summary if readable else None)
+        tip = ""
+        if readable and summary.raw:
+            tip = f"{summary.text}\n\n{summary.raw}" if summary.text else summary.raw
+        item.setToolTip(1, tip)
+
+    def refresh_trigger_details(self) -> None:
+        """Re-render every Detail sentence: after a player label or colour push,
+        a unit edit in Triggers mode, or a Settings > Appearance change. A hidden
+        panel skips it: entering Triggers mode repopulates."""
+        if not self.isVisible():
+            return
+        manager = self._manager()
+        index = self.current_trigger_index()
+        self._summary_setup = (self._summary_options(), self._summary_context(manager))
+        if manager is None or index is None or index >= len(manager.triggers):
+            return
+        trigger = manager.triggers[index]
+        for (kind, entry_index), item in self._entry_items.items():
+            entries = list(self._read(trigger, f"{kind}s") or [])
+            if 0 <= entry_index < len(entries):
+                self._apply_detail(item, kind, entries[entry_index])
+        self._fit_entry_columns()
+        self.entry_tree.viewport().update()
+
+    def _on_summary_link(self, model_index, link) -> None:
+        """A Detail link clicked: the window follows it, with the entry it came from.
+        `model_index` is persistent; a rebuild since the click leaves it invalid."""
+        if not model_index.isValid():
+            return
+        item = self.entry_tree.itemFromIndex(QModelIndex(model_index))
+        data = None if item is None else item.data(0, Qt.UserRole)
+        trigger_index = self.current_trigger_index()
+        if not data or data[0] not in ("condition", "effect") or trigger_index is None:
+            return
+        self.on_summary_link((trigger_index, data[0], data[1], link))
+
+    def reveal_trigger_id(self, trigger_id: int) -> str:
+        """Select the trigger with this trigger_id; "" on success, else why not."""
+        manager = self._manager()
+        if manager is None:
+            return "no triggers are open"
+        index = next((i for i, t in enumerate(manager.triggers) if self._read(t, "trigger_id") == trigger_id), None)
+        if index is None:
+            return f"no trigger has id {trigger_id}"
+        item = self._item_for_index.get(index)
+        if item is None or item.isHidden():
+            return "that trigger is hidden by the filter"
+        self.reveal_trigger(index)
+        return ""

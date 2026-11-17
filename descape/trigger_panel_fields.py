@@ -375,6 +375,8 @@ class _TriggerPanelFieldsMixin:
         for _spec, _refs, _editor, refresh in self._unit_ref_rows.values():
             refresh()
         self._update_group_rows()
+        if recompute_status:
+            self.refresh_trigger_details()
         if not self._status:
             return
         if not recompute_status:

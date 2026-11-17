@@ -1556,6 +1556,71 @@ def set_button_grid_all_triggers(enabled: bool) -> None:
     _save_config(config)
 
 
+# GH #388: the Triggers panel's Detail column, Settings > Appearance. One dict key, checked per option.
+TRIGGER_DETAILS_DEFAULTS: dict[str, object] = {
+    "mode": "readable",
+    "sentence_style": "short",
+    "player_text": "number",
+    "player_colour": "box",
+    "show_off_flags": False,
+    "show_ids": False,
+    "text_cap": 40,
+    "link_coords": True,
+    "link_objects": True,
+    "link_triggers": True,
+    "show_unit_ids": True,
+    "show_hp": False,
+    "text_tags": "colour",
+    "unit_id_limit": 0,
+    "selected_with_area": "area",
+}
+TRIGGER_DETAILS_CHOICES: dict[str, tuple[str, ...]] = {
+    "mode": ("readable", "raw"),
+    "sentence_style": ("short", "full"),
+    "player_text": ("number", "full", "name"),
+    "selected_with_area": ("area", "objects", "objects_first", "area_first"),
+    "player_colour": ("off", "box", "text", "both"),
+    "text_tags": ("colour", "raw"),
+}
+TRIGGER_DETAILS_TEXT_CAP_MAX = 999
+TRIGGER_DETAILS_UNIT_ID_LIMIT_MAX = 20
+_TRIGGER_DETAILS_INT_MAX = {"text_cap": TRIGGER_DETAILS_TEXT_CAP_MAX, "unit_id_limit": TRIGGER_DETAILS_UNIT_ID_LIMIT_MAX}
+_trigger_details: dict | None = None
+
+
+def _valid_trigger_detail(key: str, value) -> bool:
+    if key in TRIGGER_DETAILS_CHOICES:
+        return value in TRIGGER_DETAILS_CHOICES[key]
+    if isinstance(TRIGGER_DETAILS_DEFAULTS[key], bool):
+        return isinstance(value, bool)
+    return _is_int(value) and 0 <= value <= _TRIGGER_DETAILS_INT_MAX[key]
+
+
+def get_trigger_details() -> dict:
+    """Every TRIGGER_DETAILS_DEFAULTS key; a missing or malformed stored option reads as its default."""
+    global _trigger_details
+    if _trigger_details is None:
+        raw = _load_config().get("trigger_details")
+        raw = raw if isinstance(raw, dict) else {}
+        _trigger_details = {
+            key: raw[key] if key in raw and _valid_trigger_detail(key, raw[key]) else default
+            for key, default in TRIGGER_DETAILS_DEFAULTS.items()
+        }
+    return dict(_trigger_details)
+
+
+def set_trigger_details(values: dict) -> None:
+    """Merges `values` over the stored options. Raises ValueError, writing nothing, on an unknown key or a bad value."""
+    for key, value in values.items():
+        if key not in TRIGGER_DETAILS_DEFAULTS or not _valid_trigger_detail(key, value):
+            raise ValueError(f"bad trigger_details option {key!r}: {value!r}")
+    global _trigger_details
+    _trigger_details = {**get_trigger_details(), **values}
+    config = _load_config()
+    config["trigger_details"] = dict(_trigger_details)
+    _save_config(config)
+
+
 # The Ruler's on-map measurement label, Settings > Appearance -- previously
 # MapView.RULER_LABEL_FONT_PX, a hardcoded constant hand-bumped once already
 # after in-app feedback (2026-08-26) and likely to be re-litigated again.

@@ -869,6 +869,11 @@ class ViewerWindow(
         self.trigger_panel.on_pick_unit = self._on_pick_unit_requested
         self.trigger_panel.unit_reference_tile = self._unit_reference_tile
         self.trigger_panel.on_go_to_group = self.go_to_trigger_group
+        # GH #388: Detail sentences read placed units; a Detail link is followed here.
+        self.trigger_panel.unit_reference = lambda ref_id: self._unit_reference_index().get(ref_id)
+        self.trigger_panel.on_summary_link = self.follow_trigger_link
+        # The last object link followed and its match, so the next click steps on.
+        self._match_cycle: tuple | None = None
         self.trigger_panel.text_box_lines = settings.get_text_box_lines
         self.trigger_panel.on_text_box_lines = settings.set_text_box_lines
         # GH #166: called per recompute, never captured, since _patch_unit_ref_index() can drop the index.

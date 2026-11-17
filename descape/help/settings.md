@@ -39,6 +39,24 @@ Theme, chrome colours, UI font and toolbar buttons are covered in [View and Filt
 
 The icons sit in their own column between ID and Trigger, so the names line up, and a section with no conditions or effects shows a dash there. What counts as complete is in [Triggers](triggers.md).
 
+### Condition and effect details
+
+**Settings > Appearance > Condition and effect details** sets how the Triggers panel's Detail column reads:
+
+- **Detail view**: Readable sentences, or Raw fields (`attribute=value` pairs).
+- **Sentence style**: Short (`P2 to P1, visible`, the default) or Full (`P2 sees P1 as visible`).
+- **Player text**: `P2`, `P2 - Name` or `Name`. **Player colour** shows the player's colour as a box before it, as its text colour, both, or not at all.
+- **Flags that are off** adds them, as in `not forced`. **Ids after names** adds the id, as in `Castle #82`.
+- **Shorten text to** cuts quoted text at that many characters; Never keeps it whole.
+- **Colour tags** draws quoted text after a colour tag such as `<AQUA>` in that colour, or shows the tags as written.
+- **Placed object ids** adds a placed object's own id, as in `P1 Archer #500`.
+- **HP on heal and damage** reads `5 HP to P1 Archer` rather than `5 to P1 Archer` on Heal Object and Damage Object.
+- **List selected** sets how many ids several selected objects list, as in `5 selected P1 objects (#500, #501, …)`; Count only shows just the count.
+- **Objects and area** sets what an effect with both selected objects and an area shows: the area (the default), the selected objects, or both with either first.
+- **Links in the Detail column** turns the coordinate, object and trigger name links on or off.
+
+The Preview shows sample rows as you change them, and **Reset to Defaults** puts every option back.
+
 ## Tools
 
 **Settings > Tools** sets what each control on the Tool Options row starts at when you launch DEscape: the brush size, shape and outline thickness; Auto beach, the beach terrain and width, Trees and Eye candy; the Set Elevation level and whether Draw Rectangle is filled; the Paste Region ticks; Free placement, Off-grid, Walls skip occupied tiles and Moving a gate updates walls; the Eyedropper's Switch back after a pick; the wall the Wall button picks, and the Cliff family, piece and frame; the Unit Brush's density and Random facing/variant; Unit Line and Unit Shape's Shape, Filled, Spacing and Random facing/variant; Convert's sources, the Eraser's targets, and the Edit Area options for trigger areas and locations.

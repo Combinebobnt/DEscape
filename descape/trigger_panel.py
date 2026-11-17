@@ -92,6 +92,9 @@ from descape.trigger_panel_status import StatusStyle, _StatusMemo, _TriggerPanel
 from descape.trigger_panel_structure import _MoveButton, _TriggerPanelStructureMixin
 from descape.trigger_panel_variables import VariablesDialog, _TriggerPanelVariablesMixin
 from descape.trigger_status import Status
+from descape.trigger_summary import Context as SummaryContext
+from descape.trigger_summary import Options as SummaryOptions
+from descape.trigger_summary_delegate import TriggerSummaryDelegate
 from descape.value_picker import ValueLineEdit, _HScrollStableTreeWidget
 from descape.viewer_common import (
     FontScaledWidth,
@@ -347,6 +350,10 @@ class TriggerPanel(
         # Go to's request, (trigger_index, kind, entry_index, group). Assigned by the window.
         self.unit_reference_tile = lambda ref_id: None
         self.on_go_to_group = lambda target: None
+        # GH #388: a placed unit's unit_references.UnitRef or None, for the Detail sentences, and a
+        # Detail link's request, (trigger_index, kind, entry_index, link). Assigned by the window.
+        self.unit_reference = lambda ref_id: None
+        self.on_summary_link = lambda target: None
         # GH #139: a text box's stored height in lines by key, and its store (None resets). Assigned by the window.
         self.text_box_lines = lambda key: None
         self.on_text_box_lines = lambda key, lines: None
@@ -425,6 +432,8 @@ class TriggerPanel(
         # GH #130: PlayerId combos' labels and swatches, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
+        # GH #388: (options, context) the Detail sentences render with, rebuilt per populate.
+        self._summary_setup = (SummaryOptions(), SummaryContext())
         # GH #140: the form's Display Instructions preview, or None.
         self._instruction_preview: InstructionPreview | None = None
         # GH #167: the facet-direction preview and the field it sits under, or None and "".
@@ -721,6 +730,9 @@ class TriggerPanel(
         self.entry_tree.setColumnCount(2)
         self.entry_tree.setUniformRowHeights(True)
         self._configure_scrolling(self.entry_tree)
+        self._summary_delegate = TriggerSummaryDelegate(self.entry_tree)
+        self._summary_delegate.install(self.entry_tree, 1)
+        self._summary_delegate.link_activated.connect(self._on_summary_link)
         # Multi-select (GH #60), the entry-level twin of the trigger tree's.
         self.entry_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         # One click fires both; _sync_entry_form()'s latch makes it one populate.
@@ -956,6 +968,8 @@ class TriggerPanel(
             self._loaded = None
             self._vocabulary = None
             self._editable = False
+            # Its closures hold the closed document's trigger manager.
+            self._summary_setup = (SummaryOptions(), SummaryContext())
             self._reset_statuses()
             self._item_for_index = {}
             self._display_slots = []

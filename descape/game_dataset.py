@@ -42,7 +42,7 @@ ROR = "ror"
 
 TABLES_DIR = Path(__file__).resolve().parent
 # Tables not derived from any .dat: every dataset reads the one copy.
-SHARED_TABLES = frozenset({"cliff_connectivity.json", "trigger_requirements.json"})
+SHARED_TABLES = frozenset({"cliff_connectivity.json", "trigger_requirements.json", "trigger_summaries.json"})
 
 # A game's strings files sit in this folder under its root, Game.strings_files by name.
 STRINGS_DIR_TEMPLATE = "resources/{lang}/strings/key-value"

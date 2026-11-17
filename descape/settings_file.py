@@ -92,6 +92,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "trigger_status_color_ok_rows": (_APPEARANCE, "Mark triggers that pass"),
     "trigger_status_color_sections": (_APPEARANCE, "Colour section rows"),
     "tool_options": (_TOOLS, _TOOLS),
+    "trigger_details": (_APPEARANCE, "Condition and effect details"),
     **{legacy_key: (_TOOLS, _TOOLS) for legacy_key, _name in settings._LEGACY_TOOL_OPTION_KEYS},
     "autosave_enabled": (_SAVING, "Autosave on a timer"),
     "autosave_interval_min": (_SAVING, "Autosave every"),

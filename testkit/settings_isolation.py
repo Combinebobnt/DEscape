@@ -29,6 +29,7 @@ from pathlib import Path
 
 MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
+    "_trigger_details",
     "_graphics_quality",
     "_pan_speed",
     "_wall_opacity_pct",
