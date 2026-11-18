@@ -636,6 +636,7 @@ class _TriggerPanelStructureMixin:
         # nothing to offer here anyway: the trigger being added to was latched
         # at open and cannot be changed from it.
         self._set_entry_list_visible(False)
+        self.on_detail_shown()
         self.picker_filter.setFocus()
         self._update_buttons()
 
@@ -658,6 +659,11 @@ class _TriggerPanelStructureMixin:
         self._update_buttons()
 
     def _set_entry_list_visible(self, visible: bool) -> None:
+        # GH #387: in its own dock the picker takes nothing from the list, and hiding it would leave a
+        # blank pane. Greyed instead, since the picker is latched to the entry it opened on.
+        if self._detail_detached:
+            self.entry_tree.setEnabled(visible)
+            return
         self.entry_tree.setVisible(visible)
         for i in range(self.entry_buttons.count()):
             widget = self.entry_buttons.itemAt(i).widget()

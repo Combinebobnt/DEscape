@@ -29,6 +29,7 @@ from pathlib import Path
 
 MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
+    "_trigger_details",
     "_graphics_quality",
     "_pan_speed",
     "_wall_opacity_pct",
@@ -111,6 +112,7 @@ MEMOIZED_GLOBALS = (
     "_data_mod_terrain_group",
     "_terrain_picker_mode",
     "_terrain_grid_swatch_px",
+    "_trigger_details_bottom_layout",
 )
 
 

@@ -275,18 +275,21 @@ class _ViewerFindMixin:
         # A locked document refuses the edit, but the field would count it as committed.
         if self.game_data_lock_reason():
             return
-        # A floating panel is a window of its own, with its own focus widget (GH #64).
+        # A floating dock is a window of its own, with its own focus widget (GH #64, GH #387).
         # An inactive float keeps its focus widget across a mode change, so skip one on a hidden page.
-        windows = (self, self.panel_dock) if self.panel_dock.isFloating() else (self,)
-        for window in windows:
-            widget = window.focusWidget()
-            if not self._owns_widget(widget) or (window is not self and not widget.isVisible()):
-                continue
-            if isinstance(widget, QAbstractSpinBox):
-                widget.interpretText()
-                widget.editingFinished.emit()
-            elif isinstance(widget, _MultiLineEdit) or (isinstance(widget, QLineEdit) and widget.hasAcceptableInput()):
-                widget.editingFinished.emit()
+        for window in (self, *(dock for dock in self._docks() if dock.isFloating())):
+            self._commit_focus_of(window)
+
+    def _commit_focus_of(self, window) -> None:
+        """_commit_focused_field() for one of this window's windows."""
+        widget = window.focusWidget()
+        if not self._owns_widget(widget) or (window is not self and not widget.isVisible()):
+            return
+        if isinstance(widget, QAbstractSpinBox):
+            widget.interpretText()
+            widget.editingFinished.emit()
+        elif isinstance(widget, _MultiLineEdit) or (isinstance(widget, QLineEdit) and widget.hasAcceptableInput()):
+            widget.editingFinished.emit()
 
     def _find_trigger_op_model(self) -> TriggerEditModel | None:
         if self._find_op_refused():

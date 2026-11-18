@@ -4,9 +4,11 @@ the resize will do (how many objects go, whether trigger areas follow).
 Given a PreviewSource, it also shows where, in a resize_preview.ResizePreview
 beside the controls, drawn from that same plan.
 
-Square-only for now: "Keep square" is ticked and locked, so the height spin
-follows the width spin. Non-square maps wait on the in-game check TASK-032's
-Phase 0 owes; unlocking it is the only change this dialog needs then.
+Square-only for now: one Size row (map_size_picker.MapSizePicker, shared
+with File > New Map…) sets both axes, and the plan refuses a non-square map.
+Non-square maps wait on the in-game check TASK-032's Phase 0 owes. Enter in
+the size box shows the typed size's plan without resizing, since a resize
+cannot be undone.
 
 The anchor is session-sticky (`last=` / `state()`, TASK-514); the size
 always opens at the open map's.
@@ -18,7 +20,6 @@ from collections.abc import Callable
 
 from PyQt5.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -27,12 +28,11 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QRadioButton,
-    QSpinBox,
     QVBoxLayout,
 )
 
+from descape.map_size_picker import MapSizePicker, invalid_size_message
 from descape.resize_preview import PREVIEW_WIDTH, PreviewSource, ResizePreview
-from descape.scenario_new import MAX_MAP_TILES, MIN_MAP_TILES
 from descape.scenario_resize import Anchor, ResizePlan
 
 _ANCHOR_TIPS = {
@@ -47,10 +47,10 @@ _LEGEND = (
 
 
 class ResizeDialog(QDialog):
-    """Width, height, a locked "Keep square" box, a 3x3 anchor grid and the
-    plan summary, plus the preview when `preview` is given. `plan_for(width,
-    height, anchor)` is called on every change; OK is enabled only while the
-    plan has no refusal."""
+    """The size picker, a 3x3 anchor grid and the plan summary, plus the
+    preview when `preview` is given. `plan_for(width, height, anchor)` is
+    called on every new size or anchor; OK is enabled only while the typed
+    size is a valid one and the plan has no refusal."""
 
     def __init__(
         self,
@@ -65,28 +65,13 @@ class ResizeDialog(QDialog):
         self.setWindowTitle("Resize Map")
         self._plan_for = plan_for
         self.plan: ResizePlan | None = None
+        self._plan_key: tuple | None = None
         self.preview: ResizePreview | None = None
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.width_spin = QSpinBox()
-        self.height_spin = QSpinBox()
-        for spin, value in ((self.width_spin, width), (self.height_spin, height)):
-            spin.setRange(MIN_MAP_TILES, MAX_MAP_TILES)
-            spin.setValue(value)
-            spin.setSuffix(" tiles")
-        self.width_spin.setToolTip("New size along x (the map's upper-left and lower-right edges)")
-        self.height_spin.setToolTip("New size along y (the map's lower-left and upper-right edges)")
-        form.addRow("Width:", self.width_spin)
-        form.addRow("Height:", self.height_spin)
-        self.square_box = QCheckBox("Keep square")
-        self.square_box.setChecked(True)
-        self.square_box.setEnabled(False)
-        self.square_box.setToolTip(
-            "Non-square maps are not supported yet: whether AoE2:DE accepts them is still "
-            "being checked in-game"
-        )
-        form.addRow("", self.square_box)
+        self.size_picker = MapSizePicker(width, current=width if width == height else None, enter_applies=True)
+        form.addRow("Size:", self.size_picker)
 
         anchor_box = QGroupBox("Anchor (the part of the map that stays put)")
         grid = QGridLayout(anchor_box)
@@ -132,21 +117,9 @@ class ResizeDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-        self.width_spin.valueChanged.connect(self._on_width)
-        self.height_spin.valueChanged.connect(self._on_height)
+        self.size_picker.changed.connect(lambda _tiles: self._refresh())
+        self.size_picker.validity_changed.connect(lambda _ok: self._refresh())
         self.anchor_group.buttonToggled.connect(lambda _button, checked: checked and self._refresh())
-        self._refresh()
-
-    def _on_width(self, value: int) -> None:
-        if self.square_box.isChecked() and self.height_spin.value() != value:
-            self.height_spin.setValue(value)  # refreshes through _on_height
-            return
-        self._refresh()
-
-    def _on_height(self, value: int) -> None:
-        if self.square_box.isChecked() and self.width_spin.value() != value:
-            self.width_spin.setValue(value)
-            return
         self._refresh()
 
     @property
@@ -155,7 +128,8 @@ class ResizeDialog(QDialog):
 
     @property
     def new_size(self) -> tuple[int, int]:
-        return self.width_spin.value(), self.height_spin.value()
+        tiles = self.size_picker.tiles
+        return tiles, tiles
 
     def state(self) -> dict:
         """Session-sticky values, restored by the next dialog. Nothing here
@@ -163,12 +137,20 @@ class ResizeDialog(QDialog):
         return {"anchor": self.anchor}
 
     def _refresh(self) -> None:
-        width, height = self.new_size
-        self.plan = self._plan_for(width, height, self.anchor)
-        self.summary_label.setText(self.plan.summary())
-        self.buttons.button(QDialogButtonBox.Ok).setEnabled(self.plan.refusal is None)
-        if self.preview is not None:
-            self.preview.set_plan(self.plan)
+        ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        if not self.size_picker.acceptable:
+            # The preview keeps the last valid size's plan until the text is one again.
+            self.summary_label.setText(invalid_size_message())
+            ok_button.setEnabled(False)
+        else:
+            key = (*self.new_size, self.anchor)
+            if key != self._plan_key:
+                self.plan = self._plan_for(*key)
+                self._plan_key = key
+                if self.preview is not None:
+                    self.preview.set_plan(self.plan)
+            self.summary_label.setText(self.plan.summary())
+            ok_button.setEnabled(self.plan.refusal is None)
         # A longer summary wraps to more rows: grow to fit it, never shrink under the user.
         needed = self.heightForWidth(self.width())
         if self.isVisible() and needed > self.height():

@@ -129,6 +129,9 @@ def render() -> str:
     )
     trigger_status_colors_block = "\n".join(f"  {line}" for line in trigger_status_colors_yaml.splitlines())
 
+    trigger_details_yaml = yaml.safe_dump(dict(settings.TRIGGER_DETAILS_DEFAULTS), default_flow_style=False, sort_keys=False)
+    trigger_details_block = "\n".join(f"  {line}" for line in trigger_details_yaml.splitlines())
+
     view_layers_yaml = yaml.safe_dump(
         {spec.layer_id: spec.default for spec in view_layers.LAYERS},
         default_flow_style=False,
@@ -336,6 +339,12 @@ units_catalog_right_click: {settings.UNITS_CATALOG_RIGHT_CLICK_DEFAULT}
 # The terrain grid's swatch size in px, Settings > Appearance: {_TERRAIN_GRID_SWATCH_SIZES}.
 # Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.
 terrain_grid_swatch_px: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}
+
+# How Trigger Details lays out docked above or below the map, Settings >
+# Appearance: game (each field where the game's trigger editor puts it) or
+# compact (the form's rows in columns). Docked at a side or floating it is one
+# column either way. Default: {settings.TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT}.
+trigger_details_bottom_layout: {settings.TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT}
 
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
@@ -607,6 +616,13 @@ button_grid_all_triggers: false
 # The two marker colours, as "#rrggbb"; omit one to leave it at its default.
 trigger_status_colors:
 {trigger_status_colors_block}
+
+# The Triggers panel's condition and effect Details, Settings > Appearance >
+# Condition and effect details: readable sentences or the raw fields, their
+# style, and how players, flags, ids, long text and links read. A missing or
+# malformed option reads as its default, shown here.
+trigger_details:
+{trigger_details_block}
 
 # Settings > Saving. Autosave writes its own rotating recovery slot on a
 # timer, never the file you have open, and never clears the unsaved-changes

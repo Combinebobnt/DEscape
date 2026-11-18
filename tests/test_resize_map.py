@@ -46,7 +46,7 @@ def _fake_dialog(monkeypatch, size: int | None, anchor_name: str = "TOP_LEFT", a
             return QDialog.Rejected
         if size is None:
             return QDialog.Rejected
-        self.width_spin.setValue(size)
+        self.size_picker.set_tiles(size)
         self.anchor_buttons[Anchor[anchor_name]].setChecked(True)
         return QDialog.Accepted
 
@@ -212,7 +212,7 @@ def test_resizing_a_new_map_never_touches_the_template_dir(monkeypatch) -> None:
     assert {p.name: (p.stat().st_mtime_ns, p.read_bytes()) for p in TEMPLATE_DIR.iterdir()} == before
 
 
-def test_the_dialog_locks_square_and_refuses_the_current_size(window) -> None:
+def test_the_dialog_sets_one_size_for_both_axes_and_refuses_the_current_size(window) -> None:
     from PyQt5.QtWidgets import QDialogButtonBox
 
     from descape.resize_dialog import ResizeDialog
@@ -221,10 +221,10 @@ def test_the_dialog_locks_square_and_refuses_the_current_size(window) -> None:
     dialog = ResizeDialog(window, 120, 120, window._resize_plan_for)
     try:
         ok = dialog.buttons.button(QDialogButtonBox.Ok)
-        assert not dialog.square_box.isEnabled() and dialog.square_box.isChecked()
         assert not ok.isEnabled() and "already 120×120" in dialog.summary_label.text()
-        dialog.width_spin.setValue(100)
-        assert dialog.height_spin.value() == 100
+        assert dialog.size_picker.combo.currentText().endswith(", current")
+        dialog.size_picker.spin.setValue(100)
+        assert (dialog.plan.new_w, dialog.plan.new_h) == (100, 100)
         dialog.anchor_buttons[Anchor.BOTTOM_RIGHT].setChecked(True)
         assert ok.isEnabled()
         assert "6 objects will be deleted" in dialog.summary_label.text()

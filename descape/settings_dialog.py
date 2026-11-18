@@ -73,7 +73,9 @@ from descape import (
     view_layers,
 )
 from descape.settings_dialog_apply import _SettingsDialogApplyMixin
+from descape.spin_boxes import keep_cursor_before_suffix
 from descape.tool_defaults_page import ToolDefaultsPage
+from descape.trigger_details_page import TriggerDetailsPage
 from descape.viewer_common import (
     LabelFitButton,
     NoWheelComboBox,
@@ -567,6 +569,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self.ui_font_size_spin = QSpinBox()
         self.ui_font_size_spin.setRange(settings.UI_FONT_SIZE_MIN, settings.UI_FONT_SIZE_MAX)
         self.ui_font_size_spin.setSuffix(" pt")
+        keep_cursor_before_suffix(self.ui_font_size_spin)
         ui_font_tooltip = (
             "App chrome only (menus, dialogs, panels, toolbars, the status "
             "log) -- the map view's own overlay text (ruler readout, "
@@ -741,12 +744,17 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._add_section_divider(layout)
         layout.addWidget(self._build_trigger_status_group())
         self._add_section_divider(layout)
+        # GH #388: how the Triggers panel's Detail column reads, under the status it sits beside.
+        self.trigger_details_page = TriggerDetailsPage(self._window)
+        layout.addWidget(self.trigger_details_page)
+        self._add_section_divider(layout)
 
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel("Ruler label size:"))
         self.ruler_label_font_spin = QSpinBox()
         self.ruler_label_font_spin.setRange(settings.RULER_LABEL_FONT_PX_MIN, settings.RULER_LABEL_FONT_PX_MAX)
         self.ruler_label_font_spin.setSuffix(" px")
+        keep_cursor_before_suffix(self.ruler_label_font_spin)
         self.ruler_label_font_spin.setValue(settings.get_ruler_label_font_px())
         self.ruler_label_font_spin.valueChanged.connect(self._on_ruler_label_font_px_changed)
         font_row.addWidget(self.ruler_label_font_spin, stretch=0)
@@ -760,6 +768,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             settings.DISTANCE_TICK_FONT_PX_MIN, settings.DISTANCE_TICK_FONT_PX_MAX
         )
         self.distance_tick_font_spin.setSuffix(" px")
+        keep_cursor_before_suffix(self.distance_tick_font_spin)
         self.distance_tick_font_spin.setValue(settings.get_distance_tick_font_px())
         self.distance_tick_font_spin.valueChanged.connect(self._on_distance_tick_font_px_changed)
         distance_tick_font_row.addWidget(self.distance_tick_font_spin, stretch=0)
@@ -807,6 +816,24 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         terrain_grid_row.addWidget(self.terrain_grid_swatch_combo, stretch=0)
         terrain_grid_row.addStretch(1)
         layout.addLayout(terrain_grid_row)
+
+        # GH #387: Trigger Details docked above or below the map. Not in a theme file either.
+        trigger_details_row = QHBoxLayout()
+        trigger_details_row.addWidget(QLabel("Trigger Details under the map:"))
+        self.trigger_details_layout_combo = QComboBox()
+        for layout_id, layout_label in settings.TRIGGER_DETAILS_BOTTOM_LAYOUTS:
+            self.trigger_details_layout_combo.addItem(layout_label, layout_id)
+        self.trigger_details_layout_combo.setCurrentIndex(
+            self.trigger_details_layout_combo.findData(settings.get_trigger_details_bottom_layout())
+        )
+        self.trigger_details_layout_combo.setToolTip(
+            "Docked above or below the map, Trigger Details puts each field where the game's trigger "
+            "editor does, or flows its rows into compact columns. Docked at a side, it is one column."
+        )
+        self.trigger_details_layout_combo.currentIndexChanged.connect(self._on_trigger_details_layout_changed)
+        trigger_details_row.addWidget(self.trigger_details_layout_combo, stretch=0)
+        trigger_details_row.addStretch(1)
+        layout.addLayout(trigger_details_row)
 
         # View > Grid's appearance. A drag is bracketed rather than debounced:
         # its first tick swaps the baked grid for GridItem's preview (one
@@ -1470,6 +1497,11 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         settings.set_stack_badge_position(position_id)
         self._window.map_view.set_stack_badge_position(position_id)
         self._window._log_status(f"Stacked-unit badge position: {self.stack_badge_position_combo.itemText(index)}")
+
+    def _on_trigger_details_layout_changed(self, index: int) -> None:
+        settings.set_trigger_details_bottom_layout(self.trigger_details_layout_combo.itemData(index))
+        self._apply_trigger_details_layout()
+        self._window._log_status(f"Trigger Details under the map: {self.trigger_details_layout_combo.itemText(index)}")
 
     def _on_terrain_grid_swatch_changed(self, index: int) -> None:
         px = self.terrain_grid_swatch_combo.itemData(index)

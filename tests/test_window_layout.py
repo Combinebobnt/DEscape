@@ -70,6 +70,9 @@ def _assert_default_layout(window) -> None:
         assert not dock.isFloating() and dock.isVisible()
     assert not window.minimap_dock.isFloating() and window.minimap_dock.isHidden()
     assert not window.minimap_dock.toggleViewAction().isChecked()
+    # GH #387: under the panel, closed outside Triggers mode (tests/test_trigger_detail_dock.py).
+    assert window.dockWidgetArea(window.trigger_detail_dock) == Qt.LeftDockWidgetArea
+    assert not window.trigger_detail_dock.isFloating() and window.trigger_detail_dock.isHidden()
     assert abs(panel_width(window) - DEFAULT_PANEL_WIDTH) <= _SLACK
     _open_minimap(window)
     log, minimap = window.log_dock.geometry(), window.minimap_dock.geometry()
@@ -264,7 +267,7 @@ def test_a_state_that_will_not_restore_falls_back_to_the_default_layout(blob: st
         window.log_dock.hide()
         window.minimap_dock.hide()
         _settle()
-        # "older version": a blob from before GH #54's minimap dock.
+        # "older version": a blob from before GH #387's Trigger Details dock.
         version = WINDOW_STATE_VERSION + 1 if blob == "newer version" else WINDOW_STATE_VERSION - 1
         state = bytes(window.saveState(version))
         conftest.close_window(window)
@@ -339,6 +342,7 @@ def test_a_mode_change_titles_the_panel_and_reshows_it_when_closed() -> None:
             "Editor Panel",
             "Status Log",
             "Minimap",
+            "Trigger Details",
             "Reset Layout",
         ]
     finally:

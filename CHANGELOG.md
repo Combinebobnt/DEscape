@@ -63,6 +63,17 @@ content, link the doc instead of summarizing it.
 - **Loading progress bar** (GH #359): a bar on the right of the status bar
   shows each stage of opening a scenario and each step of a data mod parse,
   in place of the Parsing label. (contributed by @teslatankx, #389)
+- **Trigger Details panel** (GH #387): the selected trigger, condition or
+  effect's fields are their own panel, under the Triggers panel by default.
+  Dock it under the map, tab it with the Status Log or float it; under the
+  map it lays out like the game's trigger editor, or in compact columns
+  (Settings > Appearance). Saved window layouts reset once. (contributed by
+  @teslatankx, #401)
+- **Readable condition and effect details** (GH #388): the Triggers panel's
+  Detail column reads as sentences such as `P2 to P1, visible`, with links
+  that centre the map on coordinates and objects or select a named trigger.
+  Settings > Appearance > Condition and effect details sets their style.
+  (contributed by @teslatankx, #390)
 - **`tools/infer_structure.py`**: infers a new scenario version's structure
   from game-saved files, for maintainers. It finds inserted, deleted and
   resized fields, lists the layouts it can't tell apart, and refuses with
@@ -82,6 +93,10 @@ content, link the doc instead of summarizing it.
 
 ### Fixed
 
+- **Trigger object fields keep their object**: clicking into and out of an
+  object field after switching its Object List Type no longer swaps a name
+  two types share (Treasure Chest) for the new type's object.
+
 - **Trigger-created building ghosts** (GH #369): an even-sized building
   (house, castle, gate) placed by Create Object or Place Foundation now
   shows its ghost where the game spawns it, not one tile off.
@@ -92,6 +107,16 @@ content, link the doc instead of summarizing it.
   game's mod list without restarting DEscape, on the next scenario open, Mod
   Art toggle or Settings open. Settings > Mods gains Rescan mods, for a mod
   the game updated while DEscape was open.
+
+- **Typing in a size box with a unit** (tiles, pt, px, %): after a click at
+  the box's right end, Backspace and digits now edit the number instead of
+  doing nothing.
+- **Resize Map's size**: one Size row with the game's map sizes plus a box
+  to type any size, as in New Map, replaces Width, Height and the locked Keep
+  square box. Enter there shows the new size's result instead of resizing,
+  and a size under the minimum says so rather than resizing at the previous
+  size. In New Map the size box is always typeable, and a size under the
+  minimum greys out Create instead of creating the map at the previous size.
 
 ## [0.11] - 2026-11-11
 

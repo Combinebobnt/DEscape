@@ -1,6 +1,6 @@
 """ViewerWindow's toolbar: tool overflow, the toolbar builder and style, the status bar, the editor
-panel, status log and minimap docks and their saved layout (GH #64, GH #54), panel sizing and the
-mode, zoom and tool-value status."""
+panel, status log, minimap and Trigger Details docks and their saved layout (GH #64, GH #54,
+GH #387), panel sizing and the mode, zoom and tool-value status."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from PyQt5.QtCore import QByteArray, QSize, Qt
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDockWidget,
@@ -33,6 +34,7 @@ from descape import (
 )
 from descape.load_progress import LoadProgress
 from descape.minimap_panel import DEFAULT_WIDTH as DEFAULT_MINIMAP_WIDTH
+from descape.spin_boxes import keep_cursor_before_suffix
 from descape.terrain_palette import name_for_terrain_id
 from descape.terrain_style import STYLE_LABELS, label_for
 from descape.toolbar_overflow import partition
@@ -53,8 +55,10 @@ _TOOLBAR_BUTTON_STYLES = {
 
 # GH #64: saveState()/restoreState()'s version. Bump it whenever the set of docks or toolbars
 # changes, so an older blob is refused whole rather than half-applied.
-WINDOW_STATE_VERSION = 2
+WINDOW_STATE_VERSION = 3
 DEFAULT_PANEL_WIDTH = 340
+# GH #387: the editor panel's share of the left column it splits with Trigger Details.
+_DEFAULT_PANEL_SHARE_PCT = 75
 # The status log's default height: four lines plus its frame.
 _DEFAULT_LOG_LINES = 4
 _LOG_FRAME_PX = 12
@@ -65,9 +69,10 @@ class _ViewerToolbarMixin:
 
     def _build_docks(self) -> None:
         """GH #64: the editor panel (left_stack, whose pages swap with the
-        mode), the status log and the minimap (GH #54) as docks that float,
-        re-dock and close. _restore_window_layout() places them once the
-        toolbars exist."""
+        mode), the status log, the minimap (GH #54) and the trigger panel's
+        property form (Trigger Details, GH #387) as docks that float, re-dock,
+        tab and close. _restore_window_layout() places them once the toolbars
+        exist."""
         features = QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         self.panel_dock = QDockWidget(settings.MODE_LABELS[self.mode], self)
         self.panel_dock.setObjectName("panel_dock")
@@ -84,16 +89,27 @@ class _ViewerToolbarMixin:
         self.minimap_dock.setFeatures(features)
         # No horizontal grow flag, so a wider window widens the log, not the minimap. Dragging still sizes it.
         self.minimap_dock.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.trigger_detail_dock = QDockWidget("Trigger Details", self)
+        self.trigger_detail_dock.setObjectName("trigger_detail_dock")
+        self.trigger_detail_dock.setWidget(self.trigger_panel.take_detail_stack())
+        self.trigger_detail_dock.setFeatures(features)
+        self.trigger_panel.on_detail_shown = self._on_trigger_detail_shown
+        # GH #387: docked above or below the map, the form lays out across the dock.
+        self.trigger_detail_dock.dockLocationChanged.connect(lambda _area: self._sync_trigger_detail_layout())
+        self.trigger_detail_dock.topLevelChanged.connect(lambda _floating: self._sync_trigger_detail_layout())
+        self.trigger_detail_dock.visibilityChanged.connect(self._on_trigger_detail_visibility)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.panel_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.trigger_detail_dock)
+        self.splitDockWidget(self.panel_dock, self.trigger_detail_dock, Qt.Vertical)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.minimap_dock)
         self.splitDockWidget(self.log_dock, self.minimap_dock, Qt.Horizontal)
         # The panel column runs the full height, with the log under the map beside it.
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
         self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
-        # No animation: every frame of one resizes the map, and each resize renders. No tabs: a
-        # panel tabbed behind the log would stay hidden through the mode change meant to show it.
-        self.setDockOptions(self.dockOptions() & ~(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks))
+        # No animation: every frame of one resizes the map, and each resize renders. Tabs are on
+        # (GH #387): a mode change raises the panel it shows, so none stays behind another's tab.
+        self.setDockOptions(self.dockOptions() & ~QMainWindow.AnimatedDocks)
         # Not the dock's own toggleViewAction(), which takes the dock's title, the mode's name.
         self.panel_dock_action = QAction("&Editor Panel", self)
         self.panel_dock_action.setCheckable(True)
@@ -112,10 +128,16 @@ class _ViewerToolbarMixin:
         minimap_action.setToolTip("Show or hide the minimap. Drag its title bar to float it or dock it elsewhere")
         # A first show or a reopen builds the image the closed dock skipped.
         self.minimap_dock.visibilityChanged.connect(lambda visible: visible and self._schedule_minimap())
+        trigger_detail_action = self.trigger_detail_dock.toggleViewAction()
+        trigger_detail_action.setText("&Trigger Details")
+        trigger_detail_action.setToolTip(
+            "Show or hide the selected condition or effect's fields in Triggers mode. "
+            "Drag its title bar to float it, dock it elsewhere or tab it with another panel"
+        )
         self.reset_layout_action = QAction("&Reset Layout", self)
         reset_tip = (
-            "Dock the editor panel left and the status log under the map, close the minimap "
-            "(it reopens beside the log), and show any hidden toolbar"
+            "Dock the editor panel left with Trigger Details under it and the status log under "
+            "the map, close the minimap (it reopens beside the log), and show any hidden toolbar"
         )
         self.reset_layout_action.setToolTip(reset_tip)
         self.reset_layout_action.setStatusTip(reset_tip)
@@ -126,9 +148,50 @@ class _ViewerToolbarMixin:
         closed: a mode change means its page is about to be needed."""
         self.panel_dock.setWindowTitle(self.mode_combo.currentText())
         self.panel_dock.show()
+        self.panel_dock.raise_()
+
+    def _sync_trigger_detail_dock(self) -> None:
+        """GH #387: Trigger Details shows only in Triggers mode, re-shown if it
+        was closed and raised in front of any dock tabbed with it; any other
+        mode hides it, which drops its tab. View > Panels follows the mode."""
+        triggers = self.mode == "triggers"
+        dock = self.trigger_detail_dock
+        # Hiding a float moves no focus, so its box would keep a typed value nothing commits.
+        if not triggers and dock.isFloating() and dock.isVisible() and not self.game_data_lock_reason():
+            self._commit_focus_of(dock)
+        self.trigger_detail_dock.setVisible(triggers)
+        self.trigger_detail_dock.toggleViewAction().setEnabled(triggers)
+        if triggers:
+            self.trigger_detail_dock.raise_()
+
+    def _sync_trigger_detail_layout(self) -> None:
+        """GH #387: one column docked left or right or floating; docked above or
+        below the map, Settings > Appearance's layout. A typed value commits first."""
+        dock = self.trigger_detail_dock
+        across = not dock.isFloating() and self.dockWidgetArea(dock) in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea)
+        layout = settings.get_trigger_details_bottom_layout() if across else "column"
+        if layout == self.trigger_panel.detail_layout():
+            return
+        if dock.focusWidget() is not None and not self.game_data_lock_reason():
+            self._commit_focus_of(dock)
+        self.trigger_panel.set_detail_layout(layout)
+
+    def _on_trigger_detail_shown(self) -> None:
+        """The type picker opened: Trigger Details comes to the front, and its
+        window gets the keys, so the picker's filter takes typing at once."""
+        self._sync_trigger_detail_dock()
+        window = self.trigger_detail_dock.window()
+        if window is not QApplication.activeWindow():
+            window.activateWindow()
+
+    def _on_trigger_detail_visibility(self, visible: bool) -> None:
+        # A closed dock (not one behind a tab) would strand an open picker with the entry list greyed.
+        if not visible and self.trigger_detail_dock.isHidden() and self.trigger_panel._picker_trigger_index is not None:
+            self.trigger_panel._close_picker()
 
     def _apply_default_layout(self, panel_width: int | None = None, log_height: int | None = None) -> None:
-        """Panel docked left and log docked under the map, both shown, the
+        """Panel docked left with Trigger Details under it, log docked under
+        the map, all shown (Trigger Details in Triggers mode only), the
         minimap docked right of the log but closed, and the toolbars shown: a
         first run, a saved state that will not restore, and View > Panels >
         Reset Layout. `log_height` is the bare log's, as the splitter layout
@@ -136,6 +199,7 @@ class _ViewerToolbarMixin:
         default, the minimap's minimum height floors the row only once opened."""
         docks = (
             (self.panel_dock, Qt.LeftDockWidgetArea),
+            (self.trigger_detail_dock, Qt.LeftDockWidgetArea),
             (self.log_dock, Qt.BottomDockWidgetArea),
             (self.minimap_dock, Qt.BottomDockWidgetArea),
         )
@@ -143,6 +207,7 @@ class _ViewerToolbarMixin:
             dock.setFloating(False)
             self.addDockWidget(area, dock)
             dock.show()
+        self.splitDockWidget(self.panel_dock, self.trigger_detail_dock, Qt.Vertical)
         self.splitDockWidget(self.log_dock, self.minimap_dock, Qt.Horizontal)
         self.main_toolbar.show()
         self.tool_options_toolbar.show()
@@ -152,7 +217,20 @@ class _ViewerToolbarMixin:
         self.resizeDocks([self.panel_dock], [panel_width or DEFAULT_PANEL_WIDTH], Qt.Horizontal)
         self.resizeDocks([self.log_dock], [log_height + title_bar], Qt.Vertical)
         self.resizeDocks([self.minimap_dock], [DEFAULT_MINIMAP_WIDTH], Qt.Horizontal)
+        if self.isVisible():
+            self._split_left_column()
+        else:
+            self._left_column_split_pending = True
         self.minimap_dock.hide()
+        self._sync_trigger_detail_dock()
+
+    def _split_left_column(self) -> None:
+        """GH #387: the editor panel's share of the column it splits with
+        Trigger Details. Only a shown window knows the column's height."""
+        self._left_column_split_pending = False
+        column = self.panel_dock.height() + self.trigger_detail_dock.height()
+        detail = column * (100 - _DEFAULT_PANEL_SHARE_PCT) // 100
+        self.resizeDocks([self.panel_dock, self.trigger_detail_dock], [column - detail, detail], Qt.Vertical)
 
     def _restore_window_layout(self) -> None:
         """The saved dock and toolbar arrangement, else the default one with
@@ -160,24 +238,26 @@ class _ViewerToolbarMixin:
         that is gone comes back on a live one: Qt itself moves it
         (tests/test_window_layout.py pins that)."""
         state = settings.get_window_state()
-        if state is not None and self.restoreState(QByteArray(state), WINDOW_STATE_VERSION):
-            return
-        split = settings.get_split_sizes()
-        self._apply_default_layout(split[0] if split else None, settings.get_log_height())
+        if state is None or not self.restoreState(QByteArray(state), WINDOW_STATE_VERSION):
+            split = settings.get_split_sizes()
+            self._apply_default_layout(split[0] if split else None, settings.get_log_height())
+        self._sync_trigger_detail_layout()
 
     def _close_docks(self) -> None:
         """Saves the arrangement, then hides a floating dock: a window of its
         own, it would stay on screen after this window closes."""
         settings.set_window_state(bytes(self.saveState(WINDOW_STATE_VERSION)))
-        for dock in (self.panel_dock, self.log_dock, self.minimap_dock):
+        for dock in self._docks():
             if dock.isFloating():
                 dock.hide()
+
+    def _docks(self) -> tuple[QDockWidget, ...]:
+        return (self.panel_dock, self.trigger_detail_dock, self.log_dock, self.minimap_dock)
 
     def _owns_widget(self, widget: QWidget | None) -> bool:
         """Whether `widget` is in this window, its docks included. isAncestorOf()
         alone stops at a floating dock, which is a window of its own."""
-        docks = (self, self.panel_dock, self.log_dock, self.minimap_dock)
-        return widget is not None and any(w.isAncestorOf(widget) for w in docks)
+        return widget is not None and any(w.isAncestorOf(widget) for w in (self, *self._docks()))
 
     def _focus_map_view(self) -> None:
         """Keys back to the map after a panel click. From a floating panel,
@@ -889,6 +969,7 @@ class _ViewerToolbarMixin:
         self.unit_brush_density_spin.setRange(density.minimum, density.maximum)
         self.unit_brush_density_spin.setValue(density.default)
         self.unit_brush_density_spin.setSuffix(" %")
+        keep_cursor_before_suffix(self.unit_brush_density_spin)
         self.unit_brush_density_spin.setToolTip(
             "The chance each tile under the brush gets a unit. Every tile is rolled once per drag, "
             "so going over it again adds nothing"

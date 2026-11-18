@@ -605,7 +605,7 @@ class ViewerWindow(
         # follow until focus-out commits it (_on_app_focus_changed()).
         self._text_undo_box: _MultiLineEdit | None = None
         # GH #64: a floating panel's box focus left, until focus lands somewhere (_on_app_focus_changed()).
-        self._left_floating_box: _MultiLineEdit | None = None
+        self._left_window_box: _MultiLineEdit | None = None
         # -- Autosave (Settings > Saving) -------------------------------
         # Repeating, interval from settings; armed by _reset_autosave_timer().
         self._autosave_timer = QTimer(self)
@@ -887,6 +887,11 @@ class ViewerWindow(
         self.trigger_panel.on_pick_unit = self._on_pick_unit_requested
         self.trigger_panel.unit_reference_tile = self._unit_reference_tile
         self.trigger_panel.on_go_to_group = self.go_to_trigger_group
+        # GH #388: Detail sentences read placed units; a Detail link is followed here.
+        self.trigger_panel.unit_reference = lambda ref_id: self._unit_reference_index().get(ref_id)
+        self.trigger_panel.on_summary_link = self.follow_trigger_link
+        # The last object link followed and its match, so the next click steps on.
+        self._match_cycle: tuple | None = None
         self.trigger_panel.text_box_lines = settings.get_text_box_lines
         self.trigger_panel.on_text_box_lines = settings.set_text_box_lines
         # GH #166: called per recompute, never captured, since _patch_unit_ref_index() can drop the index.
@@ -1065,6 +1070,8 @@ class ViewerWindow(
         self.left_stack.setMinimumWidth(settings.MIN_SPLIT_PANE)
         # GH #64: the map is the central widget; the mode panel and the log are docks.
         self.setCentralWidget(self.map_view)
+        # GH #387: the default layout's left column split, which needs the shown window's height.
+        self._left_column_split_pending = False
         self._build_docks()
 
         # GH #58: File > Data Mod and its parse; before the menu and status bar it adds to.
@@ -1074,6 +1081,8 @@ class ViewerWindow(
         self._build_status_bar()
         # After _build_toolbar(): the saved state places the toolbars too.
         self._restore_window_layout()
+        # GH #387: a restored state may show Trigger Details, but startup is in View mode.
+        self._sync_trigger_detail_dock()
         # The type picker opening or closing re-gates Edit > Cut/Copy/Paste, focus move or not.
         self.trigger_panel.detail_stack.currentChanged.connect(lambda _index: self._update_clipboard_actions())
         # Wired here rather than passed into MapView's constructor -- see the
@@ -1175,6 +1184,7 @@ class ViewerWindow(
             self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
             self._apply_left_pane_floor()
             self._show_panel_dock()
+            self._sync_trigger_detail_dock()
         # The markers themselves are mode-free; their emphasis is not, so
         # entering or leaving Players mode has to re-push them.
         with perf_trace.phase("camera_markers"):
@@ -1262,6 +1272,7 @@ class ViewerWindow(
         self.left_stack.setCurrentIndex(_LEFT_PAGE_FOR_MODE.get(self.mode, _LEFT_PAGE_INFO))
         self._apply_left_pane_floor()
         self._show_panel_dock()
+        self._sync_trigger_detail_dock()
         self._selection = []
         self.map_view.set_unit_selection(None)
         self.units_panel.clear()
@@ -1293,6 +1304,8 @@ class ViewerWindow(
             self._cache_tool_button_widths()
             self._tool_overflow_measured = True
         self._apply_toolbar_overflow()
+        if self._left_column_split_pending:
+            self._split_left_column()
 
     def changeEvent(self, event) -> None:
         # Deferred and coalesced: apply_theme() sends several, and painting mid apply_theme() can segfault offscreen.

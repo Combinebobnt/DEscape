@@ -175,6 +175,7 @@ _SETTER_KEYS: dict[str, tuple[str, ...]] = {
     "set_favorite_star_style": ("favorite_star_style",),
     "set_units_catalog_right_click": ("units_catalog_right_click",),
     "set_terrain_grid_swatch_px": ("terrain_grid_swatch_px",),
+    "set_trigger_details_bottom_layout": ("trigger_details_bottom_layout",),
     "set_grid_blend": ("grid_blend", "grid_lightness"),
     "set_grid_thickness": ("grid_thickness",),
     "set_trigger_status_color": ("trigger_status_colors",),

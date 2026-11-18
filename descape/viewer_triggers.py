@@ -229,6 +229,7 @@ class _ViewerTriggersMixin:
         if refresh == "variables":
             # The non-modal variables dialog can remain open in any mode.
             self.trigger_panel.refresh_variables()
+            self.trigger_panel.refresh_trigger_details()
         elif refresh and self.mode == "triggers":
             if refresh == "panel":
                 # Rebuilt rather than patched, for the same reason

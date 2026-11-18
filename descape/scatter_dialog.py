@@ -51,6 +51,7 @@ from PyQt5.QtWidgets import (
 
 from descape import batch_api, object_catalog, player_labels, scatter
 from descape.render_units import unit_tile_bounds
+from descape.spin_boxes import keep_cursor_before_suffix
 from descape.terrain_palette import name_for_terrain_id, terrain_ids
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.viewer_common import _add_player_item
@@ -317,6 +318,7 @@ class ScatterDialog(QDialog):
         self.grow_spin.setRange(0, MAX_GROW)
         self.grow_spin.setValue(DEFAULT_GROW)
         self.grow_spin.setSuffix(" tiles")
+        keep_cursor_before_suffix(self.grow_spin)
         self.grow_spin.setToolTip("Widens the selected units' bounding box on every side")
         self.grow_label = QLabel("Grow by:")
         grow_row = QHBoxLayout()
@@ -396,6 +398,7 @@ class ScatterDialog(QDialog):
         self.density_spin.setRange(MIN_DENSITY_PERCENT, 100)
         self.density_spin.setValue(10)
         self.density_spin.setSuffix(" % of eligible tiles")
+        keep_cursor_before_suffix(self.density_spin)
         self.density_spin.setEnabled(False)
         form.addRow(self.density_radio, self.density_spin)
 

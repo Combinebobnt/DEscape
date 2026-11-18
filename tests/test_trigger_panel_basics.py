@@ -698,7 +698,7 @@ def test_the_attribute_family_shares_one_field_order_on_the_form_and_the_row() -
             *cluster, "object_group2", "object_type2", "source_player", "operation", "object_attributes", "message",
         ]
         entry = panel._manager().triggers[0].effects[for_class]
-        assert panel._describe("effect", entry)[1].startswith("quantity=5")
+        assert panel._summarize("effect", entry)[1].raw.startswith("quantity=5")
 
         _select_entries(panel, ("effect", for_class), ("effect", modify))
         assert [spec.name for spec, *_ in panel._rows] == [

@@ -7,7 +7,9 @@ from descape import (
     facet_preview,
     library_compat,
     trigger_geometry,
+    trigger_range,
     trigger_status,
+    trigger_summary,
     unit_references,
 )
 from descape.render_cache_splice import UnitSplice
@@ -322,11 +324,69 @@ class _ViewerTriggerOverlayMixin:
         if tile is None:
             self._log_status(f"Go to: this entry's {group} is not set")
             return
-        mm = loaded.map_manager
+        x, y = self._centre_on_tile(tile)
+        self._log_status(f"Centred on the {'selected objects' if group == GROUP_OBJECTS else group} ({x}, {y})")
+
+    def _centre_on_tile(self, tile) -> tuple[int, int]:
+        """Centre the map on `tile`, clamped to the map; the tile it used."""
+        mm = self.scenario.map_manager
         x = max(0, min(mm.map_width - 1, tile[0]))
         y = max(0, min(mm.map_height - 1, tile[1]))
         self.map_view.center_on_tile(x, y)
-        self._log_status(f"Centred on the {'selected objects' if group == GROUP_OBJECTS else group} ({x}, {y})")
+        return x, y
+
+    def follow_trigger_link(self, target: tuple) -> None:
+        """GH #388: a Detail link, (trigger_index, kind, entry_index, link). Coordinates
+        centre the map, a placed object or selected objects centre on them, an object
+        filter steps through its matches and a trigger name selects that trigger."""
+        link = target[3]
+        if self.scenario is None or not link:
+            return
+        what = link[0]
+        if what == trigger_summary.LINK_TRIGGER:
+            reason = self.trigger_panel.reveal_trigger_id(link[1])
+            if reason:
+                self._log_status(f"Trigger link: {reason}")
+            return
+        if what == trigger_summary.LINK_MATCH:
+            self.go_to_matching_objects(link[1])
+            return
+        if what == trigger_summary.LINK_AREA:
+            tile, label = trigger_geometry.area_centre(link[1:5]), "area"
+        elif what == trigger_summary.LINK_TILE:
+            tile, label = link[1:3], "location"
+        elif what == trigger_summary.LINK_UNIT:
+            tile, label = self._unit_reference_tile(link[1]), "object"
+        else:
+            tiles = [t for t in (self._unit_reference_tile(r) for r in link[1]) if t is not None]
+            tile, label = trigger_geometry.tile_centroid(tiles), "selected objects"
+        if tile is None:
+            self._log_status(f"Go to: the {label} {'are' if label.endswith('s') else 'is'} not on the map")
+            return
+        x, y = self._centre_on_tile(tile)
+        self._log_status(f"Centred on the {label} ({x}, {y})")
+
+    def go_to_matching_objects(self, found: trigger_summary.ObjectFilter) -> None:
+        """Centre on the next placed unit an object link's filter matches,
+        stepping through them, by reference id, on each click of the same link."""
+        refs = sorted(
+            (
+                ref
+                for ref in self._unit_reference_index().by_id.values()
+                if ref.bounds is not None
+                and trigger_summary.matches(found, ref, trigger_range.class_of, trigger_range.object_type_of)
+            ),
+            key=lambda ref: ref.reference_id,
+        )
+        if not refs:
+            self._match_cycle = None
+            self._log_status(f"No {found.label} on the map")
+            return
+        last = self._match_cycle
+        step = (last[1] + 1) % len(refs) if last is not None and last[0] == found else 0
+        self._match_cycle = (found, step)
+        x, y = self._centre_on_tile(refs[step].own_tile)
+        self._log_status(f"{found.label} {step + 1} of {len(refs)} ({x}, {y})")
 
     def arm_unit_picker(self, target: tuple) -> None:
         """Pick from map for one Unit/Unit[] field. Leaves self._selection

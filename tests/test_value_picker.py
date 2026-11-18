@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
+from PyQt5.QtTest import QTest
 
 from descape.value_picker import (
     PickerItem,
@@ -506,6 +507,52 @@ def test_a_label_two_groups_share_commits_the_rows_groups_item(group: str, expec
     widget.line_edit.setText("Treasure Chest")
     widget.line_edit.editingFinished.emit()
     assert received == [expected]
+
+
+def _shared_chest_held_on_a_units_row():
+    items = [
+        PickerItem(label="Treasure Chest", value=1, group="Others"),
+        PickerItem(label="Treasure Chest", value=2, group="Units"),
+    ]
+    widget = _line_edit(items)
+    widget.set_value(1)
+    widget.set_group("Units")  # the row's list type switched under the field
+    received = []
+    widget.committed.connect(received.append)
+    return widget, received
+
+
+def test_leaving_a_shared_label_unedited_keeps_its_value_after_a_group_switch() -> None:
+    """PyQt5 fires editingFinished on a focus-out with no edit, which wrote
+    the Units chest over the Others one and pushed an undo step."""
+    widget, received = _shared_chest_held_on_a_units_row()
+    widget.line_edit.editingFinished.emit()
+    assert received == []
+    assert widget.value() == 1
+
+
+def test_typing_back_to_the_shown_label_keeps_its_value_after_a_group_switch() -> None:
+    widget, received = _shared_chest_held_on_a_units_row()
+    widget.line_edit.end(False)
+    QTest.keyClicks(widget.line_edit, "x")
+    QTest.keyClick(widget.line_edit, Qt.Key_Backspace)
+    widget.line_edit.editingFinished.emit()
+    assert received == []
+    assert widget.value() == 1
+
+
+def test_browse_on_a_units_row_still_picks_the_units_item_of_a_shared_label(monkeypatch) -> None:
+    """Browse lists only the row's group, so it is the way to the Units chest."""
+
+    def fake_exec(dialog):
+        dialog.view.select(2)
+        dialog._accept_current()  # OK
+        return ValueBrowseDialog.Accepted
+
+    monkeypatch.setattr(ValueBrowseDialog, "exec_", fake_exec)
+    widget, received = _shared_chest_held_on_a_units_row()
+    widget._browse()
+    assert received == [2]
 
 
 def test_set_value_shows_a_label_outside_the_group() -> None:

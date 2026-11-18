@@ -217,6 +217,32 @@ def test_the_filter_row_does_not_clip_at_the_minimum_width() -> None:
 
 
 # -- TASK-285: the tree / detail split starts as equal halves --------------------
+# GH #387: in the window the form is the Trigger Details dock, so these splits are a standalone
+# panel's (screenshot tools), sized like the dock was at 1500x900 before it; the window's are
+# tests/test_trigger_detail_dock.py's.
+
+
+def _standalone_panel(window, height: int = 770):
+    """A shown TriggerPanel of its own on `window`'s scenario, first trigger selected."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.trigger_panel import TriggerPanel
+
+    panel = TriggerPanel()
+    panel.show_scenario(window.scenario)
+    panel.resize(TriggerPanel.MIN_USEFUL_WIDTH, height)
+    panel.show()
+    QApplication.processEvents()
+    panel.select_trigger(0)
+    QApplication.processEvents()
+    return panel
+
+
+def _close_standalone(window, panel) -> None:
+    panel.close()
+    panel.deleteLater()
+    window.edit_history.mark_saved()
+    window.close()
 
 
 def _assert_the_detail_pane_fits(panel) -> None:
@@ -235,47 +261,42 @@ def test_the_trigger_tree_keeps_the_height_its_button_rows_gave_up() -> None:
     """Five button rows left the tree viewport 70 px at this 1500x900 window.
     TASK-212 and TASK-330 took three of them out, 99 px, but the splitter
     shared its height by the panes' size hints, so the tree stood at 122 px."""
-    from PyQt5.QtWidgets import QApplication
 
     window = _sectioned_window()
+    panel = _standalone_panel(window)
     try:
-        QApplication.processEvents()
-        panel = window.trigger_panel
         top, bottom = panel.splitter.sizes()
         assert abs(top - bottom) <= 1, f"the split starts as equal halves, not {top}:{bottom}"
         viewport = panel.tree.viewport().height()
         assert viewport >= 70 + 99, f"the tree viewport is {viewport} px (194 measured)"
         _assert_the_detail_pane_fits(panel)
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)
 
 
-@pytest.mark.parametrize("height", [720, 680])
+@pytest.mark.parametrize("height", [590, 550])
 def test_the_split_never_takes_the_detail_pane_below_its_minimum(height: int) -> None:
-    """720 is the app's default window. At 680 an equal half is less than the
-    detail pane's minimum, so the tree gives the difference back. (660 until
-    the panel became a dock, whose title bar takes 21 px of the column.)"""
+    """The panel's heights at a 720 window (the app's default) and a 680 one
+    before GH #387. At 550 an equal half is less than the detail pane's
+    minimum, so the tree gives the difference back."""
     from PyQt5.QtWidgets import QApplication
 
-    window = conftest.shown_window(1280, height)
+    window = conftest.shown_window(1280, 720)
+    window.load_scenario(TRIGGER_FIXTURE)
+    QApplication.processEvents()
+    panel = _standalone_panel(window, height)
     try:
-        window.load_scenario(TRIGGER_FIXTURE)
-        window.mode_combo.setCurrentText("Triggers")
-        QApplication.processEvents()
-        panel = window.trigger_panel
         top, bottom = panel.splitter.sizes()
         minimum = panel.splitter.widget(1).minimumSizeHint().height()
         assert top + bottom >= panel.splitter.widget(0).minimumSizeHint().height() + minimum, "fixture: both fit"
-        if height == 680:
+        if height == 550:
             assert (top + bottom) // 2 < minimum, "fixture: an equal half would be too little"
             assert bottom == minimum and top < bottom
         else:
             assert abs(top - bottom) <= 1
         _assert_the_detail_pane_fits(panel)
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)
 
 
 def _drag_handle(handle, dy: int) -> None:
@@ -300,23 +321,21 @@ def test_dragging_the_tree_detail_handle_still_moves_and_keeps_the_split() -> No
     from PyQt5.QtWidgets import QApplication
 
     window = _sectioned_window()
+    panel = _standalone_panel(window)
     try:
-        QApplication.processEvents()
-        panel = window.trigger_panel
         top, bottom = panel.splitter.sizes()
 
         _drag_handle(panel.splitter.handle(1), -40)
         assert panel.splitter.sizes() == [top - 40, bottom + 40]
 
         # A later resize keeps the dragged proportion; it does not go back to the starting split.
-        window.resize(1500, 1000)
+        panel.resize(panel.width(), panel.height() + 100)
         QApplication.processEvents()
         grown_top, grown_bottom = panel.splitter.sizes()
         assert grown_top + grown_bottom == top + bottom + 100
         assert grown_bottom - grown_top >= bottom - top + 80
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)
 
 
 # -- GH #274: the bar between the condition and effect list and its form -------
@@ -326,15 +345,14 @@ def test_the_entry_bar_trades_height_between_the_list_and_the_form() -> None:
     from PyQt5.QtWidgets import QApplication
 
     window = _sectioned_window()
+    panel = _standalone_panel(window)
     try:
-        QApplication.processEvents()
-        panel = window.trigger_panel
         bars = panel.splitter.sizes()
         top, bottom = panel.detail_splitter.sizes()
         handle = panel.detail_splitter.handle(1)
-        tree_bottom = panel.entry_tree.mapTo(window, panel.entry_tree.rect().bottomLeft()).y()
-        bar = handle.mapTo(window, handle.rect().center()).y()
-        new_top = panel.entry_new_button.mapTo(window, panel.entry_new_button.rect().topLeft()).y()
+        tree_bottom = panel.entry_tree.mapTo(panel, panel.entry_tree.rect().bottomLeft()).y()
+        bar = handle.mapTo(panel, handle.rect().center()).y()
+        new_top = panel.entry_new_button.mapTo(panel, panel.entry_new_button.rect().topLeft()).y()
         assert tree_bottom < bar < new_top, "the bar sits under the list, above the buttons"
 
         # Up: at this window the form's floor leaves the list almost no room to grow.
@@ -343,20 +361,19 @@ def test_the_entry_bar_trades_height_between_the_list_and_the_form() -> None:
         assert panel.splitter.sizes() == bars, "the upper bar stays where it was"
 
         # A later resize keeps the dragged proportion; it does not go back to equal.
-        window.resize(1500, 1000)
+        panel.resize(panel.width(), panel.height() + 100)
         QApplication.processEvents()
         grown_top, grown_bottom = panel.detail_splitter.sizes()
         assert grown_top + grown_bottom > top + bottom
         assert grown_bottom - grown_top >= bottom - top + 80
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)
 
 
 def test_neither_side_of_the_entry_bar_collapses() -> None:
     window = _sectioned_window()
+    panel = _standalone_panel(window)
     try:
-        panel = window.trigger_panel
         total = sum(panel.detail_splitter.sizes())
         for dy, side, name in ((-total, 0, "entry list"), (total, 1, "form")):
             _drag_handle(panel.detail_splitter.handle(1), dy)
@@ -364,17 +381,15 @@ def test_neither_side_of_the_entry_bar_collapses() -> None:
             assert size >= panel.detail_splitter.widget(side).minimumSizeHint().height(), f"the {name} went below its minimum"
             _assert_the_detail_pane_fits(panel)
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)
 
 
 def test_the_picker_takes_the_pane_and_gives_the_dragged_split_back() -> None:
     from PyQt5.QtWidgets import QApplication
 
     window = _sectioned_window()
+    panel = _standalone_panel(window)
     try:
-        panel = window.trigger_panel
-        QApplication.processEvents()
         handle = panel.detail_splitter.handle(1)
         _drag_handle(handle, -30)
         dragged = panel.detail_splitter.sizes()
@@ -390,5 +405,4 @@ def test_the_picker_takes_the_pane_and_gives_the_dragged_split_back() -> None:
         assert panel.entry_tree.isVisible() and handle.isVisible()
         assert panel.detail_splitter.sizes() == dragged
     finally:
-        window.edit_history.mark_saved()
-        window.close()
+        _close_standalone(window, panel)

@@ -253,6 +253,12 @@ units_catalog_right_click: menu
 # Anything else falls back to the default on read. Default: 48.
 terrain_grid_swatch_px: 48
 
+# How Trigger Details lays out docked above or below the map, Settings >
+# Appearance: game (each field where the game's trigger editor puts it) or
+# compact (the form's rows in columns). Docked at a side or floating it is one
+# column either way. Default: game.
+trigger_details_bottom_layout: game
+
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
 selection_by_owner: true
@@ -511,6 +517,7 @@ keybinds:
   view_panel_dock: ''
   view_log_dock: ''
   view_minimap_dock: ''
+  view_trigger_detail_dock: ''
   view_reset_layout: ''
   view_layer_terrain_textures: ''
   view_layer_terrain_blend: ''
@@ -706,6 +713,27 @@ button_grid_all_triggers: false
 trigger_status_colors:
   ok: '#4caf50'
   problem: '#e05252'
+
+# The Triggers panel's condition and effect Details, Settings > Appearance >
+# Condition and effect details: readable sentences or the raw fields, their
+# style, and how players, flags, ids, long text and links read. A missing or
+# malformed option reads as its default, shown here.
+trigger_details:
+  mode: readable
+  sentence_style: short
+  player_text: number
+  player_colour: box
+  show_off_flags: false
+  show_ids: false
+  text_cap: 40
+  link_coords: true
+  link_objects: true
+  link_triggers: true
+  show_unit_ids: true
+  show_hp: false
+  text_tags: colour
+  unit_id_limit: 0
+  selected_with_area: objects
 
 # Settings > Saving. Autosave writes its own rotating recovery slot on a
 # timer, never the file you have open, and never clears the unsaved-changes

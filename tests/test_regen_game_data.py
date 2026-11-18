@@ -29,6 +29,7 @@ TOOL = ROOT / "tools" / "regen_game_data.py"
 NON_DAT_TABLES = {
     "cliff_connectivity.json",  # measured from scenario files by tools/gen_cliff_connectivity.py
     "trigger_requirements.json",  # hand-kept
+    "trigger_summaries.json",  # hand-kept (GH #388)
 }
 
 FAKE_GENERATORS = (

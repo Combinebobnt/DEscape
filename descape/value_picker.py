@@ -451,17 +451,18 @@ class ValueLineEdit(QWidget):
         populate-time path. Callers connect to `committed` after calling
         this, matching every other widget built this way."""
         self._value = value
-        if value is None:
-            self.line_edit.setText("")
-            return
-        item = self._by_value(value)
-        if item is not None:
-            self.line_edit.setText(_rendered_text(item, self._show_values))
-        else:
-            self.line_edit.setText(f"unknown ({value})" if self._show_values else str(value))
+        self.line_edit.setText(self._displayed_text(value))
         # Show the start, not the end: setText() leaves the cursor past the
         # last character, so a label too long for the field read "nown (9999)".
         self.line_edit.setCursorPosition(0)
+
+    def _displayed_text(self, value: int | None) -> str:
+        if value is None:
+            return ""
+        item = self._by_value(value)
+        if item is not None:
+            return _rendered_text(item, self._show_values)
+        return f"unknown ({value})" if self._show_values else str(value)
 
     # camelCase because it overrides QWidget.setEnabled, not a style slip.
     def setEnabled(self, enabled: bool) -> None:
@@ -502,6 +503,10 @@ class ValueLineEdit(QWidget):
     def _commit_from_text(self, text: str | None = None) -> None:
         typed = (text if text is not None else self.line_edit.text()).strip()
         if not typed:
+            return
+        if typed == self._displayed_text(self._value):
+            # The field still shows its value: a focus-out after the row's group
+            # changed must not move a shared label to the new group's item.
             return
         if typed.lstrip("-").isdigit():
             # The raw-value escape hatch: settable even when the item list

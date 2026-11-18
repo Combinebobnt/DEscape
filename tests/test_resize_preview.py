@@ -377,7 +377,7 @@ def test_a_spin_and_an_anchor_change_both_reach_the_widget() -> None:
     dialog = _dialog()
     try:
         assert dialog.preview.plan is dialog.plan and dialog.plan.refusal is not None
-        dialog.width_spin.setValue(70)
+        dialog.size_picker.spin.setValue(70)
         assert (dialog.preview.plan.new_w, dialog.preview.plan.new_h) == (70, 70)
         assert dialog.preview.plan is dialog.plan
         dialog.anchor_buttons[Anchor.BOTTOM_RIGHT].setChecked(True)
@@ -391,7 +391,7 @@ def test_no_source_no_widget() -> None:
     dialog = _dialog(preview=False)
     try:
         assert dialog.preview is None
-        dialog.width_spin.setValue(70)  # a refresh with nothing to tell
+        dialog.size_picker.spin.setValue(70)  # a refresh with nothing to tell
         assert dialog.plan.new_w == 70
     finally:
         dialog.deleteLater()
@@ -405,9 +405,9 @@ def test_resize_enables_as_it_does_without_a_preview() -> None:
         for dialog in dialogs:
             ok = dialog.buttons.button(QDialogButtonBox.Ok)
             assert ok.text() == "Resize" and not ok.isEnabled()
-            dialog.width_spin.setValue(70)
+            dialog.size_picker.spin.setValue(70)
             assert ok.isEnabled()
-            dialog.width_spin.setValue(100)
+            dialog.size_picker.spin.setValue(100)
             assert not ok.isEnabled()
     finally:
         for dialog in dialogs:
@@ -422,15 +422,54 @@ def test_a_longer_summary_grows_the_shown_dialog_and_a_shorter_one_does_not_shri
         dialog.show()
         QApplication.processEvents()
         opened = dialog.height()
-        dialog.width_spin.setValue(70)
+        dialog.size_picker.spin.setValue(70)
         QApplication.processEvents()
         assert dialog.height() > opened
         label = dialog.summary_label
         assert label.height() >= label.heightForWidth(label.width())
         grown = dialog.height()
-        dialog.width_spin.setValue(90)
+        dialog.size_picker.spin.setValue(90)
         QApplication.processEvents()
         assert dialog.height() == grown
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_typing_a_size_plans_it_and_enter_never_resizes() -> None:
+    """TASK-620: a click at the size box's end takes typing; a size under the
+    minimum says so and disables Resize; Enter shows a plan, never resizes."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication, QDialogButtonBox
+
+    from descape.map_size_picker import invalid_size_message
+
+    dialog = _dialog()
+    ok = dialog.buttons.button(QDialogButtonBox.Ok)
+    line_edit = dialog.size_picker.spin.lineEdit()
+    try:
+        dialog.show()
+        QApplication.processEvents()
+        QTest.mouseClick(line_edit, Qt.LeftButton, pos=QPoint(line_edit.width() - 4, line_edit.height() // 2))
+        for _ in range(3):
+            QTest.keyClick(line_edit, Qt.Key_Backspace)
+        QTest.keyClicks(line_edit, "200")
+        assert (dialog.plan.new_w, dialog.plan.new_h) == (200, 200) and ok.isEnabled()
+        for _ in range(3):
+            QTest.keyClick(line_edit, Qt.Key_Backspace)
+        QTest.keyClicks(line_edit, "60")
+        assert dialog.summary_label.text() == invalid_size_message() and not ok.isEnabled()
+        QTest.keyClick(line_edit, Qt.Key_Return)
+        assert dialog.isVisible() and line_edit.text().startswith("60")
+        QTest.keyClick(line_edit, Qt.Key_Tab)
+        assert dialog.new_size == (200, 200) and ok.isEnabled()
+        assert dialog.summary_label.text() == dialog.plan.summary()
+        dialog.size_picker.spin.setFocus(Qt.TabFocusReason)
+        dialog.size_picker.spin.selectAll()
+        QTest.keyClicks(line_edit, "168")
+        QTest.keyClick(line_edit, Qt.Key_Return)
+        assert dialog.isVisible() and dialog.plan.new_w == 168
     finally:
         dialog.close()
         dialog.deleteLater()

@@ -37,6 +37,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import cliff_catalog, debug_log, settings, tool_option_bindings, tool_options
+from descape.spin_boxes import keep_cursor_before_suffix
 from descape.viewer_common import FocusWheelComboBox, KeepOpenMenu
 
 if TYPE_CHECKING:
@@ -177,6 +178,7 @@ class ToolDefaultsPage(QWidget):
             spin = _FocusWheelSpinBox()
             row_widget = self._window.tool_option_bindings[name].widgets[0]
             spin.setSuffix(row_widget.suffix())
+            keep_cursor_before_suffix(spin)
             spin.setRange(spec.minimum, spec.maximum if spec.maximum is not None else spec.minimum)
             return spin
         if spec.kind == tool_options.SET:

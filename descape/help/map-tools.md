@@ -6,6 +6,8 @@ These commands work on the whole map, or on many objects at once, from any mode.
 
 **Map > Resize Map…** grows or shrinks the open map, keeping any of nine anchors in place: a corner, the middle of an edge, or the centre. Terrain, elevation, objects, and trigger areas and locations move with the map. New ground is plain grass at the height of the old edge beside it, so no cliff-like jump appears. It opens on the anchor you last chose with Resize, until you quit DEscape.
 
+Pick one of the game's map sizes under Size, or type any size in the box beside it; the open map's size is marked "current". Enter in the Size row shows what that size would do without resizing, and a size below the minimum says so and leaves Resize greyed out.
+
 The dialog's preview shows how the new map will sit over the old one, and follows the current view: a diamond in an isometric view, a square in top-down Flat. The solid outline is the new map, the dashed one the old map, and the small ring marks the anchor. Pale ground is new. The dark area is cut off, along with everything on it. Red points are player objects that will be deleted, and anything the new edge cuts through. Trees and other GAIA objects in the dark area get no mark of their own, so the dialog's count can be larger than the number of red points.
 
 Objects that end up off the map, or that the new edge would cut through, are deleted together with anything garrisoned in them. The dialog says how many before you commit, and how many trigger references would then point at a deleted object. Trigger areas are shifted only in files whose triggers DEscape can write back; otherwise the dialog warns that they are left as they were.

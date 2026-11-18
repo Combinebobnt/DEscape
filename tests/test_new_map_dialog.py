@@ -38,37 +38,30 @@ def dialog_for():
 
 def test_size_rows_are_the_presets_in_order_then_custom(dialog_for) -> None:
     dialog = dialog_for()
-    combo = dialog.size_combo
+    combo = dialog.size_picker.combo
     labels = [combo.itemText(i) for i in range(combo.count())]
     assert labels == [f"{STANDARD_MAP_SIZE_NAMES[t]} ({t}×{t})" for t in STANDARD_MAP_SIZES] + ["Custom"]
     assert labels[0] == "Tiny (120×120)"
     assert labels[-2] == "Ludicrous (480×480)"
 
 
-def test_custom_enables_the_size_spin_and_presets_disable_it(dialog_for) -> None:
+def test_the_size_spin_stays_enabled_and_follows_the_combo(dialog_for) -> None:
     dialog = dialog_for()
+    picker = dialog.size_picker
     assert not dialog.is_custom
-    assert not dialog.custom_spin.isEnabled()
-    dialog.size_combo.setCurrentIndex(dialog.size_combo.count() - 1)
-    assert dialog.is_custom
-    assert dialog.custom_spin.isEnabled()
-    dialog.custom_spin.setValue(300)
-    assert dialog.tiles == 300
-    dialog.size_combo.setCurrentIndex(1)
-    assert not dialog.custom_spin.isEnabled()
-    assert dialog.tiles == 144
+    assert picker.spin.isEnabled()
+    picker.spin.setValue(300)
+    assert dialog.is_custom and dialog.tiles == 300
+    picker.combo.setCurrentIndex(1)
+    assert dialog.tiles == 144 and picker.spin.value() == 144
 
 
-def test_custom_row_shows_the_size_range(dialog_for) -> None:
+def test_the_size_spin_shows_the_size_range(dialog_for) -> None:
     from descape.scenario_new import MAX_MAP_TILES, MIN_MAP_TILES
 
-    dialog = dialog_for()
-    spin = dialog.custom_spin
+    spin = dialog_for().size_picker.spin
     assert (spin.minimum(), spin.maximum()) == (MIN_MAP_TILES, MAX_MAP_TILES)
-    from PyQt5.QtWidgets import QFormLayout
-
-    label = dialog.findChild(QFormLayout).labelForField(spin)
-    assert label.text() == f"Custom size ({MIN_MAP_TILES}-{MAX_MAP_TILES}):"
+    assert f"{MIN_MAP_TILES}-{MAX_MAP_TILES}" in spin.toolTip()
 
 
 def test_both_games_are_listed_and_pickable(dialog_for) -> None:
@@ -109,7 +102,7 @@ def test_choice_matches_the_widgets_after_accept(dialog_for) -> None:
 
     dialog = dialog_for()
     assert dialog.choice is None
-    dialog.size_combo.setCurrentIndex(dialog.size_combo.findData(144))
+    dialog.size_picker.combo.setCurrentIndex(dialog.size_picker.combo.findData(144))
     dialog.terrain_combo.setCurrentIndex(dialog.terrain_combo.findData(_BEACH))
     dialog.elevation_spin.setValue(3)
     dialog.accept()
@@ -132,8 +125,7 @@ def test_an_initial_custom_size_selects_custom(dialog_for) -> None:
 
     dialog = dialog_for(NewMapChoice(tiles=300, terrain_id=_BEACH, elevation=5))
     assert dialog.is_custom
-    assert dialog.custom_spin.isEnabled()
-    assert dialog.custom_spin.value() == 300
+    assert dialog.size_picker.spin.value() == 300
     assert dialog.current_choice() == NewMapChoice(tiles=300, terrain_id=_BEACH, elevation=5)
 
 
@@ -142,7 +134,7 @@ def test_an_initial_preset_selects_that_preset(dialog_for) -> None:
 
     dialog = dialog_for(NewMapChoice(tiles=240))
     assert not dialog.is_custom
-    assert dialog.size_combo.currentText() == "Giant (240×240)"
+    assert dialog.size_picker.combo.currentText() == "Giant (240×240)"
 
 
 def test_bad_initial_values_fall_back_to_the_defaults(dialog_for) -> None:
@@ -321,7 +313,7 @@ def test_the_window_behind_the_panel_takes_no_shortcut_click_or_close() -> None:
 
     def check(dialog, modal):
         assert not file_menu.isEnabled()
-        QTest.keyClick(dialog.size_combo, Qt.Key_S, Qt.ControlModifier)
+        QTest.keyClick(dialog.size_picker.combo, Qt.Key_S, Qt.ControlModifier)
         behind = window.button.geometry().topLeft() + QPoint(5, 5)  # on the button, outside the panel
         assert not dialog.geometry().contains(behind)
         assert window.childAt(behind) is modal
@@ -358,9 +350,9 @@ def test_plain_keys_reach_the_panel_over_window_shortcuts() -> None:
     dialog = NewMapDialog(window)
 
     def check(dialog, modal):
-        dialog.size_combo.setCurrentIndex(0)
-        QTest.keyClick(dialog.size_combo, Qt.Key_S)
-        assert dialog.size_combo.currentText() == "Small (144×144)"
+        dialog.size_picker.combo.setCurrentIndex(0)
+        QTest.keyClick(dialog.size_picker.combo, Qt.Key_S)
+        assert dialog.size_picker.combo.currentText() == "Small (144×144)"
         assert window.fired == []
         return "reject"
 
@@ -375,6 +367,38 @@ def test_plain_keys_reach_the_panel_over_window_shortcuts() -> None:
             result, _seen = _run_in(window, dialog, press)
             assert result == expected
         assert window.fired == []
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(("typed", "creates"), [("60", False), ("168", True)])
+def test_enter_in_the_size_box_creates_only_a_valid_size(typed, creates) -> None:
+    """TASK-620: Enter on a size under the minimum used to create at the last
+    valid size, which Qt put back silently; now it does nothing."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+
+    from descape.new_map_dialog import NewMapDialog
+
+    window = _main_window()
+    dialog = NewMapDialog(window)
+
+    def press(dialog, modal):
+        spin = dialog.size_picker.spin
+        spin.setFocus(Qt.TabFocusReason)
+        spin.selectAll()
+        QTest.keyClicks(spin.lineEdit(), typed)
+        assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled() is creates
+        QTest.keyClick(spin.lineEdit(), Qt.Key_Return)
+        assert dialog.isVisible() is not creates
+        return "reject"
+
+    try:
+        result, seen = _run_in(window, dialog, press)
+        assert "error" not in seen, seen.get("error")
+        assert result == (QDialog.Accepted if creates else QDialog.Rejected)
+        assert (dialog.choice.tiles == 168) if creates else dialog.choice is None
     finally:
         window.close()
 

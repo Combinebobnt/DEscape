@@ -1576,6 +1576,71 @@ def set_button_grid_all_triggers(enabled: bool) -> None:
     _save_config(config)
 
 
+# GH #388: the Triggers panel's Detail column, Settings > Appearance. One dict key, checked per option.
+TRIGGER_DETAILS_DEFAULTS: dict[str, object] = {
+    "mode": "readable",
+    "sentence_style": "short",
+    "player_text": "number",
+    "player_colour": "box",
+    "show_off_flags": False,
+    "show_ids": False,
+    "text_cap": 40,
+    "link_coords": True,
+    "link_objects": True,
+    "link_triggers": True,
+    "show_unit_ids": True,
+    "show_hp": False,
+    "text_tags": "colour",
+    "unit_id_limit": 0,
+    "selected_with_area": "objects",
+}
+TRIGGER_DETAILS_CHOICES: dict[str, tuple[str, ...]] = {
+    "mode": ("readable", "raw"),
+    "sentence_style": ("short", "full"),
+    "player_text": ("number", "full", "name"),
+    "selected_with_area": ("area", "objects", "objects_first", "area_first"),
+    "player_colour": ("off", "box", "text", "both"),
+    "text_tags": ("colour", "raw"),
+}
+TRIGGER_DETAILS_TEXT_CAP_MAX = 999
+TRIGGER_DETAILS_UNIT_ID_LIMIT_MAX = 20
+_TRIGGER_DETAILS_INT_MAX = {"text_cap": TRIGGER_DETAILS_TEXT_CAP_MAX, "unit_id_limit": TRIGGER_DETAILS_UNIT_ID_LIMIT_MAX}
+_trigger_details: dict | None = None
+
+
+def _valid_trigger_detail(key: str, value) -> bool:
+    if key in TRIGGER_DETAILS_CHOICES:
+        return value in TRIGGER_DETAILS_CHOICES[key]
+    if isinstance(TRIGGER_DETAILS_DEFAULTS[key], bool):
+        return isinstance(value, bool)
+    return _is_int(value) and 0 <= value <= _TRIGGER_DETAILS_INT_MAX[key]
+
+
+def get_trigger_details() -> dict:
+    """Every TRIGGER_DETAILS_DEFAULTS key; a missing or malformed stored option reads as its default."""
+    global _trigger_details
+    if _trigger_details is None:
+        raw = _load_config().get("trigger_details")
+        raw = raw if isinstance(raw, dict) else {}
+        _trigger_details = {
+            key: raw[key] if key in raw and _valid_trigger_detail(key, raw[key]) else default
+            for key, default in TRIGGER_DETAILS_DEFAULTS.items()
+        }
+    return dict(_trigger_details)
+
+
+def set_trigger_details(values: dict) -> None:
+    """Merges `values` over the stored options. Raises ValueError, writing nothing, on an unknown key or a bad value."""
+    for key, value in values.items():
+        if key not in TRIGGER_DETAILS_DEFAULTS or not _valid_trigger_detail(key, value):
+            raise ValueError(f"bad trigger_details option {key!r}: {value!r}")
+    global _trigger_details
+    _trigger_details = {**get_trigger_details(), **values}
+    config = _load_config()
+    config["trigger_details"] = dict(_trigger_details)
+    _save_config(config)
+
+
 # The Ruler's on-map measurement label, Settings > Appearance -- previously
 # MapView.RULER_LABEL_FONT_PX, a hardcoded constant hand-bumped once already
 # after in-app feedback (2026-08-26) and likely to be re-litigated again.
@@ -2019,6 +2084,35 @@ def set_favorite_star_style(style: str) -> None:
     config["favorite_star_style"] = style
     _save_config(config)
 
+
+# GH #387: how Trigger Details lays out docked above or below the map, Settings > Appearance (no theme file).
+TRIGGER_DETAILS_BOTTOM_LAYOUTS: list[tuple[str, str]] = [("game", "Game layout"), ("compact", "Compact columns")]
+TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT = "game"
+_TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS = tuple(lid for lid, _label in TRIGGER_DETAILS_BOTTOM_LAYOUTS)
+_trigger_details_bottom_layout: str | None = None
+
+
+def get_trigger_details_bottom_layout() -> str:
+    """One of TRIGGER_DETAILS_BOTTOM_LAYOUTS' ids; an off-list value falls back to the default."""
+    global _trigger_details_bottom_layout
+    if _trigger_details_bottom_layout is None:
+        raw = _load_config().get("trigger_details_bottom_layout")
+        valid = raw in _TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS
+        _trigger_details_bottom_layout = raw if valid else TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT
+    return _trigger_details_bottom_layout
+
+
+def set_trigger_details_bottom_layout(layout: str) -> None:
+    """Raises ValueError, writing nothing, on a layout not in TRIGGER_DETAILS_BOTTOM_LAYOUTS."""
+    global _trigger_details_bottom_layout
+    if layout not in _TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS:
+        raise ValueError(
+            f"trigger_details_bottom_layout must be one of {list(_TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS)}, got {layout!r}"
+        )
+    _trigger_details_bottom_layout = layout
+    config = _load_config()
+    config["trigger_details_bottom_layout"] = layout
+    _save_config(config)
 
 # GH #195: what a right-click on a Units catalog row does, Settings > Advanced.
 UNITS_CATALOG_RIGHT_CLICKS: list[tuple[str, str]] = [
@@ -2746,6 +2840,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_panel_dock", "Editor Panel", ""),
     ("view_log_dock", "Status Log", ""),
     ("view_minimap_dock", "Minimap", ""),
+    ("view_trigger_detail_dock", "Trigger Details", ""),
     ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows

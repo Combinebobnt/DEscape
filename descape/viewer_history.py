@@ -60,16 +60,17 @@ class _ViewerHistoryMixin:
         the Edit menu follows its document's own undo stack. Opening the menu
         leaves focusWidget() on the box (a popup focus-out, which the box also
         exempts from committing), so the menu stays live while it is open."""
-        # GH #64: from a floating panel's box into this window is a window switch the box does not
-        # commit, but it is the click inside one window that would have committed it when docked.
-        # A WM may report it in two steps, through no focus widget at all.
-        if isinstance(old, _MultiLineEdit) and self.panel_dock.isFloating() and self.panel_dock.isAncestorOf(old):
-            self._left_floating_box = old
+        # GH #64, #387: a move from a box into another of this window's windows (a floating dock) commits it,
+        # as the same click would with everything docked. A WM may report it in two steps, via no focus widget.
+        if isinstance(old, _MultiLineEdit) and self._owns_widget(old):
+            self._left_window_box = old
         if new is not None:
-            left, self._left_floating_box = self._left_floating_box, None
-            if left is not None and self.isAncestorOf(new):
+            left, self._left_window_box = self._left_window_box, None
+            if left is not None and self._owns_widget(new):
+                # A deleted box (the form rebuilt) raises on window() too.
                 with contextlib.suppress(RuntimeError):
-                    left.editingFinished.emit()
+                    if new.window() is not left.window():
+                        left.editingFinished.emit()
         # GH #137: before the early return, which every non-box move takes.
         self._update_clipboard_actions()
         box = new if isinstance(new, _MultiLineEdit) and self._owns_widget(new) else None

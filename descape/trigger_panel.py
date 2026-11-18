@@ -5,7 +5,8 @@ TriggerPanel is this module's class plus eight mixins, one module per area:
 - trigger_panel.py: the class constants, __init__, the widget tree's
   construction, document state (clear_document, show_scenario, the flat and
   grouped populates), changeEvent and resizeEvent, and the shared filter
-  helpers; the trigger tree and its inline-rename delegate.
+  helpers; the trigger tree, its inline-rename delegate, the status line
+  and the resize-reporting detail stack (GH #387).
 - trigger_panel_organize.py: the tag combo and tag requests, section
   navigation and collapse state, and section management.
 - trigger_panel_list.py: selection preservation and the trigger list.
@@ -42,6 +43,7 @@ from PyQt5.QtWidgets import (
     QAction,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -64,6 +66,7 @@ from descape import (
     library_compat,
     player_labels,
     settings,
+    trigger_form_layout,
     trigger_organize,
     trigger_status,
 )
@@ -92,6 +95,9 @@ from descape.trigger_panel_status import StatusStyle, _StatusMemo, _TriggerPanel
 from descape.trigger_panel_structure import _MoveButton, _TriggerPanelStructureMixin
 from descape.trigger_panel_variables import VariablesDialog, _TriggerPanelVariablesMixin
 from descape.trigger_status import Status
+from descape.trigger_summary import Context as SummaryContext
+from descape.trigger_summary import Options as SummaryOptions
+from descape.trigger_summary_delegate import TriggerSummaryDelegate
 from descape.value_picker import ValueLineEdit, _HScrollStableTreeWidget
 from descape.viewer_common import (
     FontScaledWidth,
@@ -117,6 +123,48 @@ class _TriggerTree(_HScrollStableTreeWidget):
         # A current-row change lands here directly, past the delegate's closeEditor signal.
         super().closeEditor(editor, hint)
         self.editor_closed.emit()
+
+
+class _DetailStack(QStackedWidget):
+    """detail_stack. In the window's Trigger Details dock (GH #387) the panel's
+    own resizeEvent no longer sees the form's width change, so this reports it."""
+
+    def __init__(self, on_resize) -> None:
+        super().__init__()
+        self._on_resize = on_resize
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._on_resize()
+
+
+class _StatusLabel(QLabel):
+    """The wrapped line above the trigger list. QLabel's minimumSizeHint counts
+    one line, so a column at its floor cut the trigger pane by the rest (GH #387)."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setWordWrap(True)
+        self._wrapped_height = 0
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setHeight(max(hint.height(), self._wrapped_height))
+        return hint
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refit()
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self._refit()
+
+    def _refit(self) -> None:
+        height = self.heightForWidth(self.width()) if self.width() > 0 else 0
+        if height != self._wrapped_height:
+            self._wrapped_height = height
+            self.updateGeometry()
 
 
 class _TriggerNameDelegate(QStyledItemDelegate):
@@ -168,7 +216,8 @@ class TriggerPanel(
     convention is present (Display order only -- see show_scenario()). The
     bottom is the selected trigger's conditions and effects, plus a property
     form for whichever of them is selected, with a second bar between the
-    two (detail_splitter, GH #274).
+    two (detail_splitter, GH #274). In the window the form moves out to its
+    own dock (take_detail_stack(), GH #387).
 
     Condition and effect names come from library_compat.load_vocabulary(),
     which reads the library's own per-version JSON rather than its module-level
@@ -347,9 +396,17 @@ class TriggerPanel(
         # Go to's request, (trigger_index, kind, entry_index, group). Assigned by the window.
         self.unit_reference_tile = lambda ref_id: None
         self.on_go_to_group = lambda target: None
+        # GH #388: a placed unit's unit_references.UnitRef or None, for the Detail sentences, and a
+        # Detail link's request, (trigger_index, kind, entry_index, link). Assigned by the window.
+        self.unit_reference = lambda ref_id: None
+        self.on_summary_link = lambda target: None
         # GH #139: a text box's stored height in lines by key, and its store (None resets). Assigned by the window.
         self.text_box_lines = lambda key: None
         self.on_text_box_lines = lambda key, lines: None
+        # GH #387: the picker opened, so the window can bring the Trigger Details dock to the front.
+        self.on_detail_shown = lambda: None
+        # GH #387: whether take_detail_stack() moved the form out to the window's dock.
+        self._detail_detached = False
         # GH #166: (vocabulary, trigger_ids) -> trigger_status.StatusContext, called on every
         # recompute (the window can drop and rebuild its reference index), and the marker style.
         # Assigned by the window; these defaults treat every unit id as placed.
@@ -425,6 +482,8 @@ class TriggerPanel(
         # GH #130: PlayerId combos' labels and swatches, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
+        # GH #388: (options, context) the Detail sentences render with, rebuilt per populate.
+        self._summary_setup = (SummaryOptions(), SummaryContext())
         # GH #374: the instruction preview's portrait colour index per player, pushed with the colours.
         self._team_indices = None
         # GH #140: the form's Display Instructions preview, or None.
@@ -434,6 +493,14 @@ class TriggerPanel(
         self._facet_preview_field = ""
         self._button_grid: ButtonGrid | None = None
         self._rows: list[tuple] = []
+        # GH #387: "column", or "game" / "compact" docked above or below the map (set_detail_layout()).
+        self._detail_layout = "column"
+        # Each property form row's block key, in order; the rows as rehomed, and their grid hosts.
+        self._form_row_keys: list[str] = []
+        self._form_blocks: list[trigger_form_layout.Block] = []
+        self._grid_cells: list[QWidget] = []
+        # Compact's column per block, so a resize rebuilds only when the split changes.
+        self._compact_flow: list[int] = []
         # GH #41: field name -> object list type last chosen, kept across repopulates of one selection.
         self._list_types: dict[str, str] = {}
         self._list_types_refs: tuple | None = None
@@ -489,8 +556,7 @@ class TriggerPanel(
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.status = QLabel(self._NO_DOCUMENT)
-        self.status.setWordWrap(True)
+        self.status = _StatusLabel(self._NO_DOCUMENT)
         layout.addWidget(self.status)
 
         self.splitter = QSplitter(Qt.Vertical)
@@ -723,6 +789,9 @@ class TriggerPanel(
         self.entry_tree.setColumnCount(2)
         self.entry_tree.setUniformRowHeights(True)
         self._configure_scrolling(self.entry_tree)
+        self._summary_delegate = TriggerSummaryDelegate(self.entry_tree)
+        self._summary_delegate.install(self.entry_tree, 1)
+        self._summary_delegate.link_activated.connect(self._on_summary_link)
         # Multi-select (GH #60), the entry-level twin of the trigger tree's.
         self.entry_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         # One click fires both; _sync_entry_form()'s latch makes it one populate.
@@ -787,7 +856,7 @@ class TriggerPanel(
         # stack rather than two stacked widgets: the picker is a 140-row tree
         # and a permanent home for it would halve the form's height on every
         # document, including the ones nobody ever adds a condition to.
-        self.detail_stack = QStackedWidget()
+        self.detail_stack = _DetailStack(self._on_detail_resized)
         self.detail_stack.addWidget(self._build_property_page())  # _DETAIL_FORM
         self.detail_stack.addWidget(self._build_picker_page())  # _DETAIL_PICKER
         self.multi_label = QLabel("")
@@ -800,6 +869,26 @@ class TriggerPanel(
         self.detail_splitter.setStretchFactor(1, 1)
         self.detail_splitter.setSizes([self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
         return self.detail_splitter
+
+    def take_detail_stack(self) -> QStackedWidget:
+        """GH #387: hand the property form, picker and multi-select note to the
+        window's Trigger Details dock. The entry list joins its button row's
+        pane, detail_splitter's only child, so no bar is left between them."""
+        pane = self.detail_stack.parentWidget()
+        pane.layout().removeWidget(self.detail_stack)
+        self.detail_stack.setParent(None)
+        pane.layout().insertWidget(0, self.entry_tree, stretch=1)
+        # Without the form, the lower pane needs less than the trigger list, which the issue scrolls.
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setSizes([2 * self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
+        self._detail_detached = True
+        return self.detail_stack
+
+    def _on_detail_resized(self) -> None:
+        # Docked inside the panel, resizeEvent() already covers this.
+        if self._detail_detached and not self._populating:
+            self._reflow_compact()
+            self._fit_property_height()
 
     def _build_button_row(self, buttons, slot_for, ops, button_class=QPushButton) -> QHBoxLayout:
         """One row of equally-weighted push buttons, stored on self by name."""
@@ -831,7 +920,19 @@ class TriggerPanel(
         # with a combo demanding 430 px, every wrap policy pushed the form into
         # horizontal overflow instead, which is the opposite of the intent.
         self.property_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        self.property_area.setWidget(self.property_host)
+        # GH #387: the rows move to grid_host when the dock sits above or below the map; one shows at a time.
+        self.grid_host = QWidget()
+        self.grid_layout = QGridLayout(self.grid_host)
+        self.grid_layout.setHorizontalSpacing(18)
+        self.grid_host.hide()
+        holder = QWidget()
+        stack = QVBoxLayout(holder)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(self.property_host)
+        # At the top: the grid's height is fixed, and a box layout would centre it in the spare height.
+        stack.addWidget(self.grid_host, 0, Qt.AlignTop)
+        self.property_area.setWidget(holder)
         return self.property_area
 
     def _build_picker_page(self) -> QWidget:
@@ -919,8 +1020,9 @@ class TriggerPanel(
         if self.entry_tree.topLevelItemCount():
             self._fit_entry_columns()
         # A narrower pane wraps more rows, so the form's height is a function
-        # of the width too.
-        self._fit_property_height()
+        # of the width too. A detached form refits from its own resize.
+        if not self._detail_detached:
+            self._fit_property_height()
 
     @staticmethod
     def _configure_scrolling(tree: QTreeWidget) -> None:
@@ -958,6 +1060,8 @@ class TriggerPanel(
             self._loaded = None
             self._vocabulary = None
             self._editable = False
+            # Its closures hold the closed document's trigger manager.
+            self._summary_setup = (SummaryOptions(), SummaryContext())
             self._reset_statuses()
             self._item_for_index = {}
             self._display_slots = []

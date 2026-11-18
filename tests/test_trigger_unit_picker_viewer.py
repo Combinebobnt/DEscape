@@ -611,7 +611,7 @@ def test_a_type_pick_turns_the_object_list_type_row() -> None:
         form = panel.property_form
         combo = next(
             widget
-            for widget in panel.findChildren(QComboBox)
+            for widget in panel.detail_stack.findChildren(QComboBox)
             if form.labelForField(widget) is not None and form.labelForField(widget).text() == panel.LIST_TYPE_CAPTION
         )
         assert combo.currentText() == "Units"

@@ -466,9 +466,9 @@ def test_custom_set_to_a_preset_size_does_not_confirm(monkeypatch) -> None:
         raise AssertionError("QMessageBox.question must not be called for a preset size")
 
     def custom_480(dialog, window):
-        dialog.size_combo.setCurrentIndex(dialog.size_combo.count() - 1)
-        dialog.custom_spin.setValue(480)
-        assert dialog.is_custom
+        dialog.size_picker.spin.setValue(480)
+        dialog.size_picker.combo.setCurrentIndex(dialog.size_picker.combo.count() - 1)
+        assert dialog.is_custom and dialog.tiles == 480
         dialog.accept()
         return QDialog.Accepted
 

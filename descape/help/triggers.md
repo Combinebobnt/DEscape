@@ -1,6 +1,10 @@
 # Triggers
 
-Triggers mode edits the scenario's triggers: their conditions, their effects and the order they run in. Pick **Triggers** in the toolbar's Mode list. The left pane shows the trigger list on top and the selected trigger's conditions and effects below it, and the map stays on the right.
+Triggers mode edits the scenario's triggers: their conditions, their effects and the order they run in. Pick **Triggers** in the toolbar's Mode list. The left pane shows the trigger list on top and the selected trigger's conditions and effects below it. The selected row's fields fill the **Trigger Details** panel under it, and the map stays on the right.
+
+Trigger Details shows only in Triggers mode. Like the other panels it can float, dock on any edge of the main window, or sit in a tab with another panel: drag it by its title bar onto the middle of the Status Log to read a trigger's fields under the map while you scroll the list. Switching to Triggers mode, or opening the list of condition and effect types, brings its tab to the front. **View > Panels > Reset Layout** puts it back under the left pane, and [View and Filters](view-and-filters.md) covers the panels.
+
+Docked above or below the map, Trigger Details spreads its fields across the panel instead of one tall column. In **Game layout** each field sits where the game's own trigger editor puts it: the object list type and object list in the first column, the source player, object group and object type in the second, Set Objects, Set Area and Set Location in the third, and so on. Typed coordinates sit on one line under their Set, Go to and Reset buttons, each beside its caption. A field the game's editor does not place takes the first free spot, fields move up and left into empty spots so a type with few fields keeps them together, and each column stacks on its own, so a tall box never pushes the next column's fields down. **Compact columns** keeps the usual field order and fills columns down to the panel's height, captions beside the fields. Pick one under **Settings > Appearance > Trigger Details under the map** ([Settings](settings.md)). Docked on the left or right, or floating, it is one column either way.
 
 The line above the list counts the triggers and says which order they run in, a setting in [Map Options](map-options.md). The first column is each trigger's place in display order. It is headed **Exec #** when that is also the order they run in, and **Display #** when the file runs them by trigger ID or doesn't store which order it uses.
 
@@ -8,7 +12,7 @@ The line above the list counts the triggers and says which order they run in, a 
 
 Type in **Filter triggers…** to show only the triggers whose names match. The sort box beside it switches between **Display order**, the order the in-game editor shows, and **File order (trigger ID)**. A disabled trigger shows "(disabled)" after its name.
 
-Click a trigger to edit it. Ctrl+click and Shift+click select several; the lower pane then shows only a count, and the buttons act on all of them. **Edit > Select All** selects every trigger the filter shows.
+Click a trigger to edit it. Ctrl+click and Shift+click select several; Trigger Details then shows only a count, and the buttons act on all of them. **Edit > Select All** selects every trigger the filter shows.
 
 Double-click a trigger, or right-click it and choose **Rename**, to rename it right in the list. Enter or clicking away keeps the new name, Esc cancels, and each rename is one undo step. On a section header you edit only its title, and its dashes stay as they are; change those in the trigger's Name field. A section header with triggers under it keeps collapsing on a double-click, so rename it from the right-click menu or the **Sections** button.
 
@@ -35,14 +39,24 @@ Right-click a trigger for Cut, Copy, Paste below it, **Rename**, the four moves,
 
 ## Conditions and effects
 
-The lower pane lists a **Trigger** row, which holds the trigger's own fields (name, descriptions, enabled, looping and the objective settings), then its Conditions and Effects in display order. Drag the bar between this list and the buttons under it to give either more height.
+The lower pane lists a **Trigger** row, which holds the trigger's own fields (name, descriptions, enabled, looping and the objective settings), then its Conditions and Effects in display order.
 
 - **New** opens a list of every condition and effect type. Filter it, then double-click a type or press **Add**. With Conditions or Effects highlighted first, the other group starts collapsed.
 - **Type…** changes the selected condition or effect to another type. Fields the new type lacks are dropped, and the status log under the map names them.
 - **Duplicate**, **Delete**, ▲ and ▼ act on the selected ones, with the same Shift and Ctrl clicks as the trigger list.
 - Right-click for Cut, Copy, Paste, the moves and **Select Same Type**. Conditions and effects have their own clipboard and paste into any trigger. With this list focused, the Edit menu reads **Edit > Cut Conditions/Effects**, **Edit > Copy Conditions/Effects** and **Edit > Paste Conditions/Effects**.
 
-Select a row to edit its fields underneath. Select several and the form shows only the fields they share; one they disagree on reads "(differs)" and changes nothing until you set it. Each change is one undo step.
+Each condition and effect's Detail reads as a short sentence, such as `P2 to P1, visible` for Set Player Visibility or `"Wave 2"` for Activate Trigger. Underlined parts are links:
+
+- Coordinates centre the map on the area or location.
+- A placed object, or several selected objects, centres the map on them.
+- An object type such as `P7 Castle` centres on the next matching object on the map at each click, only those inside the entry's area when it has one; the status log counts them.
+- An object Create Object or Place Foundation is about to make goes to where it will appear, and Replace Object's replacement goes to what it replaces.
+- A trigger name selects that trigger.
+
+A field the sentence leaves out is added after a `+` when it is set. Hover a Detail for its set fields as stored. **Settings > Appearance > Condition and effect details** switches to Full sentences or the raw fields, and changes how players, flags, ids and long text read.
+
+Select a row to edit its fields in Trigger Details. Select several and the form shows only the fields they share; one they disagree on reads "(differs)" and changes nothing until you set it. Each change is one undo step.
 
 Conditions and effects keep the fields they share in the same order, so a field sits in the same place from one type to the next, and Modify Attribute and its siblings start with their quantity rows.
 

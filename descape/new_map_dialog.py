@@ -8,8 +8,9 @@ in X11 mode, the desktop alone places a new window and ignores the app's
 move(), so a separate window could open in a screen corner. A child widget
 is placed by DEscape itself, so it is centered on every OS and session.
 
-Custom stays square: non-square maps do not load through the pinned library
-yet (see scenario_new.blank_body()). Game data picks the donor: Age of
+The size is a map_size_picker.MapSizePicker, shared with Map > Resize Map…,
+and stays square: non-square maps do not load through the pinned library yet
+(see scenario_new.blank_body()). Game data picks the donor: Age of
 Empires II or Return of Rome (GH #67). Both games list the same terrains, so
 the Terrain list does not change with it.
 
@@ -50,15 +51,10 @@ from descape import (
     terrain_catalog,
     terrain_units,
 )
+from descape.map_size_picker import MapSizePicker
 from descape.scenario_io import BLANK_TEMPLATE_TILES
-from descape.scenario_new import (
-    MAX_MAP_TILES,
-    MIN_MAP_TILES,
-    STANDARD_MAP_SIZE_NAMES,
-    STANDARD_MAP_SIZES,
-)
+from descape.scenario_new import MAX_MAP_TILES, MIN_MAP_TILES
 
-CUSTOM_LABEL = "Custom"
 # Terrain swatches decoded per timer tick after the dialog shows: a .dds
 # decode is ~28 ms (terrain_browser), so ~112 at once held the dialog back,
 # and one per tick keeps every pause to a single decode.
@@ -85,10 +81,6 @@ class NewMapChoice:
         return asdict(self)
 
 
-def size_label(tiles: int) -> str:
-    return f"{STANDARD_MAP_SIZE_NAMES[tiles]} ({tiles}×{tiles})"
-
-
 def terrain_entries() -> list[terrain_catalog.TerrainEntry]:
     """The Terrain panel's list: catalog rows without the hidden ones, by display name."""
     entries = [entry for entry in terrain_catalog.terrains() if not entry.hidden]
@@ -96,7 +88,7 @@ def terrain_entries() -> list[terrain_catalog.TerrainEntry]:
 
 
 class NewMapDialog(QDialog):
-    """Size (the seven presets, then Custom with a square size spin), Game
+    """Size (the seven presets and Custom, beside a square size spin), Game
     data, Terrain, Plant (Trees, Eye candy) and Elevation. After accept,
     `choice` holds the picked NewMapChoice. An initial value the widgets cannot show (an unknown
     terrain, an unknown game data, an out-of-range number) falls back to
@@ -122,19 +114,8 @@ class NewMapDialog(QDialog):
         layout.addWidget(title)
         form = QFormLayout()
 
-        self.size_combo = QComboBox()
-        for tiles in STANDARD_MAP_SIZES:
-            self.size_combo.addItem(size_label(tiles), tiles)
-        self.size_combo.addItem(CUSTOM_LABEL, None)
-        self.size_combo.setToolTip("One of the game's map sizes, or Custom to type a size")
-        self.custom_spin = QSpinBox()
-        self.custom_spin.setRange(MIN_MAP_TILES, MAX_MAP_TILES)
-        self.custom_spin.setSuffix(" tiles")
-        self.custom_spin.setToolTip(
-            f"Square map size, {MIN_MAP_TILES}-{MAX_MAP_TILES} tiles; non-square maps are not supported yet"
-        )
-        form.addRow("Size:", self.size_combo)
-        form.addRow(f"Custom size ({MIN_MAP_TILES}-{MAX_MAP_TILES}):", self.custom_spin)
+        self.size_picker = MapSizePicker(BLANK_TEMPLATE_TILES)
+        form.addRow("Size:", self.size_picker)
 
         self.game_data_combo = QComboBox()
         for game_data in settings.new_map_game_data():
@@ -193,7 +174,8 @@ class NewMapDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-        self.size_combo.currentIndexChanged.connect(self._sync_custom_spin)
+        # Create waits for a valid size: on clicking it, Qt would put back the last one silently.
+        self.size_picker.validity_changed.connect(self.buttons.button(QDialogButtonBox.Ok).setEnabled)
         self.game_data_combo.currentIndexChanged.connect(self._sync_game_data_note)
         self.game_data_combo.currentIndexChanged.connect(self._sync_plant_boxes)
         self.terrain_combo.currentIndexChanged.connect(self._sync_plant_boxes)
@@ -271,23 +253,15 @@ class NewMapDialog(QDialog):
         self._fit_to_contents()
 
     def _set_size(self, tiles: int) -> None:
-        index = self.size_combo.findData(tiles) if tiles in STANDARD_MAP_SIZES else -1
-        if index < 0:
-            index = self.size_combo.count() - 1
-        self.custom_spin.setValue(tiles)
-        self.size_combo.setCurrentIndex(index)
-        self._sync_custom_spin()
-
-    def _sync_custom_spin(self) -> None:
-        self.custom_spin.setEnabled(self.is_custom)
+        self.size_picker.set_tiles(tiles)
 
     @property
     def is_custom(self) -> bool:
-        return self.size_combo.currentData() is None
+        return self.size_picker.is_custom
 
     @property
     def tiles(self) -> int:
-        return self.custom_spin.value() if self.is_custom else self.size_combo.currentData()
+        return self.size_picker.tiles
 
     def current_choice(self) -> NewMapChoice:
         return NewMapChoice(
@@ -411,7 +385,7 @@ class InWindowModal(QWidget):
         self._panel.show()
         self._recenter()
         self._panel.activateWindow()
-        self._panel.size_combo.setFocus(Qt.OtherFocusReason)
+        self._panel.size_picker.combo.setFocus(Qt.OtherFocusReason)
 
     def close(self) -> bool:
         QApplication.instance().removeEventFilter(self)

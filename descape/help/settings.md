@@ -32,6 +32,7 @@ Theme, chrome colours, UI font and toolbar buttons are covered in [View and Filt
 - Ruler label size, Distance ticks label size and Stacked-unit badge position set the text drawn on the map.
 - Favorite star: how the Units catalog and the Favorite Objects window mark a favorite. Gold has a dark outline so it reads on light themes; Black and white is white on dark themes and black on light ones (in Grid, a white star on the dark disc). Theme files carry it.
 - Terrain grid swatch size: how big each swatch is when Terrain mode's terrain picker shows a grid.
+- Trigger Details under the map: how Triggers mode's Trigger Details lays out when docked above or below the map. Game layout puts each field where the game's trigger editor does; Compact columns keeps the form's order in columns that fit the panel's height ([Triggers](triggers.md)).
 - Grid line blend and Grid thickness: how **View > Grid** looks. Left of the middle, blend darkens the terrain under the lines towards black; right of it, it lightens it towards white; in the middle the lines are invisible.
 
 ### Trigger status
@@ -39,6 +40,24 @@ Theme, chrome colours, UI font and toolbar buttons are covered in [View and Filt
 **Settings > Appearance > Trigger status** sets how the Triggers panel marks each trigger, condition and effect as complete or missing something: Colour, Tick and cross icons, Colour and icons, or Off. Unticking Mark triggers that pass leaves only the problems marked. Colour section rows colours a section's own row by its own conditions and effects. The two swatches change the Complete and Something missing colours.
 
 The icons sit in their own column between ID and Trigger, so the names line up, and a section with no conditions or effects shows a dash there. What counts as complete is in [Triggers](triggers.md).
+
+### Condition and effect details
+
+**Settings > Appearance > Condition and effect details** sets how the Triggers panel's Detail column reads:
+
+- **Detail view**: Readable sentences, or Raw fields (`attribute=value` pairs).
+- **Sentence style**: Short (`P2 to P1, visible`, the default) or Full (`P2 sees P1 as visible`).
+- **Player text**: `P2`, `P2 - Name` or `Name`. **Player colour** shows the player's colour as a box before it, as its text colour, both, or not at all.
+- **Flags that are off** adds them, as in `not forced`. **Ids after names** adds the id, as in `Castle #82`.
+- **Shorten text to** cuts quoted text at that many characters; Never keeps it whole.
+- **Colour tags** draws quoted text after a colour tag such as `<AQUA>` in that colour, or shows the tags as written.
+- **Placed object ids** adds a placed object's own id, as in `P1 Archer #500`.
+- **HP on heal and damage** reads `5 HP to P1 Archer` rather than `5 to P1 Archer` on Heal Object and Damage Object.
+- **List selected** sets how many ids several selected objects list, as in `5 selected P1 objects (#500, #501, …)`; Count only shows just the count.
+- **Objects and area** sets what an effect with both selected objects and an area shows: the selected objects (the default), the area, or both with either first.
+- **Links in the Detail column** turns the coordinate, object and trigger name links on or off.
+
+The Preview shows sample rows as you change them, and **Reset to Defaults** puts every option back.
 
 ## Tools
 
