@@ -410,7 +410,7 @@ class ValueLineEdit(QWidget):
         self._preview = preview
         self._browse_title = browse_title
         self._value: int | None = None
-        # set_group()'s filter: "" offers every item.
+        # set_group()'s group: "" puts no group first.
         self._group = ""
 
         layout = QHBoxLayout(self)
@@ -418,7 +418,7 @@ class ValueLineEdit(QWidget):
 
         self.line_edit = QLineEdit()
         self.line_edit.setPlaceholderText(placeholder)
-        self._completer_model = QStringListModel(self._rendered(self._items), self)
+        self._completer_model = QStringListModel(self._suggested(), self)
         completer = QCompleter(self._completer_model, self.line_edit)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
@@ -470,10 +470,11 @@ class ValueLineEdit(QWidget):
         self.browse_button.setEnabled(enabled)
 
     def set_group(self, group: str) -> None:
-        """Narrows the suggestions and Browse to one group's items, "" to every
-        item (GH #41). Display and a typed name or raw value still match all."""
+        """Puts one group's items first in the suggestions and narrows Browse
+        to them, "" for every item in order (GH #41, GH #375). Display and a
+        typed name or raw value still match all."""
         self._group = group
-        self._completer_model.setStringList(self._rendered(self._group_items()))
+        self._completer_model.setStringList(self._suggested())
 
     def group_of(self, value: int) -> str:
         """The group of the item holding `value`, or "" when no item does."""
@@ -484,6 +485,13 @@ class ValueLineEdit(QWidget):
         if not self._group:
             return self._items
         return tuple(item for item in self._items if item.group == self._group)
+
+    def _suggested(self) -> list[str]:
+        """The completer's labels: the group's first, then every other item,
+        a label two groups share kept once (GH #375)."""
+        if not self._group:
+            return list(dict.fromkeys(self._rendered(self._items)))
+        return list(dict.fromkeys(self._rendered(self._group_items()) + self._rendered(self._items)))
 
     def _rendered(self, items: Sequence[PickerItem]) -> list[str]:
         return [_rendered_text(item, self._show_values) for item in items]

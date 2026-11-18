@@ -682,6 +682,12 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("line", Role.INK, (2.5, 12, 21.5, 12, 1.4)),
         ("line", Role.INK, (12, 2.5, 12, 21.5, 1.4)),
     ),
+    # A gold star over list rows: the Favorite Objects window (GH #195).
+    "unit-favorites": (
+        ("poly", AMBER, (10, 1, 7.9, 6.6, 1.9, 6.9, 6.6, 10.6, 5, 16.4, 10, 13.1, 15, 16.4, 13.4, 10.6, 18.1, 6.9, 12.1, 6.6)),
+        ("line", Role.INK, (3, 19.5, 21, 19.5, 1.6)),
+        ("line", Role.INK, (3, 22.5, 15, 22.5, 1.6)),
+    ),
     # A page with a star.
     "help-release-notes": (
         ("rect", Role.INK_SOFT, (4, 2, 15, 20)),

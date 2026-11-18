@@ -45,9 +45,12 @@ def fake_derive(monkeypatch):
     """derive() writes every table, the .dat parse yields fixed id sets; counts calls."""
     calls = []
 
-    def derive(dat, install, out_dir, *, tools=None, parsed=None):
+    def derive(dat, install, out_dir, *, tools=None, parsed=None, progress=None):
         calls.append(dat)
         out_dir.mkdir(parents=True, exist_ok=True)
+        for i, (script, _names) in enumerate(dat_derive.GENERATORS):
+            if progress is not None:
+                progress(i, script)
         for name in dat_derive.TABLE_NAMES:
             (out_dir / name).write_text("{}")
         return list(FAKE_WARNINGS)
@@ -96,6 +99,29 @@ def test_an_entry_without_a_warnings_list_reads_as_none(tmp_path, install, mod_d
     assert found is not None and found.warnings == ()
 
 
+def test_a_build_reports_its_steps_in_order(tmp_path, install, mod_dat, fake_derive):
+    """GH #359: the mod's .dat, each generator, the game's ids, then done, in ascending percents."""
+    heard = []
+    dat_cache.build_entry(
+        mod_dat, install, tmp_path / "cache" / _key(mod_dat, install), progress=lambda *step: heard.append(step)
+    )
+    count = len(dat_derive.GENERATORS) + 2
+    assert heard[0] == (0, f"reading the mod's .dat (1 of {count})")
+    assert [caption for _percent, caption in heard[1:-2]] == [
+        f"{dat_cache.GENERATOR_CAPTIONS[script]} ({i + 2} of {count})"
+        for i, (script, _names) in enumerate(dat_derive.GENERATORS)
+    ]
+    assert heard[-2] == (100 - dat_cache.PROGRESS_WEIGHTS["game_ids"], f"reading the game's .dat ({count} of {count})")
+    assert heard[-1] == (100, "saving the tables")
+    percents = [percent for percent, _caption in heard]
+    assert percents == sorted(percents) and len(set(percents)) == len(percents)
+    assert heard[1][0] == dat_cache.PROGRESS_WEIGHTS["mod_dat"]
+
+
+def test_every_generator_has_a_progress_caption():
+    assert list(dat_cache.GENERATOR_CAPTIONS) == [script for script, _names in dat_derive.GENERATORS]
+
+
 def test_an_entry_without_meta_is_a_miss(tmp_path, install, mod_dat, fake_derive):
     key = _key(mod_dat, install)
     entry = dat_cache.build_entry(mod_dat, install, tmp_path / "cache" / key)
@@ -116,7 +142,7 @@ def test_an_unreadable_dat_fails_before_any_folder_exists(tmp_path, install, mod
 def test_a_failed_derive_never_lands_under_the_key(tmp_path, install, mod_dat, fake_derive, monkeypatch):
     key = _key(mod_dat, install)
 
-    def broken(dat, install, out_dir, *, tools=None, parsed=None):
+    def broken(dat, install, out_dir, *, tools=None, parsed=None, progress=None):
         out_dir.mkdir(parents=True)
         (out_dir / "unit_stats.json").write_text("{")
         raise RuntimeError("gen_unit_stats.py exited with 1")
@@ -192,17 +218,31 @@ def test_a_mod_read_from_the_game_profile_is_accepted(tmp_path, install, fake_de
     dat_cache.build_entry(dat, install, tmp_path / "cache" / _key(dat, install))
 
 
-def test_the_derive_subprocess_exit_codes(tmp_path, monkeypatch):
+def test_the_derive_subprocess_exit_codes(tmp_path, monkeypatch, capsys):
     built = []
-    monkeypatch.setattr(dat_cache, "build_entry", lambda dat, install, out: built.append((dat, install, out)))
+    def build(dat, install, out, *, progress):
+        built.append((dat, install, out))
+        progress(45, "building the unit art (2 of 12)")
+
+    monkeypatch.setattr(dat_cache, "build_entry", build)
     assert dat_derive.main(["a.dat", "inst", str(tmp_path / "k")]) == 0 and built == [(Path("a.dat"), Path("inst"), tmp_path / "k")]
+    assert capsys.readouterr().out == dat_cache.progress_line(45, "building the unit art (2 of 12)") + "\n"
     assert dat_derive.main(["only-one"]) == 2
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise AssertionError("VER 7.2")
 
     monkeypatch.setattr(dat_cache, "build_entry", fail)
     assert dat_derive.main(["a.dat", "inst", str(tmp_path / "k")]) == 1
+
+
+def test_a_progress_line_reads_back_and_nothing_else_does():
+    line = dat_cache.progress_line(45, "building the unit art (2 of 12)")
+    assert dat_cache.parse_progress_line(line) == (45, "building the unit art (2 of 12)")
+    assert dat_cache.parse_progress_line(line + "\r\n") == (45, "building the unit art (2 of 12)")
+    for other in ("", "wrote unit_stats.json", f"{dat_cache.PROGRESS_PREFIX}x5 caption", f"{dat_cache.PROGRESS_PREFIX}-5 c"):
+        assert dat_cache.parse_progress_line(other) is None, other
+    assert dat_cache.parse_progress_line(f"  {line}  ") == (45, "building the unit art (2 of 12)")
 
 
 def test_a_bare_parser_failure_names_the_dat_format(tmp_path):
@@ -280,6 +320,20 @@ def test_a_lenient_derive_labels_each_warning_by_its_generator(tmp_path, spy_too
     assert all("--lenient" in argv for argv in _argvs(out))
     assert sys.modules["_game_root"] is _game_root, "the caller's copy is put back"
     assert not _game_root.lenient()
+
+
+def test_a_derive_reports_each_generator_as_it_starts(tmp_path, spy_tools, no_cached_helper):
+    pytest.importorskip("genieutils")
+    out = tmp_path / "out"
+    heard = []
+
+    def progress(i, script):
+        # Before the generator runs: its argv line is not logged yet.
+        logged = len(_argvs(out)) if (out / "argv.jsonl").exists() else 0
+        heard.append((i, script, logged))
+
+    dat_derive.derive(tmp_path / "mod.dat", tmp_path / "install", out, tools=spy_tools, progress=progress)
+    assert heard == [(i, script, i) for i, (script, _names) in enumerate(dat_derive.GENERATORS)]
 
 
 def test_a_strict_derive_fails_on_the_first_guard_and_stays_strict(tmp_path, spy_tools, no_cached_helper):

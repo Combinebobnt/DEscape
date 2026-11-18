@@ -1008,6 +1008,22 @@ def _terrain_texture_for_path(path: Path):
     return arr
 
 
+def terrain_average_color_if_loaded(terrain_id: int) -> tuple[int, int, int] | None:
+    """get_terrain_average_color() if terrain_id's texture is already decoded,
+    else None, never decoding or waiting on a prefetch: the minimap's terrain
+    colour (GH #54). An lru eviction since leaves the path listed, which costs
+    one re-decode, as terrain_mask_loaded() notes."""
+    path = get_terrain_texture_path(terrain_id)
+    if path is None or path not in _loaded:
+        return None
+    return get_terrain_average_color(terrain_id)
+
+
+def loaded_texture_count() -> int:
+    """How many texture files are decoded: the minimap re-colours while this grows (GH #54)."""
+    return len(_loaded)
+
+
 def _load_texture(path: Path):
     """Decode and resize one texture file. Any thread: PIL releases the GIL."""
     import numpy as np

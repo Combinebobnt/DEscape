@@ -37,6 +37,7 @@ from descape import (
     wall_run,
 )
 from descape.constant_picker import preview_pixmap
+from descape.favorites_dialog import UnitFavoritesDialog
 from descape.render_cache_splice import UnitSplice
 from descape.render_units import NON_BUILDING_SPAN, _unit_gen_cached, occupied_tiles_for, snapped_anchor
 from descape.scatter_dialog import ScatterDialog, units_region
@@ -53,6 +54,9 @@ from descape.viewer_common import (
     _ghost_entry,
     _unit_name,
 )
+
+# GH #195: the tools a Favorite Objects pick keeps; any other switches to Place Unit.
+_FAVORITE_KEEPS_TOOLS = frozenset({"place_unit", "unit_brush", "unit_line", "unit_shape"})
 
 # TASK-327: wall_run.wall_scene() per scenario and unit_gen, which a gate's hover ghost asks per move.
 _GATE_SCENE_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -814,6 +818,69 @@ class _ViewerUnitPlaceMixin:
     def _set_last_wall(self, const: int) -> None:
         self._last_wall_const = const
         self._refresh_wall_pick_button()
+
+    # -- GH #195's Favorite Objects window ---------------------------------------
+
+    def _show_unit_favorites(self) -> None:
+        if self._favorites_dialog is None:
+            self._favorites_dialog = UnitFavoritesDialog(
+                self,
+                loader=self.units_panel.thumb_loader,
+                on_pick=self._arm_favorite,
+                on_reorder=self.units_panel.catalog_view.set_favorites,
+                on_remove=self.units_panel.catalog_view.remove_favorite,
+            )
+        self._refresh_unit_favorites()
+        self._sync_favorites_gate()
+        # Its hook pushes the Owner's portrait fill and civ to the window.
+        self.units_panel.refresh_portrait_civs()
+        self._favorites_dialog.show()
+        self._favorites_dialog.raise_()
+        self._favorites_dialog.activateWindow()
+
+    def _refresh_unit_favorites(self) -> None:
+        """The window's rows from the catalog's favorites, None for an id this dataset lacks."""
+        if self._favorites_dialog is None:
+            return
+        view = self.units_panel.catalog_view
+        self._favorites_dialog.set_entries([(value, view.entry(value)) for value in view.favorites()])
+
+    def refresh_favorite_stars(self) -> None:
+        """After Settings > Appearance's Favorite star changes: the catalog's and an open window's stars redrawn."""
+        self.units_panel.catalog_view.list.viewport().update()
+        if self._favorites_dialog is not None:
+            self._favorites_dialog.list.viewport().update()
+
+    def _on_favorites_placing_art(self, rgb: tuple[int, int, int], civ: int | None) -> None:
+        if self._favorites_dialog is None:
+            return
+        self._favorites_dialog.set_team_color(rgb)
+        self._favorites_dialog.set_civ(civ)
+
+    def _sync_favorites_gate(self) -> None:
+        """An open window's list follows Place Unit's gate, with a hint saying why it is off."""
+        if self._favorites_dialog is None:
+            return
+        if self.mode != "units":
+            hint = "Switch to Units mode to place a favorite."
+        elif self.scenario is None:
+            hint = "Open a scenario to place a favorite."
+        else:
+            hint = self.game_data_lock_reason() or "Place Unit is unavailable here."
+        self._favorites_dialog.set_pick_enabled(self.place_unit_action.isEnabled(), hint)
+
+    def _arm_favorite(self, value: int) -> None:
+        """A click in the Favorite Objects window: pick `value` in the catalog, keep a
+        placing tool (else Place Unit), and give the keys back to the map."""
+        if not self.place_unit_action.isEnabled():
+            self._log_status("Favorite: Place Unit is unavailable here")
+            return
+        if not self.units_panel.pick_object(value):
+            self._log_status(f"Favorite: could not pick {_unit_name(value)} in the catalog", level=debug_log.WARNING)
+            return
+        if self._current_tool not in _FAVORITE_KEEPS_TOOLS:
+            self.place_unit_action.setChecked(True)
+        self._focus_map_view()
 
     def _refresh_wall_menu(self) -> None:
         """The wall button's menu: the active dataset's wall family, less what its

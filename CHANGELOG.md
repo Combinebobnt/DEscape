@@ -43,8 +43,30 @@ content, link the doc instead of summarizing it.
 - **Portraits by the owner's civilization** (GH #372): unit and building
   portraits show the owner's architecture (else civilization) version, with
   the player colour shaded in as the game does, in the Units catalog, the
-  unit cards, the button grid and the instruction preview. (contributed by
-  @teslatankx, #376)
+  unit cards, the button grid and the instruction preview, each in its own
+  view's player colour (GH #374): the editor panel's, or the instruction
+  box's for the preview. (contributed by @teslatankx, #376, #384)
+- **Minimap** (GH #54): View > Panels > Minimap opens a panel, docked right
+  of the status log, that shows the whole map in the view's orientation with
+  the visible area outlined; a click or drag moves the view there. It starts
+  closed. (contributed by @teslatankx, #382)
+- **Favorite objects in Units mode** (GH #195): right-click a catalog
+  object to add or remove it as a favorite, a Favorites button lists them in
+  your own drag-sorted order, and Edit > Favorite Objects opens them in
+  their own window. One view dropdown replaces the Icons, Names and Grid
+  buttons. (contributed by @teslatankx, #381)
+- **Apply, OK, Cancel and Reset in Settings** (GH #191): changes still show
+  at once, Cancel puts back what was there at open or the last Apply, Reset
+  puts the current tab back on its defaults (keeping the install path,
+  profile folder and autosave folder), and closing with unapplied
+  changes asks first. (contributed by @teslatankx, #379)
+- **Loading progress bar** (GH #359): a bar on the right of the status bar
+  shows each stage of opening a scenario and each step of a data mod parse,
+  in place of the Parsing label. (contributed by @teslatankx, #389)
+- **`tools/infer_structure.py`**: infers a new scenario version's structure
+  from game-saved files, for maintainers. It finds inserted, deleted and
+  resized fields, lists the layouts it can't tell apart, and refuses with
+  the located divergence when a change is outside what it searches.
 
 ### Changed
 
@@ -53,6 +75,10 @@ content, link the doc instead of summarizing it.
 - **Smoother trigger overlays**: with many triggers selected, or one with a
   whole-map area, zooming, panning and hovering over the map stay smooth in
   every Elevation View, Sloped included.
+- **Object list suggestions in Triggers** (GH #375): an object field
+  suggests matches from every object list type, the chosen type's first, and
+  picking one of another type turns the row to that type. (contributed by
+  @teslatankx, #385)
 
 ### Fixed
 

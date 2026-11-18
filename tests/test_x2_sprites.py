@@ -442,7 +442,7 @@ def test_the_quality_slider_sets_the_flag_and_names_the_dlc(qtbot, monkeypatch, 
         assert not unit_sprites.hi_res()
         for value, want in ((settings.GRAPHICS_QUALITY_MAX, True), (settings.GRAPHICS_QUALITY_DEFAULT, False)):
             dialog.graphics_quality_slider.setValue(value)
-            dialog._apply_graphics_quality()
+            dialog._persist_graphics_quality()
             assert unit_sprites.hi_res() is want
         assert ("DLC not installed" in logged[0]) is not dlc
         assert "unit art" not in logged[1]  # Default says nothing about it

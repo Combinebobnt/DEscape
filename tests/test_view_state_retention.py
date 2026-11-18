@@ -199,7 +199,7 @@ def test_reset_view_default_still_fits() -> None:
 
 def test_reset_view_false_survives_a_graphics_quality_change() -> None:
     """refresh_map() (reset_view=False) is exactly what Settings > Appearance's
-    graphics-quality slider fires -- see ViewerWindow._apply_graphics_quality.
+    graphics-quality slider fires -- see SettingsDialog._persist_graphics_quality.
     That setting rescales tile_pixels_for_map()'s result, which rescales the
     WHOLE scene coordinate system (map_rect gets wider/narrower in scene
     units for the same map), so an absolute captured center point lands on a

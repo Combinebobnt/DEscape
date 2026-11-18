@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from descape import asset_source, settings, settings_file, themes, tool_options, view_layers
+from descape import asset_source, games, settings, settings_file, themes, tool_options, view_layers
 from testkit.settings_isolation import MEMOIZED_GLOBALS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +44,7 @@ _OVERLAY_COLOR_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COL
 _OVERLAY_OPACITY_IDS = tuple(gid for gid, _label, _default in settings.OVERLAY_OPACITIES)
 _TRIGGER_STATUS_IDS = tuple(sid for sid, _label, _default in settings.TRIGGER_STATUS_COLORS)
 _TOOL_OPTION_NAMES = tuple(spec.name for spec in tool_options.OPTIONS)
+_GAME_IDS = tuple(games.ids())
 
 # Dict-valued portable keys -> the ids a hostile value goes under. keybinds also takes the
 # renamed ids, whose value the rename copies before the collision reconciler runs.
@@ -57,6 +58,7 @@ DICT_KEY_IDS: dict[str, tuple] = {
     "trigger_status_colors": _TRIGGER_STATUS_IDS,
     "theme_colors": themes.ROLE_IDS,
     "text_box_lines": _TEXT_BOX_IDS,
+    "units_favorites": _GAME_IDS,
 }
 
 # One-argument getters -> the ids they are called with.
@@ -74,6 +76,7 @@ PER_ID_GETTERS: dict[str, tuple] = {
     "get_trigger_status_color_label": _TRIGGER_STATUS_IDS,
     "get_text_box_lines": _TEXT_BOX_IDS,
     "get_tool_option_default": _TOOL_OPTION_NAMES,
+    "get_unit_favorites": _GAME_IDS,
 }
 # Takes a scenario path, not an id, and its key (data_mod_by_scenario) is local.
 EXCLUDED_GETTERS = frozenset({"get_data_mod_for"})
@@ -250,6 +253,7 @@ def _one_bad_entry_cases() -> dict[str, tuple[Callable[[str], object], dict, str
         "trigger_status_colors": (settings.get_trigger_status_color, {_TRIGGER_STATUS_IDS[0]: "#123456"}, _TRIGGER_STATUS_IDS[1]),
         "theme_colors": (lambda role: settings.get_theme_colors().get(role), _two(themes.ROLE_IDS, *hex_pair), themes.ROLE_IDS[2]),
         "text_box_lines": (settings.get_text_box_lines, {_TEXT_BOX_IDS[0]: 7}, _TEXT_BOX_IDS[1]),
+        "units_favorites": (settings.get_unit_favorites, {_GAME_IDS[0]: [4, 83]}, _GAME_IDS[1]),
     }
 
 

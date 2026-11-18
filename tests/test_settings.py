@@ -1724,3 +1724,28 @@ def test_a_tool_options_entry_wins_over_its_legacy_key(tmp_path: Path) -> None:
     assert settings.get_tool_option_default("paint_trees") is True
     settings.set_tool_option_default("brush_size", 2)
     assert _raw_config(tmp_path) == {"tool_options": {"brush_size": 2}}
+
+
+def test_a_save_listener_hears_every_save_with_the_written_dict(tmp_path: Path) -> None:
+    heard: list[dict] = []
+    settings.add_save_listener(heard.append)
+    settings.set_pan_speed(900)
+    settings.remove_save_listener(heard.append)
+    settings.set_pan_speed(1000)
+    assert heard == [{"pan_speed": 900}]
+    settings.remove_save_listener(heard.append)  # a second remove is a no-op
+
+
+def test_a_raising_save_listener_never_breaks_the_save(tmp_path: Path) -> None:
+    from descape import debug_log
+
+    def broken(_config: dict) -> None:
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    heard: list[dict] = []
+    settings.add_save_listener(broken)
+    settings.add_save_listener(heard.append)
+    settings.set_pan_speed(900)
+    assert _raw_config(tmp_path) == {"pan_speed": 900}
+    assert heard == [{"pan_speed": 900}], "a later listener still runs"
+    assert "Settings save listener failed" in debug_log.entries()[-1].message

@@ -46,11 +46,10 @@ if TYPE_CHECKING:
 
 class MirrorDialog(QDialog):
     """Map mirroring (Stage 1: terrain + elevation). The repo's first
-    accept/reject dialog:
-    SettingsDialog (settings_dialog.py) and DebugLogDialog (viewer_dialogs.py) are both Close-only and apply
-    every change immediately on its own widget signal, so there is no OK/
-    Apply/Cancel convention here to copy -- this establishes one, with a
-    third "Preview" state in between.
+    accept/reject dialog, with a third "Preview" state in between. When it
+    was written, SettingsDialog (settings_dialog.py) and DebugLogDialog
+    (viewer_dialogs.py) were both Close-only; Settings has since gained OK,
+    Apply, Cancel and Reset over its live changes (GH #191).
 
     Preview applies the real edit as a normal undo record (via
     ViewerWindow.on_mirror(), same shape as on_fill()) and leaves the dialog

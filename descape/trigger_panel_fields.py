@@ -456,11 +456,14 @@ class _TriggerPanelFieldsMixin:
         return widget
 
     LIST_TYPE_CAPTION = "object list type"
-    _LIST_TYPE_TIP = "Which kind of object the field below lists. Narrows its suggestions and Browse; not saved in the scenario."
+    _LIST_TYPE_TIP = (
+        "Which kind of object the field below lists first in its suggestions; Browse opens on it."
+        " Not saved in the scenario."
+    )
 
     def _add_list_type_row(self, spec, widget: ValueLineEdit, value) -> None:
         """GH #41: the in-game Object List Type, a row above an object list
-        field that narrows its picker. A filter, not a field: it never enters
+        field that orders its picker. An ordering, not a field: it never enters
         _rows, so it writes nothing and records no undo step."""
         known = widget.group_of(value) if isinstance(value, int) and not isinstance(value, bool) else ""
         # The value's own kind, else this selection's last choice, else the picker's default category.
@@ -483,7 +486,7 @@ class _TriggerPanelFieldsMixin:
         self._list_types[name] = group
 
     def _list_type_follows(self, name: str, combo: QComboBox, widget: ValueLineEdit, value: int) -> None:
-        """A committed value of another kind (a typed name or raw id) turns the row to its kind."""
+        """A committed value of another kind (a typed name, picked suggestion or raw id) turns the row to its kind."""
         group = widget.group_of(value)
         if not group:
             return

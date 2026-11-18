@@ -1327,23 +1327,26 @@ class _ViewerOptionsMixin:
 
     def _refresh_player_labels(self) -> None:
         """GH #130: push every player selector's label and swatch, from the
-        tribe names and colours as edited. Unconditional and not mode-gated,
-        so a selector in another mode is never stale; a no-op when nothing changed."""
+        tribe names and colours as edited, and the portraits' colour indices
+        (GH #374). Unconditional and not mode-gated, so a selector in another
+        mode is never stale; a no-op when nothing changed."""
         if self.scenario is None:
-            labels, colors = player_labels.DEFAULT_LABELS, None
+            labels, colors, team_indices = player_labels.DEFAULT_LABELS, None, None
         else:
             pending = self._pending_player_values().get(player_labels.TRIBE_NAME_FIELD, {})
             labels = player_labels.labels_for(player_labels.tribe_names(self.scenario, pending))
             # A copy: refresh_player_colors() may reassign the tuple this caches.
             colors = tuple(self.scenario.player_colors)
-        if (labels, colors) == self._player_labels_pushed:
+            team_indices = tuple(self.scenario.team_indices)
+        # team_indices too: an out-of-range ColorId moves a portrait's colour, not a dot's.
+        if (labels, colors, team_indices) == self._player_labels_pushed:
             return
-        self._player_labels_pushed = (labels, colors)
+        self._player_labels_pushed = (labels, colors, team_indices)
         self._player_labels = labels
-        self.units_panel.refresh_player_labels(labels, colors)
+        self.units_panel.refresh_player_labels(labels, colors, team_indices)
         self.players_panel.refresh_player_labels(labels, colors)
         self.diplomacy_panel.refresh_player_labels(labels, colors)
-        self.trigger_panel.refresh_player_labels(labels, colors)
+        self.trigger_panel.refresh_player_labels(labels, colors, team_indices)
         if self._find_dialog is not None:
             self._find_dialog.refresh_player_labels(labels, colors)
         # Text only: Fusion draws a checkable action's icon in place of its checkmark.

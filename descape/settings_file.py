@@ -82,6 +82,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "ruler_label_font_px": (_APPEARANCE, "Ruler label size"),
     "distance_tick_font_px": (_APPEARANCE, "Distance ticks label size"),
     "stack_badge_position": (_APPEARANCE, "Stacked-unit badge position"),
+    "favorite_star_style": (_APPEARANCE, "Favorite star"),
     "terrain_grid_swatch_px": (_APPEARANCE, "Terrain grid swatch size"),
     "grid_blend": (_APPEARANCE, "Grid line blend"),
     "grid_lightness": (_APPEARANCE, "Grid line blend"),
@@ -103,6 +104,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "wheel_bindings": (_KEYBINDS, "Mouse Wheel"),
     "game_data": (_ADVANCED, "Game data"),
     "gaia_only_catalog_mode": (_ADVANCED, "GAIA-only objects"),
+    "units_catalog_right_click": (_ADVANCED, "Units catalog right-click"),
     "view_layers": (_VIEW, "Layers"),
     "distance_ticks": (_VIEW, "Distance Ticks > Show"),
     "distance_tick_interval": (_VIEW, "Distance Ticks > Every N tiles"),
@@ -128,6 +130,8 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "terrain_style": (_TOOLBAR, "Elevation View"),
     "units_catalog_mode": (_PANELS, "Units catalog view"),
     "browse_catalog_mode": (_PANELS, "Browse catalog view"),
+    "units_favorites": (_PANELS, "Units favorites"),
+    "units_favorites_mode": (_PANELS, "Favorite Objects view"),
     "terrain_picker_mode": (_PANELS, "Terrain picker view"),
     "text_box_lines": (_PANELS, "Text box heights"),
     "button_grid_all_triggers": (_PANELS, "Show all triggers' changes"),
@@ -372,6 +376,7 @@ def _entry_ids() -> dict[str, tuple[dict, str, str]]:
         "trigger_status_colors": ({sid: d for sid, _label, d in settings.TRIGGER_STATUS_COLORS}, "colour", "colours"),
         "theme_colors": (dict.fromkeys(themes.ROLE_IDS, _MISSING), "colour override", "colour overrides"),
         "text_box_lines": ({}, "text box height", "text box heights"),
+        "units_favorites": ({}, "game's favorites", "games' favorites"),
     }
 
 

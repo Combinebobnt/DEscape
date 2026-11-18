@@ -3,6 +3,7 @@
 A theme file is YAML carrying the look-only Appearance settings: the chrome
 theme (preset + per-role overrides), the UI font, the tool overlay colours,
 the ruler and distance-tick label sizes, the stacked-unit badge position,
+the favorites star's style (GH #195),
 the grid's blend and thickness, and the Triggers panel's status marker, its
 two colours and its two toggles (TASK-211). Machine, performance and feel settings
 (graphics quality, preloading, elevation height, pan speed) never travel.
@@ -37,6 +38,7 @@ _INT_RANGES: dict[str, tuple[int, int]] = {
     "grid_blend": (grid_overlay.BLEND_MIN, grid_overlay.BLEND_MAX),
 }
 _STACK_BADGE_IDS = tuple(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
+_FAVORITE_STAR_IDS = tuple(sid for sid, _label in settings.FAVORITE_STAR_STYLES)
 _OVERLAY_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COLORS)
 _TRIGGER_STATUS_IDS = tuple(sid for sid, _label, _default in settings.TRIGGER_STATUS_COLORS)
 _TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
@@ -88,6 +90,7 @@ def build_document() -> dict:
         "ruler_label_font_px": settings.get_ruler_label_font_px(),
         "distance_tick_font_px": settings.get_distance_tick_font_px(),
         "stack_badge_position": settings.get_stack_badge_position(),
+        "favorite_star_style": settings.get_favorite_star_style(),
         "grid_blend": settings.get_grid_blend(),
         "grid_thickness": settings.get_grid_thickness(),
         "trigger_status_marker": settings.get_trigger_status_marker(),
@@ -206,6 +209,11 @@ def parse_theme_file(path: Path | str, installed_families: Collection[str] | Non
                 plan.values[key] = raw
             else:
                 plan.problems.append(f"stack_badge_position: {_short(raw)} is not one of {', '.join(_STACK_BADGE_IDS)}")
+        elif key == "favorite_star_style":
+            if isinstance(raw, str) and raw in _FAVORITE_STAR_IDS:
+                plan.values[key] = raw
+            else:
+                plan.problems.append(f"favorite_star_style: {_short(raw)} is not one of {', '.join(_FAVORITE_STAR_IDS)}")
         elif key in ("ruler_label_font_px", "distance_tick_font_px", "grid_blend", "grid_thickness"):
             _parse_int(key, raw, plan)
         elif key == "trigger_status_colors":
@@ -258,6 +266,10 @@ def describe_changes(values: dict) -> list[str]:
     for key, (label, getter, unit) in getters.items():
         if key in values and values[key] != getter():
             lines.append(f"{label}: {getter()}{unit} -> {values[key]}{unit}")
+    star = values.get("favorite_star_style")
+    if star is not None and star != settings.get_favorite_star_style():
+        styles = dict(settings.FAVORITE_STAR_STYLES)
+        lines.append(f"Favorite star: {styles[settings.get_favorite_star_style()]} -> {styles[star]}")
     marker = values.get("trigger_status_marker")
     if marker is not None and marker != settings.get_trigger_status_marker():
         labels = dict(settings.TRIGGER_STATUS_MARKERS)

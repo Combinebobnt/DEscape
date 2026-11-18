@@ -178,12 +178,16 @@ def _field(walk: sw.Walk, *path: str) -> tuple[int, int]:
 
 
 def _assert_fails_fast(structure: dict, body: bytes, expect_path: str, expect_reason: str) -> None:
-    tracemalloc.start()
+    sections = [n for n in structure if n != "FileHeader"]
+    # Timed untraced: tracemalloc alone pushed this walk past 1 s on loaded CI runners.
     started = time.perf_counter()
+    with pytest.raises(sw.WalkError):
+        sw.walk(structure, body, 0, sections)
+    elapsed = time.perf_counter() - started
+    tracemalloc.start()
     try:
         with pytest.raises(sw.WalkError) as raised:
-            sw.walk(structure, body, 0, [n for n in structure if n != "FileHeader"])
-        elapsed = time.perf_counter() - started
+            sw.walk(structure, body, 0, sections)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

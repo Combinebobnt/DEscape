@@ -434,6 +434,8 @@ class TriggerPanel(
         self._player_colors = None
         # GH #388: (options, context) the Detail sentences render with, rebuilt per populate.
         self._summary_setup = (SummaryOptions(), SummaryContext())
+        # GH #374: the instruction preview's portrait colour index per player, pushed with the colours.
+        self._team_indices = None
         # GH #140: the form's Display Instructions preview, or None.
         self._instruction_preview: InstructionPreview | None = None
         # GH #167: the facet-direction preview and the field it sits under, or None and "".

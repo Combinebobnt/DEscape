@@ -1,9 +1,10 @@
-"""Main-window layout (GH #64): the editor panel and the status log are docks
-that float, re-dock and close, and the arrangement persists across launches.
+"""Main-window layout (GH #64): the editor panel, the status log and the
+minimap (GH #54) are docks that float, re-dock and close, and the arrangement
+persists across launches.
 
 The default shape is pinned too: the panel column runs the full height with
-the log under the map beside it, which is easy to regress silently because no
-other test reads it.
+the log under the map beside it and the minimap closed, opening right of the
+log, which is easy to regress silently because no other test reads it.
 
 Every size assertion runs on a shown window after the layout settles:
 resizeDocks() is a request that Qt resolves against real geometry.
@@ -14,6 +15,8 @@ from __future__ import annotations
 import pytest
 
 from descape import settings
+from descape.minimap_panel import DEFAULT_WIDTH as DEFAULT_MINIMAP_WIDTH
+from descape.minimap_panel import MIN_HEIGHT as MINIMAP_MIN_HEIGHT
 from descape.viewer_toolbar import DEFAULT_PANEL_WIDTH, WINDOW_STATE_VERSION
 from testkit.qt_window import panel_width, set_panel_width
 
@@ -50,14 +53,28 @@ def _view_menu(window):
     return next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
 
 
+def _open_minimap(window) -> None:
+    window.minimap_dock.toggleViewAction().trigger()
+    _settle()
+    assert window.minimap_dock.isVisible()
+
+
 def _assert_default_layout(window) -> None:
+    """Checks the closed minimap, then opens it to check where it lands."""
     from PyQt5.QtCore import Qt
 
     assert window.dockWidgetArea(window.panel_dock) == Qt.LeftDockWidgetArea
     assert window.dockWidgetArea(window.log_dock) == Qt.BottomDockWidgetArea
+    assert window.dockWidgetArea(window.minimap_dock) == Qt.BottomDockWidgetArea
     for dock in (window.panel_dock, window.log_dock):
         assert not dock.isFloating() and dock.isVisible()
+    assert not window.minimap_dock.isFloating() and window.minimap_dock.isHidden()
+    assert not window.minimap_dock.toggleViewAction().isChecked()
     assert abs(panel_width(window) - DEFAULT_PANEL_WIDTH) <= _SLACK
+    _open_minimap(window)
+    log, minimap = window.log_dock.geometry(), window.minimap_dock.geometry()
+    assert minimap.left() > log.right() and minimap.top() == log.top(), "the minimap sits right of the log"
+    assert abs(minimap.width() - DEFAULT_MINIMAP_WIDTH) <= _SLACK
     assert window.main_toolbar.isVisible() and window.tool_options_toolbar.isVisible()
 
 
@@ -67,7 +84,6 @@ def test_the_panel_column_runs_full_height_with_the_log_under_the_map_beside_it(
 
     window = _window()
     try:
-        _assert_default_layout(window)
         column = window.left_stack
         log = window.status_log
         column_bottom = column.mapTo(window, QPoint(0, column.height())).y()
@@ -81,6 +97,7 @@ def test_the_panel_column_runs_full_height_with_the_log_under_the_map_beside_it(
         separator = window.style().pixelMetric(QStyle.PM_DockWidgetSeparatorExtent, None, window)
         assert log_left - column_right == separator
         assert map_left == log_left
+        _assert_default_layout(window)
     finally:
         conftest.close_window(window)
 
@@ -156,6 +173,53 @@ def test_the_arrangement_is_restored_on_the_next_launch() -> None:
         conftest.close_window(window)
 
 
+def test_an_opened_minimap_stays_open_and_a_closed_one_closed_on_the_next_launch() -> None:
+    window = _window()
+    _open_minimap(window)
+    window = _relaunch(window)
+    assert window.minimap_dock.isVisible() and window.minimap_dock.toggleViewAction().isChecked()
+    window.minimap_dock.toggleViewAction().trigger()
+    _settle()
+    assert window.minimap_dock.isHidden()
+    window = _relaunch(window)
+    try:
+        assert window.minimap_dock.isHidden()
+        assert not window.minimap_dock.toggleViewAction().isChecked()
+        assert window.log_dock.isVisible()
+        _open_minimap(window)
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_floating_minimap_hides_with_its_window_and_comes_back_floating() -> None:
+    window = _window()
+    _open_minimap(window)
+    window.minimap_dock.setFloating(True)
+    window.minimap_dock.move(60, 70)
+    _settle()
+    conftest.close_window(window)
+    assert not window.minimap_dock.isVisible(), "a closed window's floating minimap must not stay on screen"
+    window = _window()
+    try:
+        assert window.minimap_dock.isFloating() and window.minimap_dock.isVisible()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_wider_window_widens_the_log_not_the_minimap() -> None:
+    window = _window()
+    try:
+        _open_minimap(window)
+        before = window.minimap_dock.width()
+        log_before = window.log_dock.width()
+        window.resize(1900, 900)
+        _settle()
+        assert window.minimap_dock.width() == before
+        assert window.log_dock.width() > log_before
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_floating_panel_comes_back_floating_and_hides_with_its_window() -> None:
     window = _window()
     window.panel_dock.setFloating(True)
@@ -188,7 +252,7 @@ def test_a_float_saved_off_every_screen_comes_back_on_one() -> None:
         conftest.close_window(window)
 
 
-@pytest.mark.parametrize("blob", ["garbage", "newer version"])
+@pytest.mark.parametrize("blob", ["garbage", "newer version", "older version"])
 def test_a_state_that_will_not_restore_falls_back_to_the_default_layout(blob: str) -> None:
     from PyQt5.QtCore import Qt
 
@@ -198,8 +262,11 @@ def test_a_state_that_will_not_restore_falls_back_to_the_default_layout(blob: st
         window = _window()
         window.addDockWidget(Qt.RightDockWidgetArea, window.panel_dock)
         window.log_dock.hide()
+        window.minimap_dock.hide()
         _settle()
-        state = bytes(window.saveState(WINDOW_STATE_VERSION + 1))
+        # "older version": a blob from before GH #54's minimap dock.
+        version = WINDOW_STATE_VERSION + 1 if blob == "newer version" else WINDOW_STATE_VERSION - 1
+        state = bytes(window.saveState(version))
         conftest.close_window(window)
         settings.set_window_state(state)
     window = _window()
@@ -211,11 +278,24 @@ def test_a_state_that_will_not_restore_falls_back_to_the_default_layout(blob: st
 
 def test_the_first_launch_after_the_splitter_layout_keeps_its_widths(tmp_path) -> None:
     """The pre-GH #64 config held split_sizes and log_height; they seed the docks once."""
-    (tmp_path / "config.yaml").write_text("split_sizes: [520, 900]\nlog_height: 150\n")
+    (tmp_path / "config.yaml").write_text("split_sizes: [520, 900]\nlog_height: 250\n")
     window = _window()
     try:
         assert abs(panel_width(window) - 520) <= _SLACK
-        assert abs(window.status_log.height() - 150) <= _SLACK
+        assert abs(window.status_log.height() - 250) <= _SLACK
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_seeded_log_height_under_the_minimap_floor_holds_until_the_minimap_opens(tmp_path) -> None:
+    """The minimap shares the log's row (GH #54), so once opened its minimum height is the row's."""
+    (tmp_path / "config.yaml").write_text("split_sizes: [520, 900]\nlog_height: 150\n")
+    window = _window()
+    try:
+        assert abs(window.status_log.height() - 150) <= _SLACK, "a closed minimap floors nothing"
+        _open_minimap(window)
+        assert window.minimap_panel.height() == MINIMAP_MIN_HEIGHT
+        assert abs(window.status_log.height() - MINIMAP_MIN_HEIGHT) <= _SLACK
     finally:
         conftest.close_window(window)
 
@@ -228,6 +308,8 @@ def test_reset_layout_restores_the_default_from_a_scrambled_one() -> None:
         window.addDockWidget(Qt.RightDockWidgetArea, window.panel_dock)
         set_panel_width(window, 600)
         window.log_dock.setFloating(True)
+        _open_minimap(window)
+        window.minimap_dock.setFloating(True)
         window.panel_dock_action.trigger()
         window.main_toolbar.hide()
         _settle()
@@ -256,6 +338,7 @@ def test_a_mode_change_titles_the_panel_and_reshows_it_when_closed() -> None:
         assert [a.text().replace("&", "") for a in panels.actions() if not a.isSeparator()] == [
             "Editor Panel",
             "Status Log",
+            "Minimap",
             "Reset Layout",
         ]
     finally:

@@ -1,5 +1,6 @@
 """ViewerWindow's view options: unit filters, sprites, layers and mod art, the colour mood, grid,
-footprint outlines, badges, range rings, cameras and the overlay toggles."""
+footprint outlines, badges, range rings, cameras, the overlay toggles, and the minimap's refresh
+and pan (GH #54)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import dataclasses
 import time
 from collections.abc import Callable
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -17,6 +18,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     asset_source,
     colour_mood,
+    minimap,
     mod_graphics,
     option_fields,
     settings,
@@ -28,6 +30,8 @@ from descape.options_model import (
 )
 from descape.unit_filter import MAX_PLAYER_ID, UnitFilter
 from descape.viewer_common import (
+    MINIMAP_DEBOUNCE_MS,
+    MINIMAP_RETRY_MS,
     KeepOpenMenu,
 )
 
@@ -271,6 +275,7 @@ class _ViewerViewMixin:
         self._cancel_warms()
         if self.scenario is None or self._cache is None:
             return
+        self._schedule_minimap()
         self._cache.set_unit_filter(self._unit_filter)
         canvas_w, canvas_h = self._cache.canvas_dims(0)
         self.map_view.invalidate_region((0, 0, canvas_w, canvas_h))
@@ -678,3 +683,60 @@ class _ViewerViewMixin:
     def _on_distance_tick_interval(self, tiles: int) -> None:
         settings.set_distance_tick_interval(tiles)
         self.map_view.set_edge_tick_interval(tiles)
+
+    def _on_history_changed(self) -> None:
+        """EditHistory.on_change's target: the History window, then the
+        minimap when the document's content moved. A view-only record (a
+        ruler) leaves content_key alone, so it rebuilds nothing."""
+        self._refresh_history_dialog()
+        key = self.edit_history.content_key
+        if key != self._minimap_key:
+            self._minimap_key = key
+            self._schedule_minimap()
+
+    def _schedule_minimap(self) -> None:
+        """One minimap rebuild MINIMAP_DEBOUNCE_MS after the last call, so a burst of changes builds once."""
+        if self.scenario is not None:
+            self._minimap_retrying = False
+            self._minimap_timer.start(MINIMAP_DEBOUNCE_MS)
+
+    def _rebuild_minimap(self) -> None:
+        """The minimap timer's target. Nothing while the dock is not on
+        screen (closed, or the window never shown): its visibilityChanged
+        schedules the build when it is. A build that drew a terrain in its
+        palette colour while its texture loads re-arms at MINIMAP_RETRY_MS,
+        until a retry finds no texture decoded since; a later pan that
+        decodes one schedules it again (_push_minimap_view())."""
+        retry, self._minimap_retrying = self._minimap_retrying, False
+        if self.scenario is None or not self.minimap_dock.isVisible():
+            return
+        if self._busy:
+            self._schedule_minimap()
+            return
+        textures = asset_source.loaded_texture_count()
+        if retry and textures == self._minimap_textures:
+            return
+        rgb, used_fallback = minimap.minimap_rgb(self.scenario, self._unit_filter)
+        self._minimap_textures = textures
+        self._minimap_fallback = used_fallback
+        self.minimap_panel.set_image(rgb)
+        self._push_minimap_view()
+        if used_fallback:
+            self._minimap_retrying = True
+            self._minimap_timer.start(MINIMAP_RETRY_MS)
+
+    def _push_minimap_view(self) -> None:
+        """MapView.on_view_moved's target: the minimap's box follows every pan,
+        zoom and resize, and a pan that decoded a texture the image drew in
+        its palette colour schedules a rebuild."""
+        self.minimap_panel.set_view(self.map_view.tile_to_view(), QRectF(self.map_view.viewport().rect()))
+        if self._minimap_fallback and asset_source.loaded_texture_count() > self._minimap_textures:
+            self._minimap_fallback = False
+            self._schedule_minimap()
+
+    def _on_minimap_pan(self, mx: float, my: float) -> None:
+        self.map_view.center_on_map_point(mx, my)
+
+    def _on_minimap_released(self) -> None:
+        # Keys back to the map, as after a panel click.
+        self._focus_map_view()

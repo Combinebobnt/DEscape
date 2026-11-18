@@ -1,6 +1,6 @@
 """ViewerWindow's toolbar: tool overflow, the toolbar builder and style, the status bar, the editor
-panel and status log docks and their saved layout (GH #64), panel sizing and the mode, zoom and
-tool-value status."""
+panel, status log and minimap docks and their saved layout (GH #64, GH #54), panel sizing and the
+mode, zoom and tool-value status."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QSizePolicy,
     QSpinBox,
     QToolButton,
     QWidget,
@@ -30,6 +31,8 @@ from descape import (
     ui_icons,
     unit_shape,
 )
+from descape.load_progress import LoadProgress
+from descape.minimap_panel import DEFAULT_WIDTH as DEFAULT_MINIMAP_WIDTH
 from descape.terrain_palette import name_for_terrain_id
 from descape.terrain_style import STYLE_LABELS, label_for
 from descape.toolbar_overflow import partition
@@ -50,7 +53,7 @@ _TOOLBAR_BUTTON_STYLES = {
 
 # GH #64: saveState()/restoreState()'s version. Bump it whenever the set of docks or toolbars
 # changes, so an older blob is refused whole rather than half-applied.
-WINDOW_STATE_VERSION = 1
+WINDOW_STATE_VERSION = 2
 DEFAULT_PANEL_WIDTH = 340
 # The status log's default height: four lines plus its frame.
 _DEFAULT_LOG_LINES = 4
@@ -62,8 +65,9 @@ class _ViewerToolbarMixin:
 
     def _build_docks(self) -> None:
         """GH #64: the editor panel (left_stack, whose pages swap with the
-        mode) and the status log as docks that float, re-dock and close.
-        _restore_window_layout() places them once the toolbars exist."""
+        mode), the status log and the minimap (GH #54) as docks that float,
+        re-dock and close. _restore_window_layout() places them once the
+        toolbars exist."""
         features = QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         self.panel_dock = QDockWidget(settings.MODE_LABELS[self.mode], self)
         self.panel_dock.setObjectName("panel_dock")
@@ -74,8 +78,16 @@ class _ViewerToolbarMixin:
         self.log_dock.setObjectName("log_dock")
         self.log_dock.setWidget(self.status_log)
         self.log_dock.setFeatures(features)
+        self.minimap_dock = QDockWidget("Minimap", self)
+        self.minimap_dock.setObjectName("minimap_dock")
+        self.minimap_dock.setWidget(self.minimap_panel)
+        self.minimap_dock.setFeatures(features)
+        # No horizontal grow flag, so a wider window widens the log, not the minimap. Dragging still sizes it.
+        self.minimap_dock.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.panel_dock)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.minimap_dock)
+        self.splitDockWidget(self.log_dock, self.minimap_dock, Qt.Horizontal)
         # The panel column runs the full height, with the log under the map beside it.
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
         self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
@@ -95,8 +107,16 @@ class _ViewerToolbarMixin:
         log_action = self.log_dock.toggleViewAction()
         log_action.setText("&Status Log")
         log_action.setToolTip("Show or hide the status log. Drag its title bar to float it or dock it elsewhere")
+        minimap_action = self.minimap_dock.toggleViewAction()
+        minimap_action.setText("&Minimap")
+        minimap_action.setToolTip("Show or hide the minimap. Drag its title bar to float it or dock it elsewhere")
+        # A first show or a reopen builds the image the closed dock skipped.
+        self.minimap_dock.visibilityChanged.connect(lambda visible: visible and self._schedule_minimap())
         self.reset_layout_action = QAction("&Reset Layout", self)
-        reset_tip = "Dock the editor panel left and the status log under the map, and show any hidden toolbar"
+        reset_tip = (
+            "Dock the editor panel left and the status log under the map, close the minimap "
+            "(it reopens beside the log), and show any hidden toolbar"
+        )
         self.reset_layout_action.setToolTip(reset_tip)
         self.reset_layout_action.setStatusTip(reset_tip)
         self.reset_layout_action.triggered.connect(lambda _checked=False: self._apply_default_layout())
@@ -108,14 +128,22 @@ class _ViewerToolbarMixin:
         self.panel_dock.show()
 
     def _apply_default_layout(self, panel_width: int | None = None, log_height: int | None = None) -> None:
-        """Panel docked left, log docked under the map, both shown, and the
-        toolbars shown: a first run, a saved state that will not restore, and
-        View > Panels > Reset Layout. `log_height` is the bare log's, as the
-        splitter layout before GH #64 saved it; the dock's title bar goes on top."""
-        for dock, area in ((self.panel_dock, Qt.LeftDockWidgetArea), (self.log_dock, Qt.BottomDockWidgetArea)):
+        """Panel docked left and log docked under the map, both shown, the
+        minimap docked right of the log but closed, and the toolbars shown: a
+        first run, a saved state that will not restore, and View > Panels >
+        Reset Layout. `log_height` is the bare log's, as the splitter layout
+        before GH #64 saved it; the dock's title bar goes on top. Closed by
+        default, the minimap's minimum height floors the row only once opened."""
+        docks = (
+            (self.panel_dock, Qt.LeftDockWidgetArea),
+            (self.log_dock, Qt.BottomDockWidgetArea),
+            (self.minimap_dock, Qt.BottomDockWidgetArea),
+        )
+        for dock, area in docks:
             dock.setFloating(False)
             self.addDockWidget(area, dock)
             dock.show()
+        self.splitDockWidget(self.log_dock, self.minimap_dock, Qt.Horizontal)
         self.main_toolbar.show()
         self.tool_options_toolbar.show()
         if log_height is None:
@@ -123,6 +151,8 @@ class _ViewerToolbarMixin:
         title_bar = self.log_dock.sizeHint().height() - self.status_log.sizeHint().height()
         self.resizeDocks([self.panel_dock], [panel_width or DEFAULT_PANEL_WIDTH], Qt.Horizontal)
         self.resizeDocks([self.log_dock], [log_height + title_bar], Qt.Vertical)
+        self.resizeDocks([self.minimap_dock], [DEFAULT_MINIMAP_WIDTH], Qt.Horizontal)
+        self.minimap_dock.hide()
 
     def _restore_window_layout(self) -> None:
         """The saved dock and toolbar arrangement, else the default one with
@@ -139,14 +169,15 @@ class _ViewerToolbarMixin:
         """Saves the arrangement, then hides a floating dock: a window of its
         own, it would stay on screen after this window closes."""
         settings.set_window_state(bytes(self.saveState(WINDOW_STATE_VERSION)))
-        for dock in (self.panel_dock, self.log_dock):
+        for dock in (self.panel_dock, self.log_dock, self.minimap_dock):
             if dock.isFloating():
                 dock.hide()
 
     def _owns_widget(self, widget: QWidget | None) -> bool:
         """Whether `widget` is in this window, its docks included. isAncestorOf()
         alone stops at a floating dock, which is a window of its own."""
-        return widget is not None and any(w.isAncestorOf(widget) for w in (self, self.panel_dock, self.log_dock))
+        docks = (self, self.panel_dock, self.log_dock, self.minimap_dock)
+        return widget is not None and any(w.isAncestorOf(widget) for w in docks)
 
     def _focus_map_view(self) -> None:
         """Keys back to the map after a panel click. From a floating panel,
@@ -1131,8 +1162,9 @@ class _ViewerToolbarMixin:
         self.game_data_banner = QLabel()
         self.game_data_banner.setVisible(False)
         self.statusBar().addPermanentWidget(self.game_data_banner)
-        # GH #58: "Parsing <mod>…" while a data mod's .dat is read.
-        self.statusBar().addPermanentWidget(self.data_mod_menu.parsing_label)
+        # GH #359: a scenario load's or a data mod parse's caption and bar, while one runs.
+        self.load_progress = LoadProgress()
+        self.statusBar().addPermanentWidget(self.load_progress)
         self.mode_status_label = QLabel()
         self.statusBar().addPermanentWidget(self.mode_status_label)
         self._update_mode_status()

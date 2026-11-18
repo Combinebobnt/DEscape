@@ -52,6 +52,7 @@ ACTION_ICONS: dict[str, str] = {
     "unit_variant_next": "variant-next",
     "unit_variant_random": "variant-random",
     "unit_select_stack": "select-stack",
+    "unit_favorites": "unit-favorites",
     "map_resize": "map-resize",
     "map_mirror": "map-mirror",
     "map_disables": "map-disables",

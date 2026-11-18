@@ -105,7 +105,7 @@ def test_a_player_name_push_re_renders_the_sentences() -> None:
         panel = window.trigger_panel
         assert _details(panel)[("effect", 1)] == 'P1 Archer "Hit points" set to 45'
         names = ("", "Britons", "", "", "", "", "", "", "")
-        panel.refresh_player_labels(player_labels.labels_for(names), window.trigger_panel._player_colors)
+        panel.refresh_player_labels(player_labels.labels_for(names), window.trigger_panel._player_colors, None)
         assert _details(panel)[("effect", 1)] == 'Britons Archer "Hit points" set to 45'
     finally:
         conftest.close_window(window)

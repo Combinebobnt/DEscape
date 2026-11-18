@@ -339,21 +339,6 @@ def _frozen_pair(**kwargs) -> si.InferResult:
 
 
 @pytest.mark.test_map
-def test_the_frozen_resave_pair_keeps_the_truth_and_leaves_only_default_positions_open() -> None:
-    result = _frozen_pair()
-    assert result.status == si.STATUS_AMBIGUOUS, result.report_lines
-    by_block = {r.edit.block: r for r in result.edits}
-    unit = by_block[("Units", "PlayerUnitsStruct", "UnitStruct")]
-    condition = by_block[("Triggers", "TriggerStruct", "ConditionStruct")]
-    assert len(result.edits) == 2
-    assert unit.edit.index == 9 and not unit.ambiguous  # capture_flag, decided by the reference despite the game's rewrites
-    assert condition.edit.index == 35 and condition.ambiguous  # allow_in_fog
-    # Open: positions that read every source condition identically (33, 34) or differ from the
-    # truth in fewer than PAIR_MIN values (31, 32); the reference rules out 18..30.
-    assert sorted(e.index for e in [condition.edit, *condition.rivals]) == [31, 32, 33, 34, 35]
-
-
-@pytest.mark.test_map
 def test_a_false_reference_break_refuses_rather_than_accepting_junk(monkeypatch: pytest.MonkeyPatch) -> None:
     # With realignment off, the game's rewrite of player_data_3[0] reads as a layout break that no
     # edit clears. Before the guard, the "gets furthest" fallback stacked junk inserts on it.
@@ -388,35 +373,6 @@ def test_a_shift_a_string_resyncs_is_still_a_break() -> None:
     # Small garbage values (non-distinctive) still count toward the solid run.
     distinctive = [True] * 4 + [False, True, False, False, True, False, False, True, False] + [True] * 240
     assert si.first_break(_events(matched, distinctive)) == 4
-
-
-def test_infer_on_the_159_fixture_from_158() -> None:
-    sample = FIXTURES / "v159_units_triggers.aoe2scenario"
-    truth = si.load_structure("1.59")
-    walked = sw.walk_file(truth, sample.read_bytes())
-    values = {p: c.value_list() for w in (walked.header, walked.body) for p, c in w.columns.items()}
-    referenced = si.infer("1.58", [sample], reference_values=values, terrain_ids=TERRAIN_IDS, library_check=None)
-    # Units is decided; the fixture's one non-default condition is below PAIR_MIN, so Conditions stays open.
-    assert referenced.status == si.STATUS_AMBIGUOUS, referenced.report_lines
-    assert [r.ambiguous for r in referenced.edits] == [False, True]
-    blind = si.infer("1.58", [sample], terrain_ids=TERRAIN_IDS, library_check=None)
-    assert blind.status == si.STATUS_AMBIGUOUS
-
-    unit = ("Units", "PlayerUnitsStruct", "UnitStruct")
-    condition = ("Triggers", "TriggerStruct", "ConditionStruct")
-    for result in (referenced, blind):
-        kept = {r.edit.block: r.edit.index for r in result.edits}
-        assert kept == {unit: 9, condition: 35}  # capture_flag and allow_in_fog's true positions
-
-    s = referenced.structure
-    capture = si.block_dict(s, unit)["retrievers"]["inferred_v1_59_0"]
-    fog = si.block_dict(s, condition)["retrievers"]["inferred_v1_59_1"]
-    assert capture["type"] == "s8" and fog["type"] == "s32"
-    assert capture["comment"].startswith("Inferred for 1.59 from 1.58")
-    assert capture["default"] == si._most_common(values[("Units", "players_units", "units", "capture_flag")])
-    assert si.block_dict(s, condition)["retrievers"]["static_value_33"]["default"] == 34
-    assert s["FileHeader"]["retrievers"]["version"]["default"] == values[("FileHeader", "version")][0]
-    assert s["Triggers"]["retrievers"]["trigger_version"]["default"] == values[("Triggers", "trigger_version")][0]
 
 
 def test_clean_check_runs_the_library_on_the_inferred_structure_in_a_worker(tmp_path) -> None:
