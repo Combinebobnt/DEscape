@@ -582,15 +582,19 @@ def check_triggers_fit_their_drag_floor(window) -> int:
         area = panel.property_area
         slack = area.viewport().width() - panel.property_host.minimumSizeHint().width()
         assert area.horizontalScrollBar().maximum() == 0, f"{name} scrolls sideways at the floor (slack {slack} px)"
-        right = area.mapTo(panel, QPoint(area.width(), 0)).x()
-        assert right <= panel.width(), f"{name}'s form ends at {right} px, past the {panel.width()} px panel"
-    for button in panel.findChildren(QAbstractButton):
-        if not button.isVisible():
-            continue
-        left = button.mapTo(panel, QPoint(0, 0)).x()
-        assert left >= 0 and left + button.width() <= panel.width(), (button.text(), left, button.width(), panel.width())
-        # A fixed-width button (a picker's "…") is never wider than its maximum, as Qt's layouts allow.
-        assert button.width() >= min(button.minimumSizeHint().width(), button.maximumWidth()), button.text()
+        # GH #387: the form is the Trigger Details dock's, docked under the panel at its width.
+        dock = window.trigger_detail_dock
+        right = area.mapTo(dock, QPoint(area.width(), 0)).x()
+        assert right <= dock.width(), f"{name}'s form ends at {right} px, past the {dock.width()} px dock"
+    # The dock's content, not its title bar's float and close buttons.
+    for host in (panel, window.trigger_detail_dock.widget()):
+        for button in host.findChildren(QAbstractButton):
+            if not button.isVisible():
+                continue
+            left = button.mapTo(host, QPoint(0, 0)).x()
+            assert left >= 0 and left + button.width() <= host.width(), (button.text(), left, button.width(), host.width())
+            # A fixed-width button (a picker's "…") is never wider than its maximum, as Qt's layouts allow.
+            assert button.width() >= min(button.minimumSizeHint().width(), button.maximumWidth()), button.text()
     window.edit_history.mark_saved()
     return pane
 

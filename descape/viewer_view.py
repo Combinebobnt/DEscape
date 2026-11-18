@@ -702,13 +702,14 @@ class _ViewerViewMixin:
 
     def _rebuild_minimap(self) -> None:
         """The minimap timer's target. Nothing while the dock is not on
-        screen (closed, or the window never shown): its visibilityChanged
-        schedules the build when it is. A build that drew a terrain in its
+        screen (closed, behind another dock's tab, or the window never shown):
+        its visibilityChanged schedules the build when it is. A build that drew a terrain in its
         palette colour while its texture loads re-arms at MINIMAP_RETRY_MS,
         until a retry finds no texture decoded since; a later pan that
         decodes one schedules it again (_push_minimap_view())."""
         retry, self._minimap_retrying = self._minimap_retrying, False
-        if self.scenario is None or not self.minimap_dock.isVisible():
+        # GH #387: a dock behind a tab stays isVisible(), moved off screen.
+        if self.scenario is None or not self.minimap_dock.isVisible() or self.minimap_dock.visibleRegion().isEmpty():
             return
         if self._busy:
             self._schedule_minimap()

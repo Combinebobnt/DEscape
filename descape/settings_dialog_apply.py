@@ -73,6 +73,7 @@ class _SettingsDialogApplyMixin:
         ("_apply_stack_badge_position", ("stack_badge_position",)),
         ("_apply_favorite_star", ("favorite_star_style",)),
         ("_apply_terrain_grid_swatch", ("terrain_grid_swatch_px",)),
+        ("_apply_trigger_details_layout", ("trigger_details_bottom_layout",)),
         ("_apply_grid_appearance", ("grid_blend", "grid_lightness", "grid_thickness")),
         (
             "_apply_trigger_status",
@@ -406,6 +407,9 @@ class _SettingsDialogApplyMixin:
 
     def _apply_terrain_grid_swatch(self) -> None:
         self._window.terrain_panel.set_grid_swatch_px(settings.get_terrain_grid_swatch_px())
+
+    def _apply_trigger_details_layout(self) -> None:
+        self._window._sync_trigger_detail_layout()
 
     def _apply_grid_appearance(self) -> None:
         view = self._window.map_view

@@ -2020,6 +2020,35 @@ def set_favorite_star_style(style: str) -> None:
     _save_config(config)
 
 
+# GH #387: how Trigger Details lays out docked above or below the map, Settings > Appearance (no theme file).
+TRIGGER_DETAILS_BOTTOM_LAYOUTS: list[tuple[str, str]] = [("game", "Game layout"), ("compact", "Compact columns")]
+TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT = "game"
+_TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS = tuple(lid for lid, _label in TRIGGER_DETAILS_BOTTOM_LAYOUTS)
+_trigger_details_bottom_layout: str | None = None
+
+
+def get_trigger_details_bottom_layout() -> str:
+    """One of TRIGGER_DETAILS_BOTTOM_LAYOUTS' ids; an off-list value falls back to the default."""
+    global _trigger_details_bottom_layout
+    if _trigger_details_bottom_layout is None:
+        raw = _load_config().get("trigger_details_bottom_layout")
+        valid = raw in _TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS
+        _trigger_details_bottom_layout = raw if valid else TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT
+    return _trigger_details_bottom_layout
+
+
+def set_trigger_details_bottom_layout(layout: str) -> None:
+    """Raises ValueError, writing nothing, on a layout not in TRIGGER_DETAILS_BOTTOM_LAYOUTS."""
+    global _trigger_details_bottom_layout
+    if layout not in _TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS:
+        raise ValueError(
+            f"trigger_details_bottom_layout must be one of {list(_TRIGGER_DETAILS_BOTTOM_LAYOUT_IDS)}, got {layout!r}"
+        )
+    _trigger_details_bottom_layout = layout
+    config = _load_config()
+    config["trigger_details_bottom_layout"] = layout
+    _save_config(config)
+
 # GH #195: what a right-click on a Units catalog row does, Settings > Advanced.
 UNITS_CATALOG_RIGHT_CLICKS: list[tuple[str, str]] = [
     ("menu", "Opens a menu to add or remove it"),
@@ -2746,6 +2775,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_panel_dock", "Editor Panel", ""),
     ("view_log_dock", "Status Log", ""),
     ("view_minimap_dock", "Minimap", ""),
+    ("view_trigger_detail_dock", "Trigger Details", ""),
     ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows

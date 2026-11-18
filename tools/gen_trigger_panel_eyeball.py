@@ -69,7 +69,12 @@ def _open_window(path: Path):
 
 
 def _grab(window, out_path: Path) -> None:
-    window.trigger_panel.grab().save(str(out_path))
+    """The trigger panel and, docked under it by default, the Trigger Details form (GH #387)."""
+    detail = window.trigger_detail_dock
+    rect = window.panel_dock.geometry()
+    if detail.isVisible() and not detail.isFloating():
+        rect = rect.united(detail.geometry())
+    window.grab(rect).save(str(out_path))
 
 
 def _capture_one(prefix: str, filename: str, expected_sections: int, out_dir: Path) -> list[Path]:
@@ -421,7 +426,7 @@ def _capture_retype_states(out_dir: Path) -> list[Path]:
         _grab(window, path)
         written.append(path)
 
-        print(f"entry button row at {panel.detail_stack.width()} px "
+        print(f"entry button row at {panel.entry_new_button.parentWidget().width()} px "
               f"(MIN_USEFUL_WIDTH is {panel.MIN_USEFUL_WIDTH}):")
         for button in (
             panel.entry_new_button,

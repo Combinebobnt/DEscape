@@ -229,6 +229,7 @@ _TOGGLE_ACTION_IDS = (
     "view_panel_dock",
     "view_log_dock",
     "view_minimap_dock",
+    "view_trigger_detail_dock",
     "view_layer_terrain_textures",
     "view_layer_terrain_blend",
     "view_layer_farm_overlay",

@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     object_catalog,
     trigger_fields,
+    trigger_form_layout,
     trigger_geometry,
     ui_icons,
     unit_references,
@@ -190,18 +191,24 @@ class _TriggerPanelFieldsMixin:
                 button.setIcon(ui_icons.tool_icon(TOOL_EYEDROPPER))
 
     @staticmethod
-    def _area_grid(cells) -> QWidget:
+    def _area_grid(cells, beside: bool = False) -> QWidget:
         """GH #277: (caption, box) cells two to a row, each caption above its
-        box. Added in field order, which is also the Tab order."""
+        box, or beside it in a grid layout above or below the map (GH #387), which
+        halves the cell's height. Added in field order, which is also the Tab order."""
         host = QWidget()
         grid = QGridLayout(host)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        # The boxes share the width, the captions beside them keep theirs.
+        for column in (1, 3) if beside else (0, 1):
+            grid.setColumnStretch(column, 1)
         for position, (label, widget) in enumerate(cells):
             row, column = divmod(position, 2)
             # A spinbox's minimum hint is sized for 2^31, which overflows the pane at larger fonts.
             widget.setMinimumWidth(1)
+            if beside:
+                grid.addWidget(label, row, column * 2)
+                grid.addWidget(widget, row, column * 2 + 1)
+                continue
             grid.addWidget(label, row * 2, column)
             grid.addWidget(widget, row * 2 + 1, column)
         return host
@@ -246,7 +253,7 @@ class _TriggerPanelFieldsMixin:
         self._pick_buttons[target] = set_button
         go_button.clicked.connect(lambda _c=False, t=(trigger_index, kind, entry_index, group): self.on_go_to_group(t))
         reset_button.clicked.connect(lambda _c=False, g=group: self._reset_group(g))
-        self.property_form.addRow(caption, host)
+        self._add_form_row(trigger_form_layout.group_key(group), caption, host)
         self._group_rows[group] = _GroupRow(fields, tuple(refs), set_button, go_button, reset_button)
         # Typing in the group's own editors never repopulates, so their edits re-gate Go to and Reset.
         for row_spec, _kind, _index, widget in self._rows:
@@ -472,7 +479,7 @@ class _TriggerPanelFieldsMixin:
         combo.setCurrentText(current)
         combo.setEnabled(widget.isEnabled())
         combo.setToolTip(self._LIST_TYPE_TIP)
-        self.property_form.addRow(self.LIST_TYPE_CAPTION, combo)
+        self._add_form_row(trigger_form_layout.list_type_key(spec.name), self.LIST_TYPE_CAPTION, combo)
         self.property_form.labelForField(combo).setToolTip(self._LIST_TYPE_TIP)
         widget.set_group(combo.currentText())
         # Connected after the index is set, like every field widget: a populate is not a choice.

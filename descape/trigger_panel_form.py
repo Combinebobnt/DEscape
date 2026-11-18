@@ -23,6 +23,7 @@ from descape import (
     object_catalog,
     train_locations,
     trigger_fields,
+    trigger_form_layout,
     trigger_geometry,
     trigger_organize,
     unit_references,
@@ -84,6 +85,15 @@ class _TriggerPanelFormMixin:
         if self._button_grid is not None:
             self._button_grid.detach()
         self._button_grid = None
+        # GH #387: a grid layout's hosts hold the rows; going with them, the rows need no takeRow().
+        for host in self._grid_cells:
+            host.hide()
+            host.setParent(None)
+            host.deleteLater()
+        self._grid_cells = []
+        self._form_blocks = []
+        self._form_row_keys = []
+        self._compact_flow = []
         while self.property_form.rowCount():
             row = self.property_form.takeRow(0)
             # A spanning addRow(widget) row fills only one of the two.
@@ -250,100 +260,110 @@ class _TriggerPanelFormMixin:
             self._list_types_refs = selection
         try:
             self._clear_property_form()
-            entries = self._entries_for(refs)
-            self._form_refs = refs
-            if not entries:
-                return
-            # N = 1 is the same code with a one-entry intersection (GH #60).
-            specs = trigger_fields.shared_specs([self._specs_for(k, entry) for k, _i, entry in entries])
-            if not specs:
-                empty = QLabel(self._no_fields_text(len(entries)))
-                # Wrapped: the N-entry wording is wider than the pane's minimum.
-                empty.setWordWrap(True)
-                self.property_form.addRow(empty)
-                return
-            objects = [entry for _k, _i, entry in entries]
-            kind, entry_index, _entry = entries[0]
-            if all(k == "effect" and self._read(e, "effect_type") == self._CREATE_OBJECT_EFFECT for k, _i, e in entries):
-                # GH #59: the stamping tool works but users don't find it.
-                hint = QLabel(self._CREATE_OBJECTS_HINT)
-                hint.setToolTip(self._CREATE_OBJECTS_HINT_TIP)
-                hint.setWordWrap(True)
-                self.property_form.addRow(hint)
-            names = {s.name for s in specs}
-            area_grid = all(f in names for f in trigger_geometry.AREA_FIELDS)
-            area_cells = []
-            for spec in specs:
-                # Compared as shown, so a sentinel BOOL's -1 and 0 share one unticked box.
-                value = trigger_fields.shared_value(
-                    objects, spec.attribute, lambda e, a, s=spec: trigger_fields.form_value(s, self._read(e, a))
-                )
-                widget = self._build_widget(spec, refs, value)
-                if trigger_fields.has_list_type(spec) and isinstance(widget, ValueLineEdit):
-                    self._add_list_type_row(spec, widget, value)
-                    self._add_type_pick_button(widget, spec, refs)
-                if area_grid and spec.name in trigger_geometry.AREA_FIELDS:
-                    # GH #277: the game's boxes. The tooltip keeps the field's name, X1 alone doesn't say area.
-                    label = QLabel(spec.name.rpartition("_")[2].upper())
-                    label.setBuddy(widget)
-                    label.setToolTip(spec.label)
-                    widget.setToolTip(spec.label)
-                    area_cells.append((label, widget))
-                    if spec.name == trigger_geometry.AREA_FIELDS[-1]:
-                        self.property_form.addRow(self._area_grid(area_cells))
-                elif spec.kind == trigger_fields.STR and spec.multiline:
-                    # GH #38/#139: caption on its own row, the box (or a locked field's text) full width below.
-                    label = QLabel(spec.label)
-                    label.setBuddy(widget)
-                    self.property_form.addRow(label)
-                    self.property_form.addRow(widget)
-                else:
-                    # One-line fields keep the side caption (GH #139 decision, 2026-10-05).
-                    self.property_form.addRow(spec.label, widget)
-                    label = self.property_form.labelForField(widget)
-                if spec.tooltip:
-                    widget.setToolTip(spec.tooltip)
-                    if label is not None:
-                        label.setToolTip(spec.tooltip)
-                self._rows.append((spec, kind, entry_index, widget))
-                if kind == "effect" and spec.name in self._FACET_UNITS and self._facet_preview is None:
-                    # GH #167: its own row directly under the facet field.
-                    self._facet_preview = FacetPreview()
-                    self._facet_preview_field = spec.name
-                    self.property_form.addRow(self._facet_preview)
-                button_grid_effect = self._button_grid_effect(entries) if spec.name == "button_location" else ""
-                if button_grid_effect and self._button_grid is None:
-                    # GH #169: the building's panel, directly under the slot it sets.
-                    self._button_grid = ButtonGrid()
-                    self.property_form.addRow(self._button_grid)
-                if len(refs) == 1 and kind != "trigger":
-                    self._add_group_row(spec, specs, refs)
-            self._update_group_rows()
-            if self._facet_preview is not None:
-                fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
-                facet = self._facet_preview_field
-                single = _entry if len(entries) == 1 else None
-                self._facet_preview.bind(
-                    fields, facet, self._FACET_UNITS[facet], self._read, single, self._fit_property_height
-                )
-            if self._button_grid is not None:
-                fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
-                self._button_grid.bind(
-                    fields,
-                    self._button_grid_effect(entries),
-                    self._read,
-                    _entry,
-                    self._fit_property_height,
-                    self._button_grid_context(entries[0][1]),
-                )
-            if len(entries) == 1 and kind == "effect" and self._read(_entry, "effect_type") == self._DISPLAY_INSTRUCTIONS:
-                self._add_instruction_preview(_entry)
+            self._fill_property_form(refs)
+            if self._detail_layout != "column":
+                self._rehome_form()
         finally:
             self._populating = False
         self._fit_property_height()
 
+    def _fill_property_form(self, refs) -> None:
+        """The form's rows for `refs`, in the column layout."""
+        entries = self._entries_for(refs)
+        self._form_refs = refs
+        if not entries:
+            return
+        # N = 1 is the same code with a one-entry intersection (GH #60).
+        specs = trigger_fields.shared_specs([self._specs_for(k, entry) for k, _i, entry in entries])
+        if not specs:
+            empty = QLabel(self._no_fields_text(len(entries)))
+            # Wrapped: the N-entry wording is wider than the pane's minimum.
+            empty.setWordWrap(True)
+            self._add_form_row("empty", empty)
+            return
+        objects = [entry for _k, _i, entry in entries]
+        kind, entry_index, _entry = entries[0]
+        if all(k == "effect" and self._read(e, "effect_type") == self._CREATE_OBJECT_EFFECT for k, _i, e in entries):
+            # GH #59: the stamping tool works but users don't find it.
+            hint = QLabel(self._CREATE_OBJECTS_HINT)
+            hint.setToolTip(self._CREATE_OBJECTS_HINT_TIP)
+            hint.setWordWrap(True)
+            self._add_form_row(trigger_form_layout.HINT, hint)
+        names = {s.name for s in specs}
+        area_grid = all(f in names for f in trigger_geometry.AREA_FIELDS)
+        area_cells = []
+        for spec in specs:
+            # Compared as shown, so a sentinel BOOL's -1 and 0 share one unticked box.
+            value = trigger_fields.shared_value(
+                objects, spec.attribute, lambda e, a, s=spec: trigger_fields.form_value(s, self._read(e, a))
+            )
+            widget = self._build_widget(spec, refs, value)
+            if trigger_fields.has_list_type(spec) and isinstance(widget, ValueLineEdit):
+                self._add_list_type_row(spec, widget, value)
+                self._add_type_pick_button(widget, spec, refs)
+            if area_grid and spec.name in trigger_geometry.AREA_FIELDS:
+                # GH #277: the game's boxes. The tooltip keeps the field's name, X1 alone doesn't say area.
+                label = QLabel(spec.name.rpartition("_")[2].upper())
+                label.setBuddy(widget)
+                label.setToolTip(spec.label)
+                widget.setToolTip(spec.label)
+                area_cells.append((label, widget))
+                if spec.name == trigger_geometry.AREA_FIELDS[-1]:
+                    self._add_form_row(
+                        trigger_form_layout.AREA_GRID, self._area_grid(area_cells, self._detail_layout != "column")
+                    )
+            elif spec.kind == trigger_fields.STR and spec.multiline:
+                # GH #38/#139: caption on its own row, the box (or a locked field's text) full width below.
+                label = QLabel(spec.label)
+                label.setBuddy(widget)
+                self._add_form_row(spec.name, label)
+                self._add_form_row(spec.name, widget)
+            else:
+                # One-line fields keep the side caption (GH #139 decision, 2026-10-05).
+                self._add_form_row(spec.name, spec.label, widget)
+                label = self.property_form.labelForField(widget)
+            if spec.tooltip:
+                widget.setToolTip(spec.tooltip)
+                if label is not None:
+                    label.setToolTip(spec.tooltip)
+            self._rows.append((spec, kind, entry_index, widget))
+            if kind == "effect" and spec.name in self._FACET_UNITS and self._facet_preview is None:
+                # GH #167: its own row directly under the facet field.
+                self._facet_preview = FacetPreview()
+                self._facet_preview_field = spec.name
+                self._add_form_row(trigger_form_layout.FACET_PREVIEW, self._facet_preview)
+            button_grid_effect = self._button_grid_effect(entries) if spec.name == "button_location" else ""
+            if button_grid_effect and self._button_grid is None:
+                # GH #169: the building's panel, directly under the slot it sets.
+                self._button_grid = ButtonGrid()
+                self._add_form_row(trigger_form_layout.BUTTON_GRID, self._button_grid)
+            if len(refs) == 1 and kind != "trigger":
+                self._add_group_row(spec, specs, refs)
+        self._update_group_rows()
+        if self._facet_preview is not None:
+            fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
+            facet = self._facet_preview_field
+            single = _entry if len(entries) == 1 else None
+            self._facet_preview.bind(
+                fields, facet, self._FACET_UNITS[facet], self._read, single, self._fit_property_height
+            )
+        if self._button_grid is not None:
+            fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
+            self._button_grid.bind(
+                fields,
+                self._button_grid_effect(entries),
+                self._read,
+                _entry,
+                self._fit_property_height,
+                self._button_grid_context(entries[0][1]),
+            )
+        if len(entries) == 1 and kind == "effect" and self._read(_entry, "effect_type") == self._DISPLAY_INSTRUCTIONS:
+            self._add_instruction_preview(_entry)
+
     # The viewer's own _CREATE_OBJECT_EFFECT, which stamp_create_objects() checks.
     _CREATE_OBJECT_EFFECT = 11
+    # GH #387: the instruction preview's narrowest in a grid, its one-line footer.
+    _PREVIEW_CHARS = 32
     _DISPLAY_INSTRUCTIONS = 20
     # GH #167: Create Object's facet and Replace Object's facet2, each with the unit it turns.
     _FACET_UNITS: ClassVar[dict[str, str]] = {"facet": "object_list_unit_id", "facet2": "object_list_unit_id_2"}
@@ -375,7 +395,7 @@ class _TriggerPanelFormMixin:
     def _add_instruction_preview(self, entry) -> None:
         """GH #140: a full-width, observe-only preview row under the fields."""
         preview = InstructionPreview()
-        self.property_form.addRow(preview)
+        self._add_form_row(trigger_form_layout.INSTRUCTION_PREVIEW, preview)
         manager = self._manager()
         names = [] if manager is None else [label for label, _id in object_catalog.variable_choices(manager)]
         fields = {spec.name: widget for spec, _kind, _index, widget in self._rows}
@@ -415,6 +435,9 @@ class _TriggerPanelFormMixin:
         still measure correct. Asking the layout for heightForWidth at the real
         viewport width is what makes the vertical scrollbar appear instead.
         """
+        if self._detail_layout != "column":
+            self._fit_grid_height()
+            return
         # activate() first, or this measures the *previous* form: the rows were
         # added moments ago and Qt has not laid them out yet, so heightForWidth
         # answers for whatever the form held before. That is how this first
@@ -430,6 +453,140 @@ class _TriggerPanelFormMixin:
         if width > 0 and self.property_form.hasHeightForWidth():
             height = max(height, self.property_form.heightForWidth(width))
         self.property_host.setMinimumHeight(height)
+
+    # -- above or below the map (GH #387) -----------------------------------
+
+    def detail_layout(self) -> str:
+        return self._detail_layout
+
+    def set_detail_layout(self, mode: str) -> None:
+        """"column" (docked at a side, or floating), or "game" or "compact"
+        (docked above or below the map). A change rebuilds the open form."""
+        if mode == self._detail_layout:
+            return
+        self._detail_layout = mode
+        self.property_host.setVisible(mode == "column")
+        self.grid_host.setVisible(mode != "column")
+        if self._form_refs is not None:
+            scroll = self.property_area.verticalScrollBar().value()
+            self._populate_property_form()
+            self.property_area.verticalScrollBar().setValue(scroll)
+
+    def _add_form_row(self, key: str, *row) -> None:
+        """Every property form row goes through here, with its block key: a spec
+        name or one of trigger_form_layout's, which say where a grid puts it."""
+        self.property_form.addRow(*row)
+        self._form_row_keys.append(key)
+
+    def _rehome_form(self) -> None:
+        """Move the populated rows into grid_host: the game's cells or Compact's
+        columns. The widgets move whole, so signals, _rows and the group rows hold."""
+        blocks: list[trigger_form_layout.Block] = []
+        for key in self._form_row_keys:
+            row = self.property_form.takeRow(0)
+            widgets = [item.widget() for item in (row.labelItem, row.fieldItem) if item is not None]
+            if blocks and blocks[-1].key == key:
+                # A text box: its caption's own row, then the box.
+                last = blocks[-1]
+                last.caption, last.field, last.stacked = last.field, widgets[-1], True
+            elif len(widgets) == 2:
+                blocks.append(trigger_form_layout.Block(key, widgets[0], widgets[1]))
+            else:
+                blocks.append(trigger_form_layout.Block(key, None, widgets[0]))
+        self._form_row_keys = []
+        self._form_blocks = blocks
+        for block in blocks:
+            if block.key == trigger_form_layout.INSTRUCTION_PREVIEW:
+                # Its wrapped labels ask for about 56 px, so its own column would wrap every word.
+                block.field.setMinimumWidth(block.field.fontMetrics().averageCharWidth() * self._PREVIEW_CHARS)
+        if self._detail_layout == "compact":
+            self._compact_flow = self._compact_columns(blocks)
+            self._grid_cells = trigger_form_layout.arrange_columns(self.grid_layout, blocks, self._compact_flow)
+            return
+        if any(kind == "trigger" for kind, _index in self._form_refs or ()):
+            slots, rows = trigger_form_layout.TRIGGER_SLOTS, trigger_form_layout.TRIGGER_ROWS
+        else:
+            slots, rows = trigger_form_layout.GAME_SLOTS, trigger_form_layout.GAME_ROWS
+            entries = self._entries_for(self._form_refs or ())
+            names = {getattr(self._definition_for(kind, entry), "name", "") for kind, _index, entry in entries}
+            if len(names) == 1:
+                slots = {**slots, **trigger_form_layout.TYPE_SLOTS.get(names.pop(), {})}
+        # A locked row (the quantity cluster's inactive slots) yields its cell to a live one.
+        locked = {spec.name for spec, *_ in self._rows if spec.read_only}
+        keys = sorted((block.key for block in blocks), key=lambda key: key in locked)
+        cells = trigger_form_layout.place(keys, slots, rows)
+        self._grid_cells = trigger_form_layout.arrange_cells(self.grid_layout, blocks, cells)
+
+    def _compact_height(self) -> int:
+        """The height a Compact column may fill: the scroll area's, less a horizontal
+        bar's, always, so the bar coming and going cannot flip the split."""
+        area = self.property_area
+        margins = self.grid_layout.contentsMargins()
+        bar = area.horizontalScrollBar().sizeHint().height()
+        return area.height() - 2 * area.frameWidth() - bar - margins.top() - margins.bottom()
+
+    def _compact_columns(self, blocks) -> list[int]:
+        spacing = max(self.property_form.verticalSpacing(), 0)
+        heights = [trigger_form_layout.block_height(block, spacing) for block in blocks]
+        return trigger_form_layout.flow(heights, self._compact_height())
+
+    def _reflow_compact(self) -> None:
+        """A height change re-splits Compact's columns, moving the same widgets, when the split changes."""
+        if self._detail_layout != "compact" or not self._form_blocks:
+            return
+        columns = self._compact_columns(self._form_blocks)
+        if columns == self._compact_flow:
+            return
+        blocks = self._form_blocks
+        focus = QApplication.focusWidget()
+        if focus is not None and self.grid_host.isAncestorOf(focus):
+            # Moving a widget takes its focus, and that focus-out commits; done first, so a
+            # commit that rebuilds the form (a rename crossing the divider rule) happens before any move.
+            self.grid_host.setFocus(Qt.OtherFocusReason)
+            if self._form_blocks is not blocks:
+                return
+        else:
+            focus = None
+        old = self._grid_cells
+        self._compact_flow = columns
+        self._grid_cells = trigger_form_layout.arrange_columns(self.grid_layout, blocks, columns)
+        for host in old:
+            host.hide()
+            host.setParent(None)
+            host.deleteLater()
+        if focus is not None:
+            focus.setFocus(Qt.OtherFocusReason)
+
+    def _fit_grid_height(self) -> None:
+        """_fit_property_height() for grid_host. A block that grew may re-split Compact first.
+        Then each cell asks for its wrapped height at its own width (the Create Objects tip
+        wraps), and grid_host takes the total, fixed rather than as a minimum: with the
+        horizontal bar shown, QScrollArea still sizes its widget to the bar-less height,
+        which would add a vertical bar to a grid that fits."""
+        self._reflow_compact()
+        for host in self._grid_cells:
+            # Qt's queued show, done now, as _fit_property_height() does for the form's rows.
+            if host.isHidden() and not host.testAttribute(Qt.WA_WState_ExplicitShowHide):
+                host.show()
+            # A text box's grip step changes its height now but its cell's on a queued
+            # LayoutRequest, and the grid would measure the cell's old height.
+            host.layout().activate()
+            trigger_form_layout.floor_width(host)
+            host.updateGeometry()
+        self.grid_layout.activate()
+        for host in self._grid_cells:
+            layout = host.layout()
+            if layout.hasHeightForWidth():
+                # At its natural width, which the grid never squeezes it below; its current width can
+                # be a squeezed one from before grid_host's minimum caught up. Never below the layout's
+                # own minimum: a text box dragged taller has a fixed height its wrapped estimate ignores.
+                width = host.sizeHint().width()
+                host.setMinimumHeight(max(layout.minimumSize().height(), layout.heightForWidth(width)))
+        self.grid_layout.activate()
+        # Never narrower than its natural width: squeezed, a column's wrapped labels grow
+        # taller than the dock, and the panel scrolls sideways either way.
+        self.grid_host.setMinimumWidth(self.grid_layout.sizeHint().width())
+        self.grid_host.setFixedHeight(self.grid_layout.minimumSize().height())
 
     def _display_text(self, spec, value) -> str:
         """A read-only field's text, in the same terms its editor would use."""

@@ -83,6 +83,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "distance_tick_font_px": (_APPEARANCE, "Distance ticks label size"),
     "stack_badge_position": (_APPEARANCE, "Stacked-unit badge position"),
     "favorite_star_style": (_APPEARANCE, "Favorite star"),
+    "trigger_details_bottom_layout": (_APPEARANCE, "Trigger Details under the map"),
     "terrain_grid_swatch_px": (_APPEARANCE, "Terrain grid swatch size"),
     "grid_blend": (_APPEARANCE, "Grid line blend"),
     "grid_lightness": (_APPEARANCE, "Grid line blend"),

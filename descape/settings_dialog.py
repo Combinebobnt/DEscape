@@ -808,6 +808,24 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         terrain_grid_row.addStretch(1)
         layout.addLayout(terrain_grid_row)
 
+        # GH #387: Trigger Details docked above or below the map. Not in a theme file either.
+        trigger_details_row = QHBoxLayout()
+        trigger_details_row.addWidget(QLabel("Trigger Details under the map:"))
+        self.trigger_details_layout_combo = QComboBox()
+        for layout_id, layout_label in settings.TRIGGER_DETAILS_BOTTOM_LAYOUTS:
+            self.trigger_details_layout_combo.addItem(layout_label, layout_id)
+        self.trigger_details_layout_combo.setCurrentIndex(
+            self.trigger_details_layout_combo.findData(settings.get_trigger_details_bottom_layout())
+        )
+        self.trigger_details_layout_combo.setToolTip(
+            "Docked above or below the map, Trigger Details puts each field where the game's trigger "
+            "editor does, or flows its rows into compact columns. Docked at a side, it is one column."
+        )
+        self.trigger_details_layout_combo.currentIndexChanged.connect(self._on_trigger_details_layout_changed)
+        trigger_details_row.addWidget(self.trigger_details_layout_combo, stretch=0)
+        trigger_details_row.addStretch(1)
+        layout.addLayout(trigger_details_row)
+
         # View > Grid's appearance. A drag is bracketed rather than debounced:
         # its first tick swaps the baked grid for GridItem's preview (one
         # eviction), each tick after that is two QPens and an update(), and
@@ -1470,6 +1488,11 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         settings.set_stack_badge_position(position_id)
         self._window.map_view.set_stack_badge_position(position_id)
         self._window._log_status(f"Stacked-unit badge position: {self.stack_badge_position_combo.itemText(index)}")
+
+    def _on_trigger_details_layout_changed(self, index: int) -> None:
+        settings.set_trigger_details_bottom_layout(self.trigger_details_layout_combo.itemData(index))
+        self._apply_trigger_details_layout()
+        self._window._log_status(f"Trigger Details under the map: {self.trigger_details_layout_combo.itemText(index)}")
 
     def _on_terrain_grid_swatch_changed(self, index: int) -> None:
         px = self.terrain_grid_swatch_combo.itemData(index)

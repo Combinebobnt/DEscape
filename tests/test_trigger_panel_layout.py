@@ -222,7 +222,8 @@ def test_a_long_form_scrolls_instead_of_crushing_its_rows(what: str) -> None:
 
 @pytest.mark.font_sensitive
 def test_resizing_the_panel_refits_the_form_height() -> None:
-    """A panel resize reaches the form only through TriggerPanel.resizeEvent.
+    """A column resize reaches the form only through its own resizeEvent (the
+    Trigger Details dock's detail stack, GH #387).
     The form's height is a function of its width (wrapped rows), so the host's
     must follow it."""
     from PyQt5.QtWidgets import QApplication

@@ -32,6 +32,7 @@ Theme, chrome colours, UI font and toolbar buttons are covered in [View and Filt
 - Ruler label size, Distance ticks label size and Stacked-unit badge position set the text drawn on the map.
 - Favorite star: how the Units catalog and the Favorite Objects window mark a favorite. Gold has a dark outline so it reads on light themes; Black and white is white on dark themes and black on light ones (in Grid, a white star on the dark disc). Theme files carry it.
 - Terrain grid swatch size: how big each swatch is when Terrain mode's terrain picker shows a grid.
+- Trigger Details under the map: how Triggers mode's Trigger Details lays out when docked above or below the map. Game layout puts each field where the game's trigger editor does; Compact columns keeps the form's order in columns that fit the panel's height ([Triggers](triggers.md)).
 - Grid line blend and Grid thickness: how **View > Grid** looks. Left of the middle, blend darkens the terrain under the lines towards black; right of it, it lightens it towards white; in the middle the lines are invisible.
 
 ### Trigger status

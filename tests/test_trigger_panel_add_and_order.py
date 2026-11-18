@@ -294,10 +294,16 @@ def test_the_picker_sizes_its_column_to_its_longest_type_name() -> None:
 
 def test_the_picker_takes_the_whole_lower_pane_and_gives_it_back() -> None:
     """Also a screenshot finding: sharing the lower pane with the detail tree
-    left 144 selectable types in five visible rows."""
+    left 144 selectable types in five visible rows. A standalone panel's: in
+    the window the picker has the Trigger Details dock (GH #387)."""
+    from descape.trigger_panel import TriggerPanel
+
     window = _triggers_window()
+    panel = TriggerPanel()
     try:
-        panel = window.trigger_panel
+        panel.show_scenario(window.scenario)
+        panel.resize(TriggerPanel.MIN_USEFUL_WIDTH, 770)
+        panel.show()
         panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
         assert panel.entry_tree.isVisible()
 
@@ -309,6 +315,8 @@ def test_the_picker_takes_the_whole_lower_pane_and_gives_it_back() -> None:
         assert panel.entry_tree.isVisible()
         assert panel.entry_new_button.isVisible()
     finally:
+        panel.close()
+        panel.deleteLater()
         window.edit_history.mark_saved()
         window.close()
 

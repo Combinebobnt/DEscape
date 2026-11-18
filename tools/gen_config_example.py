@@ -337,6 +337,12 @@ units_catalog_right_click: {settings.UNITS_CATALOG_RIGHT_CLICK_DEFAULT}
 # Anything else falls back to the default on read. Default: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}.
 terrain_grid_swatch_px: {settings.TERRAIN_GRID_SWATCH_PX_DEFAULT}
 
+# How Trigger Details lays out docked above or below the map, Settings >
+# Appearance: game (each field where the game's trigger editor puts it) or
+# compact (the form's rows in columns). Docked at a side or floating it is one
+# column either way. Default: {settings.TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT}.
+trigger_details_bottom_layout: {settings.TRIGGER_DETAILS_BOTTOM_LAYOUT_DEFAULT}
+
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
 selection_by_owner: true

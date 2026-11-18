@@ -64,6 +64,18 @@ def _window_on(tmp_path, kind: str):
     return window, widget, path
 
 
+def _float_field_dock(window, kind: str):
+    """Float the dock `kind`'s field is in (a trigger field's is Trigger Details, GH #387) and make it active."""
+    from PyQt5.QtWidgets import QApplication
+
+    dock = window.trigger_detail_dock if kind.startswith("trigger") else window.panel_dock
+    dock.setFloating(True)
+    QApplication.processEvents()
+    dock.activateWindow()
+    QApplication.setActiveWindow(dock)
+    return dock
+
+
 def _type_into(kind: str, widget) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
@@ -299,17 +311,15 @@ def test_an_autosave_tick_leaves_a_focused_fields_typed_value_pending(tmp_path) 
 @pytest.mark.parametrize("kind", ["trigger name", "hints box"])
 def test_a_floating_panels_typed_value_is_saved_too(tmp_path, kind: str) -> None:
     """GH #64: a floating panel is a window of its own, which the main window's
-    focusWidget() and isAncestorOf() never reach."""
-    from PyQt5.QtWidgets import QApplication
+    focusWidget() and isAncestorOf() never reach. GH #387: so is a floating
+    Trigger Details dock."""
 
     window, widget, path = _window_on(tmp_path, kind)
     try:
-        window.panel_dock.setFloating(True)
-        QApplication.processEvents()
-        window.panel_dock.activateWindow()
-        QApplication.setActiveWindow(window.panel_dock)
+        dock = _float_field_dock(window, kind)
         _type_into(kind, widget)
-        assert not window.isAncestorOf(widget), "fixture: the field is in the floating panel's window"
+        assert not window.isAncestorOf(widget), "fixture: the field is in the floating dock's window"
+        assert dock.isAncestorOf(widget)
         if kind in BOX_KINDS:
             assert window._focused_text_box() is widget, "Edit > Undo follows the floating box's own stack"
         window.save()
@@ -330,10 +340,7 @@ def test_a_floating_boxs_text_survives_a_click_into_the_main_window(tmp_path, ki
     window, widget, path = _window_on(tmp_path, kind)
     try:
         mode = window.mode_combo.currentText()
-        window.panel_dock.setFloating(True)
-        QApplication.processEvents()
-        window.panel_dock.activateWindow()
-        QApplication.setActiveWindow(window.panel_dock)
+        _float_field_dock(window, kind)
         _type_into(kind, widget)
         if two_step:
             QApplication.setActiveWindow(None)
@@ -344,6 +351,107 @@ def test_a_floating_boxs_text_survives_a_click_into_the_main_window(tmp_path, ki
         window.mode_combo.setCurrentText("Units")
         window.mode_combo.setCurrentText(mode)
         QApplication.processEvents()
+        window.save()
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, kind)
+
+
+@pytest.mark.parametrize("two_step", [False, True], ids=["direct", "via-no-window"])
+def test_a_docked_forms_box_survives_a_click_into_a_floating_trigger_list(tmp_path, two_step: bool) -> None:
+    """GH #387: the form and the trigger list can be in different windows. Picking another
+    trigger in the floating panel rebuilds the form, so the box must commit on the switch."""
+    from PyQt5.QtWidgets import QApplication
+
+    window, widget, path = _window_on(tmp_path, "trigger message box")
+    try:
+        panel = window.trigger_panel
+        current = panel.current_trigger_index()
+        window.panel_dock.setFloating(True)
+        QApplication.processEvents()
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        _type_into("trigger message box", widget)
+        assert window.isAncestorOf(widget), "fixture: the form is docked in the main window"
+        if two_step:
+            QApplication.setActiveWindow(None)
+        window.panel_dock.activateWindow()
+        QApplication.setActiveWindow(window.panel_dock)
+        panel.tree.setFocus()
+        QApplication.processEvents()
+        panel.select_trigger(0 if current else 1)
+        panel.select_trigger(current)
+        QApplication.processEvents()
+        window.save()
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, "trigger message box")
+
+
+def test_leaving_triggers_mode_commits_a_floating_forms_box(tmp_path) -> None:
+    """GH #387: leaving Triggers mode hides a floating Trigger Details window, which moves no
+    focus, so a mode key pressed with its box focused would otherwise drop the typed text."""
+    window, widget, path = _window_on(tmp_path, "trigger message box")
+    try:
+        _float_field_dock(window, "trigger message box")
+        _type_into("trigger message box", widget)
+        window.mode_combo.setCurrentText("Units")
+        assert window.trigger_detail_dock.isHidden()
+        window.save()
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, "trigger message box")
+
+
+def test_a_parked_box_deleted_by_a_reload_does_not_raise(tmp_path) -> None:
+    """GH #387: a box parked by a window switch can be deleted before the next focus change."""
+    import sip
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtWidgets import QApplication
+
+    window, widget, path = _window_on(tmp_path, "trigger message box")
+    try:
+        window._on_app_focus_changed(widget, None)
+        assert window._left_window_box is widget, "fixture: the box is parked"
+        window.load_scenario(path)
+        QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert sip.isdeleted(widget), "fixture: the reload deleted the box"
+        window._on_app_focus_changed(None, window.mode_combo)
+        assert window._left_window_box is None
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("move", ["dock left", "setting"])
+@pytest.mark.parametrize("kind", ["trigger name", "trigger message box"])
+def test_a_layout_switch_commits_a_focused_fields_typed_value(tmp_path, kind: str, move: str) -> None:
+    """GH #387: docked under the map the form rebuilds when its layout changes, and a
+    multi-line box ignores a window switch, so the rebuild commits the typed value first."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+    from trigger_panel_helpers import _row_widget
+
+    from descape import settings
+
+    window, widget, path = _window_on(tmp_path, kind)
+    try:
+        window.addDockWidget(Qt.BottomDockWidgetArea, window.trigger_detail_dock)
+        QApplication.processEvents()
+        assert window.trigger_panel.detail_layout() == "game"
+        widget = _row_widget(window.trigger_panel, "name" if kind == "trigger name" else "message")
+        _type_into(kind, widget)
+        records = len(window.edit_history.records)
+        if move == "dock left":
+            window.addDockWidget(Qt.LeftDockWidgetArea, window.trigger_detail_dock)
+        else:
+            settings.set_trigger_details_bottom_layout("compact")
+            window._sync_trigger_detail_layout()
+        QApplication.processEvents()
+        assert window.trigger_panel.detail_layout() == ("column" if move == "dock left" else "compact")
+        assert len(window.edit_history.records) == records + 1
         window.save()
     finally:
         conftest.close_window(window)

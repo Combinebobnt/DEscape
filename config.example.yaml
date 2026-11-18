@@ -253,6 +253,12 @@ units_catalog_right_click: menu
 # Anything else falls back to the default on read. Default: 48.
 terrain_grid_swatch_px: 48
 
+# How Trigger Details lays out docked above or below the map, Settings >
+# Appearance: game (each field where the game's trigger editor puts it) or
+# compact (the form's rows in columns). Docked at a side or floating it is one
+# column either way. Default: game.
+trigger_details_bottom_layout: game
+
 # In Units mode, outline each selected unit in its owner's player colour (GAIA
 # keeps unit_select), View > Colour Selection by Owner. Default: true.
 selection_by_owner: true
@@ -511,6 +517,7 @@ keybinds:
   view_panel_dock: ''
   view_log_dock: ''
   view_minimap_dock: ''
+  view_trigger_detail_dock: ''
   view_reset_layout: ''
   view_layer_terrain_textures: ''
   view_layer_terrain_blend: ''
