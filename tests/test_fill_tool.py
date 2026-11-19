@@ -573,6 +573,8 @@ def _count_patch_rects(cache, monkeypatch) -> list:
 
 @pytest.mark.parametrize("levels", [(0,), (0, -1)], ids=["visible-level", "and-a-coarser-one"])
 @pytest.mark.parametrize("rule", ["count", "ratio"])
+@pytest.mark.quick_keep(rule="count", levels=(0,))
+@pytest.mark.quick_keep(rule="ratio", levels=(0, -1))
 def test_a_flat_fill_too_large_to_patch_evicts_its_region(rule, levels, blend_install, monkeypatch) -> None:  # noqa: F811
     """A fill bounded by a second terrain, past the dirty-count threshold
     (`count`, lowered to 100) or under it but past the visible-tiles ratio

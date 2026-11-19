@@ -423,6 +423,8 @@ CONTESTED = [
 
 @pytest.mark.parametrize("a_path", ["wholesale", "component"])
 @pytest.mark.parametrize(("style", "mip", "repaint"), CONTESTED)
+@pytest.mark.quick_keep(style="Stepped", mip=0, repaint="patch", a_path="wholesale")
+@pytest.mark.quick_keep(style="Sloped", mip=1, repaint="evict", a_path="component")
 def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_path, art, monkeypatch) -> None:
     """Stroke A crosses a villager's tile. It splices that shared tile's
     component, or with the component cap at 0 the cache rebuilds its sources
@@ -483,6 +485,8 @@ def test_draw_strokes_over_contested_trees_undo_and_redo(style, mip, repaint, a_
 
 @pytest.mark.parametrize("const", [CASTLE, TREE_OAK], ids=["castle", "tree"])
 @pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+@pytest.mark.quick_keep(style="Stepped", mip=0, const=82)
+@pytest.mark.quick_keep(style="Sloped", mip=1, const=411)
 def test_place_move_and_delete_a_tall_unit(style, mip, const, art, monkeypatch) -> None:
     """Place has only a post side, Delete only a pre side, Move both. The
     castle is multi-anchor: its main piece's column slices key every tile on
@@ -756,6 +760,8 @@ def _check_numpy(window, step: str) -> np.ndarray:
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+@pytest.mark.quick_keep(style="Stepped")
+@pytest.mark.quick_keep(style="Flat")
 def test_a_convert_stroke_its_undo_and_redo_match_a_fresh_numpy_render(style, art, monkeypatch) -> None:
     """TASK-052: a Convert drag across three team-coloured heroes and the
     tiles between them, through the real stroke handlers, at mip 0 in view.
@@ -818,6 +824,8 @@ def test_rotating_a_unit_repaints_its_new_frame(style, mip, art, monkeypatch) ->
 
 @pytest.mark.parametrize(("layer", "player", "const"), [("hero_glow", 1, HERO), ("small_trees", 0, TREE_OAK)])
 @pytest.mark.parametrize(("style", "mip"), STYLE_MIPS)
+@pytest.mark.quick_keep(style="Stepped", mip=0, layer="hero_glow", player=1, const=160)
+@pytest.mark.quick_keep(style="Sloped", mip=1, layer="small_trees", player=0, const=411)
 def test_a_build_time_layer_reaches_the_resolved_extent(style, mip, layer, player, const, art, monkeypatch) -> None:
     """Hero Glow grows the hero's art and Small Trees shrinks the tree's, so
     the post side must resolve with the cache's own layer values."""
@@ -1065,6 +1073,8 @@ LONE_WALL_STYLE_MIPS = [*STYLE_MIPS, ("Flat", 0)]
 
 
 @pytest.mark.parametrize(("style", "mip"), LONE_WALL_STYLE_MIPS)
+@pytest.mark.quick_keep(style="Stepped", mip=0)
+@pytest.mark.quick_keep(style="Flat", mip=0)
 def test_a_gate_dragged_off_an_integer_run_end_draws_the_wall_it_left_as_a_tower(style, mip, art, monkeypatch) -> None:
     """TASK-524, "Moving a gate updates walls" unticked, so no wall is
     rewritten: (51, 50) keeps storing its run piece (0), but with only (50,
@@ -1189,6 +1199,8 @@ _LAST_RADIAN_REMOVALS = [("delete", style, mip) for style, mip in LONE_WALL_STYL
 
 
 @pytest.mark.parametrize(("verb", "style", "mip"), _LAST_RADIAN_REMOVALS)
+@pytest.mark.quick_keep(verb="delete", style="Stepped", mip=0)
+@pytest.mark.quick_keep(verb="cut", style="Stepped", mip=0)
 def test_deleting_the_last_radian_wall_repaints_every_wall(verb, style, mip, art, monkeypatch) -> None:
     """TASK-583: Delete or Cut of the lone radian wall makes the file integer,
     so the run beyond the edit draws its stored 1; undo makes it radian

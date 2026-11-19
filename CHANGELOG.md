@@ -81,6 +81,10 @@ content, link the doc instead of summarizing it.
 
 ### Changed
 
+- **Reading a large file's triggers**: the first time DEscape reads a file's
+  triggers it is faster, and on a very large file it shows a progress
+  window instead of freezing. When a mode switch, Find or Map Analysis
+  started the read, the window has Cancel.
 - **`tools/release_render_diff.py` compares against the latest release**
   (now v0.11).
 - **Smoother trigger overlays**: with many triggers selected, or one with a
@@ -92,6 +96,11 @@ content, link the doc instead of summarizing it.
   @teslatankx, #385)
 
 ### Fixed
+
+- **Map Analysis and trigger-made buildings**: the Train and research
+  buttons check counts a building a Create Object or Replace Object effect
+  makes as present, and Return of Rome scenarios show Return of Rome's own
+  technology icons.
 
 - **Trigger object fields keep their object**: clicking into and out of an
   object field after switching its Object List Type no longer swaps a name

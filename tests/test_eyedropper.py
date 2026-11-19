@@ -684,6 +684,8 @@ def assert_inert(window, tool: str, records: int, units: int) -> None:
 
 @pytest.mark.parametrize("gesture", ["drag", "double"])
 @pytest.mark.parametrize("tool", applicable_tools("terrain"))
+@pytest.mark.quick_keep(tool="pan", gesture="drag")
+@pytest.mark.quick_keep(tool="eraser", gesture="double")
 def test_the_switching_gesture_does_nothing_under_the_restored_terrain_tool(tool, gesture) -> None:
     window = _switch_back_window(from_tool=tool)
     try:

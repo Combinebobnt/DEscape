@@ -146,7 +146,7 @@ def _player_value(loaded, player: int, field_id: str):
         return None
     try:
         return player_fields.current_value(loaded, spec, player)
-    except (ValueError, IndexError, AttributeError):
+    except (ValueError, IndexError, AttributeError, TypeError):  # TypeError: a value neither int nor str
         return None
 
 

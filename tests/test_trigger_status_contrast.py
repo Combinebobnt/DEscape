@@ -102,6 +102,8 @@ def _status(kind: str):
 
 
 @pytest.mark.parametrize(("preset_id", "kind"), list(_params()))
+@pytest.mark.quick_keep(preset_id="editor_parchment_red")
+@pytest.mark.quick_keep(preset_id="dark")
 def test_a_status_row_is_legible_on_the_trees_base(preset_id: str, kind: str) -> None:
     """Passes when: under `preset_id`, applied and persisted as the app does,
     a trigger row, a condition row and an effect row of status `kind` each

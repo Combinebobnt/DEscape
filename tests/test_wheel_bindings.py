@@ -153,6 +153,8 @@ def test_the_view_knows_a_modifier_set_for_every_settings_slot() -> None:
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("action", ["tool", "rotate"])
+@pytest.mark.quick_keep(action="tool", slot="plain")
+@pytest.mark.quick_keep(action="rotate", slot="alt")
 def test_a_slot_bound_to_a_rotating_action_turns_the_ghost(slot, modifier, delta, action) -> None:
     window = _place_window()
     try:
@@ -171,6 +173,8 @@ def test_a_slot_bound_to_a_rotating_action_turns_the_ghost(slot, modifier, delta
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("action", ["tool", "brush_size"])
+@pytest.mark.quick_keep(action="tool", slot="plain")
+@pytest.mark.quick_keep(action="brush_size", slot="alt")
 def test_a_slot_bound_to_a_brush_action_steps_the_brush_size(slot, modifier, delta, action) -> None:
     window = _terrain_window("draw")
     try:
@@ -188,6 +192,8 @@ def test_a_slot_bound_to_a_brush_action_steps_the_brush_size(slot, modifier, del
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("action", ["pan_vertical", "pan_horizontal"])
+@pytest.mark.quick_keep(action="pan_vertical", slot="plain")
+@pytest.mark.quick_keep(action="pan_horizontal", slot="alt")
 def test_a_slot_bound_to_a_pan_scrolls_the_view_up_or_left(slot, modifier, delta, action) -> None:
     from descape.map_view import MapView
 
@@ -214,6 +220,8 @@ def test_a_slot_bound_to_a_pan_scrolls_the_view_up_or_left(slot, modifier, delta
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("state", ["draw", "ghost"])
+@pytest.mark.quick_keep(state="draw", slot="plain")
+@pytest.mark.quick_keep(state="ghost", slot="alt")
 def test_a_slot_bound_to_nothing_swallows_the_event(slot, modifier, delta, state) -> None:
     window = _terrain_window("draw") if state == "draw" else _place_window()
     try:
@@ -230,6 +238,8 @@ def test_a_slot_bound_to_nothing_swallows_the_event(slot, modifier, delta, state
 
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
+@pytest.mark.quick_keep(slot="plain")
+@pytest.mark.quick_keep(slot="alt")
 def test_a_slot_bound_to_zoom_zooms_over_the_ghost_and_in_draw(slot, modifier, delta) -> None:
     """The zoom column, where the default (Ctrl) would otherwise act on the tool."""
     for build in (_place_window, _terrain_window):
@@ -553,6 +563,8 @@ def test_a_binding_saved_before_the_window_is_built_is_live_on_the_first_event()
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("tool", ["draw", "select"])
 @pytest.mark.parametrize("action", ["pan_vertical", "brush_size"])
+@pytest.mark.quick_keep(action="pan_vertical", tool="draw", slot="plain")
+@pytest.mark.quick_keep(action="brush_size", tool="select", slot="alt")
 def test_a_wheel_event_sent_through_the_application_runs_its_binding(slot, modifier, delta, tool, action) -> None:
     """Brush size has no brush to step in Select, so it does nothing there."""
     from descape.map_view import MapView
@@ -1040,6 +1052,8 @@ def _archer_rotation(window) -> list[float]:
 
 @pytest.mark.parametrize("slot, modifier, delta", _SLOT_EVENTS)
 @pytest.mark.parametrize("action", _SELECTION_ACTIONS)
+@pytest.mark.quick_keep(action="rotate_selection", slot="plain")
+@pytest.mark.quick_keep(action="tool_selection", slot="alt")
 def test_a_selection_choice_turns_the_selected_unit_as_the_rotate_key_does(slot, modifier, delta, action) -> None:
     from descape.map_view import MapView
 

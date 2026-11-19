@@ -1667,6 +1667,8 @@ _CHUNKED_STEPS = (
 @pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.quick_keep(style="Flat", merged=False, by_owner=False)
+@pytest.mark.quick_keep(style="Sloped", merged=True, by_owner=True)
 def test_every_edit_and_its_undo_leave_each_group_equal_to_a_fresh_build(
     monkeypatch, style: str, merged: bool, by_owner: bool
 ) -> None:

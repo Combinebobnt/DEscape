@@ -353,6 +353,47 @@ def test_ror_portraits_follow_its_icon_table(ror_install):
     assert asset_source.unit_icon_path(99) is None, "an unknown RefName falls back to the index lookup"
 
 
+def test_ror_tech_icons_follow_its_icon_table_then_its_roots(ror_install):
+    """TASK-458: tech icons resolve as portraits do, the icon table first, then RoR's root, then the install's."""
+    ror_ui = ror_install / games.ROR.root_subpath / asset_source.UI_DIR
+    aoe2_ui = ror_install / asset_source.UI_DIR
+    for path in (
+        ror_ui / "textures/ingame/tech/005_ror_only.dds",
+        ror_ui / "textures/ingame/tech/007_ror_own.dds",
+        aoe2_ui / "textures/ingame/tech/007_aoe2_own.dds",
+        aoe2_ui / "textures/ingame/tech/008_aoe2_fallback.DDS",
+        aoe2_ui / "textures/ingame/tech/101_banking.dds",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    table = {"Techs": {"040": "TechIconsT101Banking", "007": "Nowhere"}}
+    (ror_ui / asset_source.ICON_TABLE_NAME).write_text(json.dumps(table), encoding="utf-8")
+    (ror_ui / asset_source.ROR_MATERIALS_NAME).write_text(_atlas(), encoding="utf-8")
+    (aoe2_ui / asset_source.MATERIALS_NAME).write_text(
+        _atlas(("TechIconsT101Banking", "textures/ingame/tech/101_banking.dds")), encoding="utf-8"
+    )
+    assert asset_source.tech_icon_path(7).name == "007_aoe2_own.dds"
+    assert asset_source.tech_icon_path(5) is None, "AoE2 never reads RoR's root"
+    assert asset_source.tech_icon_path(40) is None, "AoE2 ignores the RoR table"
+    _ror()
+    assert asset_source.tech_icon_path(40) == aoe2_ui / "textures/ingame/tech/101_banking.dds"
+    assert asset_source.tech_icon_path(5) == ror_ui / "textures/ingame/tech/005_ror_only.dds"
+    assert asset_source.tech_icon_path(7) == ror_ui / "textures/ingame/tech/007_ror_own.dds", "RoR's root beats the install's"
+    assert asset_source.tech_icon_path(8).name == "008_aoe2_fallback.DDS", "falls back to the install"
+    assert asset_source.tech_icon_path(9) is None
+
+
+def test_the_cached_tech_icon_follows_a_game_switch(ror_install):
+    """get_tech_icon() is keyed on the index alone, so a switch must drop it (the button grid reads it)."""
+    _ui_file(ror_install / games.ROR.root_subpath, "textures/ingame/tech/007_ror.dds", (255, 0, 0, 255))
+    _ui_file(ror_install, "textures/ingame/tech/007_aoe2.dds", (0, 0, 255, 255))
+    assert tuple(asset_source.get_tech_icon(7)[0, 0]) == (0, 0, 255, 255)
+    _ror()
+    assert tuple(asset_source.get_tech_icon(7)[0, 0]) == (255, 0, 0, 255)
+    _aoe2()
+    assert tuple(asset_source.get_tech_icon(7)[0, 0]) == (0, 0, 255, 255)
+
+
 # --- GH #363: a data mod's portraits ------------------------------------------------------
 
 PID = "7656"

@@ -654,6 +654,8 @@ def test_a_filter_toggle_in_terrain_drops_the_selected_unit_it_hides() -> None:
 @pytest.mark.parametrize("tool", ["elevation", "set_level"])
 @pytest.mark.parametrize("flush_last_step", [False, True])
 @pytest.mark.parametrize("end", ["release", "tool_switch"])
+@pytest.mark.quick_keep(end="release", flush_last_step=False, tool="elevation", style="Stepped")
+@pytest.mark.quick_keep(end="tool_switch", flush_last_step=True, tool="set_level", style="Sloped")
 def test_a_kept_selection_refreshes_once_after_an_elevation_drag(monkeypatch, style, tool, flush_last_step, end) -> None:
     from PyQt5.QtCore import QEvent, Qt
     from PyQt5.QtWidgets import QApplication

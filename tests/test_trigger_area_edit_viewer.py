@@ -364,6 +364,8 @@ def test_dragging_the_middle_moves_the_area_and_keeps_its_size(style) -> None:
         ("se", (20.5, 30.5), (20, 30, 30, 40)),  # crosses both opposite sides
     ],
 )
+@pytest.mark.quick_keep(zone="w", style="Flat")
+@pytest.mark.quick_keep(zone="se", style="Sloped")
 def test_dragging_an_edge_or_corner_resizes_the_area(style, zone, end, expected) -> None:
     window = _editing(style)
     try:
@@ -439,6 +441,8 @@ def test_hover_cursors_follow_the_zone_on_screen(style) -> None:
 
 @pytest.mark.parametrize("grab", ["area", "location"])
 @pytest.mark.parametrize("how", ["escape", "right_click", "restyle", "mode", "untick", "ruler"])
+@pytest.mark.quick_keep(how="escape", grab="area")
+@pytest.mark.quick_keep(how="ruler", grab="location")
 def test_every_cancel_drops_the_drag_without_writing(how, grab) -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication

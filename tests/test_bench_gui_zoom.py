@@ -606,6 +606,33 @@ def test_the_preframe_summary_counts_first_frame_hits_and_names_over_gate_misses
     assert lines[1] == "  over G1: #2 mip 0->0 resid 0.700 canvas 6.0 fmt RGB32 pf miss stale"
 
 
+def test_a_settle_release_counts_only_when_it_overlaps_a_click_to_first_frame_span(monkeypatch):
+    """TASK-031.76: the recorder keeps `release` ticks out of activities, and the summary's K
+    counts releases inside t_click..first frame end, not the click's whole window."""
+    from descape import perf_trace
+
+    calls = []
+    monkeypatch.setattr(perf_trace, "preframe_tick", lambda ms, kind, stats=None, fetch=None: calls.append(kind))
+    rec = bz._Recorder()
+    rec.install()
+    try:
+        perf_trace.preframe_tick(1.5, "release")
+        perf_trace.preframe_tick(2.0, "finish")
+    finally:
+        rec.restore()
+    assert calls == ["release", "finish"]
+    assert [a.detail for a in rec.activities if a.kind == "preframe"] == ["finish"]
+    assert [ms for _t, ms in rec.preframe_releases] == [1.5]
+
+    clicks = [_click("notch", 0.0, idx=1), _click("notch", 1.0, idx=2)]  # windows run to t + 0.5
+    frames = [bz.Frame(0.003, 0.010, {"blit": 0.2}, 0), bz.Frame(1.003, 1.010, {"blit": 0.2}, 0)]
+    releases = [(0.009, 2.0), (0.300, 1.2)]  # the first overlaps #1's first frame; the second is in its window only
+    line, data = bz.release_summary(clicks, frames, releases)
+    assert data == {"count": 2, "max_ms": 2.0, "inside_click": 1}
+    assert line == "preframe releases: 2 at settle, max 2.00 ms dev, 1 inside a click-to-frame span"
+    assert bz.release_summary(clicks, frames, [])[1] == {"count": 0, "max_ms": None, "inside_click": 0}
+
+
 def test_a_gate_line_reads_dev_and_x4():
     assert bz.gate_line(3, "worst 21.7 ms", 21.7, True) == "gate G3: worst 21.7 ms dev (x4 86.8 ms) met"
     assert bz.gate_line(1, "no revisit pass", None, None) == "gate G1: no revisit pass dev (x4 -) n/a"

@@ -224,6 +224,8 @@ def _paste_undo_redo(window, before_step=None, after_step=None) -> None:
 
 
 @pytest.mark.parametrize("block", sorted(BLOCKS))
+@pytest.mark.quick_keep(block="garrison")
+@pytest.mark.quick_keep(block="wall")
 def test_a_paste_its_undo_and_redo_take_the_blocks_units_path_and_match_a_fresh_render(block, monkeypatch) -> None:
     """A wall (const:add/remove) or an over-cap block updates units_by_tile in
     place and bumps the gen, on the paste and on its undo and redo; a

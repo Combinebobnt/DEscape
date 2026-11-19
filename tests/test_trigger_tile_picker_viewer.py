@@ -704,6 +704,8 @@ def test_a_tile_pick_and_the_garrison_pick_disarm_each_other() -> None:
 @pytest.mark.parametrize(
     "how", ["button", "mode", "entry", "trigger", "tool", "undo", "load", "close", "garrison_disarm_path"]
 )
+@pytest.mark.quick_keep(how="button")
+@pytest.mark.quick_keep(how="garrison_disarm_path")
 def test_every_disarm_site_disarms_a_tile_pick(how) -> None:
     gen = _gen()
     window = _window()
@@ -770,6 +772,8 @@ def test_a_pick_against_an_entry_no_longer_shown_writes_nothing() -> None:
         (4, "area", (59, 59)),  # the whole map
     ],
 )
+@pytest.mark.quick_keep(index=1, group="location", style="Flat top-down")
+@pytest.mark.quick_keep(index=4, group="area", style="Sloped")
 def test_go_to_centres_the_map_on_the_group(style, index, group, expected) -> None:
     window = _window(style)
     try:

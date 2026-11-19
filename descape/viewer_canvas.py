@@ -433,6 +433,8 @@ class MapCanvasItem(QGraphicsItem):
         # Pre-rendered frames for the next zoom notch (TASK-031.71), and write-only like
         # _last_mip: the last live paint's use of them (_blit_preframe()).
         self._preframes: list = []
+        # Frames a hit consumed, freed by drop_preframes() at the next settle (TASK-031.76).
+        self._spent_preframes: list = []
         self._last_preframe: str | None = None
         # The map's colour mood (MapView.set_colour_grade()), painted over every draw; None paints nothing.
         self.grade: colour_mood.MoodGrade | None = None
@@ -510,7 +512,8 @@ class MapCanvasItem(QGraphicsItem):
         """Copies a pre-rendered frame (TASK-031.71) 1:1 instead of drawing the
         level, when one was rendered under exactly this paint's key and the
         level's chunks under it are unchanged; True if it did. A hit consumes
-        every frame, since the view has moved. _last_preframe records the
+        every frame, since the view has moved, kept until the next settle
+        frees them. _last_preframe records the
         outcome for the zoom bench: `hit`, or `miss <reason>`."""
         if not self._preframes:
             self._last_preframe = "miss none"
@@ -525,6 +528,8 @@ class MapCanvasItem(QGraphicsItem):
         if not self._cache.paints_without_build(mip) or not self._cache.stamps_current(frame.stamps):
             self._last_preframe = "miss stale"
             return False
+        # A freed multi-MB image can go back to the OS inside the paint (1-2 ms, TASK-031.76).
+        self._spent_preframes += self._preframes
         self._preframes = []
         with perf_trace.repaint_phase("blit"):
             zoom_preframe.blit_frame(painter, frame)
@@ -542,6 +547,7 @@ class MapCanvasItem(QGraphicsItem):
 
     def drop_preframes(self) -> None:
         self._preframes = []
+        self._spent_preframes = []
 
     def _draw_level(self, painter: QPainter, mip: int, rect: QRectF) -> None:
         """Blits level `mip` over the scene rect `rect` (already clipped to

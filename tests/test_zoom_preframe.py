@@ -50,6 +50,8 @@ def _serves(cache, mip: int, stamps: tuple) -> bool:
 
 
 @pytest.mark.parametrize(("style", "op"), CASES)
+@pytest.mark.quick_keep(style="stepped", op="patch")
+@pytest.mark.quick_keep(style="flat", op="sprites")
 def test_every_pixel_changing_edit_leaves_a_frames_stamps_stale(env, style, op):  # noqa: F811
     scenario = _scenario()
     cache = _make(style, scenario, max_chunks=ROOMY)
@@ -601,6 +603,7 @@ def _hit_then_direct(monkeypatch, window, where: str, direction: int) -> tuple[n
     outcome, hit = log.wait(1)
     assert outcome == "hit", f"the predicted notch missed: {outcome}"
     assert not view._canvas_item._preframes, "a hit kept its frames"
+    assert [id(f) for f in view._canvas_item._spent_preframes] == [id(f) for f in frames], "a hit freed its frames"
     view.viewport().update()
     outcome, direct = log.wait(2)
     assert outcome == "miss none"
@@ -686,6 +689,52 @@ def test_a_walk_of_notches_hits_every_time(monkeypatch):
             _wheel(view, anchor, direction)
             outcomes.append((n, log.wait(len(log.paints) + 1)[0]))
         assert all(outcome == "hit" for _n, outcome in outcomes), outcomes
+    finally:
+        _close(window)
+
+
+@pytest.mark.gui
+def test_a_hit_keeps_its_spent_frames_until_the_next_settle_frees_them(monkeypatch):
+    """TASK-031.76: freeing a hit's multi-MB frames inside the paint cost 1-2 ms, so they live
+    until the settle. They never serve a later notch, an edit's invalidate leaves them for the
+    settle, the settle frees them before the warmer's next frames, and opting out frees them."""
+    from descape import perf_trace
+
+    window = _preframe_window()
+    try:
+        view = window.map_view
+        item = view._canvas_item
+        view._zoom_on_cursor = False
+        centre = view.viewport().rect().center()
+        kinds = []
+        real_tick = perf_trace.preframe_tick
+        monkeypatch.setattr(perf_trace, "preframe_tick", lambda ms, kind, *a: (kinds.append(kind), real_tick(ms, kind, *a)))
+        frames = _render_frames(view, 1)
+        assert frames, "no frame rendered"
+        log = _PaintLog(monkeypatch)
+        _wheel(view, centre, 1)
+        view._preframe_timer.stop()  # no settle between the two notches
+        assert log.wait(1)[0] == "hit"
+        spent = [id(f) for f in frames]
+        assert [id(f) for f in item._spent_preframes] == spent
+        _wheel(view, centre, 1)
+        view._preframe_timer.stop()
+        assert log.wait(2)[0] == "miss none", "a spent frame served a second notch"
+        item.invalidate_region((0, 0, 8, 8))
+        assert [id(f) for f in item._spent_preframes] == spent, "an edit's invalidate freed the spent frames"
+        kinds.clear()
+        view._on_preframe_settle()
+        assert item._spent_preframes == [] and item._preframes == [], "the settle kept a spent frame"
+        assert kinds[0] == "release"
+        view.preframe_warmer.run_to_completion()
+        assert item._preframes and item._spent_preframes == []
+        view._preframe_timer.stop()
+        _wheel(view, centre, -1)
+        view._preframe_timer.stop()
+        assert log.wait(3)[0] == "hit"
+        assert item._spent_preframes
+        view.set_preframes_allowed(False)
+        assert item._spent_preframes == [] and item._preframes == []
     finally:
         _close(window)
 

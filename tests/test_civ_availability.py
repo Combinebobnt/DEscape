@@ -139,6 +139,42 @@ def test_missing_names_the_reason() -> None:
     assert not civ_availability.keeper(None, NO_OVERRIDES, 5)(_LOOM, TECH)
 
 
+@pytest.mark.parametrize("stored", [2.5, [14], None], ids=["fraction", "list", "none"])
+def test_an_unreadable_civilization_is_none(stored) -> None:
+    """TASK-458: current_value() raises TypeError on a value that is not int or str; the player reads as unset."""
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    player_1 = loaded._scenario.sections["DataHeader"].retriever_map["player_data_1"].data[0]
+    player_1.retriever_map["civilization"].data = stored
+    assert civ_availability.player_civ_value(loaded, 1) is None
+    assert civ_availability.player_civ(loaded, 1) is None
+    assert civ_availability.civ_name(loaded, 1) == ""
+    assert civ_availability.player_start_age(loaded, 1) == 2, "the other fields still read"
+
+
+@pytest.mark.parametrize(
+    ("error", "field_id"),
+    [
+        (ValueError, "civilization"),
+        (IndexError, "starting_age"),
+        (AttributeError, "civilization"),
+        (TypeError, "starting_age"),
+    ],
+)
+def test_a_value_the_file_cannot_give_is_none(monkeypatch, error, field_id) -> None:
+    """A missing retriever (ValueError), a short array (IndexError), a missing section object or a
+    non-scalar value (TypeError, TASK-458) reads as unset, and only for its own field."""
+
+    def fail(_loaded, spec, _player):
+        if spec.field_id == field_id:
+            raise error(field_id)
+        return 14
+
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    monkeypatch.setattr(player_fields, "current_value", fail)
+    assert (civ_availability.player_civ_value(loaded, 1) is None) == (field_id == "civilization")
+    assert civ_availability.player_start_age(loaded, 1) is None
+
+
 @pytest.mark.parametrize(("value", "age"), [(5, 5), (6, 6), (0, None), (4294967295, None)])
 def test_player_start_age_reads_starting_age(monkeypatch, value, age) -> None:
     loaded = load_map_and_units(TRIGGERS_FIXTURE)

@@ -1281,6 +1281,8 @@ def _decorated_mill(scenario, mill_owner: int, decor_owner: int):
 @pytest.mark.parametrize(("source", "destination"), [(1, 2), (1, 4), (5, 2)])
 @pytest.mark.parametrize("sprites", [False, True])
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.quick_keep(style="stepped", sprites=False, source=1, destination=2)
+@pytest.mark.quick_keep(style="sloped", sprites=True, source=5, destination=2)
 def test_a_decorated_building_reassign_keeps_the_fresh_draw_order(
     style, sprites, source, destination, shared_art_install, monkeypatch
 ):
@@ -1525,6 +1527,8 @@ def _apply_and_check(style, cache, scenario, sprites, counts, batch) -> list[Uni
 @pytest.mark.parametrize("occupant", ["gaia", "building"])
 @pytest.mark.parametrize("sprites", [False, True])
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.quick_keep(style="stepped", sprites=False, occupant="gaia")
+@pytest.mark.quick_keep(style="sloped", sprites=True, occupant="building")
 def test_a_tree_added_and_undone_on_an_occupied_tile_splices(style, sprites, occupant, shared_art_install, monkeypatch):
     """Draw's stroke-end shape: a GAIA unit lands on a tile another unit
     holds, then its undo removes it again. The GAIA occupant has the lower
@@ -1719,6 +1723,8 @@ def _in_plan(plan, *units) -> bool:
 @pytest.mark.parametrize("encoding", ["radian", "integer"])
 @pytest.mark.parametrize("sprites", [False, True])
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.quick_keep(style="stepped", sprites=False, encoding="radian")
+@pytest.mark.quick_keep(style="sloped", sprites=True, encoding="radian")
 def test_a_wall_moved_out_of_a_run_reshapes_its_stationary_neighbours(
     style, sprites, encoding, run_wall_install, monkeypatch
 ):
@@ -1966,6 +1972,8 @@ def _pre_edit_cache(style: str, scenario, batch: list[UnitSplice], flt: UnitFilt
 @pytest.mark.parametrize("via", ["skipped", "cap"])
 @pytest.mark.parametrize("case", ["filter", "off_map", "players", "removals", "same_player"])
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.quick_keep(style="stepped", case="filter", via="skipped")
+@pytest.mark.quick_keep(style="sloped", case="same_player", via="cap")
 def test_an_in_place_membership_update_equals_a_fresh_build(style, case, via, monkeypatch):
     """A refused (cap) or skipped (splice_levels=False) membership batch patches
     units_by_tile in place, never walking every unit, to exactly a fresh

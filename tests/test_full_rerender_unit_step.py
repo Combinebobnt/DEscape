@@ -119,6 +119,8 @@ def _refuse_refresh(monkeypatch) -> None:
 
 @pytest.mark.parametrize("full", ["refresh", "rerender"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", full="refresh")
+@pytest.mark.quick_keep(style="Sloped", full="rerender")
 def test_a_trees_fill_past_the_threshold_undoes_and_redoes_like_a_fresh_build(style, full, monkeypatch) -> None:
     if full == "rerender":
         _refuse_refresh(monkeypatch)
@@ -154,6 +156,8 @@ def test_the_bench_reads_the_threshold_branch_status_line_as_its_path(style, ful
 
 @pytest.mark.parametrize("full", ["refresh", "rerender"])
 @pytest.mark.parametrize("block", ["no_elevation", "plain"])
+@pytest.mark.quick_keep(block="no_elevation", full="refresh")
+@pytest.mark.quick_keep(block="plain", full="rerender")
 def test_a_paste_shaped_record_past_the_threshold_undoes_and_redoes_like_a_fresh_build(
     block, full, monkeypatch
 ) -> None:

@@ -1014,7 +1014,8 @@ def warm_deferred(mip: int) -> None:
 
 def preframe_tick(tick_ms: float, kind: str, stats: Delta | None = None, fetch: dict | None = None) -> None:
     """Records one pre-rendered zoom frame tick (TASK-031.71): `kind` is
-    `predict`, `fetch`, `strip` or `finish`. Same idle-flush restart as warm_tick()."""
+    `predict`, `fetch`, `strip`, `finish` or `release` (the settle freeing a hit's
+    spent frames, TASK-031.76). Same idle-flush restart as warm_tick()."""
     if not _enabled:
         return
     _preframe_ticks.append((tick_ms, kind, stats, fetch))

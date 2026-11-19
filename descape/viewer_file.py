@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import gc
 import time
@@ -9,13 +10,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QDialog,
     QFileDialog,
     QMessageBox,
+    QProgressDialog,
 )
 
 from descape import (
@@ -46,6 +48,7 @@ from descape.scenario_io import (
     is_in_game_profile,
     load_map_and_units,
     load_map_and_units_from_bytes,
+    parse_triggers,
     refresh_player_render_context,
     resolve_detecting_loops,
 )
@@ -63,6 +66,7 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.trigger_model import (
     TriggerEditsUnavailableError,
 )
+from descape.trigger_parse_progress import CANCELLED_MESSAGE, TriggerParseCancelled
 from descape.unit_model import (
     UnitEditsUnavailableError,
 )
@@ -89,6 +93,11 @@ UNTITLED_PATH = Path(UNTITLED_NAME)
 # while the window was busy or mid-stroke. Short enough that a long paint
 # session doesn't starve autosave for a whole interval.
 AUTOSAVE_RETRY_MS = 5000
+
+# The first trigger parse's progress window (TASK-357): shown only past this, so a normal
+# file never shows it, and refreshed at most this often (each refresh runs processEvents()).
+TRIGGER_PARSE_DIALOG_MS = 500
+TRIGGER_PARSE_REFRESH_S = 0.05
 
 
 class _ViewerFileMixin:
@@ -863,6 +872,78 @@ class _ViewerFileMixin:
         if any(w.is_active for w in (self._level_warmer, self._margin_warmer, self._load_warmer)):
             gc_hold.engage()
 
+    def _run_first_trigger_parse(self, loaded: LoadedScenario, attempt):
+        """scenario_io's first-parse runner (TASK-357), so every first parse in
+        the app gets it however it was reached. The warms stop first: their 0 ms
+        timers would tick inside every processEvents(), and a warm's overdue
+        collect would walk the parse's millions of unfrozen objects. Busy for the
+        span, gc paused, then frozen once the attempt ran to completion, read or
+        not (a misparse's partial section stays reachable); never after a cancel,
+        whose objects are dropped. Never setEnabled(False): it would disable
+        Cancel too. Cancel exists only under _cancellable_trigger_read()."""
+        self._cancel_warms()
+        gc_hold.reset()
+        was_busy, self._busy = self._busy, True
+        cancellable = self._trigger_read_cancellable
+        dialog = QProgressDialog("Reading triggers…", "Cancel", 0, 1, self)
+        dialog.setWindowTitle("Reading triggers")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setAutoReset(False)
+        dialog.setAutoClose(False)
+        dialog.setMinimumDuration(TRIGGER_PARSE_DIALOG_MS)
+        if not cancellable:
+            dialog.setCancelButton(None)
+        dialog.setValue(0)  # starts the dialog's own show clock
+        last = [time.perf_counter()]
+
+        def progress(phase: str, done: int, total: int) -> None:
+            now = time.perf_counter()
+            if now - last[0] >= TRIGGER_PARSE_REFRESH_S:
+                last[0] = now
+                verb = "Reading" if phase == "read" else "Building"
+                dialog.setMaximum(max(1, 2 * total))
+                dialog.setLabelText(f"{verb} triggers: {done:,} of {total:,}")
+                dialog.setValue(done if phase == "read" else total + done)
+            if cancellable and dialog.wasCanceled():
+                raise TriggerParseCancelled
+
+        try:
+            with gc_hold.paused():
+                manager = attempt(progress)
+                # No collect first: it frees none of the parse's objects and walks them all.
+                gc.freeze()
+            return manager
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            self._busy = was_busy
+            self._rearm_pending_warm()
+
+    @contextlib.contextmanager
+    def _cancellable_trigger_read(self):
+        """A first parse inside the block offers Cancel, raising TriggerParseCancelled out of it."""
+        was, self._trigger_read_cancellable = self._trigger_read_cancellable, True
+        try:
+            yield
+        finally:
+            self._trigger_read_cancellable = was
+
+    def _read_triggers(self) -> bool:
+        """The memoized parse, cancellable: False only on Cancel (TASK-357)."""
+        try:
+            with self._cancellable_trigger_read():
+                parse_triggers(self.scenario)
+        except TriggerParseCancelled:
+            return False
+        return True
+
+    def _return_to_mode(self, mode: str) -> None:
+        """After a cancelled first parse: back to `mode` on the next event-loop
+        turn, never inside the switch or load that was running."""
+        self._log_status(CANCELLED_MESSAGE)
+        label = settings.MODE_LABELS.get(mode, settings.MODE_LABELS["view"])
+        QTimer.singleShot(0, lambda: self.mode_combo.setCurrentText(label))
+
     def load_scenario(
         self,
         path: Path,
@@ -1047,32 +1128,41 @@ class _ViewerFileMixin:
             self._refresh_player_labels()
             self.units_panel.refresh_portrait_civs()
             self._update_info()
-            # Only when the panel is actually on screen -- otherwise opening a
-            # map would parse a Triggers section nobody asked to see.
-            if self.mode == "triggers":
-                self._show_triggers()
-            else:
-                self.trigger_panel.clear_document()
-            # Its own if/else rather than an elif chained onto the one above:
-            # chaining would leave whichever panel lost the race populated
-            # with the previous document.
-            if self.mode == "map_options":
-                self._show_map_options()
-            else:
-                self.map_options_panel.clear_document()
-            # Its own if/else too, for the same reason as the map_options
-            # pair above -- test_opening_a_second_map_while_in_the_mode_
-            # repopulates pins this for Players mode as well.
-            if self.mode == "players":
-                self._show_players()
-            else:
-                self.players_panel.clear_document()
-            # Its own if/else too, for the same reason as the two pairs
-            # above.
-            if self.mode == "diplomacy":
-                self._show_diplomacy()
-            else:
-                self.diplomacy_panel.clear_document()
+            # A first parse in one of these offers Cancel, which ends in View (TASK-357).
+            try:
+                with self._cancellable_trigger_read():
+                    if self.mode in ("triggers", "map_options"):
+                        parse_triggers(self.scenario)  # before the panel resets anything
+                    # Only when the panel is actually on screen -- otherwise opening a
+                    # map would parse a Triggers section nobody asked to see.
+                    if self.mode == "triggers":
+                        self._show_triggers()
+                    else:
+                        self.trigger_panel.clear_document()
+                    # Its own if/else rather than an elif chained onto the one above:
+                    # chaining would leave whichever panel lost the race populated
+                    # with the previous document.
+                    if self.mode == "map_options":
+                        self._show_map_options()
+                    else:
+                        self.map_options_panel.clear_document()
+                    # Its own if/else too, for the same reason as the map_options
+                    # pair above -- test_opening_a_second_map_while_in_the_mode_
+                    # repopulates pins this for Players mode as well.
+                    if self.mode == "players":
+                        self._show_players()
+                    else:
+                        self.players_panel.clear_document()
+                    # Its own if/else too, for the same reason as the two pairs
+                    # above.
+                    if self.mode == "diplomacy":
+                        self._show_diplomacy()
+                    else:
+                        self.diplomacy_panel.clear_document()
+            except TriggerParseCancelled:
+                for panel in (self.trigger_panel, self.map_options_panel, self.players_panel, self.diplomacy_panel):
+                    panel.clear_document()
+                self._return_to_mode("view")
             # Its own if/else too, for the same reason as the pairs above.
             if self.mode == "messages":
                 self._repopulate_messages()

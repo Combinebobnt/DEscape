@@ -415,6 +415,8 @@ def test_a_shared_own_tile_splices(style, sprites, owners, shared_art_install, m
 @pytest.mark.parametrize(("mill_owner", "decor_owner"), [(1, 3), (3, 1)])
 @pytest.mark.parametrize("sprites", [False, True])
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.quick_keep(style="stepped", sprites=False, mill_owner=1, decor_owner=3, raised="mill")
+@pytest.mark.quick_keep(style="sloped", sprites=True, mill_owner=3, decor_owner=1, raised="decoration")
 def test_a_decorated_mill_splices_as_one_component(
     style, sprites, mill_owner, decor_owner, raised, shared_art_install, monkeypatch  # noqa: F811
 ):

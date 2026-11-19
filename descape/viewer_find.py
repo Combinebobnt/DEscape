@@ -26,7 +26,7 @@ from descape.analysis_dialog import AnalysisDialog
 from descape.edit_history import (
     RulerDiffRecord,
 )
-from descape.find_dialog import FindCallbacks, FindDialog
+from descape.find_dialog import TRIGGERS_CANCELLED, FindCallbacks, FindDialog
 from descape.scenario_io import (
     parse_triggers,
     unsupported_version_sentence,
@@ -36,6 +36,7 @@ from descape.trigger_model import (
     TriggerEditModel,
 )
 from descape.trigger_panel import TriggerPanel
+from descape.trigger_parse_progress import CANCELLED_MESSAGE
 from descape.unit_filter import GAIA_PLAYER_ID
 from descape.viewer_common import (
     _gaia_only_refused_note,
@@ -52,9 +53,13 @@ class _ViewerFindMixin:
         can take seconds on a large file."""
         if self.scenario is None or self._busy:
             return
+        triggers_known = self.scenario.trigger_read_supported
+        # Before the window is disabled, which would disable the progress window's Cancel (TASK-357).
+        if not self._read_triggers():
+            self._log_status(f"Map Analysis: {CANCELLED_MESSAGE}")
+            return
         self._busy = True
         self.setEnabled(False)
-        triggers_known = self.scenario.trigger_read_supported
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
@@ -251,6 +256,8 @@ class _ViewerFindMixin:
         triggers_known = self.scenario.trigger_read_supported
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            if not self._read_triggers():
+                return TRIGGERS_CANCELLED, False  # the tab retries on its next show (TASK-357)
             manager = parse_triggers(self.scenario)
         finally:
             QApplication.restoreOverrideCursor()

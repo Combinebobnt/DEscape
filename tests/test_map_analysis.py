@@ -536,6 +536,26 @@ def test_a_building_the_civ_lacks_is_a_warning_unless_one_is_placed(spanish_p1, 
     assert _location_findings(krepost) == []
 
 
+@pytest.mark.parametrize(
+    ("make", "counts"),
+    [
+        (lambda t: t.new_effect.create_object(object_list_unit_id=1251, source_player=1), True),
+        (lambda t: t.new_effect.replace_object(object_list_unit_id=82, source_player=1, object_list_unit_id_2=1251), True),
+        (lambda t: t.new_effect.create_object(object_list_unit_id=82, source_player=1), False),
+        (lambda t: t.new_effect.replace_object(object_list_unit_id=1251, source_player=1, object_list_unit_id_2=82), False),
+    ],
+    ids=["create", "replace-into", "create-other", "replace-away"],
+)
+def test_a_building_a_trigger_makes_counts_as_present(spanish_p1, make, counts) -> None:
+    """TASK-458: Create Object and Replace Object (its second object) make the Krepost the Spanish lack."""
+    findings = _location_findings((74, 1251, 1), extra=make)
+    if counts:
+        assert findings == []
+    else:
+        [(_severity, message)] = findings
+        assert "Spanish can't build" in message
+
+
 def test_a_unit_in_the_disables_list_is_a_warning(monkeypatch) -> None:
     from descape import disables_fields
 

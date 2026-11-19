@@ -133,6 +133,8 @@ def _assert_like_fresh(cache, fresh, region) -> None:
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 @pytest.mark.parametrize("edit", ["terrain", "elevation"])
+@pytest.mark.quick_keep(backend="native", edit="terrain", style="stepped")
+@pytest.mark.quick_keep(backend="numpy", edit="elevation", style="sloped")
 def test_a_patch_given_levels_evicts_the_others_under_the_bbox(
     style, edit, backend, sprite_install, fake_farm, synthetic_textures,  # noqa: F811
 ) -> None:
@@ -173,6 +175,8 @@ def test_a_patch_given_levels_evicts_the_others_under_the_bbox(
 
 
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
+@pytest.mark.quick_keep(backend="native", style="stepped")
+@pytest.mark.quick_keep(backend="numpy", style="sloped")
 def test_patch_composite_given_levels_evicts_the_others(
     style, backend, sprite_install, fake_farm, synthetic_textures,  # noqa: F811
 ) -> None:

@@ -140,6 +140,8 @@ _OUTLINE_HALF_WS = [4, 8, 12, 16, 24, 32, 48, 64, 128]
 
 @pytest.mark.parametrize("category", editor_markers.CATEGORIES)
 @pytest.mark.parametrize("half_w", _OUTLINE_HALF_WS)
+@pytest.mark.quick_keep(half_w=4, category="invisible")
+@pytest.mark.quick_keep(half_w=128, category="other")
 def test_the_separable_outline_matches_pillows_max_filter_byte_for_byte(category, half_w, monkeypatch):
     """2026-09-30 level-warm replan, A: _outlined()'s numpy dilation replaced a
     MaxFilter that cost ~33 ms per marker at half_w 64. Every layer it feeds

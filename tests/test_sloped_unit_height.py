@@ -63,6 +63,8 @@ def _measured_rise(tile_px: int, corners: tuple[int, int, int, int], nwse: bool 
 
 @pytest.mark.parametrize("nwse", [False, True])
 @pytest.mark.parametrize("tile_px", [ig.MIP_MIN_TILE_PIXELS, 16, 32, 64, 128, ig.MIP_MAX_TILE_PIXELS])
+@pytest.mark.quick_keep(tile_px=16, nwse=False)
+@pytest.mark.quick_keep(tile_px=192, nwse=True)
 def test_unit_rise_px_matches_painted_surface_across_all_corner_configs(tile_px, nwse):
     elev_step = max(1, tile_px // 8)  # 8px per level at tile_px=64, per ELEV_STEP_DIVISOR
     worst = 0

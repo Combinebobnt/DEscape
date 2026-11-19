@@ -234,6 +234,8 @@ def test_textures_off_ignores_blending(blend_install, kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_stitched_chunks_match_the_full_render(blend_install, backend, kind):
     scenario = _scenario(kind)
     _assert_equal(_stitched(_cache(kind, scenario)), _full(kind, scenario), f"{kind} on {backend}")
@@ -259,6 +261,8 @@ def _patch_edit(kind: str, cache, scenario, x: int, y: int) -> None:
 
 @pytest.mark.parametrize("edit", ["terrain", "layer"])
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat", edit="terrain")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map", edit="layer")
 def test_a_one_tile_edit_patches_to_a_fresh_render(blend_install, backend, kind, edit):
     """One level warm, then one tile painted the top-priority terrain (all 8
     neighbours gain an influence from it, diagonals included) or given a
@@ -304,6 +308,8 @@ def test_a_one_tile_edit_patches_to_a_fresh_render(blend_install, backend, kind,
 
 
 @pytest.mark.parametrize("kind", ["stepped", "sloped"])
+@pytest.mark.quick_keep(backend="numpy", kind="stepped")
+@pytest.mark.quick_keep(backend="native", kind="sloped")
 def test_a_farm_moved_onto_a_blended_boundary_matches_a_fresh_render(blend_install, backend, kind):
     """A farm-overridden tile takes the farm's plain crop and its neighbours
     keep keys read from the raw terrain_id, so a farm move through the
@@ -508,6 +514,8 @@ def _blended_skirts(composite, rects) -> int:
 
 @pytest.mark.parametrize("missing", [None, LAYER_ID, TERRAIN_IDS[2]], ids=["all", "no-layer-texture", "no-texture"])
 @pytest.mark.parametrize("kind", ["stepped", "sloped"])
+@pytest.mark.quick_keep(kind="stepped", missing=None)
+@pytest.mark.quick_keep(kind="sloped", missing=2)
 def test_blended_rects_backends_agree(native_kernel, blend_install, monkeypatch, kind, missing):  # noqa: F811
     """Every level's rects composite byte-identically on both backends, the
     native ones through the whole-rect kernel alone. A missing layer or
@@ -630,6 +638,8 @@ def _chunk_rects(cache, mip: int = 0) -> list:
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_a_second_pass_derives_no_key_and_paints_the_same(blend_install, backend, kind, blend_keys_match_the_mirrors):
     """A level composited twice: the first pass fills the cache's key map,
     the second calls influences() zero times and returns the same pixels,
@@ -654,6 +664,8 @@ def test_a_second_pass_derives_no_key_and_paints_the_same(blend_install, backend
 
 
 @pytest.mark.parametrize("kind", ["stepped", "sloped"])
+@pytest.mark.quick_keep(backend="numpy", kind="stepped")
+@pytest.mark.quick_keep(backend="native", kind="sloped")
 def test_an_elevation_only_wholesale_refresh_keeps_every_key(blend_install, backend, kind, blend_keys_match_the_mirrors):
     """refresh_wholesale() re-reads both mirrors over the whole map; with no
     terrain id or layer changed it must invalidate no key, so the
@@ -682,6 +694,8 @@ def test_an_elevation_only_wholesale_refresh_keeps_every_key(blend_install, back
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_a_rebound_blend_table_reaches_a_warm_cache(blend_install, backend, kind, monkeypatch):
     """The key map is bound to BLEND_TABLE by identity: with the table
     replaced and the chunks evicted WITHOUT a mirror re-read
@@ -700,6 +714,8 @@ def test_a_rebound_blend_table_reaches_a_warm_cache(blend_install, backend, kind
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_replaced_mirrors_reach_a_warm_cache(blend_install, backend, kind):
     """The key map is bound to both mirror arrays by identity: a tile
     repainted, the mirrors replaced by fresh reads and the chunks evicted
@@ -721,6 +737,8 @@ def test_replaced_mirrors_reach_a_warm_cache(blend_install, backend, kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_a_rebound_derive_function_reaches_a_warm_cache(blend_install, backend, kind, monkeypatch):
     """The key map is bound to render_paint._blend_keys by identity too (the
     review pack's one-tile-plain inject rebinds it): with a derive that
@@ -737,6 +755,8 @@ def test_a_rebound_derive_function_reaches_a_warm_cache(blend_install, backend, 
 
 
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.quick_keep(backend="numpy", kind="flat")
+@pytest.mark.quick_keep(backend="native", kind="sloped-flat-map")
 def test_a_cache_whose_key_map_keeps_resetting_paints_the_same(blend_install, backend, kind, monkeypatch):
     """Past KEY_MAP_MAX_SPECS the map starts over inside lookup(). With the
     cap at 4 a level's composites cross it again and again, and the stitched

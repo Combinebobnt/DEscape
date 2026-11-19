@@ -677,6 +677,8 @@ def test_a_unit_scale_scene_render_paints_the_reference() -> None:
 
 @pytest.mark.gui
 @pytest.mark.parametrize("zoom", [2.5, 3.0, 3.7])
+@pytest.mark.quick_keep(zoom=2.5)
+@pytest.mark.quick_keep(zoom=3.7)
 def test_block_tiling_matches_a_single_draw_at_a_scaled_level(monkeypatch, zoom) -> None:
     """paint() tiles a large exposedRect into PAINT_BLOCK_PX sub-blocks,
     each independently padded and drawn. Under the scaled blit those

@@ -357,6 +357,8 @@ def test_a_reduced_read_out_of_order_and_twice_is_the_same(env, style):
 
 
 @pytest.mark.parametrize(("style", "op"), CASES)
+@pytest.mark.quick_keep(style="stepped", op="patch")
+@pytest.mark.quick_keep(style="flat", op="sprites")
 def test_reduced_entries_follow_every_edit(env, style, op):
     assert _stale_after(style, op) == [], f"{style}: a stale reduced entry served after {op}"
 

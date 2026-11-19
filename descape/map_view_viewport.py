@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 from PyQt5.QtCore import QPoint, QPointF, QRectF, Qt
 from PyQt5.QtGui import (
@@ -102,7 +103,9 @@ class _MapViewViewportMixin:
         if QApplication.mouseButtons():
             self._preframe_timer.start()
             return
+        t0 = time.perf_counter()
         item.drop_preframes()
+        perf_trace.preframe_tick((time.perf_counter() - t0) * 1000, "release")
         self._preframe_warmer.start(item, (self._preframe_dir, -self._preframe_dir), self._preframe_job)
 
     def _preframe_job(self, direction: int) -> zoom_preframe.FrameJob | None:

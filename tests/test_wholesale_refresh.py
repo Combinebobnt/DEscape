@@ -138,6 +138,8 @@ def test_an_over_threshold_elevation_undo_and_redo_refresh_the_cache_in_place(
 
 @pytest.mark.parametrize("broken", ["undo", "redo"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", broken="undo")
+@pytest.mark.quick_keep(style="Sloped", broken="redo")
 def test_the_refresh_check_names_the_step_whose_elevations_went_stale(
     style, broken, tree_sprites, monkeypatch  # noqa: F811
 ) -> None:
@@ -173,6 +175,8 @@ def test_the_refresh_check_names_the_step_whose_elevations_went_stale(
 
 @pytest.mark.parametrize("trees", [False, True], ids=["terrain", "trees"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", trees=False)
+@pytest.mark.quick_keep(style="Sloped", trees=True)
 def test_a_large_fill_and_its_undo_and_redo_refresh_in_place(style, trees, tree_sprites, monkeypatch) -> None:  # noqa: F811
     """A Paint Can past the threshold, terrain only or Trees on (the A2b
     tile + unit case, whose unit step stays wholesale), then its undo and redo.

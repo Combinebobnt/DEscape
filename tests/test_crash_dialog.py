@@ -75,6 +75,8 @@ class _FakeDialog:
 def _fake_dialog(monkeypatch):
     _FakeDialog.opened = []
     set_viewer_global(monkeypatch, "CrashReportDialog", _FakeDialog)
+    # Else the host is whatever window an earlier test registered, deleted by now.
+    set_viewer_global(monkeypatch, "_crash_host_ref", None)
     return _FakeDialog
 
 

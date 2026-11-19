@@ -302,6 +302,8 @@ def test_pan_draws_no_unit_hover_outline() -> None:
 
 @pytest.mark.parametrize("tool", ["pan", "select", "move", "eyedropper", "ruler", "unit_line", "unit_shape"])
 @pytest.mark.parametrize("seed", ["drag_key", "marquee"])
+@pytest.mark.quick_keep(seed="drag_key", tool="pan")
+@pytest.mark.quick_keep(seed="marquee", tool="unit_shape")
 def test_a_stale_gesture_from_a_swallowed_release_dies_at_the_next_press(monkeypatch, tool, seed) -> None:
     window = _window(tool=tool)
     try:

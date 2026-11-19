@@ -254,6 +254,8 @@ def _escape(view):
 
 @pytest.mark.parametrize("pick", ["list", "type"])
 @pytest.mark.parametrize("how", ["escape", "right_click", "button", "mode", "entry", "trigger", "tool"])
+@pytest.mark.quick_keep(how="escape", pick="list")
+@pytest.mark.quick_keep(how="tool", pick="type")
 def test_each_cancel_disarms_without_writing(how, pick) -> None:
     from PyQt5.QtCore import QEvent, QPointF, Qt
     from PyQt5.QtGui import QMouseEvent

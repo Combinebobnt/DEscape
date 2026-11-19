@@ -486,3 +486,23 @@ def test_units_fast_path_library_entry_points() -> None:
     assert callable(bytes_conversions.str_to_bytes) and callable(string_manipulations.add_str_trail)
     assert "caption_string" not in bytes_conversions._no_string_trail
     assert (settings.MAIN_CHARSET, settings.FALLBACK_CHARSET) == ("utf-8", "latin-1")
+
+
+def test_first_trigger_parse_progress_entry_points() -> None:
+    """descape/trigger_parse_progress.py (TASK-357) wraps AoE2FileSection._create_struct
+    and Trigger.construct and swaps getters.get_scenario_version, by these shapes."""
+    import inspect
+
+    from AoE2ScenarioParser.objects.aoe2_object import AoE2Object
+    from AoE2ScenarioParser.objects.data_objects.trigger import Trigger
+    from AoE2ScenarioParser.scenarios.scenario_store import getters
+    from AoE2ScenarioParser.sections.aoe2_file_section import SectionLevel
+    from AoE2ScenarioParser.sections.retrievers import retriever_object_link
+
+    assert SectionLevel.TOP_LEVEL in SectionLevel
+    assert list(inspect.signature(AoE2FileSection._create_struct).parameters) == ["self", "model", "igenerator"]
+    assert list(inspect.signature(AoE2Object.construct).parameters) == ["uuid", "number_hist", "progress"]
+    assert "construct" not in vars(Trigger), "Trigger defines its own construct: the wrapper's restore assumes not"
+    assert callable(getters.get_scenario_version)
+    # Read through the module attribute, so the memo swap reaches it.
+    assert "getters.get_scenario_version(" in inspect.getsource(retriever_object_link)

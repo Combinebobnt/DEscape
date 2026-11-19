@@ -174,6 +174,9 @@ from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.render_cache_splice import UnitSplice
 from descape.scenario_io import (
     LoadedScenario,
+    clear_first_parse_runner,
+    parse_triggers,
+    set_first_parse_runner,
     unit_field_supported,
 )
 from descape.terrain_panel import TerrainPanel
@@ -183,6 +186,7 @@ from descape.trigger_model import (
 )
 from descape.trigger_panel import TriggerPanel
 from descape.trigger_panel_status import StatusStyle
+from descape.trigger_parse_progress import TriggerParseCancelled
 from descape.unit_model import (
     UnitEditModel,
 )
@@ -513,6 +517,9 @@ class ViewerWindow(
         # them regardless of enabled state. This flag is what actually
         # makes such a call a no-op rather than a reentrant interleave.
         self._busy = False
+        # TASK-357: every first trigger parse shows progress, and offers Cancel inside this flag's span.
+        self._trigger_read_cancellable = False
+        set_first_parse_runner(self._run_first_trigger_parse)
         # GH #221: a .aoe2scenario dropped anywhere on the window opens it.
         self.setAcceptDrops(True)
         # Seconds the last load's pre-freeze gc.collect() took (_freeze_loaded_document).
@@ -1164,7 +1171,7 @@ class ViewerWindow(
         self._eyedropper_return_tool = None
         self.disarm_unit_picker()
         self.on_lift_finalize()  # TASK-256: a mode switch keeps a flip or turn as it stands
-        self.mode = _mode_id(mode_text)
+        previous_mode, self.mode = self.mode, _mode_id(mode_text)
         self._apply_mode_shortcuts()
         # Entering a trigger-parsing mode is what makes Files, and so the
         # embedded-XS info line, readable: refresh it once when that changes.
@@ -1207,25 +1214,32 @@ class ViewerWindow(
             with perf_trace.phase("selection_view"):
                 self._reconcile_selection()
         panel_mode = self.mode in ("triggers", "map_options", "players", "diplomacy", "messages")
-        with perf_trace.phase("panel") if panel_mode else nullcontext():
-            if self.mode == "triggers":
-                self._widen_left_column(TriggerPanel.MIN_USEFUL_WIDTH)
-                # Parsed on demand, not at load: the largest corpus file's Triggers
-                # section is 1.17 MB and opening a map for terrain work must not
-                # pay for it.
-                self._show_triggers()
-            if self.mode == "map_options":
-                self._widen_left_column(MapOptionsPanel.MIN_USEFUL_WIDTH)
-                self._show_map_options()
-            if self.mode == "players":
-                self._widen_left_column(PlayersPanel.MIN_USEFUL_WIDTH)
-                self._show_players()
-            if self.mode == "diplomacy":
-                self._widen_left_column(DiplomacyPanel.MIN_USEFUL_WIDTH)
-                self._show_diplomacy()
-            if self.mode == "messages":
-                self._widen_left_column(MessagesPanel.MIN_USEFUL_WIDTH)
-                self._repopulate_messages()
+        try:
+            # A first parse here offers Cancel, which returns to the previous mode (TASK-357).
+            with self._cancellable_trigger_read(), perf_trace.phase("panel") if panel_mode else nullcontext():
+                if self.scenario is not None and self.mode in ("triggers", "map_options"):
+                    parse_triggers(self.scenario)  # before the panel resets anything
+                if self.mode == "triggers":
+                    self._widen_left_column(TriggerPanel.MIN_USEFUL_WIDTH)
+                    # Parsed on demand, not at load: the largest corpus file's Triggers
+                    # section is 1.17 MB and opening a map for terrain work must not
+                    # pay for it.
+                    self._show_triggers()
+                if self.mode == "map_options":
+                    self._widen_left_column(MapOptionsPanel.MIN_USEFUL_WIDTH)
+                    self._show_map_options()
+                if self.mode == "players":
+                    self._widen_left_column(PlayersPanel.MIN_USEFUL_WIDTH)
+                    self._show_players()
+                if self.mode == "diplomacy":
+                    self._widen_left_column(DiplomacyPanel.MIN_USEFUL_WIDTH)
+                    self._show_diplomacy()
+                if self.mode == "messages":
+                    self._widen_left_column(MessagesPanel.MIN_USEFUL_WIDTH)
+                    self._repopulate_messages()
+        except TriggerParseCancelled:
+            self._return_to_mode(previous_mode)
+            return
         if self.mode == "terrain":
             with perf_trace.phase("widen_left"):
                 self._widen_left_column(TerrainPanel.MIN_USEFUL_WIDTH)
@@ -1339,6 +1353,7 @@ class ViewerWindow(
         self._stop_placeholder_timers()
         self._cancel_warms()
         self._unit_model_prebuild.cancel()
+        clear_first_parse_runner(self._run_first_trigger_parse)
         # Same lifetime reasoning: the document frozen at load must be collectable again.
         gc.unfreeze()
         # And the warm gc hold's threshold and idle timer must not outlive the window.

@@ -120,10 +120,14 @@ def test_the_guard_catches_each_way_of_reaching_the_map() -> None:
 def test_the_collection_hook_marks_an_item_parametrized_with_a_map(attr: str) -> None:
     path = getattr(conftest, attr)
     marked, plain = [], []
-    map_item = SimpleNamespace(callspec=SimpleNamespace(params={"path": path}), add_marker=marked.append)
+
+    def no_markers(name):
+        return iter(())
+
+    map_item = SimpleNamespace(callspec=SimpleNamespace(params={"path": path}), add_marker=marked.append, iter_markers=no_markers)
     other = conftest.ROOT / "tests" / "fixtures" / "units_120x120.aoe2scenario"
-    other_item = SimpleNamespace(callspec=SimpleNamespace(params={"path": other}), add_marker=plain.append)
-    unparametrized = SimpleNamespace(add_marker=plain.append)
+    other_item = SimpleNamespace(callspec=SimpleNamespace(params={"path": other}), add_marker=plain.append, iter_markers=no_markers)
+    unparametrized = SimpleNamespace(add_marker=plain.append, iter_markers=no_markers)
     conftest.pytest_collection_modifyitems(None, [map_item, other_item, unparametrized])
     assert [m.name for m in marked] == ["test_map"]
     assert plain == []

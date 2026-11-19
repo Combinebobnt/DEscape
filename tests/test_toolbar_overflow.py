@@ -101,6 +101,8 @@ _MODES = [("View", "view"), ("Terrain", "terrain"), ("Units", "units")]
 @pytest.mark.parametrize("style", [sid for sid, _label in settings.TOOLBAR_STYLES])
 @pytest.mark.parametrize("width", _WIDTHS)
 @pytest.mark.parametrize("mode_text,mode_id", _MODES)
+@pytest.mark.quick_keep(mode_text="View", mode_id="view", width=800, style="icons")
+@pytest.mark.quick_keep(mode_text="Units", mode_id="units", width=1600, style="text")
 def test_every_tool_is_on_bar_xor_in_menu_or_neither_if_inapplicable(mode_text, mode_id, width, style):
     settings.set_toolbar_style(style)
     window = conftest.shown_terrain_window(width=width)

@@ -321,6 +321,8 @@ def test_above_in_iso_is_the_top_vertex(style: str, iso: bool) -> None:
     [("bottom_right", 1, 1), ("bottom_left", -1, 1), ("top_right", 1, -1), ("top_left", -1, -1)],
 )
 @pytest.mark.parametrize(("style", "iso"), _ALL_CASES)
+@pytest.mark.quick_keep(style="Flat", iso=False, position="bottom_right", sx=1, sy=1)
+@pytest.mark.quick_keep(style="Sloped", iso=False, position="top_left", sx=-1, sy=-1)
 def test_each_tucked_position_names_its_screen_quadrant(style: str, iso: bool, position: str, sx: int, sy: int) -> None:
     window = _window(style, iso=iso, position=position)
     try:
@@ -445,6 +447,8 @@ def _zoom_on_stack(map_view) -> None:
 
 @pytest.mark.parametrize("position", ["bottom_right", "bottom_left", "top_right", "top_left"])
 @pytest.mark.parametrize(("style", "iso"), _ALL_CASES)
+@pytest.mark.quick_keep(style="Flat", iso=False, position="bottom_right")
+@pytest.mark.quick_keep(style="Sloped", iso=False, position="top_left")
 def test_a_tucked_badge_is_drawn_inside_its_own_tile(style: str, iso: bool, position: str) -> None:
     """Must-show 1, counted: at a zoom where the badge fits, its box centre is inside its tile."""
     from PyQt5.QtCore import Qt

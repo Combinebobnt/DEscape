@@ -704,6 +704,21 @@ def preframe_summary(clicks: list[Click], frames: list[Frame], activities: list[
     return lines, data
 
 
+def release_summary(clicks: list[Click], frames: list[Frame], releases: list[tuple[float, float]]) -> tuple[str, dict]:
+    """The settle's frees of spent frames (TASK-031.76): count, worst, and how many overlap a
+    click's span from t_click to its first frame's end (expected 0)."""
+    spans = []
+    for c in clicks:
+        st = click_stats(c, frames, [])
+        if st.to_frame_ms is not None:
+            spans.append((c.t_click, c.t_click + st.to_frame_ms / 1000))
+    inside = sum(1 for end, ms in releases if any(_overlap(end - ms / 1000, end, a, b) > 0 for a, b in spans))
+    worst = max((ms for _end, ms in releases), default=None)
+    line = (f"preframe releases: {len(releases)} at settle, max {_f(worst, '.2f')} ms dev,"
+            f" {inside} inside a click-to-frame span")
+    return line, {"count": len(releases), "max_ms": worst, "inside_click": inside}
+
+
 def gates(clicks: list[Click], frames: list[Frame], activities: list[Activity]) -> list[GateResult]:
     stats = {id(c): click_stats(c, frames, activities) for c in clicks}
     out = []
@@ -1052,6 +1067,8 @@ class _Recorder:
         self.frames: list[Frame] = []
         self.activities: list[Activity] = []
         self.slow_preframe_ticks: list[Activity] = []
+        # The settle's frees of a hit's spent frames (TASK-031.76): (end time, ms), kept out of activities.
+        self.preframe_releases: list[tuple[float, float]] = []
         self.wheel: list[dict] = []
         self.offsets: list[float] = []  # handler entry minus X timestamp, ms
         self._canvas_acc: dict[str, float] = {}
@@ -1436,6 +1453,10 @@ class _Recorder:
         def preframe_tick(original):
             def wrapper(tick_ms, kind, stats=None, fetch=None):
                 t = now()
+                if kind == "release":
+                    rec.preframe_releases.append((t, tick_ms))
+                    original(tick_ms, kind)
+                    return
                 act = Activity(t - tick_ms / 1000, t, "preframe", kind, thread=thread_record(stats), fetch=fetch)
                 rec.activities.append(act)
                 if stats is None and fetch is None:
@@ -1811,6 +1832,9 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             output += [f"    queue holders: {s}" for s in g.holders]
         pf_lines, pf_json = preframe_summary(bench.clicks, frames, acts)
         output += pf_lines
+        release_line, release_json = release_summary(bench.clicks, frames, rec.preframe_releases)
+        if not args.no_preframes:
+            output.append(release_line)
         ph_json, reach_json, warm_json = {}, {}, {}
         coarsest = cache.mip_levels()[0]
         for name, (start, end, pending) in bounds.items():
@@ -1860,6 +1884,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
                 for g in results
             },
             "placeholder_passes": ph_json, "preframes": not args.no_preframes, "preframe_g1": pf_json,
+            "preframe_releases": release_json,
             "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
             "native_prime": render_cache_leveled.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
             "pending_cap_ms": margin_warm.PENDING_DEFER_MAX_MS, "level_warm_passes": warm_json,

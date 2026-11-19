@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import io
 import itertools
 import json
 import operator
 import os
 import struct
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,7 +74,7 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import effect_quantity, gc_hold, library_compat, unlinked_fields
+from descape import effect_quantity, gc_hold, library_compat, trigger_parse_progress, unlinked_fields
 from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
 
@@ -1538,6 +1540,25 @@ def _trigger_alignment_ok(trigger_tail: bytes, triggers_igen: IncrementalGenerat
 # for. Module-global because the poisoning it tracks is global to the trigger
 # classes, not per scenario -- see parse_triggers().
 _active_trigger_uuid = None
+# The installed first-parse runner (a WeakMethod), and whether a first parse is running (TASK-357).
+_first_parse_runner: weakref.WeakMethod | None = None
+_parse_in_flight = False
+
+
+def set_first_parse_runner(runner) -> None:
+    """Install `runner(loaded, attempt)` (a bound method, held weakly) for every
+    first parse, or None to remove it. `attempt(progress)` is the parse itself,
+    progress None or a trigger_parse_progress.Report. With no runner, or once
+    its owner is gone, parse_triggers() calls attempt(None). The viewer's
+    runner shows progress, offers Cancel and freezes the result (TASK-357)."""
+    global _first_parse_runner
+    _first_parse_runner = None if runner is None else weakref.WeakMethod(runner)
+
+
+def clear_first_parse_runner(runner) -> None:
+    """Removes `runner` if it is the installed one (a closing window's)."""
+    if _first_parse_runner is not None and _first_parse_runner() == runner:
+        set_first_parse_runner(None)
 
 
 def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
@@ -1572,9 +1593,17 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     file's version, so a field that does not exist in this scenario version
     reads as None instead of raising. That trade is deliberate: a wrong-version
     error is a bug, a missing field reading as absent is not.
+
+    A first parse goes through the installed runner (set_first_parse_runner()),
+    gc paused. A call made while one is running (from an event its progress
+    dispatched) raises RuntimeError before touching anything. A
+    TriggerParseCancelled or any exception outside the misparse tuple leaves
+    the document as never parsed, the classes pristine, and is re-raised.
     """
     global _active_trigger_uuid
 
+    if _parse_in_flight:
+        raise RuntimeError("parse_triggers() called while a first trigger parse is running")
     if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
         loaded.trigger_read_supported = False
         return None
@@ -1586,46 +1615,30 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
         return loaded._trigger_manager
     if loaded.trigger_read_supported is False:
         return None
+    runner = _first_parse_runner() if _first_parse_runner is not None else None
+    attempt = functools.partial(_first_parse, loaded)
+    return attempt(None) if runner is None else runner(loaded, attempt)
+
+
+def _first_parse(loaded: LoadedScenario, progress) -> TriggerManager | None:
+    """parse_triggers()'s non-memoized half: the runner's `attempt`."""
+    global _active_trigger_uuid, _parse_in_flight
+
+    scenario = loaded._scenario
+    _parse_in_flight = True
     try:
-        # The library print()s a multi-thousand-line hex dump of the failing
-        # struct before raising (aoe2_file_section.py:226, bytes_parser.py:72).
-        # For the 1.54/3.9 set that failure is expected and handled, so the dump
-        # is pure console noise -- the same reason PRINT_STATUS_UPDATES is off at
-        # the top of this module. Swallowed only around the parse attempt.
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            library_compat.depoison()
-            # Triggers begins at offset 0 of trigger_tail: the Units break
-            # captured units_section_end, and trigger_tail is the rest of the
-            # body from there.
-            igen = IncrementalGenerator(name="Triggers", file_content=loaded.trigger_tail)
-            started = False
-            triggers_end_in_tail = -1
-            files_span_in_tail = (-1, -1)
-            for section_name in scenario.structure:
-                if not started and section_name != "Triggers":
-                    continue
-                started = True
-                section_start = igen.progress
-                scenario._create_and_load_section(section_name, igen)
-                if section_name == "Triggers":
-                    triggers_end_in_tail = igen.progress
-                if section_name == "Files":
-                    files_span_in_tail = (section_start, igen.progress)
-            manager = TriggerManager.construct(scenario.uuid)
-            for trigger, entry in zip(
-                manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True
-            ):
-                unlinked_fields.pull(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
-                effect_quantity.pull(trigger.effects, entry.retriever_map["effect_data"].data or [])
-    except (EndOfFileError, ValueError, KeyError, IndexError, TypeError, struct.error):
-        # The shapes a misparse actually throws. The 1.54/3.9 set raises
-        # ValueError from the pinned 0.9.3's failure dump; EndOfFileError is
-        # what 0.9.4, which guards that dump, raises instead. Deliberately not bare `Exception`: an
-        # AttributeError from a library rename, or a MemoryError on the 1.17 MB file, is a real bug
-        # and must surface rather than be reported to the user as "this file has
-        # no triggers". A Triggers section this tool genuinely cannot parse must
-        # still degrade instead of failing the open -- routing around exactly
-        # that is why scenario_io.py exists.
+        with gc_hold.paused(), trigger_parse_progress.version_memo():
+            manager, igen, triggers_end_in_tail, files_span_in_tail = _parse_trigger_sections(loaded, progress)
+    except BaseException:
+        # A cancel, or anything outside the misparse tuple: as never parsed. The library adds a
+        # section before reading it, and option_fields.specs_for() reads their presence.
+        scenario.sections.pop("Triggers", None)
+        scenario.sections.pop("Files", None)
+        library_compat.depoison()
+        raise
+    finally:
+        _parse_in_flight = False
+    if manager is None:
         loaded.trigger_read_supported = False
         return None
 
@@ -1639,3 +1652,56 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     scenario._object_manager.managers["Trigger"] = manager
     loaded._trigger_manager = manager
     return manager
+
+
+def _parse_trigger_sections(loaded: LoadedScenario, progress):
+    """(manager, igen, triggers end, files span) in trigger_tail, or a None manager on a misparse."""
+    try:
+        # The library print()s a multi-thousand-line hex dump of the failing
+        # struct before raising (aoe2_file_section.py:226, bytes_parser.py:72).
+        # For the 1.54/3.9 set that failure is expected and handled, so the dump
+        # is pure console noise -- the same reason PRINT_STATUS_UPDATES is off at
+        # the top of this module. Swallowed only around the parse attempt.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            library_compat.depoison()
+            # After the depoison(), which would delete the Trigger.construct wrapper as an added name.
+            wrappers = trigger_parse_progress.progress_wrappers(progress) if progress else contextlib.nullcontext()
+            with wrappers:
+                manager, igen, triggers_end, files_span = _read_trigger_sections(loaded)
+    except (EndOfFileError, ValueError, KeyError, IndexError, TypeError, struct.error):
+        # The shapes a misparse actually throws. The 1.54/3.9 set raises
+        # ValueError from the pinned 0.9.3's failure dump; EndOfFileError is
+        # what 0.9.4, which guards that dump, raises instead. Deliberately not bare `Exception`: an
+        # AttributeError from a library rename, or a MemoryError on the 1.17 MB file, is a real bug
+        # and must surface rather than be reported to the user as "this file has
+        # no triggers". A Triggers section this tool genuinely cannot parse must
+        # still degrade instead of failing the open -- routing around exactly
+        # that is why scenario_io.py exists.
+        return None, None, -1, (-1, -1)
+    return manager, igen, triggers_end, files_span
+
+
+def _read_trigger_sections(loaded: LoadedScenario):
+    scenario = loaded._scenario
+    # Triggers begins at offset 0 of trigger_tail: the Units break
+    # captured units_section_end, and trigger_tail is the rest of the
+    # body from there.
+    igen = IncrementalGenerator(name="Triggers", file_content=loaded.trigger_tail)
+    started = False
+    triggers_end_in_tail = -1
+    files_span_in_tail = (-1, -1)
+    for section_name in scenario.structure:
+        if not started and section_name != "Triggers":
+            continue
+        started = True
+        section_start = igen.progress
+        scenario._create_and_load_section(section_name, igen)
+        if section_name == "Triggers":
+            triggers_end_in_tail = igen.progress
+        if section_name == "Files":
+            files_span_in_tail = (section_start, igen.progress)
+    manager = TriggerManager.construct(scenario.uuid)
+    for trigger, entry in zip(manager.triggers, scenario.sections["Triggers"].retriever_map["trigger_data"].data or [], strict=True):
+        unlinked_fields.pull(Condition, trigger.conditions, entry.retriever_map["condition_data"].data or [])
+        effect_quantity.pull(trigger.effects, entry.retriever_map["effect_data"].data or [])
+    return manager, igen, triggers_end_in_tail, files_span_in_tail

@@ -1358,6 +1358,8 @@ def _units_inertness_cases() -> list:
 
 @pytest.mark.parametrize("gesture", ["drag", "double"])
 @pytest.mark.parametrize(("tool", "pending"), _units_inertness_cases())
+@pytest.mark.quick_keep(tool="pan", pending=None, gesture="drag")
+@pytest.mark.quick_keep(tool="place_unit", pending=117, gesture="double")
 def test_the_switching_gesture_does_nothing_under_the_restored_units_tool(tool, pending, gesture) -> None:
     """Free placement ticked, so a stray Place Unit press over the picked archer would place."""
     from test_eyedropper import assert_inert, drive_gesture

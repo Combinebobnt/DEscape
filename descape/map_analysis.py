@@ -61,8 +61,9 @@ Location, Add Train Location or Change Research Location effect whose button
 won't show or that takes another one away, one finding per effect with the
 worst reason first: the unit, tech or building is not available to the
 player's civ (civ_availability, which the game's behaviour matched on
-2026-10-16) or is in its Disables list (a building placed on the map counts
-as available), a lower-id unit the civ has hides it,
+2026-10-16) or is in its Disables list (a building placed on the map, or one a Create
+Object or Replace Object effect makes, counts as available), a lower-id
+unit the civ has hides it,
 a unit covers a tech in the slot or a tech lands under a unit (measured: a
 unit put on Barracks button 6 left Long Swordsman unresearchable, and
 Chemistry put on Barracks button 1 stayed under the Militia), a
@@ -90,6 +91,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from AoE2ScenarioParser.datasets.effects import EffectId
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
@@ -113,6 +115,8 @@ STRANDED_REGION_TILES = 25
 MAX_FINDINGS_PER_CHECK = 200
 
 _TRIGGERS_UNAVAILABLE = "triggers could not be parsed for this file"
+# The effect field holding the const a Create Object or Replace Object effect makes.
+_MADE_CONST_ATTRIBUTES = {EffectId.CREATE_OBJECT: "object_list_unit_id", EffectId.REPLACE_OBJECT: "object_list_unit_id_2"}
 
 
 @dataclass(frozen=True)
@@ -703,14 +707,26 @@ def _location_problem(
     return None
 
 
+def _trigger_made_consts(manager) -> frozenset[int]:
+    """Every const a Create Object or Replace Object effect makes, for any player."""
+    made = set()
+    for trigger in getattr(manager, "triggers", None) or ():
+        for effect in trigger.effects:
+            attribute = _MADE_CONST_ATTRIBUTES.get(_read(effect, "effect_type"))
+            const = _read(effect, attribute) if attribute else None
+            if isinstance(const, int) and const >= 0:
+                made.add(const)
+    return frozenset(made)
+
+
 def check_location_buttons(loaded: LoadedScenario) -> CheckResult:
     label = "Train and research buttons"
     manager = parse_triggers(loaded)
     if manager is None:
         return CheckResult(label, unavailable=_TRIGGERS_UNAVAILABLE)
     edits = train_locations.location_edits(manager)
-    # A building placed on the map exists whatever the civ (Kreposts given to Magyars).
-    placed = frozenset(unit.unit_const for _player, unit in _all_units(loaded))
+    # A building placed on the map or made by a trigger exists whatever the civ (Kreposts given to Magyars).
+    placed = frozenset(unit.unit_const for _player, unit in _all_units(loaded)) | _trigger_made_consts(manager)
     overrides: dict[int, civ_availability.Overrides] = {}
     findings = []
     for edit in edits:

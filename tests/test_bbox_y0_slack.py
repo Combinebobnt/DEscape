@@ -142,6 +142,8 @@ LEVEL_CASES = [(s, p, mip) for s, p in CASES for mip in (-1, -2, 1, 2)]
 
 @pytest.mark.parametrize("delta", DELTAS, ids=["raise_1", "lower_1"])
 @pytest.mark.parametrize("style, pct, mip", LEVEL_CASES, ids=[f"{s}_pct{p}-{m}" for s, p, m in LEVEL_CASES])
+@pytest.mark.quick_keep(style="stepped", pct=25, mip=-1, delta=1)
+@pytest.mark.quick_keep(style="sloped", pct=25, mip=2, delta=-1)
 def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypatch, style, pct, delta, mip):
     """The same edit with the window shown and zoomed to another level (out to
     -1/-2, or in to the finer +1/+2 the viewer picks zoomed in), so _apply_dirty

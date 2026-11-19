@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testkit import qt_capture, qt_window, settings_isolation
+from testkit import qt_capture, qt_window, settings_isolation, window_reaper
 
 # Helper modules the split test files import: rewritten like test files, so their asserts report values.
 pytest.register_assert_rewrite("trigger_panel_helpers", "unit_edit_viewer_helpers")
@@ -653,6 +653,41 @@ def pytest_collection_modifyitems(config, items) -> None:
         callspec = getattr(item, "callspec", None)
         if callspec and any(isinstance(v, Path) and v.name in names for v in callspec.params.values()):
             item.add_marker(pytest.mark.test_map)
+    _thin_to_quick_keeps(items, whole=_collected_whole(config))
+
+
+def _collected_whole(config) -> bool:
+    """False when node ids or --lf narrowed collection before this hook, so a keep may legitimately match nothing."""
+    if config is None:
+        return True
+    return not config.getoption("lf", False) and not any("::" in str(a) for a in config.args)
+
+
+def _thin_to_quick_keeps(items, whole: bool = True) -> None:
+    """Marks `slow` every param combination of a `quick_keep`-marked test that
+    no `quick_keep(**params)` names (tests/README.md, "Thinned to the full
+    suite"). A key the test has no param for is a usage error, and so, on a
+    whole collection, is a keep that matches none of its test's combinations."""
+    hits: dict[tuple[str, int], int] = {}
+    for item in items:
+        keeps = [m.kwargs for m in item.iter_markers("quick_keep")]
+        callspec = getattr(item, "callspec", None)
+        if not keeps or callspec is None:
+            continue
+        function_id = item.nodeid.split("[", 1)[0]
+        kept = False
+        for index, keep in enumerate(keeps):
+            unknown = set(keep) - set(callspec.params)
+            if unknown:
+                raise pytest.UsageError(f"{item.nodeid}: quick_keep names no param {sorted(unknown)}")
+            hit = all(callspec.params[k] == v for k, v in keep.items())
+            hits[function_id, index] = hits.get((function_id, index), 0) + hit
+            kept = kept or hit
+        if not kept:
+            item.add_marker(pytest.mark.slow)
+    dead = [f"{function_id} keep #{index + 1}" for (function_id, index), n in hits.items() if not n]
+    if whole and dead:
+        raise pytest.UsageError(f"quick_keep matches none of its test's params: {', '.join(dead)}")
 
 
 _MODULE_CACHE: dict[str, object] = {}
@@ -747,6 +782,15 @@ def _no_stubbed_cliff_families_left():
     yield
     if "descape.cliff_catalog" in sys.modules:
         sys.modules["descape.cliff_catalog"].families.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_first_parse_runner_left():
+    """TASK-357: the last ViewerWindow built owns scenario_io's first-parse runner until it
+    closes, so a window a test never closed would run a later test's Qt-free parse (dialog, freeze)."""
+    yield
+    if "descape.scenario_io" in sys.modules:
+        sys.modules["descape.scenario_io"].set_first_parse_runner(None)
 
 
 @pytest.fixture(autouse=True)
@@ -930,6 +974,24 @@ def run_check(fn, *args) -> None:
         pytest.skip(detail)
     if not ok:
         pytest.fail(detail)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Deletes the ViewerWindows a test left alive, after its own finalizers
+    (testkit/window_reaper.py has why)."""
+    yield
+    window_reaper.reap(window_reaper.protected_ids())
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_fixture_setup(fixturedef, request):
+    yield
+    window_reaper.fixture_set_up(fixturedef)
+
+
+def pytest_fixture_post_finalizer(fixturedef, request) -> None:
+    window_reaper.fixture_finalized(fixturedef)
 
 
 # Under xdist the controller never collects, so each worker reports its deselected count back through workeroutput.

@@ -65,6 +65,8 @@ _KIND_LABELS = (
 OBJECT_COLUMNS = ("Name", "ID", "Type id", "Owner", "X", "Y", "Z", "Caption", "In", "Holds", "Triggers", "Note")
 _COL_TRIGGERS = OBJECT_COLUMNS.index("Triggers")
 _COL_NOTE = OBJECT_COLUMNS.index("Note")
+# The Triggers tab's sentence after a cancelled first parse (TASK-357).
+TRIGGERS_CANCELLED = "Reading triggers was cancelled. Show this tab again to read them."
 _GOTO_TIP = "Centre the map on the highlighted row (a double-click does the same)"
 _GOTO_DISABLED_TIP = "Click a result row to highlight it first"
 _TRIGGERS_COLUMN_TIP = "Trigger conditions/effects naming this object. Blank until triggers are read (open the Triggers tab)"
@@ -981,7 +983,7 @@ class _TriggersTab(QWidget):
         """Parses on first show, never when the dialog opens. False if unreadable."""
         if not self.initialized:
             reason, writable = self._dialog.callbacks.trigger_status()
-            self.initialized = True
+            self.initialized = reason != TRIGGERS_CANCELLED  # a cancelled parse retries next show
             self.writable = writable
             self.unsupported.setText(reason or "")
             self.unsupported.setVisible(reason is not None)
@@ -1345,11 +1347,19 @@ class FindDialog(QDialog):
             # Triggers are parsed now, so the Objects tab's Triggers column can fill.
             self.objects_tab.rerun()
 
+    def _open_triggers_tab(self) -> bool:
+        """Switches to the Triggers tab with at most one first parse: False if unreadable or cancelled."""
+        tab = self.triggers_tab
+        if self.tabs.currentWidget() is not tab:
+            self.tabs.setCurrentWidget(tab)  # _on_tab_changed parses
+            if not tab.initialized:
+                return False  # cancelled there: never offer a second dialog straight away
+        return tab.ensure_initialized()
+
     def show_usages(self, refs: Sequence[int]) -> None:
         """Objects tab's Show trigger usages: fill References object, Find, switch."""
         tab = self.triggers_tab
-        self.tabs.setCurrentWidget(tab)
-        if not tab.ensure_initialized():
+        if not self._open_triggers_tab():
             return
         tab.text_edit.clear()
         tab.clear_types()
@@ -1357,8 +1367,8 @@ class FindDialog(QDialog):
         tab.run_find()
 
     def show_follow_entries(self, entries) -> None:
-        self.tabs.setCurrentWidget(self.triggers_tab)
-        self.triggers_tab.show_entries(entries)
+        if self._open_triggers_tab():
+            self.triggers_tab.show_entries(entries)
 
     def mark_stale(self, kind: str = "units") -> None:
         """A unit ("units") or trigger ("triggers") edit, or its undo, happened:

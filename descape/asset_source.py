@@ -522,7 +522,7 @@ def _atlas_files(materials: dict) -> dict[str, str]:
 
 @lru_cache(maxsize=2)
 def _icon_table_files(install: Path, game: games.Game) -> dict[tuple[str, int], Path]:
-    """("Units" or "Buildings", icon index) -> its portrait file, through `game`'s own icons.json (GH #67).
+    """("Units", "Buildings" or "Techs", icon index) -> its icon file, through `game`'s own icons.json (GH #67).
     A RefName the game's Game.icon_materials file defines is one of its own files, else the first
     fallback whose materials.json defines it has the file. Only existing files; {} without the icon table."""
     own_ui = game.root(install) / UI_DIR
@@ -534,7 +534,7 @@ def _icon_table_files(install: Path, game: games.Game) -> dict[tuple[str, int], 
         ui = of.root(install) / UI_DIR
         sources.append((ui, _atlas_files(_read_json(ui / MATERIALS_NAME))))
     files = {}
-    for section in ("Units", "Buildings"):
+    for section in ("Units", "Buildings", "Techs"):
         for key, ref in (table.get(section) or {}).items():
             if not (key.isascii() and key.isdigit()):
                 continue
@@ -709,12 +709,23 @@ def get_unit_icon(icon: int | None, building: bool = False):
 
 
 def tech_icon_path(icon: int | None) -> Path | None:
-    """The tech icon file for a catalog tech icon index, by its "NNN_" prefix, or None."""
+    """The tech icon file for a catalog tech icon index, or None: through the
+    active game's icon table as unit_icon_path_in() does, then by its "NNN_"
+    prefix in the game's own root and each fallback's (GH #67)."""
     install = get_install_path()
     if install is None or icon is None or icon < 0:
         return None
+    stack = game_dataset.stack()
+    if stack.game.icon_materials is not None:
+        path = _icon_table_files(install, stack.game).get(("Techs", icon))
+        if path is not None:
+            return path
     prefix = f"{icon:03d}_"
-    return _find_file(install / TECH_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+    for root in stack.roots(install):
+        path = _find_file(root / TECH_ICON_DIR, lambda name: name.startswith(prefix) and name.endswith(".dds"))
+        if path is not None:
+            return path
+    return None
 
 
 @lru_cache(maxsize=64)

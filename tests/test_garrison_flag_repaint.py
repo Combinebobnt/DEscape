@@ -42,6 +42,9 @@ REF_HOUSE, REF_VILLAGER_IN_HOUSE, REF_ARCHER_P2 = 200, 203, 300
 TOWER_POINT = (16.5, 14.5)
 # Every edit below lands inside these tiles: the house at (10, 10), its villager, the tower, the archer.
 FOCUS = (4, 4, 28, 28)
+# Flat with Isometric View on renders through a Stepped IsoChunkCache on zero elevations (_render_style).
+FLAT_ISO = "Flat + Isometric"
+OFF_TILE_STYLES = ["Stepped", "Sloped", pytest.param(FLAT_ISO, id="FlatIso")]
 
 
 @pytest.fixture
@@ -87,7 +90,12 @@ def _window(style: str, monkeypatch, show_garrisoned: bool):
     window = ViewerWindow()
     window.load_scenario(FIXTURE_PATH)
     assert window.scenario is not None, "fixture failed to load"
-    window.terrain_style_combo.setCurrentText(style)
+    if style == FLAT_ISO:
+        window.terrain_style_combo.setCurrentText("Flat")
+        window.iso_action.setChecked(True)
+        assert window._render_style == "stepped"
+    else:
+        window.terrain_style_combo.setCurrentText(style)
     window.show_garrisoned_action.setChecked(show_garrisoned)
     window.mode_combo.setCurrentText("Units")
     cache = window._cache
@@ -226,7 +234,7 @@ def _delete_off_tile_occupant(window) -> None:
     window.on_unit_delete(Qt.NoModifier)
 
 
-@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.parametrize("style", OFF_TILE_STYLES)
 def test_deleting_an_off_tile_occupant_clears_its_hosts_flag(art, monkeypatch, style) -> None:
     window = _window(style, monkeypatch, show_garrisoned=True)
     try:
@@ -240,7 +248,7 @@ def test_deleting_an_off_tile_occupant_clears_its_hosts_flag(art, monkeypatch, s
 
 
 @pytest.mark.parametrize("step", ["delete", "undo"])
-@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.parametrize("style", OFF_TILE_STYLES)
 def test_without_the_flip_splices_an_off_tile_occupants_host_is_left_stale(art, monkeypatch, style, step) -> None:
     """The positive control for the off-tile case above (plan amendment 2):
     with the host splices taken away, the delete leaves the house's flag on

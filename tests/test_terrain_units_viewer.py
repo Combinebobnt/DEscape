@@ -450,6 +450,8 @@ def _pin_area_ratio(monkeypatch, value: float, rects: float = 0.0) -> None:
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
 @pytest.mark.parametrize("size", [1, 9])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat", "FlatIso"])
+@pytest.mark.quick_keep(style="Stepped", size=1, sprites=False)
+@pytest.mark.quick_keep(style="FlatIso", size=9, sprites=True)
 def test_draw_through_existing_trees_splices_and_repaints_like_a_fresh_render(
     style, size, sprites, monkeypatch, request
 ) -> None:
@@ -531,6 +533,8 @@ def _spy_evictions(window, monkeypatch) -> list:
 @pytest.mark.parametrize("repaint", ["patch", "evict"])
 @pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", sprites=False, repaint="patch", path="component")
+@pytest.mark.quick_keep(style="Sloped", sprites=True, repaint="evict", path="wholesale")
 def test_draw_over_a_tile_another_unit_holds_repaints_only_its_bbox(
     style, sprites, repaint, path, monkeypatch, request
 ) -> None:
@@ -1225,6 +1229,8 @@ WITHIN_CAP_CASES = [
 
 
 @pytest.mark.parametrize("style, repaint", WITHIN_CAP_CASES, ids=[f"{s}-{r}" for s, r in WITHIN_CAP_CASES])
+@pytest.mark.quick_keep(style="Stepped", repaint="patch")
+@pytest.mark.quick_keep(style="Sloped", repaint="evict")
 def test_within_cap_strokes_their_undo_and_redo_match_a_fresh_render_on_every_resident_level(
     style, repaint, tree_sprites, monkeypatch
 ) -> None:
@@ -1405,6 +1411,8 @@ def test_undo_and_redo_of_over_cap_draws_keep_their_splices_and_match_a_fresh_re
 
 @pytest.mark.parametrize("broken", ["undo B", "redo B"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", broken="undo B")
+@pytest.mark.quick_keep(style="Sloped", broken="redo B")
 def test_the_over_cap_history_check_names_the_one_step_whose_units_went_stale(
     style, broken, tree_sprites, monkeypatch
 ) -> None:
@@ -1543,6 +1551,8 @@ def _blocked_stroke_history(window, monkeypatch, before_step=None, block=None) -
 
 @pytest.mark.parametrize("repaint", ["patch", "evict", "rects", "no_target"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", repaint="patch")
+@pytest.mark.quick_keep(style="Sloped", repaint="no_target")
 def test_a_history_moves_terrain_past_its_units_is_repainted_with_them(style, repaint, tree_sprites, monkeypatch) -> None:
     """Both styles check mip 0 (visible), 1 and -1, all resident (Sloped's
     finer level since TASK-146). `rects` is Stepped's per-chunk patch (C1),
@@ -1731,6 +1741,8 @@ def _blended_history(window, before_step=None) -> None:
 
 @pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", repaint="patch")
+@pytest.mark.quick_keep(style="Sloped", repaint="rects")
 def test_a_blended_over_cap_draw_its_undo_and_redo_match_a_fresh_render_on_every_resident_level(
     style, repaint, blended_trees, monkeypatch
 ) -> None:
@@ -1763,6 +1775,8 @@ def test_a_blended_over_cap_draw_its_undo_and_redo_match_a_fresh_render_on_every
 
 @pytest.mark.parametrize("broken", BLENDED_STEPS)
 @pytest.mark.parametrize(("style", "repaint"), [("Stepped", "evict"), ("Stepped", "rects"), ("Sloped", "evict")])
+@pytest.mark.quick_keep(style="Stepped", repaint="evict", broken="stroke")
+@pytest.mark.quick_keep(style="Stepped", repaint="rects", broken="redo")
 def test_the_blended_check_names_the_one_step_whose_terrain_mirrors_went_stale(
     style, repaint, broken, blended_trees, monkeypatch
 ) -> None:
@@ -1789,6 +1803,8 @@ def test_the_blended_check_names_the_one_step_whose_terrain_mirrors_went_stale(
 
 @pytest.mark.parametrize("broken", BLENDED_STEPS)
 @pytest.mark.parametrize("repaint", ["evict", "rects"])
+@pytest.mark.quick_keep(repaint="evict", broken="stroke")
+@pytest.mark.quick_keep(repaint="rects", broken="redo")
 def test_the_blended_check_names_the_step_that_left_a_second_level_stale(
     repaint, broken, blended_trees, monkeypatch
 ) -> None:
@@ -1835,6 +1851,8 @@ def _spy_key_stash(window, monkeypatch) -> dict:
 
 
 @pytest.mark.parametrize("style", ["Stepped", "Sloped", "Flat"])
+@pytest.mark.quick_keep(style="Stepped")
+@pytest.mark.quick_keep(style="Flat")
 def test_a_blended_draw_undo_redo_undo_reuses_stashed_keys_and_matches_a_fresh_render(
     style, blended_trees, monkeypatch
 ) -> None:
@@ -2013,6 +2031,8 @@ def _erase_past_a_bare_layer(window, before_flush=None) -> None:
 
 @pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", repaint="patch")
+@pytest.mark.quick_keep(style="Sloped", repaint="rects")
 def test_an_erase_flush_repaints_a_cleared_layer_no_erased_unit_stood_on(
     style, repaint, blended_trees, monkeypatch
 ) -> None:
@@ -2166,6 +2186,8 @@ def _mip0_chunks(window) -> set:
 
 
 @pytest.mark.parametrize("style", ["Stepped", "FlatIso", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped")
+@pytest.mark.quick_keep(style="Sloped")
 def test_an_over_ratio_batch_patches_one_rect_per_chunk_and_evicts_nothing_at_the_visible_level(
     style, blended_trees, monkeypatch
 ) -> None:
@@ -2336,6 +2358,8 @@ def test_the_stroke_edge_check_fails_if_a_block_rect_loses_its_one_tile_ring(
 
 @pytest.mark.parametrize("history", ["long", "blocked"])
 @pytest.mark.parametrize("style", ["Stepped", "FlatIso"])
+@pytest.mark.quick_keep(style="Stepped", history="long")
+@pytest.mark.quick_keep(style="FlatIso", history="blocked")
 def test_the_block_rects_are_what_one_bbox_call_per_block_sizes(style, history, blended_trees, monkeypatch) -> None:
     """The grouped pass and the per-block dirty_screen_bbox_iso() calls it
     replaced (still the path when it declines) hand cache.chunk_rects() the
@@ -2656,6 +2680,8 @@ def _wide_history(window, monkeypatch, before_step=None) -> None:
 
 @pytest.mark.parametrize("repaint", ["patch", "evict", "rects"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", repaint="patch")
+@pytest.mark.quick_keep(style="Sloped", repaint="rects")
 def test_past_the_caps_a_draw_its_undo_and_redo_splice_the_visible_level_and_match_a_fresh_render(
     style, repaint, blended_trees, monkeypatch
 ) -> None:
@@ -2672,6 +2698,8 @@ def test_past_the_caps_a_draw_its_undo_and_redo_splice_the_visible_level_and_mat
 
 @pytest.mark.parametrize("broken", BLENDED_STEPS)
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Stepped", broken="stroke")
+@pytest.mark.quick_keep(style="Sloped", broken="redo")
 def test_the_wide_splice_check_names_the_one_step_whose_visible_level_was_not_spliced(
     style, broken, blended_trees, monkeypatch
 ) -> None:

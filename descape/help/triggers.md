@@ -1,6 +1,6 @@
 # Triggers
 
-Triggers mode edits the scenario's triggers: their conditions, their effects and the order they run in. Pick **Triggers** in the toolbar's Mode list. The left pane shows the trigger list on top and the selected trigger's conditions and effects below it. The selected row's fields fill the **Trigger Details** panel under it, and the map stays on the right.
+Triggers mode edits the scenario's triggers: their conditions, their effects and the order they run in. Pick **Triggers** in the toolbar's Mode list. On a very large file the first visit shows a progress window while the triggers are read, and **Cancel** returns to the previous mode, or to View if you were opening a file. The left pane shows the trigger list on top and the selected trigger's conditions and effects below it. The selected row's fields fill the **Trigger Details** panel under it, and the map stays on the right.
 
 Trigger Details shows only in Triggers mode. Like the other panels it can float, dock on any edge of the main window, or sit in a tab with another panel: drag it by its title bar onto the middle of the Status Log to read a trigger's fields under the map while you scroll the list. Switching to Triggers mode, or opening the list of condition and effect types, brings its tab to the front. **View > Panels > Reset Layout** puts it back under the left pane, and [View and Filters](view-and-filters.md) covers the panels.
 

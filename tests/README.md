@@ -11,13 +11,13 @@ Two suites, each with a wrapper at the repo root (`.sh` on Linux/Mac, `.bat`
 on Windows):
 
 ```
-./run_quick_tests.sh                                # quick suite, in parallel -- 20-30 min on 4 workers, no examples/ needed
+./run_quick_tests.sh                                # quick suite, in parallel -- 22-24 min on 4 workers, no examples/ needed
 ./run_quick_tests.sh -n 0                           # same suite, serially
 .venv/bin/python3 -m pytest                         # same suite, invoked directly: serial, see below
 bash tools/ci_parity.sh [tag]                       # same suite as CI's Linux leg sees it (corpus, install, examples/ hidden); run before every tag
 .venv/bin/python3 -m pytest -m test_map             # the test map items alone
 
-./run_full_tests.sh                                 # full suite: quick plus slow plus the FULL examples/ corpus, in parallel -- ~35 min on 4 workers
+./run_full_tests.sh                                 # full suite: quick plus slow plus the FULL examples/ corpus, in parallel -- 35-50 min on 4 workers
 ./run_full_tests.sh --maxprocesses 4                # same, on a machine with less RAM
 ./run_full_tests.sh --scenario-dir=/path/to/other/examples
 
@@ -98,8 +98,8 @@ invocation -- this repo has no `pyproject.toml` on purpose and isn't
 pip-installable, so nothing guarantees `pytest` on PATH resolves to this
 venv's install.
 
-**The full suite takes about 35 minutes on 4 workers** (2026-11-01, peak
-RSS 5.3 GB for the largest process) with the real 21-file
+**The full suite takes 35-50 minutes on 4 workers** (47 min at load avg 20
+on 2026-11-18; peak RSS 5.3 GB for the largest process on 2026-11-01) with the real 21-file
 `examples/` corpus (full-canvas render comparisons on files up to 480x480,
 `~30` random rects per file per check, etc.) -- expensive enough that
 running it after every routine change is its own problem. The corpus
@@ -124,6 +124,7 @@ assuming the full corpus needs re-running.
 | _(none)_ | synthetic + fixture-based tests | quick suite |
 | `corpus` | needs the real `examples/` corpus | full suite (`--corpus-full`); `-m corpus` alone runs the corpus subset `CORPUS_SUBSET_NAMES` |
 | `slow` | full-render comparisons, O(pixels) sweeps | full suite |
+| `quick_keep(**params)` | a param combination a thinned sweep keeps quick (below) | every combination no keep names becomes `slow` |
 | `test_map` | runs on the generated test map or its game resave (see below) | quick suite; `-m test_map` runs it alone with no `examples/` |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
 | `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms, and the Units, Players, Diplomacy and View info-page minimum-width checks | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
@@ -158,6 +159,34 @@ that needs an install takes `fake_install` (or its own
 Pass `--scenario-dir` in its `=` form when the path is outside the repo and
 no test path follows: otherwise the bare directory becomes pytest's rootdir
 and the option goes unrecognised.
+
+### Thinned to the full suite
+
+The costliest parametrized sweeps keep one or two combinations in the quick
+suite and run the rest in `run_full_tests` only. Each kept combination is a
+`@pytest.mark.quick_keep(**params)` on the test, so
+`grep -rn quick_keep tests/` lists every thinned test and what it keeps.
+`conftest.py`'s collection hook marks every combination no keep names `slow`. A
+keep names only the params it pins: `quick_keep(style="sloped")` keeps every
+sloped combination. A keep naming a param the test lacks stops collection
+with a usage error, and so does a keep matching none of its test's
+combinations, unless node ids or `--lf` narrowed the collection (a rerun of
+thinned combinations).
+
+The keeps were picked from per-test timings (2026-11-18): mostly the first and
+last collected combinations, which usually differ on every axis of a cross
+product, with a few swapped so the two differ on the axis that carries the
+assertion, and the default `editor_parchment_red` preset plus the legacy
+`dark` one for the theme sweeps. Never thinned: the `AGENTS.md` hard-rule
+pins, write-path, byte-identity and round-trip tests, `test_map` items, the
+read-path oracles (`test_scenario_io.py`, `test_structure_walk.py`), the
+settings write guards, and what CI's other legs run as their own oracle:
+`test_native_composite.py` (the macOS leg) and `test_font_dpi_sweep.py`. CI
+runs the quick suite only, so a thinned combination runs on Linux, locally,
+in `run_full_tests` alone; the `test_terrain_blend_render.py` backend sweeps
+keep one numpy and one native combination each. Thin a test only when it
+costs 8 s or more summed across its params, and stop once the quick suite is
+back near 20 min on 4 workers.
 
 A `pytest_terminal_summary` hook in `conftest.py` prints how much of the
 run was deselected/skipped, so an empty `examples/` or a default `-m` run
@@ -406,6 +435,30 @@ than "whatever the last developer saved") but it's implicit today. Phase
 3's render-touching migrations should pin `graphics_quality`/
 `elev_step_pct` to an explicitly stated value in the test itself rather
 than relying on "the redirected config happens to be empty."
+
+## Leaked windows are deleted after every test
+
+A `ViewerWindow` a test never closes outlives it: everything that references
+it sits inside its own widget graph, and either a cycle through a child
+widget's C++ parent link (invisible to Python's collector) or the viewer's
+`gc.freeze()` on a scenario load keeps it. Left alone they pile up to
+dozens per xdist worker, and each one re-inks its icons on every palette
+change, so a worker's per-test cost grew about tenfold with its age. The
+`pytest_runtest_teardown` hook in `conftest.py` therefore runs, after every
+test's own finalizers, `testkit/window_reaper.py`'s `reap()`, which
+`deleteLater()`s every top-level `ViewerWindow` still alive. It never calls
+`close()`: by then `_isolated_settings` is undone, and `closeEvent()` would
+write the developer's real `config.yaml` (above).
+
+A window a live module-, class- or package-scoped fixture holds is spared,
+whether or not the finished test requested that fixture: the fixture's value,
+its tuple elements and a `.window` attribute count. A session-scoped fixture
+is not tracked (pytest runs its setup hooks without `tests/conftest.py`), so
+it, like a fixture that holds its window in another shape, calls
+`window_reaper.keep_window()`. A test that touches a
+window an earlier test built now fails with `wrapped C/C++ object ... has been
+deleted`: that is hidden cross-test coupling, so fix the test rather than
+exempting it. `test_window_reaper.py` pins the hook.
 
 ## Process-global hazard: verify modules share one interpreter
 

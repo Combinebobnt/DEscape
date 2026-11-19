@@ -272,6 +272,8 @@ def test_the_toggle_list_names_every_checkable_keybind_action() -> None:
 
 
 @pytest.mark.parametrize("action_id", _TOGGLE_ACTION_IDS)
+@pytest.mark.quick_keep(action_id="view_isometric")
+@pytest.mark.quick_keep(action_id="filter_player_8")
 def test_a_bound_shortcut_toggles_its_checkable_action(action_id: str) -> None:
     """Binds an unused Ctrl+Alt+F9 and presses it on a shown, active Stepped
     window: the action's checked state must flip, then flip back on a second press."""

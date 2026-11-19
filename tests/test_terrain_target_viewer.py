@@ -599,6 +599,8 @@ def _render_history(window, style: str, monkeypatch, before_step=None) -> None:
 
 
 @pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Flat")
+@pytest.mark.quick_keep(style="Sloped")
 def test_layer_edits_and_their_undo_match_a_fresh_render(style: str, blend_install, monkeypatch) -> None:  # noqa: F811
     from descape import render_paint
 
@@ -614,6 +616,8 @@ def test_layer_edits_and_their_undo_match_a_fresh_render(style: str, blend_insta
 
 @pytest.mark.parametrize("broken", ["draw layer", "undo fill", "clear layer rectangle"])
 @pytest.mark.parametrize("style", ["Flat", "Stepped", "Sloped"])
+@pytest.mark.quick_keep(style="Flat", broken="draw layer")
+@pytest.mark.quick_keep(style="Sloped", broken="clear layer rectangle")
 def test_the_render_check_names_the_step_whose_layer_mirror_went_stale(
     style: str, broken: str, blend_install, monkeypatch  # noqa: F811
 ) -> None:

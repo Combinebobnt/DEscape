@@ -705,6 +705,8 @@ def test_theme_combo_lists_every_preset_in_order_and_opens_on_the_persisted_one(
 
 @pytest.mark.gui
 @pytest.mark.parametrize("preset_id", list(themes.PRESETS))
+@pytest.mark.quick_keep(preset_id="editor_parchment_red")
+@pytest.mark.quick_keep(preset_id="dark")
 def test_choosing_a_preset_persists_and_applies_it_live(qt_app, dialog, preset_id) -> None:
     """Pass conditions, for every preset (TASK-099), after picking it in the Theme combo:
     - settings.get_theme() returns it, before and after the cached value is dropped;
