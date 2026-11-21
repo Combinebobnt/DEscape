@@ -407,6 +407,20 @@ trigger_ghosts: true
 # Triggers mode, View > Show Instruction on Map. Default: true.
 instruction_overlay: true
 
+# Where the Objectives panel draws its game-style box (GH #391): dock, map
+# (over the map's top-right corner in Triggers mode, View > Show Objectives on
+# Map) or off. Default: dock.
+objectives_preview: dock
+
+# The Objectives preview shows only triggers enabled at game start, not every
+# objective. Default: false.
+objectives_at_start: false
+
+# How the Objectives preview shows a <name> tag naming a trigger variable:
+# name (as typed, as the game draws it), value (0, its value at game start) or
+# both. Default: name.
+objectives_variables: name
+
 # An outline around every unit footprint in scope, View > Footprint Outlines.
 # Default: false.
 footprint_outlines: false
@@ -451,6 +465,11 @@ window_size: [{settings.DEFAULT_WINDOW_WIDTH}, {settings.DEFAULT_WINDOW_HEIGHT}]
 # hand-editable; View > Panels > Reset Layout restores the default.
 # Omitted entirely until first saved.
 # window_state: <base64>
+
+# The Objectives list's column order and widths (GH #391): Qt's own saved
+# header state, written when a column is dragged or resized. Not
+# hand-editable; delete the key to get the default columns back.
+# objectives_columns: <base64>
 
 # Width in pixels of the editor panel and the map view, [panel, map], as
 # versions before the panels could float saved it. Read only to size the

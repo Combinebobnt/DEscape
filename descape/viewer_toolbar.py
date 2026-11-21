@@ -55,7 +55,7 @@ _TOOLBAR_BUTTON_STYLES = {
 
 # GH #64: saveState()/restoreState()'s version. Bump it whenever the set of docks or toolbars
 # changes, so an older blob is refused whole rather than half-applied.
-WINDOW_STATE_VERSION = 3
+WINDOW_STATE_VERSION = 4
 DEFAULT_PANEL_WIDTH = 340
 # GH #387: the editor panel's share of the left column it splits with Trigger Details.
 _DEFAULT_PANEL_SHARE_PCT = 75
@@ -70,8 +70,8 @@ class _ViewerToolbarMixin:
     def _build_docks(self) -> None:
         """GH #64: the editor panel (left_stack, whose pages swap with the
         mode), the status log, the minimap (GH #54) and the trigger panel's
-        property form (Trigger Details, GH #387) as docks that float, re-dock,
-        tab and close. _restore_window_layout() places them once the toolbars
+        property form (Trigger Details, GH #387) and the Objectives panel
+        (GH #391) as docks that float, re-dock, tab and close. _restore_window_layout() places them once the toolbars
         exist."""
         features = QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         self.panel_dock = QDockWidget(settings.MODE_LABELS[self.mode], self)
@@ -98,6 +98,12 @@ class _ViewerToolbarMixin:
         self.trigger_detail_dock.dockLocationChanged.connect(lambda _area: self._sync_trigger_detail_layout())
         self.trigger_detail_dock.topLevelChanged.connect(lambda _floating: self._sync_trigger_detail_layout())
         self.trigger_detail_dock.visibilityChanged.connect(self._on_trigger_detail_visibility)
+        self.objectives_dock = QDockWidget("Objectives", self)
+        self.objectives_dock.setObjectName("objectives_dock")
+        self.objectives_dock.setWidget(self.objectives_panel)
+        self.objectives_dock.setFeatures(features)
+        # GH #391: closed by hand in Triggers mode, it stays closed until reopened from View > Panels.
+        self._objectives_wanted = True
         self.addDockWidget(Qt.LeftDockWidgetArea, self.panel_dock)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.trigger_detail_dock)
         self.splitDockWidget(self.panel_dock, self.trigger_detail_dock, Qt.Vertical)
@@ -134,10 +140,19 @@ class _ViewerToolbarMixin:
             "Show or hide the selected condition or effect's fields in Triggers mode. "
             "Drag its title bar to float it, dock it elsewhere or tab it with another panel"
         )
+        objectives_action = self.objectives_dock.toggleViewAction()
+        objectives_action.setText("&Objectives")
+        objectives_action.setToolTip(
+            "Show or hide the Objectives panel in Triggers mode: every objective in game order, with a preview. "
+            "Drag its title bar to float it, dock it elsewhere or tab it with another panel"
+        )
+        # Enabled only in Triggers mode; startup is in View mode, so the first sync keeps _objectives_wanted.
+        objectives_action.setEnabled(False)
         self.reset_layout_action = QAction("&Reset Layout", self)
         reset_tip = (
             "Dock the editor panel left with Trigger Details under it and the status log under "
-            "the map, close the minimap (it reopens beside the log), and show any hidden toolbar"
+            "the map with Objectives in a tab behind it, close the minimap (it reopens beside the log), "
+            "and show any hidden toolbar"
         )
         self.reset_layout_action.setToolTip(reset_tip)
         self.reset_layout_action.setStatusTip(reset_tip)
@@ -154,6 +169,8 @@ class _ViewerToolbarMixin:
         """GH #387: Trigger Details shows only in Triggers mode, re-shown if it
         was closed and raised in front of any dock tabbed with it; any other
         mode hides it, which drops its tab. View > Panels follows the mode."""
+        # First, so showing Objectives cannot take the front tab from Trigger Details.
+        self._sync_objectives_dock()
         triggers = self.mode == "triggers"
         dock = self.trigger_detail_dock
         # Hiding a float moves no focus, so its box would keep a typed value nothing commits.
@@ -164,6 +181,20 @@ class _ViewerToolbarMixin:
         if triggers:
             self.trigger_detail_dock.raise_()
 
+    def _sync_objectives_dock(self) -> None:
+        """GH #391: Objectives shows only in Triggers mode, unless closed there
+        by hand, and never raised over a dock tabbed with it; any other mode
+        hides it. View > Panels follows the mode."""
+        triggers = self.mode == "triggers"
+        dock = self.objectives_dock
+        if dock.toggleViewAction().isEnabled():
+            # In Triggers mode since the last sync: whether it is open, behind a tab or not.
+            self._objectives_wanted = not dock.isHidden()
+        if not triggers and dock.isFloating() and dock.isVisible() and not self.game_data_lock_reason():
+            self._commit_focus_of(dock)
+        dock.setVisible(triggers and self._objectives_wanted)
+        dock.toggleViewAction().setEnabled(triggers)
+        self._push_objectives_overlay()
     def _sync_trigger_detail_layout(self) -> None:
         """GH #387: one column docked left or right or floating; docked above or
         below the map, Settings > Appearance's layout. A typed value commits first."""
@@ -191,7 +222,8 @@ class _ViewerToolbarMixin:
 
     def _apply_default_layout(self, panel_width: int | None = None, log_height: int | None = None) -> None:
         """Panel docked left with Trigger Details under it, log docked under
-        the map, all shown (Trigger Details in Triggers mode only), the
+        the map with Objectives tabbed behind it, all shown (Trigger Details
+        and Objectives in Triggers mode only), the
         minimap docked right of the log but closed, and the toolbars shown: a
         first run, a saved state that will not restore, and View > Panels >
         Reset Layout. `log_height` is the bare log's, as the splitter layout
@@ -203,6 +235,8 @@ class _ViewerToolbarMixin:
             (self.log_dock, Qt.BottomDockWidgetArea),
             (self.minimap_dock, Qt.BottomDockWidgetArea),
         )
+        # GH #391: out of the row while it is sized, then tabbed behind the log below.
+        self.removeDockWidget(self.objectives_dock)
         for dock, area in docks:
             dock.setFloating(False)
             self.addDockWidget(area, dock)
@@ -222,6 +256,11 @@ class _ViewerToolbarMixin:
         else:
             self._left_column_split_pending = True
         self.minimap_dock.hide()
+        self.objectives_dock.setFloating(False)
+        self.tabifyDockWidget(self.log_dock, self.objectives_dock)
+        self.objectives_dock.show()
+        self.log_dock.raise_()
+        self._objectives_wanted = True
         self._sync_trigger_detail_dock()
 
     def _split_left_column(self) -> None:
@@ -252,7 +291,7 @@ class _ViewerToolbarMixin:
                 dock.hide()
 
     def _docks(self) -> tuple[QDockWidget, ...]:
-        return (self.panel_dock, self.trigger_detail_dock, self.log_dock, self.minimap_dock)
+        return (self.panel_dock, self.trigger_detail_dock, self.log_dock, self.minimap_dock, self.objectives_dock)
 
     def _owns_widget(self, widget: QWidget | None) -> bool:
         """Whether `widget` is in this window, its docks included. isAncestorOf()

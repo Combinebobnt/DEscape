@@ -169,6 +169,7 @@ class _ViewerTriggerOverlayMixin:
         self._refresh_trigger_overlay()
         # The window hears entry selection only through here (GH #137's Cut/Copy gating).
         self._update_clipboard_actions()
+        self._objectives_follow_trigger()
 
     # -- trigger unit references ---------------------------------------------
 

@@ -5,7 +5,7 @@ descape.scenario_write for the write path itself.
 
 This module is the main window. ViewerWindow owns the menus, toolbar, mode
 switching, the render pipeline and every edit callback, and is this module's
-class plus 19 mixins, one module per area:
+class plus 20 mixins, one module per area:
 
 - viewer.py: the class head, __init__, mode switching, the title, the Qt
   event overrides and icon re-ink, the status log, the info-tree and combo
@@ -45,6 +45,8 @@ class plus 19 mixins, one module per area:
   resize, load_scenario and close_scenario.
 - viewer_find.py: Analysis, Find and Replace, trigger range rings and rulers.
 - viewer_info.py: the Info page, player stats and hover text.
+- viewer_objectives.py: the Objectives dock's refresh, writes, selection
+  sync and on-map preview (GH #391).
 
 The widgets and dialogs it drives live beside it: map_view*.py,
 trigger_panel*.py, map_options_panel.py, viewer_canvas.py, viewer_dialogs.py,
@@ -55,7 +57,7 @@ Rules of the split (tests/test_viewer_split.py checks them):
 
 - A mixin defines no __init__, no Qt event override and no signal: all
   instance state is created in ViewerWindow.__init__.
-- No name is defined by two of the 20 classes.
+- No name is defined by two of the 21 classes.
 - The mixins precede QMainWindow in ViewerWindow's bases.
 - A mixin module never imports this one at runtime. A module-level name two
   modules need lives in viewer_common.py.
@@ -166,6 +168,8 @@ from descape.messages_model import MessagesEditModel
 from descape.messages_panel import MessagesPanel
 from descape.minimap_panel import MinimapPanel
 from descape.new_map_dialog import NewMapDialog
+from descape.objectives_box import ObjectivesOverlay
+from descape.objectives_panel import ObjectivesPanel
 from descape.options_model import (
     OptionsEditModel,
 )
@@ -209,6 +213,7 @@ from descape.viewer_find import _ViewerFindMixin
 from descape.viewer_history import _ViewerHistoryMixin
 from descape.viewer_info import _ViewerInfoMixin
 from descape.viewer_menus import _ViewerMenusMixin
+from descape.viewer_objectives import _ViewerObjectivesMixin
 from descape.viewer_options import _ViewerOptionsMixin
 from descape.viewer_region import _ViewerRegionMixin
 from descape.viewer_render import _ViewerRenderMixin
@@ -412,7 +417,7 @@ class ViewerWindow(
     _ViewerTriggerOverlayMixin, _ViewerOptionsMixin, _ViewerToolStateMixin,
     _ViewerStrokesMixin, _ViewerRegionMixin, _ViewerRenderMixin,
     _ViewerTriggersMixin, _ViewerFileMixin, _ViewerFindMixin, _ViewerInfoMixin,
-    QMainWindow,
+    _ViewerObjectivesMixin, QMainWindow,
 ):
     # GH #142: the View info page's minimumSizeHint width at the baseline font (the stats table).
     # A class attribute: FontScaledWidth only resolves on attribute access through a class.
@@ -936,6 +941,31 @@ class ViewerWindow(
         self.diplomacy_panel = DiplomacyPanel(
             on_diplomacy_field=self.set_diplomacy_field, on_option_field=self.set_option_field
         )
+        # GH #391: the Objectives dock's panel and its on-map box; _build_docks() docks the panel.
+        self.objectives_panel = ObjectivesPanel(
+            on_flags=self._objective_flags,
+            on_order=self._objective_order,
+            on_short=self._objective_short,
+            on_new=self._objective_new,
+            on_promote=self._objective_promote,
+            on_remove=self._objective_remove,
+            on_select=self._objective_select,
+            on_preview_place=self._on_objectives_preview_place,
+            on_at_start=self._on_objectives_at_start,
+            on_variable_mode=settings.set_objectives_variables,
+            on_columns=settings.set_objectives_columns,
+            on_clear_string_ids=self._objective_clear_string_ids,
+        )
+        self.objectives_panel.candidates = self._objective_candidates
+        self.trigger_panel.on_short_typing = self.objectives_panel.preview_typing
+        self.objectives_panel.set_preview_place(settings.get_objectives_preview())
+        self.objectives_panel.set_at_start(settings.get_objectives_at_start())
+        self.objectives_panel.set_variable_mode(settings.get_objectives_variables())
+        self.objectives_panel.restore_columns(settings.get_objectives_columns())
+        # (document id, trigger count) the panel last showed, so a new document or a structural edit drops its ticks.
+        self._objectives_doc = None
+        # True while a row click selects its trigger, so the Triggers panel does not select back.
+        self._objectives_selecting = False
         self.messages_panel = MessagesPanel(on_message_field=self.set_message_field)
         self.messages_panel.text_box_lines = settings.get_text_box_lines
         self.messages_panel.on_text_box_lines = settings.set_text_box_lines
@@ -1079,6 +1109,9 @@ class ViewerWindow(
         self.setCentralWidget(self.map_view)
         # GH #387: the default layout's left column split, which needs the shown window's height.
         self._left_column_split_pending = False
+        # GH #391: the Objectives box over the map, a sibling of the instruction box.
+        self.objectives_overlay = ObjectivesOverlay(self.map_view)
+        self.objectives_panel.attach_overlay(self.objectives_overlay)
         self._build_docks()
 
         # GH #58: File > Data Mod and its parse; before the menu and status bar it adds to.
@@ -1331,6 +1364,7 @@ class ViewerWindow(
     def _reink_icons(self) -> None:
         self._icon_reink_pending = False
         ui_icons.apply_icons(self)
+        self.objectives_panel.refresh_icons()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1388,6 +1422,7 @@ class ViewerWindow(
         self._paint_report_timer.stop()
         self.load_progress.finish("load")
         self._minimap_timer.stop()
+        self.objectives_panel.shutdown()
         self.data_mod_menu.shutdown()
         settings.set_window_size(self.width(), self.height())
         self._close_docks()

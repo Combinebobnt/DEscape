@@ -679,6 +679,7 @@ class _ViewerViewMixin:
         changes the mode or the document calls it, so a stale box cannot survive one."""
         shown = self.scenario is not None and self.mode == "triggers" and self.instruction_overlay_action.isChecked()
         self.map_view.show_instruction(self._instruction_view if shown else None)
+        self._push_objectives_overlay()
 
     def _on_distance_tick_interval(self, tiles: int) -> None:
         settings.set_distance_tick_interval(tiles)

@@ -205,6 +205,7 @@ class _ViewerFileMixin:
         self._repopulate_map_options()
         self._repopulate_diplomacy()
         self._repopulate_messages()
+        self.refresh_objectives()
         self._update_tool_enabled()
         self._update_edit_actions()
         self._update_title()
@@ -1139,6 +1140,7 @@ class _ViewerFileMixin:
                         self._show_triggers()
                     else:
                         self.trigger_panel.clear_document()
+                        self.refresh_objectives()
                     # Its own if/else rather than an elif chained onto the one above:
                     # chaining would leave whichever panel lost the race populated
                     # with the previous document.
@@ -1291,6 +1293,7 @@ class _ViewerFileMixin:
         self.players_panel.clear_document()
         self.diplomacy_panel.clear_document()
         self.messages_panel.clear_document()
+        self.refresh_objectives()
         self._push_instruction_overlay()
         self._show_game_data_status()
         self._set_hover_text(HOVER_IDLE_TEXT)

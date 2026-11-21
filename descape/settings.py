@@ -840,6 +840,11 @@ _trigger_ghosts: bool | None = None
 # View > Show Instruction on Map (TASK-550): ON by default for the same reason,
 # and it applies in Triggers mode only.
 _instruction_overlay: bool | None = None
+# GH #391: the Objectives dock's preview place (OBJECTIVES_PREVIEW_PLACES) and its At game start set.
+_objectives_preview: str | None = None
+_objectives_at_start: bool | None = None
+_objectives_variables: str | None = None
+_objectives_columns: bytes | None = None
 _grid_blend: int | None = None
 _grid_thickness: int | None = None
 _grid_major_every: int | None = None
@@ -1101,6 +1106,80 @@ def set_instruction_overlay(enabled: bool) -> None:
     _instruction_overlay = enabled
     config = _load_config()
     config["instruction_overlay"] = enabled
+    _save_config(config)
+
+
+OBJECTIVES_PREVIEW_PLACES = ("dock", "map", "off")
+
+
+def get_objectives_preview() -> str:
+    """Where the Objectives dock draws its game-style box: "dock", "map" or "off"."""
+    global _objectives_preview
+    if _objectives_preview is None:
+        value = _load_config().get("objectives_preview", "dock")
+        _objectives_preview = value if value in OBJECTIVES_PREVIEW_PLACES else "dock"
+    return _objectives_preview
+
+
+def set_objectives_preview(place: str) -> None:
+    global _objectives_preview
+    _objectives_preview = place if place in OBJECTIVES_PREVIEW_PLACES else "dock"
+    config = _load_config()
+    config["objectives_preview"] = _objectives_preview
+    _save_config(config)
+
+
+def get_objectives_at_start() -> bool:
+    global _objectives_at_start
+    if _objectives_at_start is None:
+        _objectives_at_start = bool(_load_config().get("objectives_at_start", False))
+    return _objectives_at_start
+
+
+def set_objectives_at_start(at_start: bool) -> None:
+    global _objectives_at_start
+    _objectives_at_start = bool(at_start)
+    config = _load_config()
+    config["objectives_at_start"] = _objectives_at_start
+    _save_config(config)
+
+
+OBJECTIVES_VARIABLE_MODES = ("name", "value", "both")
+
+
+def get_objectives_variables() -> str:
+    """How the Objectives preview shows a variable tag: "name", "value" or "both"."""
+    global _objectives_variables
+    if _objectives_variables is None:
+        value = _load_config().get("objectives_variables", "name")
+        _objectives_variables = value if value in OBJECTIVES_VARIABLE_MODES else "name"
+    return _objectives_variables
+
+
+def get_objectives_columns() -> bytes | None:
+    """The Objectives list's saved column order and widths (QHeaderView state), or None."""
+    global _objectives_columns
+    if _objectives_columns is None:
+        raw = _load_config().get("objectives_columns")
+        if isinstance(raw, str):
+            with contextlib.suppress(ValueError):
+                _objectives_columns = base64.b64decode(raw.encode("ascii"), validate=True) or None
+    return _objectives_columns
+
+
+def set_objectives_columns(state: bytes) -> None:
+    global _objectives_columns
+    _objectives_columns = bytes(state)
+    config = _load_config()
+    config["objectives_columns"] = base64.b64encode(_objectives_columns).decode("ascii")
+    _save_config(config)
+
+
+def set_objectives_variables(mode: str) -> None:
+    global _objectives_variables
+    _objectives_variables = mode if mode in OBJECTIVES_VARIABLE_MODES else "name"
+    config = _load_config()
+    config["objectives_variables"] = _objectives_variables
     _save_config(config)
 
 
@@ -2836,11 +2915,14 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_trigger_ghosts", "Trigger-Created Units", ""),
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("view_instruction_overlay", "Instruction on Map", ""),
+    # Ships unbound, same reasoning as view_distance_ticks above.
+    ("view_objectives_overlay", "Objectives on Map", ""),
     # GH #64's View > Panels. Ship unbound, same reasoning as view_distance_ticks above.
     ("view_panel_dock", "Editor Panel", ""),
     ("view_log_dock", "Status Log", ""),
     ("view_minimap_dock", "Minimap", ""),
     ("view_trigger_detail_dock", "Trigger Details", ""),
+    ("view_objectives_dock", "Objectives", ""),
     ("view_reset_layout", "Reset Layout", ""),
 ] + [
     # View > Layers, generated from the registry the way the tool_* rows

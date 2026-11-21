@@ -260,6 +260,9 @@ class _ViewerTriggersMixin:
                 self.trigger_panel.refresh_entries()
         # Every tier, field edits included: a typed area_x2 must move the outline.
         self._rederive_trigger_overlay()
+        # GH #391: a Trigger Details edit can change an objective; "panel" already refreshed through _show_triggers().
+        if refresh != "panel" or self.mode != "triggers":
+            self.refresh_objectives()
         # GH #144: counts and Find results follow every trigger edit, panel-side ones included.
         self._find_triggers_bumped()
         self._invalidate_trigger_ranges()
@@ -644,6 +647,12 @@ class _ViewerTriggersMixin:
         if self._entry_tree_focused():
             self._update_entry_clipboard_actions()
             return
+        if self._objectives_list_focused():
+            for action, text in ((self.cut_action, "Cu&t"), (self.copy_action, "&Copy"), (self.paste_action, "&Paste")):
+                action.setText(text)
+                action.setToolTip("The Objectives list has no clipboard; the trigger list's commands work from there")
+                action.setEnabled(False)
+            return
         # The right-click menus' gate: an open type picker holds the current trigger.
         editable = self.trigger_panel._can_edit_now()
         selected = bool(self.trigger_panel.selected_trigger_indices())
@@ -703,6 +712,9 @@ class _ViewerTriggersMixin:
             return
         if (editor := self._focused_editor()) is not None:
             editor.cut()
+        elif self._objectives_list_focused():
+            # GH #391: the Objectives list has no clipboard; Cut must not reach the trigger list's selection.
+            return
         elif self._entry_tree_focused():
             self.cut_entries()
         else:
@@ -720,6 +732,8 @@ class _ViewerTriggersMixin:
             self.copy_region()
         elif (editor := self._focused_editor()) is not None:
             editor.copy()
+        elif self._objectives_list_focused():
+            return
         elif self._entry_tree_focused():
             self.copy_entries_to_clipboard()
         else:
@@ -730,6 +744,8 @@ class _ViewerTriggersMixin:
             self.paste_region()
         elif (editor := self._focused_editor()) is not None:
             editor.paste()
+        elif self._objectives_list_focused():
+            return
         elif self._entry_tree_focused():
             self.paste_entries(self.trigger_panel.current_entry_ref())
         else:
@@ -737,8 +753,13 @@ class _ViewerTriggersMixin:
 
     def _dispatch_select_all(self, _checked=False) -> None:
         """Ctrl+A: every trigger in Triggers mode (GH #3), every shown unit
-        under Units Select (TASK-325), the whole map as a region elsewhere."""
-        if self.mode == "triggers":
+        under Units Select (TASK-325), the whole map as a region elsewhere.
+        With the Objectives list focused, its rows (GH #391)."""
+        if self.mode == "triggers" and (editor := self._focused_editor()) is not None:
+            editor.selectAll()
+        elif self.mode == "triggers" and self._objectives_list_focused():
+            self.objectives_panel.tree.selectAll()
+        elif self.mode == "triggers":
             self.trigger_panel.select_all()
         elif self._units_select_active():
             self.select_all_units()
@@ -748,7 +769,9 @@ class _ViewerTriggersMixin:
     def _dispatch_deselect(self, _checked=False) -> None:
         """Ctrl+Shift+A: under Units Select the unit selection first, then the
         region (TASK-325), the same rule as Escape."""
-        if self.mode == "triggers":
+        if self.mode == "triggers" and self._objectives_list_focused():
+            self.objectives_panel.tree.clearSelection()
+        elif self.mode == "triggers":
             self.trigger_panel.clear_trigger_selection()
         elif self._units_select_active():
             if not self.deselect_units():

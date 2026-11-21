@@ -388,6 +388,8 @@ class TriggerPanel(
         self.on_focus_changed = lambda: None
         # TASK-550: the selected Display Instructions effect's InstructionView, or None. Assigned by the window.
         self.on_instruction_view = lambda view: None
+        # GH #391: (trigger indices, text) while the short description box is typed in, before it commits.
+        self.on_short_typing = lambda indices, text: None
         # Unit/Unit[] fields: placed-unit id -> label text, and Pick from map's
         # arm (a target tuple) or disarm (None) request. Assigned by the window.
         self.describe_unit_reference = lambda ref_id: ""

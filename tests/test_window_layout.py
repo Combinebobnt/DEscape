@@ -343,6 +343,7 @@ def test_a_mode_change_titles_the_panel_and_reshows_it_when_closed() -> None:
             "Status Log",
             "Minimap",
             "Trigger Details",
+            "Objectives",
             "Reset Layout",
         ]
     finally:

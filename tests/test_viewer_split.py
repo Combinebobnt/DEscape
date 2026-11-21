@@ -67,9 +67,9 @@ def _viewer_imports(source: str) -> list[str]:
     return found
 
 
-def test_nineteen_mixins_precede_qmainwindow():
+def test_twenty_mixins_precede_qmainwindow():
     mro = ViewerWindow.__mro__
-    assert len(MIXINS) == 19
+    assert len(MIXINS) == 20
     assert all(mro.index(mixin) < mro.index(QMainWindow) for mixin in MIXINS)
 
 

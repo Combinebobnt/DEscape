@@ -329,6 +329,10 @@ class _TriggerPanelFormMixin:
                 if label is not None:
                     label.setToolTip(spec.tooltip)
             self._rows.append((spec, kind, entry_index, widget))
+            if kind == "trigger" and spec.name == "short_description" and hasattr(widget, "toPlainText"):
+                widget.textChanged.connect(
+                    lambda w=widget: self.on_short_typing(self.selected_trigger_indices(), w.toPlainText())
+                )
             if kind == "effect" and spec.name in self._FACET_UNITS and self._facet_preview is None:
                 # GH #167: its own row directly under the facet field.
                 self._facet_preview = FacetPreview()
