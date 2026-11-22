@@ -1,6 +1,6 @@
 """GH #387: Trigger Details docked above or below the map lays its form out
 across the dock, in the game's cells (Game layout) or in Compact columns;
-docked at a side or floating it stays one column.
+docked at a side it stays one column, and floating it follows its shape.
 """
 
 from __future__ import annotations
@@ -208,7 +208,7 @@ def test_change_variable_is_one_row() -> None:
         conftest.close_window(window)
 
 
-def test_docking_at_a_side_or_floating_gives_the_column_back() -> None:
+def test_docking_at_a_side_or_floating_tall_gives_the_column_back() -> None:
     from PyQt5.QtCore import Qt
 
     window = _bottom_window()
@@ -224,8 +224,12 @@ def test_docking_at_a_side_or_floating_gives_the_column_back() -> None:
         _settle()
         _assert_in_grid(panel)
         dock.setFloating(True)
+        dock.resize(500, 900)
         _settle()
         _assert_in_column(panel)
+        dock.resize(1600, 400)
+        _settle()
+        _assert_in_grid(panel)
     finally:
         conftest.close_window(window)
 

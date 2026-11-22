@@ -4,7 +4,7 @@ GH #387), panel sizing and the mode, zoom and tool-value status."""
 
 from __future__ import annotations
 
-from PyQt5.QtCore import QByteArray, QSize, Qt
+from PyQt5.QtCore import QByteArray, QEvent, QObject, QSize, Qt
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -64,6 +64,20 @@ _DEFAULT_LOG_LINES = 4
 _LOG_FRAME_PX = 12
 
 
+class _ResizeWatch(QObject):
+    """Calls `on_resize` whenever the watched widget is resized."""
+
+    def __init__(self, watched: QWidget, on_resize) -> None:
+        super().__init__(watched)
+        self._on_resize = on_resize
+        watched.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # Qt override
+        if event.type() == QEvent.Resize:
+            self._on_resize()
+        return False
+
+
 class _ViewerToolbarMixin:
     """ViewerWindow's toolbar, status bar and docks (viewer.py's docstring has the split's rules)."""
 
@@ -97,6 +111,8 @@ class _ViewerToolbarMixin:
         # GH #387: docked above or below the map, the form lays out across the dock.
         self.trigger_detail_dock.dockLocationChanged.connect(lambda _area: self._sync_trigger_detail_layout())
         self.trigger_detail_dock.topLevelChanged.connect(lambda _floating: self._sync_trigger_detail_layout())
+        # Floating, its shape decides, so a resize can switch it.
+        _ResizeWatch(self.trigger_detail_dock, self._sync_trigger_detail_layout)
         self.trigger_detail_dock.visibilityChanged.connect(self._on_trigger_detail_visibility)
         self.objectives_dock = QDockWidget("Objectives", self)
         self.objectives_dock.setObjectName("objectives_dock")
@@ -196,10 +212,14 @@ class _ViewerToolbarMixin:
         dock.toggleViewAction().setEnabled(triggers)
         self._push_objectives_overlay()
     def _sync_trigger_detail_layout(self) -> None:
-        """GH #387: one column docked left or right or floating; docked above or
-        below the map, Settings > Appearance's layout. A typed value commits first."""
+        """GH #387: one column docked left or right; docked above or below the map,
+        Settings > Appearance's layout. Floating, that layout while wider than tall,
+        else one column. A typed value commits first."""
         dock = self.trigger_detail_dock
-        across = not dock.isFloating() and self.dockWidgetArea(dock) in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea)
+        if dock.isFloating():
+            across = dock.width() > dock.height()
+        else:
+            across = self.dockWidgetArea(dock) in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea)
         layout = settings.get_trigger_details_bottom_layout() if across else "column"
         if layout == self.trigger_panel.detail_layout():
             return

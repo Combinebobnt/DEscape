@@ -19,7 +19,7 @@ from math import ceil
 from typing import NamedTuple
 
 from PyQt5.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt
-from PyQt5.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QPixmap, QRegion, QWheelEvent
+from PyQt5.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QPixmap, QRegion, QTransform, QWheelEvent
 from PyQt5.QtWidgets import QApplication, QToolTip, QWidget
 
 from descape import message_markup
@@ -171,6 +171,19 @@ def variable_text(name: str, mode: str) -> str:
 
 
 def _paint_text(painter: QPainter, entry: BoxEntry, rect: QRectF, font: QFont, colors, state: _BoxState) -> None:
+    """The line at its on-screen size, unscaled: a canvas-size font shrunk by
+    the painter keeps its big hinting and draws smeared, over-bold text."""
+    world = painter.transform()
+    scale = world.m11()
+    sized = QFont(font)
+    sized.setPixelSize(max(1, round(font.pixelSize() * scale)))
+    painter.save()
+    painter.setTransform(QTransform.fromTranslate(world.dx(), world.dy()))
+    _paint_runs(painter, entry, _to_widget(rect, scale, 0, 0), sized, colors, state)
+    painter.restore()
+
+
+def _paint_runs(painter: QPainter, entry: BoxEntry, rect: QRectF, font: QFont, colors, state: _BoxState) -> None:
     """The text's colour runs left to right, the run that overflows elided."""
     painter.setFont(font)
     metrics = QFontMetricsF(font)
@@ -226,12 +239,14 @@ class _BoxState:
 
 class ObjectivesBox(QWidget):
     """The dock's preview: the box on its own backdrop, filling the widget's
-    width, at least as tall as its lines (its scroll area scrolls the rest)."""
+    width but never narrower than the game's box, at least as tall as its
+    lines (its scroll area scrolls the rest). The widget's tooltip shows
+    where a line has no note of its own."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.state = _BoxState()
-        self.setMinimumSize(160, 80)
+        self.setMinimumSize(round(BOX_WIDTH * DOCK_SCALE) + 2 * DOCK_MARGIN_PX, 80)
         self.setMouseTracking(False)
 
     def set_entries(
@@ -296,7 +311,7 @@ class ObjectivesBox(QWidget):
 
     def event(self, event) -> bool:
         if event.type() == QEvent.ToolTip:
-            note = self._note_at(QPointF(event.pos()))
+            note = self._note_at(QPointF(event.pos())) or self.toolTip()
             if note:
                 QToolTip.showText(event.globalPos(), note, self)
             else:

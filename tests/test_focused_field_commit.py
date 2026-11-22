@@ -69,6 +69,8 @@ def _float_field_dock(window, kind: str):
     from PyQt5.QtWidgets import QApplication
 
     dock = window.trigger_detail_dock if kind.startswith("trigger") else window.panel_dock
+    # Taller than wide: a wide floating Trigger Details rebuilds its form across, replacing `kind`'s field.
+    dock.resize(dock.width(), max(dock.height(), dock.width() + 1))
     dock.setFloating(True)
     QApplication.processEvents()
     dock.activateWindow()

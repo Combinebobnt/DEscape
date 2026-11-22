@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 
 from PyQt5.QtCore import QEvent, QItemSelectionModel, QRegularExpression, QSignalBlocker, Qt, QTimer
-from PyQt5.QtGui import QColor, QRegularExpressionValidator
+from PyQt5.QtGui import QColor, QPalette, QPen, QRegularExpressionValidator
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -71,9 +71,9 @@ COL_ORDER, COL_HEADER, COL_OBJECTIVE, COL_SCREEN, COL_MUTE, COL_PREVIEW, COL_SHO
 PREVIEW_ICON = "filter-show-all"
 # (column, header label, trigger attribute, tooltip)
 FLAG_COLUMNS = (
-    (COL_HEADER, "H", "header", "Header: shown as a heading, with no checkbox"),
-    (COL_OBJECTIVE, "Obj", "display_as_objective", "Display as Objective: listed in the game's Objectives panel"),
-    (COL_SCREEN, "Scr", "display_on_screen", "Display on Screen: shown in the on-screen objectives box"),
+    (COL_HEADER, "Header", "header", "Header: shown as a heading, with no checkbox"),
+    (COL_OBJECTIVE, "Objective", "display_as_objective", "Display as Objective: listed in the game's Objectives panel"),
+    (COL_SCREEN, "On Screen", "display_on_screen", "Display on Screen: shown in the on-screen objectives box"),
     (COL_MUTE, "Mute", "mute_objectives", "Mute Objectives: no sound when it changes"),
 )
 _FLAG_ATTR = {column: attr for column, _label, attr, _tip in FLAG_COLUMNS}
@@ -128,6 +128,24 @@ class _Delegate(QStyledItemDelegate):
     def __init__(self, panel: ObjectivesPanel) -> None:
         super().__init__(panel.tree)
         self._panel = panel
+
+    def paint(self, painter, option, index) -> None:
+        super().paint(painter, option, index)
+        if index.column() not in _FLAG_ATTR and index.column() != COL_PREVIEW:
+            return
+        # Fusion outlines a box from the window colour, which nearly vanishes on a dark theme's rows.
+        style_option = QStyleOptionViewItem(option)
+        self.initStyleOption(style_option, index)
+        widget = option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        box = style.subElementRect(QStyle.SE_ItemViewItemCheckIndicator, style_option, widget)
+        outline = QColor(option.palette.color(QPalette.Text))
+        outline.setAlpha(100)
+        painter.save()
+        painter.setPen(QPen(outline, 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(box.adjusted(0, 0, -1, -1))
+        painter.restore()
 
     def editorEvent(self, event, model, option, index) -> bool:
         # A read-only file's flags show but do not toggle: only a left click on the box itself or Space is
@@ -298,6 +316,8 @@ class ObjectivesPanel(QWidget):
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
         tree.setUniformRowHeights(True)
+        # A few rows at least: in a short dock the panel scrolls rather than crushing the list.
+        tree.setMinimumHeight(tree.fontMetrics().height() * 7)
         tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         tree.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         tree.setDragDropMode(QAbstractItemView.InternalMove)
@@ -316,9 +336,12 @@ class ObjectivesPanel(QWidget):
         header.setSectionsMovable(True)
         header.setMinimumSectionSize(20)
         metrics = header.fontMetrics()
-        for column, label in enumerate(["Order", *(label for _c, label, _a, _t in FLAG_COLUMNS)]):
+        header.setSectionResizeMode(COL_ORDER, QHeaderView.Interactive)
+        tree.setColumnWidth(COL_ORDER, metrics.horizontalAdvance("Order") + 24)
+        # A flag column stays checkbox-narrow: a word too long for it is cut off rather than widening the list.
+        for column, _label, _attr, _tip in FLAG_COLUMNS:
             header.setSectionResizeMode(column, QHeaderView.Interactive)
-            tree.setColumnWidth(column, metrics.horizontalAdvance(label) + (24 if column == COL_ORDER else 16))
+            tree.setColumnWidth(column, metrics.horizontalAdvance("Mute") + 16)
         header.setSectionResizeMode(COL_PREVIEW, QHeaderView.Interactive)
         tree.setColumnWidth(COL_PREVIEW, metrics.horizontalAdvance("Mute") + 16)
         header.setSectionResizeMode(COL_SHORT, QHeaderView.Interactive)
@@ -408,9 +431,7 @@ class ObjectivesPanel(QWidget):
 
         self.box = ObjectivesBox()
         self.box.state.on_tick = self.toggle_tick
-        self.tick_note = QLabel(TICK_NOTE)
-        self.tick_note.setEnabled(False)
-        self.tick_note.setWordWrap(True)
+        self.box.setToolTip(TICK_NOTE)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -425,10 +446,8 @@ class ObjectivesPanel(QWidget):
         self.box_scroll = QScrollArea()
         self.box_scroll.setWidgetResizable(True)
         self.box_scroll.setFrameShape(QFrame.NoFrame)
-        self.box_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.box_scroll.setWidget(self.box)
         right_layout.addWidget(self.box_scroll, 1)
-        right_layout.addWidget(self.tick_note)
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(left)
@@ -439,15 +458,31 @@ class ObjectivesPanel(QWidget):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(4, 4, 4, 4)
         content_layout.addWidget(self.splitter)
-        # Scrolls rather than holding a minimum: tabbed under the map, its width would cap the side panel's.
+        # Scrolls rather than holding a minimum: tabbed under the map, its height would cap the side panel's.
+        # Never sideways: too narrow, the controls are cut off and only the preview scrolls across.
+        content.setMinimumWidth(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(content)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(scroll)
         self._update_buttons()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_orientation()
+
+    def _fit_orientation(self) -> None:
+        """The preview beside the list when the panel is wide, below it when tall (docked on a side)."""
+        orientation = Qt.Vertical if self.height() > self.width() else Qt.Horizontal
+        if self.splitter.orientation() == orientation:
+            return
+        self.splitter.setOrientation(orientation)
+        # Relative weights: the splitter spreads them over its length.
+        self.splitter.setSizes([3000, 2000])
 
     def _button(self, text: str, tip: str) -> QPushButton:
         button = QPushButton(text)

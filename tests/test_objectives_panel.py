@@ -921,3 +921,69 @@ def test_a_header_starting_with_a_sign_gets_no_checkbox(window):
     window._objective_short(0, "+ Main Objective(s)")
     lines = {entry.index: entry.marker for entry, *_ in layout(window.objectives_panel.box.entries(), 900)[0]}
     assert lines[0] is None
+
+
+def test_box_text_is_drawn_at_its_on_screen_size(window, monkeypatch):
+    from PyQt5.QtGui import QPainter, QPixmap
+
+    from descape import objectives_box
+    from descape.objectives_box import BODY_PX, DOCK_SCALE, layout, paint_box
+
+    drawn = []
+    monkeypatch.setattr(
+        objectives_box,
+        "_paint_runs",
+        lambda painter, entry, rect, font, *rest: drawn.append((entry.kind, font.pixelSize(), painter.transform().m11())),
+    )
+    box = window.objectives_panel.box
+    pixmap = QPixmap(400, 400)
+    painter = QPainter(pixmap)
+    painter.scale(DOCK_SCALE, DOCK_SCALE)
+    paint_box(painter, layout(box.entries(), 900), 900, box.state)
+    painter.end()
+    body = [(px, scale) for kind, px, scale in drawn if kind not in ("Objectives", "header")]
+    assert body and all(px == round(BODY_PX * DOCK_SCALE) and scale == 1 for px, scale in body), (
+        "a canvas-size font shrunk by the painter smears"
+    )
+
+
+def test_the_preview_goes_below_the_list_in_a_tall_panel(window):
+    from PyQt5.QtCore import Qt
+
+    panel = window.objectives_panel
+    panel.resize(500, 900)
+    assert panel.splitter.orientation() == Qt.Vertical
+    panel.resize(1400, 400)
+    assert panel.splitter.orientation() == Qt.Horizontal
+
+
+def test_flag_columns_show_whole_words_and_stay_checkbox_narrow(window):
+    from descape.objectives_panel import FLAG_COLUMNS
+
+    tree = window.objectives_panel.tree
+    labels = [tree.headerItem().text(column) for column, *_ in FLAG_COLUMNS]
+    assert labels == ["Header", "Objective", "On Screen", "Mute"]
+    widths = {tree.columnWidth(column) for column, *_ in FLAG_COLUMNS}
+    assert len(widths) == 1, "a long word is cut off rather than widening its column"
+
+
+def test_a_narrow_panel_scrolls_only_the_preview_across(window):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QScrollArea
+
+    from descape.objectives_panel import TICK_NOTE, ObjectivesPanel
+
+    panel = ObjectivesPanel()
+    panel.show_rows(window.objectives_panel.rows(), True)
+    panel.resize(300, 800)
+    panel.show()
+    try:
+        _settle()
+        outer = panel.findChild(QScrollArea, options=Qt.FindDirectChildrenOnly)
+        assert outer.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert outer.widget().width() <= outer.viewport().width(), "the list and its controls never scroll sideways"
+        assert panel.box_scroll.horizontalScrollBar().maximum() > 0, "the preview keeps the game box's width and scrolls"
+        assert panel.box.toolTip() == TICK_NOTE
+    finally:
+        panel.close()
+        panel.deleteLater()
