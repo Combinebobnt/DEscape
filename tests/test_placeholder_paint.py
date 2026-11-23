@@ -279,13 +279,18 @@ def _drain(window, rounds: int = 60, until=None) -> None:
     raise AssertionError("the warms never drained")
 
 
-def _window(*, placeholders: bool = True, size: int = NARROW, height: int | None = None):
+def _window(*, placeholders: bool = True, size: int = NARROW, height: int | None = None, viewport_height: int | None = None):
     from PyQt5.QtCore import Qt
 
     window = conftest.stepped_window(FIXTURE_PATH, size=size, placeholders=placeholders)
     if height is not None:
         window.resize(size, height)
         _pump()
+    if viewport_height is not None:
+        chrome = window.height() - window.map_view.viewport().height()
+        window.resize(size, viewport_height + chrome)
+        _pump()
+        assert window.map_view.viewport().height() == viewport_height
     # Scrollbars appearing on the first zoom would resize the viewport between two grabs.
     for set_policy in (window.map_view.setHorizontalScrollBarPolicy, window.map_view.setVerticalScrollBarPolicy):
         set_policy(Qt.ScrollBarAlwaysOn)
@@ -402,28 +407,55 @@ def _best_shift(a: np.ndarray, b: np.ndarray, reach: int = 3) -> tuple[int, int]
     return min(scores, key=scores.get)
 
 
+def _onto_map(window) -> None:
+    """Scrolls so the map diamond's left corner sits at mid-viewport: the zoom keeps
+    the scroll at the canvas's top-left, where one diamond edge is all the view shows."""
+    view = window.map_view
+    corner_y = window._cache.canvas_dims(0)[1] / 2
+    view.verticalScrollBar().setValue(int(corner_y * view.viewportTransform().m22() - view.viewport().height() / 2))
+    _pump()
+
+
 @pytest.mark.gui
-def test_a_placeholder_frame_registers_with_the_refined_one(monkeypatch) -> None:
+@pytest.mark.parametrize("scale", [CROSSING_SCALE, 0.9])
+@pytest.mark.parametrize("viewport_height", [None, 1345, 1357, 1370])
+def test_a_placeholder_frame_registers_with_the_refined_one(monkeypatch, viewport_height, scale) -> None:
     """T2c: same path as a forced draw of F, byte for byte; and against the
-    refined frame the best alignment is (0, 0). Control: a 2 px shift is
-    seen as (2, 0)."""
-    # The viewport the splitter layout gave (1370 px tall). At 1345-1349 the placeholder misregisters
-    # by (2, -1), before GH #64's docks too: a separate bug, not this test's subject.
-    window = _window(height=NARROW + 31)
+    refined frame the best alignment is (0, 0). The view is scrolled onto the
+    map's corner: a single edge leaves the search blind along its own direction.
+    Controls: a refined frame moved by (2, 0) or (2, -1), and a placeholder
+    drawn 1 px left, are each seen."""
+    from descape import viewer_canvas
+
+    window = _window(viewport_height=viewport_height)
     try:
         view = window.map_view
         item = view._canvas_item
         for other in view.scene().items():
             if other is not item:
                 other.setVisible(False)
-        level = _crossed(window)
+        level = _crossed(window, scale)
+        _onto_map(window)
         placeholder = _grab(window)
         source = item._last_drawn_mip
         assert source != level
 
+        real_draw = viewer_canvas._BlockDraw._draw
+
+        def nudged_draw(self, painter):
+            if self.point is not None:
+                real_draw(self, painter)
+                return
+            painter.save()
+            painter.translate(1, 0)
+            real_draw(self, painter)
+            painter.restore()
+
         with monkeypatch.context() as m:
             m.setattr(item, "_level_to_draw", lambda *_args: source)
             forced = _grab(window)
+            m.setattr(viewer_canvas._BlockDraw, "_draw", nudged_draw)
+            nudged = _grab(window)
         assert np.array_equal(placeholder, forced)
 
         _drain(window)
@@ -437,6 +469,9 @@ def test_a_placeholder_frame_registers_with_the_refined_one(monkeypatch) -> None
         shifted[:, 2:] = refined[:, :-2]
         shifted[:, :2] = refined[:, :1]
         assert _best_shift(placeholder, shifted) == (2, 0), "the search cannot see a 2 px shift"
+        along_edge = np.roll(refined, (-1, 2), axis=(0, 1))
+        assert _best_shift(placeholder, along_edge) == (2, -1), "the view carries nothing along (2, -1)"
+        assert _best_shift(nudged, refined) == (-1, 0), "the search cannot see a placeholder drawn 1 px off"
     finally:
         _hold_warms(window)
         conftest.close_window(window)
