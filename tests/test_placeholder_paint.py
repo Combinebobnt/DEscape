@@ -286,15 +286,17 @@ def _window(*, placeholders: bool = True, size: int = NARROW, height: int | None
     if height is not None:
         window.resize(size, height)
         _pump()
-    if viewport_height is not None:
-        chrome = window.height() - window.map_view.viewport().height()
-        window.resize(size, viewport_height + chrome)
-        _pump()
-        assert window.map_view.viewport().height() == viewport_height
     # Scrollbars appearing on the first zoom would resize the viewport between two grabs.
     for set_policy in (window.map_view.setHorizontalScrollBarPolicy, window.map_view.setVerticalScrollBarPolicy):
         set_policy(Qt.ScrollBarAlwaysOn)
+    if viewport_height is not None:
+        _pump()
+        chrome = window.height() - window.map_view.viewport().height()
+        window.resize(size, viewport_height + chrome)
+        _pump()
     _drain(window)
+    if viewport_height is not None:
+        assert window.map_view.viewport().height() == viewport_height
     return window
 
 
