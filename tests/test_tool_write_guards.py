@@ -90,7 +90,16 @@ def test_a_fixture_generator_writes_into_a_compatdata_folder(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(
-    "tool", ["gen_building_place_pair", "gen_gh206_pair", "gen_gh187_pair", "gen_ship_sails_pair"]
+    "tool",
+    [
+        "gen_building_place_pair",
+        "gen_gh206_pair",
+        "gen_gh152_pair",
+        "gen_gh187_pair",
+        "gen_ship_sails_pair",
+        "gen_team_tint_pair",
+        "gen_layer_passability_probe",
+    ],
 )
 @conftest.requires_symlinks
 def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch, tool) -> None:
@@ -100,6 +109,24 @@ def test_a_building_pair_generator_refuses_a_linked_subscribed_folder(tmp_path, 
 
     with pytest.raises(WriteBlockedError):
         module.main()
+    assert list(real.iterdir()) == []
+
+
+@conftest.requires_symlinks
+def test_the_layer_probe_writes_and_reloads_then_refuses_a_linked_subscribed_game_folder(tmp_path, monkeypatch) -> None:
+    """The probe's own reload check passes; --to-game's copy (a plain copyfile) has only its own refusal."""
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("gen_layer_passability_probe")
+    monkeypatch.setattr(module, "game_folder", lambda: link / "scenario")
+    source = Path(__file__).parent / "fixtures" / "real_blank_240x240.aoe2scenario"
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys, "argv", ["gen_layer_passability_probe", "--source", str(source), "--out", str(out), "--to-game"]
+    )
+
+    with pytest.raises(WriteBlockedError):
+        module.main()  # SystemExit on a failed reload check, before the copy
+    assert [p.name for p in out.iterdir()] == [module.OUT_NAME]
     assert list(real.iterdir()) == []
 
 

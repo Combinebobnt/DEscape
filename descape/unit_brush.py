@@ -92,8 +92,9 @@ def _fits(x: float, y: float, span: tuple[int, int], width: int, height: int) ->
 
 
 def hover_anchor(const: int, tile: tuple[int, int], width: int, height: int) -> tuple[float, float] | None:
-    """Where a dab on `tile` stands `const` before jitter, or None for a
-    footprint past the map edge: paint_dab()'s own snap and fit."""
+    """Where a dab on `tile` stands `const` before jitter: paint_dab()'s own
+    snap and fit. The snap clamps an edge tile's footprint onto the map
+    (GH #152), so None only for a footprint wider than the map."""
     span = tile_span(const, NON_BUILDING_SPAN)
     x, y = snapped_anchor(tile, None, span, width, height)
     return (x, y) if _fits(x, y, span, width, height) else None

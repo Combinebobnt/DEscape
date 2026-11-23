@@ -73,6 +73,16 @@ class _MapViewViewportMixin:
                 self._canvas_item.drop_preframes()
         self.retarget_preframes()
 
+    def hold_preframes(self, held: bool) -> None:
+        """Held, no frame renders: a settle wait restarted inside the hold
+        (by retarget_preframes()) is ignored. The release restarts the wait."""
+        self._preframes_held = held
+        if held:
+            self._preframe_timer.stop()
+            self._preframe_warmer.cancel()
+        else:
+            self.retarget_preframes()
+
     def retarget_preframes(self) -> None:
         """Cancels the frame being rendered and restarts the settle wait: the
         view moved, resized or (zoom on cursor) the cursor moved, or the window
@@ -98,7 +108,7 @@ class _MapViewViewportMixin:
 
     def _on_preframe_settle(self) -> None:
         item = self._canvas_item
-        if item is None or not self._preframes_allowed or not self.isVisible():
+        if item is None or not self._preframes_allowed or self._preframes_held or not self.isVisible():
             return
         if QApplication.mouseButtons():
             self._preframe_timer.start()
@@ -417,6 +427,13 @@ class _MapViewViewportMixin:
             return
         self._last_viewport_target = target
         self.on_viewport_changed()
+
+    def repoll_viewport(self) -> None:
+        """Makes the next poll fire notify on_viewport_changed() even for an
+        unmoved view: a fire its owner ignored (a first trigger parse's, TASK-668)."""
+        self._last_viewport_target = None
+        if not self._viewport_poll_timer.isActive():
+            self._viewport_poll_timer.start()
 
     def stop_viewport_poll(self) -> None:
         """Drops a pending poll fire: the owning window is closing, and a fire

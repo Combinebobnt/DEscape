@@ -41,7 +41,9 @@ def recorded(monkeypatch):
     from descape.render_cache import IsoChunkCache
 
     events: list = []
-    monkeypatch.setattr(asset_source, "prefetch_terrain_textures", lambda ids: events.append(("prefetch", set(ids))))
+    monkeypatch.setattr(
+        asset_source, "prefetch_terrain_textures", lambda ids, _tile_pxs, back=False: events.append(("prefetch", set(ids)))
+    )
 
     class _RecordingCache(IsoChunkCache):
         def __init__(self, *args, **kwargs) -> None:
@@ -111,6 +113,29 @@ def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(
     blendomatic["value"] = object()
     assert sorted(window._texture_prefetch_ids()) == [0]  # the Terrain Blending row is off
     blendomatic["value"] = None
+
+
+@pytest.mark.parametrize("preload", [True, False])
+def test_a_settled_load_queues_every_ladder_level_behind_while_zoom_levels_preload(monkeypatch, preload):
+    """GH #326: the finest levels' 1920 px resizes start after the first paint, not at their first visit."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    calls: list = []
+    monkeypatch.setattr(
+        asset_source, "prefetch_terrain_textures", lambda ids, tile_pxs, back=False: calls.append((list(tile_pxs), back))
+    )
+    monkeypatch.setattr(settings, "get_preload_zoom_levels", lambda: preload)
+    window = conftest.stepped_window(UNITS_FIXTURE, show=True)
+    try:
+        for _ in range(10):
+            QApplication.processEvents()
+        ladder = [window._cache.mip_tile_px(m) for m in window._cache.mip_levels()]
+        backs = [pxs for pxs, back in calls if back]
+        assert backs == ([ladder] if preload else []), calls
+    finally:
+        conftest.close_window(window)
 
 
 def test_terrain_textures_off_prefetches_nothing(recorded):

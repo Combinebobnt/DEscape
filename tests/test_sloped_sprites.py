@@ -251,7 +251,7 @@ def test_mark_sprite_pick_agree_on_height(sprite_install):
         scenario, proj, elevations, corner_rise=corner_rise, with_farms=False
     )
     assert sprites.by_anchor, "fixture painted nothing -- the sprite never resolved"
-    (_draw, _ax, ay, carried_rise), = next(iter(sprites.by_anchor.values()))
+    (_draw, _ax, ay, carried_rise, _order), = next(iter(sprites.by_anchor.values()))
     half_h = proj.half_h
     fx, fy = unit.x, unit.y
     implied_rise = round(proj.origin_y + (fy - fx) * half_h) + half_h - ay

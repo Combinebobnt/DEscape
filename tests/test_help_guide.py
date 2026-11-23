@@ -33,6 +33,8 @@ _FOCUS_ONLY_TEXTS = {
 
 # (file, key): a fixed gesture that equals a rebindable default. The info tree's Ctrl+C.
 _TYPED_KEY_ALLOWLIST = {("keyboard-and-mouse.md", "Ctrl+C")}
+# Any file: the arrow keys are also the fixed Units nudge, not only the rebindable Pan defaults.
+_FIXED_KEYS = {"Up", "Down", "Left", "Right"}
 
 
 def _texts() -> dict[str, str]:
@@ -124,9 +126,21 @@ def _merge(into: dict, menu) -> None:
             _merge(sub, action.menu())
 
 
+_HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def _tab_items(page) -> set[str]:
+    """Every label, button and group title on one Settings tab, as the guide names them."""
+    from PyQt5.QtWidgets import QAbstractButton, QGroupBox, QLabel
+
+    texts = [w.text() for cls in (QLabel, QAbstractButton) for w in page.findChildren(cls)]
+    texts += [box.title() for box in page.findChildren(QGroupBox)]
+    return {_HTML_TAG.sub("", text).replace("&", "").strip().rstrip(":").strip() for text in texts} - {""}
+
+
 def _menu_resolver():
     """A function path -> bool over every menu text any mode shows, plus the
-    Settings tabs, the Filters popup and the focus-only aliases."""
+    Settings tabs and their items, the Filters popup and the focus-only aliases."""
     from PyQt5.QtWidgets import QTabWidget
 
     from descape.settings_dialog import SettingsDialog
@@ -147,7 +161,7 @@ def _menu_resolver():
         dialog = SettingsDialog(window)
         try:
             tabs = dialog.findChild(QTabWidget)
-            settings_tabs = {tabs.tabText(i).replace("&", "") for i in range(tabs.count())}
+            settings_tabs = {tabs.tabText(i).replace("&", ""): _tab_items(tabs.widget(i)) for i in range(tabs.count())}
         finally:
             dialog.close()
     finally:
@@ -156,7 +170,8 @@ def _menu_resolver():
     def resolves(path: str) -> bool:
         parts = [part.strip() for part in path.split(" > ")]
         if parts[0] == "Settings":
-            return len(parts) >= 2 and parts[1] in settings_tabs
+            items = settings_tabs.get(parts[1]) if len(parts) >= 2 else None
+            return items is not None and all(part in items for part in parts[2:])
         node = {"Filters": filters, **bar}
         for part in parts:
             if part not in node:
@@ -190,6 +205,9 @@ def test_menu_path_lint_resolves_real_paths_and_rejects_others() -> None:
         "Help > DEscape Guide",
         "Settings > Keybinds",
         "Settings > Appearance > Theme",
+        "Settings > Appearance > Condition and effect details",
+        "Settings > Keybinds > Elevation View",
+        "Settings > Saving > Autosave on a timer",
         "Filters > Show Trees",
     ):
         assert resolves(good), good
@@ -197,6 +215,8 @@ def test_menu_path_lint_resolves_real_paths_and_rejects_others() -> None:
         "Edit > Frobnicate",
         "Edit > Find and Replace...",
         "Settings > Frobnicate",
+        "Settings > Appearance > Frobnicate",
+        "Settings > Keybinds > Theme",
         "Filters > Frobnicate",
         "Nowhere > Thing",
         "Help > Release Notes for 0.0",
@@ -205,6 +225,8 @@ def test_menu_path_lint_resolves_real_paths_and_rejects_others() -> None:
     assert _menu_path_problems("x.md", "Use **Edit > Frobnicate** or **bold** text.", resolves) == [
         "x.md: **Edit > Frobnicate**"
     ]
+    sample = "**Settings > Appearance > Theme** and **Settings > Appearance > Frobnicate**."
+    assert _menu_path_problems("x.md", sample, resolves) == ["x.md: **Settings > Appearance > Frobnicate**"]
 
 
 @pytest.mark.gui
@@ -218,13 +240,36 @@ def test_every_bold_menu_path_in_the_guide_resolves() -> None:
 # -- typed keys -----------------------------------------------------------------
 
 
+def _single_key_pattern(key: str) -> re.Pattern:
+    """How a bare key is typed in prose: in backticks, an F-key anywhere, or a letter or digit after press/key."""
+    k = re.escape(key)
+    forms = [rf"`{k}`"]
+    if re.fullmatch(r"F\d+", key):
+        forms.append(rf"(?<![\w+]){k}(?![\w+])")
+    elif key.isalnum():
+        forms.append(rf"(?i:\b(?:press|key))\s+(?:\*\*|`)?{k}(?![\w+])")
+        forms.append(rf"(?<![\w+]){k}(?:\*\*|`)?\s+(?i:key)\b")
+    return re.compile("|".join(forms))
+
+
 def _typed_key_problems(filename: str, text: str) -> list[str]:
-    defaults = sorted({default for _, _, default in settings.REBINDABLE_ACTIONS if "+" in default})
-    return [
-        f"{filename}: {key}"
-        for key in defaults
-        if (filename, key) not in _TYPED_KEY_ALLOWLIST and re.search(rf"(?<![\w+]){re.escape(key)}(?![\w+])", text)
-    ]
+    defaults = {default for _, _, default in settings.REBINDABLE_ACTIONS if default}
+    problems = []
+    for key in sorted(defaults):
+        if (filename, key) in _TYPED_KEY_ALLOWLIST or key in _FIXED_KEYS:
+            continue
+        pattern = re.compile(rf"(?<![\w+]){re.escape(key)}(?![\w+])") if "+" in key else _single_key_pattern(key)
+        if pattern.search(text):
+            problems.append(f"{filename}: {key}")
+    return problems
+
+
+def test_typed_key_lint_catches_a_bare_single_key_but_not_prose() -> None:
+    sample = "Press S to select. `[` shrinks it. The 2 key picks Player 2. F1 opens this. Hit `,` then key E."
+    assert _typed_key_problems("x.md", sample) == [f"x.md: {k}" for k in sorted({",", "2", "E", "F1", "S", "["})]
+    prose = "Player 1 owns S units; P2, a 3x3 area, press Enter, the key is set. Left of it, `Up` and press Up nudge."
+    assert _typed_key_problems("x.md", prose) == []
+    assert _typed_key_problems("x.md", "Press **D** for Draw.") == ["x.md: D"]
 
 
 def test_typed_key_lint_catches_a_default_but_not_a_gesture() -> None:

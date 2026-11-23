@@ -13,8 +13,7 @@ absent.
 
 **The fixture here is its own synthetic unit-bearing scenario**, in
 tests/test_sprite_chunks.py's `_Scenario` duck-type shape, deliberately NOT
-tests/test_flat_chunks.py's default-tier one -- that is a unit-free blank
-template (see its own note), so anything built on it would run vacuous. Every
+the unit-free blank template, on which anything here would run vacuous. Every
 check below asserts non-vacuity before asserting its real property.
 
 Synthetic bytes and a tmp install throughout -- no game assets, matching the

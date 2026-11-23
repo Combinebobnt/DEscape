@@ -208,11 +208,11 @@ def test_a_sprite_paints_each_column_once_at_its_front_tile(sprite_install, monk
 
     tiles = render_units.unit_occupied_tiles(scn.unit_manager.units[1][0], MAP_W, MAP_H)
     key = unit_sprites.sprite_anchor_tile(tiles)
-    [(parent, px, py, _)] = whole.by_anchor[key]
+    [(parent, px, py, _, _)] = whole.by_anchor[key]
     x0 = px - parent.hotspot_x
     covered = np.zeros(parent.rgba.shape[1], dtype=int)
     entries = [(k, entry) for k, v in sprites.by_anchor.items() for entry in v]
-    for k, (draw, dpx, dpy, _) in entries:
+    for k, (draw, dpx, dpy, _, _) in entries:
         assert (dpx, dpy, draw.hotspot_y) == (px, py, parent.hotspot_y)
         c0 = dpx - draw.hotspot_x - x0
         c1 = c0 + draw.rgba.shape[1]
@@ -490,7 +490,7 @@ def test_an_odd_span_sprite_anchors_on_its_tiles_ground_centre(sprite_install, m
 
     layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations)
     assert layer.by_anchor, "no sprite resolved -- this test would assert nothing"
-    _draw, ax, ay, rise = next(iter(layer.by_anchor.values()))[0]
+    _draw, ax, ay, rise, _order = next(iter(layer.by_anchor.values()))[0]
     assert rise == 3 * proj.elev_step
 
     sx, sy = iso_geometry.tile_screen_origin(tx, ty, 3, proj)

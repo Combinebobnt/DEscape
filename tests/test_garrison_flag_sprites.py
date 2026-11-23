@@ -160,7 +160,7 @@ def test_a_host_with_an_occupant_paints_its_flag_after_its_body_at_its_anchor(ar
     assert render_units.garrison_host_ids(scenario) == frozenset({HOST_REF})
     key, draws = _draws(_resolve(scenario))
     assert key == (int(POINT[0]), int(POINT[1]))
-    (_body, bx, by, _), (flag, fx, fy, _) = draws
+    (_body, bx, by, _, _), (flag, fx, fy, _, _) = draws
     scale = unit_sprites.sprite_scale(render_iso.elevations_and_proj(scenario)[1].half_w)
     assert (fx - bx, fy - by) == (round(FLAG_DX * scale), round(FLAG_DY * scale))
     assert flag.rgba.shape[:2] == (round(16 * scale),) * 2
@@ -172,7 +172,7 @@ def test_the_flag_grows_the_hosts_bbox(art):
     _relink(scenario, -1)
     plain = _resolve(scenario)
     (key,) = plain.bboxes
-    _, (flag, fx, fy, _) = flagged.by_anchor[key]
+    _, (flag, fx, fy, _, _) = flagged.by_anchor[key]
     h, w = flag.rgba.shape[:2]
     flag_box = (fx - flag.hotspot_x, fy - flag.hotspot_y, fx - flag.hotspot_x + w, fy - flag.hotspot_y + h)
     grown, before = flagged.bboxes[key], plain.bboxes[key]

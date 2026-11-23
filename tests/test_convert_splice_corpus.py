@@ -81,7 +81,7 @@ def _level_state(cache, mip: int, spliced: bool, keys: dict):
     assert not spliced or lvl.gen == cache._source_gen, f"mip {mip} went stale"
     building_bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     by_anchor = {
-        k: [(_draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y), px, py, rise) for d, px, py, rise in v]
+        k: [(_draw_key(keys, d.rgba, d.hotspot_x, d.hotspot_y), px, py, rise, o) for d, px, py, rise, o in v]
         for k, v in sprites.by_anchor.items()
     }
     return (

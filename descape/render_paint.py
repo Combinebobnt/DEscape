@@ -41,8 +41,9 @@ def _drain(gen):
 
 # Pixels per tile side. >1 so real per-tile texture crops (see
 # asset_source.get_terrain_texture_array) show actual detail instead of
-# collapsing to a single flat-colored pixel. Both values must evenly divide
-# asset_source.LOADED_TEXTURE_SIZE -- see _crop_offset's assertion.
+# collapsing to a single flat-colored pixel. A level's texture is
+# asset_source.terrain_texture_size(tile_px), a whole number of tiles, so any
+# value divides it -- see _crop_offset's assertion.
 #
 # Adaptive rather than one fixed constant: memory scales with tile_pixels
 # SQUARED (a 480x480 "Ludicrous" map's rendered array is 2.83GB at 64px/tile,
@@ -79,10 +80,6 @@ def tile_pixels_for_map(map_width: int, map_height: int) -> int:
     independently and get a matching answer, since nothing changes graphics
     quality mid-render: it's only ever changed from the Settings dialog,
     between renders, never during one.
-
-    Scaling is safe for _crop_offset's divides-LOADED_TEXTURE_SIZE-evenly
-    requirement at every quality stage, since every value involved (16, 32,
-    64, 128) is a power of two dividing a power-of-two texture size.
 
     The one exception: quality 4 ("Enhanced")'s doubling is clamped to a
     no-op on small maps (base=SMALL_MAP_TILE_PIXELS=64) rather than
@@ -145,8 +142,9 @@ def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, 
 
     Where tile_px divides texture_size every crop window lands exactly on a
     tile_px boundary and never straddles the texture's own wrap point, so a
-    plain slice of the texture is enough. The native tier's 96 on a 512
-    texture (TASK-599) does not divide it: its crops straddle the wrap, so
+    plain slice of the texture is enough, and asset_source.
+    terrain_texture_size() always divides (GH #326). A stand-in texture of
+    its own size may not (96 on a 512 one): its crops straddle the wrap, so
     they slice asset_source.crop_source()'s wrap-padded copy instead, with
     the period still texture_size. Every caller crops from crop_source().
 

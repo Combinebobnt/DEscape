@@ -16,6 +16,7 @@ from unit_edit_viewer_helpers import (
     _chunk_for_tile,
     _close,
     _empty_tile,
+    _last_status_lines,
     _no_install_env,  # noqa: F401 -- autouse fixture
     _pos_for_tile,
     _unit_count,
@@ -377,6 +378,12 @@ def test_the_gaia_only_refused_note_is_empty_for_none() -> None:
 
     assert _gaia_only_refused_note(0) == ""
     assert _gaia_only_refused_note(2) == "; 2 object(s) left as they were (GAIA-only or holding one)"
+    # TASK-474: occupants held with a refused host get their own clause.
+    assert _gaia_only_refused_note(0, 0) == ""
+    assert _gaia_only_refused_note(0, 1) == "; 1 garrisoned object(s) kept with their host"
+    assert _gaia_only_refused_note(1, 2) == (
+        "; 1 object(s) left as they were (GAIA-only or holding one); 2 garrisoned object(s) kept with their host"
+    )
 
 
 # --- b1.5: move + nudge ------------------------------------------------------
@@ -400,6 +407,44 @@ def test_moving_a_selected_unit_snaps_to_the_target_tile_centre() -> None:
 
         window.undo()
         assert window.map_view._unit_index.entry_for_key(key).unit.x == entry.unit.x
+    finally:
+        _close(window)
+
+
+_BARRACKS = 12  # 3x3
+
+
+def _place_barracks(window, tile):
+    window.unrestricted_check.setChecked(True)
+    window.units_panel.select_object(_BARRACKS)
+    window.units_panel.select_owner(1)
+    window.place_unit_action.setChecked(True)
+    window.on_unit_place(_pos_for_tile(window, *tile), Qt.NoModifier)
+    return window._selection[0], window.map_view._unit_index.entry_for_key(window._selection[0])
+
+
+def test_a_barracks_placed_on_the_corner_tile_lands_wholly_on_the_map() -> None:
+    """GH #152: an odd span clamps like an even one, (1.5, 1.5) not (0.5, 0.5)."""
+    window = _window()
+    try:
+        _key, entry = _place_barracks(window, (0, 0))
+        assert entry.unit.unit_const == _BARRACKS
+        assert (entry.unit.x, entry.unit.y) == (1.5, 1.5)
+        assert "at (1.5, 1.5)" in _last_status_lines(window, 1)[0]
+    finally:
+        _close(window)
+
+
+def test_a_snapped_barracks_move_onto_an_edge_tile_lands_wholly_on_the_map() -> None:
+    window = _window()
+    try:
+        key, _entry = _place_barracks(window, _empty_tile(window))
+        window._selection = [key]
+
+        window.on_unit_move(key, _pos_for_tile(window, 0, 5), Qt.NoModifier)
+
+        moved = window.map_view._unit_index.entry_for_key(key).unit
+        assert (moved.x, moved.y) == (1.5, 5.5)
     finally:
         _close(window)
 

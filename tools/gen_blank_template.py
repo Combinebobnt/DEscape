@@ -68,7 +68,7 @@ from descape.scenario_io import (
     load_map_and_units_from_bytes,
     parse_triggers,
 )
-from descape.scenario_write import WriteBlockedError, _compress_bytes
+from descape.scenario_write import WriteBlockedError, _compress_bytes, refuse_legacy
 from testkit.zlib_runtime import warn_if_not_stock
 
 SOURCE_VERSION = "1.58"
@@ -91,6 +91,7 @@ def build_template_bytes(source_path: Path = V158_DONOR_PATH) -> bytes:
     reads the source value first and the file has no units and no triggers,
     so a changed source fails here, not silently."""
     loaded = load_map_and_units(source_path)
+    refuse_legacy(loaded)
     header = bytearray(loaded.header_bytes)
     body = bytearray(loaded.decompressed_body)
     triggers_at = loaded.units_section_end

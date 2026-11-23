@@ -19,7 +19,6 @@ from descape import (
     games,
     gate_orientation,
     player_fields,
-    render_paint,
     render_sprites,
     render_units,
     scenario_io,
@@ -98,6 +97,21 @@ def test_the_ror_fortified_palisade_draws_its_body():
     assert unit_sprites.graphic_map()[119]["graphic_id"] == 605
 
 
+@pytest.mark.parametrize(("dataset", "shells"), [("aoe2", {72, 119, 788}), ("ror", {119, 788})])
+def test_the_flag_shell_walls_are_the_ones_write_rules_quotes(dataset, shells):
+    """docs/WRITE_RULES.md: _BODY_GRAPHIC_OVERRIDES applies to 119 and 788
+    only under RoR, where Palisade Wall 72 is a plain wall with no flag."""
+    game_dataset.set_active(dataset)
+    graphic_map = unit_sprites.graphic_map()
+    flagged = {
+        const for const, entry in graphic_map.items()
+        if any(piece["file_name"] == "b_dark_wall_palisade_flag_x1" for piece in entry.get("pieces", ()))
+    }
+    assert flagged == shells
+    if dataset == "ror":
+        assert graphic_map[72]["file_name"] == "b_all_wall_small_x1" and "pieces" not in graphic_map[72]
+
+
 def test_ror_heroes_glow():
     from descape.terrain_palette import HERO_GLOW_CONSTS
 
@@ -161,7 +175,10 @@ def test_set_rotation_turns_a_hoplite(ror_model):
     assert hoplite.rotation == 1.0
 
 
-def test_set_wall_variant_refuses_wall5_under_ror(ror_model):
+def test_set_wall_variant_refuses_wall5_under_ror(ror_model, monkeypatch):
+    """The RoR wall family is what refuses WALL5, not its absence from RoR's
+    graphic map: given AoE2's five-shape entry there, 2678 is still refused."""
+    monkeypatch.setitem(unit_sprites.graphic_map(), 2678, {**unit_sprites.graphic_map()[117], "angle_count": 5})
     wall5 = ror_model.add(1, 2678, 50.5, 50.5)
     with pytest.raises(ValueError):
         ror_model.set_wall_variant(wall5, 1)
@@ -278,42 +295,17 @@ def test_ror_lists_the_objects_it_shares_with_aoe2_as_hidden():
         assert (old["code"], old["class"]) == (new["code"], new["class"]), entry.id
 
 
-# -- terrain texture scale on zoomed-out levels ------------------------------------
+# -- terrain texture scale --------------------------------------------------------
 
 
-def test_ror_zoomed_out_levels_shrink_textures_and_aoe2_does_not():
+def test_ror_textures_cover_the_same_tiles_as_aoe2s_at_every_level():
+    """GH #326 retired RoR's own zoomed-out shrink (GH #67): one engine, one span."""
     from descape import asset_source
 
-    assert [asset_source.terrain_texture_size(t) for t in (16, 32, 64, 128)] == [512] * 4
+    levels = (16, 32, 48, 64, 96, 128, 192)
+    aoe2 = [asset_source.terrain_texture_size(t) for t in levels]
     _ror()
-    assert [asset_source.terrain_texture_size(t) for t in (16, 32, 64, 128)] == [128, 256, 512, 512]
-    assert all(asset_source.terrain_texture_size(t) % t == 0 for t in (8, 16, 24, 32, 48))
-
-
-def test_a_ror_zoomed_out_tile_crops_the_shrunk_texture(tmp_path, monkeypatch):
-    """A tile at 32 px keeps the share of the texture it has at 64 px: a
-    quarter-size crop of the half-size texture, not of the full one."""
-    import functools
-    from types import SimpleNamespace
-
-    import numpy as np
-    from PIL import Image
-
-    from descape import asset_source
-
-    rng = np.random.default_rng(67)
-    path = tmp_path / "g_test.png"
-    Image.fromarray(rng.integers(0, 256, (512, 512, 3), dtype=np.uint8)).save(path)
-    # Cached, as the real one is: a dataset switch calls its cache_clear().
-    monkeypatch.setattr(asset_source, "get_terrain_texture_path", functools.cache(lambda _tid: path))
-    full = asset_source.get_terrain_texture_array(7)
-    tile = SimpleNamespace(x=1, y=0, terrain_id=7)
-    assert np.array_equal(render_paint._top_block(tile, 32), full[0:32, 32:64]), "AoE2: one size at every level"
-    _ror()
-    half = asset_source.terrain_texture_at(7, 256)
-    assert half.shape == (256, 256, 3)
-    assert np.array_equal(render_paint._top_block(tile, 32), half[0:32, 32:64])
-    assert np.array_equal(render_paint._top_block(tile, 64), full[0:64, 64:128]), "the reference level is unchanged"
+    assert [asset_source.terrain_texture_size(t) for t in levels] == aoe2
 
 
 def test_ror_shared_hidden_relics_and_wild_animals_stay_gaia_only():

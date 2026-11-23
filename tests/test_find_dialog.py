@@ -1751,6 +1751,24 @@ def test_a_host_holding_a_gaia_only_occupant_is_not_given_to_a_player() -> None:
         _close(window)
 
 
+def test_find_explains_an_occupant_found_with_its_refused_host() -> None:
+    """TASK-474: an occupant selected with its refused host is kept with it, not refused as an orphan."""
+    window, _boxes = _window()
+    try:
+        model = window._ensure_unit_edits()
+        house = _unit(window, _REF_HOUSE)
+        with window._unit_edit(model, "test: bad file", [1]):
+            _unit(window, _REF_VILLAGER_P1).unit_const = _DEER
+            other = model.add(1, 83, house.x, house.y, garrisoned_in_id=house.reference_id)
+        window._find_reassign_keys([(1, other.reference_id), (1, _REF_HOUSE)], 3)
+        assert (_owner(window, _REF_HOUSE), _owner(window, other.reference_id)) == (1, 1)
+        assert window.status_log.toPlainText().splitlines()[-1] == (
+            f"Reassigned 0 units to Player 3; {_GAIA_ONLY_NOTE}; 1 garrisoned object(s) kept with their host"
+        )
+    finally:
+        _close(window)
+
+
 def test_the_garrison_owner_row_refuses_a_gaia_only_occupant() -> None:
     window, _boxes = _window()
     try:

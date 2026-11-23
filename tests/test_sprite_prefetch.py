@@ -182,7 +182,7 @@ def _walk(scenario, unit_filter=SHOWN, wall_alpha=1.0):
 
 def _normalized(layer: render_sprites.SpriteLayer):
     return {
-        key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise) for d, x, y, rise in draws]
+        key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise, order) for d, x, y, rise, order in draws]
         for key, draws in layer.by_anchor.items()
     }, layer.bboxes
 

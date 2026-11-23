@@ -76,7 +76,7 @@ class _ViewerMenusMixin:
         self.new_action = QAction("New Map (Default Size)", self)
         self.new_action.triggered.connect(lambda checked=False: self.new_map(BLANK_TEMPLATE_TILES))
         self.addAction(self.new_action)
-        self.open_action = QAction("&Open .aoe2scenario…", self)
+        self.open_action = QAction("&Open Scenario…", self)
         self.open_action.setToolTip("Open a scenario file from disk")
         self.open_action.triggered.connect(self.open_file)
         file_menu.addAction(self.open_action)

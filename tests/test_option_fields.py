@@ -159,6 +159,30 @@ def test_a_1_49_shaped_file_keeps_its_other_map_options_writable() -> None:
     assert not options_model.options_write_supported(loaded, option_fields._SPECS)
 
 
+def _victory(loaded) -> option_fields.OptionFieldSpec:
+    return next(s for s in specs_for(loaded) if s.field_id == "victory_condition")
+
+
+@pytest.mark.parametrize("secondary", [None, b"\x00\x00\x00\x00"], ids=["pre-1.42", "1.49"])
+def test_victory_condition_drops_secondary_game_mode_with_its_row(secondary) -> None:
+    """GH #240 follow-up (user, 2026-10-19): choice 6 names the Map group's
+    Secondary game mode row, so a file without that row is not offered it."""
+    retriever = None if secondary is None else _StubRetriever(secondary, data=secondary)
+    spec = _victory(_stub_loaded({("Map", "secondary_game_modes"): retriever}))
+    assert [value for value, _label in spec.choices] == [0, 1, 2, 3, 4]
+    assert "Secondary game mode" not in spec.tooltip and spec.tooltip.endswith("the custom conditions below.")
+    full = _victory(_stub_loaded())
+    assert full.choices[-1] == (6, "Secondary game mode") and "Secondary game mode" in full.tooltip
+
+
+def test_a_stored_secondary_victory_keeps_its_choice_without_the_row() -> None:
+    loaded = _stub_loaded({
+        ("Map", "secondary_game_modes"): None,
+        ("GlobalVictory", "mode"): _StubRetriever(b"\x06\x00\x00\x00", data=6),
+    })
+    assert _victory(loaded) is next(s for s in option_fields._SPECS if s.field_id == "victory_condition")
+
+
 def test_every_spec_resolves_to_a_scalar_int() -> None:
     """Pins the invariant current_value() relies on: nothing in _SPECS today
     points at a repeat-driven retriever. If a future spec (e.g. a

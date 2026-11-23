@@ -468,6 +468,7 @@ SHEEP = 594  # class 58, a herdable a player can own
 RELIC = 285
 RUBBLE = 863  # class 14 eye candy the corpus places for players
 GUNPOWDER_KEG = 2607  # class 64, GAIA-only by the official editor (GH #208)
+RUINS = 345  # type 80, deleted by the 1.59 editor's save when a player owned it
 
 
 # GH #32: AoE2 Units its 1.59 editor lists only for GAIA, and some it lists for Player 1 too.
@@ -480,8 +481,8 @@ REVEALER_A, REVEALER_B, FURIOUS, HINT_OBJECT = 0, 127, 860, 2238
 def test_gaia_only_consts_holds_resources_trees_the_keg_and_wild_animals() -> None:
     gaia_only = unit_kind.gaia_only_consts()
     tree = sorted(TREE_UNIT_IDS)[0]
-    # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree, the keg.
-    assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree, GUNPOWDER_KEG} <= gaia_only
+    # Forage, gold, stone, Perch (fish), shore fish, the two class-63 consts, a tree, the keg, Ruins.
+    assert {BERRY_BUSH, GOLD_MINE, STONE_MINE, 53, 69, 2170, 2625, tree, GUNPOWDER_KEG, RUINS} <= gaia_only
     assert gaia_only >= TREE_UNIT_IDS
     assert {MACAW, DEER, GREY_WOLF, RABID_WOLF, RELIC, AMPHORA} <= gaia_only
     # FLARE4 is editor-hidden, so outside the rule; rubble is on the player Other tab.

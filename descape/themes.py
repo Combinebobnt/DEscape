@@ -252,7 +252,7 @@ _EDITOR_ACCENTS: dict[str, dict[str, str]] = {
 }
 _EDITOR_BUTTONS: dict[str, dict[str, str]] = {
     "parchment": {"red": "#5c0005", "blue": "#00184c", "green": "#084f00", "purple": "#2b0040"},
-    "dark_wood": {"red": "#5c0005", "blue": "#01133b", "green": "#063d00", "purple": "#220133"},
+    "dark_wood": {"red": "#5c0005", "blue": "#01133b", "green": "#052e00", "purple": "#220133"},
 }
 EDITOR_PRESETS: tuple[str, ...] = tuple(f"editor_{base}_{accent}" for base in _EDITOR_BASES for accent in _EDITOR_ACCENTS)
 for _base_id, (_base_label, _base_colors) in _EDITOR_BASES.items():
@@ -261,6 +261,19 @@ for _base_id, (_base_label, _base_colors) in _EDITOR_BASES.items():
             f"{_base_label} ({_accent_id})",
             {**_base_colors, **_accent_colors, "button": _EDITOR_BUTTONS[_base_id][_accent_id]},
         )
+
+# Rich Walnut: 75% of the shared wood chroma and a 2-degree hue shift toward red.
+PRESETS["editor_dark_wood_purple"][1].update(
+    {
+        "window": "#4f3e30",
+        "window_text": "#cbb7a7",
+        "base": "#3d2e22",
+        "alternate_base": "#47372a",
+        "text": "#d9c9b8",
+        "surface": "#3d2e22",
+        "surface_text": "#d9c9b8",
+    }
+)
 
 
 def preset_label(preset_id: str) -> str:

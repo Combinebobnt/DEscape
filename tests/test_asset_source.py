@@ -171,7 +171,7 @@ def test_get_language_tolerates_a_malformed_config() -> None:
     assert asset_source.get_language() == "en"
 
 
-# --- terrain average colour, from the cached texture array (copy-paste perf plan, Step 2) ---
+# --- terrain average colour, recorded by the first decode (copy-paste perf plan, Step 2; GH #326) ---
 
 
 @pytest.fixture
@@ -181,15 +181,12 @@ def fresh_average_cache():
     asset_source.get_terrain_average_color.cache_clear()
 
 
-def test_the_average_colour_comes_from_the_cached_array_without_opening_the_texture(
-    fresh_average_cache, monkeypatch
-) -> None:
-    """A Copy Region thumbnail must not re-decode a .dds the renderer already
-    holds as an array: with the array available, Image.open never runs."""
+def test_a_stand_in_textures_average_colour_opens_no_file(fresh_average_cache, monkeypatch) -> None:
+    """A terrain with no file averages get_terrain_texture_array()'s stand-in."""
     import numpy as np
     from PIL import Image
 
-    arr = np.zeros((asset_source.LOADED_TEXTURE_SIZE, asset_source.LOADED_TEXTURE_SIZE, 3), dtype=np.uint8)
+    arr = np.zeros((512, 512, 3), dtype=np.uint8)
     arr[..., 0], arr[..., 1], arr[..., 2] = 40, 120, 200
     arr[: arr.shape[0] // 2, :, 0] = 80  # top half redder: the mean is not one pixel's value
     monkeypatch.setattr(asset_source, "get_terrain_texture_array", lambda _tid: arr)
@@ -217,9 +214,9 @@ def _dds_average(path: Path) -> tuple[int, int, int]:
 
 
 @pytest.mark.corpus
-def test_the_terrain_colour_from_the_array_matches_the_dds_average_on_every_real_terrain(fresh_average_cache) -> None:
-    """Needs AOE2DE_INSTALL_PATH. At most one terrain may move, by at most 1 per
-    channel (measured: terrain 23, g_wt3.dds, (24,82,126) -> (23,82,126))."""
+def test_the_terrain_colour_is_the_dds_average_on_every_real_terrain(fresh_average_cache) -> None:
+    """Needs AOE2DE_INSTALL_PATH. Exact since GH #326, whichever decode records it:
+    the 512 px array it used to come from moved terrain 23 (g_wt3.dds) by 1."""
     if asset_source.get_install_path() is None:
         pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
     differing = {}
@@ -232,9 +229,36 @@ def test_the_terrain_colour_from_the_array_matches_the_dds_average_on_every_real
         old, new = _dds_average(path), asset_source.get_terrain_average_color(terrain_id)
         if old != new:
             differing[terrain_id] = (old, new)
-            assert max(abs(a - b) for a, b in zip(old, new, strict=True)) <= 1, f"terrain {terrain_id}: {old} -> {new}"
     assert checked > 100, f"only {checked} terrains have a texture -- is the install complete?"
-    assert len(differing) <= 1, f"more than one terrain's average colour moved: {differing}"
+    assert not differing, f"average colours moved: {differing}"
+
+
+@pytest.mark.corpus
+def test_every_real_texture_loads_at_the_coarsest_and_finest_level_size(fresh_average_cache) -> None:
+    """Needs AOE2DE_INSTALL_PATH. GH #326: every mapped file decodes at both ends
+    of the ladder, and the finest level's texture is no larger than the largest
+    source, so the 2048 px files are never enlarged (the 512 and 1024 px ones are)."""
+    import struct
+
+    from descape import render_paint
+
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible -- set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    finest = asset_source.terrain_texture_size(max(render_paint.FINEST_TILE_PIXELS.values()))
+    sides = {}
+    for terrain_id in sorted(asset_source._terrain_texture_map()):
+        path = asset_source.get_terrain_texture_path(terrain_id)
+        if path is None or path in sides:
+            continue
+        with open(path, "rb") as f:
+            height, width = struct.unpack("<II", f.read(20)[12:20])
+        sides[path] = max(width, height)
+        for size in (asset_source.terrain_texture_size(16), finest):
+            arr = asset_source.terrain_texture_at(terrain_id, size)
+            assert arr is not None and arr.shape == (size, size, 3), (path.name, size)
+        asset_source.clear_install_caches()
+    assert len(sides) > 80, f"only {len(sides)} texture files -- is the install complete?"
+    assert finest <= max(sides.values()), (finest, max(sides.values()))
 
 
 # --- terrain texture loads (first-paint-terrain-textures plan) ---
@@ -303,6 +327,10 @@ def counted_opens(monkeypatch):
     return opened
 
 
+REFERENCE_PX = asset_source.TEXTURE_REFERENCE_TILE_PIXELS
+REFERENCE_SIZE = asset_source.terrain_texture_size(REFERENCE_PX)
+
+
 def test_two_ids_sharing_a_file_share_one_read_only_array_and_one_open(texture_install, counted_opens) -> None:
     a, b, other = texture_install
     arr_a = asset_source.get_terrain_texture_array(a)
@@ -310,10 +338,48 @@ def test_two_ids_sharing_a_file_share_one_read_only_array_and_one_open(texture_i
     assert arr_a is arr_b
     assert asset_source.get_terrain_texture_array(other) is not arr_a
     assert len(counted_opens) == 2, counted_opens
-    assert arr_a.shape == (asset_source.LOADED_TEXTURE_SIZE, asset_source.LOADED_TEXTURE_SIZE, 3)
+    assert arr_a.shape == (REFERENCE_SIZE, REFERENCE_SIZE, 3)
     assert not arr_a.flags.writeable
     with pytest.raises(ValueError):
         arr_a[0, 0, 0] = 1
+
+
+def test_each_level_loads_its_own_texture_size_from_the_file_once(texture_install, counted_opens) -> None:
+    """GH #326: a level of tile_px crops a texture TERRAIN_TEXTURE_SPAN tiles wide,
+    resized from the source file (16 px here, so enlarged), not from another level."""
+    a, b, _other = texture_install
+    levels = (16, 64, 192)
+    arrays = {}
+    for px in levels:
+        size = asset_source.terrain_texture_size(px)
+        assert size == asset_source.TERRAIN_TEXTURE_SPAN * px and size % px == 0
+        arrays[px] = asset_source.terrain_texture_at(a, size)
+        assert arrays[px].shape == (size, size, 3) and not arrays[px].flags.writeable
+        assert asset_source.terrain_texture_at(b, size) is arrays[px], "ids sharing a file share each level"
+    assert len(counted_opens) == len(levels), counted_opens
+    assert asset_source.get_terrain_texture_array(a) is arrays[asset_source.TEXTURE_REFERENCE_TILE_PIXELS]
+
+
+def test_a_level_load_records_the_average_colour_so_it_opens_nothing_more(
+    texture_install, counted_opens, fresh_average_cache
+) -> None:
+    _a, _b, other = texture_install
+    path = asset_source.get_terrain_texture_path(other)
+    assert asset_source.terrain_average_color_if_loaded(other) is None and asset_source.loaded_texture_count() == 0
+    asset_source.terrain_texture_at(other, asset_source.terrain_texture_size(32))
+    opened = len(counted_opens)
+    assert asset_source.loaded_texture_count() == 1
+    assert asset_source.terrain_average_color_if_loaded(other) == asset_source.get_terrain_average_color(other)
+    assert len(counted_opens) == opened, "the average re-opened a decoded file"
+    assert asset_source.get_terrain_average_color(other) == _dds_average(path)
+
+
+def test_the_average_colour_of_an_undecoded_file_decodes_it_once(texture_install, counted_opens, fresh_average_cache) -> None:
+    a, b, _other = texture_install
+    average = asset_source.get_terrain_average_color(a)
+    assert asset_source.get_terrain_average_color(b) == average
+    assert len(counted_opens) == 1, "ids sharing a file decode it once for the average"
+    assert average == _dds_average(asset_source.get_terrain_texture_path(a))
 
 
 def test_clear_install_caches_drops_the_loaded_textures(texture_install, counted_opens) -> None:
@@ -322,6 +388,31 @@ def test_clear_install_caches_drops_the_loaded_textures(texture_install, counted
     asset_source.clear_install_caches()
     assert asset_source.get_terrain_texture_array(a) is not first
     assert len(counted_opens) == 2
+    assert asset_source.texture_cache_stats() == (1, first.nbytes)
+
+
+def test_the_texture_cache_drops_the_least_recently_used_load_past_its_byte_budget(
+    texture_install, counted_opens, monkeypatch, pool
+) -> None:
+    """GH #326: every level's textures can reach ~500 MB on a big map, so the cache holds a byte budget."""
+    a, _b, other = texture_install
+    small, large = (asset_source.terrain_texture_size(px) for px in (16, 32))
+    one = small * small * 3
+    monkeypatch.setattr(asset_source, "TEXTURE_CACHE_BUDGET_BYTES", 2 * one)
+    first_a = asset_source.terrain_texture_at(a, small)
+    asset_source.terrain_texture_at(other, small)
+    assert asset_source.terrain_texture_at(a, small) is first_a, "a hit marks a as recently used"
+    assert asset_source.texture_cache_stats() == (2, 2 * one) and len(counted_opens) == 2
+    asset_source.terrain_texture_at(a, asset_source.terrain_texture_size(8))
+    assert asset_source.terrain_texture_at(a, small) is first_a, "a survived; other was least recent"
+    assert asset_source.texture_cache_stats()[1] <= 2 * one
+    opened = len(counted_opens)
+    assert asset_source.prefetch_terrain_textures([other], [16]) == 1, "a dropped load is loaded again"
+    asset_source.terrain_texture_at(other, small)
+    assert len(counted_opens) == opened + 1
+    big = asset_source.terrain_texture_at(a, large)
+    assert big.nbytes > 2 * one and asset_source.texture_cache_stats() == (1, big.nbytes), "one oversize load stays"
+    assert asset_source.terrain_texture_at(a, large) is big
 
 
 class _InlineExecutor:
@@ -360,12 +451,12 @@ def threads(monkeypatch):
 
 
 def _blocking_loader(monkeypatch, release, started=None):
-    """_load_texture that holds pool threads until `release` is set; returns its call log.
+    """_decode_texture that holds pool threads until `release` is set; returns its call log.
     `started`, if given, is set once a pool thread is inside the load."""
     import threading
 
     calls: list[str] = []
-    real = asset_source._load_texture
+    real = asset_source._decode_texture
 
     def loader(path):
         name = threading.current_thread().name
@@ -376,7 +467,7 @@ def _blocking_loader(monkeypatch, release, started=None):
             assert release.wait(10), "the test never released the pool load"
         return real(path)
 
-    monkeypatch.setattr(asset_source, "_load_texture", loader)
+    monkeypatch.setattr(asset_source, "_decode_texture", loader)
     return calls
 
 
@@ -384,19 +475,104 @@ def test_prefetch_then_get_equals_a_serial_load_and_opens_each_file_once(texture
     import numpy as np
 
     a, b, other = texture_install
-    serial = {tid: asset_source._load_texture(asset_source.get_terrain_texture_path(tid)) for tid in texture_install}
+    serial = {
+        tid: asset_source._load_texture(asset_source.get_terrain_texture_path(tid), REFERENCE_SIZE)[0]
+        for tid in texture_install
+    }
     counted_opens.clear()
-    assert asset_source.prefetch_terrain_textures([a, b, other, a]) == 2, "one load per file"
+    assert asset_source.prefetch_terrain_textures([a, b, other, a], [REFERENCE_PX]) == 2, "one load per file"
     for tid in texture_install:
         assert np.array_equal(asset_source.get_terrain_texture_array(tid), serial[tid])
     assert sorted(counted_opens) == sorted({asset_source.get_terrain_texture_path(t) for t in texture_install})
-    assert asset_source.prefetch_terrain_textures([a, other]) == 0, "cached files are not loaded again"
+    assert asset_source.prefetch_terrain_textures([a, other], [REFERENCE_PX]) == 0, "cached loads are not loaded again"
+    assert asset_source.prefetch_terrain_textures([a, other], [REFERENCE_PX, 32]) == 2, "another level is another load"
+    asset_source.terrain_texture_at(a, asset_source.terrain_texture_size(32))
+    asset_source.terrain_texture_at(other, asset_source.terrain_texture_size(32))
     assert not asset_source._pending
+
+
+def test_a_multi_level_prefetch_opens_each_file_once_and_equals_serial_loads(texture_install, counted_opens, pool) -> None:
+    import numpy as np
+
+    _a, b, other = texture_install
+    pxs = [32, 16, REFERENCE_PX]
+    sizes = [asset_source.terrain_texture_size(px) for px in pxs]
+    paths = [asset_source.get_terrain_texture_path(t) for t in (b, other)]
+    serial = {(p, s): asset_source._load_texture(p, s)[0] for p in paths for s in sizes}
+    counted_opens.clear()
+    assert asset_source.prefetch_terrain_textures([b, other], pxs) == 6
+    for (path, size), expected in serial.items():
+        assert np.array_equal(asset_source._texture_for_path(path, size), expected)
+    assert sorted(counted_opens) == sorted(paths), "one decode per file, whatever the sizes"
+
+
+def test_a_later_prefetch_call_runs_ahead_of_an_earlier_calls_queued_loads(texture_install, one_thread, monkeypatch) -> None:
+    """The level warm's anchor ahead of the open's reference level (GH #326)."""
+    import threading
+
+    a, _b, other = texture_install
+    release, started = threading.Event(), threading.Event()
+    _blocking_loader(monkeypatch, release, started)
+    order: list[tuple[str, int]] = []
+    real_sized = asset_source._sized_texture
+
+    def sized(rgb, size):
+        order.append((threading.current_thread().name, size))
+        return real_sized(rgb, size)
+
+    monkeypatch.setattr(asset_source, "_sized_texture", sized)
+    assert asset_source.prefetch_terrain_textures([a], [REFERENCE_PX]) == 1
+    assert started.wait(10), "the pool never started the held load"
+    assert asset_source.prefetch_terrain_textures([other], [REFERENCE_PX]) == 1
+    assert asset_source.prefetch_terrain_textures([other], [16]) == 1
+    release.set()
+    for _gen, future in list(asset_source._pending.values()):
+        future.result(timeout=10)
+    assert [size for _name, size in order] == [REFERENCE_SIZE, asset_source.terrain_texture_size(16), REFERENCE_SIZE]
+
+
+def _resize_order(texture_install, monkeypatch, *calls) -> list[int]:
+    """Holds a load of the first file at the reference level on one_thread, makes each
+    (tile_pxs, back) prefetch call for the other file, then returns every resize's size in order."""
+    import threading
+
+    a, _b, other = texture_install
+    release, started = threading.Event(), threading.Event()
+    _blocking_loader(monkeypatch, release, started)
+    order: list[int] = []
+    real_sized = asset_source._sized_texture
+    monkeypatch.setattr(asset_source, "_sized_texture", lambda rgb, size: order.append(size) or real_sized(rgb, size))
+    assert asset_source.prefetch_terrain_textures([a], [REFERENCE_PX]) == 1
+    assert started.wait(10), "the pool never started the held load"
+    for pxs, back in calls:
+        asset_source.prefetch_terrain_textures([other], pxs, back=back)
+    release.set()
+    for _gen, future in list(asset_source._pending.values()):
+        future.result(timeout=10)
+    return order
+
+
+def test_a_re_anchor_moves_an_already_queued_level_to_the_front(texture_install, one_thread, monkeypatch) -> None:
+    """A level queued as a neighbour, then anchored on, resizes ahead of the call's new sizes;
+    the earlier job keeps the size this call did not ask for."""
+    order = _resize_order(texture_install, monkeypatch, ([32, 16], False), ([16, REFERENCE_PX], False))
+    s16, s32 = asset_source.terrain_texture_size(16), asset_source.terrain_texture_size(32)
+    assert order == [REFERENCE_SIZE, s16, REFERENCE_SIZE, s32]
+
+
+def test_a_back_prefetch_queues_behind_and_moves_nothing(texture_install, one_thread, monkeypatch) -> None:
+    """The settled load's whole ladder waits behind the level warm's loads, and a later warm
+    takes only its own sizes out of it."""
+    s16, s32, s128 = (asset_source.terrain_texture_size(px) for px in (16, 32, 128))
+    order = _resize_order(
+        texture_install, monkeypatch, ([16], False), ([128, 32, 16], True), ([32], False),
+    )
+    assert order == [REFERENCE_SIZE, s32, s16, s128]
 
 
 def test_prefetch_skips_ids_without_a_texture(texture_install, pool) -> None:
     missing = next(t for t in sorted(asset_source._terrain_texture_map()) if t not in texture_install)
-    assert asset_source.prefetch_terrain_textures([missing, 10**6]) == 0
+    assert asset_source.prefetch_terrain_textures([missing, 10**6], [REFERENCE_PX]) == 0
 
 
 def test_a_get_racing_a_pending_load_waits_for_it_instead_of_reloading(texture_install, threads, monkeypatch) -> None:
@@ -410,7 +586,7 @@ def test_a_get_racing_a_pending_load_waits_for_it_instead_of_reloading(texture_i
     perf_trace.reset()
     perf_trace.enable(True)
     try:
-        assert asset_source.prefetch_terrain_textures([other]) == 1
+        assert asset_source.prefetch_terrain_textures([other], [REFERENCE_PX]) == 1
         timer = threading.Timer(0.1, release.set)
         timer.start()
         arr = asset_source.get_terrain_texture_array(other)
@@ -426,7 +602,7 @@ def test_a_get_racing_a_pending_load_waits_for_it_instead_of_reloading(texture_i
 
 def test_a_failing_prefetch_raises_at_the_get(texture_install, pool, monkeypatch) -> None:
     _a, _b, other = texture_install
-    real = asset_source._load_texture
+    real = asset_source._decode_texture
     failures = [OSError("truncated texture")]
 
     def fails_once(path):
@@ -434,8 +610,8 @@ def test_a_failing_prefetch_raises_at_the_get(texture_install, pool, monkeypatch
             raise failures.pop()
         return real(path)
 
-    monkeypatch.setattr(asset_source, "_load_texture", fails_once)
-    asset_source.prefetch_terrain_textures([other])
+    monkeypatch.setattr(asset_source, "_decode_texture", fails_once)
+    asset_source.prefetch_terrain_textures([other], [REFERENCE_PX])
     with pytest.raises(OSError, match="truncated texture"):
         asset_source.get_terrain_texture_array(other)
     assert asset_source.get_terrain_texture_array(other) is not None, "a failed prefetch is not cached"
@@ -459,7 +635,7 @@ def _running_and_queued(texture_install, monkeypatch):
     a, _b, other = texture_install
     release, started = threading.Event(), threading.Event()
     _blocking_loader(monkeypatch, release, started)
-    assert asset_source.prefetch_terrain_textures([a, other]) == 2
+    assert asset_source.prefetch_terrain_textures([a, other], [REFERENCE_PX]) == 2
     # submit() returns before the worker picks the item up; a clear before that cancels it too.
     assert started.wait(10), "the pool never started the first load"
     running, queued = (future for _gen, future in asset_source._pending.values())
@@ -493,12 +669,38 @@ def test_clear_during_a_pending_load_discards_it(texture_install, threads, monke
     _a, _b, other = texture_install
     release, started = threading.Event(), threading.Event()
     calls = _blocking_loader(monkeypatch, release, started)
-    asset_source.prefetch_terrain_textures([other])
+    asset_source.prefetch_terrain_textures([other], [REFERENCE_PX])
     [(_gen, future)] = asset_source._pending.values()
     assert started.wait(10), "the pool never started the load"
     asset_source.clear_install_caches()
     release.set()
-    stale = future.result(timeout=10)
+    stale, _average = future.result(timeout=10)
     arr = asset_source.get_terrain_texture_array(other)
     assert arr is not stale, "a load from before the clear was served"
     assert calls[-1] == "MainThread" and len(calls) == 2, calls
+
+
+def test_a_sized_blend_mask_equals_the_red_band_of_its_rgb_resize(tmp_path) -> None:
+    """The red-band-only resize (TASK-031.26) is a render input: L and RGB mask files at the
+    finest and coarsest ladder sizes (up and down), an odd one and the file's own must match
+    resizing all of RGB and keeping red."""
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(31026)
+    mask_dir = tmp_path / "install" / asset_source.TERRAIN_MASK_SUBPATH
+    mask_dir.mkdir(parents=True)
+    Image.fromarray(rng.integers(0, 256, (512, 512), dtype=np.uint8), "L").save(mask_dir / "l.png")
+    Image.fromarray(rng.integers(0, 256, (512, 512, 3), dtype=np.uint8), "RGB").save(mask_dir / "rgb.png")
+    asset_source.set_install_path_override(tmp_path / "install")
+    try:
+        for name in ("l.png", "rgb.png"):
+            for size in (asset_source.terrain_texture_size(192), asset_source.terrain_texture_size(8), 161, 512):
+                with Image.open(mask_dir / name) as img:
+                    rgb = img.convert("RGB")
+                    want = np.array(rgb if rgb.size == (size, size) else rgb.resize((size, size)))[:, :, 0]
+                got = asset_source._sized_terrain_mask(name, size)
+                assert got is not None and got.dtype == np.uint8 and not got.flags.writeable
+                assert np.array_equal(got, want), (name, size)
+    finally:
+        asset_source.set_install_path_override(None)

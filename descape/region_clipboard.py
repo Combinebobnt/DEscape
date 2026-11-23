@@ -97,6 +97,8 @@ class RegionBlock:
     units: tuple[RegionUnit, ...]
     # GH #67: the game data active at copy time; a paste under the other game's is refused.
     dataset: str = field(default_factory=game_dataset.active)
+    # TASK-429: copied from a pre-DE .scn/.scx, whose ids differ from DE's; refused on a DE document.
+    legacy: bool = False
 
     @property
     def has_tiles(self) -> bool:

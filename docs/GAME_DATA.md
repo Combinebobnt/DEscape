@@ -28,7 +28,6 @@ data, registered in `games.GAMES`. `games.py` imports nothing from
 | `stamp_key` | none | `ror` | Its section of `tools/game_data_stamp.json` |
 | `strings_files` | `key-value-strings-utf8.txt` | `key-value-pompeii-strings-utf8.txt` | Its strings files |
 | `icon_materials` | none | `morematerials.json` | The materials file naming its own icons |
-| `texture_scales_with_level` | no | yes | A zoomed-out level shrinks terrain textures |
 | `library_enums` | yes | no | AoE2ScenarioParser's enums name its ids |
 | `data_mods` | yes | no | File > Data Mod applies |
 | `blank_template` | `blank_120x120.aoe2scenario` | `blank_ror_120x120.aoe2scenario` | New Map's donor in `descape/templates/` |
@@ -61,9 +60,8 @@ Notes on the fields:
   those headers.
 
 What reads each field outside `game_dataset`: the window title reads
-`title_tag`, the portrait lookup `icon_materials`, the terrain texture size
-`texture_scales_with_level`, File > Data Mod and the content stack
-`data_mods`, New Map `blank_template`, and the lock and `write_scenario()`
+`title_tag`, the portrait lookup `icon_materials`, File > Data Mod and the
+content stack `data_mods`, New Map `blank_template`, and the lock and `write_scenario()`
 `writable` (below). Sprites and portraits resolve along the root chain,
 and the x2 art probe and the missing-art line check the game's own root,
 so a game with its own root gets the same lookups Return of Rome does. A
@@ -103,6 +101,13 @@ writable, so a batch script is refused as well, and the rule is enforced
 rather than only shown. It does not reach the tools that write scenario
 bytes themselves (`strip_units` and the template generators); the first
 view-only game's own work covers those. Both games today are writable.
+
+A pre-DE format (`scenario_format`, `LoadedScenario.source_format.legacy`)
+is a second lock, at the format level, beside `writable`: the window's
+`game_data_lock_reason()` returns its reason first, whatever data shows the
+file. `scenario_write.refuse_legacy()` enforces it in `write_scenario()`,
+`build_patched_body()` and `build_patched()`, and it does reach the
+byte-writing tools: `strip_units` and `gen_blank_template` call it.
 
 ## Ids are persisted
 
@@ -186,7 +191,7 @@ or terrain id points at, not the files.
 | Caches | Keyed on | Dropped by |
 |---|---|---|
 | A `game_dataset.cache()` loader | the stack's `tables_key`, one cache per key | only by a clear listed for it below; a loader no row names keeps every key's cache, so switching back re-reads nothing (a data mod's side files) |
-| Tables other modules imported by name (`terrain_units`, `terrain_blend`, `terrain_palette`, `player_fields`) | the active tables | refilled in place by the `on_switch()` hooks, after the stack swap and the clear |
+| Tables other modules imported by name (`terrain_units`, `terrain_blend`, `terrain_palette`, `player_fields`) | the active tables | refilled in place by the `on_switch()` hooks, after the stack swap and the clear; a hook that raises puts the old stack back and runs the clear and every hook again for it |
 | Strings, the data mod's string sets, `object_catalog`'s catalogs and names | language or id, per `tables_key` | every clear |
 | `has_own_strings()` | install, game and language | every clear |
 | A terrain id's texture path and average colour, blended terrain blocks | terrain id | every clear |

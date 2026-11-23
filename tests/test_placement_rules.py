@@ -14,7 +14,7 @@ import random
 
 import pytest
 
-from descape import asset_source, object_catalog, placement_rules
+from descape import asset_source, game_dataset, object_catalog, placement_rules
 from descape.terrain_palette import BUILDING_TILE_SPANS, DOODAD_TILE_SPANS, FOUNDATION_TERRAIN
 from testkit.fakes import FakeScenario, SyntheticTile, SyntheticUnit
 
@@ -154,6 +154,17 @@ def test_a_garrisoned_bridge_and_a_const_without_a_foundation_lay_nothing() -> N
     assert placement_rules.laid_terrain(garrisoned) == {}
     walls = _scenario([[_unit(STONE_WALL, 9.5, 10.5), _unit(VILLAGER, 9.5, 10.5)]], fill=WATER_SHALLOW)
     assert placement_rules.laid_terrain(walls) == {}
+
+
+def test_the_laid_terrain_memo_rebuilds_on_a_dataset_switch(monkeypatch) -> None:
+    """A data mod refills FOUNDATION_TERRAIN in place with no unit edit; the generation bump must drop the memo."""
+    scenario = _scenario([[_unit(BRIDGE_MIDDLE, 10, 10.5)]], fill=WATER_SHALLOW)
+    scenario.unit_gen = 0
+    assert placement_rules._memoized_laid_terrain(scenario) == {tile: frozenset({28}) for tile in BRIDGE_TILES}
+    monkeypatch.setitem(FOUNDATION_TERRAIN, BRIDGE_MIDDLE, BEACH)
+    assert placement_rules._memoized_laid_terrain(scenario)[(9, 9)] == frozenset({28}), "no switch, no rebuild"
+    monkeypatch.setattr(game_dataset, "_generation", game_dataset.generation() + 1)
+    assert placement_rules._memoized_laid_terrain(scenario) == {tile: frozenset({BEACH}) for tile in BRIDGE_TILES}
 
 
 def test_a_moved_bridge_lays_its_deck_where_it_lands_and_a_group_without_one_keeps_the_memo() -> None:

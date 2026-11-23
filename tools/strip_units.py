@@ -39,8 +39,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from descape import scenario_format
 from descape.scenario_io import LoadedScenario, is_workshop_subscribed, load_map_and_units
-from descape.scenario_write import WriteBlockedError, _compress_bytes
+from descape.scenario_write import WriteBlockedError, _compress_bytes, refuse_legacy
 
 
 class StripVerificationError(Exception):
@@ -53,6 +54,7 @@ def strip_units(scenario: LoadedScenario) -> bytes:
     next_unit_id_to_place zeroed. Raises StripVerificationError instead of
     silently patching the wrong bytes if the file's units block wasn't
     verified at load time (see scenario_io._verify_units_block)."""
+    refuse_legacy(scenario)
     if not scenario.units_write_supported:
         raise StripVerificationError(
             f"{scenario.path}: units block failed load-time verification -- "
@@ -96,6 +98,7 @@ def main() -> None:
     for path in args.scenarios:
         if is_workshop_subscribed(path):
             raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {path}")
+        refuse_legacy(scenario_format.detect_format(path.read_bytes()))
     _self_test(args.golden)
     print(f"Self-test passed against {args.golden}")
 

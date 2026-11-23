@@ -74,7 +74,7 @@ def test_terrain_takes_its_palette_colour_without_an_install(no_install) -> None
 
 def test_a_loaded_texture_gives_its_average_colour(monkeypatch) -> None:
     monkeypatch.setattr(asset_source, "get_terrain_texture_path", lambda tid: _FAKE_TEXTURE if tid == 1 else None)
-    monkeypatch.setattr(asset_source, "_loaded", {_FAKE_TEXTURE})
+    monkeypatch.setattr(asset_source, "_averages", {_FAKE_TEXTURE: (9, 9, 9)})
     monkeypatch.setattr(asset_source, "get_terrain_average_color", lambda tid: (1, 2, 3))
     rgb, used_fallback = minimap.minimap_rgb(_scenario(), UnitFilter())
     assert tuple(rgb[0, 1]) == (1, 2, 3)
@@ -84,7 +84,7 @@ def test_a_loaded_texture_gives_its_average_colour(monkeypatch) -> None:
 
 def test_an_undecoded_texture_draws_its_palette_colour_and_says_so(monkeypatch) -> None:
     monkeypatch.setattr(asset_source, "get_terrain_texture_path", lambda tid: _FAKE_TEXTURE if tid == 1 else None)
-    monkeypatch.setattr(asset_source, "_loaded", set())
+    monkeypatch.setattr(asset_source, "_averages", {})
 
     def refuse(_tid):
         raise AssertionError("the minimap decoded a texture")

@@ -221,10 +221,12 @@ def _sprite_layer(style: str, scn):
 
 
 @contextmanager
-def _slicing(sliced: bool):
-    """True leaves render_sprites.SPRITE_COLUMN_SLICING as it stands, so flipping it is a revert check."""
+def _slicing(sliced: bool, ordered: bool = True):
+    """True leaves render_sprites.SPRITE_COLUMN_SLICING (and SUBTILE_SPRITE_ORDER) as it
+    stands, so flipping either is a revert check."""
     with pytest.MonkeyPatch.context() as mp:
         set_render_global(mp, "SPRITE_COLUMN_SLICING", render_global("SPRITE_COLUMN_SLICING") and sliced)
+        set_render_global(mp, "SUBTILE_SPRITE_ORDER", render_global("SUBTILE_SPRITE_ORDER") and ordered)
         yield
 
 
@@ -232,17 +234,18 @@ def _slicing(sliced: bool):
 @functools.lru_cache(maxsize=48)
 def _render(
     style: str, placed: tuple, patch: tuple | None = None, terrain_id: int = GROUND_TERRAIN,
-    art: tuple | None = None, sliced: bool = True,
+    art: tuple | None = None, sliced: bool = True, ordered: bool = True,
 ) -> np.ndarray:
     """One style's composite over _box(style). `placed` is ((const, x, y), ...)
     in list order; `patch` is ("keep", const, indices) or ("no-slots", const);
     `art` is PLAYER's building art (see _scenario); `sliced=False` is the
-    single-anchor render from before TASK-221 (render_sprites.SPRITE_COLUMN_SLICING)."""
+    single-anchor render from before TASK-221 (render_sprites.SPRITE_COLUMN_SLICING),
+    `ordered=False` the list-order merge from before TASK-016 (SUBTILE_SPRITE_ORDER)."""
     const, transform = _transform(patch)
     scn = _scenario(placed, terrain_id, art)
     mm = scn.map_manager
     box = _box(style)
-    with _patched(const, transform, art), _slicing(sliced):
+    with _patched(const, transform, art), _slicing(sliced, ordered):
         if style == "flat":
             draws = render_flat._flat_unit_draws(scn, TILE_PX)
             icons, _rows = render_flat._flat_icon_layer(scn, TILE_PX)
@@ -335,9 +338,11 @@ def _piece_ink(style: str, const: int, keep: frozenset[int], art: tuple | None =
 @functools.lru_cache(maxsize=16)
 def _oracle(
     style: str, const: int, unit: tuple, unit_first: bool, inject: str | None = None, art: tuple | None = None,
+    ordered: bool = True,
 ):
     """(front, back, bad_front, bad_back, front_ink) for one unit beside one building.
-    Pieces sharing the unit's slot tile are in neither set: list order decides those."""
+    Pieces sharing the unit's slot tile are in neither set: they sort against it
+    by sub-tile depth, which the edge-piece test below checks."""
     building = (const, CENTRE, CENTRE)
     placed = (unit, building) if unit_first else (building, unit)
     patch = None if inject is None else (inject, const)
@@ -348,7 +353,7 @@ def _oracle(
     tie_ids = frozenset(i for i, k in enumerate(keys) if k == unit_key)
 
     b_img, u_img = _render(style, (building,), art=art), _render(style, (unit,))
-    bu_img = _render(style, placed, patch, art=art)
+    bu_img = _render(style, placed, patch, art=art, ordered=ordered)
     unit_mask = _unit_mask(style, unit)
     front_ink = _piece_ink(style, const, front_ids, art)
     tie_ink = _piece_ink(style, const, tie_ids, art)
@@ -449,9 +454,6 @@ def test_the_no_slots_inject_breaks_the_town_centre_oracle():
 
 # Corner name -> (sign of the post's mx, sign of its my).
 CORNERS = {"back": (1, -1), "right": (1, 1), "left": (-1, -1), "front": (-1, 1)}
-# A unit sharing a post's slot tile sorts by list order, not by where it stands.
-_TIE_BY_LIST_ORDER = "a unit on a corner post's own slot tile sorts by list order, not depth"
-_KNOWN_TIE_FAILURES = {("back", "inside", "unit-first"), ("front", "inside", "pasture-first")}
 
 
 def _post(corner: str) -> tuple[int, dict]:
@@ -488,12 +490,7 @@ def _corner_cases():
         for corner in CORNERS:
             for side in ("inside", "outside"):
                 for order in ("unit-first", "pasture-first"):
-                    marks = (
-                        [pytest.mark.xfail(strict=True, reason=_TIE_BY_LIST_ORDER)]
-                        if (corner, side, order) in _KNOWN_TIE_FAILURES
-                        else []
-                    )
-                    yield pytest.param(style, corner, side, order, marks=marks, id=f"{style}-{corner}-{side}-{order}")
+                    yield pytest.param(style, corner, side, order, id=f"{style}-{corner}-{side}-{order}")
 
 
 def _post_check(style: str, corner: str, side: str, unit_first: bool, inject: str | None = None):
@@ -509,7 +506,7 @@ def _post_check(style: str, corner: str, side: str, unit_first: bool, inject: st
     overlap = _unit_mask(style, unit) & _eroded(_piece_ink(style, PASTURE, frozenset({index})))
     if _post_in_front(corner, unit):
         return overlap, overlap & _changed(bu_img, b_img)
-    # Other pieces on the post's own slot tile also sort by list order; leave them out.
+    # Other pieces on the post's own slot tile sort by their own edge or depth; the edge-piece test checks those.
     slots = _slot_tiles(PASTURE)
     others = frozenset(i for i, t in enumerate(slots) if t == slots[index] and i != index)
     front_ink = _oracle(style, PASTURE, unit, unit_first)[4]
@@ -533,10 +530,75 @@ def test_a_unit_at_a_pasture_corner_sorts_against_that_corner_post(style, corner
     assert not wrong.any(), f"{int(wrong.sum())} of {int(overlap.sum())} px sort the wrong way against the post"
 
 
+def _edge(piece: dict, span: int = 4) -> str | None:
+    """"back" for a piece on the footprint's back edge only (my = -span/2 or
+    mx = +span/2), "front" on its front edge only, None otherwise: a unit
+    inside the footprint is in front of the one and behind the other."""
+    half = span / 2
+    back = np.isclose(piece["my"], -half) or np.isclose(piece["mx"], half)
+    front = np.isclose(piece["mx"], -half) or np.isclose(piece["my"], half)
+    return None if back == front else ("back" if back else "front")
+
+
+def _edge_check(style: str, corner: str, unit_first: bool, ordered: bool = True):
+    """(back, front, bad_back, bad_front) inside the unit's own two columns,
+    for the unit just inside `corner` against the edge pieces on its own tile:
+    BU must equal U over a back-edge piece, except where a piece painting after
+    the unit covers it, and B over a front-edge piece."""
+    unit = _corner_unit(corner, "inside")
+    tile = _unit_tile(*unit)
+    pieces = unit_sprites.graphic_map()[PASTURE]["pieces"]
+    slots = _slot_tiles(PASTURE)
+    on_tile = [i for i, t in enumerate(slots) if t == tile]
+    edge_ids = {kind: frozenset(i for i in on_tile if _edge(pieces[i]) == kind) for kind in ("back", "front")}
+    _const, ux, uy = unit
+    nearer = {i for i in on_tile if _edge(pieces[i]) is None and pieces[i]["my"] - pieces[i]["mx"] > uy - ux}
+    later = {i for i, t in enumerate(slots) if _depth_key(t) > _depth_key(tile)}
+    after_ink = _piece_ink(style, PASTURE, frozenset(later | nearer | edge_ids["front"]))
+    building = (PASTURE, CENTRE, CENTRE)
+    placed = (unit, building) if unit_first else (building, unit)
+    b_img, u_img = _render(style, (building,)), _render(style, (unit,))
+    bu_img = _render(style, placed, ordered=ordered)
+    mask = _unit_mask(style, unit) & _own_columns(style, tile)
+    back = mask & _eroded(_piece_ink(style, PASTURE, edge_ids["back"])) & ~after_ink
+    front = mask & _eroded(_piece_ink(style, PASTURE, edge_ids["front"]))
+    return back, front, back & _changed(bu_img, u_img), front & _changed(bu_img, b_img)
+
+
+@pytest.mark.parametrize("unit_first", [True, False], ids=["unit-first", "pasture-first"])
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_a_unit_inside_a_pasture_corner_sorts_against_the_edge_pieces_on_its_tile(style, unit_first):
+    """TASK-016: a unit on a corner's slot tile stands inside the footprint, so
+    the back-edge fences and posts there paint under it and the front-edge ones
+    over it, in either list order (render_sprites._sprite_order())."""
+    _require_install()
+    for corner in CORNERS:
+        back, front, bad_back, bad_front = _edge_check(style, corner, unit_first)
+        if corner == "back":
+            assert back.any(), "the unit inside the back corner overlaps no back-edge piece"
+        if corner == "front":
+            assert front.any(), "the unit inside the front corner overlaps no front-edge piece"
+        assert not bad_back.any(), f"{corner}: {int(bad_back.sum())} of {int(back.sum())} px under a back-edge piece"
+        assert not bad_front.any(), f"{corner}: {int(bad_front.sum())} of {int(front.sum())} px over a front-edge piece"
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_list_order_breaks_the_edge_piece_oracle(style):
+    """The control: with SUBTILE_SPRITE_ORDER off, the pieces on the unit's
+    tile stack by list order, so the back corner's edge pieces cover a unit
+    listed first and the unit covers the front corner's listed after them."""
+    _require_install()
+    assert _edge_check(style, "back", True, ordered=False)[2].any(), "list order left the back corner green"
+    assert _edge_check(style, "front", False, ordered=False)[3].any(), "list order left the front corner green"
+
+
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_the_no_slots_inject_breaks_the_pasture_oracle(style):
     """The control. Under no-slots every piece paints on the footprint's last
-    tile, so the back post and the pieces behind an inside unit move over it."""
+    tile, so the back post and the pieces behind an inside unit move over it.
+    The front corner no longer breaks (TASK-016): with no slot the edge rule is
+    off, and the post's point depth (4) still sorts after the inside unit (3.8).
+    Measured 2026-11-19: back inside and right outside, both list orders."""
     _require_install()
     broken = []
     for corner in CORNERS:
@@ -549,7 +611,7 @@ def test_the_no_slots_inject_breaks_the_pasture_oracle(style):
                 if bad_front.any() or bad_back.any() or wrong.any():
                     broken.append((corner, side, unit_first))
     assert ("back", "inside", False) in broken, f"the no-slots inject broke only {broken}"
-    assert ("front", "inside", True) in broken, f"the no-slots inject broke only {broken}"
+    assert ("right", "outside", True) in broken, f"the no-slots inject broke only {broken}"
 
 
 def test_flat_draws_the_pasture_and_every_corner_unit():

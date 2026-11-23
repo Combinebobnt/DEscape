@@ -3,6 +3,7 @@ prefetch, _render_current and refresh_map."""
 
 from __future__ import annotations
 
+import functools
 import math
 import time
 
@@ -400,8 +401,7 @@ class _ViewerRenderMixin:
             )
             if moved is None:
                 return False
-            if self._layers.terrain_textures:
-                asset_source.prefetch_terrain_textures(self._texture_prefetch_ids())
+            self._prefetch_textures([self._cache.mip_tile_px(m) for m in self._cache.resident_levels()])
             self.map_view.invalidate_region((0, 0, *self._cache.canvas_dims(0)))
             if moved:
                 self.map_view.refresh_elevation_overlays()
@@ -628,10 +628,13 @@ class _ViewerRenderMixin:
         TASK-031.82 D6). The neighbours are warmed through _maybe_refine(),
         which calls this again once the level has settled. The anchor itself
         is otherwise only derived and primed, last (pack_only; see
-        level_warm.neighbour_mips_of())."""
+        level_warm.neighbour_mips_of()).
+
+        And a no-op inside a first trigger parse (_first_parse_running,
+        TASK-668), which re-arms after it through a fresh viewport poll."""
         if self._cache is None or not settings.get_preload_zoom_levels():
             return
-        if self._unit_flush_owed():
+        if self._first_parse_running or self._unit_flush_owed():
             return
         fit = self.map_view._fit_baseline_scale()
         if fit is None:
@@ -648,6 +651,10 @@ class _ViewerRenderMixin:
             anchor = self._cache.mip_for_scale(fit * self.map_view.devicePixelRatioF())
         mips = level_warm.neighbour_mips_of(self._cache, anchor)
         self._warm_set = list(mips)
+        # GH #326: each level crops its own texture size, so the levels about to build load theirs on the pool.
+        if self._layers.terrain_textures:
+            tile_pxs = [self._cache.mip_tile_px(m) for m in (anchor, *mips)]
+            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs)
         if self._pending_level() == anchor:
             # D6: the level a placeholder waits on warms first and alone; refine re-arms the rest.
             mips, pack_only = [anchor], ()
@@ -870,9 +877,11 @@ class _ViewerRenderMixin:
             self._start_reach()
             return
         mip, chunks = self._load_warm_queue.pop(0)
-        # The pending level's entry defers too while input is live (TASK-031.82 D3), up to its cap (D7).
+        # The pending level's entry defers too while input is live (TASK-031.82 D3), capped (D7)
+        # only while the level stays pending: the warmer asks again each deferring tick.
         self._load_warmer.start(
-            self._cache, mip, chunks, on_drained=self._pump_load_warm, defer_until=self._pending_defer_until(mip),
+            self._cache, mip, chunks, on_drained=self._pump_load_warm,
+            defer_deadline=functools.partial(self._pending_defer_until, mip),
         )
 
     def _pending_defer_until(self, mip: int) -> float | None:
@@ -1061,8 +1070,9 @@ class _ViewerRenderMixin:
             self._on_viewport_changed_traced()
 
     def _on_viewport_changed_traced(self) -> None:
-        """_on_viewport_changed's body, under its perf phase."""
-        if self._cache is None or not settings.get_preload_zoom_levels():
+        """_on_viewport_changed's body, under its perf phase. Ignores a fire
+        inside a first trigger parse without recording it (TASK-668)."""
+        if self._first_parse_running or self._cache is None or not settings.get_preload_zoom_levels():
             return
         target = self.map_view.viewport_chunk_target()
         if target is None:
@@ -1156,6 +1166,25 @@ class _ViewerRenderMixin:
             f"First paint composited in {report['paint']:.2f}s "
             f"(total {total:.2f}s, mip {report['mip']}{counted})"
         )
+        self._prefetch_ladder_textures()
+
+    def _prefetch_ladder_textures(self) -> None:
+        """Once a load's painting settles, every ladder level's textures queue
+        behind the level warm's, so a first visit to the finest levels finds
+        them loaded (GH #326: ~360 ms of 1920 px resizes otherwise). Only
+        while zoom levels preload, as the level warm itself."""
+        if self._cache is None or not self._layers.terrain_textures or not settings.get_preload_zoom_levels():
+            return
+        tile_pxs = [self._cache.mip_tile_px(m) for m in self._cache.mip_levels()]
+        asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs, back=True)
+
+    def _prefetch_textures(self, tile_pxs) -> None:
+        """Prefetches this map's textures (_texture_prefetch_ids()) at each
+        level in tile_pxs, and keeps the ids for _start_level_warm(). Nothing
+        with Terrain Textures off."""
+        if self._layers.terrain_textures:
+            self._texture_ids = self._texture_prefetch_ids()
+            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs)
 
     def _texture_prefetch_ids(self) -> list[int]:
         """The terrain ids a render of self.scenario textures: every tile's,
@@ -1261,12 +1290,11 @@ class _ViewerRenderMixin:
             # installs is unconditional for the same reason: it no-ops
             # unless load_scenario() left a report pending.
             perf_trace.arm("load" if reset_view else "re-render")
-            # Loads the map's textures on a pool while the first paint's level
-            # builds; files already cached are skipped, so a re-render pays a scan.
-            if self._layers.terrain_textures:
-                asset_source.prefetch_terrain_textures(self._texture_prefetch_ids())
             mm = self.scenario.map_manager
             tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+            # Loads the map's textures for the reference level on a pool while the first paint's
+            # level builds; loads already cached are skipped, so a re-render pays a scan.
+            self._prefetch_textures([tile_px])
             # Before set_source(): the new item's first paint can fire inside it.
             self._refresh_colour_mood_preview()
             if self._render_style == "stepped":

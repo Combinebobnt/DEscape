@@ -579,10 +579,12 @@ _SCATTER_TIP = (
 )
 
 
-def _gaia_only_refused_note(count: int) -> str:
+def _gaia_only_refused_note(count: int, held: int = 0) -> str:
     """GH #32's owner-change note: how many GAIA-only objects (or hosts holding
-    one) were left with their owner, or "" for none."""
-    return f"; {count} object(s) left as they were (GAIA-only or holding one)" if count else ""
+    one) were left with their owner, and how many occupants stayed inside such
+    a host (TASK-474), or "" for none."""
+    note = f"; {count} object(s) left as they were (GAIA-only or holding one)" if count else ""
+    return note + (f"; {held} garrisoned object(s) kept with their host" if held else "")
 
 
 # Sourced from iso_geometry, not redefined here, so Set Elevation's spinbox

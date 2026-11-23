@@ -154,11 +154,8 @@ def test_the_descriptors_agree_with_the_paths_and_behaviour_they_drive():
     assert scenario_io.TEMPLATE_DIR / games.ROR.blank_template == scenario_io.BLANK_ROR_TEMPLATE_PATH
     mod = game_dataset.DataModTables("test-games", game_dataset.TABLES_DIR, game_dataset.TABLES_DIR, "a mod")
     game_dataset.set_data_mod(mod)
-    zoomed_out = asset_source.TEXTURE_REFERENCE_TILE_PIXELS // 2
     for game in games.GAMES:
         game_dataset.set_active(game.id)
-        shrinks = asset_source.terrain_texture_size(zoomed_out) != asset_source.LOADED_TEXTURE_SIZE
-        assert shrinks == game.texture_scales_with_level, game.id
         assert (game_dataset.data_mod() is mod) == game.data_mods, game.id
 
 

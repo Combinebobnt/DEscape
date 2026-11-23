@@ -45,6 +45,8 @@ _EXPECTED_VERSIONS = [
 # Every version descape/versions/DE/ supplies a structure for. Fixed for the
 # same reason as the list above.
 _REPO_VERSIONS = ["1.21"]
+# Every pre-DE data version descape/versions/legacy/ supplies a structure for.
+_LEGACY_VERSIONS = ["1.20", "1.22", "1.26"]
 
 
 def _self_check() -> int:
@@ -134,6 +136,11 @@ def _self_check() -> int:
             failures.append(f"repo structure for scenario {version} is missing")
         else:
             print(f"OK  repo structure for scenario {version}")
+    for version in _LEGACY_VERSIONS:
+        if library_compat.legacy_structure_path(version) is None:
+            failures.append(f"legacy structure for data version {version} is missing")
+        else:
+            print(f"OK  legacy structure for data version {version}")
 
     for version in _EXPECTED_VERSIONS:
         if not library_compat.vocabulary_is_available(version):

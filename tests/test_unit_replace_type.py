@@ -124,6 +124,8 @@ def test_rotation_table() -> None:
     # Cyclable in range: verbatim; out of range: 0/0.
     assert replaced_rotation(_OAK, _PINE, 7.0, 7) == (7.0, 7)
     assert replaced_rotation(_OAK, _GOLD_MINE, 41.0, 41) == (0.0, 0)
+    # Into a type 10 const the frame becomes the variant: Port 446 (type 80, frame 0) -> oak.
+    assert replaced_rotation(446, _OAK, 5.0, 0) == (5.0, 5)
     # Wall -> wall keeps the index, radian-encoded or not.
     assert replaced_rotation(_STONE_WALL, _PALISADE_WALL, 2.5132741928100586, 0) == (2.5132741928100586, 0)
     # INERT -> INERT keeps the 7.0 sentinel.

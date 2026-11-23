@@ -33,8 +33,8 @@ off their tile centre on 6/21 (player) and 7/21 (GAIA), both INFO.
 Decorations, trees, fish and cliffs are left out on purpose.
 
 A GAIA-only object (unit_kind.gaia_only_consts(), the set Place Unit gives
-to GAIA and no owner change gives to a player: resources, trees and the
-Gunpowder Keg, plus what each game's editor lists only for GAIA, GH #32:
+to GAIA and no owner change gives to a player: resources, trees, Ruins and
+the Gunpowder Keg, plus what each game's editor lists only for GAIA, GH #32:
 wild animals and birds, Dummy Target, and the Others outside its player
 list) in a player's list fires on 0/21 examples/ files (measured before
 GH #32 widened the set; 3 other AoE2 files have none of the wider set
@@ -62,7 +62,8 @@ won't show or that takes another one away, one finding per effect with the
 worst reason first: the unit, tech or building is not available to the
 player's civ (civ_availability, which the game's behaviour matched on
 2026-10-16) or is in its Disables list (a building placed on the map, or one a Create
-Object or Replace Object effect makes, counts as available), a lower-id
+Object or Replace Object effect makes, counts as available for every player,
+even when that trigger is disabled and nothing activates it), a lower-id
 unit the civ has hides it,
 a unit covers a tech in the slot or a tech lands under a unit (measured: a
 unit put on Barracks button 6 left Long Swordsman unresearchable, and
@@ -105,7 +106,7 @@ from descape.render_units import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_kind import gaia_only_consts, invisible_consts, mobile_unit_consts
-from descape.unit_references import all_units, build_reference_index, references_in
+from descape.unit_references import all_units, build_reference_index, trigger_references
 
 Severity = Literal["error", "warning", "info"]
 
@@ -478,28 +479,18 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
         return CheckResult(label, unavailable="no trigger vocabulary for this scenario version")
     vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
     index = build_reference_index(loaded)
-    kinds = (
-        ("condition", "conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
-        ("effect", "effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
-    )
     findings = []
-    for trigger in manager.triggers:
-        for kind, list_name, type_attribute, entries, presentation in kinds:
-            for ce in getattr(trigger, list_name):
-                definition = entries.get(_read(ce, type_attribute))
-                if definition is None:
-                    continue
-                for attribute, refs in references_in(ce, definition, presentation).items():
-                    for ref in refs:
-                        if ref in index.by_id:
-                            continue
-                        findings.append(
-                            Finding(
-                                f"{_trigger_label(trigger)}: {definition.name} {kind} "
-                                f"{attribute} refers to unit id {ref}, which is not placed on the map",
-                                "warning",
-                            )
-                        )
+    for trigger, kind, definition, attribute, refs in trigger_references(manager.triggers, vocabulary):
+        for ref in refs:
+            if ref in index.by_id:
+                continue
+            findings.append(
+                Finding(
+                    f"{_trigger_label(trigger)}: {definition.name} {kind} "
+                    f"{attribute} refers to unit id {ref}, which is not placed on the map",
+                    "warning",
+                )
+            )
     return _capped(label, findings)
 
 

@@ -135,6 +135,42 @@ def test_a_switch_names_its_layers_to_the_clear_then_runs_the_hooks_on_the_new_s
     ], "the new stack is in place before the clear, and the hooks run after it"
 
 
+def test_a_raising_hook_restores_the_old_stack_and_reruns_every_hook_on_it(monkeypatch):
+    """#242: a hook that raises mid-switch must not leave the new stack in
+    place with half the tables refilled for it."""
+    from descape import asset_source
+
+    events = []
+    fail_on = {game_dataset.ROR, game_dataset.AOE2}
+
+    def failing() -> None:
+        events.append(("failing", game_dataset.active()))
+        if game_dataset.active() in fail_on:
+            raise RuntimeError(f"hook failed under {game_dataset.active()}")
+
+    monkeypatch.setattr(game_dataset, "_switch_hooks", [failing, lambda: events.append(("after", game_dataset.active()))])
+    monkeypatch.setattr(asset_source, "clear_install_caches", lambda changed=None: events.append(("clear", game_dataset.active())))
+    start = game_dataset.generation()
+    with pytest.raises(RuntimeError, match="under ror") as raised:
+        game_dataset.set_active(game_dataset.ROR)
+    assert game_dataset.active() == game_dataset.AOE2 and game_dataset.cache_key() == game_dataset.AOE2
+    assert events == [
+        ("clear", game_dataset.ROR), ("failing", game_dataset.ROR),
+        ("clear", game_dataset.AOE2), ("failing", game_dataset.AOE2), ("after", game_dataset.AOE2),
+    ], "the restore clears again and runs every hook, past one that raises again"
+    assert any("restoring aoe2 also failed" in note for note in raised.value.__notes__)
+    assert game_dataset.generation() == start + 2, "caches keyed on generation drop what the failed switch filled"
+
+    events.clear()
+    fail_on = {game_dataset.ROR}
+    with pytest.raises(RuntimeError, match="under ror") as raised:
+        game_dataset.set_active(game_dataset.ROR)
+    assert not getattr(raised.value, "__notes__", None)
+    assert events[-1] == ("after", game_dataset.AOE2)
+    fail_on = set()
+    assert game_dataset.set_active(game_dataset.ROR) is True, "the next switch is a real one"
+
+
 def test_strings_merge_bottom_up_along_the_chain_then_the_data_mod(tmp_path, monkeypatch):
     """Return of Rome takes no data mod, so a fake game with a fallback that does shows all three layers."""
     from descape import asset_source, games

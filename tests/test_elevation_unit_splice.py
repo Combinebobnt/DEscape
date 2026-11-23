@@ -160,7 +160,7 @@ def _source_state(cache, mip: int = 0):
     lvl = cache._level(mip)
     bboxes, sprites, grid = lvl.building_bboxes, lvl.sprites, lvl.bystander_grid
     layer = None if sprites is None else (
-        {k: [(id(d), px, py, rise) for d, px, py, rise in v] for k, v in sprites.by_anchor.items()},
+        {k: [(id(d), px, py, rise, o) for d, px, py, rise, o in v] for k, v in sprites.by_anchor.items()},
         dict(sprites.bboxes), sprites.skip_ids, dict(sprites.farm_by_tile),
     )
     return dict(bboxes), layer, grid_state(grid)
@@ -409,6 +409,32 @@ def test_a_shared_own_tile_splices(style, sprites, owners, shared_art_install, m
     # Sprites off, a centred 1x1 unit holds no source key at all.
     assert _source_state(cache) != before or not sprites, "the raise moved nothing, so this proves nothing"
     _assert_spliced(style, cache, scenario, sprites, counts)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_a_shared_tile_re_anchors_into_sub_tile_depth_order(style, shared_art_install, monkeypatch):  # noqa: F811
+    """TASK-016: two units on UNIT_TILE listed against their depth order. Sloped
+    raises the one neighbour that moves only the tile's (x+1, y+1) corner, so
+    their rises change by different amounts; the splice rebuilds the tile in
+    depth order, exactly as a fresh cache does."""
+    scenario = _scenario()
+    x, y = UNIT_TILE
+    near = _place(scenario, 1, SPRITE_CONST, x + 0.1, y + 0.6)
+    far = _place(scenario, 2, SPRITE_CONST, x + 0.8, y + 0.7)
+    cache = _make_cache(style, scenario, sprites=True)
+    rises = [e[3] for e in _source_state(cache)[1][0][UNIT_TILE]]
+    calls = _splice_calls(monkeypatch)
+    counts = _call_counts(monkeypatch)
+
+    _raise(style, cache, scenario, [UNIT_TILE if style == "stepped" else (x + 1, y + 1)])
+
+    assert _component(calls) == _ids(near, far)
+    entries = _source_state(cache)[1][0][UNIT_TILE]
+    orders = [e[4] for e in entries]
+    assert orders == sorted(orders) == [far.y - far.x, near.y - near.x], "the tile is not in depth order"
+    moved = [e[3] - before for e, before in zip(entries, rises, strict=True)]
+    assert any(moved) and (style == "stepped" or moved[0] != moved[1]), f"rises moved by {moved}"
+    _assert_spliced(style, cache, scenario, True, counts)
 
 
 @pytest.mark.parametrize("raised", ["mill", "decoration"])

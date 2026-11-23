@@ -233,9 +233,9 @@ class _MapViewHighlightMixin:
         before a projection snapshot (and, for Sloped, a cache) exists
         (shouldn't happen once an image is loaded -- defensive only).
 
-        coarse (draw-perf plan item 3): Sloped only, and only for
-        _update_highlight's brush footprint -- selects sloped_tile_outline_
-        coarse() instead of the exact staircase. Every other caller (Pan's
+        coarse (draw-perf plan item 3, GH #306): Sloped only, and only for
+        _set_highlight_tiles' edit highlight -- selects sloped_tile_outline_
+        coarse()'s 4-point corner quad instead of the exact staircase. Every other caller (Pan's
         static outline, ruler) leaves this False and must keep getting the
         pixel-exact outline. Region select no longer calls this: its fill is
         its ring (_rect_ring_path), which is pinned element for element to
@@ -284,7 +284,8 @@ class _MapViewHighlightMixin:
         Sloped this brush footprint was measured at 5.6ms at brush size 9,
         almost entirely _tile_polygon's per-column exact staircase times up
         to 81 tiles. Each shape's polygon is now cached (TASK-031.38), ~0.2ms
-        here; coarse still halves the path the pulse repaints. The
+        here; coarse is a 4-point straight-edged quad per tile (GH #306),
+        no staircase for zoom to magnify. The
         approximate outline is fine here since this path only ever feeds
         display, never a pick -- unlike _update_pan_highlight below, which
         stays exact."""

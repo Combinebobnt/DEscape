@@ -171,17 +171,19 @@ def snapped_anchor(
 
     Per axis, on the game's grid and centred on the cursor: an odd span sits
     at `tile + 0.5`; an even span at the whole number nearest the cursor,
-    `floor(point + 0.5)` (a tie rounds up), or `tile + 1` with no point. An
-    even anchor is clamped to `[span/2, size - span/2]`, so it stays whole and
-    the whole footprint stays on the map, as a group move keeps it.
+    `floor(point + 0.5)` (a tie rounds up), or `tile + 1` with no point.
+    Either parity is clamped to `[span/2, size - span/2]`, so the anchor stays
+    on the grid (whole for an even span, a half for an odd one) and the whole
+    footprint stays on the map, as a group move keeps it: a 3x3 on tile 0
+    lands at 1.5 (GH #152). A span of 1 never moves.
     """
     out = []
     for i, size in enumerate((map_w, map_h)):
         if span[i] % 2:
-            out.append(tile[i] + 0.5)
-            continue
-        anchor = tile[i] + 1 if point is None else math.floor(point[i] + 0.5)
-        half = span[i] // 2
+            anchor = tile[i] + 0.5
+        else:
+            anchor = tile[i] + 1 if point is None else math.floor(point[i] + 0.5)
+        half = span[i] / 2
         out.append(float(max(half, min(anchor, size - half))))
     return out[0], out[1]
 

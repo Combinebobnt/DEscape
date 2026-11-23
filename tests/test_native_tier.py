@@ -111,7 +111,7 @@ def test_mip_for_scale_decision_table() -> None:
         assert pow2.mip_for_scale(float(s)) == want, s
 
 
-def _texture(size: int = asset_source.LOADED_TEXTURE_SIZE, channels: int = 3) -> np.ndarray:
+def _texture(size: int = 512, channels: int = 3) -> np.ndarray:
     rng = np.random.default_rng(599)
     shape = (size, size, channels) if channels else (size, size)
     return rng.integers(0, 256, shape, dtype=np.uint8)
@@ -147,32 +147,17 @@ def test_crop_source_pads_only_where_tile_px_does_not_divide() -> None:
     assert asset_source.crop_source(other, NATIVE)[0, 0, 0] == other[0, 0, 0], "a cache hit across arrays"
 
 
-def test_padded_copies_live_only_while_a_native_tier_cache_does(monkeypatch) -> None:
+def test_a_padded_copy_lives_as_long_as_its_source(monkeypatch) -> None:
     import gc
 
-    gc.collect()  # a finalizer from an earlier test's cache must not fire mid-test
-    monkeypatch.setattr(asset_source, "_wrap_holders", 0)
     monkeypatch.setattr(asset_source, "_wrap_padded", {})
-
-    class _Cache:
-        _init_mip_levels = _ChunkCacheBase._init_mip_levels
-        tile_px = 64
-
     tex = _texture()
-    pow2, tiered = _Cache(), _Cache()
-    pow2._init_mip_levels(iso_geometry.mip_tile_px_candidates(64, 128))
-    assert asset_source._wrap_holders == 0, "a power-of-two ladder holds the copies"
-    tiered._init_mip_levels(iso_geometry.mip_tile_px_candidates(64, 128, native_tier=True))
-    second = _Cache()
-    second._init_mip_levels(iso_geometry.mip_tile_px_candidates(64, 128, native_tier=True))
     padded = asset_source.crop_source(tex, NATIVE)
-    del tiered
-    gc.collect()
-    assert asset_source.crop_source(tex, NATIVE) is padded, "dropped while a holder lives"
-    del second
+    assert asset_source.crop_source(tex, NATIVE) is padded
+    del tex
     gc.collect()
     assert not asset_source._wrap_padded
-    assert asset_source.crop_source(tex, NATIVE) is not padded
+
     asset_source.clear_install_caches()
     assert not asset_source._wrap_padded
 

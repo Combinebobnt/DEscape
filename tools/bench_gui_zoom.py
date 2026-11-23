@@ -93,8 +93,11 @@ while input is live (TASK-031.82 D3, margin_warm.DEFER_COLD_FIRST). --no-margin-
 all three off (render_cache_leveled.WARM_NATIVE_INPUTS and DEFER_COLD_FIRST), the A arm of
 TASK-031.82's margin-chunk bench. Each margin chunk records level_warmed and primed at its
 start, and GATES' margin_warm block lists the deferrals. The viewer's pending level defers
-for at most margin_warm.PENDING_DEFER_MAX_MS from when it became pending (TASK-031.82 D7,
-GATES pending_cap_ms); --no-pending-cap drops that deadline, the control for the cap's check.
+for at most margin_warm.PENDING_DEFER_MAX_MS from when it became pending, while it stays
+pending (TASK-031.82 D7, GATES pending_cap_ms); --no-pending-cap drops that deadline, the
+control for the cap's check. GATES' margin_warm starts record each load entry's start
+({t, mip, chunks, pending, deadline, refused}); --freeze-pending-deadline hands the entry its
+deadline as read at start, as before D7 was read per tick, the control for the r3 defect.
 GATES' placeholder_passes list each placeholder wait as a visit ({mip, start, end, end_kind}:
 sharp, superseded or still open at the pass end) beside worst_wait_ms.
 
@@ -134,6 +137,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import functools
 import json
 import os
 import re
@@ -814,43 +818,43 @@ def sharp_waits(frames: list[Frame]) -> tuple[list[tuple[int, Frame, Frame]], in
     """Placeholder waits (TASK-031.25): (level, first placeholder frame at it, first real
     full-view frame at it) per closed wait, plus how many a frame at another level
     superseded and how many are still open."""
-    opened: dict[int, Frame] = {}
-    done, superseded = [], 0
-    for f in frames:
-        if f.mip is None:
-            continue
-        for level in [lv for lv in opened if lv != f.mip]:
+    done, superseded, still_open = [], 0, 0
+    for level, opened, closing, kind in _placeholder_walk(frames):
+        if kind == "sharp":
+            done.append((level, opened, closing))
+        elif kind == "superseded":
             superseded += 1
-            del opened[level]
-        if f.placeholder:
-            opened.setdefault(f.mip, f)
-        elif f.mip in opened and f.full_real:
-            done.append((f.mip, opened.pop(f.mip), f))
-    return done, superseded, len(opened)
+        else:
+            still_open += 1
+    return done, superseded, still_open
 
 
 def placeholder_visits(frames: list[Frame], pass_end: float) -> list[dict]:
     """sharp_waits()' waits, every one timed (TASK-031.82 D7): {mip, start, end, end_kind}, where
     `start` is the first placeholder frame's start and `end` the sharp frame's end ("sharp"),
     the superseding frame's start ("superseded") or `pass_end` ("open")."""
+    ends = {"sharp": lambda f: f.end, "superseded": lambda f: f.start, "open": lambda f: pass_end}
+    visits = [{"mip": level, "start": opened.start, "end": ends[kind](closing), "end_kind": kind}
+              for level, opened, closing, kind in _placeholder_walk(frames)]
+    return sorted(visits, key=lambda v: v["start"])
+
+
+def _placeholder_walk(frames: list[Frame]):
+    """Each placeholder wait as (level, first placeholder frame, closing frame or None, end_kind):
+    closed by a real full-view frame at its level ("sharp"), by a frame at another level
+    ("superseded"), or still open after the last frame ("open")."""
     opened: dict[int, Frame] = {}
-    visits = []
-
-    def close(level: int, end: float, kind: str) -> None:
-        visits.append({"mip": level, "start": opened.pop(level).start, "end": end, "end_kind": kind})
-
     for f in frames:
         if f.mip is None:
             continue
         for level in [lv for lv in opened if lv != f.mip]:
-            close(level, f.start, "superseded")
+            yield level, opened.pop(level), f, "superseded"
         if f.placeholder:
             opened.setdefault(f.mip, f)
         elif f.mip in opened and f.full_real:
-            close(f.mip, f.end, "sharp")
+            yield f.mip, opened.pop(f.mip), f, "sharp"
     for level in list(opened):
-        close(level, pass_end, "open")
-    return sorted(visits, key=lambda v: v["start"])
+        yield level, opened.pop(level), None, "open"
 
 
 def _window_frames(click: Click, frames: list[Frame]) -> list[Frame]:
@@ -1049,6 +1053,10 @@ def format_row(click: Click, st: ClickStats) -> str:
 # --- Qt side -----------------------------------------------------------------
 
 
+def _constant(value):
+    return value
+
+
 def _pump(seconds: float) -> None:
     """bench_gui_drag._pump with a 2 ms sleep, not 10: a click arriving mid-sleep would read as queue latency."""
     from PyQt5.QtWidgets import QApplication
@@ -1093,6 +1101,8 @@ class _Recorder:
         self.margin_chunks: list[WarmChunk] = []
         # (t, mip, warmer) per margin-warm tick deferred at a cold level (TASK-031.82 D3).
         self.margin_deferrals: list[dict] = []
+        # {t, mip, chunks, pending, deadline, refused} per _load_warmer.start() (TASK-031.82 r4).
+        self.margin_starts: list[dict] = []
         self._margin_levels: set[int] = set()
         self._margin_tick: Activity | None = None
         self._chunk_active: WarmChunk | None = None
@@ -1163,8 +1173,10 @@ class _Recorder:
             out.append((ms, buf.getvalue()))
         return out
 
-    def watch_margin_warmers(self, window) -> None:
-        """Before any timer connects tick: distinguish the navigation ring from load/reach."""
+    def watch_margin_warmers(self, window, freeze_deadline: bool = False) -> None:
+        """Before any timer connects tick: distinguish the navigation ring from load/reach.
+        Also records each _load_warmer.start(); `freeze_deadline` hands it the deadline's
+        start-time value instead of the callable (--freeze-pending-deadline, r3's D7)."""
         from itertools import islice
 
         from descape import margin_warm, perf_trace
@@ -1187,6 +1199,24 @@ class _Recorder:
         for name in ("_margin_warmer", "_load_warmer"):
             self._wrap(getattr(window, name), "tick", lambda original, name=name: tick(original, name))
 
+        def start(original):
+            def wrapper(cache, mip, chunks, *a, defer_deadline=None, **k):
+                t = time.perf_counter()
+                if freeze_deadline and defer_deadline is not None:
+                    defer_deadline = functools.partial(_constant, defer_deadline())
+                original(cache, mip, chunks, *a, defer_deadline=defer_deadline, **k)
+                self.margin_starts.append({
+                    "t": t, "mip": mip, "chunks": len(chunks), "pending": mip == window._pending_level(),
+                    "deadline": None if defer_deadline is None else defer_deadline(),
+                    "refused": not warmer.is_active,
+                })
+            return wrapper
+
+        # The load entry's starts (TASK-031.82 r4's V5 times a visit from its entry's start).
+        warmer = window._load_warmer
+        if hasattr(warmer, "start"):
+            self._wrap(warmer, "start", start)
+
     def margin_data(self, clicks: list[Click], bounds: dict) -> dict:
         """Raw process-wide attribution, including first chunks warmed during load."""
         from descape import margin_warm
@@ -1195,6 +1225,7 @@ class _Recorder:
             "chunks": [asdict(c) for c in self.margin_chunks],
             "deferrals": self.margin_deferrals,
             "deferral_count": margin_warm.deferrals,
+            "starts": self.margin_starts,
             "ticks": [dict(asdict(a), ms=a.ms) for a in self.activities if a.kind == "margin-warm"],
             "clicks": [asdict(c) for c in clicks],
             "passes": {name: {"start": start, "end": end} for name, (start, end, _pending) in bounds.items()},
@@ -1731,7 +1762,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
     rec = _Recorder(args.profile_paint, args.profile_frame, args.profile_warm)
     rec.install()
     window = viewer.ViewerWindow()
-    rec.watch_margin_warmers(window)
+    rec.watch_margin_warmers(window, freeze_deadline=args.freeze_pending_deadline)
     # The app's opt-in (TASK-031.25 D8); --no-placeholders is the A arm.
     window.set_placeholders_allowed(not args.no_placeholders)
     # And to pre-rendered zoom frames (TASK-031.71); --no-preframes is the A arm.
@@ -1774,7 +1805,7 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             f" preframes {'off' if args.no_preframes else 'on'}, reach {'off' if args.no_reach else 'on'},"
             f" input budget {'off' if args.no_input_budget else 'on'},"
             f" native prime {'off' if args.no_margin_fix else 'on'}, margin defer {'off' if args.no_margin_fix else 'on'},"
-            f" pending cap {margin_warm.PENDING_DEFER_MAX_MS}"
+            f" pending cap {margin_warm.PENDING_DEFER_MAX_MS}{' read at start' if args.freeze_pending_deadline else ''}"
         )
         output.append(
             f"map {mm.map_width}x{mm.map_height}, units {sum(len(u) for u in window.scenario.unit_manager.units)},"
@@ -1887,7 +1918,8 @@ def _run_combo(args, style: str, sprites: bool, passes: list[str]) -> list[str]:
             "preframe_releases": release_json,
             "reach": not args.no_reach, "reach_passes": reach_json, "input_budget": not args.no_input_budget,
             "native_prime": render_cache_leveled.WARM_NATIVE_INPUTS, "margin_defer": margin_warm.DEFER_COLD_FIRST,
-            "pending_cap_ms": margin_warm.PENDING_DEFER_MAX_MS, "level_warm_passes": warm_json,
+            "pending_cap_ms": margin_warm.PENDING_DEFER_MAX_MS,
+            "pending_deadline_frozen": args.freeze_pending_deadline, "level_warm_passes": warm_json,
             "runtime": runtime,
         }, rec, bench, bounds)
     finally:
@@ -1951,6 +1983,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-pending-cap", action="store_true",
                         help="the pending level's cold-first defer has no deadline (TASK-031.82 D7's control,"
                         " V5 must fail on it; the app caps it at margin_warm.PENDING_DEFER_MAX_MS)")
+    parser.add_argument("--freeze-pending-deadline", action="store_true",
+                        help="the load entry's deferral deadline is read once at its start, not each tick"
+                        " (TASK-031.82 r3's D7, the defect count's control; the app reads it per tick)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     return parser
 
@@ -1964,7 +1999,7 @@ def child_command(args, style: str, sprites: str, passes: list[str]) -> list[str
     if args.root:
         cmd += ["--root", str(args.root)]
     for flag in ("allow_numpy", "no_placeholders", "no_preframes", "no_reach", "no_input_budget", "no_margin_fix",
-                 "no_pending_cap"):
+                 "no_pending_cap", "freeze_pending_deadline"):
         if getattr(args, flag):
             cmd.append(f"--{flag.replace('_', '-')}")
     return cmd

@@ -29,6 +29,8 @@ from descape import (
     gc_hold,
     perf_trace,
     place_rotation,
+    region_clipboard,
+    scenario_format,
     settings,
     terrain_units,
     ui_icons,
@@ -74,11 +76,17 @@ from descape.viewer_common import (
     HOVER_IDLE_TEXT,
 )
 
+# What File > Open and a drop accept: DE's own, plus the pre-DE .scn/.scx (TASK-429, read-only).
+SCENARIO_SUFFIXES = (".aoe2scenario", ".scn", ".scx")
+OPEN_FILTER = (
+    "All scenarios (*.aoe2scenario *.scn *.scx);;AoE2 Scenario (*.aoe2scenario);;Older AoE2 scenario (*.scn *.scx)"
+)
+
 
 def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
-    """GH #221: the local .aoe2scenario files among dropped URLs, in drop order."""
+    """GH #221: the local scenario files (SCENARIO_SUFFIXES) among dropped URLs, in drop order."""
     paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
-    return [path for path in paths if path.suffix.lower() == ".aoe2scenario"]
+    return [path for path in paths if path.suffix.lower() in SCENARIO_SUFFIXES]
 
 
 # Display-only sentinel assigned to LoadedScenario.path for a File > New map.
@@ -118,14 +126,23 @@ class _ViewerFileMixin:
         """Why the open document may not be written, or None. Shown in the
         status bar while it applies. GH #67: a file is editable only with its
         own game's data shown (Return of Rome included), and never when its
-        game is view-only (game_dataset.lock_reason())."""
+        game is view-only (game_dataset.lock_reason()). TASK-429: a pre-DE
+        .scn/.scx is read-only first, whatever data is shown."""
         if self.scenario is None:
             return None
+        if self._file_is_legacy():
+            return scenario_format.read_only_reason(self.scenario.source_format)
         return game_dataset.lock_reason(self._file_game_dataset(), self._shown_game_dataset())
 
     def _cross_game_refusal(self, block) -> str:
         """Why a clipboard block copied from the other game's file may not be pasted here, or "".
         Compares the two files' own games, not the shown data: a locked view's copy keeps its file's ids."""
+        # The reverse, a DE block onto a legacy document, is refused by the read-only lock.
+        if getattr(block, "legacy", False) and not self._file_is_legacy():
+            return (
+                "Copied from an older-format (.scn/.scx) file, whose terrain and object ids differ "
+                "from AoE2:DE's, so it can't be pasted into this document."
+            )
         copied = getattr(block, "dataset", games.DEFAULT_ID)
         here = self._file_game_dataset()
         if copied == here:
@@ -136,8 +153,16 @@ class _ViewerFileMixin:
         )
 
     def _with_file_game(self, block):
-        """`block` stamped with the open file's own game, which its ids belong to (GH #67)."""
+        """`block` stamped with the open file's own game, which its ids belong to (GH #67).
+        A region block also carries whether that file is pre-DE (TASK-429); trigger blocks have no such field."""
+        if isinstance(block, region_clipboard.RegionBlock):
+            return dataclasses.replace(block, dataset=self._file_game_dataset(), legacy=self._file_is_legacy())
         return dataclasses.replace(block, dataset=self._file_game_dataset())
+
+    def _file_is_legacy(self) -> bool:
+        """Whether the open document is a pre-DE .scn/.scx (TASK-429); False with none or a fake."""
+        fmt = getattr(self.scenario, "source_format", None)
+        return bool(fmt is not None and fmt.legacy)
 
     def _refuse_locked_save(self) -> bool:
         reason = self.game_data_lock_reason()
@@ -504,7 +529,7 @@ class _ViewerFileMixin:
         if not self._confirm_discard_changes():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open scenario", "", "AoE2 Scenario (*.aoe2scenario)"
+            self, "Open scenario", "", OPEN_FILTER
         )
         if not path:
             return
@@ -880,20 +905,60 @@ class _ViewerFileMixin:
         span, gc paused, then frozen once the attempt ran to completion, read or
         not (a misparse's partial section stays reachable); never after a cancel,
         whose objects are dropped. Never setEnabled(False): it would disable
-        Cancel too. Cancel exists only under _cancellable_trigger_read()."""
+        Cancel too. Cancel exists only under _cancellable_trigger_read().
+
+        The dialog's processEvents() runs layout and viewport-poll events, so
+        _first_parse_running keeps any warm from starting there, and the unit
+        model prebuild, the zoom frames and a held-key pan (whose ticks engage
+        a gc hold) are stopped (TASK-668). After, on a window still shown, a
+        fresh viewport poll re-arms the warms (a pending placeholder's level
+        included), the prebuild is rescheduled and the zoom frames' settle
+        wait restarts."""
         self._cancel_warms()
+        self.map_view.hold_preframes(True)  # after the cancel, which restarts their settle wait
+        self.map_view.release_held_pan()
+        prebuild_owed = self._unit_model_prebuild.is_active
+        self._unit_model_prebuild.cancel()
         gc_hold.reset()
         was_busy, self._busy = self._busy, True
-        cancellable = self._trigger_read_cancellable
+        self._first_parse_running = True
+        dialog = None
+        try:
+            dialog = self._trigger_parse_dialog()
+            progress = self._trigger_parse_progress(dialog)
+            with gc_hold.paused():
+                manager = attempt(progress)
+                # No collect first: it frees none of the parse's objects and walks them all.
+                gc.freeze()
+            return manager
+        finally:
+            if dialog is not None:
+                dialog.close()
+                dialog.deleteLater()
+            self._first_parse_running = False
+            self._busy = was_busy
+            self.map_view.hold_preframes(False)
+            # A closed window's closeEvent stopped the poll; a repoll would re-arm its warms.
+            if self.isVisible():
+                self.map_view.repoll_viewport()
+            if prebuild_owed:
+                self._schedule_unit_model_prebuild()
+
+    def _trigger_parse_dialog(self) -> QProgressDialog:
         dialog = QProgressDialog("Reading triggers…", "Cancel", 0, 1, self)
         dialog.setWindowTitle("Reading triggers")
         dialog.setWindowModality(Qt.WindowModal)
         dialog.setAutoReset(False)
         dialog.setAutoClose(False)
         dialog.setMinimumDuration(TRIGGER_PARSE_DIALOG_MS)
-        if not cancellable:
+        if not self._trigger_read_cancellable:
             dialog.setCancelButton(None)
         dialog.setValue(0)  # starts the dialog's own show clock
+        return dialog
+
+    def _trigger_parse_progress(self, dialog: QProgressDialog):
+        """The parse's progress callback, refreshing `dialog` at most every TRIGGER_PARSE_REFRESH_S."""
+        cancellable = self._trigger_read_cancellable
         last = [time.perf_counter()]
 
         def progress(phase: str, done: int, total: int) -> None:
@@ -907,17 +972,7 @@ class _ViewerFileMixin:
             if cancellable and dialog.wasCanceled():
                 raise TriggerParseCancelled
 
-        try:
-            with gc_hold.paused():
-                manager = attempt(progress)
-                # No collect first: it frees none of the parse's objects and walks them all.
-                gc.freeze()
-            return manager
-        finally:
-            dialog.close()
-            dialog.deleteLater()
-            self._busy = was_busy
-            self._rearm_pending_warm()
+        return progress
 
     @contextlib.contextmanager
     def _cancellable_trigger_read(self):

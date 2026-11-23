@@ -1107,8 +1107,6 @@ def _field_value(m: _Map, spec: trigger_fields.FieldSpec, default, k: int, trigg
     if kind == trigger_fields.REFERENCE:
         if presentation == "Unit":
             return refs[k % len(refs)]
-        if presentation == "Unit[]":
-            return refs[: 2 + k % 3]
         if presentation == "TriggerId":
             return trigger_ids[k % len(trigger_ids)]
         if presentation == "VariableId":

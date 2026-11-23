@@ -209,18 +209,19 @@ def test_a_simulated_reference_holds_only_the_base_paths() -> None:
     assert set(values) <= bt.base_paths(base)
 
 
-# The corpus coverage table (2026-11-16, examples/ plus the maintainer corpus): per transition,
+# The corpus coverage table (2026-11-21, examples/ plus the maintainer corpus): per transition,
 # the number of distinct corpus files of the new version, then the blind and simulated-reference outcomes.
-# REFUSED in-vocabulary pairs: 1.41->1.42 (an Effect and a Condition insert in one segment) and
-# 1.55->1.56 (two u16+str16 conversions in one struct), where the greedy partial step stacks a raw
-# insert and dead-ends. 1.36->1.37 refuses for another reason: the library has no Files section
+# 1.41->1.42 (an Effect and a Condition insert in one segment) and 1.55->1.56 simulated (two
+# u16+str16 conversions in one struct) recover by one retry after the greedy dead end. 1.55->1.56
+# blind still refuses: the true first edit ranks far down the blind candidate list (#347 of 1381),
+# out of reach of a bounded retry. 1.36->1.37 refuses for another reason: the library has no Files section
 # before 1.40, so even the true 1.37 structure leaves the body's tail unread (8 bytes, or 13 MB of
 # embedded AI files) and no layout meets the end anchor. A 1.40+ base can't hit that.
 CORPUS_COVERAGE = {
     "1.36->1.37": (3, bt.REFUSED, bt.REFUSED),
     "1.37->1.40": (5, bt.REFUSED, bt.REFUSED),
     "1.40->1.41": (43, bt.AMBIGUOUS, bt.AMBIGUOUS),
-    "1.41->1.42": (6, bt.REFUSED, bt.REFUSED),
+    "1.41->1.42": (6, bt.AMBIGUOUS, bt.AMBIGUOUS),
     "1.42->1.43": (3, bt.EXACT, bt.EXACT),
     "1.44->1.45": (31, bt.AMBIGUOUS, bt.AMBIGUOUS),
     "1.46->1.47": (2, bt.REFUSED, bt.REFUSED),
@@ -230,7 +231,7 @@ CORPUS_COVERAGE = {
     "1.51->1.53": (1, bt.REFUSED, bt.REFUSED),
     "1.53->1.54": (10, bt.REFUSED, bt.REFUSED),
     "1.54->1.55": (4, bt.REFUSED, bt.REFUSED),
-    "1.55->1.56": (8, bt.REFUSED, bt.REFUSED),
+    "1.55->1.56": (8, bt.REFUSED, bt.EXACT),
     "1.56->1.57": (2, bt.AMBIGUOUS, bt.EXACT),
     "1.57->1.58": (15, bt.AMBIGUOUS, bt.AMBIGUOUS),
     "1.58->1.59": (1, bt.AMBIGUOUS, bt.AMBIGUOUS),

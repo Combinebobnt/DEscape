@@ -170,8 +170,8 @@ MAX_ELEVATION = 15
 # not-yet-decided question, deliberately not folded into this change.
 #
 # MIP_MAX_TILE_PIXELS is the absolute ceiling, a memory and quality choice
-# (TASK-601): since asset_source.crop_source() a tile_px need not divide the
-# 512 texture, so divisibility no longer bounds it. Each quality's own finest
+# (TASK-601): a level's texture is sized to it (asset_source.
+# terrain_texture_size(), GH #326), so divisibility does not bound it. Each quality's own finest
 # level is render.FINEST_TILE_PIXELS; only Default reaches 192.
 MIP_MIN_TILE_PIXELS = 16
 MIP_MAX_TILE_PIXELS = 192
@@ -2129,31 +2129,32 @@ def sloped_tile_edge_outline(
 def sloped_tile_outline_coarse(
     tile_px: int, d_nw: int, d_ne: int, d_sw: int, d_se: int
 ) -> tuple[tuple[int, int], ...]:
-    """A cheaper approximation of sloped_tile_outline() for the edit-mode
-    brush highlight only (draw-perf plan item 3): one point per column per
-    edge instead of that function's two (c, y0), (c+1, y0) pair, halving
-    the ring to roughly 2 points/column against its ~4. MapView caches the
-    polygon per shape (TASK-031.38), so the build cost is gone and the
-    halving now pays off in the pulse repaint. This drops the
-    vertical step between adjacent columns, so it is NOT pixel-exact --
-    fine for a hover cue that only needs to look right, wrong for anything
-    that must agree with the pick plane. Every real caller other than
-    MapView._update_highlight's brush footprint must keep calling
-    sloped_tile_outline() itself; see that function's own docstring and
+    """A straight-edged stand-in for sloped_tile_outline() for the edit-mode
+    brush highlight only (GH #306): the 4 projected corner tips, in
+    unit_pick.diamond_points' N, E, S, W order and tile-local frame, so a
+    flat tile gets exactly Stepped's diamond.
+
+    Four points are the true silhouette, not an approximation of a curve:
+    each tile edge's rise interpolates linearly between its two corners
+    (both folds of unit_rise_px agree on an edge), and the flat diamond
+    edge it is subtracted from is a straight line, so every edge projects
+    straight. What differs from the painted pixels is the renderer's own
+    discretization (_sloped_column_runs' k/(half_w - 1) cut, its rounding
+    and its 1px run clamp): measured at most 1.0 source px for the
+    elev_step_pct stops up to 125 and 1.79 px at 200, on a nearly edge-on one-level
+    tile (tests/test_sloped_outline_coarse.py).
+
+    NOT pixel-exact, so wrong for anything that must agree with the pick
+    plane. Every caller other than MapView._set_highlight_tiles (brush
+    hover, Cliff footprint, shape rubber band) must keep
+    calling sloped_tile_outline(); see that function's own docstring and
     tests/test_sloped_pick.py::test_tile_outline_spans_exactly_the_painted_pixels,
     which pins the exact form and must never be loosened to match this
     one."""
     d_min = min(d_nw, d_ne, d_sw, d_se)
     nw, ne, sw, se = d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min
-    cols, run_start, run_len, _raw_len = _sloped_column_runs(tile_px, nw, ne, sw, se)
-
-    cols_list = cols.tolist()
-    top = [(c, int(run_start[c])) for c in cols_list]
-    bottom = [(c, int(run_start[c]) + int(run_len[c])) for c in cols_list]
-    last = cols_list[-1] + 1
-    top.append((last, int(run_start[cols_list[-1]])))
-    bottom.append((last, int(run_start[cols_list[-1]]) + int(run_len[cols_list[-1]])))
-    return tuple(top + bottom[::-1])
+    half_w, half_h = half_dims(tile_px)
+    return ((half_w, -ne), (2 * half_w, half_h - se), (half_w, 2 * half_h - sw), (0, half_h - nw))
 
 
 def ground_outline_corners(w: int, h: int, proj: IsoProjection) -> tuple[tuple[int, int], ...]:

@@ -56,7 +56,7 @@ TERRAIN_IDS = (0, 1, 2, 3, 6, 9, 10, 13)
 FARM_X, FARM_Y = 40, 80
 PLAIN_UNIT_CONST = 4  # no sprite in sprite_install's graphic map, so it draws a mark
 RISES = range(1, iso_geometry.MAX_ELEVATION + 1)
-TILE_PX_LADDER = (16, 32, 64, 96, 128, 192)  # 96 and 192: the native tiers (TASK-599, TASK-601), padded texture crops
+TILE_PX_LADDER = (16, 32, 64, 96, 128, 192)  # 96 and 192: the native tiers (TASK-599, TASK-601), padded stand-in crops
 
 
 @pytest.fixture
@@ -459,6 +459,78 @@ def test_sloped_every_mip(native_kernel, sprite_install, fake_farm, synthetic_te
         _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), _rects(cache, mip, anchors))
 
 
+@pytest.fixture
+def file_textures(tmp_path, monkeypatch):
+    """Each terrain's _texture() saved as a PNG behind get_terrain_texture_path, so
+    every level crops its own terrain_texture_size() array resized from the file (GH #326)."""
+    import functools
+
+    from PIL import Image
+
+    def path_for(terrain_id: int):
+        path = tmp_path / f"t{terrain_id}.png"
+        if not path.exists():
+            Image.fromarray(_texture(terrain_id)).save(path)
+        return path
+
+    monkeypatch.setattr(asset_source, "get_terrain_texture_path", functools.cache(path_for))
+    asset_source.clear_install_caches()
+    yield
+    asset_source.clear_install_caches()
+
+
+def _style_cache(style: str, scenario):
+    mm = scenario.map_manager
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    if style == "flat":
+        return FlatChunkCache(scenario, tile_px), None
+    if style == "stepped":
+        elevations, proj = render_iso.elevations_and_proj(scenario)
+        return IsoChunkCache(scenario, elevations, proj, tile_px), elevations
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
+    return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px), elevations
+
+
+@pytest.mark.parametrize("style", ["flat", "stepped", "sloped"])
+def test_file_backed_textures_agree_on_both_backends_at_every_level(native_kernel, sprite_install, fake_farm, file_textures, style):  # noqa: F811
+    """GH #326: real-size textures, one size per level, every level of each style's ladder."""
+    scenario = _sloped_scenario() if style == "sloped" else _cliff_scenario()
+    mm = scenario.map_manager
+    cache, elevations = _style_cache(style, scenario)
+    assert len(cache.mip_levels()) > 2, cache.mip_levels()
+    for mip in cache.mip_levels():
+        px = cache.mip_tile_px(mip)
+        tiles = [(EDIT_X, EDIT_Y), (FARM_X, FARM_Y), *_corner_tiles(mm)]
+        if style == "flat":
+            anchors = [(x * px, y * px) for x, y in tiles]
+        else:
+            anchors = _anchor_origins(cache._level(mip).proj, elevations, tiles)
+        _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), _rects(cache, mip, anchors))
+
+
+def test_a_tiles_crop_repeats_every_span_tiles_at_every_level(tmp_path, monkeypatch):
+    """GH #326: the ground pattern covers TERRAIN_TEXTURE_SPAN tiles at every zoom.
+    A random texture: _texture()'s own pattern repeats at half its side."""
+    import functools
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    path = tmp_path / "noise.png"
+    Image.fromarray(np.random.default_rng(326).integers(0, 256, (512, 512, 3), dtype=np.uint8)).save(path)
+    monkeypatch.setattr(asset_source, "get_terrain_texture_path", functools.cache(lambda _tid: path))
+    asset_source.clear_install_caches()
+    span = asset_source.TERRAIN_TEXTURE_SPAN
+    for px in (16, 32, 48, 64, 96, 128, 192):
+        def block(x, y, px=px):
+            return render_paint._top_block(SimpleNamespace(x=x, y=y, terrain_id=3), px)
+
+        assert block(2, 5).shape == (px, px, 3)
+        assert np.array_equal(block(2, 5), block(2 + span, 5 + span)), px
+        assert not np.array_equal(block(2, 5), block(3, 5)), px
+        assert not np.array_equal(block(2, 5), block(2 + span // 2, 5)), px
+
+
 # --- two-pass compositing, sprites on (GH #107) ------------------------------
 #
 # tests/test_clipped_sprites.py holds each backend to an independent expected
@@ -499,7 +571,7 @@ def test_two_pass_backends_agree(native_kernel, ink_sprite, synthetic_textures, 
     the sprite's ink touches, and one rect across all their seams."""
     heights, base, occluding = TWO_PASS_CASES[case]
     cache = chunk_cache(style, scenario_map(heights, base=base, marks=((UX - 2, UY + 1), (UX + 2, UY - 2))))
-    ((draw, ax, ay, _rise),) = cache._level(0).sprites.by_anchor[(UX, UY)]
+    ((draw, ax, ay, _rise, _order),) = cache._level(0).sprites.by_anchor[(UX, UY)]
     x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
     x1, y1 = x0 + INK_W, y0 + INK_H
     rects = [
@@ -541,7 +613,7 @@ def test_unit_pack_rows_carry_each_units_base_rise(ink_sprite, style):  # noqa: 
     assert pack.rows.shape[1] == native_composite.ROW_W == 5
     rows = {(t % MAP_W, t // MAP_W): r for t, r in _pack_rows(pack).items()}
 
-    ((_draw, _ax, _ay, sprite_rise),) = lvl.sprites.by_anchor[(UX, UY)]
+    ((_draw, _ax, _ay, sprite_rise, _order),) = lvl.sprites.by_anchor[(UX, UY)]
     ((kind, *_rest, rise),) = rows[(UX, UY)]
     assert (kind, rise) == (native_composite.ROW_SPRITE, sprite_rise)
     if style == "stepped":
@@ -887,8 +959,8 @@ def test_bulk_pending_refresh_keeps_derived_tiles_and_shared_inputs(native_backe
     anchors = dict(layer.by_anchor)
     for key in sprite_tiles:
         anchors[key] = [
-            (dataclasses.replace(draw, rgba=draw.rgba.copy()), ax + 7, ay - 3, rise)
-            for draw, ax, ay, rise in anchors[key]
+            (dataclasses.replace(draw, rgba=draw.rgba.copy()), ax + 7, ay - 3, rise, order)
+            for draw, ax, ay, rise, order in anchors[key]
         ]
     cleared = next(iter(sprite_tiles))
     anchors.pop(cleared)
@@ -1736,6 +1808,86 @@ def test_box_reduce2_backends_agree(native_kernel, shape):
         got = render_cache_common.box_reduce2(src)
     assert got.shape == want.shape == ((shape[0] + 1) // 2, (shape[1] + 1) // 2, 3)
     np.testing.assert_array_equal(got, want)
+
+
+# --- Return of Rome's shrunk textures on zoomed-out levels (GH #67, #248) ----
+
+
+def _ramp_mask(size: int) -> np.ndarray:
+    return (np.add.outer(np.arange(size), np.arange(size)) * 3 * 512 // size % 256).astype(np.uint8)
+
+
+@pytest.fixture
+def ror_texture_files(tmp_path, monkeypatch):
+    """Return of Rome active, _texture() per terrain behind
+    get_terrain_texture_path(), so terrain_texture_at() shrinks a real load
+    (synthetic_textures fakes the full-size array only), a ramp layer mask at
+    every size and random blendomatic alphas: blending on with no install."""
+    import functools
+
+    from PIL import Image
+
+    from descape import game_dataset
+
+    game_dataset.set_active(game_dataset.ROR)
+    paths = {}
+    for tid in TERRAIN_IDS:
+        paths[tid] = tmp_path / f"terrain_{tid}.png"
+        Image.fromarray(_texture(tid)).save(paths[tid])
+    alphas = np.random.default_rng(248).integers(0, 129, size=(9, 31, asset_source.BLENDOMATIC_TILE_SIZE), dtype=np.uint8)
+
+    def fake(fn):
+        fn.cache_clear = lambda: None
+        return fn
+
+    monkeypatch.setattr(asset_source, "get_terrain_texture_path", functools.cache(paths.get))
+    monkeypatch.setattr(asset_source, "get_blendomatic", fake(lambda: alphas))
+    monkeypatch.setattr(asset_source, "get_terrain_mask_array", fake(lambda _name: _ramp_mask(TEXTURE_SIZE)))
+    monkeypatch.setattr(asset_source, "_sized_terrain_mask", fake(lambda _name, size: _ramp_mask(size)))
+    asset_source.clear_install_caches()
+
+
+@pytest.mark.parametrize("style", ["stepped", "sloped"])
+def test_ror_zoomed_out_texture_crops_agree_on_both_backends(native_kernel, ror_texture_files, style):
+    """#248: under RoR a level finer than 64 px crops textures and layer masks
+    shrunk to its scale. Flat has no native kernel. Pass conditions:
+    - the ladder has such levels, and their crops differ from full-size ones
+    - at each of them, every rect composites equal on both backends, blended
+      (blending changes pixels there), the native ones through the
+      whole-rect kernel, not its per-tile fallback"""
+    scenario = _sloped_scenario() if style == "sloped" else _cliff_scenario()
+    for tile in scenario.map_manager.terrain:
+        if (tile.x * 5 + tile.y * 3) % 7 == 0:
+            tile.layer = TERRAIN_IDS[(tile.x + 2 * tile.y) % len(TERRAIN_IDS)]
+    mm = scenario.map_manager
+    tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)
+    if style == "stepped":
+        elevations, proj = render_iso.elevations_and_proj(scenario)
+
+        def make(layers=DEFAULT_LAYERS):
+            return IsoChunkCache(scenario, elevations, proj, tile_px, sprites=False, layers=layers)
+    else:
+        elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scenario)
+
+        def make(layers=DEFAULT_LAYERS):
+            return SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=False, layers=layers)
+    cache, unblended = make(), make(LayerState(terrain_blend=False))
+    assert render_paint.blend_effective(cache.layers)
+    shrunk = [m for m in cache.mip_levels() if asset_source.terrain_texture_size(cache.mip_tile_px(m)) < TEXTURE_SIZE]
+    assert shrunk, cache.mip_levels()
+    for mip in shrunk:
+        lvl_proj = cache._level(mip).proj
+        rects = _rects(cache, mip, _anchor_origins(lvl_proj, elevations, [(EDIT_X, EDIT_Y), *_corner_tiles(mm)]))
+        _assert_backends_agree(lambda *r, m=mip: cache._composite_rect(m, *r), rects)
+        calls = _count_native_calls(lambda *r, m=mip: cache._composite_rect(m, *r), cache.canvas_dims(mip))
+        assert calls.keys() == {f"composite_{'iso' if style == 'stepped' else 'sloped'}"}, (mip, calls)
+        with composite_backend.use_backend("native"):
+            blended = cache._composite_rect(mip, *rects[0])
+            assert not np.array_equal(blended, unblended._composite_rect(mip, *rects[0])), f"mip {mip}: blending changed nothing"
+        with composite_backend.use_backend("numpy"), pytest.MonkeyPatch.context() as full_size:
+            shrunk_px = cache._composite_rect(mip, *rects[0])
+            full_size.setattr(asset_source, "terrain_texture_size", lambda _px: TEXTURE_SIZE)
+            assert not np.array_equal(cache._composite_rect(mip, *rects[0]), shrunk_px), f"mip {mip}: crops did not shrink"
 
 
 # --- the backend switch itself (no native build needed) ---------------------

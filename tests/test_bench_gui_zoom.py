@@ -566,6 +566,91 @@ def test_no_pending_cap_reaches_the_viewers_pending_entry(monkeypatch):
         conftest.close_window(window)
 
 
+def test_freeze_pending_deadline_parses_and_reaches_the_child():
+    args = bz.build_parser().parse_args(["--freeze-pending-deadline"])
+    assert args.freeze_pending_deadline and not args.no_pending_cap
+    assert "--freeze-pending-deadline" in bz.child_command(args, "Stepped", "off", ["roll"])
+    assert "--freeze-pending-deadline" not in bz.child_command(bz.build_parser().parse_args([]), "Stepped", "off", ["roll"])
+
+
+class _ResidentCache:
+    def is_level_resident(self, mip: int) -> bool:
+        return True
+
+
+@pytest.fixture
+def start_window(monkeypatch):
+    """A real ViewerWindow with level 2 pending, whose _load_warmer.start() a recorder watches."""
+    from descape import viewer
+
+    conftest.ensure_qapp()
+    window = viewer.ViewerWindow()
+    monkeypatch.setattr(window, "_pending_level", lambda: 2)
+    recorders = []
+
+    def watch(**kwargs):
+        rec = bz._Recorder()
+        rec.watch_margin_warmers(window, **kwargs)
+        recorders.append(rec)
+        return rec
+
+    try:
+        yield window, watch
+    finally:
+        window._load_warmer.cancel()
+        for rec in recorders:
+            rec.restore()
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+def test_a_load_entry_start_records_its_mip_chunks_pending_and_deadline(start_window):
+    import functools
+
+    from descape import margin_warm
+
+    window, watch = start_window
+    rec = watch()
+    warmer = window._load_warmer
+    cache = _ResidentCache()
+    warmer.start(cache, 2, [(0, 0), (1, 0), (2, 0)], defer_deadline=functools.partial(window._pending_defer_until, 2))
+    warmer.start(cache, 1, [(0, 0)])
+    warmer.start(cache, 2, [], defer_deadline=functools.partial(window._pending_defer_until, 2))
+    starts = rec.margin_data([], {})["starts"]
+    assert [{k: s[k] for k in ("mip", "chunks", "pending", "refused")} for s in starts] == [
+        {"mip": 2, "chunks": 3, "pending": True, "refused": False},
+        {"mip": 1, "chunks": 1, "pending": False, "refused": False},
+        {"mip": 2, "chunks": 0, "pending": True, "refused": True},
+    ]
+    cap_s = margin_warm.PENDING_DEFER_MAX_MS / 1000.0
+    assert starts[0]["deadline"] == pytest.approx(window._pending_since[1] + cap_s) and starts[1]["deadline"] is None
+    assert starts[0]["t"] <= starts[1]["t"] <= starts[2]["t"]
+
+
+@pytest.mark.gui
+def test_a_start_under_no_pending_cap_is_still_marked_pending_with_no_deadline(start_window, monkeypatch):
+    import functools
+
+    window, watch = start_window
+    bz.apply_module_arms(bz.build_parser().parse_args(["--no-pending-cap"]), monkeypatch)
+    rec = watch()
+    window._load_warmer.start(_ResidentCache(), 2, [(0, 0)], defer_deadline=functools.partial(window._pending_defer_until, 2))
+    (start,) = rec.margin_starts
+    assert (start["pending"], start["deadline"], start["refused"]) == (True, None, False)
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("freeze", [False, True])
+def test_freeze_pending_deadline_hands_the_warmer_a_constant(start_window, freeze):
+    window, watch = start_window
+    rec = watch(freeze_deadline=freeze)
+    values = iter([5.0, 7.0, 9.0])
+    window._load_warmer.start(_ResidentCache(), 2, [(0, 0)], defer_deadline=lambda: next(values))
+    provider = window._load_warmer._defer_deadline
+    assert rec.margin_starts[0]["deadline"] == 5.0
+    assert [provider(), provider()] == ([5.0, 5.0] if freeze else [7.0, 9.0])
+
+
 def test_a_frame_dominated_by_gc_gen2_is_031_81():
     click = _click("roll", 0.0, end=1.0)
     frames = [bz.Frame(0.003, 0.103, {"other": 95.0}, 0, 97.0)]

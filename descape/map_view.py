@@ -1017,6 +1017,7 @@ class MapView(
         # (set_preframes_allowed()), rendered SETTLE_MS after the view last moved, nearest the
         # last zoom's direction first. The twin is built on first use.
         self._preframes_allowed = False
+        self._preframes_held = False  # hold_preframes(): a first trigger parse (TASK-668)
         self._preframe_warmer = zoom_preframe.PreframeWarmer()
         self._preframe_twin: zoom_preframe.ZoomTwin | None = None
         self._preframe_dir = 1

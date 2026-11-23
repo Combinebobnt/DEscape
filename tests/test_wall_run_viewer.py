@@ -2048,26 +2048,114 @@ def test_a_moved_gates_walls_agree_with_the_render_sides_derivation(encoding):
         _close(window)
 
 
+def _ghost_then_drop(window, grab=_GRAB, end=None, cw: int = 0) -> list[bool]:
+    """A real drag from `grab` to `end` (default +5 along the row), with `cw`
+    fine Rotate presses held: the ghost's refused flags, unrefused marks
+    first, read just before the release."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view = window.map_view
+    end = (grab[0] + 5, grab[1]) if end is None else end
+    start, stop = _point_pos(window, *grab), _point_pos(window, *end)
+    _HELD["value"] = True
+    try:
+        view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
+        view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, stop, Qt.NoButton, Qt.LeftButton))
+        for _ in range(cw):
+            window.rotate_cw_action.trigger()
+        assert view._unit_ghost_item is not None
+        flags = list(view._unit_ghost_item._refused_marks)
+        view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, stop, Qt.LeftButton, Qt.NoButton))
+    finally:
+        _HELD["value"] = False
+    return flags
+
+
 @pytest.mark.parametrize("box", [True, False], ids=["box_on", "box_off"])
 def test_a_gate_drag_ghost_onto_walls_is_refused_only_where_the_drop_is(box):
     """TASK-327 beside GH #194: with the box ticked the drop replaces the
     walls, so the ghost is not refused; with it off the walls block, so it is."""
-    from PyQt5.QtCore import QEvent, Qt
-
     window, gate = _gate_window(box=box)
     try:
-        view = window.map_view
-        start, end = _point_pos(window, *_GRAB), _point_pos(window, _GRAB[0] + 5, _GRAB[1])
-        _HELD["value"] = True
-        try:
-            view.mousePressEvent(_mouse_event(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton))
-            view.mouseMoveEvent(_mouse_event(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton))
-            assert view._unit_ghost_item is not None
-            assert view._unit_ghost_item.refused is not box
-            view.mouseReleaseEvent(_mouse_event(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton))
-        finally:
-            _HELD["value"] = False
+        assert any(_ghost_then_drop(window)) is not box
         assert ((gate.x, gate.y) != (27.0, _ROW + 0.5)) is box, _last_status(window)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("box", [True, False], ids=["box_on", "box_off"])
+def test_a_gate_drag_ghost_along_its_run_onto_water_is_refused_as_the_drop_is(box):
+    """TASK-489: the box excludes only the walls the drop replaces, so water under one still refuses."""
+    window, gate = _gate_window(box=box)
+    try:
+        mm = window.scenario.map_manager
+        mm.terrain[_ROW * mm.map_width + 32].terrain_id = 22  # Water Deep, under the wall on (32, _ROW)
+        state = _gate_site_state(window, gate)
+        assert any(_ghost_then_drop(window))
+        assert _gate_site_state(window, gate) == state
+        assert _last_status(window).endswith(_MOVE_HINT)
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("box", [True, False], ids=["box_on", "box_off"])
+def test_a_gate_drag_ghost_onto_a_unit_on_its_run_is_refused_as_the_drop_is_alone_or_in_a_group(box):
+    """TASK-489: the villager on a replaced wall still blocks; in a group only the gate's ghost is refused."""
+    window, gate = _gate_window(box=box)
+    try:
+        _add_unit(window, VILLAGER, 31.5, _ROW + 0.5)
+        state = _gate_site_state(window, gate)
+        assert any(_ghost_then_drop(window))
+        assert _gate_site_state(window, gate) == state
+
+        other = _add_unit(window, VILLAGER, 60.5, 60.5)
+        _select_units(window, [gate, other])
+        state = _gate_site_state(window, gate)
+        assert _ghost_then_drop(window) == [False, True], "the far villager's, then the gate's"
+        assert _gate_site_state(window, gate) == state
+        assert (other.x, other.y) == (60.5, 60.5)
+        assert _last_status(window).startswith("Move: 1 of 2 units can't go there")
+    finally:
+        _close(window)
+
+
+def test_a_group_ghost_carrying_a_gate_along_its_run_is_not_refused_with_the_box():
+    """TASK-489: the gate's replaced walls block no member, as in the group drop."""
+    window, gate = _gate_window()
+    try:
+        other = _add_unit(window, VILLAGER, 60.5, 60.5)
+        _select_units(window, [gate, other])
+        assert not any(_ghost_then_drop(window))
+        assert _last_status(window) == "Moved 2 units by (5, 0), replacing 4 walls, filling 4"
+    finally:
+        _close(window)
+
+
+def test_a_gate_turned_onto_its_run_reads_the_turned_footprints_walls_for_the_tint():
+    """TASK-489 with GH #280: a (1, 4) gate turned to (4, 1) lands on four walls, all replaced."""
+    window, _gate = _gate_window()
+    try:
+        turned = _add_unit(window, _GATE_Y, 50.5, _ROW + 10.0)  # tiles 50, _ROW + 8..11
+        assert not any(_ghost_then_drop(window, (50.4, _ROW + 9.6), (36.75, _ROW + 0.4), cw=2))
+        assert turned.unit_const == GATE and (turned.x, turned.y) == (37.0, _ROW + 0.5), _last_status(window)
+        assert "replacing 4 walls" in _last_status(window)
+    finally:
+        _close(window)
+
+
+def test_a_gate_arrow_nudge_onto_water_never_asks_the_rules_so_has_nothing_to_tint():
+    """TASK-489: a nudge has no ghost and no refusal, box or not."""
+    from PyQt5.QtCore import Qt
+
+    window, gate = _gate_window()
+    try:
+        mm = window.scenario.map_manager
+        for x in range(25, 29):
+            mm.terrain[(_ROW + 1) * mm.map_width + x].terrain_id = 22  # Water Deep
+        _select_units(window, [gate])
+        _arrow(window, Qt.Key_Down, Qt.ShiftModifier)
+        assert (gate.x, gate.y) == (27.0, _ROW + 1.5), _last_status(window)
+        assert window.map_view._unit_ghost_item is None
     finally:
         _close(window)
 

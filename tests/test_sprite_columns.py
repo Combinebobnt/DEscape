@@ -120,7 +120,7 @@ def _unit_rect(style: str, scn) -> tuple[int, int, int, int]:
     _img, elevations, corner_rise, proj = _full(style, scn, with_sprites=True)
     layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise)
     for entries in layer.by_anchor.values():
-        for draw, ax, ay, _rise in entries:
+        for draw, ax, ay, _rise, _order in entries:
             if tuple(draw.rgba[0, 0, :3]) == UNIT_COLOUR:
                 h, w = draw.rgba.shape[:2]
                 return ax - draw.hotspot_x, ay - draw.hotspot_y, ax - draw.hotspot_x + w, ay - draw.hotspot_y + h
@@ -279,7 +279,7 @@ def test_slices_partition_each_piece_inside_the_footprint(art, const, at, overha
     moved = overhung = 0
     for k, entries in layer.by_anchor.items():
         assert k in tiles
-        for draw, px, _py, _rise in entries:
+        for draw, px, _py, _rise, _order in entries:
             i = _piece_of(draw, pieces)
             parent = pieces[i].draw
             own = own_key(pieces[i])
@@ -339,7 +339,7 @@ def test_moving_a_building_beside_a_unit_splices_like_a_fresh_render(art, style,
     assert counts == {"building_bboxes": 0, "sprites": 0}
 
     def keyed(layer):
-        return {k: [(id(d), px, py, rise) for d, px, py, rise in v] for k, v in layer.by_anchor.items()}
+        return {k: [(id(d), px, py, rise, order) for d, px, py, rise, order in v] for k, v in layer.by_anchor.items()}
 
     layer = _sprite_layer(cache)
     assert any(type(d) is unit_sprites.MovedSlice for v in layer.by_anchor.values() for d, *_ in v)

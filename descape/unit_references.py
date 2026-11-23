@@ -4,9 +4,10 @@ unit it names: owner, const, own tile and footprint.
 Which fields hold such ids comes from the vocabulary's presentation map
 ("Unit" or "Unit[]"), never a hardcoded field list: condition `unit_object`
 and `next_object` carry presentation "" before v1.44, so they are not
-references there. map_analysis.check_unit_references() and the trigger
-panel's labels both walk through here, so the dangling-reference check and
-the labels cannot disagree.
+references there. map_analysis.check_unit_references(), the resize plan's
+dangling count (both through trigger_references()) and the trigger panel's
+labels all walk through here, so the dangling-reference checks and the labels
+cannot disagree.
 
 Rules, each with its reason:
 
@@ -156,6 +157,21 @@ def _ids(value: Any) -> tuple[int, ...]:
 def references_in(entry: Any, definition: Any, presentation: Mapping[str, str]) -> dict[str, tuple[int, ...]]:
     """field -> the set ids it holds, in stored order. Fields holding nothing are omitted."""
     return ids_in(entry, unit_reference_fields(definition, presentation))
+
+
+def trigger_references(triggers: Iterable[Any], vocabulary: Any) -> Iterator[tuple[Any, str, Any, str, tuple[int, ...]]]:
+    """(trigger, "condition" or "effect", definition, field, ids) for every
+    condition/effect field holding unit ids; a type the vocabulary lacks has none."""
+    kinds = (
+        ("condition", "conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
+        ("effect", "effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
+    )
+    for trigger in triggers:
+        for kind, list_name, type_attribute, definitions, presentation in kinds:
+            for entry in getattr(trigger, list_name):
+                definition = definitions.get(_read(entry, type_attribute))
+                for attribute, ids in references_in(entry, definition, presentation).items():
+                    yield trigger, kind, definition, attribute, ids
 
 
 def ids_in(entry: Any, fields: Iterable[str]) -> dict[str, tuple[int, ...]]:

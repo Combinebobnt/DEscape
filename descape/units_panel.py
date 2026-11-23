@@ -76,6 +76,12 @@ from descape.viewer_common import (
 # that resolves it, so the rule itself stays independently testable.
 _FIELD_CONDITIONALS = {"rotation_is_editable": unit_variant.is_rotation_editable}
 
+# On the Z caption: the 1.59 editor's save replaced every authored z in the test map.
+_Z_TOOLTIP = (
+    "The AoE2:DE editor recalculates Z from the terrain and stacking when it "
+    "saves the map, so a typed value does not survive that save."
+)
+
 # Always on the Rotation caption's tooltip. GH #147: a lone read-only unit gets a one-line per-kind tooltip on its value
 # instead of this inline. GH #198: a group's note leads the same tooltip (see _apply_conditional_fields).
 _ROTATION_TOOLTIP = (
@@ -704,6 +710,8 @@ class UnitsPanel(QWidget):
                 # The full caveat, always reachable at zero vertical cost; never shown inline (GH #147).
                 caption.setToolTip(_ROTATION_TOOLTIP)
                 self.unit_rotation_label = caption
+            elif spec.field_id == "z":
+                caption.setToolTip(_Z_TOOLTIP)
             # A conditional field gets BOTH widgets, in the same cell: the
             # editor for consts its rule admits, and the plain read-only label
             # every other const keeps. _apply_conditional_fields() shows one

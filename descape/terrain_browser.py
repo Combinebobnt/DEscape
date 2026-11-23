@@ -28,7 +28,7 @@ HIDDEN_LABEL = "Show unused / moddable terrains"
 SWATCH_PX = asset_source.TERRAIN_THUMBNAIL_PX
 ROW_ICON_PX = 32
 
-# Stated in the picker page rather than only in the code: 131 terrains share 85
+# Stated in the picker page rather than only in the code: 134 terrains share 85
 # textures, and the thing that really distinguishes FOREST_OAK from
 # FOREST_PINE is the trees scattered on the tile, which DEscape does not
 # draw in the map render either. So a bare swatch IS what painting this

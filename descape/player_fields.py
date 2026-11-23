@@ -18,7 +18,8 @@ root cause -- per-player data lives in *arrays*, not scalars:
   below; nothing else in this codebase records it.
 - `fallback` -- Pop Limit is the one field stored twice at different types
   and struct shapes (Map.per_player_population_cap, a u32, only since
-  1.44; Units.player_data_4[i].population_limit, an f32, on every version).
+  1.44; Units.player_data_4[i].population_limit, an f32, on every version
+  but Age of Kings, which has neither).
   current_value() prefers the primary and only reads the fallback when the
   primary retriever is absent.
 

@@ -70,6 +70,7 @@ PER_ID_GETTERS: dict[str, tuple] = {
     "get_default_overlay_color": _OVERLAY_COLOR_IDS,
     "get_overlay_color_label": _OVERLAY_COLOR_IDS,
     "get_overlay_opacity": _OVERLAY_OPACITY_IDS,
+    "get_overlay_opacity_label": _OVERLAY_OPACITY_IDS,
     "get_default_overlay_opacity": _OVERLAY_OPACITY_IDS,
     "get_trigger_status_color": _TRIGGER_STATUS_IDS,
     "get_default_trigger_status_color": _TRIGGER_STATUS_IDS,

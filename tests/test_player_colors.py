@@ -237,8 +237,8 @@ def test_two_scenarios_player_1_never_share_a_cached_tint(sprite_install):
     _, red_elev, red_proj = render_iso.render_terrain_iso_with_proj(red_scn, with_sprites=True)
     red_sprites = render_sprites.sprite_draws_by_anchor(red_scn, red_proj, red_elev)
 
-    (blue_draw, _ax, _ay, _rise), = next(iter(blue_sprites.by_anchor.values()))
-    (red_draw, _ax, _ay, _rise), = next(iter(red_sprites.by_anchor.values()))
+    (blue_draw, _ax, _ay, _rise, _order), = next(iter(blue_sprites.by_anchor.values()))
+    (red_draw, _ax, _ay, _rise, _order), = next(iter(red_sprites.by_anchor.values()))
     assert not np.array_equal(blue_draw.rgba, red_draw.rgba)
 
 

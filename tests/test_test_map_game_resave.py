@@ -5,8 +5,8 @@ saved once in the AoE2:DE 1.59 editor (2026-10-17).
 The resave is never regenerated. Every difference below was measured on it
 and is listed explicitly, so a generator change that moves one of them fails
 here: update the expected drift, or refresh the resave with a new in-game
-save. Each rewrite the game makes is a triage item (filed as TASK-402), not
-a tolerance.
+save. Each rewrite the game makes is triaged in docs/WRITE_RULES.md's "What
+the game rewrites on save", not a tolerance.
 
 The per-file tests also run on the resave, through conftest's
 `scenario_path` hook (param id `test_map_game_resave`).
@@ -46,6 +46,8 @@ FOUNDATION_TERRAINS = {7, 63}
 
 # (owner, const) placements the editor deletes. Player-owned wild animals
 # and birds (but not bears or Wild Camel), relics, some eye candy and blockers.
+# Measured against the 2026-10-17 save: GH #32 and Ruins 345's GAIA-only rule
+# now place all but 158 (P1), 332 and the P2/P3 eye candy as GAIA.
 DROPPED = {
     0: {332},
     1: {
@@ -58,16 +60,18 @@ DROPPED = {
     2: {818, 1366},
     3: {818, 1358},
 }
-# (owner, const) the editor adds (walls, gates and 2422 MOLE CONSTRUCTED); cause open.
+# (owner, const) the editor adds, each on a source unit: Mole 2421 gains 2422,
+# Siege Tower 2443 a hidden 2444, hidden gates 487/488/792 gain 64/63/789.
 ADDED = {(0, 2422), (0, 2444), (1, 63), (1, 64), (1, 789), (1, 2422), (1, 2444)}
-# (const, generated rotation, resaved rotation): buildings get 2.0, and three
-# const 444 placements change; cause open.
+# (const, generated rotation, resaved rotation): lone walls take the tower
+# index 2 and towers 2.0, and the game replaces Packed Town Center 444's values.
 ROTATION_REWRITES = {
     *((const, 0.0, 2.0) for const in (
         72, 79, 117, 119, 155, 190, 231, 234, 235, 236, 370, 684, 685, 785, 788, 1062, 1102, 1665, 2678,
     )),
     (444, 0.0, 1.5707963705062866), (444, 8.0, 0.0), (444, 15.0, 1.9634954929351807),
 }
+# One hidden Blue Tree (objects_hidden) comes back as a Cannon Galleon.
 CONST_REWRITES = {(768, 420)}
 # A unit on the map's edge line is pulled 0.21 tiles inside it.
 EDGE_CLAMP = {0.0: 0.21000000834465027, 239.99000549316406: 239.79000854492188}
@@ -83,6 +87,13 @@ MESSAGE_REWRITES = {"hints": "Tent A", "scouts": "Tent B"}
 @functools.cache
 def _loaded(path: Path):
     return load_map_and_units(path)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _drop_loaded():
+    # Two 240-tile maps, ~600k objects: kept for the session, every later full collect walks them.
+    yield
+    _loaded.cache_clear()
 
 
 def _units(path: Path) -> dict[int, tuple[int, object]]:

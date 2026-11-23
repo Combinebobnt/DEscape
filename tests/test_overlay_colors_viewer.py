@@ -355,6 +355,87 @@ def test_the_opacity_default_button_restores_and_persists_at_once() -> None:
         conftest.close_window(window)
 
 
+def _import_theme_opacity(monkeypatch, tmp_path, dialog, opacity: dict[str, int]) -> list[str]:
+    """Import theme... of a file carrying only `opacity`, Apply answered; returns the summaries shown."""
+    import yaml
+    from PyQt5.QtWidgets import QFileDialog
+
+    from descape import theme_file
+    from descape.settings_dialog import SettingsDialog
+
+    path = tmp_path / f"t{theme_file.FILE_SUFFIX}"
+    path.write_text(yaml.safe_dump({"format": theme_file.FORMAT_ID, "version": theme_file.FORMAT_VERSION, "overlay_opacity": opacity}))
+    shown: list[str] = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(path), "")))
+    monkeypatch.setattr(SettingsDialog, "_confirm_theme_import", lambda _self, summary: shown.append(summary) or True)
+    dialog.theme_import_button.click()
+    return shown
+
+
+def test_a_theme_import_fades_the_maps_live_overlay(monkeypatch, tmp_path) -> None:
+    """GH #287: the bare test dialog has no map, so only this catches a missing live apply."""
+    from descape.settings_dialog import SettingsDialog
+
+    window = conftest.blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        mv = window.map_view
+        mv.set_region((2, 2, 6, 6))
+        assert set(_opacities(_region_items(mv))) == {1.0}
+        _import_theme_opacity(monkeypatch, tmp_path, dialog, {"region": 40})
+        assert set(_opacities(_region_items(mv))) == {0.4}
+        assert settings.get_overlay_opacity("region") == 40
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("carries_region", [True, False])
+def test_a_theme_import_settles_a_pending_slider_nudge(monkeypatch, tmp_path, carries_region) -> None:
+    """A keyboard nudge still on its debounce: a file carrying that group wins, one that doesn't keeps it."""
+    from descape.settings_dialog import SettingsDialog
+
+    window = conftest.blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        dialog._overlay_opacity_sliders["region"].setValue(55)
+        assert dialog._overlay_opacity_timer.isActive()
+        assert window.map_view._overlay_opacity_overrides == {"region": 55}
+        opacity = {"region": 70} if carries_region else {"trigger_area": 30}
+        shown = _import_theme_opacity(monkeypatch, tmp_path, dialog, opacity)
+        expected_region = 70 if carries_region else 55
+        assert settings.get_overlay_opacity("region") == expected_region
+        assert dialog._overlay_opacity_sliders["region"].value() == expected_region
+        assert settings.get_overlay_opacity("trigger_area") == (100 if carries_region else 30)
+        assert not dialog._overlay_opacity_timer.isActive()
+        assert window.map_view._overlay_opacity_overrides == {}
+        # The summary compares against the nudged value, the one on screen.
+        assert ("Overlay opacity Select tool: 55% -> 70%" in shown[0]) is carries_region
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+def test_a_theme_export_keeps_a_pending_slider_nudge(monkeypatch, tmp_path) -> None:
+    import yaml
+    from PyQt5.QtWidgets import QFileDialog
+
+    from descape import theme_file
+    from descape.settings_dialog import SettingsDialog
+
+    window = conftest.blank_window()
+    dialog = SettingsDialog(window)
+    try:
+        dialog._overlay_opacity_sliders["unit_select"].setValue(65)
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(tmp_path / "mine"), "")))
+        dialog.theme_export_button.click()
+        exported = yaml.safe_load((tmp_path / f"mine{theme_file.FILE_SUFFIX}").read_text())
+        assert exported["overlay_opacity"]["unit_select"] == 65
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
 def test_apply_overlay_colors_clears_the_stale_edit_highlight() -> None:
     """_clear_highlight() runs as part of apply_overlay_colors() (the edit
     highlight has no in-place update path) -- confirm the highlight actually

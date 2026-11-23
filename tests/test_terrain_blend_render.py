@@ -77,7 +77,7 @@ def blend_install(sprite_install, fake_farm, synthetic_textures, monkeypatch):  
     neighbours."""
     rng = np.random.default_rng(20261011)
     tiles = rng.integers(0, 129, size=(9, 31, asset_source.BLENDOMATIC_TILE_SIZE), dtype=np.uint8)
-    size = asset_source.LOADED_TEXTURE_SIZE
+    size = 512  # a stand-in mask, served at its own size
     mask = (np.add.outer(np.arange(size), np.arange(size)) * 3 % 256).astype(np.uint8)
     ids = (*TERRAIN_IDS, LAYER_ID, NEW_TERRAIN_ID)
     table = {tid: BlendEntry(10 * (i + 1), i % 8, "") for i, tid in enumerate(ids)}
@@ -576,7 +576,7 @@ def test_a_mask_the_kernel_cannot_crop_falls_back_per_tile(native_kernel, blend_
     """A layer mask larger than the textures still crops in numpy, but the
     kernel only takes the one size, so its blend tables refuse and every
     layered rect is composited per tile instead, with the same pixels."""
-    size = 2 * asset_source.LOADED_TEXTURE_SIZE
+    size = 2 * 512
     big = (np.add.outer(np.arange(size), np.arange(size)) * 5 % 256).astype(np.uint8)
     monkeypatch.setattr(asset_source, "get_terrain_mask_array", _fake(lambda _name: big))
     scenario = _scenario("stepped")

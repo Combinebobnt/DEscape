@@ -210,9 +210,9 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     elevations = np.full((mm.map_height, mm.map_width), elevation, dtype=np.int64)
     layer = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
     entries = [entry for v in layer.by_anchor.values() for entry in v]
-    assert entries and len({(ax, ay) for _, ax, ay, _ in entries}) == 1, f"expected one sprite, got {entries}"
+    assert entries and len({(ax, ay) for _, ax, ay, _, _ in entries}) == 1, f"expected one sprite, got {entries}"
     rects = []
-    for draw, ax, ay, _rise in entries:
+    for draw, ax, ay, _rise, _order in entries:
         h, w = draw.rgba.shape[:2]
         x0, y0 = ax - draw.hotspot_x, ay - draw.hotspot_y
         rects.append((x0, y0, x0 + w, y0 + h))
@@ -223,7 +223,7 @@ def _sprite_rect(scenario, proj, elevation: int) -> tuple[int, int, int, int]:
     with pytest.MonkeyPatch.context() as mp:
         set_render_global(mp, "SPRITE_COLUMN_SLICING", False)
         whole = render_sprites.sprite_draws_by_anchor(scenario, proj, elevations)
-    [(draw, ax, ay, _rise)] = [entry for v in whole.by_anchor.values() for entry in v]
+    [(draw, ax, ay, _rise, _order)] = [entry for v in whole.by_anchor.values() for entry in v]
     h, w = draw.rgba.shape[:2]
     assert union == (ax - draw.hotspot_x, ay - draw.hotspot_y, ax - draw.hotspot_x + w, ay - draw.hotspot_y + h)
     return union

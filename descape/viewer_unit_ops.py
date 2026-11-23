@@ -650,7 +650,7 @@ class _ViewerUnitOpsMixin:
 
     def _reassign_units(
         self, entries, new_player: int, on_applied=None, skip_orphan_occupants: bool = False
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, int]:
         """Moves entries to `new_player` in one undo record, carrying every
         host's garrison (GH #115).
 
@@ -663,17 +663,24 @@ class _ViewerUnitOpsMixin:
 
         GH #32: an entry whose own move or carried garrison would give a
         GAIA-only object to a player is left out first, and so is an entry
-        garrisoned inside one, uncounted (TASK-474). Returns (changed,
-        carried, refused, gaia_only_refused)."""
+        garrisoned inside one, counted as held (TASK-474). Returns (changed,
+        carried, refused, gaia_only_refused, held)."""
         model = self._ensure_unit_edits()
         if model is None:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
         refused = 0
         kept = [e for e in entries if not self._owner_change_refused(model, e, new_player)]
         gaia_only_refused = len(entries) - len(kept)
         kept_ids = {id(e.unit) for e in kept}
         refused_hosts = [e for e in entries if id(e.unit) not in kept_ids]
         entries = kept
+        held = 0
+        if refused_hosts:
+            # TASK-474: an occupant selected with its refused host stays with it, no mixed-owner garrison.
+            # Before the orphan pass, which would otherwise count it as refused for a host it was selected with.
+            held_ids = {id(o.unit) for o in self._garrison_occupant_entries(model, refused_hosts)}
+            held = sum(1 for e in entries if id(e.unit) in held_ids and e.player_id != new_player)
+            entries = [e for e in entries if id(e.unit) not in held_ids]
         if skip_orphan_occupants:
             batch_refs = {e.unit.reference_id for e in entries}
             kept = []
@@ -684,10 +691,6 @@ class _ViewerUnitOpsMixin:
                     continue
                 kept.append(e)
             entries = kept
-        if refused_hosts:
-            # TASK-474: an occupant selected with its refused host stays with it, no mixed-owner garrison.
-            held = {id(o.unit) for o in self._garrison_occupant_entries(model, refused_hosts)}
-            entries = [e for e in entries if id(e.unit) not in held]
         batch_ids = {id(e.unit) for e in entries}
         changing = [e for e in entries if e.player_id != new_player]
         # A host's garrison goes with it (GH #115), whatever each occupant's own owner.
@@ -697,7 +700,7 @@ class _ViewerUnitOpsMixin:
             if e.player_id != new_player and id(e.unit) not in batch_ids
         ]
         if not changing and not carried:
-            return 0, 0, refused, gaia_only_refused
+            return 0, 0, refused, gaia_only_refused, held
         label = "Reassign unit" if len(entries) == 1 else f"Reassign {len(changing)} units"
         players = sorted({e.player_id for e in changing + carried} | {new_player})
         with self._unit_edit(model, label, players):
@@ -706,7 +709,7 @@ class _ViewerUnitOpsMixin:
                 model.reassign(entry.unit, new_player)
             if on_applied is not None:
                 on_applied({old: (new_player, old[1]) for old in old_keys})
-        return len(changing), len(carried), refused, gaia_only_refused
+        return len(changing), len(carried), refused, gaia_only_refused, held
 
     def _owner_change_refused(self, model, entry, new_player: int) -> bool:
         """GH #32: moving `entry` to `new_player` would give a GAIA-only object

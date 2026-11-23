@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from testkit import qt_capture, qt_window, settings_isolation, window_reaper
+from testkit import gc_amortize, qt_capture, qt_window, settings_isolation, window_reaper
 
 # Helper modules the split test files import: rewritten like test files, so their asserts report values.
 pytest.register_assert_rewrite("trigger_panel_helpers", "unit_edit_viewer_helpers")
@@ -976,12 +976,22 @@ def run_check(fn, *args) -> None:
         pytest.fail(detail)
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item) -> None:
+    """Stubs the per-load collect and freeze unless the test is marked real_gc_freeze (testkit/gc_amortize.py)."""
+    gc_amortize.begin_test(
+        item.get_closest_marker("real_gc_freeze") is not None,
+        gui=PYQT5_AVAILABLE and item.get_closest_marker("gui") is not None,
+    )
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item, nextitem):
     """Deletes the ViewerWindows a test left alive, after its own finalizers
-    (testkit/window_reaper.py has why)."""
+    (testkit/window_reaper.py has why), then gc_amortize's periodic collect."""
     yield
     window_reaper.reap(window_reaper.protected_ids())
+    gc_amortize.after_test()
 
 
 @pytest.hookimpl(hookwrapper=True)

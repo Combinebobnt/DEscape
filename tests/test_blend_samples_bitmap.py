@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import iso_geometry, native_composite, settings
+from descape import iso_geometry, native_composite, render_paint, settings
 
 # The default base-64/native-96 ladder plus the 192 native tier other bases reach.
 LADDER = sorted({*iso_geometry.mip_tile_px_candidates(64, native_tier=True).values(), *iso_geometry.NATIVE_TIERS})
@@ -42,12 +42,23 @@ def compared(monkeypatch):
     return calls
 
 
+def _stepped_reads(cols) -> tuple[list, list]:
+    nc, start = native_composite, cols["start"]
+    reads = [nc.OP_DIAMOND, *(nc.N_FIXED + (r - 1) * nc.PER_RISE + side for r in range(1, nc.MAX_RISE + 1) for side in (0, 1))]
+    return [cols["sy"][start[i]:start[i + 1]] for i in reads], [cols["sx"][start[i]:start[i + 1]] for i in reads]
+
+
 @pytest.mark.parametrize("tile_px", LADDER)
-def test_stepped_tables_bitmap_matches_unique(compared, tile_px):
-    steps = _elev_steps(tile_px)
-    for elev_step in steps:
-        native_composite.SteppedTables(tile_px, elev_step)
-    assert compared == [tile_px] * len(steps)
+def test_stepped_tables_bitmap_matches_unique(tile_px):
+    """Stepped marks its bitmap per assembly step (TASK-031.87), eager or sliced."""
+    nc = native_composite
+    for elev_step in _elev_steps(tile_px):
+        for budget in (None, nc.PRIME_ASSEMBLY_ELEMS, 1):
+            tables = render_paint._drain(nc.assemble_stepped(tile_px, elev_step, budget))
+            want = _old_blend_samples(tile_px, *_stepped_reads(tables.cols))
+            for got, ref in zip(tables.blend_samples, want, strict=True):
+                assert got.dtype == np.int32 and got.flags.c_contiguous
+                assert np.array_equal(got, ref), (tile_px, elev_step, budget)
 
 
 @pytest.mark.parametrize("tile_px", LADDER)

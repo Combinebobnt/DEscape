@@ -19,7 +19,7 @@ from testkit.data_mod_fixture import SPEARMAN
 from test_unit_sprites import build_sld
 
 TERRAIN = 0  # mod_tables() points it at sentinel.dds
-SIZE = asset_source.LOADED_TEXTURE_SIZE
+SIZE = asset_source.terrain_texture_size(asset_source.TEXTURE_REFERENCE_TILE_PIXELS)
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def _art():
 
 
 def _texture_entries() -> int:
-    return asset_source._terrain_texture_for_path.cache_info().currsize
+    return asset_source.texture_cache_stats()[0]
 
 
 def test_a_data_mod_switch_keeps_the_decoded_art_and_a_dataset_switch_does_not(switch_install):

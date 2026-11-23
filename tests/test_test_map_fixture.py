@@ -145,6 +145,13 @@ def _load_committed() -> _Map:
     return _Map(loaded, units, parse_triggers(loaded), OptionsEditModel(loaded), MessagesEditModel(loaded))
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _drop_committed():
+    # ~310k objects: kept for the session, every later full collect walks them.
+    yield
+    _load_committed.cache_clear()
+
+
 def _committed() -> _Map:
     """The cached parse, depoisoned on every access: another test in this worker may
     have loaded a file whose version gated the library classes these objects read through."""
@@ -800,3 +807,17 @@ def test_only_elevation_regions_are_elevated() -> None:
         if m.elevation(x, y) and not any(r.elevated and r.holds_tile(x, y) for r in regions.values())
     ]
     assert not raised, f"{len(raised)} elevated tiles outside an elevation region, e.g. {raised[:5]}"
+
+
+def test_variant_frames_follow_the_games_type_10_rule() -> None:
+    """A type 10 variant stores frame == rotation, as the game's save writes it;
+    no other cyclable placement carries a frame (a miss routes through set_variant())."""
+    off = []
+    for player, unit in _committed().units:
+        const, frame = unit.unit_const, unit.initial_animation_frame
+        if unit_variant.frame_follows_variant(const):
+            if frame != int(unit.rotation):
+                off.append((player, const, unit.rotation, frame))
+        elif unit_variant.is_cyclable(const) and frame:
+            off.append((player, const, unit.rotation, frame))
+    assert not off, f"{len(off)} placements off the frame rule, e.g. {off[:5]}"

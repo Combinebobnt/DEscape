@@ -10,9 +10,13 @@ tools/scan_variant_cycling.py re-derives it): every one of 132,118 placements on
 a cyclable const stores an exact literal integer, never the `k*2pi/n` radian
 form walls use. So writes are always a plain literal integer.
 
+The frame follows the variant only on .dat type 10 (frame_follows_variant()):
+the AoE2:DE editor's save sets a type 10 placement's frame to its rotation,
+and leaves types 20, 30 and 80 as written.
+
 Walls, cliffs and gates are excluded BY CONST SET, not by `unit.class_`: the
 game re-derives their stored index from neighbours (and a gate's orientation
-lives in its const). Class 27 is 36 consts of which only 9 are walls
+lives in its const). Class 27 is 39 consts of which only 9 are walls
 (counting Aqueduct, 231, since GH #110; 8 in Return of Rome), so a class
 exclusion would also drop Mole (2421).
 """
@@ -23,9 +27,17 @@ import json
 import random
 from pathlib import Path
 
-from descape import game_dataset, gate_orientation, unit_rotation, unit_sprites
+from descape import game_dataset, games, gate_orientation, unit_kind, unit_rotation, unit_sprites
 
 _GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
+
+# AoE2: type 10 stores frame == rotation on all 137,186 corpus placements; type 80 stores 0, and
+# types 20 and 30 unrelated frames. Not measured for Return of Rome (no editor save, its corpus not
+# checked for it), so set_variant() and placement keep its frames.
+_FRAME_FOLLOWS_TYPES = games.PerGame(
+    "unit_variant: the .dat types whose stored frame equals a variant's rotation",
+    {"aoe2": frozenset({10}), "ror": frozenset()},
+)
 
 
 @game_dataset.cache(maxsize=1)
@@ -64,6 +76,13 @@ def is_cyclable(unit_const: int) -> bool:
         and unit_const not in excluded_consts()
         and variant_count_for(unit_const) >= 2
     )
+
+
+def frame_follows_variant(unit_const: int) -> bool:
+    """Whether a variant written to this const's `rotation` also goes to its
+    `initial_animation_frame`, as the game stores it: a cyclable const of a
+    _FRAME_FOLLOWS_TYPES .dat type. Other cyclable consts keep their frame."""
+    return is_cyclable(unit_const) and unit_kind.dat_type(unit_const) in _FRAME_FOLLOWS_TYPES.active()
 
 
 def is_rotation_editable(unit_const: int) -> bool:

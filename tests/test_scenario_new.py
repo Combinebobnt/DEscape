@@ -107,6 +107,13 @@ def _real_oracle(tiles: int):
     return load_map_and_units(REAL_ORACLE_PATHS[tiles])
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _drop_real_oracles():
+    # The 480 oracle alone is ~460k objects: kept for the session, every later full collect walks it.
+    yield
+    _real_oracle.cache_clear()
+
+
 def _expected_header(donor, oracle) -> bytes:
     """The donor's header with the oracle's byte 12 (timestamp_of_last_save)."""
     return donor.header_bytes[:12] + oracle.header_bytes[12:13] + donor.header_bytes[13:]

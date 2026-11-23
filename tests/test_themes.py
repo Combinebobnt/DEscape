@@ -288,6 +288,31 @@ def test_the_editor_family_is_two_bases_by_four_accents() -> None:
         assert colors["button"] != colors["surface"], preset_id
 
 
+def test_dark_wood_green_keeps_the_original_wood_with_darker_buttons() -> None:
+    green = themes.PRESETS["editor_dark_wood_green"][1]
+    blue = themes.PRESETS["editor_dark_wood_blue"][1]
+    assert green == {**blue, "button": "#052e00", "highlight": "#158809"}
+
+
+def test_dark_wood_purple_matches_the_approved_rich_walnut_palette() -> None:
+    assert themes.PRESETS["editor_dark_wood_purple"][1] == {
+        "window": "#4f3e30",
+        "window_text": "#cbb7a7",
+        "base": "#3d2e22",
+        "alternate_base": "#47372a",
+        "text": "#d9c9b8",
+        "surface": "#3d2e22",
+        "surface_text": "#d9c9b8",
+        "highlighted_text": "#ffffff",
+        "tooltip_base": "#101207",
+        "tooltip_text": "#ffffff",
+        "link": "#e8a860",
+        "button_text": "#ffffff",
+        "highlight": "#5b1d7a",
+        "button": "#220133",
+    }
+
+
 def test_only_the_editor_presets_declare_a_surface_apart_from_their_button() -> None:
     for preset_id in _PLAIN_PRESETS:
         colors = themes.PRESETS[preset_id][1]
@@ -608,10 +633,12 @@ def test_an_editor_accent_keeps_button_text_legible_in_every_state(qt_app, prese
     assert max(abs(a - b) for a, b in zip(push_rgb, combo_rgb, strict=True)) >= 32, (preset_id, painted["push_grabbed"], painted["combo"])
 
 
-@pytest.mark.parametrize("base", ["parchment", "dark_wood"])
-def test_the_accent_never_reaches_the_tab_page(qt_app, base: str) -> None:
-    pages = {accent: _painted(qt_app, f"editor_{base}_{accent}")["tab_page"] for accent in ("red", "blue", "green", "purple")}
-    assert len(set(pages.values())) == 1, pages
+@pytest.mark.parametrize("preset_id", themes.EDITOR_PRESETS)
+def test_the_accent_never_reaches_the_tab_page(qt_app, preset_id: str) -> None:
+    _use(qt_app, preset_id)
+    page = _tab_page_pixel(qt_app)
+    _use(qt_app, preset_id, {"button": "#f000b0"})
+    assert _tab_page_pixel(qt_app) == page
 
 
 def test_a_custom_theme_can_flip_its_presets_polarity_with_the_surface_swatch(qt_app) -> None:

@@ -519,6 +519,8 @@ class ViewerWindow(
         self._busy = False
         # TASK-357: every first trigger parse shows progress, and offers Cancel inside this flag's span.
         self._trigger_read_cancellable = False
+        # TASK-668: set by _run_first_trigger_parse(); no warm may start inside its processEvents().
+        self._first_parse_running = False
         set_first_parse_runner(self._run_first_trigger_parse)
         # GH #221: a .aoe2scenario dropped anywhere on the window opens it.
         self.setAcceptDrops(True)
@@ -573,6 +575,8 @@ class ViewerWindow(
         self._load_warm_queue: list[tuple[int, list[tuple[int, int]]]] = []
         # The neighbour levels of the last level warm's anchor, pending level or not (TASK-031.25).
         self._warm_set: list[int] = []
+        # The terrain ids the last render's texture prefetch named; a level warm prefetches its levels' sizes (GH #326).
+        self._texture_ids: list[int] = []
         # The zoom-out reach (TASK-031.11): allowed per process (D9). Its (mip, range) entries
         # run on _load_warmer below every load entry (D3); _reach_keys is the last arm's set (D6).
         self._reach_warm_allowed = REACH_WARM
@@ -786,6 +790,8 @@ class ViewerWindow(
         self._tile_picker: tuple | None = None
         # GH #115: the Garrison block's Copy, as garrison.GarrisonClip rows. Session-only.
         self._garrison_clipboard: tuple = ()
+        # The copied file's game and pre-DE flag, for _cross_game_refusal() at Paste.
+        self._garrison_clipboard_origin: object | None = None
         # GH #204: the Garrison block's Cut, or None. Never held together with a Copy.
         self._garrison_cut: garrison.GarrisonCut | None = None
         # Built on first ask, dropped on any unit mutation or document change.
@@ -795,6 +801,8 @@ class ViewerWindow(
         # and the occupants of such a refused host, which stay with it.
         self._convert_refused: set[tuple[int, int]] = set()
         self._convert_held: set[tuple[int, int]] = set()
+        # The held occupants the stroke actually reached, for the status line's count.
+        self._convert_kept: set[tuple[int, int]] = set()
         # reference_id -> (player_id, unit) at first need in a stroke, for an occupant's host (TASK-474).
         self._convert_hosts: dict | None = None
         self._convert_touched_tiles: set[tuple[int, int]] = set()

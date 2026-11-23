@@ -121,7 +121,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from descape import games
+from descape import games, scenario_format
 from descape.messages_model import MessagesEditModel
 from descape.option_fields import label_for
 from descape.options_model import (
@@ -170,6 +170,18 @@ _MAP_SIZE_STRUCT = struct.Struct("<ii")
 class WriteBlockedError(Exception):
     """Raised instead of writing, e.g. for the mods/subscribed/ guard or an
     unsupported (terrain_write_supported=False) file."""
+
+
+class LegacyFormatReadOnly(WriteBlockedError):
+    """A pre-DE .scn/.scx document (TASK-429): those open read-only."""
+
+
+def refuse_legacy(scenario: LoadedScenario | scenario_format.ScenarioFormat) -> None:
+    """Raises LegacyFormatReadOnly for a pre-DE document or format. Every
+    direct writer calls this; a duck-typed fake with no source_format passes."""
+    fmt = scenario if isinstance(scenario, scenario_format.ScenarioFormat) else getattr(scenario, "source_format", None)
+    if fmt is not None and fmt.legacy:
+        raise LegacyFormatReadOnly(scenario_format.read_only_reason(fmt))
 
 
 @dataclass(frozen=True)
@@ -759,6 +771,7 @@ def write_scenario(
         raise WriteBlockedError(
             f"Refusing to write into the shipped template directory ({TEMPLATE_DIR}): {out_path}"
         )
+    refuse_legacy(scenario)
     own_game = games.for_scenario(scenario)
     if not own_game.writable:
         raise WriteBlockedError(
@@ -833,6 +846,7 @@ def build_patched(
     messages: MessagesEditModel | None = None,
 ) -> PatchedBody:
     """build_patched_body() plus the terrain block's offset in the result."""
+    refuse_legacy(scenario)
     if not scenario.terrain_write_supported:
         raise WriteBlockedError(
             "This file's terrain block failed load-time verification -- "

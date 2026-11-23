@@ -160,7 +160,7 @@ def _ink_origin(style: str, scn, elevations, corner_rise, proj) -> tuple[int, in
     """Top-left canvas pixel of the sprite, from the production anchor."""
     fold = None if corner_rise is None else iso_geometry.tile_folds(elevations)
     layer = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, corner_rise=corner_rise, fold=fold)
-    ((draw, ax, ay, _rise),) = layer.by_anchor[(UX, UY)]
+    ((draw, ax, ay, _rise, _order),) = layer.by_anchor[(UX, UY)]
     assert draw.rgba is INK
     return ax - draw.hotspot_x, ay - draw.hotspot_y
 

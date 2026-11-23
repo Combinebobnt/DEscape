@@ -246,7 +246,7 @@ def test_all_real_layer_masks_load_at_texture_size():
             modes.add(img.mode)
         mask = asset_source.get_terrain_mask_array(name)
         assert mask is not None, name
-        size = asset_source.LOADED_TEXTURE_SIZE
+        size = asset_source.terrain_texture_size(asset_source.TEXTURE_REFERENCE_TILE_PIXELS)
         assert mask.shape == (size, size) and mask.dtype == np.uint8, name
     assert {"L", "RGB"} <= modes, f"expected both L and RGB masks, got {modes}"
 

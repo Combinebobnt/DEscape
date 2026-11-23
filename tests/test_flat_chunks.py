@@ -17,8 +17,7 @@ Checks:
      np.array_equal to an independent render_scenario(isometric=False)
      call. Only meaningful for the order clause if at least one file has a
      real building/unit overlap (a tile more than one unit's draw covers);
-     the corpus-tier run asserts that non-vacuously, the fixture-tier run
-     (a unit-free map) does not.
+     the test-map and corpus-tier runs assert that non-vacuously.
   2. Arbitrary non-chunk-aligned rects == full render crop -- check 1 alone
      only ever calls render_rect() at x0=y0=0 with chunk-aligned bounds.
   3. Chunk request order doesn't matter.
@@ -58,7 +57,6 @@ from descape.render import render_scenario
 from descape.render_cache import FlatChunkCache
 from descape.render_flat import _flat_unit_draws, composite_rect_flat
 from descape.render_paint import flat_dirty_rects, tile_pixels_for_map
-from descape.scenario_io import BLANK_TEMPLATE_PATH as FIXTURE_PATH
 from descape.scenario_io import load_map_and_units
 
 import conftest
@@ -113,7 +111,7 @@ def _overlapping_tile_count(bboxes: np.ndarray, tile_px: int) -> tuple[int, tupl
     return sum(1 for n in buckets.values() if n > 1), first_overlap
 
 
-def _check_stitched_matches_full(files: list[Path], require_overlap_evidence: bool) -> tuple[bool, str]:
+def _check_stitched_matches_full(files: list[Path]) -> tuple[bool, str]:
     problems = []
     total_overlap_tiles = 0
     for path in files:
@@ -135,7 +133,7 @@ def _check_stitched_matches_full(files: list[Path], require_overlap_evidence: bo
             diff = int(np.count_nonzero(np.any(stitched != full, axis=2)))
             problems.append(f"{path.name}: {diff} pixels differ from a full render")
 
-    if require_overlap_evidence and total_overlap_tiles == 0:
+    if total_overlap_tiles == 0:
         problems.append(
             "no file in this run had a real unit/building overlap tile -- the order clause above "
             "passed vacuously, not because it's actually correct"
@@ -390,41 +388,7 @@ def _check_unit_overlap_tiling_matches_single_call(files: list[Path]) -> tuple[b
     return None, "no file in this run has a real unit/building overlap tile to test against"
 
 
-@pytest.mark.parametrize(
-    "check_fn",
-    [
-        _check_order_independence,
-        _check_patch_after_scripted_ops,
-        _check_eviction_round_trips,
-        _check_arbitrary_rects_match_full,
-        _check_invalidate_region_round_trips,
-        _check_composite_rect_flat_mutates_nothing,
-    ],
-    ids=lambda fn: fn.__name__.removeprefix("_check_"),
-)
-def test_flat_chunks(check_fn) -> None:
-    ok, detail = check_fn([FIXTURE_PATH])
-    if ok is None:
-        pytest.skip(detail)
-    assert ok, detail
-
-
-def test_flat_chunks_stitched_matches_full() -> None:
-    ok, detail = _check_stitched_matches_full([FIXTURE_PATH], require_overlap_evidence=False)
-    assert ok, detail
-
-
-def test_flat_chunks_unit_overlap_tiling() -> None:
-    """Fixture-tier stand-in: the blank template has no units, so this
-    can only ever skip here -- the real exercise of this check is the
-    corpus-tier version below. Kept so a reader scanning default-tier
-    output sees this check exists at all, not just its corpus sibling."""
-    ok, detail = _check_unit_overlap_tiling_matches_single_call([FIXTURE_PATH])
-    if ok is None:
-        pytest.skip(detail)
-    assert ok, detail
-
-
+# The quick tier runs these checks on the test map (below), which has units and overlaps.
 @pytest.mark.corpus
 @pytest.mark.parametrize(
     "check_fn",
@@ -448,7 +412,7 @@ def test_flat_chunks_corpus(check_fn, corpus_files) -> None:
 
 @pytest.mark.corpus
 def test_flat_chunks_stitched_matches_full_corpus(corpus_files) -> None:
-    ok, detail = _check_stitched_matches_full(corpus_files, require_overlap_evidence=True)
+    ok, detail = _check_stitched_matches_full(corpus_files)
     assert ok, detail
 
 
@@ -478,7 +442,7 @@ def test_flat_chunks_on_test_map(check_fn) -> None:
 
 @pytest.mark.test_map
 def test_flat_chunks_stitched_matches_full_on_test_map() -> None:
-    ok, detail = _check_stitched_matches_full([conftest.TEST_MAP_PATH], require_overlap_evidence=True)
+    ok, detail = _check_stitched_matches_full([conftest.TEST_MAP_PATH])
     assert ok, detail
 
 

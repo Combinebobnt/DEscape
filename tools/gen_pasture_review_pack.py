@@ -35,25 +35,38 @@ import numpy as np
 from descape import asset_source, game_dataset, render_bbox, render_iso, render_sprites, render_units, unit_sprites
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
+from testkit.render_family import set_render_global
 
 PACK_ID = "pasture"
 OUT_DIR = grp.OUT_DIR
 TILE_PX = grp.TILE_PX
 PASTURE = 1897
 VILLAGER = 83
+SHEEP = 594
+WAR_ELEPHANT = 239
 # DESERT_SAND: contrasts with the green pasture drape (117).
 GROUND_TERRAIN = 14
+GAIA = 0
 PLAYER = 1
 
-# Scene -> list of (unit_const, x, y, reference_id). Every pasture sits on tiles 58..61.
+# Scene -> list of (unit_const, x, y, reference_id, owner), each owner's list in this
+# order (GAIA's walks first). Every pasture sits on tiles 58..61.
 _SCENES = {
     # Seeds picked so the two front edges show all 5 distinct fence images (fencesA
     # has 3, fencesB 2) with 8 of 10 pieces differing from the unseeded frame.
-    "single": [(PASTURE, 60.0, 60.0, 9353)],
-    "single_b": [(PASTURE, 60.0, 60.0, 9033)],
+    "single": [(PASTURE, 60.0, 60.0, 9353, PLAYER)],
+    "single_b": [(PASTURE, 60.0, 60.0, 9033, PLAYER)],
     # A villager just in front of the hut, on tile (59, 61), later in depth than the
     # hut's slot but listed first, so a missing slot paints the hut over his head.
-    "inside": [(VILLAGER, 59.7, 61.0, 5001), (PASTURE, 60.0, 60.0, 9133)],
+    "inside": [(VILLAGER, 59.7, 61.0, 5001, PLAYER), (PASTURE, 60.0, 60.0, 9133, PLAYER)],
+    # TASK-016: GAIA sheep (walked first) on the back corner (62, 58)'s slot tile. No one sheep
+    # overlaps both its post and a fence (measured), so one takes the post, one the fence at (61.3, 58).
+    "back_corner": [
+        (SHEEP, 61.9, 58.1, 5002, GAIA), (SHEEP, 61.3, 58.15, 5004, GAIA), (PASTURE, 60.0, 60.0, 9133, PLAYER),
+    ],
+    # An elephant inside the front corner (58, 62), listed after the pasture: it
+    # overlaps the post and the fence at (58.7, 62).
+    "front_corner": [(PASTURE, 60.0, 60.0, 9133, PLAYER), (WAR_ELEPHANT, 58.3, 61.9, 5003, PLAYER)],
     "blank": [],
 }
 
@@ -61,6 +74,9 @@ _PLOT_TILES = [(tx, ty) for tx in (57, 62) for ty in (57, 62)]
 # Where the two front (screen-bottom) edges meet: column x = 58 and row y = 61.
 _SIDE_TILES = [(58, 59), (58, 60), (58, 61), (59, 61), (60, 61)]
 _FIGURE_TILES = [(tx, ty) for tx in (59, 60) for ty in (59, 61)]
+# The four tiles around each corner point.
+_BACK_TILES = [(tx, ty) for tx in (61, 62) for ty in (57, 58)]
+_FRONT_TILES = [(tx, ty) for tx in (57, 58) for ty in (61, 62)]
 
 # Fences are 2-3 px at the app's own tile size, too small to read a direction off,
 # so the side close-ups render at twice it (sprite scale 4/3, still the app's resize).
@@ -72,6 +88,8 @@ _FRAMES = {
     "sides_a_raw": ("single", _SIDE_TILES, 1, _SIDE_TILE_PX),
     "sides_b_raw": ("single_b", _SIDE_TILES, 1, _SIDE_TILE_PX),
     "figure_raw": ("inside", _FIGURE_TILES, 3, TILE_PX),
+    "back_raw": ("back_corner", _BACK_TILES, 3, _SIDE_TILE_PX),
+    "front_raw": ("front_corner", _FRONT_TILES, 3, _SIDE_TILE_PX),
     "ground_raw": ("blank", _PLOT_TILES, 4, TILE_PX),
 }
 
@@ -82,8 +100,8 @@ def _scenario(scene: str):
         tile.elevation = 0
         tile.terrain_id = GROUND_TERRAIN
     units = [[] for _ in base.unit_manager.units]
-    for const, x, y, ref in _SCENES[scene]:
-        units[PLAYER].append(SimpleNamespace(
+    for const, x, y, ref, owner in _SCENES[scene]:
+        units[owner].append(SimpleNamespace(
             unit_const=const, x=x, y=y, z=0.0, rotation=7.0 if const == PASTURE else 0.0,
             reference_id=ref, status=2, garrisoned_in_id=-1,
         ))
@@ -161,27 +179,32 @@ def _posts_centred(pieces):
     return [{**p, "dx": 0, "dy": 0} if "corner_posts" in p["file_name"] else p for p in pieces]
 
 
-# name -> (piece transform or None, drape off?)
+# name -> (piece transform or None, drape off?, list order?). list-order is the
+# pre-TASK-016 merge: sprites sharing a tile paint in unit-list order.
 INJECTS = {
-    "no-fences": (_no_fences, False),
-    "swap-fences": (_swap_fences, False),
-    "unseeded": (_unseeded, False),
-    "no-slots": (_no_slots, False),
-    "posts-centred": (_posts_centred, False),
-    "no-drape": (None, True),
+    "no-fences": (_no_fences, False, False),
+    "swap-fences": (_swap_fences, False, False),
+    "unseeded": (_unseeded, False, False),
+    "no-slots": (_no_slots, False, False),
+    "posts-centred": (_posts_centred, False, False),
+    "no-drape": (None, True, False),
+    "list-order": (None, False, True),
 }
 COARSE_INJECT = "no-fences"
 
 
 @contextmanager
 def _patched(inject: str | None):
+    import pytest
+
     real_map = unit_sprites.graphic_map
     game = game_dataset.active()
     saved_draped = render_sprites._DRAPED_BY_GAME[game]
     unit_sprites._scaled_cache.clear()
     unit_sprites.clear_slice_cache()
+    mp = pytest.MonkeyPatch()
     if inject is not None:
-        transform, drape_off = INJECTS[inject]
+        transform, drape_off, list_order = INJECTS[inject]
         if transform is not None:
             table = copy.deepcopy(real_map())
             for const in (1893, 1897):
@@ -189,9 +212,12 @@ def _patched(inject: str | None):
             unit_sprites.graphic_map = lambda: table
         if drape_off:
             render_sprites._DRAPED_BY_GAME[game] = frozenset()
+        if list_order:
+            set_render_global(mp, "SUBTILE_SPRITE_ORDER", False)
     try:
         yield
     finally:
+        mp.undo()
         unit_sprites.graphic_map = real_map
         render_sprites._DRAPED_BY_GAME[game] = saved_draped
         unit_sprites._scaled_cache.clear()
@@ -207,6 +233,8 @@ def _spec() -> rp.PackSpec:
         rp.Frame("sides_a_raw", "sides_a_raw.png", "raw", caption="Close-up of the two near sides of one plot."),
         rp.Frame("sides_b_raw", "sides_b_raw.png", "raw", caption="The same close-up of a second, separately placed plot."),
         rp.Frame("figure_raw", "figure_raw.png", "raw", caption="Close-up of the building with a small standing figure beside it."),
+        rp.Frame("back_raw", "back_raw.png", "raw", caption="Close-up of a plot's top corner with two animals standing near it."),
+        rp.Frame("front_raw", "front_raw.png", "raw", caption="Close-up of a plot's bottom corner with a large animal standing at it."),
         rp.Frame("ground_raw", "ground_raw.png", "raw", caption="Bare ground, same terrain and same framing as the single-plot frame."),
     )
     checks = (
@@ -270,6 +298,52 @@ def _spec() -> rp.PackSpec:
             ),
             frames=("figure_raw",),
             answers=("BUILDING-OVER-FIGURE", "FIGURE-OVER-BUILDING", "NO-OVERLAP", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="top_post",
+            question=(
+                "Find the plot's top corner point and the animal standing closest to it. First describe what "
+                "stands on that corner point and where that animal stands relative to it. Then, about the tall "
+                "thin upright post: ANIMAL-OVER-POST if a post stands on the corner point and that animal hides "
+                "part of it, POST-OVER-ANIMAL if a post there hides part of that animal, NO-POST if no tall "
+                "post stands on the corner point itself."
+            ),
+            frames=("back_raw",),
+            answers=("ANIMAL-OVER-POST", "POST-OVER-ANIMAL", "NO-POST", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="top_fence",
+            question=(
+                "Look at the low fence pieces running from the top corner along the plot's two upper sides, "
+                "not the tall corner post, and at both animals. First describe any fence piece that lies near "
+                "an animal. Then: FENCE-OVER-ANIMAL if any such fence piece hides part of either animal, CLEAR "
+                "if none does, including when no fence piece is there at all."
+            ),
+            frames=("back_raw",),
+            answers=("FENCE-OVER-ANIMAL", "CLEAR", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="bottom_post",
+            question=(
+                "Find the large animal and the plot's bottom corner point. First describe what stands on that "
+                "corner point and where the animal stands relative to it. Then, about the tall thin upright "
+                "post: POST-OVER-ANIMAL if a post stands on the corner point and hides part of the animal, "
+                "ANIMAL-OVER-POST if the animal hides part of a post there, NO-POST if no tall post stands on "
+                "the corner point itself."
+            ),
+            frames=("front_raw",),
+            answers=("POST-OVER-ANIMAL", "ANIMAL-OVER-POST", "NO-POST", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="bottom_fence",
+            question=(
+                "Look at the low fence pieces running from the bottom corner along the plot's two lower sides, "
+                "not the tall corner post. First describe any that lie near the large animal. Then: "
+                "ANIMAL-OVER-FENCE if the animal hides part of any such fence piece, CLEAR if it hides none, "
+                "including when no fence piece is there at all."
+            ),
+            frames=("front_raw",),
+            answers=("ANIMAL-OVER-FENCE", "CLEAR", "CANNOT-TELL"),
         ),
         rp.Check(
             id="ground_objects",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import types
 
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from PyQt5.QtWidgets import (
@@ -102,16 +103,17 @@ class _ViewerUnitInspectorMixin:
                 # GAIA-only entry (GH #32) keeps its own key.
                 self._selection = [old_to_new.get(key, key) for key in self._selection]
 
-            changed, carried, _refused, gaia_only = self._reassign_units(entries, new_player, on_applied=reselect)
+            changed, carried, _refused, gaia_only, held = self._reassign_units(entries, new_player, on_applied=reselect)
             owner = "GAIA" if new_player == GAIA_PLAYER_ID else f"Player {new_player}"
+            note = _gaia_only_refused_note(gaia_only, held)
             if not changed and not carried:
-                if gaia_only:
+                if note:
                     # The Owner field already shows the refused player: put it back.
                     self._update_unit_inspector_from_selection()
-                    self._log_status(f"Not reassigned to {owner}{_gaia_only_refused_note(gaia_only)}", level=debug_log.WARNING)
+                    self._log_status(f"Not reassigned to {owner}{note}", level=debug_log.WARNING)
                 return
             suffix = f" ({carried} garrisoned)" if carried else ""
-            suffix += _gaia_only_refused_note(gaia_only)
+            suffix += note
             if single:
                 self._log_status(f"Reassigned unit to {owner}{suffix}")
             else:
@@ -951,6 +953,9 @@ class _ViewerUnitInspectorMixin:
             return
         clips = self._garrison_clips(rows)
         self._garrison_clipboard = clips
+        self._garrison_clipboard_origin = types.SimpleNamespace(
+            dataset=self._file_game_dataset(), legacy=self._file_is_legacy()
+        )
         # GH #204: a Copy replaces a pending Cut, whose rows stay where they are.
         self._garrison_cut = None
         self.units_panel.set_garrison_cut(())
@@ -1004,6 +1009,10 @@ class _ViewerUnitInspectorMixin:
             return
         clips = self._garrison_clipboard
         if entry is None or not clips:
+            return
+        origin = self._garrison_clipboard_origin
+        if origin is not None and (refusal := self._cross_game_refusal(origin)):
+            self._log_status(f"Paste: {refusal}")
             return
         self._add_garrison_copies(entry, clips, "Paste into garrison", "Pasted")
 

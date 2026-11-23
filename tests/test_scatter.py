@@ -8,6 +8,7 @@ the bottom repeats the round trip on a real examples/ file.
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,6 +157,22 @@ def test_scattered_multi_tile_objects_sit_on_the_games_grid(const, region, expec
     assert _positions(_scatter_every_tile(region, const, jitter=jitter)) == [expected]
 
 
+def test_an_edge_barracks_clamps_onto_the_map_and_two_picks_on_one_anchor_place_once() -> None:
+    """GH #152: on the x = 0 edge, tiles (0, 5) and (1, 5) both clamp to
+    (1.5, 5.5), the one footprint inside the nine tiles; the duplicate is
+    dropped and every other pick's footprint leaves the set."""
+    placed = _scatter_every_tile(_block(0, 4, 3, 3), _BARRACKS)
+    assert [(u.unit_const, u.x, u.y) for u in placed] == [(_BARRACKS, 1.5, 5.5)]
+
+
+def test_a_lone_edge_tile_pick_places_its_barracks_one_tile_in(monkeypatch) -> None:
+    """GH #152: a pick of edge tile (0, 5) alone, never (1, 5), clamps to
+    (1.5, 5.5) and is kept; unclamped its (0.5, 5.5) footprint leaves the map."""
+    monkeypatch.setattr(scatter, "_pick_tiles", lambda rng, eligible, wanted, spacing: [(0, 5)])
+    specs = scatter.plan_scatter_units(_fake_scenario(), _block(0, 4, 3, 3), _BARRACKS, count=1, seed=RNG_SEED)
+    assert [(s.unit_const, s.x, s.y) for s in specs] == [(_BARRACKS, 1.5, 5.5)]
+
+
 @pytest.mark.parametrize("const", [_DORADO, _MILL, _BARRACKS, _CATAPULT_WRECK])
 def test_a_one_tile_region_places_no_multi_tile_object(const) -> None:
     model = _FakeModel()
@@ -183,7 +200,7 @@ def test_a_dropped_multi_tile_pick_leaves_the_other_placements_unchanged() -> No
     kwargs = {"count": 400, "seed": RNG_SEED, "jitter": 0.3, "weights": [1, 1]}
     mixed = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _BARRACKS], **kwargs)
     plain = scatter.scatter_units(_fake_scenario(), _FakeModel(), tiles, [_ONE_TILE, _ONE_TILE_OTHER], **kwargs)
-    assert len(mixed) < len(plain), "no Barracks pick overhung the map edge, so nothing was dropped"
+    assert len(mixed) < len(plain), "no two edge Barracks picks clamped to one anchor, so nothing was dropped"
     assert _positions(u for u in mixed if u.unit_const == _ONE_TILE) == _positions(
         u for u in plain if u.unit_const == _ONE_TILE
     )
@@ -282,6 +299,119 @@ def test_rotation_choices_are_stored_verbatim() -> None:
     assert {u.rotation for u in placed} <= {7.0, 11.0}
     assert {u.initial_animation_frame for u in placed} <= {2, 9}
     assert len({u.rotation for u in placed}) == 2
+
+
+# -- random facing or variant (TASK-510) --------------------------------------
+
+_ARCHER = 4  # ANGLE, 16 frames
+_OAK = 349  # cyclable, 42 variants
+_STONE_WALL = 117
+_STONE_GATE = 64
+_HOUSE_INERT = 33
+
+
+def _plan_mix(**kwargs):
+    kwargs.setdefault("count", 40)
+    kwargs.setdefault("seed", RNG_SEED)
+    kwargs.setdefault("weights", [2, 2, 1])
+    kwargs.setdefault("jitter", 0.3)
+    return scatter.plan_scatter_units(_fake_scenario(), _all_tiles(), [_ARCHER, _OAK, _FISH_SALMON], **kwargs)
+
+
+def _layout(specs) -> list[tuple]:
+    """A type 10 variant's frame follows its rolled rotation, so only the other consts' frames are layout."""
+    from descape import unit_variant
+
+    return [
+        (s.x, s.y, s.unit_const, None if unit_variant.frame_follows_variant(s.unit_const) else s.initial_animation_frame)
+        for s in specs
+    ]
+
+
+def test_random_rotation_calls_random_rotation_once_per_spec_in_order(monkeypatch) -> None:
+    calls: list[tuple] = []
+
+    def fake(rng, const, owner):
+        calls.append((rng, const, owner))
+        return 1000.0 + len(calls)
+
+    monkeypatch.setattr(scatter.place_rotation, "random_rotation", fake)
+    specs = _plan_mix(random_rotation=True)
+    assert specs
+    assert [(const, owner) for _, const, owner in calls] == [(s.unit_const, 0) for s in specs]
+    assert all(isinstance(rng, scatter.random.Random) for rng, _, _ in calls)
+    assert [s.rotation for s in specs] == [1001.0 + i for i in range(len(specs))]
+
+
+def test_random_rotation_keeps_each_const_inside_its_own_scope() -> None:
+    from descape import unit_rotation, unit_variant
+
+    specs = _plan_mix(random_rotation=True)
+    by_const: dict[int, list[float]] = {}
+    for s in specs:
+        by_const.setdefault(s.unit_const, []).append(s.rotation)
+    assert set(by_const) == {_ARCHER, _OAK, _FISH_SALMON}
+    count = unit_rotation.angle_count_for(_ARCHER)
+    for value in by_const[_ARCHER]:
+        facing = unit_rotation.rotation_to_facing(value, count)
+        assert value == pytest.approx(unit_rotation.facing_to_rotation(facing, count), abs=1e-12)
+    variants = unit_variant.variant_count_for(_OAK)
+    assert all(isinstance(v, float) and v == int(v) and 0 <= v < variants for v in by_const[_OAK])
+    assert all(v == 0.0 for v in by_const[_FISH_SALMON])
+    assert len(set(by_const[_ARCHER])) >= 2 and len(set(by_const[_OAK])) >= 2
+    # A tree's frame moves with its rolled variant, as the game stores it; a facing leaves it alone.
+    assert all(s.initial_animation_frame == int(s.rotation) for s in specs if s.unit_const == _OAK)
+    assert all(s.initial_animation_frame == 0 for s in specs if s.unit_const == _ARCHER)
+
+
+def test_the_same_seed_ticked_or_unticked_keeps_the_layout() -> None:
+    plain = _plan_mix()
+    rolled = _plan_mix(random_rotation=True)
+    assert _layout(rolled) == _layout(plain)
+    assert [s.rotation for s in rolled] != [s.rotation for s in plain]
+
+
+def test_the_same_seed_twice_ticked_is_identical() -> None:
+    assert _plan_mix(random_rotation=True) == _plan_mix(random_rotation=True)
+
+
+def test_rotation_choices_and_random_rotation_are_exclusive() -> None:
+    with pytest.raises(ValueError, match="at most one of rotation_choices or random_rotation"):
+        _plan_mix(rotation_choices=[0.0], random_rotation=True)
+
+
+def test_random_rotation_leaves_walls_gates_and_inert_consts_at_zero_and_draws_nothing() -> None:
+    consts = [_STONE_WALL, _STONE_GATE, _HOUSE_INERT]
+    plain = scatter.plan_scatter_units(_fake_scenario(), _all_tiles(), consts, count=40, seed=RNG_SEED, jitter=0.3)
+    rolled = scatter.plan_scatter_units(
+        _fake_scenario(), _all_tiles(), consts, count=40, seed=RNG_SEED, jitter=0.3, random_rotation=True
+    )
+    assert rolled
+    assert all(s.rotation == 0.0 for s in rolled)
+    assert rolled == plain
+
+
+def test_random_rotation_round_trips_save_and_reload(tmp_path: Path) -> None:
+    loaded = load_map_and_units(FIXTURE_PATH)
+    before = {u.reference_id for units in loaded.unit_manager.units for u in units}
+    model = UnitEditModel(loaded)
+    placed = scatter.scatter_units(
+        loaded, model, _pond(loaded), [_ARCHER, _OAK], count=40, seed=RNG_SEED, random_rotation=True
+    )
+    assert len({u.rotation for u in placed if u.unit_const == _OAK}) >= 2
+
+    out = tmp_path / "scattered_random.aoe2scenario"
+    batch_api.save(loaded, out, units=model)
+    reloaded = load_map_and_units(out)
+
+    new = [u for u in reloaded.unit_manager.units[0] if u.reference_id not in before]
+
+    def key(u):
+        # The file stores rotation as a float32: verbatim means that rounding and no other change.
+        return (u.x, u.y, u.unit_const, struct.unpack("<f", struct.pack("<f", u.rotation))[0])
+
+    assert sorted(map(key, new)) == sorted(map(key, placed))
+    assert all(u.rotation == int(u.rotation) for u in new if u.unit_const == _OAK)
 
 
 # -- occupied tiles -----------------------------------------------------------

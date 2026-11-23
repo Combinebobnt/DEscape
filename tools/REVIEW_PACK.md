@@ -25,6 +25,7 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --check --pack particle_doodads   # needs install
 .venv/bin/python3 tools/gen_review_pack.py --check --pack native_tier   # needs examples/ + install
 .venv/bin/python3 tools/gen_instruction_box_review_pack.py --check   # needs examples/ + install, drives Qt
+.venv/bin/python3 tools/gen_ground_zoom_review_pack.py --check   # needs examples/ + install
 ```
 
 A pack whose subject is a widget over the map rather than scene content cannot

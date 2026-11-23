@@ -140,6 +140,27 @@ def _require(module, *names: str) -> None:
             raise SystemExit(f"{module.__name__}.{name} is gone: update its patch in {Path(__file__).name} to match the refactor")
 
 
+def _list_order_sprites() -> None:
+    """Put the pre-TASK-016 merge back: sprites sharing a tile paint in unit-list order."""
+    import pytest
+
+    from testkit.render_family import render_global_bound, set_render_global
+
+    if not render_global_bound("SUBTILE_SPRITE_ORDER"):
+        raise SystemExit(f"render_sprites.SUBTILE_SPRITE_ORDER is gone: update its patch in {Path(__file__).name}")
+    # This worker renders once and exits, so the patch is never undone.
+    set_render_global(pytest.MonkeyPatch(), "SUBTILE_SPRITE_ORDER", False)
+
+
+def _fixed_512_textures() -> None:
+    """Put the pre-GH #326 texture back: every level crops one 512 px resize of the file (AoE2's old size)."""
+    from descape import asset_source
+
+    _require(asset_source, "terrain_texture_size", "TEXTURE_REDUCING_GAP")
+    asset_source.terrain_texture_size = lambda tile_px: 512
+    asset_source.TEXTURE_REDUCING_GAP = None  # the old 512 load was a plain resize
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -173,7 +194,22 @@ class Neutralization:
         return "mask"
 
 
-NEUTRALIZATIONS: tuple[Neutralization, ...] = ()
+NEUTRALIZATIONS: tuple[Neutralization, ...] = (
+    Neutralization(
+        "subtile-order",
+        "TASK-016: sprites sharing a tile draw nearer-last, not in unit-list order",
+        since="v0.11", control_file=OLD_ALLIES,
+        must_fail=frozenset({("stepped", True), ("sloped", True)}),
+        patch=_list_order_sprites,
+    ),
+    Neutralization(
+        "texture-span",
+        "GH #326 (TASK-200): terrain textures span 10 tiles at every level, resized from the full file",
+        since="v0.11", control_file=ELCID,
+        must_fail=ALL_CONFIGS,
+        patch=_fixed_512_textures,
+    ),
+)
 
 # A mask entry's measured Stepped canvas fraction against BASE_REF, by file and elev_step_pct (empty while none exists).
 # A run over measured + MASK_MARGIN fails: a mask grown to cover the canvas would pass every Stepped cell and its control.

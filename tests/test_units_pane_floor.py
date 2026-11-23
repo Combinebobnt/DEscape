@@ -54,5 +54,7 @@ def test_units_mode_floors_the_left_pane_at_the_units_page_and_leaving_restores_
         window.mode_combo.setCurrentText("Units")
         QApplication.processEvents()
         assert panel_width(window) >= needed, "re-entering Units must lift a narrow pane"
+        # Entering Units widens to MIN_USEFUL_WIDTH anyway; only a drag shows the floor is back.
+        assert _drag_left_to(window, settings.MIN_SPLIT_PANE) >= needed, "re-entering Units must restore its floor"
     finally:
         conftest.close_window(window)

@@ -619,13 +619,25 @@ def _interval_spy(warmer, monkeypatch) -> list[int]:
     return seen
 
 
+class _Deadline:
+    """A defer_deadline provider returning `value`, counting its calls."""
+
+    def __init__(self, value: float | None) -> None:
+        self.value = value
+        self.calls = 0
+
+    def __call__(self) -> float | None:
+        self.calls += 1
+        return self.value
+
+
 def test_a_future_deadline_defers_and_backs_off_at_most_the_time_left(input_clock, monkeypatch) -> None:
-    """D7: before defer_until a cold level still defers, but the backoff is
+    """D7: before the deadline a cold level still defers, but the backoff is
     capped by the time left, so the first chunk after it is not 50 ms late."""
     cache = _cold_cache(input_clock)
     warmer = margin_warm.MarginWarmer()
     seen = _interval_spy(warmer, monkeypatch)
-    warmer.start(cache, 0, [(0, 0)], defer_until=input_clock.t + 0.0195)
+    warmer.start(cache, 0, [(0, 0)], defer_deadline=_Deadline(input_clock.t + 0.0195))
     level_warm.note_input()
     assert warmer.tick() is True
     assert cache.get_chunk_calls == []
@@ -655,27 +667,63 @@ def test_no_deadline_defers_with_the_held_interval(input_clock, monkeypatch) -> 
     assert seen == [margin_warm.MarginWarmer.HELD_INTERVAL_MS] * 3
 
 
-def test_a_restart_with_the_same_deadline_keeps_it_and_cancel_clears_it(input_clock) -> None:
-    """The viewer re-anchors a roll's same-level clicks with the deadline it
-    stamped when the level became pending; a restart must not push it out."""
+def test_a_deadline_that_turns_to_none_keeps_deferring_with_the_held_interval(input_clock, monkeypatch) -> None:
+    """r3's defect: a level that stops being pending must not run its cold
+    chunk at the old deadline; the provider's None makes the defer unbounded."""
     cache = _cold_cache(input_clock)
     warmer = margin_warm.MarginWarmer()
-    deadline = input_clock.t + 0.1
-    warmer.start(cache, 0, [(0, 0)], defer_until=deadline)
+    seen = _interval_spy(warmer, monkeypatch)
+    provider = _Deadline(input_clock.t + 0.1)
+    warmer.start(cache, 0, [(0, 0)], defer_deadline=provider)
+    level_warm.note_input()
+    warmer.tick()
+    provider.value = None
     input_clock.t += 0.2
-    warmer.start(cache, 0, [(1, 0)], defer_until=deadline)
+    level_warm.note_input()
+    assert warmer.tick() is True
+    assert cache.get_chunk_calls == [], "a cold chunk ran at a deadline its level no longer has"
+    assert seen[-1] == margin_warm.MarginWarmer.HELD_INTERVAL_MS
+
+
+def test_a_deadline_that_appears_already_past_runs_the_chunk_on_the_next_tick(input_clock) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    provider = _Deadline(None)
+    warmer.start(cache, 0, [(0, 0)], defer_deadline=provider)
+    level_warm.note_input()
+    assert warmer.tick() is True and cache.get_chunk_calls == []
+    provider.value = input_clock.t - 0.001
     level_warm.note_input()
     assert warmer.tick() is False
-    assert cache.get_chunk_calls == [(0, 1, 0)]
+    assert cache.get_chunk_calls == [(0, 0, 0)]
 
-    warmer.start(cache, 0, [(2, 0)], defer_until=deadline)
+
+def test_the_deadline_is_read_once_per_deferring_tick_and_never_with_input_quiet(input_clock) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    provider = _Deadline(input_clock.t + 10.0)
+    warmer.start(cache, 0, [(0, 0), (1, 0)], defer_deadline=provider)
+    for n in (1, 2, 3):
+        level_warm.note_input()
+        warmer.tick()
+        assert provider.calls == n
+    assert cache.get_chunk_calls == [], "vacuous: the ticks did not defer"
+    input_clock.t += 1.0
+    warmer.tick()
+    assert cache.get_chunk_calls, "vacuous: the quiet tick ran nothing"
+    assert provider.calls == 3, "the deadline was read with input quiet"
+
+
+def test_cancel_clears_the_deadline(input_clock) -> None:
+    cache = _cold_cache(input_clock)
+    warmer = margin_warm.MarginWarmer()
+    warmer.start(cache, 0, [(0, 0)], defer_deadline=_Deadline(input_clock.t - 1.0))
     warmer.cancel()
-    assert warmer._defer_until is None
-    warmer.start(cache, 0, [(3, 0)])
-    cache._cache.clear()
+    assert warmer._defer_deadline is None
+    warmer.start(cache, 0, [(1, 0)])
     level_warm.note_input()
     assert warmer.tick() is True, "a start with no deadline kept the cancelled one"
-    assert cache.get_chunk_calls == [(0, 1, 0)]
+    assert cache.get_chunk_calls == []
 
 
 def test_a_deferral_reaches_the_perf_view_line(input_clock, monkeypatch) -> None:

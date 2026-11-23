@@ -15,6 +15,7 @@ from descape.place_rotation import (
     NOTHING,
     TURNED,
     PlaceRotation,
+    frame_for,
     random_rotation,
     rotation_for,
     step,
@@ -219,3 +220,20 @@ def test_no_facing_or_variant_rolls_zero_and_draws_nothing(const) -> None:
     for owner in (P1, GAIA):
         assert random_rotation(rng, const, owner) == 0.0
     assert rng.getstate() == before
+
+
+# --- frame_for(): the frame a placement stores --------------------------------
+
+
+PORT = 446  # cyclable, .dat type 80
+
+
+def test_only_a_type_10_variants_frame_takes_its_index() -> None:
+    """A tree's frame is its variant, as the game stores it; a type 80 variant,
+    an ANGLE facing, a wall, a gate and a cliff keep add()'s 0."""
+    tree = rotation_for(PlaceRotation(variant=7, variant_const=OAK), OAK, GAIA)
+    port = rotation_for(PlaceRotation(variant=5, variant_const=PORT), PORT, P1)
+    facing = rotation_for(PlaceRotation(facing=1.0), ARCHER, P1)
+    assert (tree, port) == (7.0, 5.0) and facing != 0.0
+    assert frame_for(OAK, tree) == 7
+    assert [frame_for(c, r) for c, r in ((PORT, port), (ARCHER, facing), (STONE_WALL, 0.0), (STONE_GATE, 0.0), (_cliff(), 0.0))] == [0] * 5

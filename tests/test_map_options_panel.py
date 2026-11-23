@@ -1168,6 +1168,36 @@ def test_every_group_renders_at_the_height_its_layout_asks_for() -> None:
         panel.deleteLater()
 
 
+@pytest.mark.font_sensitive
+def test_a_pane_below_the_hosts_minimum_width_leaves_no_blank_space_in_a_box() -> None:
+    """With the horizontal scrollbar on, the host keeps its minimum width, so
+    each box is fitted to that width, not the narrower viewport's."""
+    from PyQt5.QtWidgets import QApplication, QGroupBox
+
+    from descape import option_fields
+    from descape.map_options_panel import MapOptionsPanel
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    conftest.ensure_qapp()
+    loaded = load_map_and_units(TRIGGER_FIXTURE)
+    parse_triggers(loaded)
+
+    panel = MapOptionsPanel()
+    try:
+        panel.resize(120, 760)
+        panel.show_scenario(loaded, editable_fields=[s.field_id for s in option_fields.specs_for(loaded)])
+        panel.show()
+        QApplication.processEvents()
+        assert panel.area.horizontalScrollBar().isVisible(), "the pane must be below the host's minimum width"
+        boxes = panel.host.findChildren(QGroupBox)
+        assert boxes, "no group boxes built, so this would pass vacuously"
+        for box in boxes:
+            wanted = max(box.minimumSizeHint().height(), box.heightForWidth(box.width()))
+            assert box.height() == wanted, f"{box.title()} renders {box.height()} px but needs {wanted}"
+    finally:
+        panel.deleteLater()
+
+
 # --- the two gates ----------------------------------------------------------
 
 
@@ -1587,6 +1617,40 @@ def test_a_failed_scalar_gate_gives_the_water_row_the_scalar_reason(monkeypatch)
         assert _row(window, "water_definition").toolTip() == ViewerWindow._SCALARS_READ_ONLY
     finally:
         _close(window)
+
+
+def _as_1_49(loaded, victory: int):
+    """secondary_game_modes typed raw "4", as v1.49's structure does (GH #240), and Victory condition set to `victory`."""
+    from AoE2ScenarioParser.sections.retrievers.datatype import DataType
+
+    retriever = loaded._scenario.sections["Map"].retriever_map["secondary_game_modes"]
+    retriever.datatype = DataType("4")
+    retriever.data = b"\x00\x00\x00\x00"
+    loaded._scenario.sections["GlobalVictory"].retriever_map["mode"].data = victory
+    return loaded
+
+
+@pytest.mark.parametrize(("victory", "offered"), [(0, [0, 1, 2, 3, 4]), (6, [0, 1, 2, 3, 4, 6])])
+def test_victory_condition_offers_secondary_game_mode_only_with_its_row(victory, offered) -> None:
+    """GH #240 follow-up: a 1.49 file hides the Secondary game mode row, so
+    Victory condition hides that choice too, unless the file stores it."""
+    from descape.scenario_io import load_map_and_units
+
+    panel, emitted = _water_panel(_as_1_49(load_map_and_units(TRIGGER_FIXTURE), victory))
+    try:
+        assert panel.widget_for("secondary_game_modes") is None
+        combo = panel.widget_for("victory_condition")
+        assert [value for _label, value in _items(combo)] == offered
+        assert combo.currentData() == victory and combo.isEnabled()
+        assert ("Secondary game mode" in combo.toolTip()) == (victory == 6)
+        assert emitted == []
+    finally:
+        panel.deleteLater()
+    panel, _ = _water_panel(load_map_and_units(TRIGGER_FIXTURE))
+    try:
+        assert [value for _label, value in _items(panel.widget_for("victory_condition"))] == [0, 1, 2, 3, 4, 6]
+    finally:
+        panel.deleteLater()
 
 
 # --- corpus -----------------------------------------------------------------

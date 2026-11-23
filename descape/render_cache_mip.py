@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 
 from descape import (
-    asset_source,
     composite_backend,
     perf_trace,
 )
@@ -46,9 +45,6 @@ class _ChunkCacheMipMixin:
             f"level 0 must be the reference tile_px ({self.tile_px}), got {tile_px_by_level.get(0)!r}"
         )
         self._mip_tile_px: dict[int, int] = dict(sorted(tile_px_by_level.items()))
-        # The native tier crops wrap-padded texture copies; they live while a cache that may build it does.
-        if any(asset_source.crop_pad(asset_source.terrain_texture_size(px), px) for px in self._mip_tile_px.values()):
-            asset_source.hold_wrap_padded(self)
 
     def mip_levels(self) -> list[int]:
         """Every enumerated level index, ascending. Always contains 0.

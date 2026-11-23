@@ -69,7 +69,7 @@ class _Style:
 
 def _normalized(layer: render_sprites.SpriteLayer):
     by_anchor = {
-        key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise) for d, x, y, rise in draws]
+        key: [(d.rgba.shape, d.rgba.tobytes(), d.hotspot_x, d.hotspot_y, x, y, rise, order) for d, x, y, rise, order in draws]
         for key, draws in layer.by_anchor.items()
     }
     return by_anchor, layer.bboxes, layer.skip_ids, layer.farm_by_tile

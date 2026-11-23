@@ -696,7 +696,7 @@ def _legacy_inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int)
 
 
 _REAL_CROP_OFFSET = render_paint._crop_offset
-_REAL_TEXTURE = asset_source.get_terrain_texture_array
+_REAL_TEXTURE_AT = asset_source.terrain_texture_at
 
 
 def _field_texture(tile_px: int) -> np.ndarray | None:
@@ -706,7 +706,7 @@ def _field_texture(tile_px: int) -> np.ndarray | None:
 def _half_period(tile_px: int) -> int:
     """Half a furrow of the served FIELD texture, in texels: its row means'
     FFT peak, so a texture with another furrow density keeps the shift at
-    half a period (6 today: peak bin 40 of 512)."""
+    half a period (g_fm1.dds has 40 furrows across its side)."""
     texture = _field_texture(tile_px)
     rows = (texture.astype(np.float64) @ np.array([0.299, 0.587, 0.114])).mean(axis=1)
     spectrum = np.abs(np.fft.rfft(rows - rows.mean()))
@@ -726,33 +726,31 @@ _TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
 
 
 def _texture_variant(kind: str, tile_px: int):
-    """A get_terrain_texture_array stand-in serving one derived texture. AoE2
-    only below 64 px tiles: Return of Rome crops a shrunk copy there (GH #67)."""
+    """A terrain_texture_at stand-in serving one derived texture at the size asked."""
 
-    def get(terrain_id: int):
+    def get(terrain_id: int, size: int):
         path = asset_source.get_terrain_texture_path(terrain_id)
         if path is None:
             return None
-        key = (kind, path, tile_px)
+        key = (kind, path, tile_px, size)
         if key not in _TEXTURE_VARIANTS:
-            _TEXTURE_VARIANTS[key] = _derive_texture(kind, path, terrain_id, tile_px)
+            _TEXTURE_VARIANTS[key] = _derive_texture(kind, path, terrain_id, tile_px, size)
         return _TEXTURE_VARIANTS[key]
 
     return get
 
 
-def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int) -> np.ndarray:
+def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int, size: int) -> np.ndarray:
     from PIL import Image
 
     if kind == "unfiltered":
         # The same size the loader makes, point-sampled with no prefilter.
-        size = asset_source.LOADED_TEXTURE_SIZE
         with Image.open(path) as img:
             arr = np.array(img.convert("RGB").resize((size, size), Image.Resampling.NEAREST))
     else:
         # Every crop block whose (bx + by) is odd, turned 90 degrees in place:
         # a checkerboard of turned cells at this tile_px.
-        arr = np.array(_REAL_TEXTURE(terrain_id))
+        arr = np.array(_REAL_TEXTURE_AT(terrain_id, size))
         n = arr.shape[0] // tile_px
         for by in range(n):
             for bx in range(n):
@@ -792,13 +790,13 @@ def _patch_one_cell_shift(_style, tile_px, frame_id):
 def _patch_unfiltered(style, tile_px, _frame_id):
     """COARSE, angled frames only. Point-sampled source with no prefilter,
     on top of the angled views' ~2.8:1 vertical minification."""
-    return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("unfiltered", tile_px))]
+    return [] if style == "flat" else [(asset_source, "terrain_texture_at", _texture_variant("unfiltered", tile_px))]
 
 
 def _patch_turned(style, tile_px, _frame_id):
     """COARSE, angled frames only. Every other cell's crop turned 90
     degrees, in a checkerboard."""
-    return [] if style == "flat" else [(asset_source, "get_terrain_texture_array", _texture_variant("turned", tile_px))]
+    return [] if style == "flat" else [(asset_source, "terrain_texture_at", _texture_variant("turned", tile_px))]
 
 
 GROUND_INJECTS = {
@@ -1891,7 +1889,7 @@ def _sloped_masks(frame_id: str, frames=_SLOPED_FRAMES, crop_l0=_SLOPED_CROP_L0)
         if not lvl.sprites:
             return ink[:-step], field, ink[:-step]
         for draws in lvl.sprites.by_anchor.values():
-            for draw, ax, ay, _rise in draws:
+            for draw, ax, ay, _rise, _order in draws:
                 alpha = draw.rgba[..., 3] > 0
                 top, left = ay - draw.hotspot_y - y0, ax - draw.hotspot_x - x0
                 sy0, sx0 = max(0, -top), max(0, -left)

@@ -154,7 +154,7 @@ def _draw_key(draw):
 def _layer_key(layer):
     return (
         {
-            anchor: [(_draw_key(draw), px, py, rise) for draw, px, py, rise in slot]
+            anchor: [(_draw_key(draw), px, py, rise, order) for draw, px, py, rise, order in slot]
             for anchor, slot in layer.by_anchor.items()
         },
         layer.bboxes,

@@ -11,7 +11,7 @@ Two suites, each with a wrapper at the repo root (`.sh` on Linux/Mac, `.bat`
 on Windows):
 
 ```
-./run_quick_tests.sh                                # quick suite, in parallel -- 22-24 min on 4 workers, no examples/ needed
+./run_quick_tests.sh                                # quick suite, in parallel -- 13-21 min on 4 workers by load, no examples/ needed
 ./run_quick_tests.sh -n 0                           # same suite, serially
 .venv/bin/python3 -m pytest                         # same suite, invoked directly: serial, see below
 bash tools/ci_parity.sh [tag]                       # same suite as CI's Linux leg sees it (corpus, install, examples/ hidden); run before every tag
@@ -98,8 +98,9 @@ invocation -- this repo has no `pyproject.toml` on purpose and isn't
 pip-installable, so nothing guarantees `pytest` on PATH resolves to this
 venv's install.
 
-**The full suite takes 35-50 minutes on 4 workers** (47 min at load avg 20
-on 2026-11-18; peak RSS 5.3 GB for the largest process on 2026-11-01) with the real 21-file
+**The full suite takes 35-50 minutes on 4 workers** (38 min as load avg rose
+from 3 to 19 on 2026-11-22, 47 min at load avg 20 on 2026-11-18; peak RSS 4.8 GB
+for the largest process on 2026-11-22) with the real 21-file
 `examples/` corpus (full-canvas render comparisons on files up to 480x480,
 `~30` random rects per file per check, etc.) -- expensive enough that
 running it after every routine change is its own problem. The corpus
@@ -127,6 +128,7 @@ assuming the full corpus needs re-running.
 | `quick_keep(**params)` | a param combination a thinned sweep keeps quick (below) | every combination no keep names becomes `slow` |
 | `test_map` | runs on the generated test map or its game resave (see below) | quick suite; `-m test_map` runs it alone with no `examples/` |
 | `gui` | offscreen `ViewerWindow`, needs PyQt5 | runs if PyQt5 imports; several default-tier tests are `gui`-only, not paired with `corpus` (`test_lazy_viewport.py`, `test_new_map.py`) |
+| `real_gc_freeze` | asserts on the load's `gc.freeze()` or collect, or times work right after a load | every tier; without it a load's collect and freeze are stubbed (below) |
 | `font_sensitive` | wrap/fit geometry checks on the Map Options and trigger property forms, and the Units, Players, Diplomacy and View info-page minimum-width checks | runs at the pinned 96 DPI; `test_font_dpi_sweep.py` also re-runs them at 72-168 DPI, one subprocess per DPI |
 
 `test_lint.py` (`ruff check .`, see `ruff.toml`) runs in the default tier
@@ -181,12 +183,16 @@ assertion, and the default `editor_parchment_red` preset plus the legacy
 pins, write-path, byte-identity and round-trip tests, `test_map` items, the
 read-path oracles (`test_scenario_io.py`, `test_structure_walk.py`), the
 settings write guards, and what CI's other legs run as their own oracle:
-`test_native_composite.py` (the macOS leg) and `test_font_dpi_sweep.py`. CI
+`test_native_composite.py` and `test_sld_native.py` (the macOS leg) and
+`test_font_dpi_sweep.py`. CI
 runs the quick suite only, so a thinned combination runs on Linux, locally,
 in `run_full_tests` alone; the `test_terrain_blend_render.py` backend sweeps
 keep one numpy and one native combination each. Thin a test only when it
-costs 8 s or more summed across its params, and stop once the quick suite is
-back near 20 min on 4 workers.
+costs 8 s or more summed across its params, and only while the quick suite
+runs over 15 min wall or 60 CPU-min of summed item time (`--junitxml`) on 4
+workers at a load average under 10. It ran 12:43 and 49.6 CPU-min there on
+2026-11-22, and 20:34 and 81 CPU-min at load 15-21: past 4 busy CPUs,
+other processes' load stretches every item, so compare runs at similar load.
 
 A `pytest_terminal_summary` hook in `conftest.py` prints how much of the
 run was deselected/skipped, so an empty `examples/` or a default `-m` run
@@ -383,11 +389,15 @@ regenerate it on stock zlib.
   `test_infer_structure_cli.py` and `test_structure_backtest.py` run in the
   quick suite on the 1.59 fixture (the frozen-pair items are `test_map`).
   Their `corpus` items walk every corpus file and backtest every library
-  version bump with a corpus file of the new version (about 2 min on 4
+  version bump with a corpus file of the new version (about 6 min on 4
   workers), byte-identical files counted once. With the maintainer's
   private corpus present they pin the coverage table in
   `test_structure_backtest.py`; with `examples/` alone they check only
-  that no backtest comes out WRONG, and skip the pin.
+  that no backtest comes out WRONG, and skip the pin. The `slow` item
+  `test_two_inserts_fuzz_300_seeds_never_wrong` (`-k 300`) runs the
+  search's two-insert fuzz over 300 seeds, with and without a reference,
+  and `test_blind_retries_on_trigger_structs_never_come_out_wrong` fuzzes
+  the retries after a blind dead end.
 - `tests/fixtures/test_map_script.xs`: an empty-`main()` stub for the
   `script_name` the map names. DEscape never embeds script content, so to
   open the map in AoE2:DE without an "XS: Error 0354: failed to open file"
@@ -459,6 +469,31 @@ it, like a fixture that holds its window in another shape, calls
 window an earlier test built now fails with `wrapped C/C++ object ... has been
 deleted`: that is hidden cross-test coupling, so fix the test rather than
 exempting it. `test_window_reaper.py` pins the hook.
+
+## A load's full collection is stubbed
+
+Every scenario load runs one full `gc.collect()` and then `gc.freeze()`
+(`_freeze_loaded_document()`). In a worker that has run thousands of tests
+that collection walks everything the worker holds, pytest's own collected
+items included, and it was about 40% of the quick suite's time. So
+`testkit/gc_amortize.py` swaps the viewer's `gc` for a stand-in during that
+call only: the method body still runs, but its collect and freeze do
+nothing. The same teardown hook, after the reaper, runs one real full
+collection every 25 tests, which frees the reaped windows, and drops the
+game-data tables each data-mod test cached under its own `tmp_path` key. A
+test that asserts on the load's freeze or collect, or times work right
+after a load where an automatic collection over the unfrozen document could
+break its bound, is marked `real_gc_freeze` and gets the real calls. The
+first-parse freeze stays live, so a reaped window it froze waits for the
+next load's `gc.unfreeze()`: bounded, not a leak. `test_gc_amortize.py`
+pins all three.
+
+For the same reason, a test module that caches a parsed map for its own
+tests (`functools.cache` on a loader) clears it in an autouse module-scoped
+fixture's teardown, as `test_scenario_new.py` does: a 480-tile map is about
+half a million objects, and kept for the session every later collection on
+that worker walks it. In practice xdist hands each worker a module's tests
+in one contiguous run, so the clear rarely costs a second parse.
 
 ## Process-global hazard: verify modules share one interpreter
 

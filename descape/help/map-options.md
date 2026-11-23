@@ -6,7 +6,7 @@ The line at the top counts the settings, names the scenario version and says how
 
 ## Global Victory
 
-**Victory condition** picks how the scenario is won: Standard, Conquest, Score, Time limit, Custom, or Secondary game mode (the mode chosen under Map). Its tooltip says what each one means.
+**Victory condition** picks how the scenario is won: Standard, Conquest, Score, Time limit, Custom, or Secondary game mode (the mode chosen under Map). A file with no Secondary game mode row isn't offered that choice, unless it already stores it. Its tooltip says what each one means.
 
 - **Score to win** applies to Score victory. A file that never set a score shows 14000, the value the in-game editor fills in; type a number to store one.
 - **Time limit, years** applies to Time limit victory: how many in-game years the game lasts, to a tenth of a year. The highest score at the end wins.

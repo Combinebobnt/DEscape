@@ -29,6 +29,7 @@ import shutil
 import stat
 import sys
 import threading
+from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
@@ -56,68 +57,37 @@ LEGACY_CONFIG_PATH = REPO_ROOT / "config.yaml"
 IS_FROZEN = getattr(sys, "frozen", False)
 TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 
-# Real source textures are 512-2048px square; crops taken from them for tile
-# blitting are tiny (render.tile_pixels_for_map(), 32-64px depending on map
-# size), so there's no need to keep the full-resolution image cached per
-# terrain_id -- downsampling
-# once at load time keeps this cache's memory footprint reasonable across the
-# ~85 distinct texture files a real install has, while still leaving plenty
-# of room to pick varied non-repeating crop origins.
-LOADED_TEXTURE_SIZE = 512
-# GH #67: the tile size at which a tile crops its share of a LOADED_TEXTURE_SIZE texture,
-# for terrain_texture_size(): render.SMALL_MAP_TILE_PIXELS, a small map's reference level.
+# GH #326: one terrain texture covers TERRAIN_TEXTURE_SPAN x TERRAIN_TEXTURE_SPAN tiles at
+# every zoom, in every game. Measured 10 on an in-game farm, where the .dat's
+# terrain_dimensions says 6; taken as every terrain's span (user decision 2026-11-20).
+TERRAIN_TEXTURE_SPAN = 10
+# The level get_terrain_texture_array() serves: render.SMALL_MAP_TILE_PIXELS, a small map's reference level.
 TEXTURE_REFERENCE_TILE_PIXELS = 64
 
 
 def terrain_texture_size(tile_px: int) -> int:
-    """The texture size a level of `tile_px` crops its tiles from. Under a
-    game with Game.texture_scales_with_level (Return of Rome, GH #67) a
-    zoomed-out level reads textures shrunk by its
-    ratio to TEXTURE_REFERENCE_TILE_PIXELS, so a tile keeps the texture share
-    it has at the reference and a pattern shrinks with the map: RoR's farm
-    rows are twice as wide as AoE2's, and at one size for every level they
-    grew to a few coarse rows per farm. AoE2 keeps LOADED_TEXTURE_SIZE at
-    every level (user decision 2026-10-17). Always a multiple of tile_px."""
-    if not game_dataset.game().texture_scales_with_level or tile_px >= TEXTURE_REFERENCE_TILE_PIXELS:
-        return LOADED_TEXTURE_SIZE
-    return LOADED_TEXTURE_SIZE * tile_px // TEXTURE_REFERENCE_TILE_PIXELS
+    """The side of the texture a level of `tile_px` crops its tiles from:
+    TERRAIN_TEXTURE_SPAN tiles' worth, so a ground pattern covers the same
+    tiles at every zoom (GH #326). Each level's texture is resized from the
+    full source file, so it shows as much detail as the level has pixels
+    (a 512 or 1024 px source is enlarged at the finer levels). Always a
+    multiple of tile_px."""
+    return TERRAIN_TEXTURE_SPAN * tile_px
 
 
 def crop_pad(size: int, tile_px: int) -> int:
     """Rows and columns crop_source() wrap-pads a `size` square by: 0 where
-    tile_px divides it, else tile_px (the native tiers' 96 and 192 on 512,
-    TASK-599 and TASK-601). Exactly tile_px: the native kernel checks a
+    tile_px divides it, as it always does for terrain_texture_size(), else
+    tile_px (a stand-in texture of its own size at the native tiers' 96 and
+    192, TASK-599 and TASK-601). Exactly tile_px: the native kernel checks a
     layer mask's padded size against it, so each tier keeps its own copy."""
     return 0 if size % tile_px == 0 else tile_px
 
 
 # (id(source), pad) -> (weakref to source, padded copy), for crop_source().
 _wrap_padded: dict = {}
-# Reentrant: the weakref and finalize callbacks below can run under GC inside a locked section.
+# Reentrant: the weakref callback below can run under GC inside a locked section.
 _wrap_lock = threading.RLock()
-# Live owners hold_wrap_padded() registered; the last one's collection drops the copies.
-_wrap_holders = 0
-
-
-def hold_wrap_padded(owner) -> None:
-    """Keeps crop_source()'s padded copies while `owner` lives (a chunk
-    cache whose ladder has a level, the native tier, that does not divide
-    the texture). Once the last such owner is collected they are dropped,
-    though their sources stay in the texture caches."""
-    import weakref
-
-    global _wrap_holders
-    with _wrap_lock:
-        _wrap_holders += 1
-    weakref.finalize(owner, _release_wrap_padded)
-
-
-def _release_wrap_padded() -> None:
-    global _wrap_holders
-    with _wrap_lock:
-        _wrap_holders -= 1
-        if _wrap_holders == 0:
-            _wrap_padded.clear()
 
 
 def clear_wrap_padded() -> None:
@@ -130,9 +100,10 @@ def crop_source(arr, tile_px: int):
     tile_px crop at render._crop_offset()'s origin slices: itself where
     tile_px divides the period, else a read-only copy extended by tile_px
     rows and columns of its own wrap, so the crop never runs off the edge.
-    Ground textures tile at their edges, so the wrap is seamless. Cached per
-    source array while it lives, so a stand-in texture (tests, review packs)
-    pads its own pixels, and until the last hold_wrap_padded() owner goes."""
+    Ground textures tile at their edges, so the wrap is seamless. Only a
+    stand-in texture (tests, review packs) still pads: terrain_texture_size()
+    always divides. Cached per source array while it lives, so a stand-in
+    pads its own pixels."""
     pad = crop_pad(arr.shape[0], tile_px)
     if pad == 0:
         return arr
@@ -285,8 +256,6 @@ def clear_art_caches(changed: frozenset[str] | None = None) -> None:
         # a same-named file under a different root would otherwise keep serving
         # the old swatch or texture.
         _terrain_thumbnail_for_path.cache_clear()
-        _terrain_texture_for_path.cache_clear()
-        _shrunk_texture.cache_clear()
         _forget_prefetches()
     # Imported here, not at module scope: unit_sprites imports this module, so
     # a top-level import would be a cycle. Its caches remember MISSES as well
@@ -879,22 +848,41 @@ def get_terrain_average_color(terrain_id: int) -> tuple[int, int, int] | None:
     Cheap way to get authentic-ish colors without a full texture-blitting
     renderer.
 
-    Derived from get_terrain_texture_array()'s cached 512x512 array, not the
-    2048x2048 .dds: the textured renderer has already decoded every terrain on
-    screen, so a Copy Region thumbnail costs a 32x32 resize instead of ~20 ms of
-    decode per terrain. One definition whatever is cached. Measured against the
-    .dds-derived average: 133 of 134 terrains identical, terrain 23 (g_wt3.dds)
-    one step lower on red. The cost: textures-off rendering now loads that 512²
-    array (~0.8 MB) for each terrain on the map; with textures on it is resident
-    anyway."""
-    arr = get_terrain_texture_array(terrain_id)
-    if arr is None:
-        return None
-    import numpy as np
+    One definition, _average_rgb() of the full-size decode. The textured
+    renderer's first level load of a file records it (_averages), so a Copy
+    Region thumbnail of a terrain on screen costs no decode; otherwise
+    (textures off) this decodes the file once, ~15 ms. A terrain with no file
+    averages get_terrain_texture_array()'s stand-in, if a test serves one."""
     from PIL import Image
 
-    # Sampling is plenty for an average. Integer floor mean per channel.
-    pixels = np.asarray(Image.fromarray(arr).resize((32, 32))).reshape(-1, 3)
+    path = get_terrain_texture_path(terrain_id)
+    if path is None:
+        arr = get_terrain_texture_array(terrain_id)
+        return None if arr is None else _average_rgb(Image.fromarray(arr))
+    with _prefetch_lock:
+        known = _averages.get(path)
+        generation = _generation
+    if known is not None:
+        return known
+
+    def decode(file: Path):
+        with Image.open(file) as img:
+            return _average_rgb(img.convert("RGB"))
+
+    rgb = _decode_with_install_fallback(path, decode)
+    if rgb is not None:
+        with _prefetch_lock:
+            if generation == _generation:
+                _averages.setdefault(path, rgb)
+    return rgb
+
+
+def _average_rgb(image) -> tuple[int, int, int]:
+    """A PIL RGB image's average colour: resized to 32x32 (sampling is plenty
+    for an average), then the integer floor mean per channel."""
+    import numpy as np
+
+    pixels = np.asarray(image.resize((32, 32))).reshape(-1, 3)
     r, g, b = (int(total) // len(pixels) for total in pixels.sum(axis=0, dtype=np.int64))
     return (r, g, b)
 
@@ -908,8 +896,8 @@ TERRAIN_THUMBNAIL_PX = 64
 @lru_cache(maxsize=256)
 def _terrain_thumbnail_for_path(path: Path, px: int):
     """The open+resize half of get_terrain_thumbnail, keyed on the FILE, not
-    on a terrain_id. 131 terrains share only 85 textures -- g_for.dds alone
-    backs 12 of them -- so an id-keyed cache would decode the same .dds a
+    on a terrain_id. 134 terrains share only 85 textures -- g_for.dds alone
+    backs 14 of them -- so an id-keyed cache would decode the same .dds a
     dozen times over."""
     import numpy as np
     from PIL import Image
@@ -952,8 +940,8 @@ def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
     back to terrain_palette.color_for_terrain_id.
 
     Deliberately NOT built from get_terrain_texture_array(): that cache
-    holds a 512x512x3 array per file and evicts nothing at 85 < 256, so
-    filling a browser would warm ~67MB in the renderer's own cache for
+    holds a level-sized array per file (640 px at the reference level), so
+    filling a browser would warm ~100MB in the renderer's own cache for
     textures the open map may never touch. At 64px the whole catalog is
     ~1.6MB, and only the 85 distinct files are ever decoded."""
     path = get_terrain_texture_path(terrain_id)
@@ -963,91 +951,128 @@ def get_terrain_thumbnail(terrain_id: int, px: int = TERRAIN_THUMBNAIL_PX):
 
 
 def get_terrain_texture_array(terrain_id: int):
-    """The real texture for terrain_id as a read-only (LOADED_TEXTURE_SIZE,
-    LOADED_TEXTURE_SIZE, 3) uint8 numpy array, or None if unavailable --
-    either no install is configured, or this terrain_id has no known texture.
-    Backs real per-tile texture blitting in render.py; see
-    get_terrain_average_color for the cheaper single-color equivalent."""
+    """terrain_id's texture at the reference level, terrain_texture_size(
+    TEXTURE_REFERENCE_TILE_PIXELS), as a read-only (side, side, 3) uint8
+    array, or None when no install is configured or the id has no texture.
+    Also the stand-in seam: tests and review packs replace it to serve a
+    texture with no file behind it, which terrain_texture_at() then serves
+    at the stand-in's own size."""
     path = get_terrain_texture_path(terrain_id)
     if path is None:
         return None
-    return _terrain_texture_for_path(path)
+    return _texture_for_path(path, terrain_texture_size(TEXTURE_REFERENCE_TILE_PIXELS))
 
 
 def terrain_texture_at(terrain_id: int, size: int):
-    """get_terrain_texture_array() at `size` (terrain_texture_size()): the
-    array itself at LOADED_TEXTURE_SIZE, else that array shrunk (GH #67)."""
-    if size == LOADED_TEXTURE_SIZE:
-        return get_terrain_texture_array(terrain_id)
+    """terrain_id's texture at `size` (terrain_texture_size()), resized from
+    the full source file, or None. A terrain with no file gets whatever
+    get_terrain_texture_array() serves: None, or a stand-in at its own size."""
     path = get_terrain_texture_path(terrain_id)
-    return None if path is None else _shrunk_texture(path, size)
+    if path is None:
+        return get_terrain_texture_array(terrain_id)
+    return _texture_for_path(path, size)
 
 
-@lru_cache(maxsize=256)
-def _shrunk_texture(path: Path, size: int):
-    """_terrain_texture_for_path(path) box-filtered to (size, size), read-only."""
-    import numpy as np
-    from PIL import Image
-
-    base = _terrain_texture_for_path(path)
-    if base is None:
-        return None
-    arr = np.array(Image.fromarray(base).resize((size, size), Image.BOX))
-    arr.flags.writeable = False
-    return arr
-
-
-@lru_cache(maxsize=256)
-def _terrain_texture_for_path(path: Path):
-    """get_terrain_texture_array's load, keyed on the FILE like
+def _texture_for_path(path: Path, size: int):
+    """One file's texture at `size`, keyed on the FILE like
     _terrain_thumbnail_for_path: a map's 37 ids resolve to 26 files. Read-only,
     since ids sharing a file share the array; consumers only crop views.
     Takes a prefetched load's result (waiting if it is still running) rather
-    than decoding the file a second time; a worker's exception raises here."""
+    than decoding the file a second time; a worker's exception raises here.
+    Cached in _textures under TEXTURE_CACHE_BUDGET_BYTES (_keep_texture())."""
+    key = (path, size)
     with _prefetch_lock:
-        entry = _pending.pop(path, None)
+        if key in _textures:
+            _textures.move_to_end(key)
+            return _textures[key]
+        entry = _pending.pop(key, None)
         generation = _generation
     if entry is not None and entry[0] == generation:
         with perf_trace.texture_wait():
-            arr = entry[1].result()
+            arr, average = entry[1].result()
     else:
         with perf_trace.texture_load():
-            arr = _load_texture(path)
+            arr, average = _load_texture(path, size)
     with _prefetch_lock:
         if generation == _generation:
-            _loaded.add(path)
+            _keep_texture(key, arr)
+            if average is not None:
+                _averages.setdefault(path, average)
     return arr
 
 
+def _keep_texture(key: tuple[Path, int], arr) -> None:
+    """Caches arr (None for a file that will not decode, so it is not retried)
+    as the most recently used entry, then drops least recently used entries
+    until the cache is back within TEXTURE_CACHE_BUDGET_BYTES, never the new
+    one (GH #326: ~500 MB if a big map visits every level). Under _prefetch_lock."""
+    global _texture_bytes
+    old = _textures.pop(key, None)
+    _texture_bytes -= 0 if old is None else old.nbytes
+    _textures[key] = arr
+    _texture_bytes += 0 if arr is None else arr.nbytes
+    while _texture_bytes > TEXTURE_CACHE_BUDGET_BYTES and len(_textures) > 1:
+        dropped = _textures.pop(next(iter(_textures)))
+        _texture_bytes -= 0 if dropped is None else dropped.nbytes
+
+
+def texture_cache_stats() -> tuple[int, int]:
+    """(entries, bytes) the terrain texture cache holds: tests and benches."""
+    with _prefetch_lock:
+        return len(_textures), _texture_bytes
+
+
 def terrain_average_color_if_loaded(terrain_id: int) -> tuple[int, int, int] | None:
-    """get_terrain_average_color() if terrain_id's texture is already decoded,
+    """get_terrain_average_color() if terrain_id's file has been decoded,
     else None, never decoding or waiting on a prefetch: the minimap's terrain
-    colour (GH #54). An lru eviction since leaves the path listed, which costs
-    one re-decode, as terrain_mask_loaded() notes."""
+    colour (GH #54)."""
     path = get_terrain_texture_path(terrain_id)
-    if path is None or path not in _loaded:
+    if path is None or path not in _averages:
         return None
     return get_terrain_average_color(terrain_id)
 
 
 def loaded_texture_count() -> int:
-    """How many texture files are decoded: the minimap re-colours while this grows (GH #54)."""
-    return len(_loaded)
+    """How many texture files have been decoded: the minimap re-colours while this grows (GH #54)."""
+    return len(_averages)
 
 
-def _load_texture(path: Path):
-    """Decode and resize one texture file. Any thread: PIL releases the GIL."""
-    import numpy as np
+# PIL's reducing_gap for a texture downscale (GH #326: 3.6 vs 17 ms at 160 px, max channel diff 2); None is a plain resize.
+TEXTURE_REDUCING_GAP: float | None = 3.0
+
+
+def _load_texture(path: Path, size: int):
+    """Decode one texture file and resize it to (size, size): (read-only
+    array, the file's _average_rgb() or None once known). (None, None) for a
+    mod file that will not decode. Any thread: PIL releases the GIL."""
+    decoded = _decode_texture(path)
+    if decoded is None:
+        return None, None
+    return _sized_texture(decoded[0], size), decoded[1]
+
+
+def _decode_texture(path: Path):
+    """(the file's PIL RGB image, its _average_rgb() or None once known), or
+    None for a mod file that will not decode. Decoded once per prefetch job,
+    whatever sizes it resizes to."""
     from PIL import Image
 
     def decode(file: Path):
         with Image.open(file) as img:
-            rgb = img.convert("RGB").resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
-            return np.array(rgb)
+            rgb = img.convert("RGB")
+        return rgb, None if path in _averages else _average_rgb(rgb)
 
-    arr = _decode_with_install_fallback(path, decode)
-    if arr is not None:
-        arr.flags.writeable = False
+    return _decode_with_install_fallback(path, decode)
+
+
+def _sized_texture(rgb, size: int):
+    """A decoded texture resized to (size, size), as a read-only array."""
+    import numpy as np
+
+    if rgb.size != (size, size):
+        rgb = rgb.resize((size, size), reducing_gap=TEXTURE_REDUCING_GAP)
+    arr = np.array(rgb)
+    arr.flags.writeable = False
     return arr
 
 
@@ -1153,8 +1178,12 @@ _masks_asked: set[tuple[str, int]] = set()
 
 
 def terrain_mask_at(name: str, size: int):
-    """get_terrain_mask_array() at `size`, as terrain_texture_at() (GH #67)."""
-    mask = get_terrain_mask_array(name) if size == LOADED_TEXTURE_SIZE else _sized_terrain_mask(name, size)
+    """terrain/masks/<name> at `size` (terrain_texture_size()), the side of
+    the texture it modulates, so it crops at that texture's offset. With no
+    file, whatever get_terrain_mask_array() serves: None, or a stand-in."""
+    mask = _sized_terrain_mask(name, size)
+    if mask is None:
+        mask = get_terrain_mask_array(name)
     _masks_asked.add((name, size))
     return mask
 
@@ -1169,16 +1198,19 @@ def terrain_mask_loaded(name: str, size: int) -> bool:
 
 @lru_cache(maxsize=32)
 def get_terrain_mask_array(name: str):
-    """terrain/masks/<name>'s red channel as a read-only (LOADED_TEXTURE_SIZE,
-    LOADED_TEXTURE_SIZE) uint8 array, 0..255 = the layer terrain's weight, or
-    None. The files mix L and RGB modes, so they go through RGB first; they
-    are 512 px already, the same grid get_terrain_texture_array() crops."""
-    return _sized_terrain_mask(name, LOADED_TEXTURE_SIZE)
+    """terrain/masks/<name>'s red channel at the reference level's texture
+    side as a read-only uint8 array, 0..255 = the layer terrain's weight, or
+    None. The stand-in seam for masks, as get_terrain_texture_array() is for
+    textures."""
+    return _sized_terrain_mask(name, terrain_texture_size(TEXTURE_REFERENCE_TILE_PIXELS))
 
 
-@lru_cache(maxsize=96)  # every mask at up to three sizes under Return of Rome
+@lru_cache(maxsize=128)  # every mask at each ladder size
 def _sized_terrain_mask(name: str, size: int):
-    """get_terrain_mask_array()'s load at `size`, box-filtered below LOADED_TEXTURE_SIZE."""
+    """terrain/masks/<name> resized from the file (512 px) to (size, size).
+    The files mix L and RGB modes, so they go through RGB first. Only the red
+    band is resized: byte-identical to resizing RGB, a third of the cost at
+    1920 px (33 -> 11 ms, TASK-031.26)."""
     path = game_dataset.resource_path(f"{TERRAIN_MASK_SUBPATH}/{name}") if name else None
     if path is None or not path.is_file():
         return None
@@ -1187,12 +1219,10 @@ def _sized_terrain_mask(name: str, size: int):
 
     try:
         with Image.open(path) as img:
-            rgb = img.convert("RGB")
-            if rgb.size != (LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE):
-                rgb = rgb.resize((LOADED_TEXTURE_SIZE, LOADED_TEXTURE_SIZE))
-            if size != LOADED_TEXTURE_SIZE:
-                rgb = rgb.resize((size, size), Image.BOX)
-            arr = np.ascontiguousarray(np.array(rgb)[:, :, 0])
+            red = img.convert("RGB").getchannel("R")
+            if red.size != (size, size):
+                red = red.resize((size, size))
+            arr = np.ascontiguousarray(np.array(red))
     except (OSError, ValueError):
         return None
     arr.flags.writeable = False
@@ -1203,10 +1233,17 @@ def _sized_terrain_mask(name: str, size: int):
 # module pulls in Qt). Created on first use; tests swap in an inline executor.
 PREFETCH_WORKERS = min(4, max(1, (os.cpu_count() or 2) - 1))
 _prefetch_executor = None
-# path -> (generation, Future) for prefetched loads no get has taken yet.
-_pending: dict[Path, tuple[int, Future]] = {}
-# Paths _terrain_texture_for_path has cached: lru_cache has no membership test.
-_loaded: set[Path] = set()
+# (path, size) -> (generation, Future) for prefetched loads no get has taken yet.
+_pending: dict[tuple[Path, int], tuple[int, Future]] = {}
+# Queued prefetch jobs, (path, [(size, Future)]), the next to run first; each has one pool slot.
+_jobs: deque[tuple[Path, list[tuple[int, Future]]]] = deque()
+# (path, size) -> texture (or None), least recently used first; _texture_bytes is their total nbytes.
+_textures: OrderedDict[tuple[Path, int], object] = OrderedDict()
+_texture_bytes = 0
+# The user's ~512 MB (2026-11-20): above it the least recently used level's file reloads on its next visit.
+TEXTURE_CACHE_BUDGET_BYTES = 512 * 2**20
+# path -> _average_rgb() of the full file, recorded by the first decode (GH #326).
+_averages: dict[Path, tuple[int, int, int]] = {}
 _prefetch_lock = threading.Lock()
 # Bumped by clear_install_caches() (not a data-mod switch's), so a load from before it is never served.
 _generation = 0
@@ -1226,41 +1263,100 @@ def _prefetch_pool():
     return _prefetch_executor
 
 
-def _prefetch_load(path: Path):
+def _run_prefetch_job() -> None:
+    """One pool slot: takes the job at the front of _jobs, decodes its file
+    once and resolves each size's Future as soon as that size is resized, in
+    the caller's order. A size whose Future was cancelled is skipped."""
+    with _prefetch_lock:
+        if not _jobs:
+            return
+        path, futures = _jobs.popleft()
+    wanted = [(size, future) for size, future in futures if future.set_running_or_notify_cancel()]
+    if not wanted:
+        return
     with perf_trace.texture_prefetch():
-        return _load_texture(path)
+        try:
+            decoded = _decode_texture(path)
+            for size, future in wanted:
+                future.set_result((None, None) if decoded is None else (_sized_texture(decoded[0], size), decoded[1]))
+        except Exception as exc:  # noqa: BLE001 - raised again at the get
+            for _size, future in wanted:
+                if not future.done():
+                    future.set_exception(exc)
 
 
-def prefetch_terrain_textures(terrain_ids) -> int:
-    """Starts loading the texture files behind terrain_ids on a small thread
-    pool, so a render that needs them later waits on the load already in
-    flight instead of decoding each on the GUI thread. Files already cached or
-    already pending are skipped, as are ids with no texture. Returns the
-    number of loads submitted."""
-    submitted = 0
-    for terrain_id in terrain_ids:
-        path = get_terrain_texture_path(int(terrain_id))
-        if path is None:
-            continue
-        with _prefetch_lock:
-            if path in _loaded or path in _pending:
-                continue
-            _pending[path] = (_generation, _prefetch_pool().submit(_prefetch_load, path))
-        submitted += 1
+def prefetch_terrain_textures(terrain_ids, tile_pxs, back: bool = False) -> int:
+    """Starts loading the texture files behind terrain_ids, at the texture
+    size of each level in tile_pxs, on a small thread pool, so a render that
+    needs them later waits on the load already in flight instead of decoding
+    each on the GUI thread. One job per file decodes it once for all its
+    sizes, resized in tile_pxs' order (the caller's anchor level first). A
+    call's jobs go ahead of every earlier call's still-queued ones: the latest
+    caller is the current view (a level warm's anchor ahead of the open's
+    reference level). A size this call asks for that an earlier call still
+    has queued moves into this call's job (a re-anchor's level, queued as a
+    neighbour, goes to the front); the earlier job keeps its other sizes.
+    `back` instead queues behind everything and moves nothing: the whole
+    ladder after a load settles (GH #326). Loads already cached, running or
+    taken by a get are skipped, as are ids with no texture. Returns the
+    number of (file, size) loads submitted."""
+    sizes = list(dict.fromkeys(terrain_texture_size(px) for px in tile_pxs))
+    paths = dict.fromkeys(p for p in map(get_terrain_texture_path, map(int, terrain_ids)) if p is not None)
+    jobs, submitted = [], 0
+    with _prefetch_lock:
+        moved: dict[Path, dict[int, Future]] = {}
+        if not back and _jobs:
+            wanted, kept = set(sizes), []
+            for path, queued in _jobs:
+                rest = queued
+                if path in paths:
+                    # A cancelled one (an install clear) is dropped, so its size is loaded afresh.
+                    moved.setdefault(path, {}).update((s, f) for s, f in queued if s in wanted and not f.cancelled())
+                    rest = [(s, f) for s, f in queued if s not in wanted]
+                if rest:
+                    kept.append((path, rest))
+            _jobs.clear()
+            _jobs.extend(kept)
+        for path in paths:
+            earlier = moved.get(path, {})
+            futures = []
+            for size in sizes:
+                key = (path, size)
+                if size in earlier:
+                    futures.append((size, earlier[size]))
+                elif key not in _textures and key not in _pending:
+                    future = Future()
+                    _pending[key] = (_generation, future)
+                    futures.append((size, future))
+                    submitted += 1
+            if futures:
+                jobs.append((path, futures))
+        if back:
+            _jobs.extend(jobs)
+        else:
+            _jobs.extendleft(reversed(jobs))
+    # Outside the lock: a test's inline executor runs the slot inside submit(). A job emptied
+    # above leaves its slot behind, which finds nothing or the next job.
+    pool = _prefetch_pool()
+    for _job in jobs:
+        pool.submit(_run_prefetch_job)
     return submitted
 
 
 def _forget_prefetches() -> None:
-    """clear_install_caches()'s half for the prefetch: pending loads are
-    dropped (a queued one cancelled, a running one finishes unserved) and the
-    generation moves on."""
-    global _generation
+    """clear_art_caches()'s half for the texture cache and prefetch: cached
+    textures and pending loads are dropped (a queued one cancelled, a running
+    one finishes unserved) and the generation moves on, in one locked step.
+    _jobs stays: a get may be waiting on one of its Futures, and its job skips the cancelled ones."""
+    global _generation, _texture_bytes
     with _prefetch_lock:
         _generation += 1
         for _gen, future in _pending.values():
             future.cancel()
         _pending.clear()
-        _loaded.clear()
+        _textures.clear()
+        _texture_bytes = 0
+        _averages.clear()
 
 
 def shutdown_prefetch_pool() -> None:
@@ -1272,6 +1368,11 @@ def shutdown_prefetch_pool() -> None:
         for _gen, future in _pending.values():
             future.cancel()
         _pending.clear()
+        # A get may hold a queued job's Future already: cancelled, it raises rather than waiting on a dead slot.
+        for _path, futures in _jobs:
+            for _size, future in futures:
+                future.cancel()
+        _jobs.clear()
         executor, _prefetch_executor = _prefetch_executor, None
     if executor is not None:
         executor.shutdown(wait=False, cancel_futures=True)

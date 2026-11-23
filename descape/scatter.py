@@ -10,14 +10,21 @@ is_water() set, or a rectangle comprehension. fill_tools.contiguous_region()
 keys on exact terrain_id equality, so it can't express "a body of water" (a
 bay of WATER + WATER_DEEP + SHALLOWS comes back as three regions).
 
-**rotation is a pass-through, never randomized.** For ~65% of GAIA objects
-(and every wall and gate) `rotation` is a graphic-variant index, not an
-angle -- see AGENTS.md's hard rules. random.uniform(0, 2 * math.pi) is
-therefore banned here: it would write variant indices nobody has measured.
-A caller who has confirmed a set of values valid for its const passes them
-as rotation_choices; otherwise every unit gets 0.0.
-initial_animation_frame gets the same treatment, and is the field to vary
-if the goal is forty fish not animating in lockstep.
+**rotation is never randomized except through
+place_rotation.random_rotation().** For ~65% of GAIA objects (and every wall
+and gate) `rotation` is a graphic-variant index, not an angle -- see
+AGENTS.md's hard rules. random.uniform(0, 2 * math.pi) is therefore banned
+here: it would write variant indices nobody has measured. With
+random_rotation=True (TASK-510) each unit's value comes from
+place_rotation.random_rotation(), which keeps it inside AGENTS.md's ANGLE and
+*Cycle Variant* scopes and gives walls, gates, cliffs and INERT consts 0.0;
+it is drawn after every other value, so the same seed gives the same layout
+with or without it. A caller who has confirmed a set of values valid for its
+const passes them as rotation_choices instead; otherwise every unit gets 0.0.
+initial_animation_frame gets the same treatment (animation_frames, else 0),
+and is the field to vary if the goal is forty fish not animating in
+lockstep, with one exception: a rolled type 10 variant overrides it with
+the same index (place_rotation.frame_for()), as the game stores it.
 
 **Determinism.** A local random.Random(seed), never module-global random.*,
 and the eligible tiles are sorted before any draw, so the same seed gives
@@ -48,6 +55,8 @@ from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
+
+from descape import place_rotation, unit_variant
 
 # render is already loaded by unit_model, so importing it here costs nothing.
 from descape.render_units import NON_BUILDING_SPAN, _span_start, snapped_anchor, span_anchor, unit_tile_bounds
@@ -219,6 +228,7 @@ def plan_scatter_units(
     min_spacing: int = 0,
     avoid_occupied: bool = False,
     rotation_choices: Sequence[float] | None = None,
+    random_rotation: bool = False,
     animation_frames: Sequence[int] | None = None,
 ) -> list[_Spec]:
     """Plans scatter_units(): the (x, y, const, rotation, frame) specs for
@@ -238,13 +248,20 @@ def plan_scatter_units(
     x + 0.5 +/- jitter, clamped to MAX_JITTER. Any multi-tile axis
     (tile_span(): buildings, fish, cliffs, doodads, wrecks) takes
     render_units.snapped_anchor() instead, unjittered: `x + 1` on an even span, so a
-    Mill or a salmon lands on the game's grid. A multi-tile pick is kept only
-    when its whole footprint lies in the eligible tiles, as in
+    Mill or a salmon lands on the game's grid, and either parity clamped so the
+    footprint stays on the map (a 3x3 on tile 0 lands at 1.5). A multi-tile pick
+    is kept only when its whole footprint lies in the eligible tiles, as in
     scatter_existing_units(); otherwise it is dropped, so a "Water only"
     region's edge never puts a fish on shore and the returned list stays the
-    truthful count. z is always 0.0, never derived from terrain elevation.
+    truthful count. Two picks that clamp to one const and anchor (tiles 0 and 1
+    for a 3x3) place once. z is always 0.0, never derived from terrain elevation.
     `min_spacing` is a Chebyshev tile distance, best-effort. `avoid_occupied` drops tiles under any existing unit's
     footprint (see occupied_tiles()).
+
+    `random_rotation=True` rolls each returned unit's rotation through
+    place_rotation.random_rotation() after every other draw (module
+    docstring); it excludes `rotation_choices`, and on a type 10 variant it
+    replaces the `animation_frames` choice with the rolled index.
     """
     if jitter < 0:
         raise ValueError(f"jitter must be >= 0, got {jitter}")
@@ -255,6 +272,8 @@ def plan_scatter_units(
         raise ValueError(f"weights has {len(weights)} entries for {len(consts)} unit_consts")
     if rotation_choices is not None and not rotation_choices:
         raise ValueError("rotation_choices must be None or non-empty")
+    if rotation_choices is not None and random_rotation:
+        raise ValueError("pass at most one of rotation_choices or random_rotation")
     if animation_frames is not None and not animation_frames:
         raise ValueError("animation_frames must be None or non-empty")
 
@@ -271,6 +290,7 @@ def plan_scatter_units(
     eligible_set = set(eligible)
 
     specs = []
+    planned = set()
     for x, y in picked:
         if len(consts) == 1:
             const = consts[0]
@@ -291,8 +311,21 @@ def plan_scatter_units(
             uy += jy if span[1] <= 1 else 0.0
         if span != NON_BUILDING_SPAN and not _footprint_fits(ux, uy, span, eligible_set):
             continue  # after every draw, so the picks after it place as before
+        if (const, ux, uy) in planned:
+            continue  # two edge picks clamped to one anchor (GH #152)
+        planned.add((const, ux, uy))
         specs.append(_Spec(ux, uy, const, rotation, frame))
+    if random_rotation:
+        # Rolled last so the layout is the seed's either way; owner 0 is safe, rotation_for() never reads it (GH #217).
+        specs = [_rolled(s, place_rotation.random_rotation(rng, s.unit_const, 0)) for s in specs]
     return specs
+
+
+def _rolled(spec: _Spec, rotation: float) -> _Spec:
+    """`spec` with a rolled rotation; a type 10 variant's frame takes the same index (frame_for())."""
+    if unit_variant.frame_follows_variant(spec.unit_const):
+        return spec._replace(rotation=rotation, initial_animation_frame=place_rotation.frame_for(spec.unit_const, rotation))
+    return spec._replace(rotation=rotation)
 
 
 class ExistingScatter(NamedTuple):

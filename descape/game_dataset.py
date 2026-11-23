@@ -154,12 +154,21 @@ def cache_key() -> object:
 
 
 def _swap(new: ContentStack) -> bool:
-    """Installs `new` in one assignment; runs the switch and returns True when cache_key() changed."""
+    """Installs `new` in one assignment; runs the switch and returns True when
+    cache_key() changed. A raising hook puts the old stack back and runs the
+    switch again for it, every hook even if one raises, then re-raises."""
     global _stack
     old, _stack = _stack, new
     if new.tables_key == old.tables_key:
         return False
-    _switched(DATA_MOD_SWITCH if new.game.id == old.game.id else GAME_SWITCH)
+    changed = DATA_MOD_SWITCH if new.game.id == old.game.id else GAME_SWITCH
+    try:
+        _switched(changed)
+    except BaseException as exc:
+        _stack = old
+        for failed in _switched(changed, keep_going=True):
+            exc.add_note(f"restoring {old.game.id} also failed: {failed!r}")
+        raise
     return True
 
 
@@ -168,14 +177,22 @@ def generation() -> int:
     return _generation
 
 
-def _switched(changed: frozenset[str]) -> None:
+def _switched(changed: frozenset[str], keep_going: bool = False) -> list[Exception]:
+    """Clears the caches and runs the hooks; with keep_going, runs every hook and returns what raised."""
     global _generation
     _generation += 1
     from descape import asset_source
 
     asset_source.clear_install_caches(changed=changed)
+    failures: list[Exception] = []
     for hook in tuple(_switch_hooks):
-        hook()
+        try:
+            hook()
+        except Exception as exc:
+            if not keep_going:
+                raise
+            failures.append(exc)
+    return failures
 
 
 def only_changed(changed: frozenset[str] | None, layers: frozenset[str]) -> bool:

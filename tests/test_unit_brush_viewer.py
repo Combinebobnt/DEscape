@@ -354,6 +354,8 @@ def test_random_ticked_varies_a_tree_stroke_and_unticked_gives_the_pending_rotat
         count = unit_variant.variant_count_for(OAK)
         assert len(set(rotations)) > 10
         assert all(r == int(r) and 0 <= r < count for r in rotations)
+        # A tree's frame moves with its variant, as the game stores it.
+        assert all(u.initial_animation_frame == int(u.rotation) for _p, u in _units(window))
         window.unit_brush_random_check.setChecked(False)
         window._place_rotation = PlaceRotation(variant=7, variant_const=OAK)
         before = len(_units(window))
@@ -557,15 +559,18 @@ def test_a_random_pick_ghosts_its_roll_unless_any_const_of_it_is_refused(monkeyp
         _close(window)
 
 
-def test_a_footprint_past_the_map_edge_shows_no_ghost() -> None:
+def test_an_edge_tile_ghost_stands_one_tile_in_on_the_map() -> None:
+    """GH #152: an edge-tile 3x3 is clamped onto the map, not skipped, so its
+    tiles 0 and 1 show the same ghost one tile in (both anchor at 1.5), and the next differs."""
     window = _window(const=BARRACKS, owner=P1, size=1, shown=True)
     try:
-        _hover(window, (0, 0))
-        assert _ghost(window) is None
-        _hover(window, (1, 1))
-        assert _ghost(window) is not None
-        _hover(window, (119, 119))
-        assert _ghost(window) is None
+        rects = {}
+        for tile in ((0, 0), (1, 1), (2, 2), (118, 118), (119, 119)):
+            _hover(window, tile)
+            assert _ghost(window) is not None, tile
+            rects[tile] = _ghost(window).sceneBoundingRect()
+        assert rects[0, 0] == rects[1, 1] != rects[2, 2]
+        assert rects[119, 119] == rects[118, 118]
     finally:
         _close(window)
 

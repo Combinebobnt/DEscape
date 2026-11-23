@@ -248,7 +248,7 @@ _COLOURS = {_OWN: (200, 40, 90), _ABOVE: (10, 230, 120), _HIGHER: (90, 0, 255), 
 def seam_masks(monkeypatch):
     """Constant-colour textures and a random 0..128 mask per (mode, tile), served by
     get_blend_mask as the loader does: faded, then conform_edges, looked up at call time."""
-    size = asset_source.LOADED_TEXTURE_SIZE
+    size = TEXTURE_SIZE
     textures = {tid: np.broadcast_to(np.array(c, dtype=np.uint8), (size, size, 3)) for tid, c in _COLOURS.items()}
     def texture(tid):
         return textures.get(tid)
@@ -470,7 +470,7 @@ def test_a_bleed_changes_only_the_lower_tiles_neighbour_side(synthetic, tile_px)
 
 
 def test_a_constant_128_layer_mask_gives_the_exact_integer_midpoint(synthetic):
-    size = asset_source.LOADED_TEXTURE_SIZE
+    size = TEXTURE_SIZE
     synthetic.masks["layer.png"] = np.full((size, size), 128, dtype=np.uint8)
     tile_px = 32
     ox, oy = _offsets(2, 2, tile_px)
@@ -486,7 +486,7 @@ def test_an_empty_overlay_name_falls_back_to_the_neutral_mask(synthetic):
 
 
 def test_swapping_a_texture_reaches_the_block_through_clear_install_caches(synthetic):
-    size = asset_source.LOADED_TEXTURE_SIZE
+    size = TEXTURE_SIZE
     synthetic.masks["layer.png"] = np.full((size, size), 128, dtype=np.uint8)
     key, tile_px = (LOW, LAYER, ()), 16
     ox, oy = _offsets(1, 1, tile_px)

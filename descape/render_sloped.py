@@ -665,7 +665,7 @@ def _paint_objects_sloped(
     # Sprites after this tile's marks, in by_anchor's order (_paint_objects_iso's comment).
     if sprites is not None:
         off_x, off_y = offset
-        for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):
+        for draw, ax, ay, rise_px, _order in sprites.by_anchor.get((tile.x, tile.y), ()):
             _clipped_paint_rgba(
                 img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba, ink, rise_px
             )

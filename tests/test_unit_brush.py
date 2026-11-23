@@ -10,7 +10,7 @@ import pytest
 
 from descape import asset_source, brush, placement_rules, unit_kind, unit_rotation, unit_sprites, unit_variant
 from descape.place_rotation import PlaceRotation, rotation_for
-from descape.render_units import occupied_tiles_for
+from descape.render_units import _span_start, occupied_tiles_for
 from descape.unit_brush import BrushStroke, Spec, hover_anchor, is_refused_const, paint_dab
 from testkit.fakes import FakeScenario, SyntheticTile
 
@@ -238,11 +238,16 @@ def test_a_mobile_stroke_reads_a_bridge_and_builds_the_laid_map_once(monkeypatch
 # --- map edge, anchors, jitter ---------------------------------------------------------------
 
 
-def test_a_footprint_crossing_the_map_edge_is_skipped() -> None:
+def test_an_edge_tile_3x3_lands_one_tile_in_on_the_map() -> None:
+    """GH #152: snapped_anchor() clamps the odd span, so the edge Farms are
+    placed wholly on the map instead of skipped or overhanging."""
     scenario = _scenario()
     stroke = _stroke(FARM, rules=False)
     placed = paint_dab(scenario, stroke, [(0, 10), (SIZE - 1, 10), (10, 10)], _adder(scenario))
-    assert [(u.x, u.y) for _p, u in placed] == [(10.5, 10.5)]
+    xys = sorted((u.x, u.y) for _p, u in placed)
+    assert xys == [(1.5, 10.5), (10.5, 10.5), (SIZE - 1.5, 10.5)]
+    for x, _y in xys:
+        assert _span_start(x, 3) >= 0 and _span_start(x, 3) + 3 <= SIZE
 
 
 def test_tile_span_anchors_a_mountain_on_the_game_grid() -> None:
@@ -289,7 +294,8 @@ def test_hover_anchor_is_where_a_dab_stands_the_unit_and_none_exactly_where_it_p
             if anchor != painted:
                 wrong.append((const, tile, anchor, painted))
     assert not wrong, wrong
-    assert outcomes[BARRACKS, (0, 0)] is None and outcomes[BARRACKS, (size - 1, size - 1)] is None
+    assert outcomes[BARRACKS, (0, 0)] == (1.5, 1.5)  # clamped onto the map (GH #152)
+    assert outcomes[BARRACKS, (size - 1, size - 1)] == (size - 1.5, size - 1.5)
     assert outcomes[HOUSE, (0, 0)] is not None and outcomes[FORTRESS, (size - 1, size - 1)] is not None
 
 

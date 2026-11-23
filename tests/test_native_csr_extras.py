@@ -9,7 +9,7 @@ from itertools import pairwise
 import numpy as np
 import pytest
 
-from descape import iso_geometry, native_composite, settings
+from descape import iso_geometry, native_composite, render_paint, settings
 
 LADDER = sorted({*iso_geometry.mip_tile_px_candidates(64, native_tier=True).values(), *iso_geometry.NATIVE_TIERS})
 
@@ -129,3 +129,157 @@ def test_i32_matches_on_random_parts():
                  for _ in range(int(rng.integers(0, 5)))]
         raised += _same_i32(parts)
     assert 0 < raised < 300, f"random parts raised {raised} of 300 times: not both outcomes"
+
+
+# --- Sliced assembly (TASK-031.87): _CsrAssembly in ranges against one-shot _old_csr.
+
+
+def _old_csr(ops, src):
+    start = np.zeros(len(ops) + 1, dtype=np.int64)
+    np.cumsum([op[0].size for op in ops], out=start[1:])
+    cols = {"dy": _old_i32([op[0] for op in ops]), "dx": _old_i32([op[1] for op in ops]), "start": start}
+    cols["ext"] = _old_ext(ops)
+    if src:
+        cols["sy"] = _old_i32([op[2] for op in ops])
+        cols["sx"] = _old_i32([op[3] for op in ops])
+    return cols
+
+
+def _same_cols(got: dict, want: dict, what) -> None:
+    assert got.keys() == want.keys(), what
+    for k, w in want.items():
+        g = got[k]
+        assert g.dtype == w.dtype and g.flags.c_contiguous and g.shape == w.shape, (what, k)
+        assert np.array_equal(g, w), (what, k)
+
+
+def _sliced(ops, src, budget, **kw):
+    asm = native_composite._CsrAssembly(ops, src, **kw)
+    steps = 1
+    while asm.step(budget):
+        steps += 1
+    return asm.finish(), steps
+
+
+@pytest.fixture
+def csr_compared(monkeypatch):
+    """Every _csr call, checked against _old_csr."""
+    real = native_composite._csr
+    calls = []
+
+    def spy(ops, src):
+        got = real(ops, src)
+        _same_cols(got, _old_csr(ops, src), len(ops))
+        calls.append(len(ops))
+        return got
+
+    monkeypatch.setattr(native_composite, "_csr", spy)
+    return calls
+
+
+def test_zero_ops_layout():
+    for src in (False, True):
+        cols = native_composite._csr([], src=src)
+        _same_cols(cols, _old_csr([], src), src)
+        assert cols["start"].tolist() == [0]
+
+
+def test_sliced_csr_matches_one_shot_on_random_op_lists():
+    rng = np.random.default_rng(87)
+    for trial in range(200):
+        lens = rng.choice([0, 0, 1, 2, 17, 300], size=int(rng.integers(1, 30))).tolist()
+        src = bool(trial % 2)
+        ops = [tuple(rng.integers(-5000, 5000, n).astype(np.int64) for _ in range(4 if src else 2)) for n in lens]
+        want = _old_csr(ops, src)
+        for budget in (None, 1, int(rng.integers(1, 400)), 10**9):
+            (got, _samples), steps = _sliced(ops, src, budget)
+            _same_cols(got, want, (lens, budget))
+            if budget == 1:
+                # Empty ops may ride along in a range; an entry-holding op over the budget is alone.
+                assert sum(1 for n in lens if n > 1) <= steps <= len(ops)
+
+
+def _tables(tile_px, elev_step, budget):
+    nc = native_composite
+    if budget == "eager":
+        return nc.SteppedTables(tile_px, elev_step)
+    return render_paint._drain(nc.assemble_stepped(tile_px, elev_step, budget))
+
+
+def _old_stepped(tile_px, elev_step):
+    """The pre-TASK-031.87 SteppedTables.__init__'s cols, factor_keys, op_len and fstart."""
+    nc = native_composite
+    pairs = nc._fixed_ops(tile_px)
+    for r in range(1, nc.MAX_RISE + 1):
+        pairs += nc._rise_ops(tile_px, r * elev_step)
+    cols = _old_csr([op if len(op) == 4 else (*op, np.zeros_like(op[0]), np.zeros_like(op[0])) for op, _key in pairs], True)
+    keys = [key for _op, key in pairs]
+    op_len = np.diff(cols["start"])
+    fstart = np.full(len(pairs), -1, dtype=np.int64)
+    total = 0
+    for i, key in enumerate(keys):
+        if key is not None:
+            fstart[i] = total
+            total += int(op_len[i])
+    return cols, keys, op_len, fstart
+
+
+def _same_array(a, b):
+    assert (a is None and b is None) or (a.dtype == b.dtype and a.flags.c_contiguous and np.array_equal(a, b))
+
+
+@pytest.mark.parametrize("tile_px", LADDER)
+def test_stepped_tables_identical_eager_and_sliced(tile_px):
+    _hw, half_h = iso_geometry.half_dims(tile_px)
+    steps = {max(1, round(half_h * pct / 100)) for pct in settings.ELEV_STEP_PCT_STOPS}
+    for elev_step in (min(steps), max(steps)):
+        want, keys, op_len, fstart = _old_stepped(tile_px, elev_step)
+        ref = _tables(tile_px, elev_step, "eager")
+        # Factors and LUTs aren't assembled: the eager instance's stand in for the old code's.
+        kernel = (want["dy"], want["dx"], want["sy"], want["sx"], None, want["start"], want["ext"], fstart,
+                  *ref.kernel_tables()[8:])
+        for budget in ("eager", native_composite.PRIME_ASSEMBLY_ELEMS, 1):
+            got = ref if budget == "eager" else _tables(tile_px, elev_step, budget)
+            _same_cols(got.cols, want, (tile_px, elev_step, budget))
+            assert got.factor_keys == keys
+            _same_array(got.op_len, op_len)
+            _same_array(got.fstart, fstart)
+            for a, b in zip(got.blend_samples, ref.blend_samples, strict=True):
+                _same_array(a, b)
+            for a, b in zip(got.kernel_tables(), kernel, strict=True):
+                _same_array(a, b)
+
+
+@pytest.mark.parametrize("tile_px", [32, 128, 192])
+def test_other_csr_callers_match_one_shot(csr_compared, tile_px):
+    from descape.grid_overlay import grid_bake
+
+    rng = np.random.default_rng(tile_px)
+    registry = native_composite.SlopedShapes(tile_px)
+    s = max(1, tile_px // 8)
+    for _batch in range(3):
+        keys = []
+        for _ in range(12):
+            corners = rng.integers(0, 4, size=4) * s
+            corners -= corners.min()
+            keys.append((*(int(c) for c in corners), bool(rng.integers(0, 2))))
+        registry.shape_ids(keys)
+        registry.packed()
+    _cand, stamps = native_composite._grid_stamps(tile_px, grid_bake(True, 60, 2), np.arange(81))
+    assert stamps is not None
+    # The diamond pack, three (quads, edges) repacks, and the grid stamps.
+    assert len(csr_compared) == 1 + 3 * 2 + 1
+
+
+@pytest.mark.parametrize("budget", ["eager", 1])
+def test_overflow_still_raised(monkeypatch, budget):
+    real = native_composite._rise_ops
+
+    def wide(tile_px, rise):
+        ops = real(tile_px, rise)
+        (dy, *rest), key = ops[0]
+        return [((dy + np.int64(2**31), *rest), key), *ops[1:]]
+
+    monkeypatch.setattr(native_composite, "_rise_ops", wide)
+    with pytest.raises(OverflowError, match="does not fit in int32"):
+        _tables(32, 4, budget)

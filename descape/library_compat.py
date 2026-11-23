@@ -95,6 +95,19 @@ VERSIONS_DIR = Path(AoE2ScenarioParser.__file__).resolve().parent / "versions" /
 # reaches scenario_io and this module alike.
 REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
 
+# Pre-DE (FileHeader version 2) structures, one per DataHeader version
+# (v1.20 Age of Kings, v1.22 The Conquerors, v1.26 HD Edition .scx), never by
+# file version: see scenario_format. Looked up at call time like the one above.
+LEGACY_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "legacy"
+
+
+def legacy_structure_path(data_version: str | None) -> Path | None:
+    """The structure.json for a header-2 file's data version, or None."""
+    if data_version is None:
+        return None
+    path = LEGACY_VERSIONS_DIR / f"v{data_version}" / "structure.json"
+    return path if path.is_file() else None
+
 # The Triggers section's first field is an f64 trigger_version, and trigger_tail
 # starts at the Triggers section's first byte. See scenario_io.load_map_and_units.
 _TRIGGER_VERSION_STRUCT = struct.Struct("<d")

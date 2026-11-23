@@ -674,6 +674,7 @@ def test_a_trigger_count_change_reevaluates_an_unedited_trigger_naming_a_trigger
 
 
 @pytest.mark.corpus
+@pytest.mark.real_gc_freeze  # an automatic full collection over an unfrozen document would eat the 250 ms
 def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -> None:
     """Measured 2026-10-07: 2.3 s for a live marker change and 453 ms for a
     Triggers-mode unit edit on old-allies-final-v2 when every setData re-sized
@@ -685,6 +686,7 @@ def test_trigger_status_restyles_a_590_trigger_file_without_a_resize_per_row() -
 
 
 @pytest.mark.test_map
+@pytest.mark.real_gc_freeze
 def test_trigger_status_restyles_the_600_trigger_test_map_without_a_resize_per_row() -> None:
     """The same 250 ms gate on the generated test map, in the quick suite."""
     _assert_status_restyle_is_batched(conftest.TEST_MAP_PATH)

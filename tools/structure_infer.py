@@ -25,6 +25,9 @@ How it works:
   last distinctive value that still matches the reference bounds it from
   below, and every single edit in that span is tried. The best is applied and
   the loop repeats, one edit at a time, inside per-block and total budgets.
+  Where that path dead-ends, the search goes back to the latest round that
+  took a partial (non-fitting) edit and tries its next byte layout, within
+  small retry bounds; a path that never dead-ends is never revisited.
 - Several fitting candidates are scored against the reference pairwise, over
   only the values the two parse differently. A winner needs MARGIN over every
   rival on at least PAIR_MIN such values; otherwise the result is AMBIGUOUS
@@ -116,6 +119,8 @@ WHOLE_MIN = 16
 WHOLE_RATIO = 0.95
 # An edit that gets further without fitting must make this many more distinctive values match.
 PARTIAL_MIN = 2
+# A retried alternative after a dead end needs only this gain: it is still kept only on a full fit.
+RETRY_GAIN_MIN = 1
 # Scoring: a candidate wins when, against each rival, the rival's mismatch fraction over the
 # values the two parse differently is at least MARGIN higher. Margin gate (frozen re-save, 1.58 to
 # 1.59): the truth scores 0.0..0.052 (the game's rewrites), every wrong single edit 1.0.
@@ -138,6 +143,8 @@ class Budget:
     edits_per_block: int = 6
     edits_total: int = 24
     walk_reads: int = 1_000_000_000  # field reads over every candidate walk of the run
+    alternatives_per_round: int = 3  # byte layouts kept to retry at a round that took a partial edit
+    backtracks: int = 8  # retries per segment after a dead end; 0 is the plain greedy search
 
 
 DEFAULT_BUDGET = Budget()
@@ -848,6 +855,25 @@ class Choice:
     ambiguous: bool
     fits: bool
     note: str
+    abandoned: list[Edit] = field(default_factory=list)  # a retried edit: the path it replaced
+
+
+@dataclass
+class _Branch:
+    """A round that took a partial edit: the state before it and its untried layouts."""
+
+    structure: dict
+    depth: int  # len(done) before the round
+    per_block: Counter
+    names_next: int
+    located: str  # the round's evidence
+    alternatives: list[list[tuple]]  # each one layout group's results, best first
+    offsets: dict
+    tried: int = 0
+
+
+def _retries(n: int) -> str:
+    return f"{n} {'retry' if n == 1 else 'retries'}"
 
 
 @dataclass
@@ -958,6 +984,9 @@ class SegmentSearch:
         current = structure
         done: list[tuple[Edit, Choice, str]] = []
         per_block: Counter = Counter()
+        branches: list[_Branch] = []
+        first_dead: tuple[dict, list, str, int] | None = None  # the greedy path's refusal, names.next
+        retries = 0
         try:
             while True:
                 probes = [self.probe(current, inp) for inp in self.inputs]
@@ -968,21 +997,76 @@ class SegmentSearch:
                 p = probes[primary]
                 inp = self.inputs[primary]
                 located = f"{inp.label} @ {p.evidence}: {p.reason}"
+                dead, branch = None, None
                 if len(done) >= self.budget.edits_total:
-                    return SegmentOutcome(current, done, f"edit budget of {self.budget.edits_total} spent; still: {located}")
-                choice = self._round(current, probes, primary)
-                if choice is None:
-                    return SegmentOutcome(current, done, f"no single edit in the vocabulary fits; first evidence: {located}")
-                per_block[choice.edit.block] += 1
-                if per_block[choice.edit.block] > self.budget.edits_per_block:
-                    where = "/".join(choice.edit.block)
-                    why = f"edit budget of {self.budget.edits_per_block} for {where} spent; still: {located}"
-                    return SegmentOutcome(current, done, why)
-                current = apply_edit(current, choice.edit)
-                self.names.commit(choice.edit)
-                done.append((choice.edit, choice, located))
+                    dead = f"edit budget of {self.budget.edits_total} spent; still: {located}"
+                else:
+                    choice, alternatives, offsets = self._round(current, probes, primary)
+                    if choice is None:
+                        dead = f"no single edit in the vocabulary fits; first evidence: {located}"
+                    else:
+                        if alternatives:
+                            branch = _Branch(current, len(done), per_block.copy(), self.names.next, located, alternatives, offsets)
+                        after, dead = self._take(choice, located, current, done, per_block)
+                if dead is None:
+                    current = after
+                    # A round whose own edit spends its block's budget is no branch point: retrying it
+                    # would let a stack of junk edits hand its last round a fresh block.
+                    if branch is not None:
+                        branches.append(branch)
+                    continue
+                if first_dead is None:
+                    first_dead = (current, list(done), dead, self.names.next)
+                current, retries = self._retry(branches, done, per_block, retries, dead)
+                if current is None:
+                    return self._refuse(first_dead, retries)
         except _BudgetExceeded as e:
-            return SegmentOutcome(current, done, str(e))
+            if first_dead is None:
+                return SegmentOutcome(current, done, str(e))
+            return self._refuse(first_dead, retries, f"; {e} during {_retries(retries)} after the dead end")
+
+    def _take(self, choice: Choice, located: str, current: dict, done: list, per_block: Counter) -> tuple[dict | None, str | None]:
+        """Apply `choice` to the path: the new structure, or the dead end its block's budget makes."""
+        per_block[choice.edit.block] += 1
+        if per_block[choice.edit.block] > self.budget.edits_per_block:
+            where = "/".join(choice.edit.block)
+            return None, f"edit budget of {self.budget.edits_per_block} for {where} spent; still: {located}"
+        self.names.commit(choice.edit)
+        done.append((choice.edit, choice, located))
+        return apply_edit(current, choice.edit), None
+
+    def _retry(self, branches: list[_Branch], done: list, per_block: Counter, retries: int, dead: str) -> tuple[dict | None, int]:
+        """Back to the latest branch with an untried layout and take it, restoring that round's
+        state (path, budgets, names). None when no retry is left."""
+        while branches and retries < self.budget.backtracks:
+            branch = branches[-1]
+            if not branch.alternatives:
+                branches.pop()
+                continue
+            pool = branch.alternatives.pop(0)
+            branch.tried += 1
+            retries += 1
+            abandoned = [e for e, _, _ in done[branch.depth :]]
+            del done[branch.depth :]
+            per_block.clear()
+            per_block.update(branch.per_block)
+            self.names.next = branch.names_next
+            choice = self._choose(pool, False, branch.offsets)
+            if len(pool) == 1:
+                choice.note = "the only candidate of its layout"
+            choice.note = f"retry {branch.tried} at round {branch.depth + 1} after a dead end ({dead}); {choice.note}"
+            choice.abandoned = abandoned
+            after, _ = self._take(choice, branch.located, branch.structure, done, per_block)
+            if after is not None:
+                return after, retries
+        return None, retries
+
+    def _refuse(self, first_dead: tuple[dict, list, str, int], retries: int, suffix: str | None = None) -> SegmentOutcome:
+        current, done, why, names_next = first_dead
+        self.names.next = names_next
+        if suffix is None:
+            suffix = f"; {_retries(retries)} after the dead end found no fit" if retries else ""
+        return SegmentOutcome(current, done, why + suffix)
 
     def _groups(self, current: dict, edits: Sequence[Edit]) -> list[_Group]:
         groups: dict[tuple, _Group] = {}
@@ -1022,7 +1106,9 @@ class SegmentSearch:
             out.append(self._evidence(group.compiled, inp, w, e))
         return out
 
-    def _round(self, current: dict, probes: Sequence[Probe], primary: int) -> Choice | None:
+    def _round(self, current: dict, probes: Sequence[Probe], primary: int) -> tuple[Choice | None, list[list[tuple]], dict]:
+        """The round's choice, plus, for a partial one, the other byte layouts to retry after a
+        dead end (`_alternatives`), and the position offsets `_choose` ranks by."""
         p = probes[primary]
         inp = self.inputs[primary]
         compiled = sw.compile_structure(_subset(current, self.sections))
@@ -1044,7 +1130,7 @@ class SegmentSearch:
                 if probe.evidence is None or probe.evidence > p.evidence or inp.reference is not None:
                     kept.append((group, m, probe))
         if not kept:
-            return None
+            return None, [], offsets
         results = []  # (edit, fits, primary evidence, ref probe, structure, primary probe)
         by_group: dict[int, list[tuple[int, Probe]]] = {}
         for group, m, probe in kept:
@@ -1074,8 +1160,9 @@ class SegmentSearch:
                 edit = group.members[m][0]
                 results.append((edit, fits, per_input[primary][m].evidence, ref_probe, group.members[m][1], per_input[primary][m]))
         if not results:
-            return None
+            return None, [], offsets
         fitting = [r for r in results if r[1]]
+        scores, floor = None, None
         if fitting:
             pool, fits = fitting, True
         else:
@@ -1083,22 +1170,56 @@ class SegmentSearch:
                 # Getting further proves nothing on its own (a junk insert can push a break or a
                 # walk failure along); with a reference, the edit must make more values match.
                 if p.walk is None:
-                    return None
-                current = compare(p.walk, inp.reference, self.sections)
-                gains = [self._gain(r[5], current, inp, offsets.get((r[0].block, r[0].index), lower)) for r in results]
-                best = max(gains)
+                    return None, [], offsets
+                events = compare(p.walk, inp.reference, self.sections)
+                scores = [self._gain(r[5], events, inp, offsets.get((r[0].block, r[0].index), lower)) for r in results]
+                best, floor = max(scores), RETRY_GAIN_MIN
                 if best < PARTIAL_MIN:
-                    return None
-                pool, fits = [r for r, g in zip(results, gains, strict=True) if g == best], False
+                    return None, [], offsets
             else:
                 results = [r for r in results if r[2] is not None and r[2] > p.evidence]
                 if not results:
-                    return None
-                best = max(r[2] for r in results)
-                pool, fits = [r for r in results if r[2] == best], False
+                    return None, [], offsets
+                scores = [r[2] for r in results]
+                best = max(scores)
+            pool, fits = [r for r, s in zip(results, scores, strict=True) if s == best], False
         if fits and self.diff_pair is not None and len(pool) > 1:
             pool = self._diff_filter(pool) or pool
-        return self._choose(pool, fits, offsets)
+        choice = self._choose(pool, fits, offsets)
+        alternatives = []
+        if not fits and self.budget.backtracks > 0:
+            alternatives = self._alternatives(results, scores, floor, choice.edit, grow, offsets)
+        return choice, alternatives, offsets
+
+    def _alternatives(self, results, scores, floor, chosen: Edit, grow, offsets) -> list[list[tuple]]:
+        """One pool per byte-layout group other than the chosen edit's, each its best-scoring
+        members, at most `alternatives_per_round`. Count-field-backed k-inserts come first (the
+        count field is direct evidence), the end of the 4-byte run first, as `_choose` ranks;
+        then the rest by score, in the round's order."""
+
+        def key(r) -> tuple:
+            e: Edit = r[0]
+            return e.block, layout_signature(block_dict(r[4], e.block)["retrievers"])
+
+        groups: dict[tuple, list[tuple[tuple, Any]]] = {}
+        chosen_key = None
+        for r, s in zip(results, scores, strict=True):
+            k = key(r)
+            if r[0] is chosen:
+                chosen_key = k
+            if floor is None or s >= floor:
+                groups.setdefault(k, []).append((r, s))
+        ranked = []
+        for order, (k, members) in enumerate(groups.items()):
+            if k == chosen_key:
+                continue
+            best = max(s for _, s in members)
+            pool = [r for r, s in members if s == best]
+            backed = any(r[0].block in grow and r[0].kind == f"insert {grow[r[0].block]} x s32" for r in pool)
+            reach = max(offsets.get((r[0].block, r[0].index), r[0].index) for r in pool)
+            ranked.append(((0, -reach, order) if backed else (1, -best, order), pool))
+        ranked.sort(key=lambda t: t[0])
+        return [pool for _, pool in ranked[: self.budget.alternatives_per_round]]
 
     def _diff_filter(self, pool):
         a, b = self.diff_pair
@@ -1400,6 +1521,7 @@ class EditRecord:
     note: str
     rivals: list[Edit]
     ambiguous: bool
+    abandoned: list[Edit] = field(default_factory=list)  # the dead-end path a retried edit replaced
 
 
 @dataclass
@@ -1547,7 +1669,7 @@ def infer(
         outcome = search.run(structure)
         structure = outcome.structure
         for edit, choice, evidence in outcome.edits:
-            result.edits.append(EditRecord(name, edit, evidence, choice.note, choice.rivals, choice.ambiguous))
+            result.edits.append(EditRecord(name, edit, evidence, choice.note, choice.rivals, choice.ambiguous, choice.abandoned))
             if choice.ambiguous:
                 span = sorted({e.index for e in [edit, *choice.rivals] if e.block == edit.block})
                 result.unresolved.append(
@@ -1642,7 +1764,12 @@ def emit(structure: dict, result: InferResult, files: Sequence[ScenarioFile], ve
                 continue  # a later edit removed it
             values = _field_values(files, out, edit.block, name)
             definition["default"] = _default_for(definition["type"], _most_common(values))
-            how = "ambiguous, see INFERRED.md" if record.ambiguous else record.note
+            # A retry's note names an input file and offset, which a shipped structure must not carry.
+            how = record.note
+            if record.ambiguous:
+                how = "ambiguous, see INFERRED.md"
+            elif record.abandoned:
+                how = "retried after a dead end, see INFERRED.md"
             definition["comment"] = f"Inferred for {version} from {base_version} ({edit.kind}; {how})"
         spec_block = sw.compile_structure({edit.block[0]: out[edit.block[0]]})
         spec = block_prefixes(spec_block)[edit.block][0]
@@ -1752,6 +1879,8 @@ def render_report(result: InferResult) -> list[str]:
             shown = "; ".join(e.describe() for e in r.rivals[:8])
             more = f" and {len(r.rivals) - 8} more" if len(r.rivals) > 8 else ""
             lines.append(f"  - rivals: {shown}{more}")
+        if r.abandoned:
+            lines.append(f"  - abandoned after a dead end: {'; '.join(e.describe() for e in r.abandoned)}")
     if result.unresolved:
         lines += ["", "## Unresolved", ""]
         lines += [f"- {u}" for u in result.unresolved]

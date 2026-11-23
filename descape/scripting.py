@@ -1090,7 +1090,7 @@ class Editor:
         rotation = place_rotation.rotation_for(state, const, owner)
         model = run.unit_model()
         with _model_errors():
-            unit = model.add(owner, const, x, y, rotation=rotation)
+            unit = model.add(owner, const, x, y, rotation=rotation, initial_animation_frame=place_rotation.frame_for(const, rotation))
         run.membership.add(owner, unit)
         run.touched([unit])
         return unit

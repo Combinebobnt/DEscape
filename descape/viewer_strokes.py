@@ -652,6 +652,7 @@ class _ViewerStrokesMixin:
         self._convert_done = set()
         self._convert_refused = set()
         self._convert_held = set()
+        self._convert_kept = set()
         self._convert_hosts = None
         self._convert_touched_tiles = set()
         # Read once and held for the whole drag rather than re-read per
@@ -685,9 +686,12 @@ class _ViewerStrokesMixin:
                 entry = index.entries[order]
                 key = unit_pick.unit_key(entry.player_id, entry.unit)
                 # A multi-tile unit appears in several touched tiles' buckets.
-                if key in self._convert_done or key in self._convert_refused or key in self._convert_held:
+                if key in self._convert_done or key in self._convert_refused:
                     continue
                 if entry.player_id in sources and entry.player_id != destination:
+                    if key in self._convert_held:
+                        self._convert_kept.add(key)
+                        continue
                     # GH #32: never a GAIA-only object (or a host carrying one) to a player.
                     if self._owner_change_refused(model, entry, destination):
                         self._convert_refused.add(key)
@@ -700,6 +704,7 @@ class _ViewerStrokesMixin:
                     # TASK-474: an occupant reached before its refused host stays with it too.
                     if self._convert_host_refused(model, entry, sources, destination):
                         self._convert_held.add(key)
+                        self._convert_kept.add(key)
                         continue
                     self._convert_one(model, entry, key, destination, destination_units)
                     # by_tile lacks hidden occupants. They go with their host
@@ -772,10 +777,11 @@ class _ViewerStrokesMixin:
         model = self._convert_model
         self._convert_model = None
         count = len(self._convert_done)
-        refused_note = _gaia_only_refused_note(len(self._convert_refused))
+        refused_note = _gaia_only_refused_note(len(self._convert_refused), len(self._convert_kept))
         self._convert_done = set()
         self._convert_refused = set()
         self._convert_held = set()
+        self._convert_kept = set()
         self._convert_hosts = None
         self._convert_touched_tiles = set()
         pending, self._unit_stroke_pending_splices = self._unit_stroke_pending_splices, []
@@ -860,7 +866,8 @@ class _ViewerStrokesMixin:
                 # As _convert_one(): a warm in flight walks the lists add() appends to (TASK-326).
                 self._cancel_warms()
                 cancelled = True
-            unit = model.add(spec.player, spec.unit_const, spec.x, spec.y, rotation=spec.rotation)
+            frame = place_rotation.frame_for(spec.unit_const, spec.rotation)
+            unit = model.add(spec.player, spec.unit_const, spec.x, spec.y, rotation=spec.rotation, initial_animation_frame=frame)
             own, occupied = self._unit_footprint(unit)
             # add() appends, so the index is the tail, not an O(n) _unit_list_index() scan.
             splices.append(UnitSplice(spec.player, len(units[spec.player]) - 1, unit, None, own, (), occupied))

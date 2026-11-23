@@ -340,6 +340,7 @@ def test_state_round_trips_into_the_next_dialog() -> None:
         first.jitter_spin.setValue(0.25)
         first.spacing_spin.setValue(3)
         first.avoid_check.setChecked(False)
+        first.random_rotation_check.setChecked(True)
         state = first.state()
     finally:
         first.deleteLater()
@@ -351,8 +352,57 @@ def test_state_round_trips_into_the_next_dialog() -> None:
         assert params.jitter == pytest.approx(0.25)
         assert params.min_spacing == 3
         assert not second.avoid_check.isChecked()
+        assert second.random_rotation_check.isChecked() and params.random_rotation
+        assert second.note_label.text() == scatter_dialog._PLACE_RANDOM_NOTE
     finally:
         second.deleteLater()
+
+
+# -- TASK-510: random facing or variant ---------------------------------------
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_random_facing_box_starts_unticked_and_reaches_params() -> None:
+    dialog = _dialog(_scenario())
+    try:
+        assert not dialog.random_rotation_check.isChecked()
+        assert dialog.params().random_rotation is False
+        dialog.random_rotation_check.setChecked(True)
+        assert dialog.params().random_rotation is True
+    finally:
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_random_facing_box_swaps_the_note_and_move_mode_greys_it() -> None:
+    picked = fakes.SyntheticUnit(x=1.5, y=1.5, unit_const=_FISH, reference_id=5)
+    dialog = _move_dialog(_scenario(), [picked])
+    try:
+        assert dialog.random_rotation_check.isEnabled()
+        assert dialog.note_label.text() == scatter_dialog._PLACE_NOTE
+        dialog.random_rotation_check.setChecked(True)
+        assert dialog.note_label.text() == scatter_dialog._PLACE_RANDOM_NOTE
+        dialog.random_rotation_check.setChecked(False)
+        assert dialog.note_label.text() == scatter_dialog._PLACE_NOTE
+        for ticked in (True, False):
+            dialog.random_rotation_check.setChecked(ticked)
+            dialog.move_radio.setChecked(True)
+            assert not dialog.random_rotation_check.isEnabled()
+            assert dialog.note_label.text() == scatter_dialog._MOVE_NOTE
+            dialog.place_radio.setChecked(True)
+            assert dialog.random_rotation_check.isEnabled()
+            expected = scatter_dialog._PLACE_RANDOM_NOTE if ticked else scatter_dialog._PLACE_NOTE
+            assert dialog.note_label.text() == expected
+    finally:
+        dialog.deleteLater()
+
+
+def test_both_place_notes_keep_the_grid_sentence() -> None:
+    assert scatter_dialog._PLACE_NOTE.endswith(scatter_dialog._GRID_NOTE)
+    assert scatter_dialog._PLACE_RANDOM_NOTE.endswith(scatter_dialog._GRID_NOTE)
+    assert "same seed gives the same layout" in scatter_dialog._PLACE_RANDOM_NOTE
 
 
 # -- GH #105: move the selected units -----------------------------------------

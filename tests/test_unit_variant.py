@@ -54,6 +54,21 @@ def test_a_const_whose_file_holds_one_variant_is_not_cyclable():
     assert not unit_variant.is_cyclable(1280)
 
 
+PORT, FLAGF, LEGION_D = 446, 901, 2  # cyclable .dat types 80, 20 and 30
+
+
+def test_only_a_type_10_cyclable_consts_frame_follows_its_variant():
+    """The type 10 rule the 1.59 editor's save applies; not measured for Return of Rome, so false there."""
+    from descape import game_dataset, unit_kind
+
+    assert [unit_kind.dat_type(c) for c in (OAK, PORT, FLAGF, LEGION_D)] == [10, 80, 20, 30]
+    assert all(unit_variant.is_cyclable(c) for c in (OAK, PORT, FLAGF, LEGION_D))
+    assert unit_variant.frame_follows_variant(OAK) and unit_variant.frame_follows_variant(BARRELS)
+    assert not any(unit_variant.frame_follows_variant(c) for c in (PORT, FLAGF, LEGION_D, WALL, CLIFF, GATE, ARCHER))
+    with game_dataset.activated(game_dataset.ROR):
+        assert unit_variant.is_cyclable(OAK) and not unit_variant.frame_follows_variant(OAK)
+
+
 def test_excluded_consts_are_exactly_the_walls_cliffs_and_gates():
     gates = {c for group in gate_orientation.groups().values() for c in group}
     assert len(unit_sprites._ROTATION_VARIANT_CONSTS) == 9
@@ -185,6 +200,24 @@ def test_every_cyclable_placement_stores_a_literal_index(corpus_files):
             if abs(unit.rotation - round(unit.rotation)) >= 1e-6:
                 radian.append((path.name, unit.unit_const, unit.rotation))
     assert not radian, f"{len(radian)} non-literal: {radian[:10]}"
+
+
+@pytest.mark.corpus
+def test_the_frame_rule_holds_on_every_corpus_placement(corpus_files):
+    """What licenses frame_follows_variant(): every type 10 cyclable placement
+    stores frame == rotation, and every type 80 one frame 0."""
+    from descape import scenario_io, unit_kind
+
+    bad = []
+    for path in corpus_files:
+        loaded = scenario_io.load_map_and_units(path)
+        for unit in loaded.unit_manager.get_all_units():
+            const, frame = unit.unit_const, unit.initial_animation_frame
+            follows = unit_variant.frame_follows_variant(const)
+            expected = round(unit.rotation) if follows else 0
+            if (follows or (unit_variant.is_cyclable(const) and unit_kind.dat_type(const) == 80)) and frame != expected:
+                bad.append((path.name, const, unit.rotation, frame))
+    assert not bad, f"{len(bad)} off the rule: {bad[:10]}"
 
 
 _UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"

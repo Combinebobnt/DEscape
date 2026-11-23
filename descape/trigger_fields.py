@@ -127,15 +127,16 @@ _ENUM_TYPES: Mapping[str, type[Enum]] = {
     "VisibilityState": trigger_lists.VisibilityState,
 }
 
-# Every presentation that stays a REFERENCE kind rather than becoming a plain
-# int, combo, or unsupported field. All seven need a resolved name shown
-# beside (or in place of) the raw id, but split three ways for 4d's picker
-# (TriggerPanel._build_widget()): TriggerId/VariableId resolve against the
-# open document (see DOCUMENT_REFERENCES and object_catalog.py's
-# trigger_choices()/variable_choices()); UnitInfo/BuildingInfo/TechInfo get a
-# real picker (see CATALOG_PRESENTATIONS); Unit/Unit[] are placed-unit
-# reference_ids, not type constants: resolved by descape/unit_references.py
-# against the open document and picked from the map, never from a dataset.
+# Every reference presentation: an id that needs a resolved name shown
+# beside (or in place of) it, rather than a plain int, combo, or unsupported
+# field. Split three ways for 4d's picker (TriggerPanel._build_widget()):
+# TriggerId/VariableId resolve against the open document (see
+# DOCUMENT_REFERENCES and object_catalog.py's trigger_choices()/
+# variable_choices()); UnitInfo/BuildingInfo/TechInfo get a real picker (see
+# CATALOG_PRESENTATIONS); Unit/Unit[] are placed-unit reference_ids, not type
+# constants: resolved by descape/unit_references.py against the open document
+# and picked from the map, never from a dataset. All but Unit[] are the
+# REFERENCE kind; _kind_for() makes Unit[] an INT_LIST (TASK-370).
 # None here just marks "no library Enum for from_id()", not "no picker".
 _REFERENCE_DATASETS: Mapping[str, type[Enum] | None] = {
     "TriggerId": None,

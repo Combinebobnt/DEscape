@@ -17,6 +17,7 @@ import conftest
 
 pytestmark = [
     pytest.mark.gui,
+    pytest.mark.real_gc_freeze,
     pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable"),
 ]
 

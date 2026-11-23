@@ -426,11 +426,27 @@ def test_regenerating_into_another_tables_dir_needs_its_own_stamp(tmp_path):
     assert not (tmp_path / "tables").exists()
 
 
-def test_regenerating_refuses_a_subscribed_mods_folder(world, tmp_path):
-    world.tables = tmp_path / "mods" / "subscribed" / "123_x" / "tables"
-    assert world.run("--dataset", "aoe2") == regen.EXIT_CANNOT
+def _refused_only(world, dataset: str, refused: Path) -> None:
+    """One refusal line, after all's AoE2 header; all stops there, before any RoR write."""
+    header = ["=== Age of Empires II ==="] if dataset == "all" else []
+    assert world.lines == [*header, f"refusing to write into a subscribed-mods (mods/subscribed/) folder: {refused}"]
     assert not world.tables.exists() and not world.stamp.exists()
-    assert world.lines == [f"refusing to write into a subscribed-mods (mods/subscribed/) folder: {world.tables}"]
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror", "all"])
+def test_regenerating_refuses_a_subscribed_mods_folder(world, tmp_path, dataset):
+    world.add_ror()
+    world.tables = tmp_path / "mods" / "subscribed" / "123_x" / "tables"
+    assert world.run("--dataset", dataset) == regen.EXIT_CANNOT
+    _refused_only(world, dataset, world.tables / regen.tables_subdir(games.ROR) if dataset == "ror" else world.tables)
+
+
+@pytest.mark.parametrize("dataset", ["aoe2", "ror", "all"])
+def test_regenerating_refuses_a_stamp_in_a_subscribed_mods_folder(world, tmp_path, dataset):
+    world.add_ror()
+    world.stamp = tmp_path / "Mods" / "Subscribed" / "123_x" / "stamp.json"
+    assert world.run("--dataset", dataset) == regen.EXIT_CANNOT
+    _refused_only(world, dataset, world.stamp)
 
 
 # --- Return of Rome (GH #67) ---------------------------------------------

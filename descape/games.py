@@ -54,8 +54,6 @@ class Game:
     strings_files: tuple[str, ...] = ("key-value-strings-utf8.txt",)
     # The widgetui materials file naming this game's own icon files, when it has one.
     icon_materials: str | None = None
-    # A zoomed-out level reads terrain textures shrunk with it.
-    texture_scales_with_level: bool = False
     # AoE2ScenarioParser's unit, building, hero and tech enums name this game's ids.
     library_enums: bool = True
     # File > Data Mod applies: a data mod replaces this game's .dat.
@@ -91,7 +89,6 @@ ROR = Game(
     stamp_key="ror",
     strings_files=("key-value-pompeii-strings-utf8.txt",),
     icon_materials="morematerials.json",
-    texture_scales_with_level=True,
     library_enums=False,
     data_mods=False,
     blank_template="blank_ror_120x120.aoe2scenario",

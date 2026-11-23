@@ -198,7 +198,9 @@ def _inject_no_cover():
         contribution = real(*args, **kwargs)
         if contribution is not None:
             for key, entries in contribution.by_anchor.items():
-                contribution.by_anchor[key] = [(draw, px, py, _NEVER_BELOW) for draw, px, py, _rise in entries]
+                contribution.by_anchor[key] = [
+                    (draw, px, py, _NEVER_BELOW, order) for draw, px, py, _rise, order in entries
+                ]
         return contribution
 
     return RENDER, "_resolve_unit_sprite", lifted

@@ -939,9 +939,14 @@ class _MapViewInputMixin:
     def focusOutEvent(self, event) -> None:
         """Alt+Tab mid-hold never delivers a release, so the timer would
         otherwise run forever."""
+        self.release_held_pan()
+        super().focusOutEvent(event)
+
+    def release_held_pan(self) -> None:
+        """Drops a held-key pan as if its keys were released: its ticks
+        engage a gc hold (TASK-668: none may run inside a first trigger parse)."""
         self._pan_held.clear()
         self._stop_pan()
-        super().focusOutEvent(event)
 
     def keyReleaseEvent(self, event) -> None:
         """Shift during a shape drag (the matching half of keyPressEvent's

@@ -1290,6 +1290,21 @@ OVERLAY_COLORS: list[tuple[str, str, str]] = [
     ("trigger_run", "Location and patrol run", "#b4f078"),
     ("trigger_unit_ref", "Referenced unit", "#3cd28c"),
 ]
+# OVERLAY_COLORS id prefix (before the first "_") -> section header text,
+# mirroring KEYBIND_SECTION_TITLES. Here, Qt-free, for theme_file's summary too.
+OVERLAY_SECTION_TITLES: dict[str, str] = {
+    "highlight": "Terrain brush",
+    "pan": "Pan",
+    "unit": "Units",
+    "ruler": "Ruler",
+    "region": "Select tool",
+    "mirror": "Map mirroring",
+    "footprint": "Footprint outlines",
+    "fish": "Fish outlines",
+    "range": "Range rings",
+    "analysis": "Map Analysis",
+    "trigger": "Trigger overlay",
+}
 _DEFAULT_OVERLAY_COLORS: dict[str, str] = {cid: default for cid, _label, default in OVERLAY_COLORS}
 _OVERLAY_COLOR_LABELS: dict[str, str] = {cid: label for cid, label, _default in OVERLAY_COLORS}
 _overlay_colors: dict[str, str] | None = None
@@ -1344,7 +1359,15 @@ OVERLAY_OPACITIES: list[tuple[str, str, int]] = [
     ("trigger_area", "Area opacity", OVERLAY_OPACITY_MAX),
 ]
 _DEFAULT_OVERLAY_OPACITY: dict[str, int] = {gid: default for gid, _label, default in OVERLAY_OPACITIES}
+# Group -> the OVERLAY_SECTION_TITLES section its slider closes.
+OVERLAY_OPACITY_SECTIONS: dict[str, str] = {"unit_select": "unit", "region": "region", "trigger_area": "trigger"}
 _overlay_opacity: dict[str, int] | None = None
+
+
+def get_overlay_opacity_label(group_id: str) -> str:
+    """The group's section title (the slider rows' own labels are ambiguous out of context)."""
+    section = OVERLAY_OPACITY_SECTIONS.get(group_id)
+    return OVERLAY_SECTION_TITLES[section] if section is not None else group_id
 
 
 def _valid_overlay_opacity(value) -> bool:
@@ -1778,12 +1801,14 @@ def apply_appearance_values(values: dict) -> None:
     """A validated theme-file import (theme_file.parse_theme_file()'s
     ImportPlan.values): one config read, every key set, one save, memo globals
     updated, so an import is never half-applied and never ~30 YAML round
-    trips. Keys absent from `values` are left alone; overlay and trigger status colours merge."""
-    global _theme, _theme_colors, _ui_font_family, _ui_font_size, _overlay_colors
+    trips. Keys absent from `values` are left alone; overlay colours and opacities
+    and trigger status colours merge."""
+    global _theme, _theme_colors, _ui_font_family, _ui_font_size, _overlay_colors, _overlay_opacity
     global _ruler_label_font_px, _distance_tick_font_px, _stack_badge_position, _grid_blend, _grid_thickness
     global _trigger_status_colors, _trigger_status_marker, _trigger_status_color_ok_rows, _trigger_status_color_sections
     global _favorite_star_style
     merged_overlay = dict(_load_overlay_colors()) if "overlay_colors" in values else None
+    merged_opacity = dict(_load_overlay_opacity()) if "overlay_opacity" in values else None
     merged_status = dict(_load_trigger_status_colors()) if "trigger_status_colors" in values else None
     config = _load_config()
     if "theme" in values:
@@ -1802,6 +1827,10 @@ def apply_appearance_values(values: dict) -> None:
         merged_overlay.update(values["overlay_colors"])
         _overlay_colors = merged_overlay
         config["overlay_colors"] = dict(merged_overlay)
+    if merged_opacity is not None:
+        merged_opacity.update(values["overlay_opacity"])
+        _overlay_opacity = merged_opacity
+        config["overlay_opacity"] = dict(merged_opacity)
     if "ruler_label_font_px" in values:
         _ruler_label_font_px = values["ruler_label_font_px"]
         config["ruler_label_font_px"] = _ruler_label_font_px

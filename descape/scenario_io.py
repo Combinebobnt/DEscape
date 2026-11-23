@@ -74,7 +74,7 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import effect_quantity, gc_hold, library_compat, trigger_parse_progress, unlinked_fields
+from descape import effect_quantity, gc_hold, library_compat, scenario_format, trigger_parse_progress, unlinked_fields
 from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
 
@@ -295,9 +295,15 @@ class UnsupportedStructureVersion(Exception):
     section is parsed. `str()` is the user-facing explanation, so a caller with
     no UI of its own can report it as-is."""
 
-    def __init__(self, scenario_version: str) -> None:
+    def __init__(self, scenario_version: str, message: str | None = None) -> None:
         self.scenario_version = scenario_version
-        super().__init__(unsupported_structure_message(scenario_version))
+        super().__init__(message or unsupported_structure_message(scenario_version))
+
+    @classmethod
+    def for_format(cls, fmt: scenario_format.ScenarioFormat) -> UnsupportedStructureVersion:
+        """A header-2 band with no legacy structure: never the HD 1.21 one."""
+        label = f"{fmt.file_version} (data {fmt.data_version})" if fmt.data_version else fmt.file_version
+        return cls(label, scenario_format.legacy_unsupported_message(fmt))
 
 
 # The blank template's TerrainStruct stride, for descape/scenario_new.py's
@@ -318,8 +324,9 @@ class LoadedScenario:
     # destination and never reads this. descape/viewer_file.py may replace it with a
     # display-only sentinel that does not exist on disk (a File > New document).
     scenario_version: str
-    structure_source: str  # "library", or "repo" for a version only
-    # library_compat.REPO_VERSIONS_DIR defines (v1.21). Whether
+    structure_source: str  # "library", "repo" for a version only
+    # library_compat.REPO_VERSIONS_DIR defines (v1.21), or "legacy" for a
+    # pre-DE file (library_compat.LEGACY_VERSIONS_DIR, read-only). Whether
     # parse_triggers() attempts one is repo_version_has_triggers(), not this.
     map_manager: MapManager
     unit_manager: UnitManager
@@ -489,6 +496,10 @@ class LoadedScenario:
     # getattr(scenario, "player_art", None): the duck-typed fakes lack it, and
     # None draws today's Gaia-table art.
     player_art: tuple[tuple[int | None, int, int | None], ...] | None = None
+
+    # TASK-429: the on-disk format; `.legacy` (a pre-DE header-2 file) is
+    # read-only (scenario_write.refuse_legacy()) with triggers never read.
+    source_format: scenario_format.ScenarioFormat = scenario_format.DE_FORMAT
 
 
 def retriever_length(retriever: Any) -> int:
@@ -1076,7 +1087,9 @@ def _verify_messages_block(decompressed: bytes, start: int, end: int, retriever_
     mirroring _verify_terrain_block()/_verify_units_block() above."""
     pos = start
     for name in _MESSAGE_FIELD_ORDER:
-        retriever = retriever_map[name]
+        retriever = retriever_map.get(name)
+        if retriever is None:  # Age of Kings has no scouts pair
+            continue
         length = retriever_length(retriever)
         if name in _MESSAGE_TEXT_FIELDS:
             value = retriever.data
@@ -1188,16 +1201,25 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     igen = IncrementalGenerator(str(path), raw)
     scenario_version = _get_file_version(igen)
     scenario_variant = _get_scenario_variant(igen)
+    source_format, legacy_body = scenario_format.read_format(raw)
+    legacy_structure = library_compat.legacy_structure_path(source_format.data_version)
 
     scenario = AoE2DEScenario(
         "DE", scenario_version, source_location=str(path), name="", variant=scenario_variant
     )
-    if not structure_is_available(scenario_version):
+    if source_format.legacy:
+        # Keyed by data version: a header-2 file never falls through to HD's v1.21.
+        if legacy_structure is None or legacy_body is None:
+            raise UnsupportedStructureVersion.for_format(source_format)
+    elif not structure_is_available(scenario_version):
         # Checked here rather than letting _load_structure() raise, so the
         # cause is named instead of surfacing the library's raw message.
         raise UnsupportedStructureVersion(scenario_version)
-    repo_structure = _repo_structure_path(scenario_version)
-    if repo_structure is None:
+    repo_structure = None if source_format.legacy else _repo_structure_path(scenario_version)
+    if source_format.legacy:
+        # Like the repo branch below: parsed fresh, no vocabulary init.
+        scenario.structure = json.loads(legacy_structure.read_text(encoding="utf-8"))
+    elif repo_structure is None:
         scenario._load_structure()
         # _get_structure() parses the JSON fresh per call, so this cannot leak across loads.
         library_compat.fix_structure(scenario.structure, scenario_version)
@@ -1215,9 +1237,14 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     # header's length at this point, so this slice is the header's own verbatim
     # bytes -- no need to re-read them separately.
     header_bytes = igen.file_content[: igen.progress]
+    if source_format.legacy and igen.progress != scenario_format.body_offset(raw):
+        raise ValueError(
+            f"{source_format.display_name} file header read {igen.progress} bytes, but the file "
+            f"says {scenario_format.body_offset(raw)}: the file may be damaged."
+        )
 
     original_compressed_body = igen.get_remaining_bytes()
-    decompressed = _decompress_bytes(original_compressed_body)
+    decompressed = legacy_body if source_format.legacy else _decompress_bytes(original_compressed_body)
     data_igen = IncrementalGenerator(name="Scenario Data", file_content=decompressed)
     scenario._decompressed_file_data = decompressed
 
@@ -1346,7 +1373,7 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     loaded = LoadedScenario(
         path=path,
         scenario_version=scenario_version,
-        structure_source="library" if repo_structure is None else "repo",
+        structure_source="legacy" if source_format.legacy else "library" if repo_structure is None else "repo",
         map_manager=map_manager,
         unit_manager=unit_manager,
         trigger_tail=trigger_tail,
@@ -1380,7 +1407,11 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         # Known up front for a vocabulary-less repo structure: parse_triggers()
         # never tries one.
         trigger_read_supported=(
-            None if repo_structure is None or repo_version_has_triggers(scenario_version) else False
+            False
+            if source_format.legacy
+            else None
+            if repo_structure is None or repo_version_has_triggers(scenario_version)
+            else False
         ),
         trigger_write_supported=False,
         _trigger_manager=None,
@@ -1390,6 +1421,7 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         _scenario=scenario,
         unit_spans=unit_spans,
         game_variant=_header_variant(header_retriever_map),
+        source_format=source_format,
     )
     loaded.player_art = _player_art_or_none(loaded)
     return loaded
@@ -1427,9 +1459,14 @@ def _read_player_colors(scenario: AoE2DEScenario) -> list[int]:
     group builds this list player-1-first (gaia_first=False), not GAIA-first
     -- resources[8] is GAIA's own (junk, never used) slot, and resources[9..
     15] is filler. Confirmed against every file in this project's corpus.
+    A pre-DE file stores no colour there: player N then gets ColorId N-1, as
+    AoE2:DE's importer writes (PLAYER_COLORS' own default swaps P7 and P8).
     """
     resources = scenario.sections["PlayerDataTwo"].retriever_map["resources"].data
-    return [resources[i].retriever_map["player_color"].data for i in range(8)]
+    return [
+        r.retriever_map["player_color"].data if "player_color" in r.retriever_map else index
+        for index, r in enumerate(resources[:8])
+    ]
 
 
 def refresh_player_colors(loaded: LoadedScenario, pending_colors: dict[int, int]) -> bool:
@@ -1573,7 +1610,8 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     the 0.9.3 pin, EndOfFileError on 0.9.4). Those files open and edit
     normally for terrain and units; only trigger reading is unavailable.
 
-    Also returns None, without attempting a parse, for a file loaded from a
+    Also returns None, without attempting a parse, for a pre-DE file
+    (structure_source "legacy") and for a file loaded from a
     repo structure with no repo vocabulary (v1.21, see
     repo_version_has_triggers()): nothing ships condition/effect definitions
     for it and _load_map_and_units() never initialised any, so a parse would
@@ -1604,7 +1642,9 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
 
     if _parse_in_flight:
         raise RuntimeError("parse_triggers() called while a first trigger parse is running")
-    if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
+    if loaded.structure_source == "legacy" or (
+        loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version)
+    ):
         loaded.trigger_read_supported = False
         return None
     scenario = loaded._scenario

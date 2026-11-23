@@ -207,7 +207,9 @@ eye candy does exist (FLARE4 697 x230, rubble 863/864/865/144/1497, STATUE
 Plus _GAIA_ONLY_EXTRA_CONSTS, named rather than derived from a class: the
 Gunpowder Keg 2607 (GH #208), which the official editor drops when it is set
 to a player (the PR #223 contributor's in-game check). The corpus agrees: all
-20 keg placements, in 2 of the 21 files, are GAIA (measured 2026-10-15).
+20 keg placements, in 2 of the 21 files, are GAIA (measured 2026-10-15). And
+Ruins TERRX 345 (type 80), which the 1.59 editor deleted when it saved the
+test map with one owned by Player 1; all 7 corpus placements are GAIA.
 
 AoE2 follows its editor too (GH #32), with the same rule shape as Return of
 Rome below. Measured 2026-10-21/22 from the 1.59 editor's lists for Player 1
@@ -228,7 +230,10 @@ against GAIA's:
   lists like the keg (_AOE2_PLAYER_OTHERS holds all 87). The other 289 are
   exactly the unhidden eye-candy types and relics outside that list, plus
   the keg; amphorae, rocks, plants, ruins and Relic 285 among them.
-- Buildings: not measured (user decision).
+- Buildings: not read from the editor's lists (user decision). Measured
+  instead by the 1.59 editor's save of the test map (2026-10-17): 245 of its
+  246 unhidden type 80 consts survived owned by a player, and the one lost
+  was Ruins 345, now in _GAIA_ONLY_EXTRA_CONSTS.
 
 Hidden objects are outside the rule, so the corpus's player-owned FLARE4 697
 and RUBL2 144 stay ownable. Corpus check (2026-10-22, 3 AoE2 files outside
@@ -303,8 +308,9 @@ _EYE_CANDY_TYPE = 10
 _RESOURCE_CLASSES = frozenset({5, 7, 8, 31, 32, 33, 40, 41, 48, 63})
 # Minus 40/41, the hidden PILE*/P* piles: never placed in the corpus, no resource.
 _GAIA_ONLY_CLASSES = _RESOURCE_CLASSES - {40, 41}
-# Gunpowder Keg: the official editor drops it when a player owns it (GH #208).
-_GAIA_ONLY_EXTRA_CONSTS = frozenset({2607})
+# Ruins TERRX 345 and the Gunpowder Keg 2607: the official editor drops them when a player owns
+# them (the 1.59 resave; GH #208's in-game check).
+_GAIA_ONLY_EXTRA_CONSTS = frozenset({345, 2607})
 # Non-hero Units classes both editors list for GAIA only (GH #67 RoR, GH #32 AoE2): prey, predators, birds, foxes.
 _GAIA_ONLY_UNIT_CLASSES = frozenset({9, 10, 11, 65})
 # GH #32, AoE2: the Units ids in those classes its editor lists for a player too (Moveable Map
@@ -344,6 +350,12 @@ def _objects() -> dict[int, dict]:
     """unit_const -> its committed catalog entry, keyed by int."""
     data = json.loads(game_dataset.table_path(_CATALOG_PATH).read_text())["objects"]
     return {int(const): entry for const, entry in data.items()}
+
+
+def dat_type(unit_const: int) -> int | None:
+    """The const's .dat `unit.type` in the active catalog, None for a const it lacks."""
+    entry = _objects().get(unit_const)
+    return None if entry is None else entry.get("type")
 
 
 @game_dataset.cache(maxsize=1)

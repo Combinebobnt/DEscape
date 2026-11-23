@@ -75,11 +75,24 @@ _REGION_DISABLED_TIP = "Drag an area with the Select tool in Terrain mode, or us
 _UNITS_DISABLED_TIP = "Select units in Units mode first"
 _MOVE_DISABLED_TIP = "Select units in Units mode first. The selection is dropped when you leave Units mode."
 
-_PLACE_NOTE = (
-    "Every unit is placed with rotation 0 and animation frame 0: for many "
-    "GAIA objects rotation is a graphic-variant index, not an angle. "
+_GRID_NOTE = (
     "Objects bigger than one tile snap to the game's grid; one whose "
     "footprint would cover a tile that isn't eligible is skipped."
+)
+_PLACE_NOTE = (
+    "Every unit is placed with rotation 0 and animation frame 0: for many "
+    "GAIA objects rotation is a graphic-variant index, not an angle. " + _GRID_NOTE
+)
+_PLACE_RANDOM_NOTE = (
+    "Each copy that can face gets a random facing, and trees and other scenery "
+    "a random variant; walls, gates, cliffs and objects with one look keep "
+    "rotation 0. A tree or other scenery the game stores that way takes its "
+    "variant as its animation frame too; every other frame is 0. The same seed gives the same "
+    "layout either way. " + _GRID_NOTE
+)
+_RANDOM_ROTATION_TIP = (
+    "Give each copy a random facing, or a random variant for trees and other scenery. "
+    "Walls, gates, cliffs and objects with one look keep rotation 0"
 )
 _MOVE_NOTE = (
     "Only the position changes: a moved unit keeps its rotation, elevation and "
@@ -165,6 +178,8 @@ class ScatterParams:
     move_selected: bool = False
     # GH #164: a random pick's consts, rolled per copy; unit_const stays its rolled one for eligibility.
     unit_consts: tuple[int, ...] | None = None
+    # TASK-510: a random facing or variant per copy, through place_rotation.random_rotation().
+    random_rotation: bool = False
 
     def requested(self, eligible: int) -> int | None:
         """How many units were asked for, or None for a (lo, hi) range whose
@@ -438,6 +453,11 @@ class ScatterDialog(QDialog):
         self.avoid_check.setChecked(True)
         self.avoid_check.toggled.connect(self._refresh_eligible)
         form.addRow(self.avoid_check)
+
+        self.random_rotation_check = QCheckBox("Random facing/variant")
+        self.random_rotation_check.setToolTip(_RANDOM_ROTATION_TIP)
+        self.random_rotation_check.toggled.connect(self._settle_note)
+        form.addRow(self.random_rotation_check)
         return group
 
     # -- live state --------------------------------------------------------
@@ -482,8 +502,15 @@ class ScatterDialog(QDialog):
         self.owner_combo.setEnabled(not move)
         self.amount_group.setEnabled(not move)
         self.spacing_spin.setEnabled(not move)
-        self.note_label.setText(_MOVE_NOTE if move else _PLACE_NOTE)
+        self.random_rotation_check.setEnabled(not move)
+        self._settle_note()
         self._refresh_eligible()
+
+    def _settle_note(self) -> None:
+        if self.move_mode():
+            self.note_label.setText(_MOVE_NOTE)
+        else:
+            self.note_label.setText(_PLACE_RANDOM_NOTE if self.random_rotation_check.isChecked() else _PLACE_NOTE)
 
     def _on_restrict_changed(self) -> None:
         self.terrain_combo.setEnabled(self.terrain_radio.isChecked())
@@ -575,6 +602,7 @@ class ScatterDialog(QDialog):
             min_spacing=self.spacing_spin.value(),
             move_selected=self.move_mode(),
             unit_consts=self._unit_consts,
+            random_rotation=self.random_rotation_check.isChecked(),
         )
 
     def state(self) -> dict:
@@ -594,6 +622,7 @@ class ScatterDialog(QDialog):
             "min_spacing": self.spacing_spin.value(),
             "avoid": self.avoid_check.isChecked(),
             "grow": self.grow_spin.value(),
+            "random_rotation": self.random_rotation_check.isChecked(),
         }
 
     def _restore(self, last: dict) -> None:
@@ -617,6 +646,7 @@ class ScatterDialog(QDialog):
         self.jitter_spin.setValue(last.get("jitter", 0.0))
         self.spacing_spin.setValue(last.get("min_spacing", 0))
         self.avoid_check.setChecked(bool(last.get("avoid", True)))
+        self.random_rotation_check.setChecked(bool(last.get("random_rotation", False)))
         # Sticky Move needs a selection, else Place unless there is no object;
         # with no region the area came from the selection, so it opens on Move.
         selected = bool(self._selected)

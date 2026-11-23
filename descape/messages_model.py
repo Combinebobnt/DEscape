@@ -28,6 +28,7 @@ from descape.messages_fields import (
     MESSAGE_FIELDS,
     encode_for_write,
     normalize_for_display,
+    present_fields,
 )
 from descape.scenario_io import LoadedScenario
 
@@ -76,13 +77,14 @@ class MessagesEditModel:
         self.loaded = loaded
 
         retriever_map = loaded._scenario.sections["Messages"].retriever_map
+        self.fields = present_fields(retriever_map)
         self._original_text: dict[str, str] = {}
         self._original_newline: dict[str, str | None] = {}
         self._original_id: dict[str, int] = {}
         self._pending_text: dict[str, str] = {}
         self._pending_id: dict[str, int] = {}
 
-        for spec in MESSAGE_FIELDS:
+        for spec in self.fields:
             text = retriever_map[spec.retriever].data
             display, newline_token = normalize_for_display(text)
             self._original_text[spec.field_id] = display
@@ -183,14 +185,14 @@ class MessagesEditModel:
         return self.loaded.messages_section_start, self.loaded.messages_section_end
 
     def serialize(self) -> bytes:
-        """The whole 12-retriever Messages section: six <I string-table ids
+        """The whole 12-retriever Messages section (10 on Age of Kings): six <I string-table ids
         in field order, then six <h-length-prefixed UTF-8 payloads in the
         same field order. Never delegates to AoE2ScenarioParser's own
         serializer -- see this module's docstring."""
         out = bytearray()
-        for spec in MESSAGE_FIELDS:
+        for spec in self.fields:
             out += _ID_STRUCT.pack(self.current_value(_id_field_id(spec.field_id)))
-        for spec in MESSAGE_FIELDS:
+        for spec in self.fields:
             encoded = self._encoded(spec.field_id)
             out += _TEXT_LEN_STRUCT.pack(len(encoded))
             out += encoded

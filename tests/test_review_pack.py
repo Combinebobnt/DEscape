@@ -40,6 +40,16 @@ def test_ground_texture_pack_check_passes() -> None:
 
 
 @pytest.mark.corpus
+def test_ground_views_pack_check_passes() -> None:
+    """Needs examples/ and the real install, as ground_texture's."""
+    gen = conftest.load_verify_module("gen_ground_zoom_review_pack")
+    reason = gen.grp._ground_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check()
+
+
+@pytest.mark.corpus
 def test_sloped_mip_pack_check_passes() -> None:
     """Needs examples/ and the real install: real maps, textures and sprites
     stitched from SlopedChunkCache's coarser levels (sloped_fine has its finer one)."""

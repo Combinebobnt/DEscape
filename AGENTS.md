@@ -40,6 +40,14 @@ scope.
   script through `batch_api.load()`, not a bare
   `scenario_io.load_map_and_units()`. `docs/GAME_DATA.md` has the
   registry, the per-game tables and adding a game.
+- **Pre-DE documents are read-only.** A FileHeader-version-2 file (Age of
+  Kings, The Conquerors and HD Edition `.scn`/`.scx`,
+  `LoadedScenario.source_format.legacy`) opens for viewing only.
+  `scenario_write.refuse_legacy()` raises `LegacyFormatReadOnly` (a
+  `WriteBlockedError`) in `write_scenario()`, `build_patched_body()`,
+  `build_patched()`, `tools/strip_units.py` and `tools/gen_blank_template.py`
+  (the fixture generators splice only fixed DE donors). Any new direct
+  writer of a file a user names must call it too. `docs/SCENARIO_IO.md` "Older formats" has the detail.
 - **The exceptions to "verbatim".** This list is
   exhaustive: every other write path stays verbatim as above, and each
   exception that goes through a model method raises rather than silently
@@ -71,9 +79,10 @@ scope.
   - *Replace* (GH #144): `UnitEditModel.replace_type()`, by
     `unit_model.replaced_rotation()`; `tests/test_unit_replace_type.py`.
   - *Place Unit's placement rotation* (GH #172, the Unit Brush, GH #170,
-    and Unit Line / Unit Shape, GH #365, and a script's
-    `editor.add_unit()`): `place_rotation.rotation_for()`;
-    `tests/test_place_rotation.py`, `tests/test_unit_shape.py`,
+    Unit Line / Unit Shape, GH #365, Scatter Units in Region's Random
+    facing/variant box, and a script's `editor.add_unit()`):
+    `place_rotation.rotation_for()`; `tests/test_place_rotation.py`,
+    `tests/test_unit_shape.py`, `tests/test_scatter.py`,
     `tests/test_scripting.py`.
   - *Terrain planting's variant*: `terrain_units.variant_for()`;
     `tests/test_terrain_units.py`.
@@ -158,6 +167,44 @@ behaviour the guide describes updates its topic in the same commit, and a
 new menu item, mode or tool gets a line in its topic. Guide prose names a
 command and where it lives, never its rebindable key (the Keyboard and Mouse
 page shows the live keys); `tests/test_help_guide.py` lints the rest.
+
+## Panel layouts
+
+The editor panel, Status Log, Minimap and Trigger Details are docks
+(`descape/viewer_toolbar.py`, GH #64): each can float as its own window
+(on another monitor too), dock on another edge (the editor panel left or
+right only), tab with another dock, or close, and the arrangement is kept
+between launches. A UI change must work in the default layout first: a fresh
+config, or View > Panels > Reset Layout (editor panel left with Trigger
+Details under it, Status Log under the map, Minimap closed). It must not
+break the other arrangements either. What usually breaks:
+
+- **Size.** Docked left or right a panel is narrow and tall, under the map
+  it is wide and short, floating it is whatever size the user drags. Set
+  minimum sizes so the content stays usable everywhere rather than tuning for
+  the default geometry. A form that changes shape with the dock's place
+  follows `dockLocationChanged`/`topLevelChanged`, as Trigger Details does
+  (`_sync_trigger_detail_layout()`).
+- **A floating dock is a window of its own.** `isAncestorOf()` from the main
+  window stops at it (use `_owns_widget()`), it keeps its own focus widget
+  and active window, hiding it moves no focus, so a typed value must commit
+  first (`_commit_focus_of()`), and keys go back to the map through
+  `_focus_map_view()`.
+- **A tabbed or closed dock is not on screen.** Code that needs a panel
+  shown re-shows and raises it (`_show_panel_dock()`); work that a hidden
+  dock skips runs when it reappears (the Minimap builds on
+  `visibilityChanged`), and nothing reads a hidden dock's geometry.
+- **The saved layout.** Adding, removing or renaming a dock or toolbar bumps
+  `WINDOW_STATE_VERSION`, so an older saved layout is refused whole and falls
+  back to the default instead of half-applying. A new dock or toolbar needs an
+  `objectName` (`saveState()` skips an unnamed one), a View > Panels entry, a
+  place in `_apply_default_layout()`, and a line in the guide's Panels
+  section (`descape/help/view-and-filters.md`).
+- **Tests.** `tests/test_window_layout.py` pins the default shape and the
+  float, re-dock and relaunch round trips. A layout-sensitive change tests the
+  default plus the arrangement it is most likely to break (floating, docked
+  under the map, or tabbed), on a shown window (`conftest.shown_window()`):
+  geometry on an unshown window tests Qt's fallback, not the code.
 
 ## Contributing
 

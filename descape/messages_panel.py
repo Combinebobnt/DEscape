@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape.messages_fields import MESSAGE_FIELDS, STRING_ID_UNSET, normalize_for_display
+from descape.messages_fields import MESSAGE_FIELDS, STRING_ID_UNSET, normalize_for_display, present_fields
 from descape.text_edits import ProseTextEdit
 from descape.viewer_common import FontScaledWidth
 
@@ -54,6 +54,7 @@ class MessagesPanel(QWidget):
     def __init__(self, on_message_field=None):
         super().__init__()
         self._on_message_field = on_message_field or (lambda *args: None)
+        self._fields = MESSAGE_FIELDS  # the shown document's present_fields()
         # GH #139: a box's stored height in lines by key, and its store (None resets). Assigned by the window.
         self.text_box_lines = lambda key: None
         self.on_text_box_lines = lambda key, lines: None
@@ -134,7 +135,8 @@ class MessagesPanel(QWidget):
             self._loaded = loaded
             retriever_map = loaded._scenario.sections["Messages"].retriever_map
             self._values = {}
-            for spec in MESSAGE_FIELDS:
+            self._fields = present_fields(retriever_map)
+            for spec in self._fields:
                 text = retriever_map[spec.retriever].data
                 display, _token = normalize_for_display(text) if isinstance(text, str) else (str(text), None)
                 self._values[spec.field_id] = display
@@ -154,10 +156,10 @@ class MessagesPanel(QWidget):
     def _status_text(self, loaded, notes: Sequence[str]) -> tuple[str, str]:
         set_ids = sum(
             1
-            for spec in MESSAGE_FIELDS
+            for spec in self._fields
             if self._values.get(f"{spec.field_id}_id", STRING_ID_UNSET) != STRING_ID_UNSET
         )
-        summary = [f"6 fields — scenario {loaded.scenario_version}"]
+        summary = [f"{len(self._fields)} fields — scenario {loaded.scenario_version}"]
         detail = list(notes)
         if not self._editable:
             summary.append("read-only")
@@ -169,7 +171,7 @@ class MessagesPanel(QWidget):
     # -- building the form --------------------------------------------------
 
     def _build_groups(self) -> None:
-        for spec in MESSAGE_FIELDS:
+        for spec in self._fields:
             box = QGroupBox(spec.label)
             box_layout = QVBoxLayout(box)
 

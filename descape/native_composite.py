@@ -83,16 +83,33 @@ def _extents(dy: np.ndarray, dx: np.ndarray, start: np.ndarray) -> np.ndarray:
 _I32 = np.iinfo(np.int32)
 
 
-def _i32(parts: list[np.ndarray]) -> np.ndarray:
-    if not parts:
-        return np.zeros(0, dtype=np.int32)
-    wide = np.concatenate(parts)
+def _check_i32(wide: np.ndarray) -> None:
     if wide.dtype.kind not in "iu":
         if not np.array_equal(wide.astype(np.int32), wide):
             raise OverflowError("an index table value does not fit in int32")
     elif wide.size and (int(wide.min()) < _I32.min or int(wide.max()) > _I32.max):
         raise OverflowError("an index table value does not fit in int32")
+
+
+def _i32(parts: list[np.ndarray]) -> np.ndarray:
+    if not parts:
+        return np.zeros(0, dtype=np.int32)
+    wide = np.concatenate(parts)
+    _check_i32(wide)
     return wide.astype(np.int32)
+
+
+def _mark_samples(present: np.ndarray, tile_px: int, sy: list[np.ndarray], sx: list[np.ndarray]) -> None:
+    flat = np.concatenate([np.zeros(0, np.int64), *(y.astype(np.int64) * tile_px + x for y, x in zip(sy, sx, strict=True))])
+    if flat.size:
+        # A negative index would wrap silently in present[flat].
+        assert int(flat.min()) >= 0 and int(flat.max()) < tile_px * tile_px
+        present[flat] = True
+
+
+def _present_samples(present: np.ndarray, tile_px: int) -> tuple[np.ndarray, np.ndarray]:
+    flat = np.flatnonzero(present)
+    return np.ascontiguousarray(flat // tile_px, dtype=np.int32), np.ascontiguousarray(flat % tile_px, dtype=np.int32)
 
 
 def _blend_samples(tile_px: int, sy: list[np.ndarray], sx: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -100,32 +117,81 @@ def _blend_samples(tile_px: int, sy: list[np.ndarray], sx: list[np.ndarray]) -> 
     two contiguous int32 arrays: the texels the kernel composes per blended
     tile. Built fresh, never written in place, since a worker may hold it.
     A presence bitmap over [0, tile_px²) stands in for np.unique (TASK-031.85)."""
-    flat = np.concatenate([np.zeros(0, np.int64), *(y.astype(np.int64) * tile_px + x for y, x in zip(sy, sx, strict=True))])
     present = np.zeros(tile_px * tile_px, dtype=bool)
-    if flat.size:
-        # A negative index would wrap silently in present[flat].
-        assert int(flat.min()) >= 0 and int(flat.max()) < tile_px * tile_px
-        present[flat] = True
-    flat = np.flatnonzero(present)
-    return np.ascontiguousarray(flat // tile_px, dtype=np.int32), np.ascontiguousarray(flat % tile_px, dtype=np.int32)
+    _mark_samples(present, tile_px, sy, sx)
+    return _present_samples(present, tile_px)
+
+
+class _CsrAssembly:
+    """_csr()'s assembly in ranges of whole ops (TASK-031.87): step() fills
+    the next run of ops whose entry total fits max_elems (at least one op,
+    every op with None), running _i32's check and _extents() per range into
+    preallocated columns, so the result is identical to one-shot assembly.
+    With src, an op of two arrays gets zero src columns. With tile_px, the
+    ops in reads also mark _blend_samples()'s bitmap; finish() returns its
+    samples beside the columns."""
+
+    def __init__(self, ops: list[tuple], src: bool, *, tile_px: int | None = None, reads=()):
+        self._ops = ops
+        self._src = src
+        start = np.zeros(len(ops) + 1, dtype=np.int64)
+        np.cumsum([op[0].size for op in ops], out=start[1:])
+        self._start = start
+        n = int(start[-1])
+        self._names = ("dy", "dx", "sy", "sx") if src else ("dy", "dx")
+        self._cols = {name: np.empty(n, dtype=np.int32) for name in self._names}
+        self._ext = np.empty((len(ops), 4), dtype=np.int32)
+        self._tile_px = tile_px
+        self._reads = frozenset(reads)
+        self._present = None if tile_px is None else np.zeros(tile_px * tile_px, dtype=bool)
+        self._next = 0
+
+    def step(self, max_elems: int | None = None) -> bool:
+        """Assembles the next range; True while ops are left."""
+        ops, start = self._ops, self._start
+        a = self._next
+        if a >= len(ops):
+            return False
+        b = len(ops) if max_elems is None else a + 1
+        if max_elems is not None:
+            while b < len(ops) and start[b + 1] - start[a] <= max_elems:
+                b += 1
+        s0, s1 = int(start[a]), int(start[b])
+        for k, name in enumerate(self._names):
+            parts = [op[k] if k < len(op) else np.zeros_like(op[0]) for op in ops[a:b]]
+            wide = np.concatenate(parts)
+            _check_i32(wide)
+            self._cols[name][s0:s1] = wide
+        c = self._cols
+        self._ext[a:b] = _extents(c["dy"][s0:s1], c["dx"][s0:s1], start[a:b + 1] - s0).reshape(-1, 4)
+        if self._present is not None:
+            idx = [i for i in range(a, b) if i in self._reads]
+            _mark_samples(
+                self._present, self._tile_px,
+                [c["sy"][start[i]:start[i + 1]] for i in idx], [c["sx"][start[i]:start[i + 1]] for i in idx],
+            )
+        self._next = b
+        return b < len(ops)
+
+    def finish(self) -> tuple[dict, tuple[np.ndarray, np.ndarray] | None]:
+        assert self._next >= len(self._ops)
+        c = self._cols
+        cols = {"dy": c["dy"], "dx": c["dx"], "start": self._start, "ext": self._ext.reshape(-1)}
+        if self._src:
+            cols["sy"] = c["sy"]
+            cols["sx"] = c["sx"]
+        samples = None if self._present is None else _present_samples(self._present, self._tile_px)
+        return cols, samples
+
+    def run(self) -> dict:
+        self.step()
+        return self.finish()[0]
 
 
 def _csr(ops: list[tuple], src: bool) -> dict:
     """Concatenates per-op (dst_y, dst_x[, src_y, src_x]) into int32 columns
     with int64 start offsets and per-op inclusive extents."""
-    lens = [op[0].size for op in ops]
-    start = np.zeros(len(ops) + 1, dtype=np.int64)
-    np.cumsum(lens, out=start[1:])
-    cols = {
-        "dy": _i32([op[0] for op in ops]),
-        "dx": _i32([op[1] for op in ops]),
-        "start": start,
-    }
-    cols["ext"] = _extents(cols["dy"], cols["dx"], start)
-    if src:
-        cols["sy"] = _i32([op[2] for op in ops])
-        cols["sx"] = _i32([op[3] for op in ops])
-    return cols
+    return _CsrAssembly(ops, src).run()
 
 
 def _fixed_ops(tile_px: int) -> list[tuple]:
@@ -158,39 +224,29 @@ class SteppedTables:
     factors are fetched per call (stepped_factors)."""
 
     def __init__(self, tile_px: int, elev_step: int):
-        pairs = _fixed_ops(tile_px)
-        assert len(pairs) == N_FIXED
-        for r in range(1, MAX_RISE + 1):
-            pairs += _rise_ops(tile_px, r * elev_step)
-        assert len(pairs) == N_FIXED + MAX_RISE * PER_RISE
-        ops = [op for op, _key in pairs]
-        # factor_keys[i] is op i's factor key (_fixed_ops()).
-        keys = [key for _op, key in pairs]
-        # One src entry per dst entry in every op, zeros where an op samples
-        # nothing, so the four columns share the start offsets.
-        cols = _csr([op if len(op) == 4 else (*op, np.zeros_like(op[0]), np.zeros_like(op[0])) for op in ops], src=True)
+        built = render_paint._drain(assemble_stepped(tile_px, elev_step, None))
+        self.__dict__.update(vars(built))
+
+    @classmethod
+    def _from_parts(cls, tile_px: int, cols: dict, blend_samples: tuple, factor_keys: list) -> SteppedTables:
+        self = cls.__new__(cls)
         for name in ("sy", "sx"):
             assert cols[name].size == 0 or (cols[name].min() >= 0 and cols[name].max() < tile_px)
         self.tile_px = tile_px
         self.cols = cols
-        self.factor_keys = keys
+        self.factor_keys = factor_keys
         self.op_len = np.diff(cols["start"])
-        # Every op whose paint reads a Src (the kernel's _op_scatter calls):
-        # the diamond and both skirts of every rise.
-        start = cols["start"]
-        reads = [OP_DIAMOND, *(N_FIXED + (r - 1) * PER_RISE + side for r in range(1, MAX_RISE + 1) for side in (0, 1))]
-        self.blend_samples = _blend_samples(
-            tile_px, [cols["sy"][start[i]:start[i + 1]] for i in reads], [cols["sx"][start[i]:start[i + 1]] for i in reads],
-        )
-        fstart = np.full(len(ops), -1, dtype=np.int64)
+        self.blend_samples = blend_samples
+        fstart = np.full(len(factor_keys), -1, dtype=np.int64)
         total = 0
-        for i, key in enumerate(keys):
+        for i, key in enumerate(factor_keys):
             if key is not None:
                 fstart[i] = total
                 total += int(self.op_len[i])
         self.fstart = fstart
         self._factor_src: list | None = None
         self._factors: np.ndarray | None = None
+        return self
 
     def factors(self) -> np.ndarray:
         """The darken factors, fetched from render_iso's lru caches on every call
@@ -220,9 +276,38 @@ class SteppedTables:
         return (c["dy"], c["dx"], c["sy"], c["sx"], None, c["start"], c["ext"], self.fstart, self.factors(), luts)
 
 
+def assemble_stepped(tile_px: int, elev_step: int, max_elems: int | None):
+    """SteppedTables' assembly as a generator that yields between
+    _CsrAssembly steps of max_elems entries (TASK-031.87) and returns the
+    finished instance. Gathers every producer's ops first, cache hits once
+    prime_walk() ran the rises. max_elems None assembles in one step."""
+    pairs = _fixed_ops(tile_px)
+    assert len(pairs) == N_FIXED
+    for r in range(1, MAX_RISE + 1):
+        pairs += _rise_ops(tile_px, r * elev_step)
+    assert len(pairs) == N_FIXED + MAX_RISE * PER_RISE
+    # factor_keys[i] is op i's factor key (_fixed_ops()).
+    keys = [key for _op, key in pairs]
+    # Every op whose paint reads a Src (the kernel's _op_scatter calls):
+    # the diamond and both skirts of every rise.
+    reads = [OP_DIAMOND, *(N_FIXED + (r - 1) * PER_RISE + side for r in range(1, MAX_RISE + 1) for side in (0, 1))]
+    # One src entry per dst entry in every op, zeros where an op samples
+    # nothing, so the four columns share the start offsets.
+    asm = _CsrAssembly([op for op, _key in pairs], True, tile_px=tile_px, reads=reads)
+    while asm.step(max_elems):
+        yield
+    cols, samples = asm.finish()
+    return SteppedTables._from_parts(tile_px, cols, samples, keys)
+
+
+# A finished walk assembly handed to stepped_tables(); non-empty only inside prime_walk()'s handoff call.
+_ASSEMBLED: dict[tuple[int, int], SteppedTables] = {}
+
+
 @lru_cache(maxsize=16)
 def stepped_tables(tile_px: int, elev_step: int) -> SteppedTables:
-    return SteppedTables(tile_px, elev_step)
+    built = _ASSEMBLED.pop((tile_px, elev_step), None)
+    return built if built is not None else SteppedTables(tile_px, elev_step)
 
 
 class SlopedShapes:
@@ -299,12 +384,21 @@ def sloped_shapes(tile_px: int) -> SlopedShapes:
 # Priming (TASK-031.85)
 
 # prime_walk()'s batch per step, from the TASK-031.85 atom census: each batch <= 2 ms at 128 px.
+# Masks and registrations shrink above 128 px by area (_prime_batch(), TASK-031.87).
 PRIME_MASK_BATCH = 8
 PRIME_SHAPE_BATCH = 12
 PRIME_SHADE_BATCH = 32
 PRIME_BAND_ROWS = 32
 # KeyMap keys read per step while collecting mask arguments.
 PRIME_KEY_SCAN = 512
+# Table entries per stepped_tables() assembly step: the TASK-031.87 census's largest budget whose
+# in-context steps at 128 and 192 px stayed <= 2 ms at default and maximum elevation.
+PRIME_ASSEMBLY_ELEMS = 98_304
+
+
+def _prime_batch(base: int, tile_px: int) -> int:
+    """A per-item batch sized at 128 px, scaled down by tile area above it."""
+    return base if tile_px <= 128 else max(1, base * 128 ** 2 // tile_px ** 2)
 
 
 def prime_walk(tile_px: int, elev_step: int, *, sloped: bool = False, blend_keys=None, heights=None):
@@ -315,14 +409,16 @@ def prime_walk(tile_px: int, elev_step: int, *, sloped: bool = False, blend_keys
     that comes first, or after an eviction, builds as it does today.
 
     Stepped (and iso Flat): the fixed ops and one rise per step, the
-    stepped_tables() assembly, then its factors (kernel_tables()). Sloped:
+    stepped_tables() assembly PRIME_ASSEMBLY_ELEMS entries a step
+    (assemble_stepped()), handed to the factory through _ASSEMBLED, then
+    its factors (kernel_tables()). Sloped:
     the sloped_shapes() registry. Both then the blend masks: blend_keys()
     returns the KeyMap's keys (None with blending off), snapshotted here, and
-    each key's get_blend_mask() pairs are filled PRIME_MASK_BATCH a step, for
+    each key's get_blend_mask() pairs are filled _prime_batch(PRIME_MASK_BATCH) a step, for
     keys whose layer mask is absent or already loaded. A layer mask load is
     never run here. Sloped last: heights() returns (corner_rise, fold); the
     level's shapes are discovered PRIME_BAND_ROWS tile rows a step by
-    prepare_sloped()'s own encoding, registered PRIME_SHAPE_BATCH a step,
+    prepare_sloped()'s own encoding, registered _prime_batch(PRIME_SHAPE_BATCH) a step,
     packed in one step, and shaded PRIME_SHADE_BATCH a step at elev_step.
     crop_source()'s wrap copies are not warmed."""
     yield
@@ -335,7 +431,13 @@ def prime_walk(tile_px: int, elev_step: int, *, sloped: bool = False, blend_keys
             yield
             _rise_ops(tile_px, r * elev_step)
         yield
-        tables = stepped_tables(tile_px, elev_step)
+        built = yield from assemble_stepped(tile_px, elev_step, PRIME_ASSEMBLY_ELEMS)
+        yield
+        try:
+            _ASSEMBLED[(tile_px, elev_step)] = built
+            tables = stepped_tables(tile_px, elev_step)
+        finally:
+            _ASSEMBLED.pop((tile_px, elev_step), None)
         yield
         tables.kernel_tables()
     yield
@@ -348,6 +450,7 @@ def prime_walk(tile_px: int, elev_step: int, *, sloped: bool = False, blend_keys
 
 def _prime_masks(keys: list, tile_px: int):
     """prime_walk()'s blend masks over a snapshot of KeyMap keys."""
+    batch = _prime_batch(PRIME_MASK_BATCH, tile_px)
     seen: set = set()
     pending: list = []
     for i in range(0, len(keys), PRIME_KEY_SCAN):
@@ -361,11 +464,11 @@ def _prime_masks(keys: list, tile_px: int):
                 if args not in seen:
                     seen.add(args)
                     pending.append(args)
-        while len(pending) >= PRIME_MASK_BATCH:
+        while len(pending) >= batch:
             yield
-            for args in pending[:PRIME_MASK_BATCH]:
+            for args in pending[:batch]:
                 asset_source.get_blend_mask(*args)
-            del pending[:PRIME_MASK_BATCH]
+            del pending[:batch]
     if pending:
         yield
         for args in pending:
@@ -394,9 +497,10 @@ def _prime_shapes(tile_px: int, elev_step: int, heights):
                 seen.add(key)
                 found.append(key)
     new = [key for key in found if key not in registered]
-    for i in range(0, len(new), PRIME_SHAPE_BATCH):
+    batch = _prime_batch(PRIME_SHAPE_BATCH, tile_px)
+    for i in range(0, len(new), batch):
         yield
-        sloped_shapes(tile_px).shape_ids(new[i:i + PRIME_SHAPE_BATCH])
+        sloped_shapes(tile_px).shape_ids(new[i:i + batch])
     yield
     sloped_shapes(tile_px).packed()
     # Every shape, not only new ones: an earlier registration may have shaded at another elev_step.
@@ -548,7 +652,7 @@ class UnitPack:
                     continue
                 t = y * w + x
                 if pending[t]:
-                    for draw, ax, ay, rise in draws:
+                    for draw, ax, ay, rise, _order in draws:
                         keys.append(t * 2 + 1)
                         gathered.append((ROW_SPRITE, ay - draw.hotspot_y, ax - draw.hotspot_x, draw.rgba, rise))
             for (x, y), farm in sprites.farm_by_tile.items():
@@ -609,7 +713,7 @@ class UnitPack:
             if id(unit) not in skip:
                 rows.append(self._mark_row(unit, color, key))
         slot_of = self._slots.get
-        for draw, ax, ay, rise in anchor_get(key, ()):
+        for draw, ax, ay, rise, _order in anchor_get(key, ()):
             rgba = draw.rgba
             slot = slot_of(id(rgba))
             if slot is None:

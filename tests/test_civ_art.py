@@ -593,7 +593,7 @@ def test_an_art_edit_on_a_player_without_buildings_still_reports_a_change():
 def _layer_draw(loaded):
     _, elev, proj = render_iso.render_terrain_iso_with_proj(loaded, with_sprites=True)
     layer = render_sprites.sprite_draws_by_anchor(loaded, proj, elev)
-    ((draw, _x, _y, _rise),) = next(iter(layer.by_anchor.values()))
+    ((draw, _x, _y, _rise, _order),) = next(iter(layer.by_anchor.values()))
     return draw
 
 

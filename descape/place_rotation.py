@@ -15,7 +15,8 @@ It follows the Rotate rules (ViewerWindow.on_unit_rotate) per const:
   carries across picks with different angle counts.
 - Cyclable (unit_variant.is_cyclable): a graphic-variant index, always written
   as a literal integer. It belongs to the const it was chosen on and reads as
-  0 for any other pick.
+  0 for any other pick. On a type 10 const the frame takes the same index
+  (frame_for(), unit_variant.frame_follows_variant()).
 - Gate (gate_orientation.is_gate): the orientation lives in the const, so a
   step returns the sibling const and leaves the state alone.
 - Everything else (walls, cliffs, single-variant and INERT consts): nothing to
@@ -120,3 +121,10 @@ def rotation_for(state: PlaceRotation, const: int, owner: int) -> float:
     if unit_variant.is_cyclable(const):
         return float(variant_for(state, const))
     return 0.0
+
+
+def frame_for(const: int, rotation: float) -> int:
+    """The `initial_animation_frame` a placement of `const` with
+    rotation_for()'s `rotation` stores: the variant index where
+    unit_variant.frame_follows_variant(), else add()'s own 0."""
+    return int(rotation) if unit_variant.frame_follows_variant(const) else 0

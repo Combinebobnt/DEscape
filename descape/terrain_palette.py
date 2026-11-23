@@ -156,7 +156,7 @@ BUILDING_TILE_SPANS: dict[int, tuple[int, int]] = {}
 # every other unit_const, including every other building, which occupies its
 # whole bbox.
 BUILDING_TILE_OFFSETS: dict[int, frozenset[tuple[int, int]]] = {}
-# The 260 heroes the game draws its golden glow around (GH #39), generated
+# The 268 heroes the game draws its golden glow around (GH #39), generated
 # from the .dat's hero_mode bits and hero_glow_graphic; see
 # tools/gen_unit_render_data.py's "hero_glow" docs for the rule.
 HERO_GLOW_CONSTS: set[int] = set()

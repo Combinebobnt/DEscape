@@ -616,6 +616,9 @@ def test_rotate_set_variant_and_add_unit_stay_inside_their_write_rules() -> None
     assert made["archer"].rotation == place_rotation.rotation_for(state(facing=1.0), _ARCHER_CONST, 1)
     assert made["plain"].rotation == place_rotation.rotation_for(state(), _WATCH_TOWER_CONST, 2)
     assert made["tree"].rotation == 5.0 and made["archer"].rotation not in (0.0, 1.0)
+    # A tree's frame moves with its variant, as the game stores it; a facing leaves it 0.
+    assert doc.unit(_TREE_OAK).initial_animation_frame == 3
+    assert (made["tree"].initial_animation_frame, made["archer"].initial_animation_frame) == (5, 0)
 
 
 def test_a_kept_editor_refuses_to_write_after_its_run() -> None:

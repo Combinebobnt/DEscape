@@ -226,13 +226,6 @@ def _trigger_state(scenario: LoadedScenario) -> tuple[str, str]:
     return TRIGGERS_REMAPPED, "Trigger areas and locations will be shifted with the map."
 
 
-def _read(obj, attribute: str):
-    try:
-        return getattr(obj, attribute, None)
-    except Exception:  # noqa: BLE001 -- the library's version-gated properties raise
-        return None
-
-
 def dangling_reference_count(scenario: LoadedScenario, removed: Iterable) -> int:
     """How many unit ids in condition/effect fields (an id inside a Unit[] list
     counts once each) name only units in `removed`: the references a resize
@@ -247,18 +240,12 @@ def dangling_reference_count(scenario: LoadedScenario, removed: Iterable) -> int
     if manager is None or not library_compat.vocabulary_is_available(scenario.scenario_version):
         return 0
     vocabulary = library_compat.load_vocabulary(scenario.scenario_version)
-    kinds = (
-        ("conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
-        ("effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),
+    return sum(
+        1
+        for *_where, ids in unit_references.trigger_references(manager.triggers, vocabulary)
+        for ref in ids
+        if ref in gone
     )
-    count = 0
-    for trigger in manager.triggers:
-        for list_name, type_attribute, definitions, presentation in kinds:
-            for entry in getattr(trigger, list_name):
-                definition = definitions.get(_read(entry, type_attribute))
-                for ids in unit_references.references_in(entry, definition, presentation).values():
-                    count += sum(1 for ref in ids if ref in gone)
-    return count
 
 
 def _refusal(scenario: LoadedScenario, new_w: int, new_h: int, dx: int, dy: int, deleted: int) -> str | None:

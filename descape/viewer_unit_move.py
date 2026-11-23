@@ -28,7 +28,14 @@ from descape import (
 )
 from descape.render_cache_splice import UnitSplice
 from descape.render_sprites import unit_sprite_draws_at
-from descape.render_units import unit_at, unit_mark_color, unit_tile_bounds, wall_variant_rotation_overrides
+from descape.render_units import (
+    occupied_tiles_for,
+    unit_at,
+    unit_mark_color,
+    unit_occupied_tiles,
+    unit_tile_bounds,
+    wall_variant_rotation_overrides,
+)
 from descape.unit_model import (
     reanchored,
 )
@@ -1062,29 +1069,49 @@ class _ViewerUnitMoveMixin:
         its order: a host that takes it never refuses and one that does not
         always does, Free placement or not; a drop back on its own point with
         its const unchanged has no footprint to judge; Free placement lifts
-        the rule. `stand_in` is the drag's turn (_drag_stand_in()). The rule's
-        answer alone is memoized, per tile crossing on a snapped drag."""
+        the rule. `stand_in` is the drag's turn (_drag_stand_in()). The walls
+        a moved gate replaces never block it (_drag_replaced_walls()). The
+        rule's answer alone is memoized, per tile crossing on a snapped drag."""
         if drop is not None:
             return drop[1] is not None
         unit = entry.unit
         const = stand_in.unit_const
         own_point = point == (stand_in.x, stand_in.y) and const == unit.unit_const
-        if own_point or self._restrictions_lifted() or self._moves_gate_walls([entry]):
+        if own_point or self._restrictions_lifted():
             return False
-        memo_key = (key, point, const, self.scenario.unit_gen)
+        memo_key = (key, point, const, self.scenario.unit_gen, self.gate_walls_check.isChecked())
         memo = self._drag_rule_memo
         if memo is not None and memo[0] == memo_key:
             return memo[1]
-        refused = placement_rules.move_refused(self.scenario, unit, *point, exclude=[unit], unit_const=const)
+        exclude = [unit, *self._drag_replaced_walls([(unit, const, *point)])]
+        refused = placement_rules.move_refused(self.scenario, unit, *point, exclude=exclude, unit_const=const)
         self._drag_rule_memo = (memo_key, refused)
         return refused
 
-    def _moves_gate_walls(self, entries) -> bool:
-        """Whether a drop of `entries` may replace walls under a moved gate
-        (GH #194). The release then excludes those walls through the unit
-        model's gate plan, which a preview does not build, so it is drawn
-        untinted rather than refused over walls the drop would replace."""
-        return self.gate_walls_check.isChecked() and any(gate_orientation.is_gate(e.unit.unit_const) for e in entries)
+    def _drag_replaced_walls(self, landings) -> list:
+        """The walls a drop would replace under its moved gates with "Moving a
+        gate updates walls" ticked (GH #194), which its rule excludes, so the
+        preview excludes them too (TASK-489). `landings` is [(unit, landing
+        const, x, y)]: a gate counts by its landing const's tiles, and only
+        when they differ from its stored ones, as wall_run.scenario_move_plan()
+        rules. Read off the memoized wall scene, so a drag walks no scene per
+        tile crossing. One gap: the drop keeps a wall remove_many() refuses
+        (something is garrisoned in it), which then blocks the drop untinted."""
+        if not self.gate_walls_check.isChecked():
+            return []
+        mm = self.scenario.map_manager
+        landed: set[tuple[int, int]] = set()
+        for unit, const, x, y in landings:
+            if not gate_orientation.is_gate(const):
+                continue
+            new = occupied_tiles_for(const, x, y, mm.map_width, mm.map_height)
+            old = unit_occupied_tiles(unit, mm.map_width, mm.map_height)
+            if new is not None and old is not None and set(new) != set(old):
+                landed.update(new)
+        if not landed:
+            return []
+        _tiles, walls = self._gate_wall_scene()
+        return [wall for _player_id, wall in wall_run.walls_under(landed, walls)]
 
     def _ghost_mark(self, player_id: int, ghost, ghost_entry=None):
         """(polygons, color) of the coloured-mark ghost for `player_id`'s `ghost`."""
@@ -1145,7 +1172,8 @@ class _ViewerUnitMoveMixin:
         zero delta and Free placement (none). With a turn, a zero delta still
         judges the members whose const changed, as _move_group() does. Up to
         GROUP_GHOST_CAP members are checked, the grabbed one first; the release
-        checks all. Empty for a drag that may replace walls (_moves_gate_walls()).
+        checks all. The walls its moved gates replace block no member, as in
+        _group_move_refusal() (_drag_replaced_walls()).
 
         The answer is memoized per delta and turn through one BlockerGrid per
         drag (_group_grid()), so a snapped drag asks once per tile crossing."""
@@ -1159,31 +1187,31 @@ class _ViewerUnitMoveMixin:
         memo = self._group_flags_memo
         if memo is not None and memo[0] is self._selection and memo[1:6] == (dx, dy, gen, box, turn):
             return memo[6]
-        ids: set[int] = set()
-        # Inside the memo: the scan for a gate runs once per delta, not per mouse move.
-        if not self._moves_gate_walls(entries):
-            pairs = [(e, self._drag_stand_in(e, True)) for e in entries]
-            if in_place:
-                pairs = [(e, stand_in) for e, stand_in in pairs if stand_in.unit_const != e.unit.unit_const]
-            if len(pairs) > GROUP_GHOST_CAP:
-                # Stable, so the grabbed member leads and the rest keep their order.
-                pairs = sorted(pairs, key=lambda pair: pair[0].unit is not anchor.unit)[:GROUP_GHOST_CAP]
-            grid = self._group_grid(entries)
-            # The whole group lands, capped or not, so every member's landing lays its deck.
-            laid = self._group_laid(entries, dx, dy, lambda e: self._drag_stand_in(e, True))
-            ids = {
-                id(e.unit)
-                for e, stand_in in pairs
-                if placement_rules.move_refused(
-                    self.scenario,
-                    e.unit,
-                    stand_in.x + dx,
-                    stand_in.y + dy,
-                    grid=grid,
-                    unit_const=stand_in.unit_const,
-                    laid=laid,
-                )
-            }
+        pairs = [(e, self._drag_stand_in(e, True)) for e in entries]
+        # Every member, before the cap: the drop plans the whole group's gates.
+        replaced = self._drag_replaced_walls([(e.unit, s.unit_const, s.x + dx, s.y + dy) for e, s in pairs])
+        if in_place:
+            pairs = [(e, stand_in) for e, stand_in in pairs if stand_in.unit_const != e.unit.unit_const]
+        if len(pairs) > GROUP_GHOST_CAP:
+            # Stable, so the grabbed member leads and the rest keep their order.
+            pairs = sorted(pairs, key=lambda pair: pair[0].unit is not anchor.unit)[:GROUP_GHOST_CAP]
+        grid = self._group_grid(entries)
+        # The whole group lands, capped or not, so every member's landing lays its deck.
+        laid = self._group_laid(entries, dx, dy, lambda e: self._drag_stand_in(e, True))
+        ids = {
+            id(e.unit)
+            for e, stand_in in pairs
+            if placement_rules.move_refused(
+                self.scenario,
+                e.unit,
+                stand_in.x + dx,
+                stand_in.y + dy,
+                exclude=replaced,
+                grid=grid,
+                unit_const=stand_in.unit_const,
+                laid=laid,
+            )
+        }
         self._group_flags_memo = (self._selection, dx, dy, gen, box, turn, ids)
         return ids
 

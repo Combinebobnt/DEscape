@@ -10,7 +10,7 @@ In DEscape this page shows your current keys and mouse wheel settings next, read
 - A double-click counts as two clicks, so on a stack of units it steps down twice.
 - Keys reach the map only while it has keyboard focus. If one seems to do nothing, click the map first.
 - Esc cancels whatever is in progress, nearest first: a pick on the map, an area drag, a line, rectangle or wall drag, a ruler measurement, a unit drag or selection box, a region move or a region drag. Next, a live flip or turn of a selection or region goes back to where it started; Enter keeps it instead. With nothing in progress, Esc clears the unit selection under Units mode's Select tool, and otherwise clears the selected region.
-- Dropping a `.aoe2scenario` file onto the window opens it.
+- Dropping a `.aoe2scenario`, `.scn` or `.scx` file onto the window opens it.
 
 ## Picking on the map
 

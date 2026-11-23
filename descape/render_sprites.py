@@ -100,7 +100,7 @@ def unit_sprite_draws_at(
     )
     if contribution is None:
         return []
-    # by_anchor entries also carry the base rise; callers here place by pixel only.
+    # by_anchor entries also carry the base rise and order; callers here place by pixel only.
     return [
         entry[:3]
         for key in sorted(contribution.by_anchor, key=lambda k: (k[1], k[0]))
@@ -115,12 +115,13 @@ class SpriteLayer:
     building_bboxes already are -- resolving and decoding a sprite per chunk
     would dominate a chunk's cost outright.
 
-    by_anchor maps a tile to the sprites that paint AT that tile, in the
-    units' own relative order with moved column slices last
-    (_accumulate_contribution()), each as (draw, px, py, rise_px): the anchor
-    pixel and the unit's base rise, which decides what terrain may cover its
-    ink (_paint_candidates_iso). A multi-tile piece contributes one entry per
-    column run (_sprite_columns(), TASK-221), each draw a slice of the piece
+    by_anchor maps a tile to the sprites that paint AT that tile, in
+    sub-tile depth order with moved column slices last
+    (_accumulate_contribution()), each as (draw, px, py, rise_px, order): the
+    anchor pixel, the unit's base rise, which decides what terrain may cover
+    its ink (_paint_candidates_iso), and the merge's _sprite_order(). A
+    multi-tile piece contributes one entry per column run
+    (_sprite_columns(), TASK-221), each draw a slice of the piece
     with the same anchor pixel. bboxes is keyed the same way and merges
     straight into building_bboxes, so composite_rect_iso's existing bystander
     machinery pulls a sprite's anchor tile into the candidate set with no
@@ -147,7 +148,7 @@ class SpriteLayer:
     coloured slab must not draw underneath.
     """
 
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]]
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int, float]]]
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]]
     skip_ids: frozenset[int]
     farm_by_tile: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
@@ -359,7 +360,7 @@ class _SpriteContribution:
     this unit's alone."""
 
     skip_id: int
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]]
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int, float]]]
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]]
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]]
 
@@ -380,6 +381,29 @@ def _sprite_keeps_own_point(unit_const: int) -> bool:
 # False is the single-anchor render, the revert switch for tests, injects and the
 # release diff. A memo invariant, so flipping it never serves the other state.
 SPRITE_COLUMN_SLICING = True
+
+# TASK-016: entries sharing a tile merge by _sprite_order(). False is the walk-order append, the
+# revert switch for tests, injects and the release diff. Not a memo invariant: only the merge reads it.
+SUBTILE_SPRITE_ORDER = True
+
+_EDGE_EPS = 1e-6
+
+
+def _sprite_order(piece: unit_sprites.SpritePiece, fx: float, fy: float, span: tuple[int, int]) -> float:
+    """A piece's sub-tile depth among the entries at its tile (TASK-016): its
+    ground point's `y - x`, nearer is larger. A slotted piece on the
+    footprint's back edge only (my = -span_y/2 or mx = +span_x/2) is -inf, on
+    its front edge only +inf: a unit on that slot tile stands inside the
+    footprint, so in front of a back edge and behind a front one wherever
+    along it. The side corners sit on one of each and keep their point depth."""
+    mx, my = piece.ground
+    if piece.slot is not None:
+        hx, hy = span[0] / 2, span[1] / 2
+        back = abs(my + hy) < _EDGE_EPS or abs(mx - hx) < _EDGE_EPS
+        front = abs(mx + hx) < _EDGE_EPS or abs(my - hy) < _EDGE_EPS
+        if back != front:
+            return -np.inf if back else np.inf
+    return (fy + my) - (fx + mx)
 
 
 def _sprite_columns(
@@ -562,10 +586,12 @@ def _resolve_unit_sprite(
     # The unclamped footprint start, matching how a slot offset was derived;
     # bounds is already map-clamped and is the wrong origin to add to.
     slot_x0, slot_y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
-    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int]]] = {}
+    by_anchor: dict[tuple[int, int], list[tuple[object, int, int, int, float]]] = {}
     bboxes: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    span = (span_x, span_y)
     for piece in pieces:
         px, py = ax + piece.dx, ay + piece.dy
+        order = _sprite_order(piece, fx, fy, span)
         if piece.slot is None:
             key = anchor
         else:
@@ -582,7 +608,7 @@ def _resolve_unit_sprite(
                 run_draw = draw
             else:
                 run_draw = unit_sprites.slice_draw(draw, c0, c1, key if moved else None)
-            by_anchor.setdefault(run_key, []).append((run_draw, px, py, rise_px))
+            by_anchor.setdefault(run_key, []).append((run_draw, px, py, rise_px, order))
             run_bbox = (x0 + c0, y0, x0 + c1, y0 + h)
             bbox = bboxes.get(run_key)
             bboxes[run_key] = run_bbox if bbox is None else (
@@ -677,22 +703,42 @@ def _accumulate_contribution(
     so a splice that feeds units in walk order builds the walk's exact layer.
     Copies out of the contribution, never aliasing its lists.
 
-    A by_anchor list is its unmoved entries in walk order, then its moved
-    column slices (unit_sprites.MovedSlice, TASK-221) stable-sorted by their
-    piece's own key in depth order: each moved slice paints after every
-    unmoved entry at its tile, and moved ones keep the order they painted in
-    when each sat at its own key (pasture slots are not in depth order in
-    the piece list)."""
+    A by_anchor list is its unmoved entries, then its moved column slices
+    (unit_sprites.MovedSlice, TASK-221) stable-sorted by their piece's own
+    key in depth order: each moved slice paints after every unmoved entry at
+    its tile, and moved ones keep the order they painted in when each sat at
+    its own key (pasture slots are not in depth order in the piece list).
+
+    With SUBTILE_SPRITE_ORDER (TASK-016), each unmoved entry goes before the
+    first unmoved entry whose order (_sprite_order(), the entry's last field)
+    is strictly greater, scanning from just after this contribution's
+    previous entry at the key. So ties keep walk order, a unit's own pieces
+    keep their list order whatever their values, and an empty tile is a plain
+    append. That is a stable sort only while a contribution's own values never
+    decrease at one key, true of every shipped composite; a garrison flag
+    appended after a Town Center's front piece is the known exception. Off, unmoved
+    entries append in walk order. This merge is the order's only source:
+    every consumer paints by_anchor as it stands."""
     if contribution.farm_tiles:
         # Later unit wins on overlap -- overlapping farms can't
         # happen in-game, but a scenario file can contain them, and a
         # byte-identity test needs a deterministic answer.
         farm_by_tile.update(contribution.farm_tiles)
     moved_type = unit_sprites.MovedSlice
+    ordered = SUBTILE_SPRITE_ORDER
     for key, piece_draws in contribution.by_anchor.items():
         merged = by_anchor.setdefault(key, [])
+        # Where this contribution's next unmoved entry may go, at the earliest.
+        lo = 0
         for entry in piece_draws:
             draw = entry[0]
+            if ordered and type(draw) is not moved_type:
+                at, n, order = lo, len(merged), entry[4]
+                while at < n and type((other := merged[at])[0]) is not moved_type and other[4] <= order:
+                    at += 1
+                merged.insert(at, entry)
+                lo = at + 1
+                continue
             if type(draw) is moved_type:
                 depth = (draw.key[1] - draw.key[0], draw.key[0])
                 at = len(merged)

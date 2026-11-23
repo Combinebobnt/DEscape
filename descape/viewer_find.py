@@ -495,7 +495,7 @@ class _ViewerFindMixin:
             return {}
         remapped: dict = {}
         entries = self._find_entries(keys)
-        changed, carried, refused, gaia_only = self._reassign_units(
+        changed, carried, refused, gaia_only, held = self._reassign_units(
             entries, new_player, on_applied=remapped.update, skip_orphan_occupants=True
         )
         owner = "GAIA" if new_player == GAIA_PLAYER_ID else f"Player {new_player}"
@@ -504,7 +504,7 @@ class _ViewerFindMixin:
             status += f" ({carried} garrisoned)"
         if refused:
             status += f"; {refused} refused (garrisoned in a host not being reassigned)"
-        status += _gaia_only_refused_note(gaia_only)
+        status += _gaia_only_refused_note(gaia_only, held)
         self._log_status(status)
         return remapped
 

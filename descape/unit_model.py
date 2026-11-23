@@ -398,9 +398,11 @@ def replaced_position(unit: Unit, new_const: int) -> tuple[float, float]:
 def replaced_rotation(old_const: int, new_const: int, rotation: float, frame: int) -> tuple[float, int]:
     """(rotation, initial_animation_frame) after replace_type(), AGENTS.md's
     *Replace* exception. The two move together (always equal in the corpus for
-    cliffs, trees and doodads). Verbatim when both consts are ANGLE, both walls
+    cliffs and .dat type 10 objects such as trees, not for other cyclable
+    consts). Verbatim when both consts are ANGLE, both walls
     or both INERT, and for two cyclable consts when the old variant exists in
-    the new one; (0.0, 0) for any other pairing and for every target gate."""
+    the new one, the frame becoming that variant on a frame_follows_variant()
+    target; (0.0, 0) for any other pairing and for every target gate."""
     if gate_orientation.is_gate(new_const):
         return 0.0, 0
     if unit_rotation.rotation_is_angle(old_const) and unit_rotation.rotation_is_angle(new_const):
@@ -412,7 +414,8 @@ def replaced_rotation(old_const: int, new_const: int, rotation: float, frame: in
             rotation, unit_rotation.angle_count_for(old_const), unit_variant.variant_count_for(old_const)
         )
         if old_index < unit_variant.variant_count_for(new_const):
-            return rotation, frame
+            # Into a type 10 const the frame is the variant, whatever the old type stored.
+            return rotation, old_index if unit_variant.frame_follows_variant(new_const) else frame
         return 0.0, 0
     inert = unit_rotation.INERT
     if unit_rotation.semantics_for(old_const) == inert and unit_rotation.semantics_for(new_const) == inert:
@@ -990,16 +993,23 @@ class UnitEditModel:
         unit_variant.is_cyclable() rejects. Walls, cliffs and gates stay
         verbatim because the game re-derives their index from neighbours; a
         value derived from those neighbours goes through set_wall_variant()
-        or set_cliff_frame() instead.
+        or set_cliff_frame() instead. On a unit_variant.frame_follows_variant()
+        const (AoE2 type 10) `initial_animation_frame` takes the same index, as
+        the game stores it; every other const keeps its stored frame.
         """
         if not unit_variant.is_cyclable(unit.unit_const):
             raise ValueError(
                 f"unit_const {unit.unit_const} has no cyclable graphic variants "
                 f"({unit_rotation.semantics_for(unit.unit_const)}) -- refusing to transform it"
             )
+        follows = unit_variant.frame_follows_variant(unit.unit_const)
+        if follows and rotation != int(rotation):
+            raise ValueError(f"unit_const {unit.unit_const}: a variant is a literal integer, got {rotation!r}")
         player, index = self._locate(unit)
         self._maybe_capture_field_delta(player, index, unit)
         unit.rotation = rotation
+        if follows:
+            unit.initial_animation_frame = int(rotation)
         self._blobs[player][index] = None
         self._dirty = True
         self._bump_unit_gen()

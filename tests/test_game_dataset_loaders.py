@@ -9,9 +9,12 @@ place rather than rebound."""
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from descape import (
@@ -649,3 +652,94 @@ def test_ror_sld_bytes_reread_the_ror_file_after_eviction(ror_install):
     _ror()
     unit_sprites._sld_bytes_cache.clear()
     assert unit_sprites._sld_bytes(base, "u_all_bowman_idleA_x1") == b"ror"
+
+
+# --- a whole render across a Return of Rome session (#242) ---------------
+
+
+def _render_level(style: str, scenario):
+    """A fresh chunk cache's whole canvas at its coarsest level, sprites on."""
+    from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
+    from descape.render_iso import elevations_and_proj
+    from descape.render_paint import tile_pixels_for_map
+    from descape.render_sloped import sloped_elevations_and_proj
+
+    mm = scenario.map_manager
+    tile_px = tile_pixels_for_map(mm.map_width, mm.map_height)
+    if style == "flat":
+        cache = FlatChunkCache(scenario, tile_px, sprites=True)
+    elif style == "stepped":
+        elevations, proj = elevations_and_proj(scenario)
+        cache = IsoChunkCache(scenario, elevations, proj, tile_px, sprites=True)
+    else:
+        elevations, corner_rise, proj = sloped_elevations_and_proj(scenario)
+        cache = SlopedChunkCache(scenario, elevations, corner_rise, proj, tile_px, sprites=True)
+    mip = min(cache.mip_levels())
+    return cache.render_rect(0, 0, *cache.canvas_dims(mip), mip=mip).copy()
+
+
+RENDER_STYLES = ("flat", "stepped", "sloped")
+
+
+def _session_child() -> None:
+    """A fresh process's renders, for the test below, as sha256 digests (a
+    whole level is tens of MB): argv is the config dir, the .json to write,
+    and "aoe2" (AoE2 only) or "ror-first" (the RoR copy of the test map in
+    every style under RoR, then AoE2)."""
+    import hashlib
+
+    from descape import scenario_io
+    from testkit.ror_fixture import ror_copy
+    from testkit.settings_isolation import isolate_settings
+    from tests.conftest import TEST_MAP_PATH
+
+    def digest(image: np.ndarray) -> str:
+        return hashlib.sha256(np.ascontiguousarray(image).tobytes() + repr(image.shape).encode()).hexdigest()
+
+    config_dir, out, order = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+    isolate_settings(config_dir)
+    renders = {}
+    if order == "ror-first":
+        _ror()
+        ror = scenario_io.load_map_and_units(ror_copy(config_dir, TEST_MAP_PATH))
+        assert games.for_scenario(ror).id == game_dataset.ROR
+        renders.update({f"ror-{style}": digest(_render_level(style, ror)) for style in RENDER_STYLES})
+        _aoe2()
+    aoe2 = scenario_io.load_map_and_units(TEST_MAP_PATH)
+    renders.update({style: digest(_render_level(style, aoe2)) for style in RENDER_STYLES})
+    out.write_text(json.dumps(renders), encoding="utf-8")
+
+
+def _fresh_process_renders(tmp_path: Path, order: str) -> dict[str, str]:
+    import subprocess
+
+    from tests.conftest import ROOT
+
+    config_dir, out = tmp_path / order, tmp_path / f"{order}.json"
+    config_dir.mkdir()
+    install = asset_source.get_install_path()
+    env = {**os.environ, "AOE2DE_INSTALL_PATH": "" if install is None else str(install)}
+    code = "from tests.test_game_dataset_loaders import _session_child; _session_child()"
+    run = subprocess.run(
+        [sys.executable, "-c", code, str(config_dir), str(out), order],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=600, check=False,
+    )
+    assert run.returncode == 0, run.stderr[-4000:]
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytest.mark.test_map
+def test_an_aoe2_render_is_unchanged_by_a_ror_session_before_it(tmp_path):
+    """#242: an AoE2 render after a RoR session, each in a fresh process,
+    matches one with no RoR session at all. RoR goes first because a
+    lazily built cache the switch misses keeps the first game's data: the
+    blend priority lookup did (test_blend_priorities_follow_the_dataset_both_ways).
+    Textures, blending and sprites count only with an install
+    (AOE2DE_INSTALL_PATH); without one this pins the flat colours, spans and tables
+    only, and passes with the blend lookup bug back (measured 2026-11-18)."""
+    plain = _fresh_process_renders(tmp_path, "aoe2")
+    after_ror = _fresh_process_renders(tmp_path, "ror-first")
+    for style in RENDER_STYLES:
+        if asset_source.get_install_path() is not None:
+            assert after_ror[f"ror-{style}"] != plain[style], f"{style}: RoR drew nothing of its own"
+        assert after_ror[style] == plain[style], f"{style}: the AoE2 render differs after a RoR session"

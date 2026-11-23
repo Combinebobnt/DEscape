@@ -952,7 +952,7 @@ def _paint_objects_iso(
     # earlier (_sprite_columns, TASK-221): every pixel paints exactly once.
     if sprites is not None:
         off_x, off_y = offset
-        for draw, ax, ay, rise_px in sprites.by_anchor.get((tile.x, tile.y), ()):
+        for draw, ax, ay, rise_px, _order in sprites.by_anchor.get((tile.x, tile.y), ()):
             _clipped_paint_rgba(
                 img, ay - draw.hotspot_y - off_y, ax - draw.hotspot_x - off_x, draw.rgba, ink, rise_px
             )

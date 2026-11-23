@@ -26,6 +26,11 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Older scenarios open view-only** (GH #308): Age of Kings and The
+  Conquerors `.scn`/`.scx` and some HD Edition `.scx` files show their map,
+  units, players and messages; triggers are not read and nothing can be
+  saved. Other HD Edition and UserPatch `.scx`/`.scx2` files aren't
+  supported yet.
 - **Undockable panels** (GH #64): the side panel and the status log float
   as their own windows (say on a second monitor) and re-dock on either side,
   View > Panels shows or hides them and resets the layout, and the
@@ -78,9 +83,23 @@ content, link the doc instead of summarizing it.
   from game-saved files, for maintainers. It finds inserted, deleted and
   resized fields, lists the layouts it can't tell apart, and refuses with
   the located divergence when a change is outside what it searches.
+- **Random facing or variant in Scatter Units in Region** (GH #305): a
+  Random facing/variant box gives each placed copy a random facing, or a
+  random variant for trees and other scenery. Walls, gates, cliffs and
+  objects with one look keep rotation 0, and the same seed keeps its layout
+  either way.
 
 ### Changed
 
+- **Terrain textures match the game's scale** (GH #326): a ground texture
+  repeats every 10 tiles at every zoom, as in-game (it was 8 at the default
+  zoom and changed at every zoom step), and the closer zoom levels are
+  sharper, read from the full-size game texture. Return of Rome too.
+- **Zooming**: zooming through a level for the first time no longer waits
+  behind a slow background chunk.
+- **Map Options Victory condition**: a file with no Secondary game mode row
+  (older than 1.42, or 1.49) no longer offers "Secondary game mode", unless
+  the file already stores it.
 - **Reading a large file's triggers**: the first time DEscape reads a file's
   triggers it is faster, and on a very large file it shows a progress
   window instead of freezing. When a mode switch, Find or Map Analysis
@@ -94,13 +113,36 @@ content, link the doc instead of summarizing it.
   suggests matches from every object list type, the chosen type's first, and
   picking one of another type turns the row to that type. (contributed by
   @teslatankx, #385)
+- **Trees and most scenery store their animation frame as the game does**
+  (GH #343): Cycle Variant, Place Unit, the Unit Brush, Unit Line and Shape,
+  Scatter's Random facing/variant, Find and Replace and a script's
+  `add_unit()` write a variant's number to its frame too, as the AoE2:DE
+  editor's own save does.
+- **Inspector Z**: its caption's tooltip says the AoE2:DE editor
+  recalculates Z when it saves the map, so a typed value does not survive.
+- **Dark Wood (purple)**: the wood tones are slightly redder and less
+  saturated, with the same purple buttons and selection highlights.
+- **Dark Wood (green)**: push buttons are darker green, with the same wood
+  tones and selection highlights.
 
 ### Fixed
 
+- **Ruins stay with GAIA** (GH #343): Place Unit gives Ruins to GAIA and no
+  owner change gives them to a player, since the AoE2:DE editor deletes a
+  player-owned one when it saves.
+
+- **Theme files carry the overlay opacity sliders** (GH #287): Export theme…
+  saves Settings > Appearance's three overlay opacities and Import theme…
+  restores them. An older DEscape skips that part of a newer file and imports
+  the rest.
+
 - **Map Analysis and trigger-made buildings**: the Train and research
   buttons check counts a building a Create Object or Replace Object effect
-  makes as present, and Return of Rome scenarios show Return of Rome's own
-  technology icons.
+  makes as present.
+
+- **Return of Rome technology icons**: with Return of Rome game data, the
+  Triggers button grid's technology icons resolve through its own icon
+  table.
 
 - **Trigger object fields keep their object**: clicking into and out of an
   object field after switching its Object List Type no longer swaps a name
@@ -126,6 +168,27 @@ content, link the doc instead of summarizing it.
   and a size under the minimum says so rather than resizing at the previous
   size. In New Map the size box is always typeable, and a size under the
   minimum greys out Create instead of creating the map at the previous size.
+- **Gate drag preview with Moving a gate updates walls** (GH #345): a gate
+  dragged onto water or another unit now shows red as the drop refuses it,
+  while the walls it replaces still never turn it red.
+- **Narrow Map Options and Players panes**: a pane narrower than the form
+  no longer leaves blank space under wrapped rows.
+- **Owner changes with garrisons**: changing owner in the Unit Inspector or
+  with Convert now says how many garrisoned objects stayed with a host that
+  couldn't change owner.
+- **Data mod foundations in placement checks**: Place Unit, the Unit Brush,
+  Unit Line and Shape, and Move read bridge and building foundations from a
+  newly loaded data mod straight away, not after the next unit edit.
+- **Sloped brush outline** (GH #306): in Sloped mode the brush hover
+  outline has straight edges instead of a pixel staircase.
+- **A 3x3 or 5x5 building placed on the map's edge tiles stays on the map**
+  (GH #152): Place Unit and Move used to centre it on the clicked tile,
+  leaving part of it off the map; Scatter and the Unit Brush skipped it.
+  Scatter also no longer stacks two copies of one building where two edge
+  picks clamp to the same spot.
+- **Units sharing a tile draw nearer-in-front** (GH #324): a sheep just
+  inside a pasture's corner is no longer covered by the corner post and
+  fences behind it, and two units on one tile no longer stack by list order.
 
 ## [0.11] - 2026-11-11
 

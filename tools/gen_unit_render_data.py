@@ -22,10 +22,11 @@ consts:
   1x1, same as the main Wall; the diagonal Gate's own center piece is a
   separate, larger unit_const.
 
-  2 * clearance is an exact integer for 918 of the 940 axis values across all
-  470 building consts. The 22 exceptions are small decoratives at clearance
-  0.2/0.25/0.3, and 66 further axis values are exactly 0 -- all want a 1x1
-  dot, which is what the max(1, ...) floor gives them.
+  2 * clearance is an exact integer for 930 of the 982 axis values across all
+  491 building consts. The 52 exceptions are small annexes, fences, carts and
+  decoratives at clearance 0.2/0.25/0.3, and 92 further axis values are
+  exactly 0 -- all want a 1x1 dot, which is what the max(1, ...) floor gives
+  them.
 
   Two superseded versions of this rule, both kept because each failure is
   easy to reintroduce: the first collapsed both axes to one square radius via
@@ -230,11 +231,12 @@ consts:
 
 - "hero_glow": [unit_const, ...] -- the heroes the game draws its golden glow
   around (GH #39). The rule is `(creatable.hero_mode & 0xff) & (1 | 64)` AND
-  `creatable.hero_glow_graphic in 12218..12224`, which gives 260 consts.
+  `creatable.hero_glow_graphic in 12218..12224`, which gives 268 consts.
 
-  Neither half alone is enough. 529 ordinary units (ARCHR, KNGHT...) also
-  carry a HeroGlow graphic, and so does KINGX 434 (mode 34, no glow
-  in-game), so the graphic cannot mark a hero by itself. Hero-flagged
+  Neither half alone is enough. 536 ordinary units (mode 0: ARCHR,
+  KNGHT...) also carry a HeroGlow graphic, and so do 11 with neither glow
+  bit set, KINGX 434 among them (mode 34, no glow in-game), so the graphic
+  cannot mark a hero by itself. Hero-flagged
   buildings (HTAT, SEAFORF..., mode 1) have glow graphic -1 and drop out,
   matching the game.
 

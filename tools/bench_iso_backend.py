@@ -93,14 +93,15 @@ def time_it(fn, *args, repeats: int = 1, **kwargs):
     return best, result
 
 
-def warm_texture_cache(tiles) -> None:
-    """Primes asset_source.get_terrain_texture_array's lru_cache for every
-    terrain_id actually present, so the first *timed* call doesn't pay for
-    disk reads + Pillow decode/resize of a real .dds -- the 5-11us/tile flat
-    number is a steady-state figure, not a cold-cache one, so this keeps
-    the comparison apples-to-apples."""
+def warm_texture_cache(tiles, tile_px: int) -> None:
+    """Primes asset_source.terrain_texture_at's cache at tile_px's texture
+    size for every terrain_id actually present, so the first *timed* call
+    doesn't pay for disk reads + Pillow decode/resize of a real .dds -- the
+    5-11us/tile flat number is a steady-state figure, not a cold-cache one,
+    so this keeps the comparison apples-to-apples."""
+    size = asset_source.terrain_texture_size(tile_px)
     for tid in {t.terrain_id for t in tiles}:
-        asset_source.get_terrain_texture_array(tid)
+        asset_source.terrain_texture_at(tid, size)
 
 
 def bench_incremental(tiles, w: int, h: int, tile_px: int, reps: int = 2000) -> None:
@@ -115,7 +116,7 @@ def bench_incremental(tiles, w: int, h: int, tile_px: int, reps: int = 2000) -> 
     canvas_h, canvas_w, origin_x, origin_y = iso_canvas_size_and_origin(w, h, tile_px, max_elev, elev_step)
 
     tile = tiles[len(tiles) // 2]  # an arbitrary, representative interior tile
-    warm_texture_cache([tile])
+    warm_texture_cache([tile], tile_px)
 
     img_numpy = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     t0 = time.perf_counter()
@@ -140,7 +141,7 @@ def bench_dataset(name: str, tiles, w: int, h: int, scenario=None, repeats: int 
     tile_px = tile_pixels_for_map(w, h)
     n = len(tiles)
     print(f"\n=== {name} ({w}x{h}, {n:,} tiles, tile_px={tile_px}) ===")
-    warm_texture_cache(tiles)
+    warm_texture_cache(tiles, tile_px)
 
     if scenario is not None:
         flat_t, _ = time_it(render_terrain, scenario, repeats=repeats)

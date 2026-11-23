@@ -4,6 +4,9 @@ External viewer/editor for Age of Empires 2: Definitive Edition `.aoe2scenario`
 files. Renders the terrain grid and unit placement, and supports terrain/elevation
 editing with undo/redo and a scriptable batch-edit API, without needing the
 in-game editor.
+Older scenarios from before the Definitive Edition (Age of Kings and The
+Conquerors `.scn`/`.scx`, and some HD Edition `.scx`) open view-only. Other
+HD Edition and UserPatch `.scx`/`.scx2` files aren't supported yet.
 
 ## Download
 
@@ -267,10 +270,14 @@ before version 1.59, which has no such field.
 
 `descape/scatter.py` places units at random, reproducible positions across a
 tile set you build yourself (e.g. every water tile, or one connected pond):
-`scatter_units(scenario, units, tiles, unit_const, count=40, seed=7)`. It never
-randomizes `rotation`, which is a graphic-variant index rather than an angle for
-many GAIA objects; pass `rotation_choices=` with values you've confirmed if you
-need variety.
+`scatter_units(scenario, units, tiles, unit_const, count=40, seed=7)`.
+`rotation` is a graphic-variant index rather than an angle for many GAIA
+objects, so it randomizes `rotation` only with `random_rotation=True`, and then
+per the object's own rules: a facing for units that face, a variant index for
+trees and other scenery, and 0 for walls, gates, cliffs and the rest. That roll
+is drawn after everything else, so a seed keeps its layout with or without it.
+`rotation_choices=` stays for values you've confirmed yourself; the two are
+exclusive.
 
 The same thing from the GUI is **Edit > Scatter Units in Region…**: pick an
 object (and an owner) in the Units panel, then give it an area: outline one
@@ -280,7 +287,9 @@ units' bounding box, widened on every side by the dialog's **Grow by** tiles (2
 by default); with both, the dialog starts on the region and its **Area** row
 switches to the units. It filters the area to eligible tiles (any tile, water
 only, or one terrain type), optionally skips tiles already under a unit, and
-places a count or a density of randomized copies as one undo step. The live "N
+places a count or a density of randomized copies as one undo step. Ticking
+**Random facing/variant** gives each copy a random facing, or a random variant
+for trees and other scenery (the `random_rotation=True` above). The live "N
 eligible tiles" line is exactly what will be placed, except that an object
 bigger than one tile snaps to the game's grid and is skipped where its
 footprint would cover a tile that isn't eligible. GAIA-only objects
@@ -520,7 +529,9 @@ regardless.
 
 The committed game-derived data files (`descape/terrain_texture_map.json`,
 `terrain_classes.json`, `terrain_blend_map.json`, `tree_unit_ids.json`, `unit_render_data.json`,
-`unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`) are factual id/name/filename correspondence tables, not
+`unit_graphic_map.json`, `unit_stats.json`, `object_catalog.json`, `building_art_map.json`,
+`garrison_table.json`, `terrain_unit_map.json`, and their Return of Rome copies under
+`descape/ror/`) are factual id/name/filename correspondence tables, not
 game asset content. The seven committed blank
 `.aoe2scenario` files hold default structural data containing no authored
 scenario content. Four under `tests/fixtures/` (`blank_120x120_v158`,

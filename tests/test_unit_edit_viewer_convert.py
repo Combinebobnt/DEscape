@@ -134,7 +134,8 @@ def test_converting_a_host_holding_a_gaia_only_occupant_to_a_player_is_refused()
 
         # Another player-1 unit on the tile may convert; the host and its deer stay.
         assert host in window.scenario.unit_manager.units[1] and deer in window.scenario.unit_manager.units[1]
-        assert window.status_log.toPlainText().splitlines()[-1].endswith(_gaia_only_refused_note(1))
+        # The deer, reached after its refused host, is the one kept with it.
+        assert window.status_log.toPlainText().splitlines()[-1].endswith(_gaia_only_refused_note(1, 1))
         before_records = len(window.edit_history.records)
 
         window.units_panel.select_owner(0)
@@ -180,6 +181,11 @@ def test_an_occupant_reached_before_its_refused_host_stays_with_it() -> None:
 
         player_1 = window.scenario.unit_manager.units[1]
         assert all(u in player_1 for u in (host, deer, on_tile, off_tile))
+        # The host refused; its deer, on_tile and off_tile, each reached by the stroke, stay with it.
+        status = window.status_log.toPlainText().splitlines()[-1]
+        assert status.endswith(
+            "; 1 object(s) left as they were (GAIA-only or holding one); 3 garrisoned object(s) kept with their host"
+        ), status
     finally:
         _close(window)
 
@@ -200,7 +206,10 @@ def test_an_inspector_owner_change_keeps_an_occupant_selected_with_its_refused_h
         assert all(u in player_1 for u in (host, deer, on_tile))
         assert len(window.edit_history.records) == before_records
         status = window.status_log.toPlainText().splitlines()[-1]
-        assert status == "Not reassigned to Player 2; 1 object(s) left as they were (GAIA-only or holding one)"
+        assert status == (
+            "Not reassigned to Player 2; 1 object(s) left as they were (GAIA-only or holding one)"
+            "; 1 garrisoned object(s) kept with their host"
+        )
     finally:
         _close(window)
 

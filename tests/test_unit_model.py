@@ -235,6 +235,29 @@ def test_set_variant_dirties_only_the_cycled_tree() -> None:
     assert sum(dirty) == 1
 
 
+def test_set_variant_moves_a_trees_frame_and_keeps_a_type_80_ones() -> None:
+    """A type 10 tree's frame follows its variant, and undo restores both; a
+    type 80 const (Port 446, swapped onto the oak) keeps its stored frame."""
+    loaded, model = _open()
+    history = EditHistory()
+    original = _units_section(loaded)
+    oak = _unit(loaded, _REF_TREE_OAK)
+    before = (oak.rotation, oak.initial_animation_frame)
+    model.begin_unit_edit([0], fields_only=True)
+    model.set_variant(oak, 8.0)
+    model.commit_unit_edit("Cycle variant", history)
+    assert (oak.rotation, oak.initial_animation_frame) == (8.0, 8)
+    history.undo([], None, None, model)
+    assert (oak.rotation, oak.initial_animation_frame) == before
+    assert model.serialize() == original
+    with pytest.raises(ValueError):
+        model.set_variant(oak, 2.5)  # no frame matches a fractional variant
+    assert (oak.rotation, oak.initial_animation_frame) == before
+    oak.unit_const, oak.initial_animation_frame = 446, 3
+    model.set_variant(oak, 5.0)
+    assert (oak.rotation, oak.initial_animation_frame) == (5.0, 3)
+
+
 @pytest.mark.parametrize("reference_id", [_REF_WALL, _REF_ARCHER_P1, _REF_HOUSE])
 def test_set_variant_refuses_a_non_cyclable_const(reference_id) -> None:
     """A wall (neighbour-derived variant), an ANGLE archer and an INERT house."""

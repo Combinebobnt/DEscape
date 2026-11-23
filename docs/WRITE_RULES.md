@@ -28,11 +28,13 @@ active: the viewer activates it on open, a script through
 `batch_api.load()` (a bare `scenario_io.load_map_and_units()` does not).
 The AoE2 figures below come from the AoE2 corpus. The Return of Rome ones
 come from 8 RoR scenarios (100,098 placements, 2026-10-17). The ANGLE,
-wall, cliff, gate and Cycle Variant rules (not the exact counts, nor the
-farm and `_BODY_GRAPHIC_OVERRIDES` details) are re-checked by
+wall, cliff, gate, Cycle Variant and farm rules (not the exact counts, and
+the wall neighbour agreement only to at least 95%) are re-checked by
 `tests/test_ror_corpus.py`, run as
 `pytest -m corpus tests/test_ror_corpus.py --scenario-dir <RoR folder>
---corpus-full` (it skips where there are no RoR files):
+--corpus-full` (it skips where there are no RoR files). The
+`_BODY_GRAPHIC_OVERRIDES` consts are pinned against the committed RoR table
+by `tests/test_ror_editing.py`:
 
 - ANGLE: the RoR `.dat`'s own type 70 plus the same four trebuchet consts
   (the same objects there, hidden in its editor); 1,697 placements, zero
@@ -162,7 +164,16 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   set (never by `unit.class_`, which would also drop Mole)
   because the game re-derives their index from neighbours, so a written
   value would be overridden. It always writes a literal integer index: every
-  corpus placement on a cyclable const stores one, never the radian form.
+  corpus placement on a cyclable const stores one, never the radian form
+  (one const outside the corpus breaks this, see *What the game rewrites on
+  save* below). Under AoE2 it writes the same index to
+  `initial_animation_frame` on a .dat type 10 const
+  (`unit_variant.frame_follows_variant()`): every type 10 corpus placement
+  stores frame equal to rotation, and the 1.59 editor's save sets it so. Every
+  other const keeps its stored frame: type 80 stores 0, and types 20 and 30
+  store frames unrelated to the variant. The rule is not measured for Return
+  of Rome (no editor save, and its corpus was not checked for it), so there
+  `set_variant()` and placement keep the stored frame.
   Its callers are Cycle Variant, the Rotate actions, the Rotation field,
   Move's pending turn (GH #280) and the wheel's selected-units choices (GH
   #356), the last two per the *Rotate* bullet above, and a script's
@@ -257,12 +268,15 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `UnitEditModel.replace_type()`, which changes a unit's const (see the
   const exceptions below) and so must decide what its `rotation` and
   `initial_animation_frame` mean under the new const. The two move together
-  (they are always equal in the corpus for cliffs, trees and doodads), by
+  (they are always equal in the corpus for cliffs and for .dat type 10
+  objects such as trees and eye candy, not for other cyclable consts), by
   `unit_model.replaced_rotation()`: verbatim when both consts are ANGLE,
   both are walls (the `rotation_variant_eligible()` consts; the game
   re-derives the index from neighbours), or both are INERT (which keeps the
   `7.0` sentinel); verbatim for two cyclable consts when the old variant
-  index exists in the new const, else `0.0`/`0`; `0.0`/`0` for every other
+  index exists in the new const (the frame becoming that index when the new
+  const is a type 10 one under AoE2, as *Cycle Variant* writes it), else
+  `0.0`/`0`; `0.0`/`0` for every other
   pairing (a unit that becomes a wall then takes its neighbour-derived
   shape, and a wall kept a wall re-derives when a tile beside it changes,
   both by the wall bullet above; `replace_type()` itself stays as stated)
@@ -275,7 +289,10 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `place_rotation.rotation_for()`, and the owner never changes it. An ANGLE
   const gets a facing on its own frame grid, GAIA's included (GH #217: the
   game draws a GAIA creatable's facing). A cyclable const gets a literal
-  integer variant index, inside the *Cycle Variant* scope above. A gate's
+  integer variant index, inside the *Cycle Variant* scope above, and its
+  `initial_animation_frame` comes only from `place_rotation.frame_for()`: the
+  same index on a type 10 const under AoE2, as *Cycle Variant* writes it, else
+  `add()`'s 0. A gate's
   orientation is a different catalog const, picked before the click, so
   this is a new unit and not a `set_unit_const()` case, the same as
   mirroring. Everything else (walls, cliffs, INERT) keeps `add()`'s `0.0`.
@@ -298,7 +315,15 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `editor.add_unit()` takes its rotation from `rotation_for()` too, from a
   state built of its `facing` or `variant` argument (each refused on a
   const of the other kind), and sends a GAIA-only object to GAIA as Place
-  Unit does; `tests/test_scripting.py`.
+  Unit does; `tests/test_scripting.py`. Edit > Scatter Units in Region's
+  Random facing/variant box (TASK-510,
+  `scatter.plan_scatter_units(random_rotation=True)`, which
+  `scatter_units()` forwards) writes `random_rotation()`'s value per copy
+  too, inside the same ANGLE and *Cycle Variant* scopes, and nothing but
+  `0.0` for any other const; a rolled type 10 variant's frame takes
+  `frame_for()`'s value too. `add_many()` is unvalidated, so the guard is
+  `random_rotation()`, pinned by `tests/test_place_rotation.py` and
+  `tests/test_scatter.py`.
 - *Terrain planting's variant* (the Terrain tool's Trees and Eye candy,
   and File > New Map…'s, which `scenario_new` and
   `tools/gen_blank_maps.py` also reach): each new GAIA unit is
@@ -400,3 +425,50 @@ may use it.
   `mirror_tools.unit_image()`. A selection or committed region turned in
   place (TASK-256) does change a placed gate's const, through
   `set_unit_const()` above.
+
+## What the game rewrites on save
+
+Measured by opening the generated test map
+(`tests/fixtures/test_map_240x240.aoe2scenario`) in the AoE2:DE 1.59 editor
+and saving it (`tests/fixtures/test_map_game_resave.aoe2scenario`,
+2026-10-17), paired unit by unit with the map it was saved from. Each
+rewrite is one of two kinds: the game's own normalization, which needs
+nothing here, or a value DEscape wrote that the game replaces, which is
+fixed, refused or explained in the app. A rewrite a later save shows that
+is not listed here is a new finding.
+
+- **Objects deleted.** 212 units, 211 of them player-owned: 209 wild
+  animals, birds, relics and Others the editor lists for GAIA only, which
+  Place Unit and every owner change already give to GAIA alone
+  (`unit_kind.owner_refused()`), Ruins 345, now GAIA-only too, and Hidden
+  Outlaw 158 (Player 1); plus FLARE3 332, owned by GAIA. 158 and 332 are
+  editor-hidden objects, and the rule leaves them as they are.
+- **Variant frames.** Every .dat type 10 variant placement got
+  `initial_animation_frame` equal to its `rotation`; types 20, 30 and 80 kept
+  their frame. DEscape now writes it that way (*Cycle Variant* above). Two
+  Horses (1869, an ANGLE const) got frames 49 and 54: normalization.
+- **Packed Town Center 444.** Its three rotations (0.0, 8.0, 15.0) came back
+  as 4, 0 and 5 sixteenths of a turn in radians, not a function of the value
+  written. A value the game replaces. That contradicts *Cycle Variant*'s
+  "every corpus placement on a cyclable const stores a literal", which holds
+  for the corpus only: 444 has no corpus placement.
+- **Lone walls and towers, 0.0 to 2.0.** 9 lone walls (the tower index 2) and
+  10 towers. Normalization: corpus towers store both 2.0 and 0.0.
+- **Const 768 to 420.** One hidden Blue Tree came back as a Cannon Galleon.
+  Normalization of a hidden object, reachable only with Show hidden.
+- **New units.** Mole 2421 gains a 2422 and Siege Tower 2443 a hidden 2444,
+  and hidden gates 487, 488 and 792 gain 64, 63 and 789, each at its source
+  unit's position. The game's own companions, the same for any author.
+- **Edge positions.** A unit on the map's edge line is moved to 0.21 tiles
+  from the edge, on every edge. Whether DEscape should clamp or warn at
+  placement is still open.
+- **Garrisoned units** move onto their host. Normalization.
+- **z.** Every unit's `z` is recalculated from the terrain and stacking,
+  typed values included. The Inspector's Z caption and the guide say so; the
+  field stays editable, since the value is the file's.
+- **Terrain.** Ten editor-hidden and foundation terrains (33, 34, 36, 38,
+  39, 43, 44, 61, 62, 103) become a listed terrain plus a layer, and a
+  farm-type building paints 7 or 63 under itself. No corpus map uses the ten.
+- **Messages.** Hints and scouts text with a string id set is replaced by
+  the string table's text. The Messages panel already says the game shows
+  the language-file string.

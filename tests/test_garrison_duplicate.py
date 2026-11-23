@@ -161,3 +161,32 @@ def test_duplicate_needs_a_selected_row() -> None:
         assert button.isEnabled()
     finally:
         viewer_tests._close(window)
+
+
+def test_a_garrison_copy_from_a_pre_de_file_is_refused_at_paste(monkeypatch) -> None:
+    """The garrison clipboard keeps its file's game and pre-DE flag, as region blocks do (TASK-429)."""
+    window = viewer_tests._window()
+    try:
+        tower, occupants = viewer_tests._tower_with_two_inside(window)
+        viewer_tests._hide_garrisoned(window)
+        window._selection = [(1, tower.reference_id)]
+        window._refresh_selection_view()
+        panel = window.units_panel
+        viewer_tests._select_rows(window, {occupants[0].reference_id})
+        with monkeypatch.context() as m:
+            m.setattr(window, "_file_is_legacy", lambda: True)
+            panel.garrison_copy_button.click()
+        assert window._garrison_clipboard_origin.legacy
+        count = viewer_tests._unit_count(window)
+        records = len(window.edit_history.records)
+
+        panel.garrison_paste_button.click()
+
+        assert viewer_tests._unit_count(window) == count
+        assert len(window.edit_history.records) == records
+        assert "older-format (.scn/.scx)" in _last_status(window)
+        panel.garrison_copy_button.click()
+        panel.garrison_paste_button.click()
+        assert viewer_tests._unit_count(window) == count + 1, "a copy from this DE file still pastes"
+    finally:
+        viewer_tests._close(window)

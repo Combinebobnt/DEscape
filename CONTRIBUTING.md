@@ -52,6 +52,15 @@ Python 3.11. The native renderer is optional (README, "Faster renderer").
   `descape/help/` in the same PR, and a new menu item, mode or tool gets a
   line in its topic. `tests/test_help_guide.py` checks the guide's style,
   menu paths and links; the guide names commands, never their default keys.
+- For new UI or substantial changes to existing UI, attach screenshots or
+  generated images showing the implemented UI to the PR description. Include
+  before-and-after screenshots when they help show what changed. Minor fixes
+  or adjustments, such as typos or small spacing tweaks, don't need images.
+- A change to the window or a panel works in the default layout (a fresh
+  config, or View > Panels > Reset Layout) and still works with the panels
+  rearranged: floating as their own windows, docked on another edge, tabbed
+  together or closed. Say in the PR which arrangements you tried.
+  `AGENTS.md`, "Panel layouts", lists what usually breaks.
 - A `tests/test_module_size.py` failure means a file outgrew its line
   ceiling. Put the new code in a sibling module, or, if it belongs in that
   file, raise its ceiling in that test's table with a dated reason on the

@@ -34,9 +34,9 @@ from descape.view_layers import LayerState, render_key
 # Whether a level warm chains native_prime_job() (TASK-031.85) and a re-arm re-queues an
 # unfinished one (TASK-031.82 D6); tools/bench_gui_zoom.py's --no-margin-fix turns it off.
 WARM_NATIVE_INPUTS = True
-# The finest level native_prime_job() primes: 128 px assembly is one atom over the 3 ms limit
-# (TASK-031.85 census); TASK-031.87's sliced assembly raises it.
-NATIVE_PRIME_MAX_TILE_PX = 96
+# The finest level native_prime_job() primes: the largest tier any quality's ladder has, since
+# TASK-031.87 sliced the stepped assembly. A finer future tier waits for its own atom census.
+NATIVE_PRIME_MAX_TILE_PX = 192
 
 
 @dataclass
@@ -683,7 +683,9 @@ class _LeveledChunkCache(_ChunkCacheBase):
         under its current _source_gen (TASK-031.82 D6: a walk a crossing
         cancelled is re-queued by the next re-arm). So a re-arm over
         resident, primed levels queues nothing and starts no timer. A
-        restarted walk re-runs its finished atoms as cache hits.
+        restarted walk re-runs its finished atoms as cache hits, except a
+        Stepped assembly cut off between its steps (TASK-031.87), which
+        starts over: its partial arrays live only in the closed walk.
         Between atoms the walk stops quietly once the level leaves residency."""
         if not WARM_NATIVE_INPUTS or composite_backend.native is None:
             return None

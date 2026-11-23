@@ -523,7 +523,7 @@ def test_tree_scale_of_one_is_byte_identical_to_omitting_the_argument(fake_trees
     passed = render_sprites.sprite_draws_by_anchor(scn, proj, elevations, tree_scale=1.0)
     assert omitted.bboxes == passed.bboxes
     for tile, draws in omitted.by_anchor.items():
-        for (draw, px, py, _rise), (pdraw, ppx, ppy, _prise) in zip(draws, passed.by_anchor[tile], strict=True):
+        for (draw, px, py, _rise, _order), (pdraw, ppx, ppy, _prise, _porder) in zip(draws, passed.by_anchor[tile], strict=True):
             assert (px, py) == (ppx, ppy)
             assert np.array_equal(draw.rgba, pdraw.rgba)
 

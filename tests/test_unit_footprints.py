@@ -308,8 +308,8 @@ def test_a_unit_whose_own_tile_is_off_the_map_has_no_bounds():
 )
 def test_the_snapped_anchor_centres_an_even_span_on_the_cursor(tile, point, span, expected):
     """Snapped placement lands on the game's grid, an odd span at tile + 0.5
-    and an even span on the whole number nearest the cursor, clamped so the
-    whole footprint stays on a 120x120 map."""
+    and an even span on the whole number nearest the cursor, either clamped
+    so the whole footprint stays on a 120x120 map."""
     assert render_units.snapped_anchor(tile, point, span, 120, 120) == expected
 
 
@@ -322,6 +322,26 @@ def test_the_snapped_anchors_edge_clamp_keeps_a_4x4_on_the_map():
     assert render_units.unit_tile_bounds(Unit(x=120.0, y=120.0, unit_const=82), 120, 120) is None
     x, y = render_units.snapped_anchor((0, 0), (0.2, 0.1), (4, 4), 120, 120)
     assert render_units.unit_tile_bounds(Unit(x=x, y=y, unit_const=82), 120, 120) == (0, 4, 0, 4)
+
+
+@pytest.mark.parametrize(
+    ("tile", "point", "span", "expected"),
+    [
+        ((0, 0), None, (3, 3), (1.5, 1.5)),  # a Barracks on the corner tile, not (0.5, 0.5)
+        ((0, 0), (0.3, 0.7), (3, 3), (1.5, 1.5)),
+        ((119, 119), None, (3, 3), (118.5, 118.5)),
+        ((1, 1), None, (5, 5), (2.5, 2.5)),  # a Wonder one tile in still overhangs unclamped
+        ((118, 0), None, (5, 5), (117.5, 2.5)),
+        ((0, 0), None, (1, 1), (0.5, 0.5)),  # span 1 never moves
+        ((119, 119), (119.99, 119.99), (1, 1), (119.5, 119.5)),
+        ((0, 0), None, (4, 1), (2.0, 0.5)),  # only the even axis clamps on a 4x1 gate
+        ((119, 119), None, (1, 4), (119.5, 118.0)),
+    ],
+)
+def test_the_snapped_anchor_clamps_an_odd_span_onto_the_map(tile, point, span, expected):
+    """GH #152: an odd span's tile + 0.5 is clamped to [span/2, size - span/2]
+    like an even one's, so an edge-tile 3x3 or 5x5 lands wholly on the map."""
+    assert render_units.snapped_anchor(tile, point, span, 120, 120) == expected
 
 
 # -- against real placement data -----------------------------------------

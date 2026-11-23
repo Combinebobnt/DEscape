@@ -6,9 +6,10 @@ DEscape opens, edits and saves Age of Empires II: Definitive Edition scenario fi
 
 ## Open a scenario
 
-- **File > Open .aoe2scenario…** opens a file from disk.
+- **File > Open Scenario…** opens a file from disk.
 - **File > Open Recent** lists the scenarios you opened before. A file that has gone missing drops off the list until it is back.
-- Drop a `.aoe2scenario` file onto the window to open it. If you drop several, the first one opens.
+- Drop a `.aoe2scenario`, `.scn` or `.scx` file onto the window to open it. If you drop several, the first one opens.
+- Older scenarios from before the Definitive Edition (Age of Kings and The Conquerors `.scn`/`.scx`, and some HD Edition `.scx`; other HD Edition and UserPatch files aren't supported yet) open for viewing only: the map, units, players and messages show, triggers are not read, and nothing can be edited or saved. To edit one, open it in the game's own Scenario Editor and save it as `.aoe2scenario`, then open that copy here.
 - **File > New Map…** starts a blank scenario. Pick its size (one of the game's sizes, or type any square size in the box beside it; Create stays greyed out while the typed size is below the minimum), the game it is for (Age of Empires II or Return of Rome), the terrain every tile starts with and its elevation. Elevation is the value stored in the file: the game's Scenario Editor shows it one higher. Plant's Trees box plants the terrain's trees the way the Terrain tool does (a tree on every tile of a full forest), and Eye candy adds the doodads a terrain carries, such as grass tufts; each is greyed out for a terrain with none. A map that would get over 100,000 of them, such as a Ludicrous forest, asks first and can be created without them. The new map opens with no unsaved changes, trees included. The dialog remembers your last choice.
 - **File > Close Map** closes the scenario.
 

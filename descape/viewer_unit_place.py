@@ -88,7 +88,8 @@ class _ViewerUnitPlaceMixin:
         span: `tile + 0.5` on an odd-span axis, which is every axis of a 1x1
         unit and of a const-less call, and the whole number nearest the
         cursor on an even-span one, so a House centres on the cursor on the
-        game's grid (GH #206). `_pick_tile()` resolves the
+        game's grid (GH #206). Either is clamped so the footprint stays on the
+        map: a Barracks on tile (0, 0) lands at (1.5, 1.5) (GH #152). `_pick_tile()` resolves the
         clicked SCREEN pixel to an integer tile in all three render styles
         (Flat's division, Stepped's screen_to_tile, Sloped's pick-plane
         lookup). Off-grid is `_pick_map_point()`, the continuous inverse added by
@@ -200,7 +201,10 @@ class _ViewerUnitPlaceMixin:
             else:
                 splices: list[UnitSplice] = []
                 with self._unit_edit(model, "Place unit", [player], splices):
-                    unit = model.add(player, object_id, x, y, rotation=rotation)
+                    unit = model.add(
+                        player, object_id, x, y, rotation=rotation,
+                        initial_animation_frame=place_rotation.frame_for(object_id, rotation),
+                    )
                     # Placed units become the selection (same reasoning as
                     # reassign's own key update): the id just chosen is the one worth
                     # showing in the inspector next, not whatever was selected before.
@@ -523,9 +527,10 @@ class _ViewerUnitPlaceMixin:
 
     def _unit_brush_hover_point(self, pos, const: int) -> tuple[float, float] | None:
         """Where a dab on the cursor tile stands `const`, or None where a press
-        paints nothing whatever the boxes say: a refused pick or a footprint
-        past the map edge. The whole pick counts, as _begin_unit_brush_stroke()'s
-        refusal does, not just the const rolled to stand for it."""
+        paints nothing whatever the boxes say: a refused pick, or no anchor
+        from unit_brush.hover_anchor(). An edge tile's footprint is clamped onto
+        the map (GH #152), not refused. The whole pick counts, as
+        _begin_unit_brush_stroke()'s refusal does, not just the const rolled to stand for it."""
         if self._unit_brush_pick_refused():
             return None
         tile = self.map_view._pick_tile(pos)
@@ -688,6 +693,7 @@ class _ViewerUnitPlaceMixin:
             jitter=params.jitter,
             min_spacing=params.min_spacing,
             avoid_occupied=False,
+            random_rotation=params.random_rotation,
         )
         if not specs:
             # Every multi-tile pick overhung the eligible tiles (TASK-277): no edit, so no empty undo step.

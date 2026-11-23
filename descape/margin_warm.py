@@ -27,9 +27,10 @@ not yet level_warmed() runs nothing and backs off to HELD_INTERVAL_MS, so a
 roll click never queues behind it (DEFER_COLD_FIRST). That holds for the
 viewer's pending level too (user, 2026-11-10: its load entry running cold put
 the click back behind the same chunk), but only until a deadline (D7,
-PENDING_DEFER_MAX_MS from when the level became pending, start()'s
-defer_until): a continuous roll never pauses, so an unbounded defer kept a
-placeholder an upscale for its whole visit.
+PENDING_DEFER_MAX_MS from when the level became pending): a continuous roll
+never pauses, so an unbounded defer kept a placeholder an upscale for its
+whole visit. start()'s defer_deadline is asked each deferring tick, so a level
+that stops being pending drops its deadline and defers unbounded again.
 
 **Worker threads (maintainer plan Batch F T2).** Where the cache offers a
 ChunkJob (render_cache_base._ChunkCacheBase.prepare_chunk_job: native backend, Stepped or Sloped),
@@ -58,6 +59,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from descape import debug_log, gc_hold, level_warm, perf_trace
@@ -76,7 +78,7 @@ _now = time.perf_counter
 # bounds a tick's first chunk. tools/bench_gui_zoom.py's --no-margin-fix clears it.
 DEFER_COLD_FIRST = True
 # TASK-031.82 D7: the viewer's pending level defers at most this long (wall ms)
-# from when it became pending, passed to start() as defer_until.
+# from when it became pending, while it stays pending (start()'s defer_deadline).
 PENDING_DEFER_MAX_MS = 350
 # Ticks deferred so far, process-wide; the bench reports it.
 deferrals = 0
@@ -405,8 +407,8 @@ class MarginWarmer(_IdleTimerDriver):
         self._in_flight: list[tuple[int, int]] = []
         self._token = 0
         self._sync = False
-        # A _now() deadline past which the cold-first defer stops (D7); None never stops it.
-        self._defer_until: float | None = None
+        # Asked each deferring tick for a _now() deadline ending the cold-first defer (D7).
+        self._defer_deadline: Callable[[], float | None] | None = None
 
     @property
     def is_active(self) -> bool:
@@ -431,7 +433,8 @@ class MarginWarmer(_IdleTimerDriver):
             self._sync = False
 
     def start(
-        self, cache, mip: int, chunks: list[tuple[int, int]], *, on_drained=None, defer_until: float | None = None,
+        self, cache, mip: int, chunks: list[tuple[int, int]], *, on_drained=None,
+        defer_deadline: Callable[[], float | None] | None = None,
     ) -> None:
         """Queues `chunks` (mip-level chunk indices) on `cache`, replacing
         any margin warm already in flight -- LevelWarmer.start()'s shape,
@@ -452,8 +455,9 @@ class MarginWarmer(_IdleTimerDriver):
         cancel() either, which drops it unfired for the same reason
         LevelWarmer.cancel() does.
 
-        `defer_until`, a margin_warm._now() deadline, ends the cold-first
-        defer at that time (D7); None leaves it unbounded."""
+        `defer_deadline`, called each deferring tick, returns a
+        margin_warm._now() deadline that ends the cold-first defer (D7) or
+        None for no bound; without one the defer is unbounded."""
         self.cancel()
         if not chunks or not cache.is_level_resident(mip):
             return
@@ -461,7 +465,7 @@ class MarginWarmer(_IdleTimerDriver):
         self._mip = mip
         self._queue = list(chunks)
         self._on_drained = on_drained
-        self._defer_until = defer_until
+        self._defer_deadline = defer_deadline
         self._schedule()
 
     def cancel(self) -> None:
@@ -475,7 +479,7 @@ class MarginWarmer(_IdleTimerDriver):
         self._mip = None
         self._queue = []
         self._on_drained = None
-        self._defer_until = None
+        self._defer_deadline = None
         self._token += 1
         self._in_flight = []
         self._stop_timer()
@@ -511,8 +515,9 @@ class MarginWarmer(_IdleTimerDriver):
 
         While input is live at a level that is not yet level_warmed(), warms
         nothing and backs off the same way (DEFER_COLD_FIRST); queue and
-        in-flight jobs are kept. With a defer_until deadline the backoff is
-        at most the time left, so the first chunk after it is not late."""
+        in-flight jobs are kept. A defer_deadline is asked for its deadline
+        then, once per tick; the backoff is at most the time left, so the
+        first chunk after it is not late."""
         if self._held_backoff():
             return True
         if self._overdue_collect():
@@ -523,10 +528,11 @@ class MarginWarmer(_IdleTimerDriver):
                 self._stop_timer()
                 return True
             return self._drained()
-        if self._defers():
+        defer, until = self._defers()
+        if defer:
             global deferrals
             deferrals += 1
-            self._set_interval(self._deferral_interval_ms())
+            self._set_interval(self._deferral_interval_ms(until))
             with perf_trace.where("margin-warm"):
                 perf_trace.warm_deferred(self._mip)
             return True
@@ -566,18 +572,23 @@ class MarginWarmer(_IdleTimerDriver):
             return True
         return self._drained()
 
-    def _defers(self) -> bool:
+    def _defers(self) -> tuple[bool, float | None]:
+        """(defer this tick, the deadline read for it). The deadline provider
+        runs only once every other condition holds, at most once per tick."""
         if not DEFER_COLD_FIRST or self._sync or not level_warm.input_live():
-            return False
-        if self._defer_until is not None and _now() >= self._defer_until:
-            return False
+            return False, None
         warmed = getattr(self._cache, "level_warmed", None)
-        return warmed is not None and not warmed(self._mip)
+        if warmed is None or warmed(self._mip):
+            return False, None
+        until = self._defer_deadline() if self._defer_deadline is not None else None
+        if until is not None and _now() >= until:
+            return False, until
+        return True, until
 
-    def _deferral_interval_ms(self) -> int:
-        if self._defer_until is None:
+    def _deferral_interval_ms(self, until: float | None) -> int:
+        if until is None:
             return self.HELD_INTERVAL_MS
-        left_ms = math.ceil((self._defer_until - _now()) * 1000)
+        left_ms = math.ceil((until - _now()) * 1000)
         return max(1, min(self.HELD_INTERVAL_MS, left_ms))
 
     def _pooled(self) -> bool:

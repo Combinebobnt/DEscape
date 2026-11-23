@@ -122,6 +122,7 @@ def transform_block(block: RegionBlock, element: str, file_radian: bool) -> Bloc
         layers=layers,
         units=tuple(units),
         dataset=block.dataset,
+        legacy=block.legacy,
     )
     return BlockTransform(result, kept)
 

@@ -518,9 +518,10 @@ def test_the_first_paint_after_a_load_names_its_terrain_texture_loads(tmp_path):
     window = conftest.stepped_window(UNITS_FIXTURE, size=600)
     try:
         # A prefetched file counts on the line its pool load finished in: the load op's or the first paint's.
+        # Once per level size it loads (GH #326): the level warm prefetches the neighbours' too.
         lines = [line for line in debug_log.get_log_text().splitlines() if "perf load: repaint" in line or "perf op load" in line]
         assert len(lines) == 2, lines
-        assert sum(int(n) for n in re.findall(r"textures \+(\d+) files", " ".join(lines))) == len(ids), lines
+        assert sum(int(n) for n in re.findall(r"textures \+(\d+) files", " ".join(lines))) >= len(ids), lines
     finally:
         perf_trace.enable(False)
         perf_trace.reset()

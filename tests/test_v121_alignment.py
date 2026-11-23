@@ -49,7 +49,8 @@ WORKSHOP_DIR = Path("~/games/steam/steamapps/workshop/content/221380").expanduse
 STRUCTURE_PATH = Path(__file__).resolve().parent.parent / "descape/versions/DE/v1.21/structure.json"
 
 # Measured against every real corpus file this repo has ever seen (trigger
-# versions 2.2 to 4.9, scenario versions 1.37 through 1.58) -- assertion 3's
+# versions 2.2 to 5.0, scenario versions 1.37 through 1.59, format_scan's
+# KNOWN_TRIGGER_VERSIONS) -- assertion 3's
 # "plausible band". Generous headroom on both sides: a misaligned f64 read
 # lands near zero (denormal) or astronomically large, never quietly inside
 # this range.

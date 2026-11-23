@@ -129,3 +129,39 @@ def test_a_one_tile_region_with_a_house_selected_enables_ok_in_the_real_dialog()
         assert "nothing moved" in window.status_log.toPlainText()
     finally:
         conftest.close_window(window)
+
+
+_OAK = 349  # cyclable, 42 variants
+_OAK_REGION = (60, 60, 68, 68)
+
+
+def test_a_ticked_random_facing_box_places_varied_oak_variants_as_one_undo_step() -> None:
+    """TASK-510. Pass conditions: with an oak picked and Random facing/variant
+    ticked in the real dialog, OK places oaks whose rotations are literal
+    integer variant indices with at least two distinct values, as one undo record."""
+    window = _window()
+    try:
+        # pick_object(), since a GAIA-only tree is listed only for a GAIA owner.
+        assert window.units_panel.pick_object(_OAK)
+        window.on_region_selected(_OAK_REGION)
+        before = {u.reference_id for units in window.scenario.unit_manager.units for u in units}
+        records = len(window.edit_history.records)
+
+        def act(dialog) -> bool:
+            dialog.count_spin.setValue(20)
+            dialog.random_rotation_check.setChecked(True)
+            return True
+
+        record = _answer_real_dialog(window, act)
+        window.scatter_units_in_region()
+
+        assert record["error"] is None, record["error"]
+        assert record["seen"] is not None, "the real dialog never showed"
+        placed = [u for units in window.scenario.unit_manager.units for u in units if u.reference_id not in before]
+        assert placed and all(u.unit_const == _OAK for u in placed)
+        rotations = [u.rotation for u in placed]
+        assert all(r == int(r) and 0 <= r < 42 for r in rotations)
+        assert len(set(rotations)) >= 2
+        assert len(window.edit_history.records) == records + 1
+    finally:
+        conftest.close_window(window)

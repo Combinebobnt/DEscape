@@ -9,6 +9,7 @@ the real dialog never reaches its minimum duration, so it never shows."""
 from __future__ import annotations
 
 import gc
+import time
 from typing import ClassVar
 
 import pytest
@@ -155,6 +156,154 @@ def test_the_parse_is_busy_with_every_warm_stopped(window, dialogs) -> None:
     assert dialog.busy and all(dialog.busy), "not busy during the parse"
     assert not any(any(active) for active in dialog.warming), "a warm was live inside the parse"
     assert not window._busy, "busy was not restored"
+
+
+@pytest.fixture
+def shown_parse(monkeypatch, dialogs):
+    """The dialog shows at once and every progress call refreshes it, so
+    setValue() runs processEvents() as on a large file. The first shown call
+    waits out a viewport poll interval and the zoom frames' settle wait, and
+    queues a level warm start as a placeholder's pending timer would, so all
+    of them fire in the next setValue()'s processEvents(). A cancel answers
+    only from the second shown call, after that dispatch."""
+    from PyQt5.QtCore import QTimer
+
+    from descape import gc_hold, level_warm, zoom_preframe
+    from descape.map_view import MapView
+
+    wait_s = 2 * max(MapView.VIEWPORT_POLL_MS, zoom_preframe.SETTLE_MS) / 1000
+
+    set_viewer_global(monkeypatch, "TRIGGER_PARSE_DIALOG_MS", 0)
+    set_viewer_global(monkeypatch, "TRIGGER_PARSE_REFRESH_S", 0)
+    inside = {"engage": 0, "schedule": 0, "prebuild": 0}
+    state = {"in_parse": False, "closed": False, "shown_calls": 0, "queued_ran": False, "polls": 0, "starts_after": 0}
+    real_init, real_close, real_cancel = dialogs.__init__, dialogs.close, dialogs.wasCanceled
+
+    def init(self, *args):
+        real_init(self, *args)
+        state["in_parse"] = True
+
+    def close(self):
+        state["in_parse"], state["closed"] = False, True
+        return real_close(self)
+
+    def was_canceled(self):
+        if self.isVisible():
+            state["shown_calls"] += 1
+            if state["shown_calls"] == 1:
+                window = self.parent()
+
+                def queued():
+                    state["queued_ran"] = state["in_parse"]
+                    window._start_level_warm()
+
+                QTimer.singleShot(0, queued)
+                window.map_view.retarget_preframes()  # what a resize inside the parse does
+                time.sleep(wait_s)
+        return real_cancel(self) and state["shown_calls"] >= 2
+
+    def counting(key, real):
+        def spy(*args, **kwargs):
+            if state["in_parse"]:
+                inside[key] += 1
+            return real(*args, **kwargs)
+
+        return spy
+
+    monkeypatch.setattr(dialogs, "__init__", init)
+    monkeypatch.setattr(dialogs, "close", close)
+    monkeypatch.setattr(dialogs, "wasCanceled", was_canceled)
+    monkeypatch.setattr(gc_hold, "engage", counting("engage", gc_hold.engage))
+    monkeypatch.setattr(
+        level_warm._IdleTimerDriver, "_schedule", counting("schedule", level_warm._IdleTimerDriver._schedule)
+    )
+    return inside, state
+
+
+def _arm_everything(window, monkeypatch, inside, state) -> None:
+    """The warms, a pending unit model prebuild, zoom frames on, a held-key
+    pan and a viewport poll due to fire, as when the user enters Triggers
+    right after a load."""
+    from PyQt5.QtCore import Qt
+
+    view = window.map_view
+    view.set_preframes_allowed(True)
+    window._start_level_warm()
+    assert any(getattr(window, n).is_active for n in WARMERS), "vacuous: no warm is active before the entry"
+    real = window._prebuild_unit_model
+
+    def prebuild(doc_id):
+        inside["prebuild"] += 1
+        return real(doc_id)
+
+    monkeypatch.setattr(window, "_prebuild_unit_model", prebuild)
+    window.unit_edits = None
+    window._schedule_unit_model_prebuild()
+    assert window._unit_model_prebuild.is_active, "vacuous: no prebuild pending"
+    real_traced = window._on_viewport_changed_traced
+
+    def traced():
+        state["polls"] += state["in_parse"]
+        return real_traced()
+
+    monkeypatch.setattr(window, "_on_viewport_changed_traced", traced)
+    real_start = window._start_level_warm
+
+    def start(*args, **kwargs):
+        state["starts_after"] += state["closed"]
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(window, "_start_level_warm", start)
+    view._pan_held[(Qt.Key_Right, 0)] = (1, 0)
+    view._pan_elapsed.start()
+    view._pan_timer.start(view.PAN_TICK_MS)
+    view._last_viewport_target = None
+    view._note_viewport_changed()
+
+
+def _assert_events_ran_inside(state) -> None:
+    assert state["shown_calls"] >= 2, "vacuous: no processEvents() ran inside the parse after the wait"
+    assert state["queued_ran"], "vacuous: the queued level warm start did not fire inside the parse"
+    assert state["polls"], "vacuous: no viewport poll fired inside the parse"
+
+
+def test_no_warm_or_gc_hold_restarts_inside_a_shown_parse(window, dialogs, shown_parse, monkeypatch) -> None:
+    inside, state = shown_parse
+    _arm_everything(window, monkeypatch, inside, state)
+    window.mode_combo.setCurrentText("Triggers")
+    (dialog,) = dialogs.made
+    _assert_events_ran_inside(state)
+    assert inside == {"engage": 0, "schedule": 0, "prebuild": 0}, f"restarted inside the parse: {inside}"
+    assert not any(any(active) for active in dialog.warming), "a warm was live inside the parse"
+    assert not window._first_parse_running
+    _settle_for(window.map_view.VIEWPORT_POLL_MS * 3)
+    # An inside fire recorded as seen would leave the repoll's fire nothing to re-anchor.
+    assert state["starts_after"], "no viewport fire re-anchored the level warm after the parse"
+    assert window.unit_edits is not None, "the held prebuild never ran after the parse"
+
+
+def test_a_cancelled_shown_parse_restores_gc_and_busy(window, dialogs, shown_parse, monkeypatch) -> None:
+    inside, state = shown_parse
+    _arm_everything(window, monkeypatch, inside, state)
+    freezes: list[int] = []
+    real = gc.freeze
+    monkeypatch.setattr(gc, "freeze", lambda: freezes.append(1) or real())
+    dialogs.cancel = True
+    window.mode_combo.setCurrentText("Triggers")
+    _assert_events_ran_inside(state)
+    assert window.scenario.trigger_read_supported is None, "vacuous: the parse was not cancelled"
+    assert freezes == [], "a cancelled parse froze its dropped objects"
+    assert gc.isenabled() and not window._busy and not window._first_parse_running
+    assert inside == {"engage": 0, "schedule": 0, "prebuild": 0}, f"restarted inside the parse: {inside}"
+
+
+def _settle_for(ms: int) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    end = time.perf_counter() + ms / 1000
+    while time.perf_counter() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
 
 
 def test_a_first_entry_freezes_and_a_second_does_not(window, dialogs, monkeypatch) -> None:

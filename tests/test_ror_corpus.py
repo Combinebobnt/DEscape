@@ -38,6 +38,9 @@ from testkit.ror_fixture import ROR_VARIANT
 pytestmark = pytest.mark.corpus
 
 ZERO = 1e-6
+FARM = 50
+# docs/WRITE_RULES.md quotes 96.9% measured; this is the floor the test holds to.
+WALL_AGREEMENT_FLOOR = 0.95
 
 
 @functools.cache
@@ -109,7 +112,7 @@ def test_walls_store_literal_indices_frame_0_and_agree_with_their_neighbours(ror
                     total += 1
                     agree += derived == round(unit.rotation)
     assert walls, "no wall placement"
-    assert total and agree / total >= 0.95, f"{agree}/{total}"
+    assert total and agree / total >= WALL_AGREEMENT_FLOOR, f"{agree}/{total}"
 
 
 def test_walls_with_at_most_one_neighbour_store_the_tower(ror_files):
@@ -173,6 +176,19 @@ def test_cyclable_placements_store_literal_indices(ror_files):
             seen += 1
             assert _is_int(unit.rotation), (path.name, unit.unit_const, unit.rotation)
     assert seen, "no cyclable placement"
+
+
+def test_farms_store_a_literal_0_to_3_with_frame_0(ror_files):
+    """docs/WRITE_RULES.md: Farm 50 is cyclable under RoR, four variants, each placement a literal 0-3, frame 0."""
+    assert unit_variant.variant_count_for(FARM) == 4
+    farms = 0
+    for path, _loaded, _pid, unit in _placements(ror_files):
+        if unit.unit_const != FARM:
+            continue
+        farms += 1
+        assert _is_int(unit.rotation) and round(unit.rotation) in range(4), (path.name, unit.rotation)
+        assert unit.initial_animation_frame == 0, (path.name, unit.initial_animation_frame)
+    assert farms, "no farm placement"
 
 
 def test_every_write_gate_opens(ror_files):

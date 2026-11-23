@@ -400,12 +400,16 @@ class SpritePiece:
     `slot` is unit_graphic_map.json's per-piece depth slot: the footprint tile
     whose moment in the depth walk paints this piece, as an offset from the
     footprint's low corner. None on every gate, wall and plain unit, which
-    paint at the unit's own single anchor tile as before."""
+    paint at the unit's own single anchor tile as before.
+
+    `ground` is the piece's (mx, my) in tiles from the footprint centre, the
+    input to render_sprites._sprite_order() (TASK-016); (0, 0) without one."""
 
     draw: SpriteDraw
     dx: int
     dy: int
     slot: tuple[int, int] | None = None
+    ground: tuple[float, float] = (0.0, 0.0)
 
 
 class _LRU(OrderedDict):
@@ -2730,6 +2734,7 @@ def _opaque_pieces(
             dx=round(piece["dx"] * piece_scale),
             dy=round(piece["dy"] * piece_scale),
             slot=None if slot is None else (int(slot[0]), int(slot[1])),
+            ground=(piece.get("mx", 0.0) * tree_scale, piece.get("my", 0.0) * tree_scale),
         ))
     return result
 

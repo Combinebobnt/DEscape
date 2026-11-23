@@ -264,10 +264,19 @@ class TriggerPanel(
             "definition, which does not cover triggers.\n\n"
             "Terrain, elevation and unit editing work normally on this file."
         ),
+        # A pre-DE .scn/.scx (TASK-429): read-only, triggers never read.
+        "legacy": (
+            "This file's Triggers section isn't read.\n\n"
+            "It is an older-format scenario (.scn/.scx from before AoE2:DE). DEscape shows its "
+            "map, units and players, but not its triggers, and it cannot be edited or saved here.\n\n"
+            "To edit it, open it in AoE2:DE's editor and save it as .aoe2scenario."
+        ),
     }
 
     @staticmethod
     def _unsupported_key(loaded: LoadedScenario) -> str:
+        if loaded.structure_source == "legacy":
+            return "legacy"
         if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
             return "repo_no_vocabulary"
         return "library"

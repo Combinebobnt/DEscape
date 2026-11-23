@@ -1,12 +1,12 @@
 """Qt-free theme files, Settings > Appearance > Export theme... / Import theme...
 
 A theme file is YAML carrying the look-only Appearance settings: the chrome
-theme (preset + per-role overrides), the UI font, the tool overlay colours,
-the ruler and distance-tick label sizes, the stacked-unit badge position,
-the favorites star's style (GH #195),
+theme (preset + per-role overrides), the UI font, the tool overlay colours
+and the three overlay opacities (GH #129), the ruler and distance-tick label
+sizes, the stacked-unit badge position, the favorites star's style (GH #195),
 the grid's blend and thickness, and the Triggers panel's status marker, its
 two colours and its two toggles (TASK-211). Machine, performance and feel settings
-(graphics quality, preloading, elevation height, pan speed) never travel.
+(graphics quality, preloading, elevation height, wall opacity, pan speed) never travel.
 
 Import validates rather than trusts. A file that isn't a theme file at all is
 refused whole; anything else is checked key by key, and a bad key is reported
@@ -40,6 +40,7 @@ _INT_RANGES: dict[str, tuple[int, int]] = {
 _STACK_BADGE_IDS = tuple(pid for pid, _label in settings.STACK_BADGE_POSITIONS)
 _FAVORITE_STAR_IDS = tuple(sid for sid, _label in settings.FAVORITE_STAR_STYLES)
 _OVERLAY_IDS = tuple(cid for cid, _label, _default in settings.OVERLAY_COLORS)
+_OPACITY_IDS = tuple(gid for gid, _label, _default in settings.OVERLAY_OPACITIES)
 _TRIGGER_STATUS_IDS = tuple(sid for sid, _label, _default in settings.TRIGGER_STATUS_COLORS)
 _TRIGGER_STATUS_MARKER_IDS = tuple(mid for mid, _label in settings.TRIGGER_STATUS_MARKERS)
 # Each key's import-summary label, as the Trigger status group labels its control.
@@ -87,6 +88,7 @@ def build_document() -> dict:
         "theme": {"preset": settings.get_theme(), "colors": settings.get_theme_colors()},
         "ui_font": {"family": settings.get_ui_font_family(), "size": settings.get_ui_font_size()},
         "overlay_colors": {cid: settings.get_overlay_color(cid) for cid in _OVERLAY_IDS},
+        "overlay_opacity": {gid: settings.get_overlay_opacity(gid) for gid in _OPACITY_IDS},
         "ruler_label_font_px": settings.get_ruler_label_font_px(),
         "distance_tick_font_px": settings.get_distance_tick_font_px(),
         "stack_badge_position": settings.get_stack_badge_position(),
@@ -127,6 +129,26 @@ def _parse_colors(raw, known: Collection[str], what: str, plan: ImportPlan) -> d
         except ValueError:
             plan.problems.append(f"{what}.{key}: {_short(value)} is not a '#rrggbb' colour")
     return colors
+
+
+def _parse_opacities(raw, plan: ImportPlan) -> None:
+    # The setter's own checks (settings._valid_overlay_opacity()), one message per kind.
+    if not isinstance(raw, dict):
+        plan.problems.append(f"overlay_opacity: expected a mapping of id to percent, got {type(raw).__name__}")
+        return
+    lo, hi = settings.OVERLAY_OPACITY_MIN, settings.OVERLAY_OPACITY_MAX
+    opacity: dict[str, int] = {}
+    for key, value in raw.items():
+        if key not in _OPACITY_IDS:
+            plan.problems.append(f"overlay_opacity: unknown id {_short(key)}")
+        elif not _is_int(value):
+            plan.problems.append(f"overlay_opacity.{key}: expected a whole number, got {type(value).__name__}")
+        elif not lo <= value <= hi:
+            plan.problems.append(f"overlay_opacity.{key}: {_short(value)} is outside {lo}-{hi}")
+        else:
+            opacity[key] = value
+    if opacity:
+        plan.values["overlay_opacity"] = opacity
 
 
 def _parse_theme(raw, plan: ImportPlan) -> None:
@@ -204,6 +226,8 @@ def parse_theme_file(path: Path | str, installed_families: Collection[str] | Non
             colors = _parse_colors(raw, _OVERLAY_IDS, "overlay_colors", plan)
             if colors:
                 plan.values["overlay_colors"] = colors
+        elif key == "overlay_opacity":
+            _parse_opacities(raw, plan)
         elif key == "stack_badge_position":
             if isinstance(raw, str) and raw in _STACK_BADGE_IDS:
                 plan.values[key] = raw
@@ -256,6 +280,10 @@ def describe_changes(values: dict) -> list[str]:
         current = settings.get_overlay_color(color_id)
         if hex_str != current:
             lines.append(f"Overlay colour {settings.get_overlay_color_label(color_id)}: {current} -> {hex_str}")
+    for group_id, pct in values.get("overlay_opacity", {}).items():
+        current = settings.get_overlay_opacity(group_id)
+        if pct != current:
+            lines.append(f"Overlay opacity {settings.get_overlay_opacity_label(group_id)}: {current}% -> {pct}%")
     getters = {
         "ruler_label_font_px": ("Ruler label size", settings.get_ruler_label_font_px, " px"),
         "distance_tick_font_px": ("Distance ticks label size", settings.get_distance_tick_font_px, " px"),

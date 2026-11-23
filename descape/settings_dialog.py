@@ -541,9 +541,9 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         theme_grid.addWidget(self.theme_combo, 0, 1)
         file_tooltip = (
             "A theme file carries this tab's look settings: theme and chrome colours, UI font, "
-            "tool overlay colours, ruler and distance-tick label sizes, badge position, favorite "
-            "star, grid blend and thickness, and trigger status with its colours. Not graphics quality, "
-            "preloading, elevation height, pan speed or toolbar buttons."
+            "tool overlay colours and opacities, ruler and distance-tick label sizes, badge position, "
+            "favorite star, grid blend and thickness, and trigger status with its colours. Not graphics "
+            "quality, preloading, elevation height, wall opacity, pan speed or toolbar buttons."
         )
         self.theme_export_button = QPushButton("Export theme…")
         self.theme_export_button.setToolTip(file_tooltip)
@@ -961,26 +961,10 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         # Esc and the title-bar X: asks first when changes are unapplied. The Cancel button never asks.
         self._close_or_ask()
 
-    # OVERLAY_COLORS id prefix (before the first "_") -> section header text,
-    # mirroring settings.KEYBIND_SECTION_TITLES.
-    _OVERLAY_SECTION_TITLES: ClassVar[dict[str, str]] = {
-        "highlight": "Terrain brush",
-        "pan": "Pan",
-        "unit": "Units",
-        "ruler": "Ruler",
-        "region": "Select tool",
-        "mirror": "Map mirroring",
-        "footprint": "Footprint outlines",
-        "fish": "Fish outlines",
-        "range": "Range rings",
-        "analysis": "Map Analysis",
-        "trigger": "Trigger overlay",
-    }
+    _OVERLAY_SECTION_TITLES: ClassVar[dict[str, str]] = settings.OVERLAY_SECTION_TITLES
     # Colour section prefix -> settings.OVERLAY_OPACITIES group; its slider closes that section.
     _OVERLAY_OPACITY_SECTIONS: ClassVar[dict[str, str]] = {
-        "unit": "unit_select",
-        "region": "region",
-        "trigger": "trigger_area",
+        section: gid for gid, section in settings.OVERLAY_OPACITY_SECTIONS.items()
     }
 
     def _add_overlay_opacity_row(self, grid: QGridLayout, row: int, section: str) -> int:
@@ -1041,8 +1025,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             settings.set_overlay_opacity(group_id, pct)
         self._window.map_view.apply_overlay_opacity()
         for group_id, pct in pending.items():
-            section = next(s for s, gid in self._OVERLAY_OPACITY_SECTIONS.items() if gid == group_id)
-            self._window._log_status(f"Overlay opacity: {self._OVERLAY_SECTION_TITLES[section]} -> {pct}%")
+            self._window._log_status(f"Overlay opacity: {settings.get_overlay_opacity_label(group_id)} -> {pct}%")
 
     def _reset_overlay_opacity(self, group_id: str) -> None:
         self._overlay_opacity_sliders[group_id].setValue(settings.get_default_overlay_opacity(group_id))
@@ -1235,6 +1218,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._window._log_status(f"Chrome colours: reset to {themes.preset_label(settings.get_theme())}")
 
     def _export_theme(self) -> None:
+        # A slider still on its apply timer must be in config.yaml before the file is built from it.
+        self._flush_pending()
         start = str(Path.home() / f"descape{theme_file.FILE_SUFFIX}")
         path, _ = QFileDialog.getSaveFileName(self, "Export theme", start, f"DEscape theme (*{theme_file.FILE_SUFFIX})")
         if not path:
@@ -1277,6 +1262,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             self._window._log_status(f"Theme import refused: {e}", level=debug_log.WARNING)
             QMessageBox.warning(self, "Import refused", f"{path}\n\n{e}")
             return
+        # The summary is against config.yaml, and a nudged slider the file lacks must stay, so save it first.
+        self._flush_pending()
         if not self._confirm_theme_import(theme_file.format_import_summary(plan)):
             self._window._log_status("Theme import cancelled")
             return
@@ -1312,6 +1299,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             settings.get_ui_font_family(), settings.get_ui_font_size(), QApplication.instance().font()
         )
         self._apply_overlay_colors()
+        self._apply_overlay_opacity()
         self._apply_map_label_fonts()
         self._apply_stack_badge_position()
         self._apply_favorite_star()
@@ -1330,10 +1318,13 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             self.trigger_status_marker_combo,
             self.trigger_status_ok_rows_check,
             self.trigger_status_sections_check,
+            *self._overlay_opacity_sliders.values(),
         )
         for widget in widgets:
             widget.blockSignals(True)
         try:
+            for group_id, slider in self._overlay_opacity_sliders.items():
+                slider.setValue(settings.get_overlay_opacity(group_id))
             self.theme_combo.setCurrentIndex(self.theme_combo.findData(settings.get_theme()))
             self.ruler_label_font_spin.setValue(settings.get_ruler_label_font_px())
             self.distance_tick_font_spin.setValue(settings.get_distance_tick_font_px())
@@ -1353,6 +1344,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
                 widget.blockSignals(False)
         self.grid_blend_value_label.setText(self._blend_label(settings.get_grid_blend()))
         self.grid_thickness_value_label.setText(f"{settings.get_grid_thickness()} px")
+        for group_id, label in self._overlay_opacity_labels.items():
+            label.setText(f"{settings.get_overlay_opacity(group_id)}%")
         for color_id, swatch in self._overlay_swatches.items():
             self._set_swatch_color(swatch, settings.get_overlay_color(color_id))
         for status_id, swatch in self._trigger_status_swatches.items():

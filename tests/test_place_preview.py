@@ -692,6 +692,7 @@ def test_a_cycled_tree_places_the_ghosts_variant_as_an_integer(rotating_install)
 
         entry = _place_at(window, scene)
         assert entry.unit.rotation == 5.0 and entry.unit.rotation == int(entry.unit.rotation)
+        assert entry.unit.initial_animation_frame == 5  # a type 10 frame moves with its variant
         assert ghost == _placed_draws(window, entry)
     finally:
         _close(window)

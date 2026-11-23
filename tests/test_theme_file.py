@@ -21,6 +21,7 @@ def _non_default_look() -> None:
     settings.set_ui_font_family("DejaVu Sans")
     settings.set_ui_font_size(14)
     settings.set_overlay_color("ruler_line", "#ff00ff")
+    settings.set_overlay_opacity("region", 40)
     settings.set_ruler_label_font_px(24)
     settings.set_distance_tick_font_px(10)
     settings.set_stack_badge_position("top_left")
@@ -98,6 +99,7 @@ def test_the_document_is_look_only() -> None:
         "theme",
         "ui_font",
         "overlay_colors",
+        "overlay_opacity",
         "ruler_label_font_px",
         "distance_tick_font_px",
         "stack_badge_position",
@@ -149,6 +151,23 @@ def test_a_partial_file_touches_only_its_keys(tmp_path, monkeypatch) -> None:
     assert changed == {"grid_blend", "overlay_colors"}
 
 
+def test_a_partial_opacity_mapping_touches_only_its_group(tmp_path) -> None:
+    """One group leaves the other two (a file with no overlay_opacity key: the test above)."""
+    _non_default_look()
+    before = theme_file.build_document()
+    config_before = yaml.safe_load(settings.CONFIG_PATH.read_text())
+    plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", _doc(overlay_opacity={"trigger_area": 30})))
+    assert plan.problems == []
+    settings.apply_appearance_values(plan.values)
+    after = theme_file.build_document()
+    assert after["overlay_opacity"] == {**before["overlay_opacity"], "trigger_area": 30}
+    assert after["overlay_opacity"]["region"] == 40
+    for key in set(before) - {"overlay_opacity"}:
+        assert after[key] == before[key], key
+    config_after = yaml.safe_load(settings.CONFIG_PATH.read_text())
+    assert {k for k in config_after if config_after[k] != config_before.get(k)} == {"overlay_opacity"}
+
+
 def test_importing_a_theme_pops_legacy_dark_mode(tmp_path) -> None:
     settings.CONFIG_PATH.write_text("dark_mode: true\n")
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", _doc(theme={"preset": "dim", "colors": {}})))
@@ -191,6 +210,13 @@ def test_importing_a_theme_pops_legacy_dark_mode(tmp_path) -> None:
             "trigger_status_color_sections: expected true or false",
             "trigger_status_color_sections",
         ),
+        ({"overlay_opacity": [40]}, "overlay_opacity: expected a mapping of id to percent", "overlay_opacity"),
+        ({"overlay_opacity": {"terrain": 40}}, "overlay_opacity: unknown id 'terrain'", "overlay_opacity"),
+        ({"overlay_opacity": {"region": "40"}}, "overlay_opacity.region: expected a whole number", "overlay_opacity"),
+        ({"overlay_opacity": {"region": True}}, "overlay_opacity.region: expected a whole number", "overlay_opacity"),
+        ({"overlay_opacity": {"region": 40.0}}, "overlay_opacity.region: expected a whole number", "overlay_opacity"),
+        ({"overlay_opacity": {"region": 5}}, "overlay_opacity.region: 5 is outside 10-100", "overlay_opacity"),
+        ({"overlay_opacity": {"region": 101}}, "overlay_opacity.region: 101 is outside 10-100", "overlay_opacity"),
     ],
 )
 def test_each_bad_key_is_reported_and_not_applied(tmp_path, keys, fragment, not_applied) -> None:
@@ -206,9 +232,17 @@ def test_a_bad_role_colour_skips_only_that_role(tmp_path) -> None:
     assert len(plan.problems) == 2
 
 
+def test_a_bad_opacity_group_skips_only_that_group(tmp_path) -> None:
+    plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", _doc(overlay_opacity={"region": 40, "unit_select": 101})))
+    assert plan.values["overlay_opacity"] == {"region": 40}
+    assert len(plan.problems) == 1
+
+
 def test_out_of_range_values_are_never_clamped_into_settings(tmp_path) -> None:
     before = theme_file.build_document()
-    plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", _doc(ruler_label_font_px=999, grid_blend=-999)))
+    plan = theme_file.parse_theme_file(
+        _write(tmp_path / "t.yaml", _doc(ruler_label_font_px=999, grid_blend=-999, overlay_opacity={"region": 5}))
+    )
     settings.apply_appearance_values(plan.values)
     assert theme_file.build_document() == before
 
@@ -290,6 +324,7 @@ def test_problem_messages_cap_every_echoed_value(tmp_path) -> None:
         stack_badge_position=big,
         theme={"preset": "x" * 5000, "colors": {}},
         overlay_colors={"x" * 5000: "#000000", "ruler_line": "y" * 5000},
+        overlay_opacity={"x" * 5000: 10, "region": 10**4000},
         ui_font={"size": 10**4000, "family": "f" * 5000},
         grid_blend=10**4000,
         grid_thickness=10**4000,
@@ -297,7 +332,7 @@ def test_problem_messages_cap_every_echoed_value(tmp_path) -> None:
     )
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", doc), installed_families=[])
     messages = plan.problems + plan.notes
-    assert len(messages) == 9, messages
+    assert len(messages) == 11, messages
     assert all(len(m) < 300 for m in messages), [len(m) for m in messages]
 
 
@@ -395,11 +430,19 @@ def test_the_whole_number_check_is_the_shared_one() -> None:
 
 
 def test_summary_lists_changes_problems_and_notes(tmp_path) -> None:
-    doc = _doc(theme={"preset": "dark", "colors": {}}, grid_thickness=2, bogus=1, ui_font={"family": "Nowhere Sans"})
+    doc = _doc(
+        theme={"preset": "dark", "colors": {}},
+        grid_thickness=2,
+        bogus=1,
+        ui_font={"family": "Nowhere Sans"},
+        overlay_opacity={"region": 40, "unit_select": settings.get_overlay_opacity("unit_select")},
+    )
     plan = theme_file.parse_theme_file(_write(tmp_path / "t.yaml", doc), installed_families=[])
     summary = theme_file.format_import_summary(plan)
     assert "Theme: Wood (red) -> Dark" in summary
     assert "Grid thickness: 1 px -> 2 px" in summary
+    assert "  Overlay opacity Select tool: 100% -> 40%" in summary.splitlines()
+    assert "Overlay opacity Units" not in summary  # unchanged, so not listed
     assert "unknown key 'bogus'" in summary
     assert "Nowhere Sans" in summary.split("Notes:")[1]
 
@@ -485,6 +528,7 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
         trigger_status_colors={"ok": "#0000aa"},
         trigger_status_color_ok_rows=not settings.get_trigger_status_color_ok_rows(),
         trigger_status_color_sections=not settings.get_trigger_status_color_sections(),
+        overlay_opacity={"trigger_area": 30},
     )
     ok_rows, sections = doc["trigger_status_color_ok_rows"], doc["trigger_status_color_sections"]
     panel = qt_dialog._window.trigger_panel
@@ -518,6 +562,11 @@ def test_import_applies_live_and_refreshes_every_widget(tmp_path, monkeypatch, q
     assert qt_dialog._trigger_status_swatches["ok"].toolTip() == "#0000aa"
     assert not panel.tree.isColumnHidden(panel._COL_STATUS), "the Triggers panel restyled live"
     assert qt_dialog.grid_thickness_value_label.text() == "4 px"
+    assert settings.get_overlay_opacity("trigger_area") == 30
+    assert qt_dialog._overlay_opacity_sliders["trigger_area"].value() == 30
+    assert qt_dialog._overlay_opacity_labels["trigger_area"].text() == "30%"
+    # An unblocked slider refresh would leave the debounce running; nothing else shows it.
+    assert not qt_dialog._overlay_opacity_timer.isActive()
     view = qt_dialog._window.map_view
     assert view._stack_badge_position == "above"
     assert (view._grid_blend, view._grid_thickness) == (40, 4)

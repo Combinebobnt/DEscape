@@ -8,7 +8,7 @@ recorded beside the spec itself, so this module stands on its own.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from descape import colour_mood, map_strings
 from descape.scenario_io import LoadedScenario, retriever_length
@@ -60,6 +60,10 @@ class OptionFieldSpec:
     panel: str = "map_options"
 
 
+# Victory condition's choice that defers to the Map group's Secondary game mode row (GH #240).
+_SECONDARY_VICTORY = 6
+_SECONDARY_VICTORY_TIP = " Secondary game mode: the mode chosen under Map."
+
 _SPECS: tuple[OptionFieldSpec, ...] = (
     # -- Global Victory -------------------------------------------------------
     # Choices are hardcoded literals, matching the secondary_game_modes
@@ -74,11 +78,11 @@ _SPECS: tuple[OptionFieldSpec, ...] = (
             "How the scenario is won. Standard: conquest, relics or a wonder. "
             "Conquest: defeat all enemies. Score: reach the score below. Time "
             "limit: highest score when time runs out. Custom: the custom "
-            "conditions below. Secondary game mode: the mode chosen under Map."
+            "conditions below." + _SECONDARY_VICTORY_TIP
         ),
         choices=(
             (0, "Standard"), (1, "Conquest"), (2, "Score"),
-            (3, "Time limit"), (4, "Custom"), (6, "Secondary game mode"),
+            (3, "Time limit"), (4, "Custom"), (_SECONDARY_VICTORY, "Secondary game mode"),
         ),
     ),
     OptionFieldSpec(
@@ -323,7 +327,28 @@ def specs_for(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
     case: list data, or a TEXT spec's non-str, must still reach
     current_value()'s raise. A STRING_COMBO spec whose data is not a str is
     left out too: the combo has nothing truthful to show for it.
+
+    Without a Secondary game mode row (a pre-1.42 or 1.49 file), Victory
+    condition offers no "Secondary game mode" choice either, unless the file
+    already stores it.
     """
+    out = _present_specs(loaded)
+    if any(spec.field_id == "secondary_game_modes" for spec in out):
+        return out
+    return tuple(_without_secondary_victory(loaded, spec) for spec in out)
+
+
+def _without_secondary_victory(loaded: LoadedScenario, spec: OptionFieldSpec) -> OptionFieldSpec:
+    if spec.field_id != "victory_condition" or int(current_value(loaded, spec)) == _SECONDARY_VICTORY:
+        return spec
+    return replace(
+        spec,
+        choices=tuple(choice for choice in spec.choices if choice[0] != _SECONDARY_VICTORY),
+        tooltip=spec.tooltip.removesuffix(_SECONDARY_VICTORY_TIP),
+    )
+
+
+def _present_specs(loaded: LoadedScenario) -> tuple[OptionFieldSpec, ...]:
     out = []
     for spec in _SPECS:
         section = loaded._scenario.sections.get(spec.section)

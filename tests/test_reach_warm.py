@@ -630,12 +630,13 @@ def test_the_pending_levels_load_entry_is_capped_from_when_it_became_pending(mon
             window._load_warm_queue = [(0, [(0, 0), (1, 0)])]
             window._pump_load_warm()
             assert window._load_warmer.mip == 0, "vacuous: the pending entry did not start"
-            assert window._load_warmer._defer_until == pytest.approx(100.0 + cap), f"re-anchor at {now} moved it"
+            assert window._load_warmer._defer_deadline() == pytest.approx(100.0 + cap), f"re-anchor at {now} moved it"
         window._load_warmer.cancel()
 
         assert window._pending_defer_until(1) is None, "a non-pending entry was capped"
         window._on_viewport_changed()
-        assert window._margin_warmer._defer_until is None, "the ring was capped"
+        assert window._margin_warmer.is_active, "vacuous: the ring did not start"
+        assert window._margin_warmer._defer_deadline is None, "the ring was capped"
 
         window._pending_since = (1, 50.0)
         assert window._pending_defer_until(0) == pytest.approx(100.2 + cap)
@@ -677,6 +678,52 @@ def test_a_level_pending_again_after_leaving_gets_a_fresh_deadline(monkeypatch) 
         item._level_to_draw(3, rect, True, 1.0)
         window._placeholder_pending_timer.stop()
         assert window._pending_defer_until(3) > clock.t, "a re-entered level kept its stale deadline"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.usefixtures("native_backend")
+def test_a_level_that_stops_being_pending_drops_its_deadline(monkeypatch) -> None:
+    """TASK-031.82 r3's defect: pending at 0 with its load entry started, the
+    view zooms back to the settled level (_level_to_draw's branch 2, no
+    callback). Past the old deadline with input live, the entry still defers."""
+    from PyQt5.QtCore import QRectF
+
+    from descape import level_warm
+
+    clock = _WallClock()
+    monkeypatch.setattr(margin_warm, "_now", clock)
+    monkeypatch.setattr(level_warm, "_now", clock)
+    monkeypatch.setattr(level_warm, "_last_input", None)
+    window = _settled(reach=False)
+    try:
+        item = window.map_view._canvas_item
+        monkeypatch.setattr(item, "_placeholders", True)
+        monkeypatch.setattr(item, "_settled_mip", 1)
+        monkeypatch.setattr(item, "view_ready", lambda mip, rect, scale: False)
+        monkeypatch.setattr(item, "_placeholder_source", lambda mip, rect, scale: 1)
+        monkeypatch.setattr(window, "_maybe_refine", lambda: None)
+        monkeypatch.setattr(window._cache, "level_warmed", lambda mip: False)
+        rect = QRectF()
+        item._level_to_draw(0, rect, True, 1.0)
+        window._placeholder_pending_timer.stop()
+        assert item.pending_mip() == 0 and window._pending_since == (0, 100.0)
+        window._load_warmer.cancel()
+        window._load_warm_queue = [(0, [(0, 0), (1, 0)])]
+        window._pump_load_warm()
+        warmer = window._load_warmer
+        assert warmer.is_active and warmer.mip == 0, "vacuous: the pending entry did not start"
+        queued = list(warmer._queue)
+
+        item._level_to_draw(1, rect, True, 1.0)
+        assert item.pending_mip() is None, "vacuous: branch 2 did not end the wait"
+        clock.t += margin_warm.PENDING_DEFER_MAX_MS / 1000.0 + 0.1
+        level_warm.note_input()
+        assert warmer.tick() is True
+        assert (warmer._queue, warmer._in_flight) == (queued, []), "a cold chunk ran at a superseded level's deadline"
+        assert warmer._timer.interval() == margin_warm.MarginWarmer.HELD_INTERVAL_MS
+        warmer.cancel()
     finally:
         conftest.close_window(window)
 

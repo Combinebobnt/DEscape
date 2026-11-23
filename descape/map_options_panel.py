@@ -87,6 +87,9 @@ class FitHost(QWidget):
                     child.show()
         host_layout.activate()
         width = self._area.viewport().width()
+        if width > 0:
+            # Below the host's minimum the horizontal scrollbar is on and the host keeps its minimum width.
+            width = max(width, self.minimumSizeHint().width())
         margins = host_layout.contentsMargins()
         # The width the boxes are about to get: a freshly built box still has
         # Qt's 100 px default width until the deferred layout pass runs.

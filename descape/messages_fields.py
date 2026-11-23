@@ -55,6 +55,11 @@ MESSAGE_FIELDS: tuple[MessageFieldSpec, ...] = (
 )
 
 
+def present_fields(retriever_map: dict) -> tuple[MessageFieldSpec, ...]:
+    """MESSAGE_FIELDS this file's structure has (Age of Kings has no scouts pair)."""
+    return tuple(s for s in MESSAGE_FIELDS if s.retriever in retriever_map and s.id_retriever in retriever_map)
+
+
 def normalize_for_display(text: str) -> tuple[str, str | None]:
     """Maps a field's stored text to what QPlainTextEdit should show, plus
     which newline token the field originally used ("\\r\\n", "\\r", "\\n", or

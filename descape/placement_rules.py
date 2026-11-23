@@ -126,19 +126,20 @@ def laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
     return {tile: frozenset(ids) for tile, ids in laid.items()}
 
 
-# scenario -> ((unit_gen, map width, map height), laid_terrain()).
+# scenario -> ((unit_gen, map width, map height, dataset generation), laid_terrain()).
 _LAID_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _memoized_laid_terrain(scenario) -> dict[tuple[int, int], frozenset[int]]:
     """laid_terrain(), built once per unit edit (scenario.unit_gen, which every
     UnitEditModel mutator bumps) rather than per click or per group-move
-    member. A scenario without unit_gen (a test fake) builds it fresh."""
+    member. A dataset switch (File > Data Mod refills FOUNDATION_TERRAIN in
+    place) rebuilds it too. A scenario without unit_gen (a test fake) builds it fresh."""
     gen = getattr(scenario, "unit_gen", None)
     if gen is None:
         return laid_terrain(scenario)
     mm = scenario.map_manager
-    key = (gen, mm.map_width, mm.map_height)
+    key = (gen, mm.map_width, mm.map_height, game_dataset.generation())
     cached = _LAID_MEMO.get(scenario)
     if cached is not None and cached[0] == key:
         return cached[1]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import json
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -238,29 +239,214 @@ def _encode_run(structure: dict, values: dict[str, int | None], n_items: int) ->
     return bytes(out + struct.pack("<H", 4) + b"tail")
 
 
-def test_two_inserts_in_a_repeated_struct_never_come_out_wrong() -> None:
-    # Two s32 inserts into a struct of mostly constant 4-byte fields. Before whole-path breaks, one
-    # 8-byte insert at the first position "fit" (the fields between read each other's bytes in every
-    # item, too few values for a stream break) and was reported INFERRED: 72 of 300 seeds.
-    wrong = []
-    for seed in range(40):
-        rng = random.Random(seed)
-        n = rng.randint(4, 8)
-        base = _run_struct(n)
-        values = {f"f{i}": rng.choice([0, -1, 1, 2, None]) for i in range(n)}
-        truth = base
-        for name in ("x", "y")[: rng.choice([1, 2])]:
-            index = rng.randint(0, len(truth["S"]["structs"]["Item"]["retrievers"]) - 1)
-            truth = si.apply_edit(truth, si.Edit(ITEM, index, 0, [(name, {"type": "s32"})], "insert s32"))
-            values[name] = rng.choice([0, -1, 1, 2, None])
-        data = _encode_run(truth, values, si.WHOLE_MIN + 4)
-        out = search(base, data, reference_for(truth, data))
+def _fuzz_case(seed: int) -> tuple[dict, dict, bytes]:
+    """Two s32 inserts (or one) into a struct of mostly constant 4-byte fields: (base, truth, data)."""
+    rng = random.Random(seed)
+    n = rng.randint(4, 8)
+    base = _run_struct(n)
+    values = {f"f{i}": rng.choice([0, -1, 1, 2, None]) for i in range(n)}
+    truth = base
+    for name in ("x", "y")[: rng.choice([1, 2])]:
+        index = rng.randint(0, len(truth["S"]["structs"]["Item"]["retrievers"]) - 1)
+        truth = si.apply_edit(truth, si.Edit(ITEM, index, 0, [(name, {"type": "s32"})], "insert s32"))
+        values[name] = rng.choice([0, -1, 1, 2, None])
+    return base, truth, _encode_run(truth, values, si.WHOLE_MIN + 4)
+
+
+def _fuzz(seeds: range, blind: bool = False) -> tuple[list, int]:
+    """(wrong results, refused count). With a reference, wrong is any truth value read differently;
+    blind, it is `_never_wrong`'s (an unambiguous wrong layout)."""
+    wrong, refused = [], 0
+    for seed in seeds:
+        base, truth, data = _fuzz_case(seed)
+        out = search(base, data, None if blind else reference_for(truth, data))
         if out.refused is not None:
+            refused += 1
+            continue
+        edits = [e.describe() for e, _, _ in out.edits]
+        if blind:
+            if not any(c.ambiguous for _, c, _ in out.edits) and not same_layout(out.structure, truth):
+                wrong.append((seed, edits))
             continue
         got, want = sw.walk(out.structure, data, 0), sw.walk(truth, data, 0)
         if any(p in got.columns and c.value_list() != got.columns[p].value_list() for p, c in want.columns.items()):
-            wrong.append((seed, [e.describe() for e, _, _ in out.edits]))
+            wrong.append((seed, edits))
+    return wrong, refused
+
+
+# Refused counts measured 2026-11-21: a rise means retries stopped recovering what they did.
+FUZZ_REFUSED = {(40, False): 8, (40, True): 0, (300, False): 48, (300, True): 0}  # greedy: 15, 0, 94, 0
+TRIGGER_RECOVERED = 19  # of _trigger_case's 30 seeds, by a retry (greedy refuses all 30)
+
+
+def test_two_inserts_in_a_repeated_struct_never_come_out_wrong() -> None:
+    # Before whole-path breaks, one 8-byte insert at the first position "fit" (the fields between
+    # read each other's bytes in every item, too few values for a stream break) and was reported
+    # INFERRED: 72 of 300 seeds.
+    wrong, refused = _fuzz(range(40))
     assert not wrong, wrong
+    assert refused <= FUZZ_REFUSED[(40, False)]
+
+
+def test_two_inserts_blind_never_come_out_wrong() -> None:
+    wrong, refused = _fuzz(range(40), blind=True)
+    assert not wrong, wrong
+    assert refused <= FUZZ_REFUSED[(40, True)]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("blind", [False, True], ids=["reference", "blind"])
+def test_two_inserts_fuzz_300_seeds_never_wrong(blind: bool) -> None:
+    wrong, refused = _fuzz(range(300), blind=blind)
+    assert not wrong, wrong
+    assert refused <= FUZZ_REFUSED[(300, blind)]
+
+
+def _record(out: si.SegmentOutcome) -> list:
+    return [(e.describe(), e.new_names(), c.note, [r.describe() for r in c.rivals], c.ambiguous) for e, c, _ in out.edits]
+
+
+def test_retrying_changes_nothing_where_the_greedy_search_succeeds() -> None:
+    # Retries engage only after a dead end, so every greedy result is kept edit for edit. (Blind, this
+    # fuzz never dead-ends, so only the referenced runs can tell.)
+    compared = 0
+    for seed in range(40):
+        base, truth, data = _fuzz_case(seed)
+        ref = reference_for(truth, data)
+        greedy = search(base, data, ref, si.Budget(backtracks=0))
+        if greedy.refused is not None:
+            continue
+        compared += 1
+        assert _record(search(base, data, ref)) == _record(greedy), seed
+    assert compared >= 40 - 15
+
+
+Fields = tuple[tuple[str, str], ...]
+
+
+def _two_conversions(before: Fields = (("a", "s32"),), after: Fields = (("c", "s32"),)) -> tuple[dict, dict, bytes]:
+    """1.56's shape: two adjacent u32 fields p, q of a repeated struct each become u16 + str16."""
+    base = base_structure()
+    fields = (*before, ("p", "u32"), ("q", "u32"), *after, ("label", "str16"))
+    base["S"]["structs"]["Item"] = {"retrievers": {n: {"type": t} for n, t in fields}}
+    truth = base
+    for name in ("p", "q"):
+        index = list(truth["S"]["structs"]["Item"]["retrievers"]).index(name)
+        truth = si.apply_edit(truth, si.Edit(ITEM, index, 1, [(f"new_{name}", {"type": "u16"}), (name, {"type": "str16"})], "retype"))
+    return base, truth, encode(truth, {"n_items": 6})
+
+
+def test_two_conversions_in_one_repeated_struct_recover_by_retrying() -> None:
+    base, truth, data = _two_conversions()
+    ref = reference_for(truth, data)
+    greedy = search(base, data, ref, si.Budget(backtracks=0))
+    assert greedy.refused is not None and greedy.edits, "the fixture must reproduce the greedy dead end"
+    out = search(base, data, ref)
+    assert out.refused is None and same_layout(out.structure, truth)
+    choice = out.edits[0][1]
+    assert re.match(r"retry \d at round 1 after a dead end \(no single edit", choice.note), choice.note
+    assert choice.abandoned
+    # The greedy path's edit took inferred_v9_9_0; the kept path's names start there again, contiguous.
+    assert greedy.edits[0][0].new_names() == ["inferred_v9_9_0"]
+    assert [n for e, _, _ in out.edits for n in e.new_names()] == ["inferred_v9_9_0", "inferred_v9_9_1"]
+
+
+def test_a_refusal_after_retries_reports_the_first_dead_end() -> None:
+    # With a float before the conversions and nothing after, no retried layout fits either.
+    base, truth, data = _two_conversions((("a", "s32"), ("f", "f32")), ())
+    ref = reference_for(truth, data)
+    greedy = search(base, data, ref, si.Budget(backtracks=0))
+    assert greedy.refused is not None and greedy.edits
+    for n in (1, 2, si.DEFAULT_BUDGET.backtracks):
+        out = search(base, data, ref, si.Budget(backtracks=n))
+        assert out.refused is not None
+        spent = int(out.refused.removeprefix(greedy.refused + "; ").split()[0])
+        assert out.refused == f"{greedy.refused}; {si._retries(spent)} after the dead end found no fit"
+        assert 1 <= spent <= n
+        assert _record(out) == _record(greedy)
+
+
+def _trigger_case(seed: int) -> tuple[dict, dict, bytes]:
+    """Triggers holding effects and conditions with static_value counts, one s32 inserted into
+    each struct: the count fields say both grew, and neither k-insert fits alone."""
+    rng = random.Random(seed)
+    eff = {"effect_type": "s32", "static_value_x": "s32", **{f"e{i}": "s32" for i in range(rng.randint(3, 6))}, "message": "str16"}
+    cond = {"condition_type": "s32", "static_value_y": "s32", **{f"c{i}": "s32" for i in range(rng.randint(3, 6))}, "xs": "str16"}
+    trig = {
+        "t_a": {"type": "s32"},
+        "name": {"type": "str16"},
+        "n_eff": {"type": "u32"},
+        "effects": {"type": "struct:EffectStruct", "dependencies": _repeat_by("n_eff")},
+        "n_cond": {"type": "u32"},
+        "conditions": {"type": "struct:ConditionStruct", "dependencies": _repeat_by("n_cond")},
+    }
+    pairs = (("EffectStruct", eff), ("ConditionStruct", cond))
+    structs = {name: {"retrievers": {n: {"type": t} for n, t in rets.items()}} for name, rets in pairs}
+    top = {
+        "n_trig": {"type": "u32"},
+        "trigger_data": {"type": "struct:TriggerStruct", "dependencies": _repeat_by("n_trig")},
+        "tail": {"type": "str16"},
+    }
+    base = {"Triggers": {"retrievers": top, "structs": {"TriggerStruct": {"retrievers": trig, "structs": structs}}}}
+    truth = base
+    for name, sub, size in (("x", "EffectStruct", len(eff)), ("y", "ConditionStruct", len(cond))):
+        block = ("Triggers", "TriggerStruct", sub)
+        truth = si.apply_edit(truth, si.Edit(block, rng.randint(2, size - 1), 0, [(name, {"type": "s32"})], "insert s32"))
+    tick = itertools.count(1000)
+
+    def text() -> bytes:
+        s = f"s{next(tick)}".encode()
+        return struct.pack("<H", len(s)) + s
+
+    def item(rets: dict) -> bytes:
+        out = b""
+        for name, d in rets.items():
+            if name.startswith("static_value"):
+                out += struct.pack("<i", sum(1 for e in rets.values() if e["type"] == "s32") - si.COUNT_FIELD_BIAS)
+            elif d["type"] == "str16":
+                out += text()
+            else:
+                out += struct.pack("<i", rng.choice([0, -1, 1, 2, 70_000 + next(tick)]))
+        return out
+
+    t_structs = truth["Triggers"]["structs"]["TriggerStruct"]["structs"]
+    data = struct.pack("<I", 12)
+    for _ in range(12):
+        n_eff, n_cond = rng.randint(0, 3), rng.randint(0, 2)
+        data += struct.pack("<i", 70_000 + next(tick)) + text() + struct.pack("<I", n_eff)
+        data += b"".join(item(t_structs["EffectStruct"]["retrievers"]) for _ in range(n_eff))
+        data += struct.pack("<I", n_cond) + b"".join(item(t_structs["ConditionStruct"]["retrievers"]) for _ in range(n_cond))
+    return base, truth, data + text()
+
+
+def _layouts(structure: dict) -> list:
+    out = []
+
+    def visit(node: dict, path: tuple) -> None:
+        out.append((path, si.layout_signature(node["retrievers"])))
+        for name, child in node.get("structs", {}).items():
+            visit(child, (*path, name))
+
+    for name, node in structure.items():
+        visit(node, (name,))
+    return out
+
+
+def _blind_triggers(data: bytes, base: dict, budget: si.Budget = si.DEFAULT_BUDGET) -> si.SegmentOutcome:
+    inp = si.SegmentInput("synthetic", data, 0, si._end_anchor(len(data)), si.FilterContext(), None)
+    return si.SegmentSearch("T", ["Triggers"], [inp], si.Names("9.9"), budget, [0]).run(base)
+
+
+def test_a_retry_takes_the_count_backed_insert_before_further_reaching_raw_inserts() -> None:
+    # 1.42's shape, blind: a raw insert into the parent gets furthest, then dead-ends.
+    base, truth, data = _trigger_case(6)
+    greedy = _blind_triggers(data, base, si.Budget(backtracks=0))
+    assert greedy.refused is not None and greedy.edits[0][0].kind.startswith("insert raw"), _record(greedy)
+    out = _blind_triggers(data, base)
+    assert out.refused is None and _layouts(out.structure) == _layouts(truth), _record(out)
+    first, choice, _ = out.edits[0]
+    assert choice.note.startswith("retry 1 at round 1 "), choice.note
+    assert first.kind == "insert 1 x s32" and first.block[-1] == "EffectStruct"
 
 
 def test_a_whole_path_break_needs_nearly_every_value_of_a_path_with_enough_instances() -> None:
@@ -400,3 +586,32 @@ def test_the_worker_address_cap_lowers_an_unlimited_limit_and_never_raises_one()
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=conftest.ROOT, capture_output=True, text=True, check=True)
     assert out.stdout.split() == [str(1 << 34)] * 2
+
+
+@pytest.mark.slow
+def test_blind_retries_on_trigger_structs_never_come_out_wrong() -> None:
+    # The run-struct fuzz never dead-ends blind, so this is the evidence-ranked retries' fuzz: greedy
+    # refuses nearly every seed here, and a retried path must fit or refuse, never fit wrongly.
+    wrong, recovered = [], 0
+    for seed in range(30):
+        base, truth, data = _trigger_case(seed)
+        out = _blind_triggers(data, base)
+        if out.refused is None:
+            recovered += any(c.abandoned for _, c, _ in out.edits)
+            if not any(c.ambiguous for _, c, _ in out.edits) and _layouts(out.structure) != _layouts(truth):
+                wrong.append((seed, _record(out)))
+    assert not wrong, wrong
+    assert recovered >= TRIGGER_RECOVERED
+
+
+def test_the_report_lists_the_path_a_retried_edit_abandoned() -> None:
+    kept, given_up = EDITS[0], EDITS[1]
+    record = si.EditRecord("S", kept, "evidence", "retry 1 at round 1 after a dead end (x); y", [], False, [given_up])
+    lines = si.render_report(si.InferResult(si.STATUS_INFERRED, "9.9", "9.8", {}, [record]))
+    assert f"  - abandoned after a dead end: {given_up.describe()}" in lines
+    # The note names an input file; the emitted structure, which may ship, must not.
+    record.note = "retry 1 at round 1 after a dead end (private.aoe2scenario @ 40: ...); the only candidate of its layout"
+    result = si.InferResult(si.STATUS_INFERRED, "9.9", "9.8", None, [record])
+    emitted = si.emit(si.apply_edit(base_structure(), kept), result, [], "9.9", "9.8")
+    comment = emitted["S"]["structs"]["Item"]["retrievers"]["new"]["comment"]
+    assert comment == "Inferred for 9.9 from 9.8 (insert s8; retried after a dead end, see INFERRED.md)"
