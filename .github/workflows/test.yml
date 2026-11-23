@@ -1,10 +1,12 @@
 name: test
 on:
   pull_request:
+  # Run by hand on any branch: the test legs only, no bundles, unlike build.yml.
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: test-${{ github.event.pull_request.number }}
+  group: test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   # The same three runners and test steps as build-leg.yml, minus the bundle.
