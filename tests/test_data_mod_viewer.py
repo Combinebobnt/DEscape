@@ -478,21 +478,30 @@ def test_closing_the_window_stops_a_parse(window, mods):
     assert process.state() == QProcess.NotRunning
 
 
-def test_opening_another_document_mid_parse_drops_the_parse(window, mods, tmp_path, monkeypatch):
+def test_opening_another_document_mid_parse_drops_the_parse(window, mods, tmp_path):
     """The pick was A's: B (no memory) opens with the install's data, and the parse never lands on it."""
+    from PyQt5.QtCore import QProcess
+
     a, b = _scenario(tmp_path, "a.aoe2scenario"), _scenario(tmp_path, "b.aoe2scenario")
     window.load_scenario(a)
-    marker = tmp_path / "derived"
-    mods.child = f"import time; time.sleep(0.5); open({str(marker)!r}, 'w').close()"
-    real_lookup = data_mods.tables_for
-    monkeypatch.setattr(data_mods, "tables_for", lambda mod, key: real_lookup(mod, key) if marker.exists() else None)
-    mods.cached(mods.alpha)
+    # Keep the child running regardless of how long it takes to open B.
+    mods.child = "import sys; sys.stdin.read(1)"
     _menu(window)["Alpha"].trigger()
-    window.load_scenario(b)
-    assert window.data_mod_menu._job is None and window.load_progress.job("data_mod") is None
-    deadline = time.monotonic() + 1.5  # three times the child's run
-    _pump_until(lambda: time.monotonic() > deadline)
-    assert game_dataset.data_mod() is None and not marker.exists(), "the killed parse never finished or swapped"
+    process = window.data_mod_menu._job.process
+    exits = []
+    process.finished.connect(lambda _code, status: exits.append(status))
+    try:
+        assert process.waitForStarted(15000), "the fake parser must start"
+        window.load_scenario(b)
+        assert window.data_mod_menu._job is None and window.load_progress.job("data_mod") is None
+        _pump_until(lambda: bool(exits))
+    finally:
+        if not exits:
+            # Let the child exit cleanly even if cancellation itself regresses.
+            process.closeWriteChannel()
+            process.waitForFinished(5000)
+    assert exits == [QProcess.CrashExit], "opening B killed the parser"
+    assert game_dataset.data_mod() is None, "B keeps the install's data"
     assert settings.get_data_mod_for(a) == data_mods.identity(mods.alpha), "A keeps its pick"
 
 
