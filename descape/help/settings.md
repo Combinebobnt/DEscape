@@ -53,7 +53,7 @@ The icons sit in their own column between ID and Trigger, so the names line up, 
 - **Colour tags** draws quoted text after a colour tag such as `<AQUA>` in that colour, or shows the tags as written.
 - **Placed object ids** adds a placed object's own id, as in `P1 Archer #500`.
 - **HP on heal and damage** reads `5 HP to P1 Archer` rather than `5 to P1 Archer` on Heal Object and Damage Object.
-- **List selected** sets how many ids several selected objects list, as in `5 selected P1 objects (#500, #501, …)`; Count only shows just the count.
+- **List selected** sets how many ids several selected objects list, as in `5 selected objects (#500, #501, …)`; Count only shows just the count. They take their owner's colour when they all have one.
 - **Objects and area** sets what an effect with both selected objects and an area shows: the selected objects (the default), the area, or both with either first.
 - **Links in the Detail column** turns the coordinate, object and trigger name links on or off.
 

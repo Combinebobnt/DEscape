@@ -169,6 +169,7 @@ class _ViewerTriggerOverlayMixin:
         self._refresh_trigger_overlay()
         # The window hears entry selection only through here (GH #137's Cut/Copy gating).
         self._update_clipboard_actions()
+        self._objectives_follow_trigger()
 
     # -- trigger unit references ---------------------------------------------
 
@@ -382,9 +383,11 @@ class _ViewerTriggerOverlayMixin:
             self._match_cycle = None
             self._log_status(f"No {found.label} on the map")
             return
+        # The next by reference id after the last one shown, so an add or delete between clicks skips none.
         last = self._match_cycle
-        step = (last[1] + 1) % len(refs) if last is not None and last[0] == found else 0
-        self._match_cycle = (found, step)
+        after = last[1] if last is not None and last[0] == found else None
+        step = next((i for i, ref in enumerate(refs) if after is not None and ref.reference_id > after), 0)
+        self._match_cycle = (found, refs[step].reference_id)
         x, y = self._centre_on_tile(refs[step].own_tile)
         self._log_status(f"{found.label} {step + 1} of {len(refs)} ({x}, {y})")
 

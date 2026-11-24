@@ -40,7 +40,7 @@ def _drain(gen):
 
 
 # Pixels per tile side. >1 so real per-tile texture crops (see
-# asset_source.get_terrain_texture_array) show actual detail instead of
+# asset_source.terrain_texture_at) show actual detail instead of
 # collapsing to a single flat-colored pixel. A level's texture is
 # asset_source.terrain_texture_size(tile_px), a whole number of tiles, so any
 # value divides it -- see _crop_offset's assertion.

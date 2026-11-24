@@ -159,6 +159,23 @@ def test_without_an_install_the_icon_modes_are_off_until_refresh(tmp_path) -> No
         asset_source.set_install_path_override(None)
 
 
+def test_the_view_dropdown_says_why_only_names_is_offered_without_an_install(tmp_path) -> None:
+    """The Icons/Names/Grid buttons' no-install tooltip, kept on the closed dropdown and its items (GH #195)."""
+    from PyQt5.QtCore import Qt
+
+    view = _view()
+    combo = view.display_combo
+    assert "game install" in combo.toolTip() and combo.toolTip().startswith("Icons and Grid")
+    assert "game install" in combo.itemData(combo.findData("grid"), Qt.ToolTipRole)
+    asset_source.set_install_path_override(conftest._fake_install(tmp_path))
+    try:
+        view.refresh_thumbnails()
+        assert combo.toolTip() == "Icon and name rows"
+        assert combo.itemData(combo.findData("grid"), Qt.ToolTipRole) == "Icons only, name and Unit ID on hover"
+    finally:
+        asset_source.set_install_path_override(None)
+
+
 def test_the_modes_switch_the_view_and_persist(fake_install, monkeypatch) -> None:
     from PyQt5.QtWidgets import QListView
 

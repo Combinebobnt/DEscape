@@ -1552,9 +1552,10 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._window._apply_left_pane_floor()  # Units, Terrain and Triggers floors are font-measured
         # Again once the posted relayout has run: until then a panel's minimumSizeHint is the old font's.
         QTimer.singleShot(0, self._window._apply_left_pane_floor)
-        shown_family = family or "platform default"
-        shown_size = f"{size} pt" if size is not None else "default size"
-        self._window._log_status(f"UI font: {shown_family}, {shown_size}")
+        if not self._quiet_appliers:
+            shown_family = family or "platform default"
+            shown_size = f"{size} pt" if size is not None else "default size"
+            self._window._log_status(f"UI font: {shown_family}, {shown_size}")
 
     def _on_preload_zoom_levels_toggled(self, enabled: bool) -> None:
         """Persists only -- turning it OFF also cancels every warm already in

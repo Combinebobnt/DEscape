@@ -405,6 +405,73 @@ def test_both_place_notes_keep_the_grid_sentence() -> None:
     assert "same seed gives the same layout" in scatter_dialog._PLACE_RANDOM_NOTE
 
 
+def _placement(dialog):
+    from PyQt5.QtWidgets import QGroupBox
+
+    return next(group for group in dialog.findChildren(QGroupBox) if group.title() == "Placement")
+
+
+def _screen(monkeypatch, height: int) -> None:
+    """Offscreen's own screen is 800x600, too short for the dialog; this one is `height` tall."""
+    from PyQt5.QtCore import QRect
+
+    monkeypatch.setattr(scatter_dialog, "_screen_area", lambda _widget: QRect(0, 0, 1920, height), raising=False)
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_the_dialog_opens_at_its_size_hint_and_grows_with_the_longer_note(monkeypatch) -> None:
+    """TASK-672: with room on the screen the Placement rows are never squeezed, at open
+    or after Random facing/variant swaps in the longer note."""
+    from PyQt5.QtWidgets import QApplication
+
+    _screen(monkeypatch, 1200)
+    dialog = _dialog(_scenario())
+    placement = _placement(dialog)
+    try:
+        dialog.show()
+        QApplication.processEvents()
+        assert dialog.height() >= dialog.sizeHint().height()
+        assert placement.height() >= placement.sizeHint().height()
+        opened = dialog.height()
+        dialog.random_rotation_check.setChecked(True)
+        QApplication.processEvents()
+        assert dialog.note_label.text() == scatter_dialog._PLACE_RANDOM_NOTE
+        assert dialog.height() > opened
+        assert placement.height() >= placement.sizeHint().height()
+        label = dialog.note_label
+        assert label.height() >= label.heightForWidth(label.width())
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+@pytest.mark.gui
+@pytestmark_gui
+def test_a_screen_too_short_for_the_dialog_scrolls_rather_than_squeezing(monkeypatch) -> None:
+    """TASK-672: the dialog stays inside the screen and the groups keep their height."""
+    from PyQt5.QtWidgets import QApplication
+
+    _screen(monkeypatch, 600)
+    dialog = _dialog(_scenario())
+    placement = _placement(dialog)
+    try:
+        dialog.show()
+        QApplication.processEvents()
+        assert dialog.frameGeometry().height() <= 600
+        assert placement.height() >= placement.sizeHint().height()
+        # Wide and as tall as the screen allows, so the tick resizes nothing: the scroll alone re-lays its page.
+        dialog.resize(dialog.width() + 100, 600 - (dialog.frameGeometry().height() - dialog.height()))
+        QApplication.processEvents()
+        dialog.random_rotation_check.setChecked(True)
+        QApplication.processEvents()
+        assert dialog.frameGeometry().height() <= 600
+        assert placement.height() >= placement.sizeHint().height()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 # -- GH #105: move the selected units -----------------------------------------
 
 

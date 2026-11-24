@@ -305,9 +305,8 @@ class _TriggerPanelFormMixin:
                 self._add_type_pick_button(widget, spec, refs)
             if area_grid and spec.name in trigger_geometry.AREA_FIELDS:
                 # GH #277: the game's boxes. The tooltip keeps the field's name, X1 alone doesn't say area.
-                label = QLabel(spec.name.rpartition("_")[2].upper())
+                label = trigger_form_layout.short_caption(spec.name, QLabel(spec.label))
                 label.setBuddy(widget)
-                label.setToolTip(spec.label)
                 widget.setToolTip(spec.label)
                 area_cells.append((label, widget))
                 if spec.name == trigger_geometry.AREA_FIELDS[-1]:
@@ -329,6 +328,10 @@ class _TriggerPanelFormMixin:
                 if label is not None:
                     label.setToolTip(spec.tooltip)
             self._rows.append((spec, kind, entry_index, widget))
+            if kind == "trigger" and spec.name == "short_description" and hasattr(widget, "toPlainText"):
+                widget.textChanged.connect(
+                    lambda w=widget: self.on_short_typing(self.selected_trigger_indices(), w.toPlainText())
+                )
             if kind == "effect" and spec.name in self._FACET_UNITS and self._facet_preview is None:
                 # GH #167: its own row directly under the facet field.
                 self._facet_preview = FacetPreview()
@@ -535,6 +538,9 @@ class _TriggerPanelFormMixin:
     def _reflow_compact(self) -> None:
         """A height change re-splits Compact's columns, moving the same widgets, when the split changes."""
         if self._detail_layout != "compact" or not self._form_blocks:
+            return
+        if any(box.grip_dragging() for box in self.grid_host.findChildren(_MultiLineEdit)):
+            # A re-split mid-drag would move the box out from under the cursor.
             return
         columns = self._compact_columns(self._form_blocks)
         if columns == self._compact_flow:
@@ -752,6 +758,8 @@ class _TriggerPanelFormMixin:
             widget.set_visible_lines(stored)
         # A re-fit per step, or the taller box draws over the rows below it.
         widget.linesChanged.connect(lambda _lines: self._fit_property_height())
+        # Compact holds its split while the grip is down (_reflow_compact()), and re-splits on release.
+        widget.linesCommitted.connect(lambda _lines: self._fit_property_height())
         widget.linesCommitted.connect(lambda lines, k=key: self.on_text_box_lines(k, lines))
         widget.linesReset.connect(lambda k=key: self.on_text_box_lines(k, None))
 

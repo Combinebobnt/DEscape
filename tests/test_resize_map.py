@@ -290,3 +290,29 @@ def test_the_dialog_opens_on_the_last_anchor_and_plans_for_it(window) -> None:
         assert dialog.state() == {"anchor": Anchor.CENTER}
     finally:
         dialog.deleteLater()
+
+
+def test_the_anchor_title_fits_its_label_area(window) -> None:
+    """TASK-661: Fusion clips a group title to its ink width + 2, which a long title outran."""
+    from PyQt5.QtGui import QFont
+    from PyQt5.QtWidgets import QStyle, QStyleOptionGroupBox
+
+    from descape.resize_dialog import ResizeDialog
+
+    dialog = ResizeDialog(window, 120, 120, window._resize_plan_for)
+    try:
+        box = dialog.anchor_box
+        assert box.toolTip(), "the explanation the title dropped lives in the tooltip"
+        failures = []
+        for points in range(7, 17):
+            font = QFont(box.font())
+            font.setPointSize(points)
+            box.setFont(font)
+            option = QStyleOptionGroupBox()
+            box.initStyleOption(option)
+            label = box.style().subControlRect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, box)
+            if label.width() < box.fontMetrics().horizontalAdvance(box.title()):
+                failures.append((points, label.width(), box.fontMetrics().horizontalAdvance(box.title())))
+        assert not failures, f"title wider than its label area at (pt, area, advance): {failures}"
+    finally:
+        dialog.deleteLater()

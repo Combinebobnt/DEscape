@@ -1,8 +1,8 @@
 """Settings > Appearance's condition and effect details: how the Triggers
 panel's Detail column reads (GH #388).
 
-One stored dict, settings.get_trigger_details(). Each edit saves at once and
-re-renders the open panel (TriggerPanel.refresh_trigger_details()), like the
+One stored dict, settings.get_trigger_details(). Each edit (a typed number
+on Enter or focus-out) saves at once and re-renders the open panel (TriggerPanel.refresh_trigger_details()), like the
 other tabs' live controls. The Preview tree renders three sample rows through
 the same summariser and delegate as the panel.
 
@@ -60,30 +60,37 @@ _LINKS = (
     ("link_objects", "Objects", "A click centres the map on the object, or steps through the objects that match"),
     ("link_triggers", "Trigger names", "A click selects that trigger"),
 )
+# The Preview's object and tech ids: every registered game's editor lists them (Wonder, Archer or
+# Bowman, Loom or Astrology), so the rows read real names under Return of Rome too.
+SAMPLE_BUILDING, SAMPLE_UNIT, SAMPLE_TECH = 276, 4, 22
 # The Preview's rows: (kind, type name, field values over the type's defaults).
 _SAMPLES = (
     (
         "condition",
         "objects_in_area",
-        {"quantity": 1, "object_list": 82, "source_player": 7, "area_x1": 21, "area_y1": 215, "area_x2": 24, "area_y2": 218},
+        {"quantity": 1, "object_list": SAMPLE_BUILDING, "source_player": 7, "area_x1": 21, "area_y1": 215, "area_x2": 24, "area_y2": 218},
     ),
     ("effect", "set_player_visibility", {"source_player": 2, "target_player": 1, "visibility_state": 0}),
-    ("effect", "research_technology", {"source_player": 4, "technology": 22, "force_research_technology": 0}),
-    ("effect", "modify_attribute", {"quantity": 1, "object_list_unit_id": 82, "source_player": 7, "operation": 1, "object_attributes": 0}),
+    ("effect", "research_technology", {"source_player": 4, "technology": SAMPLE_TECH, "force_research_technology": 0}),
+    (
+        "effect",
+        "modify_attribute",
+        {"quantity": 1, "object_list_unit_id": SAMPLE_BUILDING, "source_player": 7, "operation": 1, "object_attributes": 0},
+    ),
     ("effect", "activate_trigger", {"trigger_id": 4}),
     ("effect", "display_instructions", {"source_player": 1, "message": "<AQUA>Defend the castle until the reinforcements arrive"}),
     ("condition", "destroy_object", {"unit_object": 500}),
     (
         "effect",
         "kill_object",
-        {"source_player": 1, "object_list_unit_id": 4, "selected_object_ids": [500, 501, 502, 503],
+        {"source_player": 1, "object_list_unit_id": SAMPLE_UNIT, "selected_object_ids": [501, 502, 503],
          "area_x1": 10, "area_y1": 20, "area_x2": 15, "area_y2": 25},
     ),
 )
 _SAMPLE_TRIGGERS = {4: "Wave 2"}
 _SAMPLE_UNITS = {
     ref: SimpleNamespace(player_id=player, unit_const=const, bounds=(0, 0, 1, 1), own_tile=(0, 0))
-    for ref, player, const in ((500, 7, 82), (501, 1, 4), (502, 1, 4), (503, 1, 4))
+    for ref, player, const in ((500, 7, SAMPLE_BUILDING), (501, 1, SAMPLE_UNIT), (502, 1, SAMPLE_UNIT), (503, 1, SAMPLE_UNIT))
 }
 _SAMPLE_NAMES = ("", "Britons", "Franks", "Goths", "Mongols", "Celts", "Huns", "Byzantines", "Persians")
 
@@ -131,6 +138,8 @@ class TriggerDetailsPage(QWidget):
         self.cap_spin.setSuffix(" characters")
         keep_cursor_before_suffix(self.cap_spin)
         self.cap_spin.setSpecialValueText("Never")
+        # A typed value saves and re-renders on Enter or focus-out, not per keystroke; the arrows still step at once.
+        self.cap_spin.setKeyboardTracking(False)
         self.cap_spin.setToolTip("Quoted text longer than this ends in an ellipsis; the row's tooltip has it whole")
         form.addRow("Shorten text to:", self.cap_spin)
         self.tags_combo = FocusWheelComboBox()
@@ -143,7 +152,8 @@ class TriggerDetailsPage(QWidget):
         self.id_limit_spin.setSuffix(" ids")
         keep_cursor_before_suffix(self.id_limit_spin)
         self.id_limit_spin.setSpecialValueText("Count only")
-        self.id_limit_spin.setToolTip("How many ids \"3 selected P1 objects\" lists before it ends in an ellipsis")
+        self.id_limit_spin.setKeyboardTracking(False)
+        self.id_limit_spin.setToolTip("How many ids \"3 selected objects\" lists before it ends in an ellipsis")
         form.addRow("List selected:", self.id_limit_spin)
         self.area_combo = FocusWheelComboBox()
         for value, text in _SELECTED_WITH_AREA:

@@ -156,7 +156,11 @@ font, DPI and one reference string's advance. Two guard tests back this up:
 whose premise is "no install" deletes it itself (the autouse
 `_no_install_from_the_environment` fixture several files carry), and a test
 that needs an install takes `fake_install` (or its own
-`set_install_path_override()`), which outranks the variable.
+`set_install_path_override()`), which outranks the variable. A texture
+stand-in (a patched `asset_source.get_terrain_texture_array`) serves only a
+terrain with no real file, so a test serving one, or counting the getter's
+calls, calls `conftest.hide_install()` first (or a file's own fixture with the
+same body); otherwise a visible install's real textures win.
 
 Pass `--scenario-dir` in its `=` form when the path is outside the repo and
 no test path follows: otherwise the bare directory becomes pytest's rootdir

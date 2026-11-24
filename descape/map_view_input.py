@@ -1414,8 +1414,9 @@ class _MapViewInputMixin:
                 self._area_drag_end = end
             self._update_area_drag_preview()
             return
-        if self._area_edit is not None or self._location_edit is not None:
-            self._set_area_hover(self._area_hit(pos))
+        # A held Pan drag keeps its hover: a zone met at the scroll limit would flip it to NoDrag.
+        if (self._area_edit is not None or self._location_edit is not None) and not event.buttons() & Qt.LeftButton:
+            self._set_area_hover(self._area_hit(pos, tile))
         # Pick from map's hover, the Units-mode unit cue in whatever mode is showing.
         if self._unit_picker_active:
             self._clear_highlight()

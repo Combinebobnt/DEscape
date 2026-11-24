@@ -77,7 +77,7 @@ def render_terrain(
     """Terrain rendered at tile_pixels_for_map()-per-tile resolution
     (adaptive on map size -- see that function). Uses a real per-tile
     texture crop when an AoE2DE install is configured
-    (asset_source.get_terrain_texture_array), falling back to
+    (asset_source.terrain_texture_at), falling back to
     terrain_palette's flat color per tile otherwise. Returns an
     (H*tile_px, W*tile_px, 3) uint8 array. blend=False keeps the
     pre-blending render (blend_effective()). farm_tiles: flat_farm_tiles()'

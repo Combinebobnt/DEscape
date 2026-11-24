@@ -369,11 +369,6 @@ class _TriggerPanelListMixin:
         summary = trigger_summary.summarize(kind, entry, definition, presentation, context, options, self._read)
         return (definition.name.replace("_", " "), summary)
 
-    def _describe(self, kind: str, entry) -> tuple[str, str]:
-        """(name, detail text) for one condition or effect row."""
-        name, summary = self._summarize(kind, entry)
-        return (name, "" if summary is None else summary.text)
-
     def _apply_detail(self, item, kind: str, entry) -> None:
         """One entry row's Item and Detail: the sentence painted by the delegate, the raw fields in its tooltip."""
         name, summary = self._summarize(kind, entry)

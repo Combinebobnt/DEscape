@@ -427,6 +427,8 @@ class ButtonGrid(QWidget):
             return f"Pick where it is {where} to preview its buttons."
         if building in command_buttons.VILLAGER_IDS:
             return "A villager's build buttons move only when trained at the builder (118), not a villager."
+        if building == command_buttons.FEMALE_BUILDER_UNIT:
+            return "A villager's build buttons move only when trained at the builder (118), not the female builder (212)."
         if not command_buttons.has_buttons(building) and not object_catalog.is_building(building):
             # A building with none still takes trained units (an Army Tent): it shows empty.
             return f"{building_name(building)} is not a building and has no command buttons in the game data."

@@ -294,7 +294,7 @@ def _cell_layout(members: list[Block]) -> QVBoxLayout:
                 beside = QHBoxLayout()
                 cell.addLayout(beside)
             if block.caption is not None:
-                beside.addWidget(_caption_beside(block.key, block.caption))
+                beside.addWidget(short_caption(block.key, block.caption))
             beside.addWidget(block.field, 1)
             continue
         if block.caption is not None:
@@ -303,7 +303,8 @@ def _cell_layout(members: list[Block]) -> QVBoxLayout:
     return cell
 
 
-def _caption_beside(key: str, caption: QLabel) -> QLabel:
+def short_caption(key: str, caption: QLabel) -> QLabel:
+    """A coordinate's caption as its field name's last part (X, Y1), the full caption in its tooltip."""
     if not caption.toolTip():
         caption.setToolTip(caption.text())
     caption.setText(key.rpartition("_")[2].upper())

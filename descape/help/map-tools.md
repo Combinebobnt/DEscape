@@ -4,7 +4,7 @@ These commands work on the whole map, or on many objects at once, from any mode.
 
 ## Resize Map
 
-**Map > Resize Map…** grows or shrinks the open map, keeping any of nine anchors in place: a corner, the middle of an edge, or the centre. Terrain, elevation, objects, and trigger areas and locations move with the map. New ground is plain grass at the height of the old edge beside it, so no cliff-like jump appears. It opens on the anchor you last chose with Resize, until you quit DEscape.
+**Map > Resize Map…** grows or shrinks the open map, keeping any of nine anchors in place: a corner, the middle of an edge, or the centre. Terrain, elevation, objects, and trigger areas and locations move with the map. New ground is plain grass at the height of the old edge beside it, so no cliff-like jump appears. It opens on the anchor you last chose with Resize, until you quit DEscape. On a very large file whose triggers have not been read yet, a progress window reads them first, and **Cancel** there leaves the map as it was without opening the dialog.
 
 Pick one of the game's map sizes under Size, or type any size in the box beside it; the open map's size is marked "current". Enter in the Size row shows what that size would do without resizing, and a size below the minimum says so and leaves Resize greyed out.
 

@@ -170,18 +170,22 @@ class _MapViewTriggersMixin:
         across = area / max(math.hypot(ax, ay), math.hypot(bx, by)) if area else 1.0
         return self.AREA_EDIT_BAND_PX / across
 
-    def _area_hit(self, pos: QPointF) -> str | None:
+    def _area_hit(self, pos: QPointF, tile: tuple[int, int] | None = None) -> str | None:
         """The live grab zone under scene-space pos, or None. The location mark
-        draws above the area, so it wins: its own half-extent, floored on screen."""
+        draws above the area, so it wins: its own half-extent, floored on screen.
+        `tile`, the integer pick a hover already made at pos, skips the
+        fractional pick when it lies more than a tile from both grab targets."""
         if not self._area_edit_live():
+            return None
+        mark = self._location_edit if self._area_move else None
+        reach = max(self.TRIGGER_LOCATION_SCALE / 2, self._area_band_tiles()) if mark is not None else 0.0
+        if tile is not None and not self._area_near(tile, mark, reach):
             return None
         point = self._pick_map_point(pos) or self.ground_map_point(pos)
         if point is None:
             return None
-        if self._area_move and self._location_edit is not None:
-            reach = max(self.TRIGGER_LOCATION_SCALE / 2, self._area_band_tiles())
-            if trigger_geometry.location_hit(self._location_edit, point, reach):
-                return trigger_geometry.ZONE_LOCATION
+        if mark is not None and trigger_geometry.location_hit(mark, point, reach):
+            return trigger_geometry.ZONE_LOCATION
         if self._area_edit is None:
             return None
         # Resize off means no border at all, Tile borders included.
@@ -189,6 +193,19 @@ class _MapViewTriggersMixin:
         tile_borders = self._area_tile_borders and self._area_resize
         zone = trigger_geometry.area_hit_zone(self._area_edit, point, band, tile_borders)
         return None if zone == trigger_geometry.ZONE_MOVE and not self._area_move else zone
+
+    def _area_near(self, tile: tuple[int, int], mark: tuple[int, int] | None, reach: float) -> bool:
+        """Whether the integer tile is within one tile of the edited area, or of
+        the mark's reach: the integer and fractional picks may differ by a tile."""
+        tx, ty = tile
+        if mark is not None:
+            span = math.ceil(reach) + 1
+            if abs(tx - mark[0]) <= span and abs(ty - mark[1]) <= span:
+                return True
+        if self._area_edit is None:
+            return False
+        x1, y1, x2, y2 = self._area_edit
+        return min(x1, x2) - 1 <= tx <= max(x1, x2) + 1 and min(y1, y2) - 1 <= ty <= max(y1, y2) + 1
 
     def _area_zone_cursor(self, zone: str) -> Qt.CursorShape:
         """The resize cursor along the zone's ON-SCREEN drag direction, so an

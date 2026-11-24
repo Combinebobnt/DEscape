@@ -45,6 +45,7 @@ VIEWER_MODULES: tuple[str, ...] = (
     "descape.viewer_file",
     "descape.viewer_find",
     "descape.viewer_info",
+    "descape.viewer_objectives",
 )
 
 VIEWER = ModuleFamily("viewer", lambda: VIEWER_MODULES)

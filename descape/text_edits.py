@@ -65,10 +65,19 @@ class _HeightGrip(QWidget):
         if self._press_y is None:
             event.ignore()
             return
+        self._end_drag()
+        event.accept()
+
+    def hideEvent(self, event) -> None:
+        # A grip hidden mid-drag never sees its release: end the drag so Compact re-splits.
+        if self._press_y is not None:
+            self._end_drag()
+        super().hideEvent(event)
+
+    def _end_drag(self) -> None:
         self._press_y = None
         if self._editor.visible_lines() != self._press_lines:
             self._editor.linesCommitted.emit(self._editor.visible_lines())
-        event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
@@ -93,8 +102,8 @@ class _MultiLineEdit(QPlainTextEdit):
     While a box has focus, ViewerWindow's Edit > Undo/Redo act on its own
     document undo stack rather than EditHistory (GH #38). Opening the Edit
     menu is a popup focus-out, which focusOutEvent() exempts, so the menu
-    reaches the box's stack before anything is committed. Opening it from the
-    keyboard (Alt) commits the box first.
+    reaches the box's stack before anything is committed. The menu bar's
+    keyboard mode (Alt, or Escape out of a menu) holds the box the same way.
 
     The grip emits linesChanged(n) per whole-line drag step, linesCommitted(n)
     once on release if the count moved, and linesReset() on a double-click
@@ -180,6 +189,10 @@ class _MultiLineEdit(QPlainTextEdit):
     def grip(self) -> QWidget:
         return self._grip
 
+    def grip_dragging(self) -> bool:
+        """Whether the grip is pressed: a drag is live until its release."""
+        return self._grip._press_y is not None
+
     def _place_grip(self) -> None:
         # Spans the viewport's width only, so a visible vertical scrollbar is never covered.
         viewport = self.viewport().geometry()
@@ -198,9 +211,9 @@ class _MultiLineEdit(QPlainTextEdit):
 
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
-        # A popup or a window switch is not the user leaving the field, so it does
-        # not commit; the menu bar's keyboard mode (MenuBarFocusReason) does.
-        if event.reason() not in (Qt.PopupFocusReason, Qt.ActiveWindowFocusReason):
+        # A popup, a window switch or the menu bar's keyboard mode is not leaving the field; the
+        # window commits a box the bar took focus from once focus lands elsewhere (TASK-648).
+        if event.reason() not in (Qt.PopupFocusReason, Qt.ActiveWindowFocusReason, Qt.MenuBarFocusReason):
             self.editingFinished.emit()
 
 

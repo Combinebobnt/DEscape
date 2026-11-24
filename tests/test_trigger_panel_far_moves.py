@@ -528,7 +528,7 @@ def test_gh211_the_entry_menu_offers_top_and_bottom_under_the_move_gate(tmp_path
         window.undo()
         assert not window.edit_history.is_dirty
 
-        # The type picker takes the lower pane, and the entry verbs with it.
+        # The open type picker gates the entry verbs.
         _select_entries(panel, ("condition", 0))
         item = panel._entry_item_for("condition", 0)
         panel._request_entry_op("new")

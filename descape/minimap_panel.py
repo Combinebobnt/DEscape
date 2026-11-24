@@ -47,9 +47,6 @@ class MinimapPanel(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(DEFAULT_WIDTH, MIN_HEIGHT)
 
-    def has_image(self) -> bool:
-        return self._image is not None
-
     def set_image(self, rgb: np.ndarray | None) -> None:
         """An (h, w, 3) uint8 array, pixel (y, x) = tile (x, y), or None for no map."""
         if rgb is None:

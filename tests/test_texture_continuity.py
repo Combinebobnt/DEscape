@@ -25,6 +25,8 @@ from descape.view_layers import LayerState
 from testkit.fakes import FakeScenario, SyntheticTile
 from testkit.render_family import set_render_global
 
+import conftest
+
 TEXTURE_SIZE = 512
 MAP_W = MAP_H = 8
 TERRAIN_ID = 1
@@ -47,6 +49,7 @@ def _coord_texture() -> np.ndarray:
 
 @pytest.fixture
 def coord_texture(monkeypatch):
+    conftest.hide_install(monkeypatch)
     texture = _coord_texture()
     monkeypatch.setattr(asset_source, "get_terrain_texture_array", lambda _tid: texture)
     monkeypatch.setattr(asset_source, "get_terrain_average_color", lambda _tid: None)

@@ -26,6 +26,10 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Objectives panel** (GH #391): lists every trigger objective, header and
+  on-screen line in game order, with drag reordering, inline flags and text,
+  and a preview of the game's objectives box in the panel or on the map.
+  (contributed by @teslatankx, #403)
 - **Older scenarios open view-only** (GH #308): Age of Kings and The
   Conquerors `.scn`/`.scx` and some HD Edition `.scx` files show their map,
   units, players and messages; triggers are not read and nothing can be
@@ -126,6 +130,47 @@ content, link the doc instead of summarizing it.
   tones and selection highlights.
 
 ### Fixed
+
+- **Typing in a text box survives the menu bar**: closing a menu with
+  Escape, or opening one with Alt, no longer applies the text still being
+  typed in a Messages or trigger text box; it applies when you leave the box
+  or save, and Edit > Undo keeps acting on the box's own typing.
+- **First read of a large file's triggers**: while it runs, the panel reads
+  "Reading triggers…" and the status bar names the mode being entered,
+  instead of "No map open." and the old mode, and Resize Map's read can now
+  be cancelled.
+- **Scatter Units in Region opens at its full size**: it grows when Random
+  facing/variant lengthens its note instead of squeezing the Placement rows,
+  and scrolls on a screen too short for it.
+- **Resize Map's Anchor title** is no longer cut off with some fonts; its
+  explanation moved to a tooltip.
+- **Trigger Details links and rows**: quick clicks on a Detail link each
+  step to the next match, stepping stays right when objects are added or
+  deleted between clicks and restarts after opening a file, a double-click on
+  a trigger link stops at that trigger, and a drag-select ending over a link
+  no longer follows it. Several selected objects read "N selected objects" in
+  their owner's colour, Extreme and Disabled rows show their -1 in the hover,
+  and a float attribute's -1 operand reads as -1.
+
+- **Compact Trigger Details**: dragging a text box taller no longer makes it
+  jump columns mid-drag. Settings' Shorten text to and List selected save on
+  Enter instead of every keystroke, and the Preview reads real names under
+  Return of Rome.
+
+- **8 px more map**: the hidden loading bar no longer makes the status bar
+  taller.
+
+- **Settings > Cancel** no longer logs "Mod art choices applied" or "UI font"
+  lines that read as an apply.
+
+- **Edit Area while panning**: a pan held at the edge of the scrollable view
+  no longer stops, or starts moving the area, when the cursor crosses it.
+
+- **Smaller fixes**: on Linux, programs DEscape opens (the file manager from
+  Open containing folder) no longer inherit its file-dialog theme; the Units
+  catalog's view dropdown says why only Names is offered without the game
+  install; Change Train Location gives the female builder (212) the builder
+  hint instead of "has no command buttons".
 
 - **Ruins stay with GAIA** (GH #343): Place Unit gives Ruins to GAIA and no
   owner change gives them to a player, since the AoE2:DE editor deletes a

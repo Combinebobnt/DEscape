@@ -1634,8 +1634,8 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
 
     A first parse goes through the installed runner (set_first_parse_runner()),
     gc paused. A call made while one is running (from an event its progress
-    dispatched) raises RuntimeError before touching anything. A
-    TriggerParseCancelled or any exception outside the misparse tuple leaves
+    dispatched) raises RuntimeError before touching anything. A cancel, a
+    callback's own error or any exception outside the misparse tuple leaves
     the document as never parsed, the classes pristine, and is re-raised.
     """
     global _active_trigger_uuid
@@ -1670,7 +1670,7 @@ def _first_parse(loaded: LoadedScenario, progress) -> TriggerManager | None:
         with gc_hold.paused(), trigger_parse_progress.version_memo():
             manager, igen, triggers_end_in_tail, files_span_in_tail = _parse_trigger_sections(loaded, progress)
     except BaseException:
-        # A cancel, or anything outside the misparse tuple: as never parsed. The library adds a
+        # A cancel, a callback error or any non-misparse: as never parsed. The library adds a
         # section before reading it, and option_fields.specs_for() reads their presence.
         scenario.sections.pop("Triggers", None)
         scenario.sections.pop("Files", None)
@@ -1706,8 +1706,12 @@ def _parse_trigger_sections(loaded: LoadedScenario, progress):
             library_compat.depoison()
             # After the depoison(), which would delete the Trigger.construct wrapper as an added name.
             wrappers = trigger_parse_progress.progress_wrappers(progress) if progress else contextlib.nullcontext()
-            with wrappers:
+            with wrappers as report:
                 manager, igen, triggers_end, files_span = _read_trigger_sections(loaded)
+                if report:  # Files and the pull loop report nothing: refresh and check Cancel once more
+                    report("end", len(manager.triggers), len(manager.triggers))
+    except trigger_parse_progress.ReportFailed as e:
+        raise e.error from None  # a callback bug surfaces, never read as a misparse (TASK-669)
     except (EndOfFileError, ValueError, KeyError, IndexError, TypeError, struct.error):
         # The shapes a misparse actually throws. The 1.54/3.9 set raises
         # ValueError from the pinned 0.9.3's failure dump; EndOfFileError is

@@ -86,6 +86,7 @@ def _texture(terrain_id: int) -> np.ndarray:
 
 @pytest.fixture
 def synthetic_textures(monkeypatch):
+    conftest.hide_install(monkeypatch)
     cache: dict[int, np.ndarray] = {}
 
     def fake(terrain_id: int) -> np.ndarray:

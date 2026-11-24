@@ -1,6 +1,6 @@
 """GH #387: Trigger Details docked above or below the map lays its form out
 across the dock, in the game's cells (Game layout) or in Compact columns;
-docked at a side or floating it stays one column.
+docked at a side it stays one column, and floating it follows its shape.
 """
 
 from __future__ import annotations
@@ -102,6 +102,20 @@ def _assert_in_column(panel) -> None:
         assert panel.property_host.isAncestorOf(widget), spec.name
 
 
+def _assert_cells_follow_place(panel, slots, rows: int) -> None:
+    """The form's widgets sit where place() puts its own block keys: each in its column, a
+    column's cells stacked in row order. Where each type's keys land is test_trigger_form_layout.py's."""
+    cells = tfl.place([block.key for block in panel._form_blocks], slots, rows)
+    stacks: dict[int, list[tuple[int, int, str]]] = {}
+    for block in panel._form_blocks:
+        column, place = _cell_of(panel, block.field)
+        assert column == cells[block.key][0], block.key
+        stacks.setdefault(column, []).append((cells[block.key][1], place, block.key))
+    for stack in stacks.values():
+        places = [place for _row, place, _key in sorted(stack)]
+        assert places == sorted(places), stack
+
+
 def test_create_object_sits_in_the_games_cells() -> None:
     window = _bottom_window()
     try:
@@ -109,16 +123,12 @@ def test_create_object_sits_in_the_games_cells() -> None:
         assert panel.detail_layout() == "game"
         _select(panel, "create object")
         _assert_in_grid(panel)
-        cells = {name: _cell_of(panel, _row_widget(panel, name)) for name in (
-            "object_list_unit_id", "source_player", "location_x", "location_y", "item_id", "facet", "disable_sound",
-        )}
-        assert cells == {
-            "object_list_unit_id": (1, 3), "source_player": (2, 1), "location_x": (3, 1), "location_y": (3, 1),
-            # The game's column 5 is empty here, so disable sound closes up to 5.
-            "item_id": (2, 3), "facet": (2, 2), "disable_sound": (5, 1),
-        }
-        # Set Location's (3, 3), grown up through the free cells above it.
-        assert _cell_of(panel, panel._group_rows["location"].set_button) == (3, 1)
+        keys = {block.key for block in panel._form_blocks}
+        assert {"location_x", "location_y", tfl.group_key("location"), "disable_sound"} <= keys, "fixture"
+        _assert_cells_follow_place(panel, tfl.GAME_SLOTS, tfl.GAME_ROWS)
+        # The coordinates and their Set row share one cell.
+        location = {_cell_of(panel, _row_widget(panel, name)) for name in ("location_x", "location_y")}
+        assert location == {_cell_of(panel, panel._group_rows["location"].set_button)}
     finally:
         conftest.close_window(window)
 
@@ -146,14 +156,7 @@ def test_the_trigger_row_sits_in_the_games_cells() -> None:
         panel = window.trigger_panel
         _select(panel, "Trigger")
         _assert_in_grid(panel)
-        stacks: dict[int, list[tuple[int, int, str]]] = {}
-        for spec, _kind, _index, widget in panel._rows:
-            column, place = _cell_of(panel, widget)
-            assert column == tfl.TRIGGER_SLOTS[spec.name][0], spec.name
-            stacks.setdefault(column, []).append((tfl.TRIGGER_SLOTS[spec.name][1], place, spec.name))
-        for stack in stacks.values():
-            # Each column stacks its cells in the table's row order.
-            assert [name for _r, _p, name in sorted(stack)] == [name for _r, _p, name in sorted(stack, key=lambda e: e[1])]
+        _assert_cells_follow_place(panel, tfl.TRIGGER_SLOTS, tfl.TRIGGER_ROWS)
     finally:
         conftest.close_window(window)
 
@@ -208,7 +211,7 @@ def test_change_variable_is_one_row() -> None:
         conftest.close_window(window)
 
 
-def test_docking_at_a_side_or_floating_gives_the_column_back() -> None:
+def test_docking_at_a_side_or_floating_tall_gives_the_column_back() -> None:
     from PyQt5.QtCore import Qt
 
     window = _bottom_window()
@@ -224,8 +227,12 @@ def test_docking_at_a_side_or_floating_gives_the_column_back() -> None:
         _settle()
         _assert_in_grid(panel)
         dock.setFloating(True)
+        dock.resize(500, 900)
         _settle()
         _assert_in_column(panel)
+        dock.resize(1600, 400)
+        _settle()
+        _assert_in_grid(panel)
     finally:
         conftest.close_window(window)
 
@@ -276,6 +283,38 @@ def test_a_text_box_dragged_taller_keeps_its_grip_in_its_cell() -> None:
             grip = box.grip().geometry().translated(box.mapTo(cell, box.rect().topLeft()))
             assert cell.rect().contains(grip), (lines, grip, cell.rect())
             assert panel.grid_host.height() >= cell.geometry().bottom()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_compact_grip_drag_re_splits_only_on_release() -> None:
+    """A re-split mid-drag reparented the box under the cursor; the split holds until the grip is let go."""
+    from PyQt5.QtCore import QEvent, QPoint, Qt
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtWidgets import QApplication
+
+    window = _bottom_window("compact", 260)
+    try:
+        panel = window.trigger_panel
+        _select(panel, "Trigger", 0)
+        box = _row_widget(panel, "description")
+        grip = box.grip()
+        start = grip.rect().center()
+        flow, cell = list(panel._compact_flow), box.parentWidget()
+
+        def send(kind, pos, button, buttons) -> None:
+            QApplication.sendEvent(grip, QMouseEvent(kind, pos, grip.mapToGlobal(pos), button, buttons, Qt.NoModifier))
+            _settle()
+
+        send(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        end = start + QPoint(0, 30 * box.fontMetrics().lineSpacing())
+        send(QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton)
+        assert box.visible_lines() > 30, "fixture: the drag grew the box"
+        assert panel._compact_flow == flow and box.parentWidget() is cell, "re-split mid-drag"
+        assert flow != panel._compact_columns(panel._form_blocks), "fixture: the taller box needs another split"
+        send(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+        assert panel._compact_flow == panel._compact_columns(panel._form_blocks) != flow, "no re-split on release"
+        assert panel.grid_host.isAncestorOf(box)
     finally:
         conftest.close_window(window)
 

@@ -69,6 +69,8 @@ def _float_field_dock(window, kind: str):
     from PyQt5.QtWidgets import QApplication
 
     dock = window.trigger_detail_dock if kind.startswith("trigger") else window.panel_dock
+    # Taller than wide: a wide floating Trigger Details rebuilds its form across, replacing `kind`'s field.
+    dock.resize(dock.width(), max(dock.height(), dock.width() + 1))
     dock.setFloating(True)
     QApplication.processEvents()
     dock.activateWindow()
@@ -165,6 +167,33 @@ def test_the_save_key_writes_a_focused_fields_typed_value(tmp_path, kind: str) -
 
     saved = _saved_value(path, kind)
     assert saved == SPIN_VALUE if kind == "ai_map_type" else MARKER in saved
+
+
+@pytest.mark.parametrize("kind", BOX_KINDS)
+def test_the_save_key_from_the_menu_bar_writes_the_held_box(tmp_path, kind: str) -> None:
+    """TASK-648: an Alt tap's keyboard mode holds the box uncommitted with the bar as focusWidget(),
+    and the window's Save shortcut fires there, so the save flush reads through the bar."""
+    from test_text_box_undo_menu import _click_the_map, _enter_the_menu_bar
+
+    window, widget, path = _window_on(tmp_path, kind)
+    try:
+        _type_into(kind, widget)
+        records = len(window.edit_history.records)
+        _enter_the_menu_bar(window, "alt")
+        assert len(window.edit_history.records) == records
+        _press_save_key(window, window.menuBar())
+
+        assert not window.windowTitle().startswith("*")
+        assert len(window.edit_history.records) == records + 1
+        assert not window.edit_history.is_dirty
+        # Leaving the bar afterwards commits the held box again, which must add nothing.
+        _click_the_map(window)
+        assert len(window.edit_history.records) == records + 1
+        assert not window.windowTitle().startswith("*")
+    finally:
+        conftest.close_window(window)
+
+    assert MARKER in _saved_value(path, kind)
 
 
 def test_file_save_from_the_menu_writes_a_focused_boxs_typed_value(tmp_path) -> None:

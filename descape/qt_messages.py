@@ -51,3 +51,16 @@ def install() -> None:
     # Also the install-once flag; PyQt5 keeps its own reference to the callable.
     _handler = handler
     qInstallMessageHandler(handler)
+
+
+def uninstall() -> None:
+    """Gives Qt back its default handler. Call once the event loop returns:
+    PyQt's wrapper takes the GIL without checking the interpreter is still
+    alive, so a message Qt prints during interpreter shutdown must not reach it."""
+    global _handler
+    if _handler is None:
+        return
+    from PyQt5.QtCore import qInstallMessageHandler
+
+    qInstallMessageHandler(None)
+    _handler = None

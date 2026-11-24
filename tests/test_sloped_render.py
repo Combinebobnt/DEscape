@@ -38,6 +38,8 @@ from descape.render_iso import render_terrain_iso
 from descape.render_sloped import render_terrain_sloped, render_terrain_sloped_with_proj
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 
+import conftest
+
 
 def _load() -> object:
     return load_map_and_units(str(BLANK_TEMPLATE_PATH))
@@ -87,7 +89,7 @@ def test_coverage_on_sloped_map():
     assert unpainted / total < 0.55, f"{unpainted}/{total} unpainted pixels in the outline bbox"
 
 
-def test_slope_shade_is_gathered_through_uv_idx():
+def test_slope_shade_is_gathered_through_uv_idx(monkeypatch):
     """_render_tile_sloped must gather _slope_shade through
     sloped_quad_indices' uv_idx, never slice it to length.
 
@@ -123,6 +125,7 @@ def test_slope_shade_is_gathered_through_uv_idx():
 
     rng = np.random.default_rng(3)
     texture = rng.integers(0, 256, size=(tile_px, tile_px, 3), dtype=np.uint8)
+    conftest.hide_install(monkeypatch)
     real = asset_source.get_terrain_texture_array
     asset_source.get_terrain_texture_array = lambda _tid: texture
     try:

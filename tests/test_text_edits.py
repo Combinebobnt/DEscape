@@ -157,6 +157,27 @@ def test_a_grip_drag_grows_by_whole_lines_and_commits_once(flavour: str) -> None
     widget.close()
 
 
+def test_a_grip_hidden_mid_drag_ends_the_drag_and_commits() -> None:
+    """A grip that never sees its release (hidden mid-drag) must not stay dragging, or Compact never re-splits."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    widget = _prose_edit()
+    widget.show()
+    QApplication.processEvents()
+    calls = _recorder(widget)
+    _drag(widget.grip(), 2, release=False)
+    assert widget.grip_dragging()
+    widget.hide()
+    assert not widget.grip_dragging()
+    assert calls["committed"] == [widget.VISIBLE_LINES + 2]
+    # QTest's press leaves the button held process-wide until a release.
+    QTest.mouseRelease(widget.grip(), Qt.LeftButton)
+    assert calls["committed"] == [widget.VISIBLE_LINES + 2], "the late release commits nothing more"
+    widget.close()
+
+
 def test_a_double_click_resets_to_the_default_band() -> None:
     from PyQt5.QtCore import QPoint, Qt
     from PyQt5.QtTest import QTest

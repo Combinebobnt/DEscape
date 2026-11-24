@@ -68,7 +68,7 @@ from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.trigger_model import (
     TriggerEditsUnavailableError,
 )
-from descape.trigger_parse_progress import CANCELLED_MESSAGE, TriggerParseCancelled
+from descape.trigger_parse_progress import CANCELLED_MESSAGE, READING_MESSAGE, TriggerParseCancelled
 from descape.unit_model import (
     UnitEditsUnavailableError,
 )
@@ -230,6 +230,7 @@ class _ViewerFileMixin:
         self._repopulate_map_options()
         self._repopulate_diplomacy()
         self._repopulate_messages()
+        self.refresh_objectives()
         self._update_tool_enabled()
         self._update_edit_actions()
         self._update_title()
@@ -815,6 +816,10 @@ class _ViewerFileMixin:
             return
         if not self._confirm_resize_unsaved():
             return
+        # The dialog's plan reads the triggers as it opens: a first parse here offers Cancel (TASK-669).
+        if not self._read_triggers():
+            self._log_status(f"Resize Map: {CANCELLED_MESSAGE}")
+            return
         mm = self.scenario.map_manager
         isometric = self._terrain_style != "flat" or self.iso_action.isChecked()
         dialog = ResizeDialog(
@@ -926,7 +931,7 @@ class _ViewerFileMixin:
         try:
             dialog = self._trigger_parse_dialog()
             progress = self._trigger_parse_progress(dialog)
-            with gc_hold.paused():
+            with gc_hold.paused(), self._reading_triggers_shown():
                 manager = attempt(progress)
                 # No collect first: it frees none of the parse's objects and walks them all.
                 gc.freeze()
@@ -944,8 +949,25 @@ class _ViewerFileMixin:
             if prebuild_owed:
                 self._schedule_unit_model_prebuild()
 
+    @contextlib.contextmanager
+    def _reading_triggers_shown(self):
+        """Behind the dialog the status bar names the combo's mode and that mode's
+        panel reads READING_MESSAGE, put back after: no "No map open." (TASK-667)."""
+        self._update_mode_status()
+        panel = self.left_stack.currentWidget()
+        owners = (self.trigger_panel, self.map_options_panel, self.players_panel, self.diplomacy_panel, self.messages_panel)
+        if panel not in owners:
+            yield
+            return
+        before = panel.status.text()
+        panel.status.setText(READING_MESSAGE)
+        try:
+            yield
+        finally:
+            panel.status.setText(before)
+
     def _trigger_parse_dialog(self) -> QProgressDialog:
-        dialog = QProgressDialog("Reading triggers…", "Cancel", 0, 1, self)
+        dialog = QProgressDialog(READING_MESSAGE, "Cancel", 0, 1, self)
         dialog.setWindowTitle("Reading triggers")
         dialog.setWindowModality(Qt.WindowModal)
         dialog.setAutoReset(False)
@@ -1151,6 +1173,8 @@ class _ViewerFileMixin:
             self._trigger_overlay_ref = None
             self.disarm_unit_picker()
             self._unit_ref_index = None
+            # GH #388: an object link's step names the old document's reference ids.
+            self._match_cycle = None
             # GH #172: a pending facing or variant is this document's, never the next one's.
             self._place_rotation = place_rotation.PlaceRotation()
             self._place_ghost_memo = None
@@ -1194,6 +1218,7 @@ class _ViewerFileMixin:
                         self._show_triggers()
                     else:
                         self.trigger_panel.clear_document()
+                        self.refresh_objectives()
                     # Its own if/else rather than an elif chained onto the one above:
                     # chaining would leave whichever panel lost the race populated
                     # with the previous document.
@@ -1346,6 +1371,7 @@ class _ViewerFileMixin:
         self.players_panel.clear_document()
         self.diplomacy_panel.clear_document()
         self.messages_panel.clear_document()
+        self.refresh_objectives()
         self._push_instruction_overlay()
         self._show_game_data_status()
         self._set_hover_text(HOVER_IDLE_TEXT)

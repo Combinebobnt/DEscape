@@ -57,6 +57,13 @@ def _point(view, zone: str):
     return _ground_pos(view, mx, my)
 
 
+def _hover(view, pos):
+    """A move with no button held, which is what updates the hover zone."""
+    from PyQt5.QtCore import QEvent, Qt
+
+    view.mouseMoveEvent(conftest.mouse_event(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton))
+
+
 def _drag(view, start, end):
     _press(view, start)
     _move(view, end)
@@ -185,7 +192,7 @@ def test_with_the_box_off_a_drag_on_the_area_pans_and_writes_nothing() -> None:
         window.trigger_panel.select_entry("effect", PATROL_EFFECT)
         assert view.area_edit() is None
         records = _records(window)
-        _move(view, _point(view, "move"))
+        _hover(view, _point(view, "move"))
         assert view._area_hover is None
         _drag(view, _point(view, "move"), _ground_pos(view, 50.5, 50.5))
         assert _records(window) == records
@@ -201,12 +208,127 @@ def test_a_drag_off_the_area_pans() -> None:
     try:
         view = window.map_view
         records = _records(window)
-        _move(view, _ground_pos(view, 40.5, 50.5))
+        _hover(view, _ground_pos(view, 40.5, 50.5))
         assert view._area_hover is None
         assert view.dragMode() == QGraphicsView.ScrollHandDrag
+        bars = view.horizontalScrollBar(), view.verticalScrollBar()
+        before = [bar.value() for bar in bars]
         _drag(view, _ground_pos(view, 40.5, 50.5), _ground_pos(view, 45.5, 55.5))
         assert view._area_drag is None
         assert _records(window) == records
+        assert [bar.value() for bar in bars] != before, "the view really panned"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_held_pan_at_the_scroll_limit_keeps_panning_over_the_area() -> None:
+    """GH #229 review: once a Pan drag hits the scroll limit the cursor slides
+    onto the area; its hover must not flip the view to NoDrag mid-pan."""
+    from PyQt5.QtCore import QPointF
+    from PyQt5.QtWidgets import QGraphicsView
+
+    window = _window()
+    try:
+        window.trigger_panel.select_entry("effect", PATROL_EFFECT)
+        window.area_edit_check.setChecked(True)
+        view = window.map_view
+        # Zoomed out until the map fits vertically: a vertical pan is at its limit from the start.
+        view.scale(0.6, 0.6)
+        records = _records(window)
+        bar = view.verticalScrollBar()
+        assert bar.minimum() == bar.maximum()
+        end = _point(view, "move")
+        start = end - QPointF(0, 60)
+        assert view.viewport().rect().contains(start.toPoint()) and view.viewport().rect().contains(end.toPoint())
+        _hover(view, start)
+        assert view._area_hover is None, "the pan starts off the area"
+        scroll = [view.horizontalScrollBar().value(), bar.value()]
+        _press(view, start)
+        assert view._area_drag is None
+        _move(view, end)
+        assert [view.horizontalScrollBar().value(), bar.value()] == scroll, "the cursor slid onto the area"
+        assert view._area_hover is None
+        assert view.dragMode() == QGraphicsView.ScrollHandDrag
+        _release(view, end)
+        assert view._area_drag is None
+        assert _records(window) == records
+        _hover(view, end)
+        assert view._area_hover == "move", "a buttonless move still finds the zone"
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_hover_far_from_the_area_skips_the_second_pick() -> None:
+    """The integer tile a hover already picked rules out a far tile before
+    the fractional pick runs; near the area the zone is still found."""
+    window = _editing("Stepped")
+    try:
+        view = window.map_view
+        real = view._pick_map_point
+        calls = []
+
+        def counting(pos):
+            calls.append(pos)
+            return real(pos)
+
+        view._pick_map_point = counting
+        _hover(view, _ground_pos(view, 60.5, 60.5))
+        assert view._area_hover is None
+        assert calls == []
+        _hover(view, _point(view, "move"))
+        assert view._area_hover == "move"
+        assert len(calls) == 1
+        # One tile outside the area: picked, since the two picks may disagree by a tile.
+        _hover(view, _ground_pos(view, 29.5, 43.5))
+        assert view._area_hover is None
+        assert len(calls) == 2
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_a_raised_edge_tile_still_grabs_its_edge(style) -> None:
+    """Hover and drag on elevated ground: the west edge tile, raised, resizes."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    tile = (30, 43)
+    window = _editing(style)
+    try:
+        view = window.map_view
+        window.area_tile_borders_check.setChecked(True)
+        before = view._tile_polygon(*tile).boundingRect().center().y()
+        window.mode_combo.setCurrentText("Terrain")
+        window._on_tool_selected("elevation")
+        window.on_edit_stroke_start()
+        window.on_edit_stroke_tile(*tile, Qt.NoModifier)
+        window.on_edit_stroke_end()
+        QApplication.processEvents()
+        window.mode_combo.setCurrentText("Triggers")
+        window._on_tool_selected("pan")
+        QApplication.processEvents()
+        assert view._tile_polygon(*tile).boundingRect().center().y() < before, "the tile must really rise"
+        raised = conftest.polygon_viewport_pos(view, *tile)
+        _hover(view, raised)
+        assert view._area_hover == "w"
+        _drag(view, raised, conftest.polygon_viewport_pos(view, 27, 43))
+        _x1, y1, x2, y2 = _gen().GEOMETRY_PATROL_AREA
+        assert _values(window, "effect", PATROL_EFFECT, AREA) == (27, y1, x2, y2)
+    finally:
+        conftest.close_window(window)
+
+
+def test_an_area_past_the_map_edge_has_no_handles() -> None:
+    gen = _gen()
+    window = _editing()
+    try:
+        values = dict(zip(AREA, (110, 40, 125, 46), strict=True))
+        window.set_entry_field_group(gen.REFERENCE_TRIGGER, ("effect", PATROL_EFFECT), values, "Set Area")
+        assert _values(window, "effect", PATROL_EFFECT, AREA) == (110, 40, 125, 46)
+        assert window.map_view.area_edit() is None
+        values = dict(zip(AREA, (110, 40, 119, 46), strict=True))
+        window.set_entry_field_group(gen.REFERENCE_TRIGGER, ("effect", PATROL_EFFECT), values, "Set Area")
+        assert window.map_view.area_edit() == (110, 40, 119, 46)
     finally:
         conftest.close_window(window)
 
@@ -218,9 +340,9 @@ def test_with_resize_off_the_whole_area_moves(tile_borders) -> None:
         view = window.map_view
         window.area_tile_borders_check.setChecked(tile_borders)
         window.area_resize_check.setChecked(False)
-        _move(view, _point(view, "w"))
+        _hover(view, _point(view, "w"))
         assert view._area_hover == "move"
-        _move(view, _ground_pos(view, 30.85, 43.5))
+        _hover(view, _ground_pos(view, 30.85, 43.5))
         assert view._area_hover == "move", "the tile ring does not resize either"
         _drag(view, _point(view, "w"), _ground_pos(view, 27.5, 43.5))
         assert _values(window, "effect", PATROL_EFFECT, AREA) == (27, 40, 31, 46)
@@ -235,7 +357,7 @@ def test_with_move_off_only_the_edges_grab() -> None:
         view = window.map_view
         window.area_move_check.setChecked(False)
         records = _records(window)
-        _move(view, _point(view, "move"))
+        _hover(view, _point(view, "move"))
         assert view._area_hover is None
         _drag(view, _point(view, "move"), _ground_pos(view, 40.5, 50.5))
         assert _records(window) == records, "the middle pans"
@@ -252,7 +374,7 @@ def test_with_both_options_off_nothing_grabs() -> None:
         window.area_move_check.setChecked(False)
         window.area_resize_check.setChecked(False)
         for zone in ("move", "w", "se"):
-            _move(view, _point(view, zone))
+            _hover(view, _point(view, zone))
             assert view._area_hover is None, zone
         _press(view, _point(view, "se"))
         assert view._area_drag is None
@@ -280,14 +402,14 @@ def test_tile_borders_make_the_whole_edge_tile_resize(style) -> None:
         view = window.map_view
         deep = _ground_pos(view, 30.85, 43.5)  # inside the west edge tile, past the thin band
         assert view._area_band_tiles() < 0.85, "the thin band must not reach the probe"
-        _move(view, deep)
+        _hover(view, deep)
         assert view._area_hover == "move"
         window.area_tile_borders_check.setChecked(True)
-        _move(view, deep)
+        _hover(view, deep)
         assert view._area_hover == "w"
-        _move(view, _ground_pos(view, 32.5, 43.5))
+        _hover(view, _ground_pos(view, 32.5, 43.5))
         assert view._area_hover == "move", "a 5x7 area keeps its middle"
-        _move(view, _ground_pos(view, 32.5, 40.85))
+        _hover(view, _ground_pos(view, 32.5, 40.85))
         assert view._area_hover == "n"
         _drag(view, deep, _ground_pos(view, 28.5, 43.5))
         assert _values(window, "effect", PATROL_EFFECT, AREA) == (28, 40, 34, 46)
@@ -305,9 +427,9 @@ def test_tile_borders_leave_a_two_tile_axis_thin() -> None:
         )
         assert view.area_edit() == (30, 40, 31, 46)
         window.area_tile_borders_check.setChecked(True)
-        _move(view, _ground_pos(view, 31.0, 43.5))
+        _hover(view, _ground_pos(view, 31.0, 43.5))
         assert view._area_hover == "move", "2 tiles wide: no tile border across x"
-        _move(view, _ground_pos(view, 31.0, 40.85))
+        _hover(view, _ground_pos(view, 31.0, 40.85))
         assert view._area_hover == "n", "7 tiles tall: the end tile is border"
     finally:
         conftest.close_window(window)
@@ -425,11 +547,11 @@ def test_hover_cursors_follow_the_zone_on_screen(style) -> None:
             "ne": Qt.SizeBDiagCursor if top_down else Qt.SizeVerCursor,
         }
         for zone, shape in expected.items():
-            _move(view, _point(view, zone))
+            _hover(view, _point(view, zone))
             assert view._area_hover == zone
             assert view.cursor().shape() == shape, zone
             assert view.dragMode() == QGraphicsView.NoDrag
-        _move(view, _ground_pos(view, 60.5, 60.5))
+        _hover(view, _ground_pos(view, 60.5, 60.5))
         assert view._area_hover is None
         assert view.dragMode() == QGraphicsView.ScrollHandDrag, "back to the Pan hand"
     finally:
@@ -529,7 +651,7 @@ def test_an_armed_set_pick_wins_over_the_handles() -> None:
         view = window.map_view
         records = _records(window)
         _arm(window, "area")
-        _move(view, _point(view, "move"))
+        _hover(view, _point(view, "move"))
         assert view._area_hover is None
         _press(view, _point(view, "move"))
         assert view._area_drag is None and view._tile_pick_anchor is not None, "the press anchors the pick"
@@ -644,7 +766,7 @@ def test_a_location_only_entry_drags_its_mark_with_no_area() -> None:
         assert view.area_edit() is None
         assert view.location_edit() == gen.GEOMETRY_CREATE_LOCATION
         mark = _mark_pos(view, gen.GEOMETRY_CREATE_LOCATION)
-        _move(view, mark)
+        _hover(view, mark)
         assert view._area_hover == "location"
         assert view.cursor().shape() == Qt.SizeAllCursor
         assert view.dragMode() == QGraphicsView.NoDrag
@@ -670,7 +792,7 @@ def test_only_move_gates_the_mark(entry, move, resize, grabs) -> None:
         window.area_resize_check.setChecked(resize)
         x, y = view.location_edit()
         records = _records(window)
-        _move(view, _mark_pos(view, (x, y)))
+        _hover(view, _mark_pos(view, (x, y)))
         assert view._area_hover == ("location" if grabs else None)
         assert view.dragMode() == (QGraphicsView.NoDrag if grabs else QGraphicsView.ScrollHandDrag)
         _drag(view, _mark_pos(view, (x, y)), _mark_pos(view, (x + 3, y + 2)))
@@ -686,9 +808,9 @@ def test_a_mark_inside_the_area_wins_and_beside_it_the_area_still_moves() -> Non
     try:
         view = window.map_view
         _set_location(window, PATROL_EFFECT, (32, 43))
-        _move(view, _mark_pos(view, (32, 43)))
+        _hover(view, _mark_pos(view, (32, 43)))
         assert view._area_hover == "location"
-        _move(view, _ground_pos(view, 33.5, 43.5))
+        _hover(view, _ground_pos(view, 33.5, 43.5))
         assert view._area_hover == "move"
         _drag(view, _mark_pos(view, (32, 43)), _mark_pos(view, (36, 48)))
         assert _values(window, "effect", PATROL_EFFECT, LOCATION) == (36, 48)
@@ -709,14 +831,14 @@ def test_a_one_tile_area_under_the_mark_keeps_its_rim() -> None:
         _set_location(window, PATROL_EFFECT, (32, 43))
         view.scale(4.0, 4.0)
         assert view._area_band_tiles() < 0.4, "the rim probe must sit past the reach"
-        _move(view, _mark_pos(view, (32, 43)))
+        _hover(view, _mark_pos(view, (32, 43)))
         assert view._area_hover == "location"
-        _move(view, _ground_pos(view, 32.05, 43.5))
+        _hover(view, _ground_pos(view, 32.05, 43.5))
         assert view._area_hover == "w"
         window.area_move_check.setChecked(False)
-        _move(view, _mark_pos(view, (32, 43)))
+        _hover(view, _mark_pos(view, (32, 43)))
         assert view._area_hover is None
-        _move(view, _ground_pos(view, 32.05, 43.5))
+        _hover(view, _ground_pos(view, 32.05, 43.5))
         assert view._area_hover == "w"
     finally:
         conftest.close_window(window)
@@ -731,7 +853,7 @@ def test_a_location_its_object_overrides_has_no_handle() -> None:
         assert view.location_edit() is None
         records = _records(window)
         mark = _mark_pos(view, gen.HOUSE_TILE)
-        _move(view, mark)
+        _hover(view, mark)
         assert view._area_hover is None
         _press(view, mark)
         assert view._area_drag is None, "the drag pans"
@@ -912,7 +1034,7 @@ def test_an_armed_set_location_wins_over_the_handle() -> None:
     try:
         view = window.map_view
         _arm(window, "location")
-        _move(view, _mark_pos(view))
+        _hover(view, _mark_pos(view))
         assert view._area_hover is None
         _press(view, _mark_pos(view))
         assert view._area_drag is None, "the press is the pick's"

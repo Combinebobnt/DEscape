@@ -16,7 +16,7 @@ import pytest
 
 from descape import scenario_io
 from descape.find_dialog import TRIGGERS_CANCELLED
-from descape.trigger_parse_progress import CANCELLED_MESSAGE
+from descape.trigger_parse_progress import CANCELLED_MESSAGE, READING_MESSAGE
 from testkit.viewer_family import set_viewer_global
 
 import conftest
@@ -44,6 +44,7 @@ def dialogs(monkeypatch):
             self.visible: list[bool] = []
             self.busy: list[bool] = []
             self.warming: list[list[bool]] = []
+            self.behind: list[tuple[str, str]] = []
             Recording.made.append(self)
 
         def setCancelButton(self, button):
@@ -54,6 +55,9 @@ def dialogs(monkeypatch):
             self.visible.append(self.isVisible())
             self.busy.append(self.parent()._busy)
             self.warming.append([getattr(self.parent(), n).is_active for n in WARMERS])
+            window = self.parent()
+            status = getattr(window.left_stack.currentWidget(), "status", None)
+            self.behind.append((window.mode_status_label.text(), status.text() if status else ""))
             return Recording.cancel
 
     Recording.made = []
@@ -97,6 +101,44 @@ def test_cancelling_a_triggers_entry_returns_to_the_previous_mode(window, dialog
     window.mode_combo.setCurrentText("Triggers")
     assert window.mode == "triggers" and window.scenario._trigger_manager is not None
     assert window.trigger_panel._loaded is window.scenario, "the re-entry did not populate the panel"
+
+
+@pytest.mark.parametrize(
+    "label, panel",
+    [("Triggers", "trigger_panel"), ("Map Options", "map_options_panel"), ("Players", "players_panel")],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_behind_the_dialog_the_panel_reads_reading_and_the_status_bar_the_new_mode(
+    window, dialogs, label, panel, cancel
+) -> None:
+    window.mode_combo.setCurrentText("Terrain")
+    dialogs.cancel = cancel
+    window.mode_combo.setCurrentText(label)
+    (dialog,) = dialogs.made
+    assert dialog.behind, "vacuous: no progress call ran"
+    assert {(f"Mode: {label}" in bar, line) for bar, line in dialog.behind} == {(True, READING_MESSAGE)}
+    _settle()
+    assert getattr(window, panel).status.text() != READING_MESSAGE, "the reading line outlived the parse"
+    shown = "Terrain" if cancel else label
+    assert window.mode_combo.currentText() == shown and f"Mode: {shown}" in window.mode_status_label.text()
+
+
+def test_a_cancelled_resize_read_never_opens_the_resize_dialog(window, dialogs, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QDialog
+
+    from descape.resize_dialog import ResizeDialog
+
+    opened: list = []
+    monkeypatch.setattr(ResizeDialog, "exec_", lambda self: opened.append(self) or QDialog.Rejected)
+    dialogs.cancel = True
+    window.resize_map()
+    (dialog,) = dialogs.made
+    assert not dialog.no_cancel_button, "Resize Map's first parse offered no Cancel"
+    assert not opened and window.scenario.trigger_read_supported is None, "the cancel did not stop the resize"
+    assert CANCELLED_MESSAGE in window.status_log.toPlainText()
+    dialogs.cancel = False
+    window.resize_map()
+    assert len(opened) == 1 and window.scenario._trigger_manager is not None
 
 
 def test_a_cancelled_players_entry_never_fills_the_personality_cache(window, dialogs) -> None:
@@ -275,6 +317,7 @@ def test_no_warm_or_gc_hold_restarts_inside_a_shown_parse(window, dialogs, shown
     _assert_events_ran_inside(state)
     assert inside == {"engage": 0, "schedule": 0, "prebuild": 0}, f"restarted inside the parse: {inside}"
     assert not any(any(active) for active in dialog.warming), "a warm was live inside the parse"
+    assert {("Mode: Triggers" in bar, line) for bar, line in dialog.behind} == {(True, READING_MESSAGE)}
     assert not window._first_parse_running
     _settle_for(window.map_view.VIEWPORT_POLL_MS * 3)
     # An inside fire recorded as seen would leave the repoll's fire nothing to re-anchor.

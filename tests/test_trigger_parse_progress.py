@@ -100,17 +100,45 @@ def _check_progress_parse(path) -> None:
     for phase in ("read", "build"):
         events = [(done, total) for p, done, total in seen if p == phase]
         assert events == [(i, n) for i in range(1, n + 1)], f"{phase} did not count 1..{n}"
-    assert [p for p, _, _ in seen] == ["read"] * n + ["build"] * n
+    assert seen[-1] == ("end", n, n)
+    assert [p for p, _, _ in seen] == ["read"] * n + ["build"] * n + ["end"]
 
 
-@pytest.mark.parametrize("phase", ["read", "build"])
+def test_the_last_report_comes_after_the_pull_loop(monkeypatch) -> None:
+    seen: list = []
+    real_pull = scenario_io.effect_quantity.pull
+    monkeypatch.setattr(scenario_io.effect_quantity, "pull", lambda *a: seen.append("pull") or real_pull(*a))
+    runner = _Runner(lambda *event: seen.append(event[0]))
+    scenario_io.set_first_parse_runner(runner.run)
+    assert scenario_io.parse_triggers(scenario_io.load_map_and_units(str(FIXTURE))) is not None
+    assert "pull" in seen, "vacuous: the pull loop did not run"
+    assert seen[-1] != "pull", "Cancel goes unanswered from the last Trigger.construct to the end of the pull loop"
+
+
+@pytest.mark.parametrize("phase", ["read", "build", "end"])
+def test_a_callback_bug_surfaces_instead_of_reading_as_unreadable_triggers(phase) -> None:
+    def report(p, done, total):
+        if p == phase:
+            raise TypeError("callback bug")
+
+    runner = _Runner(report)
+    scenario_io.set_first_parse_runner(runner.run)
+    originals = _originals()
+    loaded = scenario_io.load_map_and_units(str(FIXTURE))
+    with pytest.raises(TypeError, match="callback bug"):
+        scenario_io.parse_triggers(loaded)
+    assert loaded.trigger_read_supported is None and loaded._trigger_manager is None
+    _assert_restored(originals)
+
+
+@pytest.mark.parametrize("phase", ["read", "build", "end"])
 def test_a_cancel_leaves_the_document_and_classes_as_never_parsed(phase, monkeypatch) -> None:
     dumps = []
     real_dump = AoE2FileSection.get_byte_structure_as_string
     monkeypatch.setattr(AoE2FileSection, "get_byte_structure_as_string", lambda s: dumps.append(s) or real_dump(s))
 
     def report(p, done, total):
-        if p == phase and done == 2:
+        if p == phase and (done == 2 or p == "end"):
             raise TriggerParseCancelled
 
     runner = _Runner(report)

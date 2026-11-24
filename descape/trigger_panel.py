@@ -126,8 +126,8 @@ class _TriggerTree(_HScrollStableTreeWidget):
 
 
 class _DetailStack(QStackedWidget):
-    """detail_stack. In the window's Trigger Details dock (GH #387) the panel's
-    own resizeEvent no longer sees the form's width change, so this reports it."""
+    """detail_stack. It sits in the Trigger Details dock (GH #387), out of the
+    panel's resizeEvent, so this reports the form's width change."""
 
     def __init__(self, on_resize) -> None:
         super().__init__()
@@ -214,10 +214,9 @@ class TriggerPanel(
     Two panes, split vertically. The top is trigger names, grouped into 4c's
     divider-derived sections when the corpus's own `--- Section ---`
     convention is present (Display order only -- see show_scenario()). The
-    bottom is the selected trigger's conditions and effects, plus a property
-    form for whichever of them is selected, with a second bar between the
-    two (detail_splitter, GH #274). In the window the form moves out to its
-    own dock (take_detail_stack(), GH #387).
+    bottom is the selected trigger's conditions and effects. The property
+    form for whichever of them is selected, and the Add picker, live in the
+    window's Trigger Details dock (take_detail_stack(), GH #387).
 
     Condition and effect names come from library_compat.load_vocabulary(),
     which reads the library's own per-version JSON rather than its module-level
@@ -237,7 +236,7 @@ class TriggerPanel(
     # off the right edge, which is what its old fixed width was working around.
     _MIN_DETAIL_WIDTH = 120
 
-    # Each pane's starting weight in both vertical splits. Only the ratio counts, but
+    # A pane's starting weight in the vertical split. Only the ratio counts, but
     # QSplitter.setSizes() raises a value below a pane's minimum to it, which would skew it.
     _SPLIT_WEIGHT = 10_000
 
@@ -397,6 +396,8 @@ class TriggerPanel(
         self.on_focus_changed = lambda: None
         # TASK-550: the selected Display Instructions effect's InstructionView, or None. Assigned by the window.
         self.on_instruction_view = lambda view: None
+        # GH #391: (trigger indices, text) while the short description box is typed in, before it commits.
+        self.on_short_typing = lambda indices, text: None
         # Unit/Unit[] fields: placed-unit id -> label text, and Pick from map's
         # arm (a target tuple) or disarm (None) request. Assigned by the window.
         self.describe_unit_reference = lambda ref_id: ""
@@ -414,8 +415,6 @@ class TriggerPanel(
         self.on_text_box_lines = lambda key, lines: None
         # GH #387: the picker opened, so the window can bring the Trigger Details dock to the front.
         self.on_detail_shown = lambda: None
-        # GH #387: whether take_detail_stack() moved the form out to the window's dock.
-        self._detail_detached = False
         # GH #166: (vocabulary, trigger_ids) -> trigger_status.StatusContext, called on every
         # recompute (the window can drop and rebuild its reference index), and the marker style.
         # Assigned by the window; these defaults treat every unit id as placed.
@@ -573,11 +572,11 @@ class TriggerPanel(
 
         self.splitter.addWidget(self._build_trigger_pane())
         self.splitter.addWidget(self._build_detail_pane())
-        self.splitter.setStretchFactor(0, 1)
+        # Without the form, the lower pane needs less than the trigger list, which the issue scrolls.
+        # Set as weights: left alone, Qt splits by the two size hints.
+        self.splitter.setStretchFactor(0, 2)
         self.splitter.setStretchFactor(1, 1)
-        # Equal halves to start with. Left alone, Qt splits by the two size hints (about
-        # 40:60), so a button row taken out of the tree pane gave the tree half its height.
-        self.splitter.setSizes([self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
+        self.splitter.setSizes([2 * self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
 
         # Below the splitter rather than in either pane's button rows: a
         # variable belongs to the document, not to the selected trigger or
@@ -809,15 +808,10 @@ class TriggerPanel(
         self.entry_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.entry_tree.customContextMenuRequested.connect(self._show_entry_context_menu)
 
-        # GH #274: nested, so self.splitter stays a two-pane split and its drag keeps this ratio.
-        self.detail_splitter = QSplitter(Qt.Vertical)
-        # A pane collapsed to zero height still passes every isVisibleTo() check (units_panel.py).
-        self.detail_splitter.setChildrenCollapsible(False)
-        self.detail_splitter.addWidget(self.entry_tree)
-
         pane = QWidget()
         pane_layout = QVBoxLayout(pane)
         pane_layout.setContentsMargins(0, 0, 0, 0)
+        pane_layout.addWidget(self.entry_tree, stretch=1)
 
         self.entry_buttons = self._build_button_row(
             [
@@ -865,37 +859,22 @@ class TriggerPanel(
         # stack rather than two stacked widgets: the picker is a 140-row tree
         # and a permanent home for it would halve the form's height on every
         # document, including the ones nobody ever adds a condition to.
+        # GH #387: the stack has no place in the panel; the window's Trigger Details dock holds it.
         self.detail_stack = _DetailStack(self._on_detail_resized)
         self.detail_stack.addWidget(self._build_property_page())  # _DETAIL_FORM
         self.detail_stack.addWidget(self._build_picker_page())  # _DETAIL_PICKER
         self.multi_label = QLabel("")
         self.multi_label.setAlignment(Qt.AlignCenter)
         self.detail_stack.addWidget(self.multi_label)  # _DETAIL_MULTI
-        pane_layout.addWidget(self.detail_stack, stretch=1)
-
-        self.detail_splitter.addWidget(pane)
-        self.detail_splitter.setStretchFactor(0, 1)
-        self.detail_splitter.setStretchFactor(1, 1)
-        self.detail_splitter.setSizes([self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
-        return self.detail_splitter
+        return pane
 
     def take_detail_stack(self) -> QStackedWidget:
-        """GH #387: hand the property form, picker and multi-select note to the
-        window's Trigger Details dock. The entry list joins its button row's
-        pane, detail_splitter's only child, so no bar is left between them."""
-        pane = self.detail_stack.parentWidget()
-        pane.layout().removeWidget(self.detail_stack)
-        self.detail_stack.setParent(None)
-        pane.layout().insertWidget(0, self.entry_tree, stretch=1)
-        # Without the form, the lower pane needs less than the trigger list, which the issue scrolls.
-        self.splitter.setStretchFactor(0, 2)
-        self.splitter.setSizes([2 * self._SPLIT_WEIGHT, self._SPLIT_WEIGHT])
-        self._detail_detached = True
+        """GH #387: the property form, picker and multi-select note, for the
+        window's Trigger Details dock (or a test's or bench's own host)."""
         return self.detail_stack
 
     def _on_detail_resized(self) -> None:
-        # Docked inside the panel, resizeEvent() already covers this.
-        if self._detail_detached and not self._populating:
+        if not self._populating:
             self._reflow_compact()
             self._fit_property_height()
 
@@ -1028,10 +1007,6 @@ class TriggerPanel(
             return
         if self.entry_tree.topLevelItemCount():
             self._fit_entry_columns()
-        # A narrower pane wraps more rows, so the form's height is a function
-        # of the width too. A detached form refits from its own resize.
-        if not self._detail_detached:
-            self._fit_property_height()
 
     @staticmethod
     def _configure_scrolling(tree: QTreeWidget) -> None:

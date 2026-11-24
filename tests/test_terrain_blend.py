@@ -16,6 +16,8 @@ import pytest
 from descape import asset_source, render_paint, terrain_blend
 from descape.terrain_blend import NEIGHBOURS, BlendEntry, influences, tile_indices
 
+import conftest
+
 TEXTURE_SIZE = 512
 LOW, HIGH, HIGHER, LAYER = 1, 2, 3, 4
 
@@ -248,6 +250,7 @@ _COLOURS = {_OWN: (200, 40, 90), _ABOVE: (10, 230, 120), _HIGHER: (90, 0, 255), 
 def seam_masks(monkeypatch):
     """Constant-colour textures and a random 0..128 mask per (mode, tile), served by
     get_blend_mask as the loader does: faded, then conform_edges, looked up at call time."""
+    conftest.hide_install(monkeypatch)
     size = TEXTURE_SIZE
     textures = {tid: np.broadcast_to(np.array(c, dtype=np.uint8), (size, size, 3)) for tid, c in _COLOURS.items()}
     def texture(tid):
@@ -361,6 +364,7 @@ def synthetic(monkeypatch):
     """Synthetic textures, blend table and blendomatic. Each single-edge and
     corner tile gives the neighbour (alpha 0) the raster pixels on its own
     screen side and keeps the rest (alpha 128); tiles 20-30 keep everything."""
+    conftest.hide_install(monkeypatch)
     textures = {tid: _texture(tid) for tid in (LOW, HIGH, HIGHER, LAYER)}
     masks: dict[str, np.ndarray] = {}
 

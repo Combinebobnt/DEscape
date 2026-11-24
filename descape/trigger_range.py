@@ -39,7 +39,7 @@ from typing import Any
 
 from descape import game_dataset, object_catalog, trigger_model
 from descape.trigger_fields import UNSET
-from descape.trigger_geometry import AREA_FIELDS, coordinate
+from descape.trigger_geometry import AREA_FIELDS, area_contains, coordinate
 
 CHANGE_OBJECT_RANGE = 32
 MODIFY_ATTRIBUTE = 51
@@ -295,12 +295,6 @@ def object_type_of(unit_const: int) -> int | None:
     return fields[1] if fields[1] in _OBJECT_TYPES else None
 
 
-def _area_contains(area: tuple[int, int, int, int], tile: tuple[int, int]) -> bool:
-    x1, y1, x2, y2 = area
-    x, y = tile
-    return min(x1, x2) <= x <= max(x1, x2) and min(y1, y2) <= y <= max(y1, y2)
-
-
 def effect_applies(
     effect: RangeEffect, *, player_id: int, unit_const: int, reference_id: int, own_tile: tuple[int, int]
 ) -> bool:
@@ -316,7 +310,7 @@ def effect_applies(
         return reference_id in effect.selected_ids
     if effect.source_player != player_id:
         return False
-    if effect.area is not None and not _area_contains(effect.area, own_tile):
+    if effect.area is not None and not area_contains(effect.area, own_tile):
         return False
     if effect.unit_const != UNSET and effect.unit_const != unit_const:
         return False

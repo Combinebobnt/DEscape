@@ -95,6 +95,22 @@ def test_a_shown_window_keeps_drawing_the_map_until_the_first_paint(shown):
     assert "First paint composited in " in shown.status_log.toPlainText()
 
 
+def test_the_bar_takes_no_height_from_the_map_hidden_or_shown(shown):
+    """QStatusBar sizes itself by every permanent widget, hidden ones too: the bar fits its row instead."""
+    from PyQt5.QtWidgets import QApplication
+
+    status_bar, progress = shown.statusBar(), shown.load_progress
+    hidden = (status_bar.height(), shown.map_view.height())
+    progress.start("load", "Loading a: reading the file", 10)
+    QApplication.processEvents()
+    assert (status_bar.height(), shown.map_view.height()) == hidden
+    assert 0 < progress.bar.height() <= progress.height()
+    progress.finish("load")
+    status_bar.removeWidget(progress)
+    QApplication.processEvents()
+    assert (status_bar.height(), shown.map_view.height()) == hidden, "as tall as a status bar without it"
+
+
 def test_a_corrupt_file_hides_the_bar_before_its_dialog(window, tmp_path, monkeypatch):
     from PyQt5.QtWidgets import QMessageBox
 

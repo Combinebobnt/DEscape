@@ -474,7 +474,7 @@ def _shaded(shade: float, rgb) -> list[int]:
     ],
 )
 def test_tinted_pins_the_step_0_curve_on_both_tables(table, index, shade, expected) -> None:
-    """GH #374 Step 0's fit, colour * (1.113*shade + 0.177), worked by hand per table entry (not game pixels)."""
+    """GH #374 Step 0's fit (catalog_thumbs.TINT_SLOPE, TINT_OFFSET), worked by hand per table entry (not game pixels)."""
     rgb = getattr(terrain_palette, table)[index]
     assert _shaded(shade, rgb) == pytest.approx(expected, abs=1)
 

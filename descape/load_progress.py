@@ -42,8 +42,9 @@ class LoadProgress(QWidget):
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setFixedWidth(BAR_WIDTH)
-        # Fixed, or the bar's Expanding policy splits the status bar's free space with its messages.
-        self.bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # Fixed across, or it splits the status bar's free space with its messages; Ignored down, so its
+        # 27 px hint never makes the status bar taller (QStatusBar counts hidden widgets too).
+        self.bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Ignored)
         self.bar.setFormat("%p%")
         layout.addWidget(self.bar)
         # owner -> (caption, percent), for every running job.

@@ -43,6 +43,7 @@ from descape.terrain_palette import BUILDING_TILE_SPANS, FOUNDATION_TERRAIN, TRE
 from descape.view_layers import DEFAULT_LAYERS, LAYERS, SMALL_TREE_SCALE, LayerState, availability, render_key
 from testkit.fakes import FakeScenario, SyntheticTile
 
+import conftest
 from test_unit_sprites import build_sld
 
 MAP_W = MAP_H = 16
@@ -138,6 +139,7 @@ def _install_textures(monkeypatch) -> None:
     tests/test_farm_terrain.py and tests/test_sloped_render.py already use.
     Solid colour also makes the crop offset irrelevant, so a real mip ladder
     needs no per-level texture."""
+    conftest.hide_install(monkeypatch)
     textures = {
         tid: np.full((FAKE_TEXTURE_SIZE, FAKE_TEXTURE_SIZE, 3), color, dtype=np.uint8)
         for tid, color in TEXTURE_COLORS.items()

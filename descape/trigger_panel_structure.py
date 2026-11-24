@@ -606,7 +606,7 @@ class _TriggerPanelStructureMixin:
         entry_ref: tuple[str, int] | None = None,
         entry_type: int = -1,
     ) -> None:
-        """Show the vocabulary picker over the lower pane.
+        """Show the vocabulary picker in place of the property form.
 
         `entry_ref` switches it from Add to Change: the picker then offers only
         that entry's own kind and opens on the type it already has.
@@ -631,11 +631,8 @@ class _TriggerPanelStructureMixin:
             else "Filter conditions and effects…"
         )
         self.detail_stack.setCurrentIndex(self._DETAIL_PICKER)
-        # The picker gets the whole lower pane while it is up. Sharing it with
-        # the detail tree left 144 types in five visible rows, and the tree has
-        # nothing to offer here anyway: the trigger being added to was latched
-        # at open and cannot be changed from it.
-        self._set_entry_list_visible(False)
+        # GH #387: greyed, not hidden: the picker has its own dock, and is latched to the entry it opened on.
+        self.entry_tree.setEnabled(False)
         self.on_detail_shown()
         self.picker_filter.setFocus()
         self._update_buttons()
@@ -655,20 +652,13 @@ class _TriggerPanelStructureMixin:
         self.picker_tree.clear()
         self.picker_filter.clear()
         self.detail_stack.setCurrentIndex(self._DETAIL_FORM)
-        self._set_entry_list_visible(True)
+        self.entry_tree.setEnabled(True)
         self._update_buttons()
 
-    def _set_entry_list_visible(self, visible: bool) -> None:
-        # GH #387: in its own dock the picker takes nothing from the list, and hiding it would leave a
-        # blank pane. Greyed instead, since the picker is latched to the entry it opened on.
-        if self._detail_detached:
-            self.entry_tree.setEnabled(visible)
-            return
-        self.entry_tree.setVisible(visible)
-        for i in range(self.entry_buttons.count()):
-            widget = self.entry_buttons.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(visible)
+    def cancel_picker(self) -> None:
+        """Close the Add or Type picker, if open, adding nothing (the window's closed Trigger Details dock)."""
+        if self._picker_trigger_index is not None:
+            self._close_picker()
 
     def _populate_picker(self) -> None:
         """Both kinds in Add mode; only the latched entry's own kind in Change

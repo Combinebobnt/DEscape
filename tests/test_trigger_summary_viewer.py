@@ -123,10 +123,10 @@ def _link_point(tree, item, column: int, prefix: str):
     return QPoint(x, tree.visualItemRect(item).center().y())
 
 
-def test_a_click_on_a_link_emits_it_and_a_click_elsewhere_selects() -> None:
-    from PyQt5.QtCore import Qt
+def _link_tree():
+    """(tree, rows, emitted): a shown three-row tree whose Detail reads "go to <area link>"."""
     from PyQt5.QtTest import QTest
-    from PyQt5.QtWidgets import QAbstractItemView, QApplication, QTreeWidget, QTreeWidgetItem
+    from PyQt5.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
     from descape.trigger_summary import Segment, Summary
     from descape.trigger_summary_delegate import SUMMARY_ROLE, TriggerSummaryDelegate
@@ -150,6 +150,29 @@ def test_a_click_on_a_link_emits_it_and_a_click_elsewhere_selects() -> None:
     tree.setColumnWidth(0, 120)
     tree.show()
     QTest.qWaitForWindowExposed(tree)
+    return tree, rows, emitted
+
+
+def _send(tree, kinds: str, pos) -> None:
+    """Left-button events in the order a platform delivers them: p press, r release, d double-click."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtWidgets import QApplication
+
+    viewport = tree.viewport()
+    for kind in kinds:
+        event_type = {"p": QEvent.MouseButtonPress, "r": QEvent.MouseButtonRelease, "d": QEvent.MouseButtonDblClick}[kind]
+        buttons = Qt.NoButton if kind == "r" else Qt.LeftButton
+        event = QMouseEvent(event_type, pos, viewport.mapToGlobal(pos), Qt.LeftButton, buttons, Qt.NoModifier)
+        QApplication.sendEvent(viewport, event)
+
+
+def test_a_click_on_a_link_emits_it_and_a_click_elsewhere_selects() -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    tree, rows, emitted = _link_tree()
     try:
         tree.setCurrentItem(rows[0])
         rows[1].setSelected(True)
@@ -159,22 +182,86 @@ def test_a_click_on_a_link_emits_it_and_a_click_elsewhere_selects() -> None:
         assert emitted == [("area", 21, 215, 24, 218)]
         assert tree.currentItem() is rows[0], "a link click leaves the selection alone"
         assert rows[0].isSelected() and rows[1].isSelected(), "a multi-selection stays whole"
-        # A real double-click: press and release, then the double-click and its release.
-        link = _link_point(tree, rows[2], 1, "go to ")
-        QTest.mouseClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier, link)
-        QTest.mouseDClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier, link)
-        QTest.mouseRelease(tree.viewport(), Qt.LeftButton, Qt.NoModifier, link)
+        # A real double-click: press and release, then the double-click and its release. Each press follows.
+        _send(tree, "prdr", _link_point(tree, rows[2], 1, "go to "))
         QApplication.processEvents()
-        assert len(emitted) == 2, "a double-click follows once"
+        assert len(emitted) == 3, "a double-click follows twice"
         assert tree.currentItem() is rows[0] and not rows[2].isSelected()
         QTest.mouseClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier, _link_point(tree, rows[1], 1, ""))
         QApplication.processEvents()
-        assert len(emitted) == 2
+        assert len(emitted) == 3
         assert tree.currentItem() is rows[1]
         QTest.mouseMove(tree.viewport(), _link_point(tree, rows[0], 1, "go to "))
         assert tree.viewport().cursor().shape() == Qt.PointingHandCursor
         QTest.mouseMove(tree.viewport(), _link_point(tree, rows[0], 1, ""))
         assert tree.viewport().cursor().shape() != Qt.PointingHandCursor
+    finally:
+        tree.close()
+
+
+def test_three_quick_clicks_on_a_link_follow_it_three_times() -> None:
+    """xgui: the middle of three quick clicks arrives as a double-click, and was eaten unfollowed."""
+    from PyQt5.QtWidgets import QApplication
+
+    tree, rows, emitted = _link_tree()
+    try:
+        _send(tree, "prdrpr", _link_point(tree, rows[0], 1, "go to "))
+        QApplication.processEvents()
+        assert len(emitted) == 3
+    finally:
+        tree.close()
+
+
+def test_a_double_click_on_a_trigger_link_does_not_chain_through_the_next_trigger() -> None:
+    """The first press follows the link and rebuilds the rows; the double-click lands on the
+    followed trigger's row in the same place, which must not follow its link on."""
+    from PyQt5.QtWidgets import QApplication
+
+    window = _window(_REFERENCES)
+    try:
+        panel = window.trigger_panel
+        window.trigger_structural_edit("copy", [_REFERENCES])
+        triggers = panel._manager().triggers
+        # The duplicate, B, is the one other trigger whose effect 0 is Activate Trigger; C is the setup trigger.
+        copy = next(i for i, t in enumerate(triggers) if i != _REFERENCES and t.effects and t.effects[0].effect_type == 8)
+        triggers[_REFERENCES].effects[0].trigger_id = triggers[copy].trigger_id
+        triggers[copy].effects[0].trigger_id = triggers[_SETUP].trigger_id
+        panel.select_trigger(_SETUP)
+        panel.select_trigger(_REFERENCES)
+        tree = panel.entry_tree
+        tree.verticalScrollBar().setValue(0)
+        point = _link_point(tree, panel._entry_items[("effect", 0)], 1, "")
+        _send(tree, "pr", point)
+        QApplication.processEvents()
+        assert panel.current_trigger_index() == copy, "fixture: the click followed the link"
+        tree.verticalScrollBar().setValue(0)
+        _index, link = panel._summary_delegate._link_under(point)
+        assert link is not None and link[0] == "trigger", "fixture: the duplicate's own trigger link is under the cursor"
+        _send(tree, "dr", point)
+        QApplication.processEvents()
+        assert panel.current_trigger_index() == copy, "one double-click followed two links"
+    finally:
+        window.edit_history.mark_saved()
+        conftest.close_window(window)
+
+
+def test_a_release_over_a_link_whose_press_began_elsewhere_reaches_the_view() -> None:
+    """The end of a drag-select: the view saw the press, so it must see the release."""
+    from PyQt5.QtWidgets import QApplication
+
+    tree, rows, emitted = _link_tree()
+    clicked = []
+    tree.clicked.connect(lambda index: clicked.append(index.row()))
+    tree.doubleClicked.connect(lambda index: clicked.append(("double", index.row())))
+    try:
+        _send(tree, "p", _link_point(tree, rows[1], 1, ""))
+        _send(tree, "r", _link_point(tree, rows[1], 1, "go to "))
+        QApplication.processEvents()
+        assert clicked == [1], "the view never saw the release"
+        # A double-click off a link is the view's too.
+        _send(tree, "prdr", _link_point(tree, rows[2], 1, ""))
+        QApplication.processEvents()
+        assert clicked == [1, 2, ("double", 2)] and emitted == []
     finally:
         tree.close()
 
@@ -219,6 +306,56 @@ def test_an_object_filter_link_steps_through_its_matches(monkeypatch) -> None:
         conftest.close_window(window)
 
 
+def test_an_object_filter_link_steps_by_reference_id_when_units_change(monkeypatch) -> None:
+    """By position, a match deleted between clicks made the next click repeat one; and a new
+    document starts the count again."""
+    import dataclasses
+    from types import MappingProxyType
+
+    from descape.trigger_summary import LINK_MATCH, ObjectFilter
+    from descape.unit_references import ReferenceIndex
+
+    gen = _gen()
+    window = _window(gen.REFERENCE_TRIGGER)
+    try:
+        centred = _centred(window, monkeypatch)
+        archers = ObjectFilter(player=1, unit_const=4, label="P1 Archer")
+        real = window._unit_reference_index()
+        first, second = sorted(
+            (ref for ref in real.by_id.values() if ref.player_id == 1 and ref.unit_const == 4),
+            key=lambda ref: ref.reference_id,
+        )
+        third = dataclasses.replace(second, reference_id=second.reference_id + 1000, own_tile=(54, 59))
+        by_id = {**real.by_id, third.reference_id: third}
+        # Not monkeypatch.undo(), which would also undo the autouse settings isolation.
+        real_index = window._unit_reference_index
+        faked = [True]
+        monkeypatch.setattr(
+            window,
+            "_unit_reference_index",
+            lambda: ReferenceIndex(MappingProxyType(by_id), frozenset()) if faked[0] else real_index(),
+        )
+
+        def follow() -> None:
+            window.follow_trigger_link((gen.REFERENCE_TRIGGER, "effect", 2, (LINK_MATCH, archers)))
+
+        follow()
+        follow()
+        assert centred == [first.own_tile, second.own_tile]
+        del by_id[first.reference_id]
+        follow()
+        assert centred[-1] == third.own_tile, "the deleted match made the next click repeat one"
+        assert _last_line(window).startswith("P1 Archer 2 of 2")
+        faked[0] = False
+        follow()
+        assert _last_line(window).startswith("P1 Archer 1 of 2"), "past the last id, it wraps to the first"
+        window.load_scenario(FIXTURE_PATH)
+        follow()
+        assert _last_line(window).startswith("P1 Archer 1 of 2"), "a new document starts at the first match"
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_trigger_link_selects_that_trigger() -> None:
     window = _window(_REFERENCES)
     try:
@@ -256,15 +393,30 @@ def test_a_clicked_trigger_link_rebuilds_the_rows_safely() -> None:
         conftest.close_window(window)
 
 
-def test_a_rename_shows_in_the_rows_that_name_the_trigger() -> None:
+def _self_activating_window():
+    """The references trigger shown, its effect 0 (Activate Trigger) retargeted at itself."""
     window = _window(_REFERENCES)
+    panel = window.trigger_panel
+    trigger = panel._manager().triggers[_REFERENCES]
+    trigger.effects[0].trigger_id = trigger.trigger_id
+    panel.select_trigger(_SETUP)
+    panel.select_trigger(_REFERENCES)
+    assert _details(panel)[("effect", 0)] == f'"{trigger.name}"', "fixture: the row names its own trigger"
+    return window
+
+
+def test_a_name_field_rename_re_renders_the_triggers_own_rows_that_name_it() -> None:
+    window = _self_activating_window()
     try:
         panel = window.trigger_panel
-        panel.select_entry("effect", 0)
-        panel._manager().triggers[_SETUP].name = "Renamed"
-        panel._refresh_labels(_REFERENCES)
+        panel.select_entry("trigger", -1)
+        name = next(widget for spec, _kind, _index, widget in panel._rows if spec.name == "name")
+        name.setText("Renamed")
+        name.editingFinished.emit()
+        assert panel._manager().triggers[_REFERENCES].name == "Renamed", "the edit went through"
         assert _details(panel)[("effect", 0)] == '"Renamed"'
     finally:
+        window.edit_history.mark_saved()
         conftest.close_window(window)
 
 
@@ -283,17 +435,23 @@ def test_a_variable_rename_re_renders_the_rows_that_name_it() -> None:
 
 
 @pytest.mark.parametrize("selected", [("trigger", -1), ("effect", 1)])
-def test_a_rename_from_the_list_re_renders_the_shown_rows_that_name_it(selected) -> None:
-    """Renaming another trigger from the trigger list refreshes that trigger, not the shown one,
-    and the rows naming it need not be selected."""
-    window = _window(_REFERENCES)
+@pytest.mark.parametrize("renamed", [_SETUP, _REFERENCES])
+def test_a_rename_from_the_list_re_renders_the_shown_rows_that_name_it(selected, renamed) -> None:
+    """The list's inline rename (rename_trigger()) of another trigger or the shown one itself;
+    the rows naming it need not be selected."""
+    window = _self_activating_window()
     try:
         panel = window.trigger_panel
+        effect = panel._manager().triggers[_REFERENCES].effects[0]
+        effect.trigger_id = panel._manager().triggers[renamed].trigger_id
+        panel.select_trigger(_SETUP)
+        panel.select_trigger(_REFERENCES)
         panel.select_entry(*selected)
-        panel._manager().triggers[_SETUP].name = "Renamed"
-        panel._refresh_labels(_SETUP)
+        panel.rename_trigger(renamed, "Renamed")
+        assert panel._manager().triggers[renamed].name == "Renamed", "the edit went through"
         assert _details(panel)[("effect", 0)] == '"Renamed"'
     finally:
+        window.edit_history.mark_saved()
         conftest.close_window(window)
 
 
@@ -332,14 +490,17 @@ def test_the_panel_hands_a_clicked_link_to_the_window_with_its_entry() -> None:
 
 def test_the_settings_controls_store_render_the_preview_and_reset() -> None:
     from descape import settings
+    from descape.trigger_summary_delegate import SUMMARY_ROLE
 
     dialog, window = conftest.dialog_and_window()
     try:
         page = dialog.trigger_details_page
         assert page.preview.topLevelItem(1).text(1) == "P2 to P1, visible"
         assert [page.preview.topLevelItem(i).text(1) for i in (4, 5, 6, 7)] == [
-            '"Wave 2"', 'P1 "Defend the castle until the reinforceme…", 10 s', "P7 Castle #500", "4 selected P1 objects",
+            '"Wave 2"', 'P1 "Defend the castle until the reinforceme…", 10 s', "P7 Wonder #500", "3 selected objects + source player: P1",
         ]
+        # All three are P1's, so the count takes P1's colour.
+        assert page.preview.topLevelItem(7).data(1, SUMMARY_ROLE).segments[0].player == 1
         page.style_combo.setCurrentIndex(page.style_combo.findData("full"))
         page.colour_combo.setCurrentIndex(page.colour_combo.findData("text"))
         page.cap_spin.setValue(0)
@@ -353,6 +514,46 @@ def test_the_settings_controls_store_render_the_preview_and_reset() -> None:
     finally:
         dialog.close()
         conftest.close_window(window)
+
+
+@pytest.mark.parametrize(("spin_name", "key"), [("cap_spin", "text_cap"), ("id_limit_spin", "unit_id_limit")])
+def test_a_typed_number_saves_once_on_enter_not_per_keystroke(monkeypatch, spin_name: str, key: str) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    from descape import settings
+
+    dialog, window = conftest.dialog_and_window()
+    try:
+        spin = getattr(dialog.trigger_details_page, spin_name)
+        saved = []
+        real = settings.set_trigger_details
+        monkeypatch.setattr(settings, "set_trigger_details", lambda values: (saved.append(dict(values)), real(values)))
+        spin.setFocus()
+        spin.selectAll()
+        QTest.keyClicks(spin, "12")
+        assert saved == [], "saved per keystroke"
+        QTest.keyClick(spin, Qt.Key_Return)
+        assert saved == [{key: 12}]
+        assert settings.get_trigger_details()[key] == 12
+        QTest.keyClick(spin, Qt.Key_Up)
+        assert saved[-1] == {key: 13}, "an arrow step still saves at once"
+    finally:
+        dialog.close()
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("game_id", ["aoe2", "ror"])
+def test_the_preview_samples_are_objects_every_games_editor_lists(game_id: str) -> None:
+    """AoE2's Castle (82), the old sample, is editor-hidden under Return of Rome."""
+    from descape import game_dataset, games, object_catalog, trigger_details_page, trigger_fields
+
+    assert {game.id for game in games.GAMES} == {"aoe2", "ror"}, "a new game: add it here"
+    with game_dataset.activated(game_id):
+        listed = {entry.id: entry for entry in object_catalog.objects()}
+        for const in (trigger_details_page.SAMPLE_BUILDING, trigger_details_page.SAMPLE_UNIT):
+            assert const in listed and not listed[const].hidden, (game_id, const)
+        assert trigger_fields.resolve_reference("TechInfo", trigger_details_page.SAMPLE_TECH), game_id
 
 
 def test_opening_and_closing_settings_writes_nothing() -> None:

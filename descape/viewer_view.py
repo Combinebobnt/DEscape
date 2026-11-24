@@ -483,18 +483,23 @@ class _ViewerViewMixin:
             self.invalidate_ai_choices()
         return True
 
-    def _apply_mod_art_change(self, status: str, *, rescan: bool = False, picked_up: bool = False) -> bool:
+    def _apply_mod_art_change(
+        self, status: str, *, rescan: bool = False, picked_up: bool = False, quiet: bool = False
+    ) -> bool:
         """The one path for a Mod Art toggle, a Settings opt-out or opt-in and a
         profile folder change (TASK-378): mod_graphics takes the window's state, every
         art cache drops, and the map, swatches and thumbnails redraw from the
         files that now win. rescan also forgets the scanned mod folders; without
         it, a change in the game's mod list is picked up first (TASK-438), and
-        the result says whether there was one. picked_up: _pick_up_mod_changes() already did."""
+        the result says whether there was one. picked_up: _pick_up_mod_changes() already did.
+        quiet logs no status line but a pick-up, for Settings' Cancel putting the old choices back."""
         if rescan:
             mod_graphics.clear()
         elif not picked_up and mod_graphics.refresh():
             picked_up = True
             status = f"{MOD_LIST_PICKED_UP}. {status}"
+            if quiet:  # news of its own, not an apply, so said even then
+                self._log_status(MOD_LIST_PICKED_UP)
             self.invalidate_ai_choices()  # a mod enabled in the game offers its AIs
         toggled = mod_graphics.set_enabled(self._layers.mod_art)
         mod_graphics.set_excluded(settings.get_mod_art_excluded())
@@ -502,7 +507,8 @@ class _ViewerViewMixin:
         if not (toggled or mod_graphics.enabled()):
             # Off before and after (an opt-out, opt-in or profile change): nothing drawn changes.
             self._update_tool_enabled()
-            self._log_status(status)
+            if not quiet:
+                self._log_status(status)
             return picked_up
         self._cancel_warms()
         asset_source.clear_art_caches()
@@ -514,8 +520,9 @@ class _ViewerViewMixin:
         self.trigger_panel.refresh_portraits()
         if self.scenario is None:
             self._update_tool_enabled()  # refresh_map() re-gates when a map is open
-        pending = " (measuring its reach in the background)" if unit_sprites.reach_pending() else ""
-        self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'}{pending}")
+        if not quiet:
+            pending = " (measuring its reach in the background)" if unit_sprites.reach_pending() else ""
+            self._log_status(f"{status}. {self._mod_art_status() or 'Mod art: none drawn'}{pending}")
         return picked_up
 
     def _mod_art_status(self) -> str:
@@ -679,6 +686,7 @@ class _ViewerViewMixin:
         changes the mode or the document calls it, so a stale box cannot survive one."""
         shown = self.scenario is not None and self.mode == "triggers" and self.instruction_overlay_action.isChecked()
         self.map_view.show_instruction(self._instruction_view if shown else None)
+        self._push_objectives_overlay()
 
     def _on_distance_tick_interval(self, tiles: int) -> None:
         settings.set_distance_tick_interval(tiles)

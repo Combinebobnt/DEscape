@@ -23,6 +23,8 @@ from descape.render_paint import tile_pixels_for_map
 from descape.unit_filter import UnitFilter
 from testkit.fakes import FakeScenario, SyntheticTile
 
+import conftest
+
 MAP_W = MAP_H = 16
 BACKGROUND_TERRAIN = 1
 FARM_CONST = 50
@@ -55,6 +57,7 @@ def _scenario(*, with_farm: bool) -> FakeScenario:
 @pytest.fixture
 def textures(monkeypatch):
     """Solid colours, so a leftover drape would show as the farm terrain's own colour."""
+    conftest.hide_install(monkeypatch)
     farm_terrain = render_sprites._terrain_overlay_for(FARM_CONST)
     assert farm_terrain is not None, "FARM lost its foundation terrain -- this file would prove nothing"
     colours = {BACKGROUND_TERRAIN: (10, 20, 30), farm_terrain: (200, 150, 40)}

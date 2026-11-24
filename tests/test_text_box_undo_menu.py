@@ -198,11 +198,85 @@ def _refetch_box(window, which: str):
     return window.messages_panel.widget_for("hints")
 
 
+def _click_the_edit_title(window) -> None:
+    """A spontaneous press through the window handle, as TASK-418's live runs clicked it."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    bar = window.menuBar()
+    pos = bar.mapTo(window, bar.actionGeometry(_edit_menu(window).menuAction()).center())
+    QTest.mouseClick(window.windowHandle(), Qt.LeftButton, Qt.NoModifier, pos)
+    QApplication.processEvents()
+
+
+def _enter_the_menu_bar(window, entry: str) -> None:
+    """The bar's keyboard mode, by Escape out of a mouse-opened Edit menu or a bare Alt tap (TASK-648)."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    if entry == "escape":
+        _click_the_edit_title(window)
+        assert _edit_menu(window).isVisible(), "the click did not open the Edit menu"
+        QTest.keyClick(QApplication.activePopupWidget(), Qt.Key_Escape)
+    else:
+        target = QApplication.focusWidget()
+        QTest.keyPress(target, Qt.Key_Alt)
+        QTest.keyRelease(target, Qt.Key_Alt)
+    QApplication.processEvents()
+    assert QApplication.activePopupWidget() is None
+    assert QApplication.focusWidget() is window.menuBar()
+
+
+def _click_the_map(window) -> None:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    view = window.map_view
+    QTest.mouseClick(window.windowHandle(), Qt.LeftButton, Qt.NoModifier, view.mapTo(window, view.rect().center()))
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is view
+
+
 @pytest.mark.parametrize("which", BOXES)
-def test_alt_e_commits_the_box_once_and_undo_reverts_that_commit(which: str) -> None:
-    """TASK-125's recorded coarser path, pinned as designed (TASK-418): the menu bar's keyboard
-    mode takes focus (MenuBarFocusReason), which commits the box as one EditHistory record, and
-    Undo then reverts that whole commit. Changing this is a deliberate decision, not a fix."""
+def test_escape_out_of_a_mouse_opened_edit_menu_commits_nothing(which: str) -> None:
+    """TASK-648: Escape leaves the bar in keyboard mode with focus (MenuBarFocusReason), which holds
+    the box uncommitted as the Undo target; a second Escape hands focus back to it."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        finished = []
+        box.editingFinished.connect(lambda: finished.append(True))
+        _type(box, " xyz")
+        before_history = _history(window)
+
+        _enter_the_menu_bar(window, "escape")
+        assert finished == []
+        assert _history(window) == before_history
+        assert window.focusWidget() is window.menuBar()
+        assert window._focused_text_box() is box
+
+        QTest.keyClick(window.menuBar(), Qt.Key_Escape)
+        QApplication.processEvents()
+        assert QApplication.focusWidget() is box
+        assert finished == []
+        assert _history(window) == before_history
+        assert box.toPlainText().endswith(" xyz")
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("which", BOXES)
+def test_alt_e_holds_the_box_and_undo_follows_its_stack(which: str) -> None:
+    """TASK-648 retires TASK-125's coarser path: Alt+E commits nothing, and Undo with the bar holding
+    focus (a window shortcut fires there) steps back the box's own typing, not EditHistory."""
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
@@ -211,18 +285,123 @@ def test_alt_e_commits_the_box_once_and_undo_reverts_that_commit(which: str) -> 
     try:
         _focus(box)
         before_text = box.toPlainText()
-        records, cursor = _history(window)
+        before_history = _history(window)
         _type(box, " xyz")
 
         QTest.keyClick(box, Qt.Key_E, Qt.AltModifier)
         QApplication.processEvents()
-        assert _history(window) == (records + 1, cursor + 1), "Alt+E should commit the box as one record"
-        assert window._focused_text_box() is None
+        assert _edit_menu(window).isVisible(), "Alt+E did not open the Edit menu"
+        assert QApplication.focusWidget() is window.menuBar()
+        assert _history(window) == before_history, "Alt+E should commit nothing"
+        assert window._focused_text_box() is box
+        assert window.undo_action.isEnabled()
 
         window.undo_action.trigger()
         QApplication.processEvents()
-        assert _history(window) == (records + 1, cursor)
+        assert box.toPlainText() == before_text
+        assert _history(window) == before_history
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("entry", ["escape", "alt"])
+@pytest.mark.parametrize("which", BOXES)
+def test_leaving_the_menu_bar_for_the_map_commits_the_box_once(which: str, entry: str) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        before_text = box.toPlainText()
+        records, cursor = _history(window)
+        _type(box, " xyz")
+        typed = box.toPlainText()
+
+        _enter_the_menu_bar(window, entry)
+        assert _history(window) == (records, cursor)
+        _click_the_map(window)
+        assert _history(window) == (records + 1, cursor + 1), "the map click should commit the held box once"
+        assert window._focused_text_box() is None
+
+        # The one record holds the typed text: Undo reverts to the old text and Redo brings it back.
+        window.undo_action.trigger()
+        QApplication.processEvents()
         assert _refetch_box(window, which).toPlainText() == before_text
+        window.redo_action.trigger()
+        QApplication.processEvents()
+        assert _refetch_box(window, which).toPlainText() == typed
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("which", BOXES)
+def test_a_mode_switch_from_the_menu_bar_commits_the_held_box(which: str) -> None:
+    """A mode shortcut fires while the bar holds the box; the switch hides it, so it commits there."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import settings
+
+    window, box = _box_window(which)
+    try:
+        _focus(box)
+        records, cursor = _history(window)
+        _type(box, " xyz")
+        _enter_the_menu_bar(window, "alt")
+        window.mode_combo.setCurrentText(settings.MODE_LABELS["view"])
+        QApplication.processEvents()
+        assert _history(window) == (records + 1, cursor + 1), "the switch should commit the held box once"
+        assert window._focused_text_box() is None, "a hidden box must not stay the Undo target"
+        assert window._menu_bar_held_box() is None
+    finally:
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("which", BOXES)
+def test_a_window_switch_keeps_the_held_box_pending(which: str) -> None:
+    """TASK-648, G5: the bar loses focus to no widget and gets it back; a switch never commits a box."""
+    from PyQt5.QtWidgets import QApplication, QWidget
+
+    window, box = _box_window(which)
+    other = QWidget()
+    try:
+        _focus(box)
+        records, cursor = _history(window)
+        _type(box, " xyz")
+
+        _enter_the_menu_bar(window, "alt")
+        other.show()
+        other.activateWindow()
+        QApplication.setActiveWindow(other)
+        QApplication.processEvents()
+        assert not window.isActiveWindow()
+        window.activateWindow()
+        QApplication.setActiveWindow(window)
+        QApplication.processEvents()
+        assert window.isActiveWindow()
+        assert _history(window) == (records, cursor)
+        assert window._focused_text_box() is box
+
+        _click_the_map(window)
+        assert _history(window) == (records + 1, cursor + 1)
+    finally:
+        other.close()
+        other.deleteLater()
+        _leave_the_menu_bar(window)
+        conftest.close_window(window)
+
+
+def test_paste_from_the_menu_bar_targets_the_held_box() -> None:
+    """TASK-648: in Triggers mode Edit > Cut/Copy/Paste follow the held box, not the trigger list."""
+    window, box = _box_window("trigger message")
+    try:
+        _focus(box)
+        assert window.paste_action.text() == "&Paste"
+        _enter_the_menu_bar(window, "alt")
+        assert window.paste_action.text() == "&Paste"
+        assert window._focused_editor() is box
     finally:
         _leave_the_menu_bar(window)
         conftest.close_window(window)

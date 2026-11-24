@@ -489,6 +489,15 @@ class _ViewerMenusMixin:
             "sized and placed as the game draws it."
         )
         view_menu.addAction(self.instruction_overlay_action)
+        # GH #391: mirrors the Objectives panel's Preview combo (On map), persisted through it.
+        self.objectives_overlay_action = QAction(
+            "Show Ob&jectives on Map", self, checkable=True, checked=settings.get_objectives_preview() == "map"
+        )
+        self.objectives_overlay_action.setToolTip(
+            "In Triggers mode, the game's objectives box drawn over the map's top-right corner, "
+            "as the Objectives panel's Preview On map."
+        )
+        view_menu.addAction(self.objectives_overlay_action)
 
         # GH #49. Persisted passive chrome, but off by default: it draws over
         # the sprites, so it is opt-in.
@@ -598,6 +607,7 @@ class _ViewerMenusMixin:
         self.trigger_overlay_action.toggled.connect(self._on_trigger_overlay_toggled)
         self.trigger_ghosts_action.toggled.connect(self._on_trigger_ghosts_toggled)
         self.instruction_overlay_action.toggled.connect(self._on_instruction_overlay_toggled)
+        self.objectives_overlay_action.toggled.connect(self._on_objectives_overlay_toggled)
         for tiles, action in self.distance_tick_interval_actions.items():
             # `on` must lead: toggled passes checked as the first positional
             # arg, so a lambda with only `tiles=tiles` gets it bound into
@@ -759,12 +769,13 @@ class _ViewerMenusMixin:
         panels_menu = KeepOpenMenu("Pan&els", view_menu)
         view_menu.addMenu(panels_menu)
         panels_menu.menuAction().setToolTip(
-            "Show or hide the editor panel, the status log, the minimap and Trigger Details"
+            "Show or hide the editor panel, the status log, the minimap, Trigger Details and Objectives"
         )
         panels_menu.addAction(self.panel_dock_action)
         panels_menu.addAction(self.log_dock.toggleViewAction())
         panels_menu.addAction(self.minimap_dock.toggleViewAction())
         panels_menu.addAction(self.trigger_detail_dock.toggleViewAction())
+        panels_menu.addAction(self.objectives_dock.toggleViewAction())
         panels_menu.addSeparator()
         panels_menu.addAction(self.reset_layout_action)
 
@@ -1022,10 +1033,12 @@ class _ViewerMenusMixin:
             "view_trigger_overlay": self.trigger_overlay_action,
             "view_trigger_ghosts": self.trigger_ghosts_action,
             "view_instruction_overlay": self.instruction_overlay_action,
+            "view_objectives_overlay": self.objectives_overlay_action,
             "view_panel_dock": self.panel_dock_action,
             "view_log_dock": self.log_dock.toggleViewAction(),
             "view_minimap_dock": self.minimap_dock.toggleViewAction(),
             "view_trigger_detail_dock": self.trigger_detail_dock.toggleViewAction(),
+            "view_objectives_dock": self.objectives_dock.toggleViewAction(),
             "view_reset_layout": self.reset_layout_action,
             **{f"view_layer_{lid}": action for lid, action in self.layer_actions.items()},
             "view_pan_up": self.view_pan_up_action,
@@ -1180,6 +1193,7 @@ class _ViewerMenusMixin:
         self._pick_up_mod_changes()  # TASK-438: its mod lists start current
         dialog = SettingsDialog(self)
         dialog.exec_()
+        dialog.deleteLater()  # parented to the window, so each open would otherwise keep one
 
     def _show_debug_log(self) -> None:
         # Before the dialog snapshots the log: a just-finished op isn't written until idle.

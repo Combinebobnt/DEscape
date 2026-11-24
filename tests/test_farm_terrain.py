@@ -25,6 +25,8 @@ import pytest
 from descape import asset_source, iso_geometry, render_bbox, render_iso, render_paint, render_sprites, render_units, unit_sprites
 from descape.terrain_palette import BUILDING_TILE_SPANS, FOUNDATION_TERRAIN, PLAYER_COLORS
 
+import conftest
+
 MAP_W = MAP_H = 12
 FAKE_FARM_CONST = 999001
 FAKE_FARM_SPAN = (3, 3)
@@ -170,6 +172,7 @@ def _synthetic_textures(monkeypatch) -> int:
     always (0, 0) -- the same fixture shape tests/test_sloped_render.py
     uses to keep the oracle exact rather than dependent on install-specific
     art. Returns tile_px."""
+    conftest.hide_install(monkeypatch)
     tile_px = render_paint.tile_pixels_for_map(MAP_W, MAP_H)
     textures = {
         tid: np.full((tile_px, tile_px, 3), color, dtype=np.uint8)

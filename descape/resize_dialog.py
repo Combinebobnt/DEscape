@@ -73,7 +73,9 @@ class ResizeDialog(QDialog):
         self.size_picker = MapSizePicker(width, current=width if width == height else None, enter_applies=True)
         form.addRow("Size:", self.size_picker)
 
-        anchor_box = QGroupBox("Anchor (the part of the map that stays put)")
+        # A long title clips in Fusion with some fonts, its label area being the ink width + 2 (TASK-661).
+        self.anchor_box = anchor_box = QGroupBox("Anchor")
+        anchor_box.setToolTip("The part of the map that stays put")
         grid = QGridLayout(anchor_box)
         self.anchor_group = QButtonGroup(self)
         self.anchor_buttons: dict[Anchor, QRadioButton] = {}

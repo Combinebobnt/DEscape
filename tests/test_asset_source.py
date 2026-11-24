@@ -181,7 +181,7 @@ def fresh_average_cache():
     asset_source.get_terrain_average_color.cache_clear()
 
 
-def test_a_stand_in_textures_average_colour_opens_no_file(fresh_average_cache, monkeypatch) -> None:
+def test_a_stand_in_textures_average_colour_opens_no_file(fresh_average_cache, _no_install_env, monkeypatch) -> None:
     """A terrain with no file averages get_terrain_texture_array()'s stand-in."""
     import numpy as np
     from PIL import Image
@@ -198,7 +198,7 @@ def test_a_stand_in_textures_average_colour_opens_no_file(fresh_average_cache, m
     assert asset_source.get_terrain_average_color(10) == (60, 120, 200)
 
 
-def test_the_average_colour_is_none_without_a_texture_array(fresh_average_cache, monkeypatch) -> None:
+def test_the_average_colour_is_none_without_a_texture_array(fresh_average_cache, _no_install_env, monkeypatch) -> None:
     monkeypatch.setattr(asset_source, "get_terrain_texture_array", lambda _tid: None)
     assert asset_source.get_terrain_average_color(10) is None
 

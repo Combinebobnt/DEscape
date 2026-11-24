@@ -44,6 +44,9 @@ _TEAM_INDEX = 0
 _HALF_W = 32
 # The memo's byte budget: each icon's RGBA pixels (a 48 px one is 9 KB) plus a portrait's kept array.
 MEMO_BYTES_CAP = 32 * 1024 * 1024
+# tinted()'s curve, region = colour * (slope * shade + offset): fitted to the game's 1.59
+# portraits in all 9 colours, within 2.1 to 6.4/255 mean (GH #374 Step 0).
+TINT_SLOPE, TINT_OFFSET = 1.113, 0.177
 
 _pool: ThreadPoolExecutor | None = None
 _pool_lock = threading.Lock()
@@ -137,8 +140,7 @@ def tinted(arr: np.ndarray, rgb: tuple[int, int, int]) -> np.ndarray:
     if clear.any() and not arr[..., :3][clear].any():
         region = np.broadcast_to(colour, pixels[..., :3].shape)
     else:
-        # Fitted to the game's 1.59 portraits in all 9 colours, within 2.1 to 6.4/255 mean (GH #374 Step 0).
-        region = colour * (1.113 * shade + 0.177)
+        region = colour * (TINT_SLOPE * shade + TINT_OFFSET)
     out = np.empty((*arr.shape[:2], 4), np.uint8)
     out[..., :3] = np.clip((pixels[..., :3] * weight + region * (1 - weight)) * 255 + 0.5, 0, 255)
     out[..., 3] = 255
@@ -216,9 +218,10 @@ class ThumbLoader(QObject):
     once per resolved request, civ already folded; cached() answers a memo hit
     without one. The sprite ignores civ (GH #284).
 
-    One loader serves the panel's list and both cards. Each `client` (the
-    list, each card) has its own pending list, which its next request()
-    replaces, so one card never drops another's request. A `priority` client
+    One loader serves the panel's list, both cards and the Favorite Objects
+    window. Each `client` (the list, each card, the window) has its own pending
+    list, which its next request() replaces, so one never drops another's
+    request; request([], 0, client=...) drops a client's list. A `priority` client
     (a card) is served before every other, so a card never waits behind a
     viewport of rows, even one the list asked for later (a scroll after the
     pick); among equals the most recently requested goes first."""

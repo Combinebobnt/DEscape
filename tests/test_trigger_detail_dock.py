@@ -77,7 +77,7 @@ def test_a_fresh_config_docks_the_form_under_the_editor_panel() -> None:
         assert dock.geometry().top() > window.panel_dock.geometry().bottom(), "under the panel"
         assert dock.geometry().left() == window.panel_dock.geometry().left()
         # The entry list and its buttons are one pane, with no bar left over from the form.
-        assert window.trigger_panel.detail_splitter.count() == 1
+        assert window.trigger_panel.entry_tree.parentWidget() is window.trigger_panel.splitter.widget(1)
     finally:
         conftest.close_window(window)
 
@@ -252,8 +252,9 @@ def test_no_left_column_widget_goes_below_its_minimum(height: int) -> None:
         ):
             _assert_fits(widget, name)
         if height == 900 and not os.environ.get(FONT_DPI_OVERRIDE_ENV):
-            viewport = panel.tree.viewport().height()
-            assert viewport >= 150, f"the trigger list viewport is {viewport} px (157 measured)"
+            # In rows, not pixels, so a style's row height moves the floor with it.
+            rows = panel.tree.viewport().height() // panel.tree.sizeHintForRow(0)
+            assert rows >= 6, f"the trigger list shows {rows} whole rows (8 measured)"
     finally:
         conftest.close_window(window)
 

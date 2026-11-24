@@ -33,20 +33,26 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 
+from PyQt5.QtCore import QEvent, QRect, QSize
 from PyQt5.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
+    QWidget,
 )
 
 from descape import batch_api, object_catalog, player_labels, scatter
@@ -162,6 +168,51 @@ def region_terrain_counts(scenario, region: tuple[int, int, int, int]) -> Counte
     return Counter(mm.terrain[y * width + x].terrain_id for x, y in region_tiles(region, width, mm.map_height))
 
 
+def _screen_area(widget: QWidget) -> QRect:
+    """The free area of the dialog's screen: once shown its own (the user may drag it to another
+    monitor), before that its parent's, as QDialog centres on it."""
+    owner = widget if widget.isVisible() else (widget.parentWidget() or widget)
+    screen = owner.screen() or QApplication.primaryScreen()
+    return screen.availableGeometry()
+
+
+def _frame_height(dialog: QDialog) -> int:
+    """The window frame's added height: the dialog's own once shown, before that its parent window's,
+    as QDialog::adjustPosition() reads it, never under the style's title bar."""
+    if dialog.isVisible():
+        return dialog.frameGeometry().height() - dialog.height()
+    guess = dialog.style().pixelMetric(QStyle.PM_TitleBarHeight)
+    parent = dialog.parentWidget()
+    if parent is not None and parent.window().isVisible():
+        top = parent.window()
+        guess = max(guess, top.frameGeometry().height() - top.height())
+    return guess
+
+
+class _GroupsScroll(QScrollArea):
+    """Scrolls the dialog's groups vertically, which only a screen too short for them needs
+    (TASK-672). Its size hint is the page's own, uncapped, so the dialog's is the full one."""
+
+    def sizeHint(self) -> QSize:
+        page = self.widget()
+        hint = page.sizeHint()
+        if page.hasHeightForWidth():
+            hint.setHeight(max(hint.height(), page.heightForWidth(hint.width())))
+        return hint + QSize(2 * self.frameWidth(), 2 * self.frameWidth())
+
+    def minimumSizeHint(self) -> QSize:
+        # As wide as the page plus a scrollbar, so it never scrolls sideways; any height.
+        width = self.widget().minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width()
+        return QSize(width + 2 * self.frameWidth(), super().minimumSizeHint().height())
+
+    def eventFilter(self, watched, event) -> bool:
+        # A taller page would lay out squeezed at its old size: resize it first, and pass the hint up.
+        if watched is self.widget() and event.type() == QEvent.LayoutRequest:
+            self.updateGeometry()
+            super().event(QEvent(QEvent.LayoutRequest))
+        return super().eventFilter(watched, event)
+
+
 @dataclass(frozen=True)
 class ScatterParams:
     """Exactly what ViewerWindow hands scatter.plan_scatter_units(), or with
@@ -235,8 +286,11 @@ class ScatterDialog(QDialog):
         self._buildings_by_others: set[tuple[int, int]] | None = None
         self._moving: list | None = None
         self._eligible: list[tuple[int, int]] = []
+        self._fitted = False
 
-        layout = QVBoxLayout(self)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._build_mode_group())
         # Before the restrict group: its terrain default reads _area().
         layout.addWidget(self._build_area_group())
@@ -269,14 +323,45 @@ class ScatterDialog(QDialog):
         self.note_label = QLabel(_PLACE_NOTE)
         self.note_label.setWordWrap(True)
         layout.addWidget(self.note_label)
+        layout.addStretch(1)
+
+        self.scroll = _GroupsScroll()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidget(page)
+        outer = QVBoxLayout(self)
+        outer.addWidget(self.scroll)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        outer.addWidget(self.buttons)
 
         self._restore(last or {})
         self._refresh_eligible()
+
+    # -- size --------------------------------------------------------------
+
+    def setVisible(self, visible: bool) -> None:
+        # Sized before Qt's first show: its own pick is capped at 2/3 of the screen, squeezing the groups.
+        if visible and not self._fitted:
+            self._fitted = True
+            self._fit_to_hint(grow_only=False)
+        super().setVisible(visible)
+
+    def _fit_to_hint(self, *, grow_only: bool = True) -> None:
+        """Takes sizeHint() within the screen's free area, where the scroll takes up any shortfall;
+        `grow_only` never shrinks it under the user."""
+        area = _screen_area(self)
+        self.scroll.updateGeometry()  # the page's own request reaches _GroupsScroll only later
+        frame = _frame_height(self)
+        hint = self.sizeHint()
+        width, height = hint.width(), hint.height()
+        if grow_only:
+            width, height = max(width, self.width()), max(height, self.height())
+        self.resize(min(width, area.width()), min(height, area.height() - frame))
+        if self.isVisible() and self.frameGeometry().bottom() > area.bottom():
+            self.move(self.x(), max(area.top(), area.bottom() + 1 - self.frameGeometry().height()))
 
     # -- construction ------------------------------------------------------
 
@@ -511,6 +596,8 @@ class ScatterDialog(QDialog):
             self.note_label.setText(_MOVE_NOTE)
         else:
             self.note_label.setText(_PLACE_RANDOM_NOTE if self.random_rotation_check.isChecked() else _PLACE_NOTE)
+        if self.isVisible():
+            self._fit_to_hint()
 
     def _on_restrict_changed(self) -> None:
         self.terrain_combo.setEnabled(self.terrain_radio.isChecked())

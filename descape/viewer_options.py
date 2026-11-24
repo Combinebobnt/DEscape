@@ -144,6 +144,7 @@ class _ViewerOptionsMixin:
         self._sync_entry_clipboard_state()
         # A repopulate can leave nothing current, which emits no entry change.
         self._on_trigger_focus_changed()
+        self.refresh_objectives()
 
     def _show_map_options(self) -> None:
         """Populate the Map Options panel, parsing the Triggers section first.

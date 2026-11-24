@@ -171,9 +171,25 @@ def test_the_object_filter_reads_selected_objects_first() -> None:
     one = _summary("effect", "kill_object", context, selected_object_ids=[500])
     assert one.text == "P1 Archer #500"
     assert one.segments[0].link == (trigger_summary.LINK_UNIT, 500)
-    several = _summary("effect", "kill_object", context, selected_object_ids=[500, 501, 502])
-    assert several.segments == (Segment("3 selected P1 objects", (trigger_summary.LINK_UNITS, (500, 501, 502)), 1),)
-    assert _text("effect", "kill_object", context, selected_object_ids=[777]) == "P1 object 777 (not on the map)"
+    several = _summary("effect", "kill_object", context, source_player=2, selected_object_ids=[500, 501, 502])
+    # Not every id is P1's (two are not on the map), so no colour; the source player trails.
+    assert several.segments[0] == Segment("3 selected objects", (trigger_summary.LINK_UNITS, (500, 501, 502)))
+    assert several.text == "3 selected objects + source player: P2"
+    assert _text("effect", "kill_object", context, selected_object_ids=[777]) == "object 777 (not on the map) + source player: P1"
+
+
+def test_several_objects_of_one_owner_take_its_colour_not_the_source_players() -> None:
+    """They read as P2's, coloured P2, when all were P1's: the source player is not their owner."""
+    placed = {
+        ref: SimpleNamespace(player_id=1, unit_const=_ARCHER, bounds=(0, 0, 1, 1), own_tile=(5, 5)) for ref in (500, 501)
+    }
+    context = Context(labels=NAMES, unit=placed.get)
+    several = _summary("effect", "kill_object", context, source_player=2, selected_object_ids=[500, 501])
+    assert several.text == "2 selected objects + source player: P2"
+    assert (several.segments[0].player, several.segments[-1].player) == (1, 2)
+    placed[501] = SimpleNamespace(player_id=3, unit_const=_ARCHER, bounds=(0, 0, 1, 1), own_tile=(5, 5))
+    mixed = _summary("effect", "kill_object", context, source_player=2, selected_object_ids=[500, 501])
+    assert mixed.segments[0].player is None, "owners differ: no one colour"
 
 
 def test_the_object_filter_reads_class_area_and_max() -> None:
@@ -330,13 +346,14 @@ def test_every_type_of_every_version_summarises_at_its_defaults(version) -> None
                 trigger_summary.summarize(kind, entry, definition, presentation, options=Options(sentence_style=style))
 
 
-def test_a_player_the_sentence_does_not_show_leads_it() -> None:
+def test_the_source_player_trails_a_placed_object_the_sentence_names() -> None:
     placed = {500: SimpleNamespace(player_id=1, unit_const=_ARCHER, bounds=(0, 0, 1, 1), own_tile=(5, 5))}
     context = Context(labels=NAMES, unit=placed.get)
     assert _text("effect", "kill_object", context, source_player=1, selected_object_ids=[500]) == "P1 Archer #500"
-    lead = _summary("effect", "kill_object", context, source_player=2, selected_object_ids=[777]).segments[0]
-    assert (lead.text, lead.player) == ("P2", 2)
-    # After a placed object it is ignored in-game, so it trails instead of reading as the actor.
+    # After a placed object it is ignored in-game, so it trails instead of reading as the actor;
+    # an id not on the map too. test_objects_in_area_and_object_attacked_lead_with_the_player has a lead.
+    missing = _text("effect", "kill_object", context, source_player=2, selected_object_ids=[777])
+    assert missing == "object 777 (not on the map) + source player: P2"
     trailing = _summary("effect", "kill_object", context, source_player=2, selected_object_ids=[500])
     assert trailing.text.startswith("P1 Archer #500 + ") and trailing.text.endswith(": P2")
     assert trailing.segments[-1].player == 2
@@ -364,12 +381,13 @@ def test_placed_ids_and_how_many_selected_ids_to_list() -> None:
     context = Context(labels=NAMES, unit=placed.get)
     ids = [500, 501, 502, 503, 504]
     assert _text("effect", "kill_object", context, Options(show_unit_ids=False), selected_object_ids=[500]) == "P1 Archer"
-    assert _text("effect", "kill_object", context, selected_object_ids=ids) == "5 selected P1 objects"
-    assert _text("effect", "kill_object", context, Options(unit_id_limit=3), selected_object_ids=ids) == (
-        "5 selected P1 objects (#500, #501, #502, …)"
+    unset = {"source_player": -1, "selected_object_ids": ids}
+    assert _text("effect", "kill_object", context, **unset) == "5 selected objects"
+    assert _text("effect", "kill_object", context, Options(unit_id_limit=3), **unset) == (
+        "5 selected objects (#500, #501, #502, …)"
     )
-    assert _text("effect", "kill_object", context, Options(unit_id_limit=5), selected_object_ids=ids) == (
-        "5 selected P1 objects (#500, #501, #502, #503, #504)"
+    assert _text("effect", "kill_object", context, Options(unit_id_limit=5), **unset) == (
+        "5 selected objects (#500, #501, #502, #503, #504)"
     )
 
 
@@ -377,9 +395,9 @@ def test_placed_ids_and_how_many_selected_ids_to_list() -> None:
     ("choice", "expected"),
     [
         ("area", "P1 Archer in 21,215 24,218"),
-        ("objects", "3 selected P1 objects"),
-        ("objects_first", "3 selected P1 objects in 21,215 24,218"),
-        ("area_first", "P1 Archer in 21,215 24,218 and 3 selected P1 objects"),
+        ("objects", "3 selected objects + source player: P1"),
+        ("objects_first", "3 selected objects in 21,215 24,218 + source player: P1"),
+        ("area_first", "P1 Archer in 21,215 24,218 and 3 selected objects"),
     ],
 )
 def test_selected_objects_with_an_area_read_per_the_option(choice, expected) -> None:
@@ -400,6 +418,37 @@ def test_a_minus_one_that_is_a_real_value_does_not_read_as_unset() -> None:
     assert _text("effect", "modify_attribute", **hit_points, message="leftover").startswith('P1 Archer "Hit points" set to -1 +')
 
 
+def test_a_float_attributes_minus_one_operand_reads_as_a_value() -> None:
+    """Movement speed is a float slot: its -1 is as real an operand as an int slot's."""
+    from pathlib import Path
+
+    from descape import trigger_fields
+    from descape.scenario_io import load_map_and_units, parse_triggers
+
+    # A loaded effect: the library's float gate reads its per-version tables, filled on load.
+    fixture = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
+    effect = parse_triggers(load_map_and_units(fixture)).triggers[1].effects[1]
+    assert _definition("effect", "modify_attribute").default_attributes["effect_type"] == effect.effect_type, "fixture"
+    effect.object_attributes, effect.operation, effect.quantity = 5, 1, -1.0  # movement speed, set
+    assert trigger_fields.live_quantity_slot(effect) == trigger_fields.QUANTITY_FLOAT
+    summary = trigger_summary.summarize(
+        "effect", effect, _definition("effect", "modify_attribute"), _presentation("effect"), Context(labels=NAMES)
+    )
+    assert summary.text.endswith('"Movement speed" set to -1'), summary.text
+    assert "quantity=-1.0" in summary.raw
+
+
+def test_a_minus_one_read_as_a_value_keeps_its_raw_pair_for_the_hover() -> None:
+    """The row read Extreme but its hover (Summary.raw) dropped quantity=-1, so it was empty."""
+    assert "quantity=-1" in _summary("condition", "difficulty_level", quantity=-1).raw
+    assert "quantity=-1" in _summary("condition", "technology_state", source_player=1, technology=_LOOM, quantity=-1).raw
+    attribute = {"source_player": 1, "object_list_unit_id": _ARCHER, "operation": 1, "quantity": -1, "object_attributes": 50}
+    assert "quantity=-1" in _summary("effect", "modify_attribute", **attribute).raw
+    # An unset -1 (no operation to apply it) still stays out, and Raw view keeps the rule it had.
+    assert "quantity=" not in _summary("effect", "modify_attribute", **{**attribute, "operation": -1}).raw
+    assert "quantity=" not in _summary("condition", "difficulty_level", options=Options(mode=RAW), quantity=-1).raw
+
+
 def test_a_trailing_source_player_is_added_once() -> None:
     placed = {500: SimpleNamespace(player_id=1, unit_const=_ARCHER, bounds=(0, 0, 1, 1), own_tile=(5, 5))}
     context = Context(labels=NAMES, unit=placed.get)
@@ -411,7 +460,7 @@ def test_a_trailing_source_player_is_added_once() -> None:
 def test_selected_objects_with_an_area_read_as_the_objects_by_default() -> None:
     """The game acts on the selected ids and ignores the area, so the default sentence must name them."""
     fields = {"source_player": 1, "object_list_unit_id": _ARCHER, "selected_object_ids": [500, 501, 502], **_AREA}
-    assert _text("effect", "kill_object", **fields) == "3 selected P1 objects"
+    assert _text("effect", "kill_object", **fields) == "3 selected objects + source player: P1"
     assert settings.TRIGGER_DETAILS_DEFAULTS["selected_with_area"] == Options().selected_with_area
 
 

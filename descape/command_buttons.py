@@ -53,6 +53,8 @@ PAGE2_OFFSET = 20
 BUILDER_UNIT = 118
 # Male and female Villager: a trigger naming either moves nothing.
 VILLAGER_IDS = frozenset({83, 293})
+# The female villager's builder task unit: the .dat trains no building there (unmeasured in game).
+FEMALE_BUILDER_UNIT = 212
 
 # The villager build menus' own buttons: more options, then cancel.
 BUILDER_RESERVED = {14: "More", 15: "Cancel"}

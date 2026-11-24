@@ -173,6 +173,15 @@ def settle_thumbs(loader, timeout: float = 5.0) -> None:
     QApplication.processEvents()
 
 
+def hide_install(monkeypatch) -> None:
+    """A texture stand-in (a patched get_terrain_texture_array) serves only a terrain with no real file,
+    so a test serving one hides AOE2DE_INSTALL_PATH, which outranks the config.yaml this file hides."""
+    from descape import asset_source
+
+    monkeypatch.delenv("AOE2DE_INSTALL_PATH", raising=False)
+    asset_source.clear_install_caches()
+
+
 @pytest.fixture
 def fake_install(tmp_path):
     from descape import asset_source
@@ -746,16 +755,25 @@ def _no_perf_trace_hooks_left():
 
 
 @pytest.fixture(autouse=True)
-def _no_unapplied_settings_prompt(monkeypatch):
+def _no_unapplied_settings_prompt(request, monkeypatch):
+    refuse_unapplied_settings_prompt(request.node, monkeypatch)
+
+
+def refuse_unapplied_settings_prompt(node, monkeypatch) -> None:
     """GH #191: Settings' unapplied-changes prompt is modal and would block forever offscreen,
     so a test that closes a dirty dialog through reject() (Esc, the title-bar X) fails at once
-    instead. A test that wants the prompt patches SettingsDialog._ask_unapplied, which shadows this."""
-    if PYQT5_AVAILABLE:
+    instead. A test that wants the prompt patches SettingsDialog._ask_unapplied, which shadows this;
+    the real one is the patch's __wrapped__. Only a gui test, or one after the module loaded,
+    is patched, so a Qt-free test never imports the dialog. So a test that dirties a SettingsDialog
+    must carry the gui mark, or it can be the first in its worker and get the real modal prompt."""
+    loaded = "descape.settings_dialog_apply" in sys.modules
+    if PYQT5_AVAILABLE and (loaded or node.get_closest_marker("gui") is not None):
         from descape.settings_dialog_apply import _SettingsDialogApplyMixin
 
         def refuse(_dialog):
             raise AssertionError("Settings asked about unapplied changes: patch SettingsDialog._ask_unapplied")
 
+        refuse.__wrapped__ = vars(_SettingsDialogApplyMixin)["_ask_unapplied"]
         monkeypatch.setattr(_SettingsDialogApplyMixin, "_ask_unapplied", refuse)
 
 

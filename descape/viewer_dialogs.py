@@ -202,11 +202,15 @@ def painted_tab_page(palette: QPalette) -> str:
     return QColor(image.pixel(12, 12)).name()
 
 
+def status_contrast_floor() -> float:
+    """The live theme's contrast floor for status text: 4.5:1, or 7:1 on a high-contrast preset."""
+    return 7.0 if settings.get_theme() in themes.HIGH_CONTRAST_PRESETS else 4.5
+
+
 def legible_status_color(hex_str: str, background: str) -> str:
     """`hex_str` shaded until it is readable on `background` under the live
-    theme: 4.5:1, or 7:1 on a high-contrast preset."""
-    floor = 7.0 if settings.get_theme() in themes.HIGH_CONTRAST_PRESETS else 4.5
-    return themes.legible(hex_str, background, floor)
+    theme (status_contrast_floor())."""
+    return themes.legible(hex_str, background, status_contrast_floor())
 
 
 def status_text_color(hex_str: str, *, on_tab_page: bool) -> str:

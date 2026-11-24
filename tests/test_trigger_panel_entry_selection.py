@@ -49,7 +49,8 @@ def _effect_summary(panel, trigger_index: int, entry_index: int) -> tuple:
     """A comparable summary of one effect, so a delete can be checked to have
     removed the rows it was given rather than merely that many rows."""
     effect = panel._manager().triggers[trigger_index].effects[entry_index]
-    return (effect.effect_type, panel._describe("effect", effect))
+    name, summary = panel._summarize("effect", effect)
+    return (effect.effect_type, name, summary.text)
 
 
 def test_selected_entry_refs_reads_in_tree_order_and_drops_non_entries() -> None:

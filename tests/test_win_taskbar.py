@@ -69,7 +69,7 @@ def test_viewer_sets_identity_and_logs_result_before_qapplication(monkeypatch, l
     monkeypatch.setattr(settings, "get_xwayland_on_wayland", lambda: False)
     monkeypatch.setattr(qt_platform, "inherited_line", lambda: None)
     monkeypatch.setattr(qt_platform, "apply_default", lambda **kwargs: None)
-    monkeypatch.setattr(qt_platform, "apply_default_theme", lambda: None)
+    monkeypatch.setattr(qt_platform, "apply_default_theme", lambda argv: None)
     monkeypatch.setattr(qt_messages, "install", lambda: None)
     log = Mock()
     monkeypatch.setattr(debug_log, "log", log)

@@ -32,6 +32,15 @@ import pytest
 
 from descape import asset_source, iso_geometry, render_iso, render_sloped
 
+import conftest
+
+
+@pytest.fixture(autouse=True)
+def _no_install(monkeypatch):
+    """A real texture skips get_terrain_texture_array, which the reject tests count to see a tile paint."""
+    conftest.hide_install(monkeypatch)
+
+
 TILE_PX = (8, 16, 32, 64, 128)
 ELEV_STEP_PCT = (25, 50, 100, 200)
 LEVELS = range(4)

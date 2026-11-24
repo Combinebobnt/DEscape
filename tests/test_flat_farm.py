@@ -28,6 +28,7 @@ from descape.unit_filter import UnitFilter
 from descape.view_layers import LayerState
 from testkit.render_family import set_render_global
 
+import conftest
 from test_unit_sprites import FILE_NAME, build_sld
 
 MAP_W = MAP_H = 12
@@ -109,6 +110,7 @@ def _farm(ref: int = 1, xy=FARM_XY) -> Unit:
 @pytest.fixture
 def fake_farm(monkeypatch):
     """A const with no .sld and a foundation terrain, plus solid textures."""
+    conftest.hide_install(monkeypatch)
     assert FAKE_FARM_CONST not in unit_sprites.graphic_map(), "picked const collides with a real one"
     monkeypatch.setitem(BUILDING_TILE_SPANS, FAKE_FARM_CONST, FAKE_FARM_SPAN)
     monkeypatch.setitem(FOUNDATION_TERRAIN, FAKE_FARM_CONST, FAKE_FARM_TERRAIN)

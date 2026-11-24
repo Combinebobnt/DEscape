@@ -38,6 +38,7 @@ from descape import (
 )
 from testkit.render_family import set_render_global
 
+import conftest
 from test_unit_sprites import CONST
 
 STYLES = ("stepped", "sloped")
@@ -75,6 +76,7 @@ def synthetic_textures(monkeypatch):
     """Every terrain id gets its own per-pixel texture and blending stays off,
     install or not: a blended edge keeps its neighbour's pixels under a
     recolour, so _own_pixels() would under-measure a tile's coverage."""
+    conftest.hide_install(monkeypatch)
     cache: dict[int, np.ndarray] = {}
 
     def fake(terrain_id: int) -> np.ndarray:

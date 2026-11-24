@@ -55,11 +55,39 @@ class _ViewerHistoryMixin:
             return None
         return box
 
+    def _menu_bar_held_box(self) -> _MultiLineEdit | None:
+        """TASK-648: the docked box the menu bar's keyboard mode took focus from,
+        still uncommitted, or None. A box deleted by a form rebuild reads as None."""
+        box = self._menu_bar_box
+        if box is None:
+            return None
+        try:
+            box.document()
+        except RuntimeError:
+            self._menu_bar_box = None
+            return None
+        return box
+
+    def _release_menu_bar_box(self) -> None:
+        """TASK-648: a mode switch hides the held box, so it commits now and stops being the Undo target."""
+        held, self._menu_bar_box = self._menu_bar_held_box(), None
+        if held is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            held.editingFinished.emit()
+        if self._focused_text_box() is held:
+            held.document().undoAvailable.disconnect(self._on_text_undo_available)
+            held.document().redoAvailable.disconnect(self._on_text_undo_available)
+            self._text_undo_box = None
+            self._update_edit_actions()
+
     def _on_app_focus_changed(self, old, new) -> None:
         """GH #38: while one of this window's _MultiLineEdit boxes has focus,
         the Edit menu follows its document's own undo stack. Opening the menu
         leaves focusWidget() on the box (a popup focus-out, which the box also
-        exempts from committing), so the menu stays live while it is open."""
+        exempts from committing), so the menu stays live while it is open.
+        While the menu bar's keyboard mode holds a box (TASK-648), the menu
+        follows that box until focus lands elsewhere here, which commits it."""
         # GH #64, #387: a move from a box into another of this window's windows (a floating dock) commits it,
         # as the same click would with everything docked. A WM may report it in two steps, via no focus widget.
         if isinstance(old, _MultiLineEdit) and self._owns_widget(old):
@@ -71,9 +99,22 @@ class _ViewerHistoryMixin:
                 with contextlib.suppress(RuntimeError):
                     if new.window() is not left.window():
                         left.editingFinished.emit()
+        # TASK-648: the bar's keyboard mode holds a docked box (its focus-out is exempt); focus landing on
+        # anything else here commits it. Focus moving to no widget or another window (a switch) keeps it.
+        bar = self.menuBar()
+        if new is bar and isinstance(old, _MultiLineEdit) and self.isAncestorOf(old):
+            self._menu_bar_box = old
+        elif new is not bar and self._owns_widget(new):
+            held, self._menu_bar_box = self._menu_bar_held_box(), None
+            if held is not None and held is not new:
+                with contextlib.suppress(RuntimeError):
+                    held.editingFinished.emit()
         # GH #137: before the early return, which every non-box move takes.
         self._update_clipboard_actions()
-        box = new if isinstance(new, _MultiLineEdit) and self._owns_widget(new) else None
+        if isinstance(new, _MultiLineEdit) and self._owns_widget(new):
+            box = new
+        else:
+            box = self._menu_bar_held_box() if new is bar else None
         if box is self._text_undo_box:
             return
         old_box = self._focused_text_box()

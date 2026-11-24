@@ -179,11 +179,12 @@ def _field(walk: sw.Walk, *path: str) -> tuple[int, int]:
 
 def _assert_fails_fast(structure: dict, body: bytes, expect_path: str, expect_reason: str) -> None:
     sections = [n for n in structure if n != "FileHeader"]
-    # Timed untraced: tracemalloc alone pushed this walk past 1 s on loaded CI runners.
-    started = time.perf_counter()
+    # This thread's CPU time, not wall time, which a loaded 4-worker suite stretched past 1 s (1.63 s)
+    # for a walk of about 0.04 s. Untraced: tracemalloc alone doubles a walk.
+    started = time.thread_time()
     with pytest.raises(sw.WalkError):
         sw.walk(structure, body, 0, sections)
-    elapsed = time.perf_counter() - started
+    elapsed = time.thread_time() - started
     tracemalloc.start()
     try:
         with pytest.raises(sw.WalkError) as raised:
@@ -193,7 +194,7 @@ def _assert_fails_fast(structure: dict, body: bytes, expect_path: str, expect_re
         tracemalloc.stop()
     assert expect_path in raised.value.path
     assert expect_reason in raised.value.reason
-    assert elapsed < 1.0
+    assert elapsed < 1.0, f"{elapsed:.2f} s of CPU"
     assert peak < 100 * 1024 * 1024
 
 

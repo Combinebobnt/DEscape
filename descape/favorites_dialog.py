@@ -22,10 +22,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PyQt5.QtCore import QEvent, QPoint, Qt
-from PyQt5.QtGui import QBrush, QPalette
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -37,7 +35,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import asset_source, catalog_browser, settings
-from descape.catalog_browser import FAVORITE_ROLE, CatalogDelegate, CatalogList
+from descape.catalog_browser import CatalogDelegate, CatalogList
 from descape.terrain_palette import PORTRAIT_COLORS
 
 _VALUE_ROLE = Qt.UserRole
@@ -72,10 +70,7 @@ class UnitFavoritesDialog(QDialog):
         self._pick_enabled = True
         self._disabled_hint = ""
 
-        self.display_combo = QComboBox()
-        self.display_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        for mode, (label, _tip) in catalog_browser._MODES.items():
-            self.display_combo.addItem(label, mode)
+        self.display_combo = catalog_browser.mode_combo()
         self.display_combo.activated.connect(lambda index: self._choose_mode(self.display_combo.itemData(index)))
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("View:"))
@@ -131,30 +126,8 @@ class UnitFavoritesDialog(QDialog):
         self._rows = list(rows)
         catalog_browser.sync_mode_combo(self.display_combo, self.mode(), self._has_install())
         catalog_browser.configure_list(self.list, self.mode())
-        grid = self.mode() == "grid"
-        px = catalog_browser.icon_px(self.mode())
-        placeholder = None if px is None else catalog_browser.placeholder_icon(px)
-        unknown_text = QBrush(self.list.palette().color(QPalette.Disabled, QPalette.Text))
         self.list.blockSignals(True)
-        self.list.clear()
-        self._items = {}
-        for value, entry in self._rows:
-            if entry is None:
-                label = catalog_browser.unknown_label(value)
-                item = QListWidgetItem("" if grid else label)
-                item.setToolTip(f"{label}: not in this game's data, so it cannot be placed")
-                item.setForeground(unknown_text)
-                if px is not None:
-                    item.setIcon(catalog_browser._glyph("?", px) if grid else placeholder)
-            else:
-                item = QListWidgetItem("" if grid else entry.name)
-                item.setToolTip(catalog_browser.row_tooltip(entry, True))
-                if placeholder is not None:
-                    item.setIcon(placeholder)
-            item.setData(_VALUE_ROLE, value)
-            item.setData(FAVORITE_ROLE, True)
-            self.list.addItem(item)
-            self._items[value] = item
+        self._items = catalog_browser.fill_rows(self.list, self._rows, self.mode(), set(self.values()))
         if keep in self._items:
             self.list.setCurrentItem(self._items[keep])
         self.list.blockSignals(False)
@@ -271,7 +244,7 @@ class UnitFavoritesDialog(QDialog):
         known = {value for value, entry in self._rows if entry is not None}
         wanted = []
         for value in (v for v in catalog_browser.visible_values(self.list) if v in known):
-            const = catalog_browser._thumb_const(value)
+            const = catalog_browser.thumb_const(value)
             hit, icon = self._loader.cached(const, px, self._civ)
             if hit:
                 self._set_icon(value, icon, px)
@@ -284,7 +257,7 @@ class UnitFavoritesDialog(QDialog):
         if not catalog_browser.thumb_fits(const, px, civ, catalog_browser.icon_px(self.mode()), self._civ):
             return
         for value, entry in self._rows:
-            if entry is not None and catalog_browser._thumb_const(value) == const:
+            if entry is not None and catalog_browser.thumb_const(value) == const:
                 self._set_icon(value, icon, px)
 
     def _set_icon(self, value: int, icon, px: int) -> None:

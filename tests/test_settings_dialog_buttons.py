@@ -106,6 +106,68 @@ def test_the_prompt_reads_apply_discard_back_with_back_the_default(dialog_window
     box.done(0)
 
 
+@pytest.mark.parametrize(("pressed", "answer"), [("Apply", "apply"), ("Discard", "discard"), ("Back", "back"), (None, "back")])
+def test_the_prompt_answers_by_the_button_pressed(dialog_window, monkeypatch, pressed, answer) -> None:
+    """The real _ask_unapplied (conftest's patch keeps it as __wrapped__); None closes the box with no button."""
+    from PyQt5.QtWidgets import QMessageBox
+
+    from descape.settings_dialog_apply import _SettingsDialogApplyMixin
+
+    dialog, _window = dialog_window
+    real = _SettingsDialogApplyMixin._ask_unapplied.__wrapped__
+
+    def press(box):
+        for button in box.buttons():
+            if button.text() == pressed:
+                button.click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec_", press)
+    assert real(dialog) == answer
+
+    # And through the title-bar X on a dirty dialog, to the dialog's result.
+    from PyQt5.QtWidgets import QDialog
+
+    monkeypatch.setattr(_SettingsDialogApplyMixin, "_ask_unapplied", real)
+    _shown(dialog)
+    dialog.zoom_view_center_radio.setChecked(True)
+    dialog.close()
+    if answer == "back":
+        assert dialog.isVisible() and settings.get_zoom_centered_on_cursor() is False
+        dialog._cancel()
+    else:
+        result = QDialog.Accepted if answer == "apply" else QDialog.Rejected
+        assert not dialog.isVisible() and dialog.result() == result
+        assert settings.get_zoom_centered_on_cursor() is (answer == "discard")
+
+
+def test_a_qt_free_test_never_imports_the_settings_dialog(monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    import descape
+
+    monkeypatch.delitem(sys.modules, "descape.settings_dialog_apply", raising=False)
+    monkeypatch.delattr(descape, "settings_dialog_apply", raising=False)
+    with pytest.MonkeyPatch.context() as inner:
+        conftest.refuse_unapplied_settings_prompt(SimpleNamespace(get_closest_marker=lambda _name: None), inner)
+    assert "descape.settings_dialog_apply" not in sys.modules
+
+
+def test_each_settings_open_deletes_its_dialog(dialog_window, monkeypatch) -> None:
+    from PyQt5.QtCore import QCoreApplication, QEvent
+
+    from descape.settings_dialog import SettingsDialog
+
+    _dialog, window = dialog_window
+    monkeypatch.setattr(SettingsDialog, "exec_", lambda self: self.done(0) or 0)
+    before = len(window.findChildren(SettingsDialog))
+    for _ in range(2):
+        window._show_settings()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert len(window.findChildren(SettingsDialog)) == before, "the fixture's own dialog alone"
+
+
 def test_apply_is_enabled_only_while_something_is_unapplied(dialog_window) -> None:
     dialog, _window = dialog_window
     apply_button = _button(dialog, "Apply")
@@ -302,6 +364,37 @@ def test_cancel_restores_the_mods_tab(dialog_window) -> None:
     assert settings.get_mod_art_excluded() == frozenset()
     assert mod_graphics._excluded == frozenset()
     assert settings.get_data_mod_label_shown() is True
+
+
+def test_cancel_puts_mod_art_and_the_font_back_without_an_applied_line(dialog_window) -> None:
+    """The appliers Cancel reruns stay quiet: the log says cancelled, not "Mod art choices applied" or "UI font"."""
+    dialog, window = dialog_window
+    start = dialog.ui_font_size_spin.value()
+    dialog.ui_font_size_spin.setValue(start + 1 if start < settings.UI_FONT_SIZE_MAX else start - 1)
+    dialog._flush_pending()
+    settings.set_mod_art_excluded({"/mods/a/status"})
+    dialog._apply_mod_art()
+    before = window.status_log.toPlainText()
+    assert "UI font: " in before and "Mod art choices applied" in before, "each applier logs outside a Cancel"
+    dialog._cancel()
+    added = window.status_log.toPlainText()[len(before):]
+    assert "Settings changes cancelled" in added
+    assert "UI font" not in added and "Mod art" not in added
+    assert settings.get_mod_art_excluded() == frozenset() and settings.get_ui_font_size() is None
+
+
+def test_a_mod_list_change_found_during_cancel_is_still_said(dialog_window, monkeypatch) -> None:
+    from descape import mod_graphics
+    from descape.viewer_view import MOD_LIST_PICKED_UP
+
+    dialog, window = dialog_window
+    settings.set_mod_art_excluded({"/mods/a/status"})
+    dialog._apply_mod_art()
+    before = window.status_log.toPlainText()
+    monkeypatch.setattr(mod_graphics, "refresh", lambda: True)
+    dialog._cancel()
+    added = window.status_log.toPlainText()[len(before):]
+    assert MOD_LIST_PICKED_UP in added and "Mod art choices applied" not in added
 
 
 def test_rescan_mods_is_not_undone_by_cancel(dialog_window, monkeypatch) -> None:

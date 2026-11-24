@@ -251,7 +251,8 @@ def test_flat_top_down_draws_a_square() -> None:
 @_NEEDS_QT
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_tile_to_scene_is_the_ground_plane_and_none_after_close(style: str) -> None:
-    from PyQt5.QtCore import QPointF
+    from PyQt5.QtCore import QPointF, QRectF
+    from PyQt5.QtGui import QTransform
 
     from descape import iso_geometry
 
@@ -265,9 +266,25 @@ def test_tile_to_scene_is_the_ground_plane_and_none_after_close(style: str) -> N
             assert abs(point.x() - ax) <= 1 and abs(point.y() - ay) <= 1
         window.close_scenario()
         assert window.map_view.tile_to_scene() is None
-        assert window.minimap_panel.viewport_polygon() is None and not window.minimap_panel.has_image()
+        panel = window.minimap_panel
+        assert panel.viewport_polygon() is None and _draws_no_map(panel)
+        # A view handed over again finds no image left to fit: the close dropped it.
+        panel.set_view(QTransform(), QRectF(0, 0, 10, 10))
+        assert panel.fit() is None and _draws_no_map(panel)
     finally:
         conftest.close_window(window)
+
+
+def _draws_no_map(panel) -> bool:
+    """The panel paints its fill colour alone: no map image, no border, no box."""
+    from PyQt5.QtGui import QImage
+
+    from descape.minimap_panel import FILL_COLOR
+
+    painted = panel.grab().toImage().convertToFormat(QImage.Format_RGB32)
+    blank = QImage(painted.size(), QImage.Format_RGB32)
+    blank.fill(FILL_COLOR)
+    return painted.width() > 0 and painted == blank
 
 
 def _box_centre_tile(window):
@@ -369,6 +386,41 @@ def test_a_press_and_drag_on_the_minimap_recentres_the_view_and_returns_focus() 
 
 @pytest.mark.gui
 @_NEEDS_QT
+def test_dragging_the_divider_from_the_log_widens_the_minimap_past_its_hint_and_refits_it() -> None:
+    """GH #54: the dock's Maximum width policy still lets the separator drag size it; the map stays centred."""
+    from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.minimap_panel import DEFAULT_WIDTH
+
+    window = _map_window("Stepped")
+    try:
+        log, dock, panel = window.log_dock, window.minimap_dock, window.minimap_panel
+        assert panel.width() == DEFAULT_WIDTH and log.geometry().right() < dock.geometry().left()
+        log_width, view_size = log.width(), window.map_view.size()
+        start = QPoint((log.geometry().right() + dock.geometry().left()) // 2, dock.geometry().center().y())
+        QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, start)
+        # QMainWindow moves a separator on a 0 ms timer, so each step runs it before the next.
+        for dx in (-10, -60, -120):
+            move = QMouseEvent(QEvent.MouseMove, QPointF(start + QPoint(dx, 0)), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+            QApplication.sendEvent(window, move)
+            _settle()
+        QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, start + QPoint(-120, 0))
+        _settle()
+        assert panel.width() == DEFAULT_WIDTH + 120 and log.width() == log_width - 120
+        assert window.map_view.size() == view_size, "the row only splits differently"
+        drawn = _corner_points(window)
+        left, right = min(p.x() for p in drawn.values()), max(p.x() for p in drawn.values())
+        assert abs((left + right) / 2 - panel.width() / 2) <= 1, "the map re-fits centred in the wider panel"
+        assert panel.viewport_polygon() is not None
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
 def test_the_wheel_on_the_minimap_changes_nothing() -> None:
     from PyQt5.QtCore import QPoint, QPointF, Qt
     from PyQt5.QtGui import QWheelEvent
@@ -428,7 +480,7 @@ def test_with_no_document_the_dock_stays_empty() -> None:
         window._schedule_minimap()
         assert not window._minimap_timer.isActive()
         window._rebuild_minimap()
-        assert not window.minimap_panel.has_image() and window.minimap_panel.fit() is None
+        assert _draws_no_map(window.minimap_panel) and window.minimap_panel.fit() is None
     finally:
         conftest.close_window(window)
 
@@ -517,7 +569,7 @@ def test_a_second_load_drops_the_old_image_until_its_own_build() -> None:
     try:
         assert window.minimap_panel._image.width() == window.scenario.map_manager.map_width
         window.load_scenario(conftest.TEST_MAP_PATH)
-        assert not window.minimap_panel.has_image(), "the old map's image never takes the new map's box"
+        assert _draws_no_map(window.minimap_panel), "the old map's image never takes the new map's box"
         assert window._minimap_timer.isActive()
         window._rebuild_minimap()
         assert window.minimap_panel._image.width() == window.scenario.map_manager.map_width == 240

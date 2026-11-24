@@ -31,8 +31,10 @@ replaces). A condition's `inverted`
 adds `not ` (Full: `Not: `) on its own. A field the
 template does not show and the JSON's `omit` does not name is appended as
 `+ label: value` when it differs from the type's default, so nothing set is
-ever hidden. A type with no template (a newer version) reads `label: value`
-pairs.
+ever hidden. The JSON's `extra` names the fields an entry leaves to that
+tail on purpose; the renderer never reads it, only the table's coverage test
+(every field shown, omitted or extra). A type with no template (a newer
+version) reads `label: value` pairs.
 
 Read-only: nothing here writes an entry.
 """
@@ -49,7 +51,14 @@ from typing import Any
 from AoE2ScenarioParser.datasets import trigger_lists
 
 from descape import message_markup, player_labels, trigger_fields
-from descape.trigger_geometry import AREA_FIELDS, LOCATION_FIELDS, LOCATION_OBJECT_FIELD, SELECTED_OBJECTS_FIELD, WALL_FIELDS
+from descape.trigger_geometry import (
+    AREA_FIELDS,
+    LOCATION_FIELDS,
+    LOCATION_OBJECT_FIELD,
+    SELECTED_OBJECTS_FIELD,
+    WALL_FIELDS,
+    area_contains,
+)
 
 TABLE_PATH = Path(__file__).resolve().parent / "trigger_summaries.json"
 
@@ -368,6 +377,8 @@ class _Renderer:
         self.object_link: tuple | None = None
         self.link_as_object: frozenset[str] = frozenset()
         self.names_placed = False
+        # Fields whose -1 the sentence read as a value, so the raw hover keeps them too.
+        self.minus_one: set[str] = set()
 
     # -- values
 
@@ -426,8 +437,10 @@ class _Renderer:
             return rendered
         value = self.value(part.name)
         # -1 is a real member of some enums (Extreme difficulty, a Disabled tech), not unset.
-        if _is_unset(value) and not (part.modifier.startswith(":") and self.is_member(part.modifier[1:], value)):
-            return None
+        if _is_unset(value):
+            if not (part.modifier.startswith(":") and self.is_member(part.modifier[1:], value)):
+                return None
+            self.minus_one.add(part.name)
         if part.modifier.startswith("?"):
             rendered = self.render(part.args[0 if value else 1]) if len(part.args) == 2 else None
         elif part.modifier.startswith("!") and (self.is_default(part.name, value) or value in _hidden(part.modifier)):
@@ -497,9 +510,9 @@ class _Renderer:
 
     def placed_unit(self, ref_id: Any) -> list[Segment]:
         ref = self.context.unit(ref_id)
+        self.names_placed = True
         if ref is None:
             return [Segment(f"object {ref_id} (not on the map)")]
-        self.names_placed = True
         name = self.catalog_name("UnitInfo", ref.unit_const)
         link = self.unit_link((LINK_UNIT, ref_id)) if ref.bounds is not None else None
         owner = self.player(ref.player_id)
@@ -518,11 +531,14 @@ class _Renderer:
             shown = ", ".join(f"#{i}" for i in ids[:limit])
             listed = f" ({shown}, …)" if len(ids) > limit else f" ({shown})"
         link = self.unit_link((LINK_UNITS, ids))
-        source = self.value("source_player")
-        if _is_unset(source):
-            return [Segment(f"{len(ids)} selected objects{listed}", link)]
-        owner = self.player(source)
-        return [self.owned(f"{len(ids)} selected {owner.text} objects{listed}", link, owner)]
+        self.names_placed = True
+        text = f"{len(ids)} selected objects{listed}"
+        owners = {getattr(self.context.unit(i), "player_id", None) for i in ids}
+        if len(owners) != 1 or None in owners:
+            return [Segment(text, link)]
+        # Coloured as their one owner but not named for it, so with_player() trails the source player.
+        owner = self.player(owners.pop())
+        return [Segment(text, link, owner.player, None, owner.mark)]
 
     def trigger(self, trigger_id: Any) -> Segment:
         name = self.context.trigger_name(trigger_id) if isinstance(trigger_id, int) else None
@@ -726,11 +742,14 @@ class _Renderer:
         return [Segment(", ".join(texts))] if texts else None
 
     def operand_minus_one(self, operation: Any) -> str:
-        """With an operation set, a live quantity of -1 is the value it applies ("set to -1"), not unset."""
+        """With an operation set, a live quantity of -1 (int or float) is the value it applies ("set to -1"),
+        not unset. Not the armour and attack pair's: its -1 amount packs into the class's bits."""
         live = trigger_fields.live_quantity_slot(self.entry) if self.kind == "effect" else trigger_fields.QUANTITY
-        if _is_unset(operation) or live != trigger_fields.QUANTITY or self.value("quantity") != trigger_fields.UNSET:
+        slots = (trigger_fields.QUANTITY, trigger_fields.QUANTITY_FLOAT)
+        if _is_unset(operation) or live not in slots or self.value("quantity") != trigger_fields.UNSET:
             return "?"
         self.used.add("quantity")
+        self.minus_one.update(("quantity", "quantity_float"))
         return "-1"
 
     def _pseudo_op(self, part: _Field) -> list[Segment] | None:
@@ -843,8 +862,15 @@ def _safe_read(entry: Any, attribute: str) -> Any:
         return None
 
 
-def raw_detail(kind: str, entry: Any, definition: Any, read: Callable[[Any, str], Any] = _safe_read) -> str:
-    """The `attribute=value` pairs the Detail column showed before GH #388."""
+def raw_detail(
+    kind: str,
+    entry: Any,
+    definition: Any,
+    read: Callable[[Any, str], Any] = _safe_read,
+    keep_minus_one: frozenset[str] | set[str] = frozenset(),
+) -> str:
+    """The `attribute=value` pairs the Detail column showed before GH #388, plus a -1 in
+    `keep_minus_one` (one the sentence read as a value, such as Extreme difficulty)."""
     type_attribute = TYPE_ATTRIBUTES[kind]
     details = []
     for attribute in sorted(definition.attributes, key=trigger_fields.form_rank):
@@ -853,7 +879,7 @@ def raw_detail(kind: str, entry: Any, definition: Any, read: Callable[[Any, str]
         value = read(entry, attribute)
         # -1 is the library's "unset" sentinel across almost every numeric
         # trigger field, so showing it would bury the fields that are set.
-        if value is None or value == -1 or value == "" or value == []:
+        if value is None or (value == -1 and attribute not in keep_minus_one) or value == "" or value == []:
             continue
         details.append(f"{attribute}={value}")
     return ", ".join(details)
@@ -895,12 +921,13 @@ def summarize(
     """One condition or effect's Detail: its sentence, or the raw pairs in Raw mode."""
     context = context or Context()
     options = options or Options()
-    raw = raw_detail(kind, entry, definition, read)
     if options.mode == RAW:
+        raw = raw_detail(kind, entry, definition, read)
         return Summary((Segment(raw),) if raw else (), raw)
     template = load_table().get(KIND_KEYS[kind], {}).get(definition.name)
     renderer = _Renderer(kind, entry, definition, presentation, context, options, read)
-    return Summary(_merge(_bridge(renderer.sentence(template))), raw)
+    segments = _merge(_bridge(renderer.sentence(template)))
+    return Summary(segments, raw_detail(kind, entry, definition, read, renderer.minus_one))
 
 
 def matches(found: ObjectFilter, ref: Any, class_of: Callable[[int], Any], type_of: Callable[[int], Any]) -> bool:
@@ -914,9 +941,4 @@ def matches(found: ObjectFilter, ref: Any, class_of: Callable[[int], Any], type_
         return False
     if found.object_type != unset and type_of(ref.unit_const) != found.object_type:
         return False
-    if found.area is not None:
-        x1, y1, x2, y2 = found.area
-        x, y = ref.own_tile
-        if not (min(x1, x2) <= x <= max(x1, x2) and min(y1, y2) <= y <= max(y1, y2)):
-            return False
-    return True
+    return found.area is None or area_contains(found.area, ref.own_tile)

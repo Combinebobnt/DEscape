@@ -824,6 +824,7 @@ _LOCAL_KEY_WORDS: dict[str, str | None] = {
     "window_state": "window",
     "split_sizes": "window",
     "log_height": "window",
+    "objectives_columns": "window",
     "xwayland_on_wayland": "X11 compatibility on Wayland",
     settings_file.IMPORT_APPLIED_KEY: None,
     # No menu writes these yet; the guide names them once Tools > Scripts and Addons exist.

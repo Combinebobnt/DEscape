@@ -29,9 +29,9 @@ from test_unit_sprites import CONST
 
 # Wide enough that a level's view spans 3+ chunks (TASK-031.25 T3b, T3i), and short, so
 # two levels' views fit the blank fixture's small chunk byte budget (its level-0 canvas area x 3).
-# Heights here are window heights: GH #359's progress bar made the status bar 8 px taller, added back.
+# Heights here are window heights, the default layout's chrome included.
 WIDE = 2200
-WIDE_HEIGHT = 1108
+WIDE_HEIGHT = 1100
 NARROW = 1600
 
 
@@ -989,7 +989,7 @@ def test_a_wheel_notch_across_a_level_lands_sharp_wherever_the_view_sits(on_curs
     sharp: no placeholder and no chunk composited in the paint."""
     from PyQt5.QtCore import QPoint
 
-    window = _window(size=1360, height=1038)
+    window = _window(size=1360, height=1030)
     try:
         view = window.map_view
         item = view._canvas_item
@@ -1037,7 +1037,7 @@ def _zoom_out_roll(start_scale: float, notches: int, edge: bool, reach: bool) ->
     of the residual ~0.51 this roll needs."""
     from PyQt5.QtCore import QPoint, QPointF
 
-    window = _window(size=1360, height=1038)
+    window = _window(size=1360, height=1030)
     try:
         window.set_reach_warm_allowed(reach)
         view = window.map_view

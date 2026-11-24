@@ -106,6 +106,8 @@ class _SettingsDialogApplyMixin:
         "Mods": " The profile folder is not reset.",
         "Saving": " The autosave folder is not reset.",
     }
+    # True while Cancel puts values back: an applier then logs no line that reads as an apply.
+    _quiet_appliers = False
 
     # -- pages and timers --------------------------------------------------
 
@@ -280,14 +282,16 @@ class _SettingsDialogApplyMixin:
     def _revert(self) -> None:
         """Cancel: pending changes dropped, then config.yaml and the toolbar row put back as they
         were at open or the last Apply, and every applier whose keys changed run again."""
-        self._stop_pending()
-        current = settings_snapshot.snapshot_settings(settings_snapshot.ALL_DIALOG_KEYS)
-        restored = current != self._snapshot
+        self._quiet_appliers, restored = True, False
         try:
+            self._stop_pending()
+            current = settings_snapshot.snapshot_settings(settings_snapshot.ALL_DIALOG_KEYS)
+            restored = current != self._snapshot
             if restored:
                 settings_snapshot.restore_settings(self._snapshot)
                 self._reapply(current, self._snapshot)
         finally:
+            self._quiet_appliers = False
             # A raising applier must not leave the toolbar row on the cancelled values.
             if self._window.tool_option_values() != self._toolbar_snapshot:
                 self._restore_tool_row(self._toolbar_snapshot)
@@ -358,7 +362,7 @@ class _SettingsDialogApplyMixin:
         self._window.map_view.set_zoom_anchor_mode(settings.get_zoom_centered_on_cursor())
 
     def _apply_mod_art(self) -> None:
-        self._window._apply_mod_art_change("Mod art choices applied")
+        self._window._apply_mod_art_change("Mod art choices applied", quiet=self._quiet_appliers)
 
     def _apply_owner_filter(self) -> None:
         self._window.units_panel.refresh_owner_filter()

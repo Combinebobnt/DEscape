@@ -350,6 +350,27 @@ def test_a_villager_as_trained_at_points_to_the_builder() -> None:
         _close(window)
 
 
+def test_the_female_builder_as_trained_at_points_to_the_builder() -> None:
+    """GH #169 review: 212 has no buttons in the .dat, but it is no plain unit either."""
+    from descape import command_buttons
+
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {
+            "object_list_unit_id": _CASTLE,
+            "object_list_unit_id_2": command_buttons.FEMALE_BUILDER_UNIT,
+            "button_location": 14,
+        },
+    )
+    try:
+        grid = _grid(window)
+        assert grid.grid_host.isHidden()
+        hint = grid.hint_label.text()
+        assert "builder (118)" in hint and "no command buttons" not in hint
+    finally:
+        _close(window)
+
+
 def test_unset_or_buttonless_shows_a_hint_instead_of_the_grid() -> None:
     from trigger_panel_helpers import _row_widget
 

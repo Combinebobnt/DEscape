@@ -290,6 +290,8 @@ class _ViewerFindMixin:
     def _commit_focus_of(self, window) -> None:
         """_commit_focused_field() for one of this window's windows."""
         widget = window.focusWidget()
+        if window is self and widget is self.menuBar():
+            widget = self._menu_bar_held_box()  # TASK-648: the bar's keyboard mode holds a box.
         if not self._owns_widget(widget) or (window is not self and not widget.isVisible()):
             return
         if isinstance(widget, QAbstractSpinBox):

@@ -800,7 +800,7 @@ def test_a_list_value_is_copied_not_aliased() -> None:
 
 
 def test_an_unknown_old_type_carries_nothing_without_raising() -> None:
-    """_describe() already renders such an entry; retyping is how a user gets
+    """trigger_summary.summarize() already renders such an entry; retyping is how a user gets
     out of it, so it must not be the one op that raises."""
     new = _entry(["effect_type", "source_player"], {"effect_type": 2, "source_player": -1})
     entry = _Live(effect_type=999, source_player=4)

@@ -52,7 +52,8 @@ def test_gh213_entry_rows_follow_the_display_order_and_carry_the_list_index(tmp_
             entries = getattr(trigger, f"{kind}s")
             for row, index in enumerate(order):
                 item = group.child(row)
-                assert (item.text(0), item.text(1)) == tuple(panel._describe(kind, entries[index])), (kind, row)
+                name, summary = panel._summarize(kind, entries[index])
+                assert (item.text(0), item.text(1)) == (name, summary.text), (kind, row)
                 assert panel._entry_item_for(kind, index) is item, (kind, row)
         assert panel._entry_item_for("effect", 7) is None
 
@@ -295,7 +296,7 @@ def test_gh213_the_entry_move_buttons_and_menu_follow_the_selection(tmp_path: Pa
         assert down.toolTip().startswith(panel._ENTRY_MOVE_DOWN_MENU_TIP + ". Shift+click")
         assert not [a.text() for a in menu.actions() if "click" in a.toolTip()], "a menu entry ignores modifiers"
 
-        # The type picker takes the lower pane, and the entry verbs with it.
+        # The open type picker gates the entry verbs.
         _select_entries(panel, ("condition", 0))
         panel._request_entry_op("new")
         assert _entry_move_states(panel) == (False, False)

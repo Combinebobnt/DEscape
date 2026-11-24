@@ -76,6 +76,7 @@ _MODES = {
     "grid": ("Grid", "Icons only, name and Unit ID on hover"),
 }
 _NO_INSTALL_TIP = "Needs the game install (Settings), which supplies the portraits and sprites"
+_NO_INSTALL_COMBO_TIP = "Icons and Grid need the game install (Settings), which supplies the portraits and sprites"
 _LIST_ICON_PX = 32
 _GRID_ICON_PX = 48
 _GRID_CELL_PAD = 8
@@ -153,7 +154,7 @@ def _random_badge(icon: QIcon, px: int) -> QIcon:
     return QIcon(pixmap)
 
 
-def _thumb_const(value: int) -> int:
+def thumb_const(value: int) -> int:
     """The const whose thumbnail a row shows: a random pick shows its preview const's."""
     return place_random.preview_const(value) if place_random.is_random(value) else value
 
@@ -172,6 +173,46 @@ def placeholder_icon(px: int) -> QIcon:
     pixmap = QPixmap(px, px)
     pixmap.fill(Qt.transparent)
     return QIcon(pixmap)
+
+
+def mode_combo() -> QComboBox:
+    """A display dropdown with the three modes (the catalog's and the Favorite Objects window's);
+    sync_mode_combo() sets its state and tooltips."""
+    combo = QComboBox()
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+    for mode, (label, _tip) in _MODES.items():
+        combo.addItem(label, mode)
+    return combo
+
+
+def fill_rows(view: QListWidget, rows, mode: str, favorites) -> dict[int, QListWidgetItem]:
+    """Refills `view` with a row per (id, CatalogEntry or None) in `rows`, in `mode`, and returns
+    them by id. None is an id the active dataset lacks, greyed. Signals and the current row are the caller's."""
+    grid = mode == "grid"
+    px = icon_px(mode)
+    # A blank icon of the mode's size: a row has its full size before its thumbnail lands,
+    # and a uniform-size grid does not size every cell from an icon-less first one.
+    placeholder = None if px is None else placeholder_icon(px)
+    unknown_text = QBrush(view.palette().color(QPalette.Disabled, QPalette.Text))
+    view.clear()
+    items: dict[int, QListWidgetItem] = {}
+    for value, entry in rows:
+        if entry is None:
+            item = QListWidgetItem("" if grid else unknown_label(value))
+            item.setToolTip(f"{unknown_label(value)}: not in this game's data, so it cannot be placed")
+            item.setForeground(unknown_text)
+            if px is not None:
+                item.setIcon(_glyph("?", px) if grid else placeholder)
+        else:
+            item = QListWidgetItem("" if grid else entry.name)
+            item.setToolTip(row_tooltip(entry, value in favorites))
+            if placeholder is not None:
+                item.setIcon(placeholder)
+        item.setData(_VALUE_ROLE, value)
+        item.setData(FAVORITE_ROLE, value in favorites)
+        view.addItem(item)
+        items[value] = item
+    return items
 
 
 def configure_list(view: QListWidget, mode: str) -> None:
@@ -236,7 +277,7 @@ def thumb_fits(const: int, px: int, civ: int | None, want_px: int | None, owner_
 def row_icon(loader, value: int, icon, px: int, civ: int | None, team_rgb, name: str, grid: bool) -> QIcon:
     """A row's icon from a ready thumbnail: the team colour filled in, a random pick's badge, and
     a stand-in when there is no thumbnail (the placeholder, or Grid's initials)."""
-    const = _thumb_const(value)
+    const = thumb_const(value)
     source = loader.source(const, px, civ)
     icon = catalog_thumbs.team_filled(icon, source, team_rgb, px, loader.art(const, px, civ))
     if place_random.is_random(value):
@@ -515,11 +556,8 @@ class CatalogBrowserView(QWidget):
             self.favorites_button.clicked.connect(self._on_favorites_clicked)
             class_row.addWidget(self.favorites_button)
         # One dropdown for the three modes (GH #195 freed their buttons' room for Favorites).
-        self.display_combo = QComboBox()
+        self.display_combo = mode_combo()
         self.display_combo.setFocusPolicy(Qt.NoFocus)
-        self.display_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        for mode, (label, _tip) in _MODES.items():
-            self.display_combo.addItem(label, mode)
         # activated, not currentIndexChanged: _sync_mode_combo()'s own index change must never save.
         self.display_combo.activated.connect(lambda index: self._choose_mode(self.display_combo.itemData(index)))
         class_row.addWidget(self.display_combo)
@@ -892,31 +930,7 @@ class CatalogBrowserView(QWidget):
         self._fill_class_combo()
         configure_list(self.list, self.mode())
         self.list.blockSignals(True)
-        self.list.clear()
-        self._items = {}
-        grid = self.mode() == "grid"
-        px = icon_px(self.mode())
-        # A blank icon of the mode's size: a row has its full size before its thumbnail lands,
-        # and a uniform-size grid does not size every cell from an icon-less first one.
-        placeholder = None if px is None else placeholder_icon(px)
-        favorites = set(self.favorites())
-        unknown_text = QBrush(self.list.palette().color(QPalette.Disabled, QPalette.Text))
-        for value, entry in self._list_entries():
-            if entry is None:
-                item = QListWidgetItem("" if grid else unknown_label(value))
-                item.setToolTip(f"{unknown_label(value)}: not in this game's data, so it cannot be placed")
-                item.setForeground(unknown_text)
-                if px is not None:
-                    item.setIcon(_glyph("?", px) if grid else placeholder)
-            else:
-                item = QListWidgetItem("" if grid else entry.name)
-                item.setToolTip(row_tooltip(entry, value in favorites))
-                if placeholder is not None:
-                    item.setIcon(placeholder)
-            item.setData(_VALUE_ROLE, value)
-            item.setData(FAVORITE_ROLE, value in favorites)
-            self.list.addItem(item)
-            self._items[value] = item
+        self._items = fill_rows(self.list, self._list_entries(), self.mode(), set(self.favorites()))
         if keep in self._items:
             self.list.setCurrentItem(self._items[keep])
         self.list.blockSignals(False)
@@ -930,11 +944,11 @@ class CatalogBrowserView(QWidget):
         wanted = []
         # An unknown id never reaches the loader, which would decode it on the GUI thread.
         for value in (v for v in visible_values(self.list) if v in self._by_id):
-            hit, icon = self._loader.cached(_thumb_const(value), px, self._civ)
+            hit, icon = self._loader.cached(thumb_const(value), px, self._civ)
             if hit:
                 self._set_icon(value, icon, px)
             else:
-                wanted.append(_thumb_const(value))
+                wanted.append(thumb_const(value))
         if wanted:
             self._loader.request(wanted, px, client=self, civ=self._civ)
 
@@ -943,7 +957,7 @@ class CatalogBrowserView(QWidget):
         if not thumb_fits(const, px, civ, icon_px(self.mode()), self._civ):
             return
         for value in (const, *place_random.RANDOM_PICKS):
-            if value in self._items and value in self._by_id and _thumb_const(value) == const:
+            if value in self._items and value in self._by_id and thumb_const(value) == const:
                 self._set_icon(value, icon, px)
 
     def _set_icon(self, value: int, icon, px: int) -> None:
@@ -993,3 +1007,5 @@ def sync_mode_combo(combo: QComboBox, mode: str, install: bool) -> None:
         model.item(index).setEnabled(enabled)
         combo.setItemData(index, _MODES[mode_id][1] if enabled else _NO_INSTALL_TIP, Qt.ToolTipRole)
     combo.setCurrentIndex(combo.findData(mode))
+    # The closed dropdown's own, as the Icons/Names/Grid buttons had: why only Names is offered.
+    combo.setToolTip(_MODES[mode][1] if install else _NO_INSTALL_COMBO_TIP)

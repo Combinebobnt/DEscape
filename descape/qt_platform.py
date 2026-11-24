@@ -12,9 +12,11 @@ Desktop file dialogs (GH #220): the PyQt5 wheel ships no KDE or GTK theme
 plugin, so on Linux Qt's own file dialog is used. Its one theme plugin,
 `xdgdesktopportal`, routes QFileDialog through xdg-desktop-portal instead.
 Qt 5.15 has no fallback when the portal is missing (the dialog never opens,
-measured), so the theme is set only when a D-Bus query finds the portal's
+measured), so the theme is chosen only when a D-Bus query finds the portal's
 FileChooser at version 3 or later (folder pickers need it), and never over a user-set `QT_QPA_PLATFORMTHEME` (even an empty
-one, which is the opt-out).
+one, which is the opt-out). It goes to QApplication as `-platformtheme`, not
+into the environment, so a program DEscape starts (a file manager from Open
+containing folder) keeps its own theme.
 
 No PyQt import here: this must run before Qt picks a plugin, and stays a pure
 function of the environment so tests need no display. The setting is read by
@@ -91,16 +93,17 @@ def apply_default(
     return f"Wayland session: using QT_QPA_PLATFORM={choice} (XWayland), the X11 compatibility setting is on."
 
 
-def portal_file_chooser_available(
+def portal_file_chooser_problem(
     environ: Mapping[str, str],
     *,
     which: Callable[[str], str | None] = shutil.which,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     frozen: bool = bool(getattr(sys, "frozen", False)),
-) -> bool:
-    """Whether the session bus has xdg-desktop-portal with a FileChooser of
-    version 3 or later, asked with the first of gdbus or busctl found. Reading the property also
-    starts a D-Bus-activatable portal that is not running yet."""
+) -> str | None:
+    """None when the session bus has xdg-desktop-portal with a FileChooser of
+    version 3 or later, asked with the first of gdbus or busctl found, else why
+    not, for the debug log. Reading the property also starts a
+    D-Bus-activatable portal that is not running yet."""
     env = dict(environ)
     if frozen:
         # PyInstaller points LD_LIBRARY_PATH at the bundle; a system tool needs the original.
@@ -124,11 +127,19 @@ def portal_file_chooser_available(
                 timeout=_QUERY_TIMEOUT_S,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
+        except subprocess.TimeoutExpired:
+            return f"{tool} timed out after {_QUERY_TIMEOUT_S} s"
+        except OSError as exc:
+            return f"{tool} failed to run: {exc}"
+        if result.returncode != 0:
+            return f"no portal FileChooser on the session bus ({tool} exit code {result.returncode})"
         version = _reported_version(result.stdout or "")
-        return result.returncode == 0 and version is not None and version >= _MIN_FILE_CHOOSER_VERSION
-    return False
+        if version is None:
+            return f"unreadable {tool} reply {(result.stdout or '').strip()[:60]!r}"
+        if version < _MIN_FILE_CHOOSER_VERSION:
+            return f"FileChooser version {version}, folder pickers need {_MIN_FILE_CHOOSER_VERSION}+"
+        return None
+    return "neither gdbus nor busctl is installed"
 
 
 def _reported_version(stdout: str) -> int | None:
@@ -137,22 +148,16 @@ def _reported_version(stdout: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def default_platform_theme(environ: Mapping[str, str], platform: str, portal_check: Callable[[], bool]) -> str | None:
-    """The `QT_QPA_PLATFORMTHEME` value to set, or None to leave Qt's own
-    choice. `portal_check` runs only on Linux with the variable unset."""
-    if not platform.startswith("linux") or "QT_QPA_PLATFORMTHEME" in environ:
-        return None
-    return PORTAL_THEME if portal_check() else None
-
-
 def apply_default_theme(
-    environ: MutableMapping[str, str] | None = None,
+    argv: list[str],
+    environ: Mapping[str, str] | None = None,
     platform: str | None = None,
-    portal_check: Callable[[], bool] | None = None,
+    portal_problem: Callable[[], str | None] | None = None,
 ) -> str | None:
-    """Sets the portal theme in `environ` (os.environ by default) when
-    `default_platform_theme()` picks it, and returns the debug-log line for
-    what happened on Linux, or None elsewhere."""
+    """Adds `-platformtheme` with the portal theme to `argv`, the list the
+    QApplication is built from, on Linux with `QT_QPA_PLATFORMTHEME` unset
+    and a usable portal. Returns the debug-log line for what happened on
+    Linux, or None elsewhere. `portal_problem` runs only in that case."""
     environ = os.environ if environ is None else environ
     platform = sys.platform if platform is None else platform
     if not platform.startswith("linux"):
@@ -160,13 +165,8 @@ def apply_default_theme(
     inherited = environ.get("QT_QPA_PLATFORMTHEME")
     if inherited is not None:
         return f"Inherited QT_QPA_PLATFORMTHEME: {inherited!r}, left as set"
-    if portal_check is None:
-
-        def portal_check() -> bool:
-            return portal_file_chooser_available(environ)
-
-    choice = default_platform_theme(environ, platform, portal_check)
-    if choice is None:
-        return "Linux: no xdg-desktop-portal FileChooser (version 3+), keeping Qt's file dialog"
-    environ["QT_QPA_PLATFORMTHEME"] = choice
-    return f"Linux: using QT_QPA_PLATFORMTHEME={choice} (desktop file dialogs)"
+    problem = portal_problem() if portal_problem is not None else portal_file_chooser_problem(environ)
+    if problem is not None:
+        return f"Linux: no usable xdg-desktop-portal FileChooser ({problem}), keeping Qt's file dialog"
+    argv[1:1] = ["-platformtheme", PORTAL_THEME]
+    return f"Linux: using platform theme {PORTAL_THEME} (desktop file dialogs)"

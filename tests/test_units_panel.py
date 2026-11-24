@@ -1102,7 +1102,9 @@ def _region(rgb, shade: int = 255):
     """The holed portrait's centre in `rgb`: its shading tinted as the game
     does (GH #374), worked by hand from the fit, not through tinted();
     within 1 for float32 rounding."""
-    factor = 1.113 * shade / 255 + 0.177
+    from descape.catalog_thumbs import TINT_OFFSET, TINT_SLOPE
+
+    factor = TINT_SLOPE * shade / 255 + TINT_OFFSET
     return pytest.approx(tuple(min(255.0, c * factor) for c in rgb), abs=1)
 
 

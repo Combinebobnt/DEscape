@@ -185,7 +185,18 @@ def test_without_an_install_it_shows_names_only() -> None:
     dialog.set_entries(_rows(_ARCHER))
     assert dialog.mode() == "names" and dialog.display_combo.currentData() == "names"
     assert not conftest.display_mode_enabled(dialog, "icons") and not conftest.display_mode_enabled(dialog, "grid")
+    assert "game install" in dialog.display_combo.toolTip(), "the dropdown says why"
     assert settings.get_units_favorites_mode() == "grid", "the sync never saves over the choice"
+
+
+def test_it_builds_rows_through_the_catalogs_public_helpers() -> None:
+    """One row builder for the catalog and this window, and no reach into catalog_browser's private names."""
+    from pathlib import Path
+
+    from descape import favorites_dialog
+
+    source = Path(favorites_dialog.__file__).read_text(encoding="utf-8")
+    assert "catalog_browser._" not in source and "fill_rows(" in source
 
 
 def test_the_dropdown_saves_its_own_mode(fake_install, monkeypatch) -> None:
@@ -253,7 +264,7 @@ def test_the_window_and_the_catalog_both_fill_from_one_loader(fake_install) -> N
         catalog_rows = [v for v in catalog_browser.visible_values(view.list) if v in view._by_id]
         assert len(catalog_rows) > 2
         for value in (*catalog_rows, _CASTLE, _ARCHER):
-            assert loader.cached(catalog_browser._thumb_const(value), 32, None)[0], value
+            assert loader.cached(catalog_browser.thumb_const(value), 32, None)[0], value
     finally:
         dialog.close()
         view.close()

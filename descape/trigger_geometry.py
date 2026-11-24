@@ -250,6 +250,13 @@ def area_centre(coords: Sequence[int]) -> tuple[int, int]:
     return ((x1 + x2) // 2, (y1 + y2) // 2)
 
 
+def area_contains(area: Sequence[int], tile: Sequence[int]) -> bool:
+    """Whether `tile` is inside the area, corners in either order, edges included."""
+    x1, y1, x2, y2 = area
+    x, y = tile
+    return min(x1, x2) <= x <= max(x1, x2) and min(y1, y2) <= y <= max(y1, y2)
+
+
 def tile_centroid(tiles: Sequence[tuple[int, int]]) -> tuple[int, int] | None:
     """The integer centroid of some units' own tiles, or None for none: a
     run's origin and Go to Objects (GH #138) share it."""

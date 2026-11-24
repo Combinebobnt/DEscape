@@ -5,11 +5,12 @@ plain text, so column fitting, copy and accessibility read the same words. A
 row with no summary (Raw view, the Trigger and group rows) paints as usual.
 
 install() adds a viewport event filter, since the view would act on a
-press before any delegate hook could stop it. A plain left press on a link
-emits `link_activated(index, link)` once the event returns (the follow may
-rebuild the tree), and the press, release and double-click are eaten, so a
-multi-selection stays whole and no drag starts. It also shows a pointing
-hand over a link.
+press before any delegate hook could stop it. A plain left press on a link,
+or a double-click on the link that press followed, emits
+`link_activated(index, link)` once the event returns (the follow may rebuild
+the tree), and it and its release are eaten, so a multi-selection stays
+whole and no drag starts. A release whose press began elsewhere reaches the
+view. It also shows a pointing hand over a link.
 """
 
 from __future__ import annotations
@@ -21,8 +22,8 @@ from PyQt5.QtCore import QEvent, QObject, QPersistentModelIndex, QPointF, QRectF
 from PyQt5.QtGui import QAbstractTextDocumentLayout, QPalette, QTextDocument
 from PyQt5.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from descape import settings
-from descape.viewer_dialogs import legible_status_color
+from descape import themes
+from descape.viewer_dialogs import status_contrast_floor
 
 SUMMARY_ROLE = Qt.UserRole + 10
 # The swatch square and a hair space after it.
@@ -32,9 +33,9 @@ _MOUSE_EVENTS = (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.MouseButtonRe
 
 
 @lru_cache(maxsize=256)
-def _legible(rgb: tuple[int, int, int], background: str, _theme: str) -> str:
-    """A text colour shaded until it reads on `background` (the trigger status rule); `_theme` keys the cache."""
-    return legible_status_color("#{:02x}{:02x}{:02x}".format(*rgb), background)
+def _legible(rgb: tuple[int, int, int], background: str, floor: float) -> str:
+    """A text colour shaded until it reads `floor`:1 on `background` (the trigger status rule)."""
+    return themes.legible("#{:02x}{:02x}{:02x}".format(*rgb), background, floor)
 
 
 class TriggerSummaryDelegate(QStyledItemDelegate):
@@ -45,6 +46,10 @@ class TriggerSummaryDelegate(QStyledItemDelegate):
         # pid-indexed RGB tuples, or None (no swatches). Pushed by the panel.
         self.player_colors = None
         self._view = None
+        # Whether the last left press (or double-click) was a link's, so its release is eaten too.
+        self._ate_press = False
+        # The link the last eaten press followed, which a double-click may follow again.
+        self._followed = None
 
     def install(self, view, column: int) -> None:
         """Paint `view`'s `column` and follow its links, with the hover cursor."""
@@ -69,9 +74,20 @@ class TriggerSummaryDelegate(QStyledItemDelegate):
             else:
                 watched.unsetCursor()
             return False
-        if link is None or event.button() != Qt.LeftButton or event.modifiers() != Qt.NoModifier:
+        if event.button() != Qt.LeftButton:
             return False
-        if kind == QEvent.MouseButtonPress:
+        if kind == QEvent.MouseButtonRelease:
+            # Only an eaten press's release: one whose press began elsewhere (a drag-select) is the view's.
+            eaten, self._ate_press = self._ate_press, False
+            return eaten
+        self._ate_press = link is not None and event.modifiers() == Qt.NoModifier
+        if not self._ate_press:
+            self._followed = None
+            return False
+        # A double-click's second press follows too, so quick clicks each step once, but only the link
+        # its first press followed: that follow may have rebuilt the rows (a trigger link) under the cursor.
+        if kind == QEvent.MouseButtonPress or link == self._followed:
+            self._followed = link
             target = QPersistentModelIndex(index)
             QTimer.singleShot(0, lambda: self.link_activated.emit(target, link))
         return True
@@ -91,17 +107,17 @@ class TriggerSummaryDelegate(QStyledItemDelegate):
     def _html(self, summary, background: str = "#ffffff") -> str:
         """Rich text for a summary. Coloured text is shaded to read on `background`; a
         player's box keeps the true colour, since it shows which colour the player is."""
-        theme = settings.get_theme()
+        floor = status_contrast_floor()
         parts = []
         for i, segment in enumerate(summary.segments):
             text = html.escape(segment.text)
             if segment.rgb is not None:
-                text = f'<span style="color:{_legible(tuple(segment.rgb), background, theme)}">{text}</span>'
+                text = f'<span style="color:{_legible(tuple(segment.rgb), background, floor)}">{text}</span>'
             colors = self.player_colors
             if segment.player is not None and colors is not None and 0 <= segment.player < len(colors):
                 rgb = tuple(colors[segment.player][:3])
                 if segment.mark in ("text", "both"):
-                    text = f'<span style="color:{_legible(rgb, background, theme)}">{text}</span>'
+                    text = f'<span style="color:{_legible(rgb, background, floor)}">{text}</span>'
                 if segment.mark in ("box", "both"):
                     text = f'<span style="color:rgb({rgb[0]},{rgb[1]},{rgb[2]})">{_SWATCH}</span>{text}'
             if segment.link is not None:

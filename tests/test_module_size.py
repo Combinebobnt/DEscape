@@ -34,7 +34,7 @@ DESCAPE_CEILINGS = {
     "player_fields.py": 2200,  # baseline 2026-11-13
     "render_cache.py": 1700,  # baseline 2026-11-13
     "scenario_io.py": 1800,  # baseline 2026-11-13
-    "settings.py": 3700,  # 2026-11-16: GH #195 favorites + GH #191; memo globals live on this module
+    "settings.py": 3800,  # 2026-11-23: GH #391 objectives settings; memo globals live on this module
     "settings_dialog.py": 2600,  # baseline 2026-11-13
     "trigger_model.py": 1700,  # baseline 2026-11-13
     "unit_model.py": 2200,  # baseline 2026-11-13

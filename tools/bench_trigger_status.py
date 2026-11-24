@@ -9,8 +9,9 @@ seconds (gc on, as the app runs it). Then per run, medians printed:
   fresh StatusContext (per-context caches cold, as on a first populate).
 - **panel**: the panel's own pass, `TriggerPanel._compute_all_statuses()`,
   with no memo: what a first populate runs.
-- **first**: `show_scenario()` on a shown TriggerPanel for a document it is
-  not showing, so the pass runs in full.
+- **first**: `show_scenario()` on a shown TriggerPanel, its form shown apart
+  as the Trigger Details dock holds it, for a document it is not showing, so
+  the pass runs in full.
 - **memo**: `show_scenario()` again on the same document (the memoized
   repopulate).
 - **nopass**: the first populate with the pass stubbed out: the rest of the
@@ -110,6 +111,10 @@ def main() -> None:
         panel.edited_trigger_indices = frozenset
         panel.resize(1500, 900)
         panel.show()
+        # The form in a window of its own, as the Trigger Details dock holds it (GH #387).
+        detail = panel.take_detail_stack()
+        detail.resize(1500, 900)
+        detail.show()
         QApplication.processEvents()
         rows: list[dict[str, float]] = []
         try:
@@ -158,6 +163,7 @@ def main() -> None:
                 print(f"  run {run + 1}  {cells}  | loadavg {load}")
             print("  median " + "  ".join(f"{c} {statistics.median(r[c] for r in rows):.1f}" for c in COLUMNS) + " (ms)")
         finally:
+            detail.close()
             panel.close()
 
 
